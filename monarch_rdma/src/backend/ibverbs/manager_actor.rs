@@ -15,38 +15,18 @@
 //! - Queue pair creation and connection establishment
 //! - RDMA domain and protection domain management
 //! - Device selection and PCI-to-RDMA device mapping
-//!
-//! ## Queue-pair lifecycle
-//!
-//! Bringing up a queue pair to a peer is a two-sided handshake (each
-//! side has its own QP and must learn the other side's endpoint
-//! before transitioning `INIT → RTR → RTS`). Doing all of that in
-//! response to a single message would block our actor loop while
-//! awaiting peer RPCs, and the peer's symmetric request would block
-//! waiting for us — a deadlock.
-//!
-//! Instead, [`IbvManagerActor`] does only sync bookkeeping in the
-//! handler and offloads the handshake to a per-QP child actor,
-//! [`QueuePairInitializer`]. The store of QPs ([`Self::qps`]) is
-//! keyed by [`QpKey`] and holds a [`QpState`]: `Pending { info,
-//! initializer, waiters }` while the handshake runs, `Ready(qp)`
-//! once this side is RTS and has observed the peer's RTS, or
-//! `Failed(error)` as a tombstone after a fatal error.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
-use std::time::Instant;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use backoff::ExponentialBackoff;
-use backoff::ExponentialBackoffBuilder;
-use backoff::backoff::Backoff;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
+use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
@@ -56,9 +36,10 @@ use hyperactor::Instance;
 use hyperactor::OncePortHandle;
 use hyperactor::OncePortRef;
 use hyperactor::PortHandle;
-use hyperactor::PortRef;
 use hyperactor::RefClient;
 use hyperactor::actor::Referable;
+use hyperactor::context::Mailbox;
+use hyperactor::mailbox::OncePortReceiver;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -76,16 +57,10 @@ use super::primitives::mlx5dv_supported;
 use super::primitives::resolve_qp_type;
 use super::queue_pair::IbvQueuePair;
 use super::queue_pair::OpResult;
-use super::queue_pair::PeerInfo;
-use super::queue_pair::PollTarget;
 use super::queue_pair::ProcessOps;
-use super::queue_pair::QpGuard;
 use super::queue_pair::QpKey;
 use super::queue_pair::QueuePairActor;
-use super::queue_pair::QueuePairInitializer;
-use super::queue_pair::destroy_qp;
 use crate::RdmaOp;
-use crate::RdmaOpType;
 use crate::RdmaTransportLevel;
 use crate::backend::RdmaBackend;
 use crate::local_memory::KeepaliveLocalMemory;
@@ -93,23 +68,6 @@ use crate::rdma_components::get_registered_cuda_segments;
 use crate::rdma_manager_actor::GetIbvActorRefClient;
 use crate::rdma_manager_actor::RdmaManagerActor;
 use crate::validate_execution_context;
-
-// DEPRECATED — replaced by [`CreatePeerQueuePair`] + [`QueuePairActor`].
-// Kept only so [`QueuePairInitializer`] still compiles; the handler
-// on [`IbvManagerActor`] will be removed in a follow-up diff together
-// with the rest of the legacy QP machinery.
-/// Cross-proc message: peer asks for our endpoint, lazily creating
-/// the entry on our side if absent. Generic over the manager actor
-/// type so tests can swap in a mock.
-#[derive(Debug, Serialize, Deserialize, Named)]
-#[serde(bound(serialize = "", deserialize = ""))]
-pub(super) struct EnsureQueuePair<A: Referable> {
-    pub(super) sender: ActorRef<A>,
-    pub(super) sender_device: String,
-    pub(super) receiver_device: String,
-    pub(super) reply: PortRef<PeerInfo>,
-}
-wirevalue::register_type!(EnsureQueuePair<IbvManagerActor>);
 
 /// Cross-proc message: the active side asks the peer's manager to
 /// create and connect a mirror QP for an in-flight [`QueuePairActor`].
@@ -146,40 +104,19 @@ pub(super) struct SubmitOps {
     pub(super) reply: PortHandle<OpResult>,
 }
 
-// DEPRECATED — slated for removal in the follow-up diff that deletes
-// the symmetric `QueuePairInitializer` handshake. Active-side
-// queue pairs now live behind [`IbvManagerActor::qp_handles`] (one
-// [`QueuePairActor`] per peer); passive-side mirror QPs live in
-// [`IbvManagerActor::peer_created_qps`].
-/// Per-QpKey state in [`IbvManagerActor::qps`].
-///
-/// `Pending` covers the entire handshake (an initializer is running);
-/// `Ready` is the terminal usable state; `Failed` is a tombstone that
-/// records the error so subsequent `RequestQueuePair` / `EnsureQueuePair`
-/// calls for the same key surface the same error rather than retrying
-/// or hanging.
-#[derive(Debug)]
-enum QpState {
-    Pending {
-        /// Local endpoint, captured when the QP was first created so
-        /// repeated `EnsureQueuePair` calls don't have to re-extract it.
-        info: IbvQpInfo,
-        /// Child actor driving the handshake. Stopped on
-        /// `QpInitializerDone`/`QpInitializerFailed`.
-        initializer: ActorHandle<QueuePairInitializer<IbvManagerActor>>,
-        /// Local `RequestQueuePair` callers waiting for the QP. Drained
-        /// to `Ok(qp.clone())` on `Ready`, or `Err(_)` on failure.
-        waiters: Vec<OncePortHandle<Result<IbvQueuePair, String>>>,
-    },
-    Ready(IbvQueuePair),
-    Failed(String),
+/// Local-only message: create an [`IbvQueuePair`] on `self_device`,
+/// drive a handshake with `peer` (whose mirror QP lands on
+/// `peer_device`), and return the connected QP. Lets doorbell tests
+/// and the `cuda_ping_pong` example poke a real QP without going
+/// through [`QueuePairActor`].
+pub struct RawQueuePair {
+    pub peer: ActorRef<IbvManagerActor>,
+    pub self_device: String,
+    pub peer_device: String,
+    pub reply: OncePortHandle<Result<IbvQueuePair, String>>,
 }
 
 /// Cross-proc messages handled by [`IbvManagerActor`].
-///
-/// `EnsureQueuePair` is defined as a separate top-level message
-/// because it's generic over the manager actor type to allow
-/// mocking in tests.
 #[derive(Handler, HandleClient, RefClient, Debug, Serialize, Deserialize, Named)]
 pub enum IbvManagerMessage {
     /// Release a buffer registration by `remote_buf_id`. Fire-and-forget
@@ -211,112 +148,6 @@ pub enum IbvManagerLocalMessage {
         #[reply]
         reply: OncePortHandle<Result<IbvBuffer, String>>,
     },
-    /// DEPRECATED — slated for removal in the follow-up diff. Callers
-    /// now submit ops directly via [`SubmitOps`]; per-peer QPs are
-    /// managed internally by [`IbvManagerActor`] through
-    /// [`QueuePairActor`].
-    ///
-    /// User-facing entry point: get a connected `IbvQueuePair` for
-    /// `(self_device, other actor's id, other_device)`. Lazily creates
-    /// the QP + initializer if absent; if a handshake is in flight,
-    /// the reply port is queued and answered when the QP becomes
-    /// `Ready` (or fails).
-    ///
-    /// No `#[reply]` because the handler may park `reply` on the
-    /// `Pending` entry and answer it later from [`QpInitializerDone`]/
-    /// [`QpInitializerFailed`].
-    RequestQueuePair {
-        other: ActorRef<IbvManagerActor>,
-        self_device: String,
-        other_device: String,
-        reply: OncePortHandle<Result<IbvQueuePair, String>>,
-    },
-}
-
-// DEPRECATED — slated for removal in the follow-up diff.
-/// Local-only handshake-success report. The initializer sends this
-/// to its owning manager once both sides have reached RTS, handing
-/// over the freshly-connected [`QpGuard`].
-#[derive(Debug)]
-pub(super) struct QpInitializerDone {
-    pub(super) qp_key: QpKey,
-    pub(super) qp: QpGuard,
-}
-
-// DEPRECATED — slated for removal in the follow-up diff.
-/// Local-only handshake-failure report. The initializer sends this
-/// to its owning manager when the handshake aborted; the underlying
-/// QP has already been dropped on the initializer side.
-#[derive(Debug)]
-pub(super) struct QpInitializerFailed {
-    pub(super) qp_key: QpKey,
-    pub(super) error: String,
-}
-
-/// DEPRECATED — slated for removal in the follow-up diff together
-/// with [`IbvBackend::execute_op`] and [`IbvBackend::wait_for_completion`].
-///
-/// Adaptive wait between completion polls.
-///
-/// While the elapsed time since [`Self::yield_now`] was first called
-/// is below `yield_window`, the policy yields cooperatively
-/// (`tokio::task::yield_now`) — keeping latency tight when the WR
-/// completes shortly after being posted. `tokio::time::sleep` has a
-/// minimum resolution of ~1ms (the timer wheel tick), so even a
-/// `sleep(Duration::from_micros(100))` would block that long; `yield_now` is
-/// sub-millisecond and lets the next poll fire as soon as the runtime
-/// schedules us. Past `yield_window` the policy switches to an
-/// exponential backoff (1ms initial, doubling, capped at 10ms) so
-/// long-running operations don't keep the runtime spinning.
-///
-/// `yield_window` is read from
-/// [`crate::config::RDMA_CQ_BUSY_POLL_WINDOW`]. When it's `None`
-/// (the default) the policy disables the cutoff and only ever
-/// yields, never sleeps.
-struct PollSleepPolicy {
-    yield_window: Option<Duration>,
-    started_at: Option<Instant>,
-    backoff: Option<ExponentialBackoff>,
-}
-
-impl PollSleepPolicy {
-    fn new() -> Self {
-        let yield_window = hyperactor_config::global::get(crate::config::RDMA_CQ_BUSY_POLL_WINDOW);
-        Self {
-            yield_window,
-            started_at: None,
-            backoff: None,
-        }
-    }
-
-    /// Suspend the current task before the next poll. If no yield
-    /// window is configured (the default), always yields. Otherwise,
-    /// yields while within the window and then walks an exponential
-    /// backoff up to 10ms past it.
-    async fn yield_now(&mut self) {
-        let Some(window) = self.yield_window else {
-            tokio::task::yield_now().await;
-            return;
-        };
-        let started = *self.started_at.get_or_insert_with(Instant::now);
-        if started.elapsed() < window {
-            tokio::task::yield_now().await;
-            return;
-        }
-        let backoff = self.backoff.get_or_insert_with(|| {
-            ExponentialBackoffBuilder::new()
-                .with_initial_interval(Duration::from_millis(1))
-                .with_max_interval(Duration::from_millis(10))
-                .with_multiplier(2.0)
-                .with_randomization_factor(0.0)
-                .with_max_elapsed_time(None)
-                .build()
-        });
-        match backoff.next_backoff() {
-            Some(delay) => tokio::time::sleep(delay).await,
-            None => tokio::task::yield_now().await,
-        }
-    }
 }
 
 /// Look up `(addr, size)` in a slice of registered CUDA segments
@@ -374,18 +205,11 @@ pub(super) struct SegmentInfo {
 #[hyperactor::export(
     handlers = [
         IbvManagerMessage,
-        EnsureQueuePair<IbvManagerActor>,
         CreatePeerQueuePair<IbvManagerActor>,
     ],
 )]
 pub struct IbvManagerActor {
     owner: OnceLock<ActorHandle<RdmaManagerActor>>,
-
-    /// DEPRECATED — slated for removal in the follow-up diff together
-    /// with the rest of the legacy QP machinery.
-    ///
-    /// Per-QP state, keyed from this manager's perspective. See [`QpKey`].
-    qps: HashMap<QpKey, QpState>,
 
     /// Active-side [`QueuePairActor`] children, keyed from this
     /// manager's perspective. Lazily populated on the first
@@ -396,15 +220,18 @@ pub struct IbvManagerActor {
     /// Passive-side mirror QPs, created in response to a peer's
     /// [`CreatePeerQueuePair`]. The peer's [`QueuePairActor`] owns
     /// the active side; we hold the connected mirror here so the
-    /// peer can read/write our memory.
+    /// peer can read/write our memory. The map's `Drop` destroys
+    /// each QP via [`IbvQueuePair`]'s own `Drop`.
     peer_created_qps: HashMap<QpKey, IbvQueuePair>,
 
     /// Map of RDMA device names to their domains and loopback QPs.
     /// Created lazily when memory is registered for a specific
     /// device. `Arc<IbvDomain>` so every `IbvMemoryRegionView`
     /// registered against the domain can hold a clone and keep the
-    /// PD alive until the last MR is dereg'd.
-    device_domains: HashMap<String, (Arc<IbvDomain>, Option<IbvQueuePair>)>,
+    /// PD alive until the last MR is dereg'd. The loopback QP is
+    /// owned by this map and destroyed via [`IbvQueuePair`]'s `Drop`
+    /// when the entry is removed.
+    device_domains: HashMap<String, (Arc<IbvDomain>, Option<Arc<IbvQueuePair>>)>,
 
     config: IbvConfig,
 
@@ -441,94 +268,22 @@ impl Actor for IbvManagerActor {
             .expect("owner should only be set once during init");
         Ok(())
     }
-
-    /// Absorb `Undeliverable::Lost` for per-op [`OpResult`] replies —
-    /// the typical case is that the submitting caller dropped its
-    /// receiver mid-batch (e.g. test teardown, `IbvBackend::submit`
-    /// timing out) and we just want to drop those replies on the
-    /// floor rather than letting the default impl kill the actor.
-    /// Everything else (including any other lost message type or any
-    /// `Undeliverable::Message`) falls through to the default which
-    /// bails into supervision.
-    async fn handle_undeliverable_message(
-        &mut self,
-        this: &Instance<Self>,
-        undeliverable: hyperactor::mailbox::Undeliverable<hyperactor::mailbox::MessageEnvelope>,
-    ) -> Result<(), anyhow::Error> {
-        if let hyperactor::mailbox::Undeliverable::Lost(lost) = &undeliverable
-            && lost.message_type.as_deref() == Some(std::any::type_name::<OpResult>())
-        {
-            return Ok(());
-        }
-        hyperactor::actor::handle_undeliverable_message(this, undeliverable)
-    }
 }
 
 impl Drop for IbvManagerActor {
     fn drop(&mut self) {
-        // 1. DEPRECATED legacy QP state. `Pending` entries hold the
-        // qp via the initializer; signal the initializer to stop and
-        // let the runtime tear it down. `Failed` is a tombstone with
-        // no resources. Pending waiters won't be answered and their
-        // callers will observe the dropped reply ports as `Err(_)`.
-        for (_key, state) in self.qps.drain() {
-            match state {
-                QpState::Ready(_) => {
-                    // TODO(slurye): Proper cleanup of QPs. Currently there's no safe way to do this
-                    // because `IbvQueuePair` can have arbitrary clones and there's no way to guarantee
-                    // that none of them are still in use.
-                }
-                QpState::Pending { initializer, .. } => {
-                    let _ = initializer.drain_and_stop("IbvManagerActor dropped");
-                }
-                QpState::Failed(_) => {}
-            }
-        }
-
-        // 2. Drain active-side QP actors. Each child owns its
+        // Drain active-side QP actors. Each child owns its
         // `IbvQueuePair`; `drain_and_stop` schedules the actor to
-        // finish in-flight ops and exit. The owned `IbvQueuePair`
-        // currently leaks on actor drop because the type is still
-        // `Clone` — same TODO as `QpState::Ready` above; the
-        // follow-up diff that makes `IbvQueuePair: !Clone` fixes both.
+        // finish in-flight ops and exit, dropping the QP via its
+        // own `Drop`.
         for (_key, handle) in self.qp_handles.drain() {
             let _ = handle.drain_and_stop("IbvManagerActor dropped");
         }
 
-        // 3. Destroy passive-side mirror QPs. The manager is their
-        // sole owner.
-        for (_key, qp) in self.peer_created_qps.drain() {
-            // SAFETY: We just drained `peer_created_qps`; the
-            // manager is being dropped and no other code holds a
-            // clone of this QP's `rdmaxcel_qp_t` pointer.
-            unsafe { destroy_qp(&qp) };
-        }
-
-        // 4. Drop buffer registrations. Each entry's
-        // `IbvMemoryRegionView` carries the only manager-side
-        // reference to that MR's `Arc<IbvMemoryRegion>` and its
-        // `Arc<IbvDomain>`. They run their FFI cleanup from their
-        // `Drop`s once no surviving view holds a clone.
-        self.buffer_registrations.clear();
-
-        // 5. Drop the segments-owner Arc. `deregister_segments`
-        // runs from `IbvMemoryRegion::Segments::Drop` when the last
-        // segment-backed view also goes away.
-        self.segments_mr.take();
-
-        // 6. Drop device domains (PDs + loopback QPs). Loopback QPs
-        // are tied to this map only; destroy them explicitly. PD
-        // teardown waits on the last `Arc<IbvDomain>` clone (held
-        // by any outstanding view) to drop.
-        for (_device_name, (domain, qp)) in self.device_domains.drain() {
-            if let Some(qp) = qp {
-                // SAFETY: `device_domains` is the only holder of
-                // these loopback QPs; we just drained it and the
-                // manager is being dropped, so no clones survive.
-                unsafe { destroy_qp(&qp) };
-            }
-            drop(domain);
-        }
+        // The remaining fields (`peer_created_qps`,
+        // `buffer_registrations`, `segments_mr`, `device_domains`)
+        // free their FFI resources through their elements' `Drop`s
+        // when this struct is dropped.
     }
 }
 
@@ -580,7 +335,6 @@ impl IbvManagerActor {
 
         let actor = Self {
             owner: OnceLock::new(),
-            qps: HashMap::new(),
             qp_handles: HashMap::new(),
             peer_created_qps: HashMap::new(),
             device_domains: HashMap::new(),
@@ -594,14 +348,17 @@ impl IbvManagerActor {
         Ok(actor)
     }
 
-    /// Get or create a domain and loopback QP for the specified RDMA device
+    /// Get or create a domain (and its loopback QP, if mlx5dv is
+    /// supported) for the specified RDMA device. The loopback QP is
+    /// kept in [`Self::device_domains`] solely so the CUDA segment
+    /// scanner can hand its raw pointer to `register_segments`.
     fn get_or_create_device_domain(
         &mut self,
         device_name: &str,
         rdma_device: &IbvDevice,
-    ) -> Result<(Arc<IbvDomain>, Option<IbvQueuePair>), anyhow::Error> {
-        if let Some((domain, qp)) = self.device_domains.get(device_name) {
-            return Ok((Arc::clone(domain), qp.clone()));
+    ) -> Result<Arc<IbvDomain>, anyhow::Error> {
+        if let Some((domain, _)) = self.device_domains.get(device_name) {
+            return Ok(Arc::clone(domain));
         }
 
         // Create new domain for this device
@@ -615,17 +372,15 @@ impl IbvManagerActor {
         // Create loopback QP for this domain if mlx5dv is supported (needed for segment registration)
         // For EFA, we don't need a loopback QP for segment scanning
         let qp = if mlx5dv_supported() && !crate::efa::is_efa_device() {
-            let mut qp = QpGuard::new(
-                IbvQueuePair::new(domain.context, domain.pd, self.config.clone()).map_err(|e| {
+            let mut qp =
+                IbvQueuePair::new(Arc::clone(&domain), self.config.clone()).map_err(|e| {
                     anyhow::anyhow!(
                         "could not create loopback QP for device {}: {}",
                         device_name,
                         e
                     )
-                })?,
-            );
+                })?;
 
-            // Get connection info and connect to itself
             let endpoint = qp.get_qp_info().map_err(|e| {
                 anyhow::anyhow!("could not get QP info for device {}: {}", device_name, e)
             })?;
@@ -638,15 +393,14 @@ impl IbvManagerActor {
                 )
             })?;
 
-            Some(qp)
+            Some(Arc::new(qp))
         } else {
             None
         };
 
-        let qp = qp.map(|qp| qp.into_inner());
         self.device_domains
-            .insert(device_name.to_string(), (Arc::clone(&domain), qp.clone()));
-        Ok((domain, qp))
+            .insert(device_name.to_string(), (Arc::clone(&domain), qp));
+        Ok(domain)
     }
 
     /// Build parallel PD/QP arrays indexed by CUDA device ordinal
@@ -666,7 +420,14 @@ impl IbvManagerActor {
                     pds.push(domain.pd);
                     qps.push(
                         qp.as_ref()
-                            .map(|q| q.qp as *mut rdmaxcel_sys::rdmaxcel_qp_t)
+                            // SAFETY: the returned pointer is read by
+                            // the segment-scan FFI under a separate
+                            // call on this same `&self`; the QP lives
+                            // in `device_domains` for the lifetime of
+                            // this `IbvManagerActor`, so its `Drop`
+                            // cannot run while these pointers are in
+                            // use.
+                            .map(|q| unsafe { q.as_ptr() } as *mut rdmaxcel_sys::rdmaxcel_qp_t)
                             .unwrap_or(std::ptr::null_mut()),
                     );
                 } else {
@@ -738,7 +499,7 @@ impl IbvManagerActor {
             );
 
             // Get or create domain and loopback QP for this device
-            let (domain, _qp) = self.get_or_create_device_domain(&device_name, &rdma_device)?;
+            let domain = self.get_or_create_device_domain(&device_name, &rdma_device)?;
 
             let access = if crate::efa::is_efa_device() {
                 crate::efa::mr_access_flags()
@@ -910,22 +671,15 @@ impl IbvManagerActor {
             .into_iter()
             .find(|d| d.name() == self_device)
             .ok_or_else(|| anyhow::anyhow!("RDMA device '{}' not found", self_device))?;
-        let (domain, _) = self.get_or_create_device_domain(self_device, &rdma_device)?;
-        // The `QpGuard` here destroys the underlying `rdmaxcel_qp_t`
-        // on early returns from `get_qp_info` / `connect`. Once
-        // `IbvQueuePair` becomes single-owner (with its own `Drop`)
-        // in a follow-up diff, the guard goes away.
-        let mut qp = QpGuard::new(
-            IbvQueuePair::new(domain.context, domain.pd, self.config.clone())
-                .map_err(|e| anyhow::anyhow!("could not create peer IbvQueuePair: {}", e))?,
-        );
+        let domain = self.get_or_create_device_domain(self_device, &rdma_device)?;
+        let mut qp = IbvQueuePair::new(domain, self.config.clone())
+            .map_err(|e| anyhow::anyhow!("could not create peer IbvQueuePair: {}", e))?;
         let local_info = qp
             .get_qp_info()
             .map_err(|e| anyhow::anyhow!("could not extract peer QP info: {}", e))?;
         qp.connect(sender_info)
             .map_err(|e| anyhow::anyhow!("could not connect peer QP: {}", e))?;
-        self.peer_created_qps
-            .insert(qp_key.clone(), qp.into_inner());
+        self.peer_created_qps.insert(qp_key.clone(), qp);
         Ok(local_info)
     }
 
@@ -947,8 +701,8 @@ impl IbvManagerActor {
             .into_iter()
             .find(|d| d.name() == self_device)
             .ok_or_else(|| anyhow::anyhow!("RDMA device '{}' not found", self_device))?;
-        let (domain, _) = self.get_or_create_device_domain(self_device, &rdma_device)?;
-        let qp = IbvQueuePair::new(domain.context, domain.pd, self.config.clone())
+        let domain = self.get_or_create_device_domain(self_device, &rdma_device)?;
+        let qp = IbvQueuePair::new(domain, self.config.clone())
             .map_err(|e| anyhow::anyhow!("could not create IbvQueuePair for {qp_key:?}: {}", e))?;
         let local_manager: ActorRef<Self> = cx.bind();
         let is_loopback = local_manager.actor_addr() == peer_manager.actor_addr()
@@ -964,58 +718,6 @@ impl IbvManagerActor {
         ));
         self.qp_handles.insert(qp_key.clone(), actor.clone());
         Ok(actor)
-    }
-
-    /// DEPRECATED — slated for removal in the follow-up diff.
-    ///
-    /// Lazy QP creation: if `qp_key` is absent, create the local
-    /// `IbvQueuePair`, capture its `IbvQpInfo`, and spawn a
-    /// `QueuePairInitializer` to drive the handshake. Returns the
-    /// `QpState` entry — either the freshly-inserted `Pending` one,
-    /// or the existing `Pending`/`Ready`/`Failed`.
-    fn ensure_queue_pair_impl(
-        &mut self,
-        cx: &Context<'_, Self>,
-        other: ActorRef<IbvManagerActor>,
-        qp_key: &QpKey,
-    ) -> Result<&mut QpState, anyhow::Error> {
-        if !self.qps.contains_key(qp_key) {
-            let self_device = &qp_key.self_device;
-            let rdma_device = super::primitives::get_all_devices()
-                .into_iter()
-                .find(|d| d.name() == self_device)
-                .ok_or_else(|| anyhow::anyhow!("RDMA device '{}' not found", self_device))?;
-            let (domain, _) = self.get_or_create_device_domain(self_device, &rdma_device)?;
-            // Wrap the freshly-created QP in a `QpGuard` immediately
-            // so that any early-return path below (e.g. `get_qp_info`
-            // failing) destroys the underlying `rdmaxcel_qp_t` via
-            // the guard's `Drop` rather than leaking it.
-            let mut qp = QpGuard::new(
-                IbvQueuePair::new(domain.context, domain.pd, self.config.clone())
-                    .map_err(|e| anyhow::anyhow!("could not create IbvQueuePair: {}", e))?,
-            );
-            let info = qp
-                .get_qp_info()
-                .map_err(|e| anyhow::anyhow!("could not extract QP info: {}", e))?;
-            let initializer = cx.spawn(QueuePairInitializer::new(
-                Instance::handle(cx),
-                other,
-                qp_key.clone(),
-                qp,
-            ));
-            self.qps.insert(
-                qp_key.clone(),
-                QpState::Pending {
-                    info,
-                    initializer,
-                    waiters: Vec::new(),
-                },
-            );
-        }
-        Ok(self
-            .qps
-            .get_mut(qp_key)
-            .expect("entry just inserted or pre-existing"))
     }
 }
 
@@ -1048,13 +750,13 @@ impl Handler<SubmitOps> for IbvManagerActor {
             let mrv = match self.resolve_local_mr(&op.local_memory) {
                 Ok(mrv) => mrv,
                 Err(e) => {
-                    reply.post(
+                    reply.try_post(
                         cx,
                         OpResult {
                             op_idx: i,
                             result: Err(e.to_string()),
                         },
-                    );
+                    )?;
                     continue;
                 }
             };
@@ -1067,24 +769,112 @@ impl Handler<SubmitOps> for IbvManagerActor {
             let handle = match self.ensure_qp_actor(cx, &qp_key, peer_manager) {
                 Ok(h) => h,
                 Err(e) => {
-                    reply.post(
+                    reply.try_post(
                         cx,
                         OpResult {
                             op_idx: i,
                             result: Err(e.to_string()),
                         },
-                    );
+                    )?;
                     continue;
                 }
             };
-            handle.post(
+            handle.try_post(
                 cx,
                 ProcessOps {
                     items: vec![(i, op, mrv)],
                     reply: reply.clone(),
                 },
-            );
+            )?;
         }
+        Ok(())
+    }
+}
+
+impl IbvManagerActor {
+    /// Synchronous portion of [`RawQueuePair`] handling: create the
+    /// local QP, post `CreatePeerQueuePair` to `peer`, and return the
+    /// in-flight reply receiver. The follow-up work (awaiting the
+    /// peer's reply and connecting the QP) runs in a tokio task off
+    /// the manager's mailbox; see [`Self::raw_queue_pair_impl`]'s
+    /// rewrite into [`Handler<RawQueuePair>`].
+    fn raw_queue_pair_setup(
+        &mut self,
+        cx: &Context<'_, Self>,
+        peer: &ActorRef<IbvManagerActor>,
+        self_device: String,
+        peer_device: String,
+    ) -> Result<(IbvQueuePair, OncePortReceiver<Result<IbvQpInfo, String>>), anyhow::Error> {
+        let rdma_device = super::primitives::get_all_devices()
+            .into_iter()
+            .find(|d| d.name() == &self_device)
+            .ok_or_else(|| anyhow::anyhow!("RDMA device '{self_device}' not found"))?;
+        let domain = self.get_or_create_device_domain(&self_device, &rdma_device)?;
+        let mut qp = IbvQueuePair::new(domain, self.config.clone())
+            .map_err(|e| anyhow::anyhow!("could not create IbvQueuePair: {e}"))?;
+        let sender_info = qp
+            .get_qp_info()
+            .map_err(|e| anyhow::anyhow!("could not extract QP info: {e}"))?;
+        let (reply, rx) = Mailbox::mailbox(cx).open_once_port::<Result<IbvQpInfo, String>>();
+        peer.post(
+            cx,
+            CreatePeerQueuePair::<IbvManagerActor> {
+                sender: cx.bind(),
+                sender_device: self_device,
+                receiver_device: peer_device,
+                sender_info,
+                reply: reply.bind(),
+            },
+        );
+        Ok((qp, rx))
+    }
+}
+
+#[async_trait]
+impl Handler<RawQueuePair> for IbvManagerActor {
+    async fn handle(&mut self, cx: &Context<Self>, msg: RawQueuePair) -> Result<(), anyhow::Error> {
+        let RawQueuePair {
+            peer,
+            self_device,
+            peer_device,
+            reply,
+        } = msg;
+
+        // Do the sync setup (QP create + peer dispatch) while we
+        // still own the manager's actor loop.
+        let setup = self.raw_queue_pair_setup(cx, &peer, self_device, peer_device);
+        let (mut qp, rx) = match setup {
+            Ok(state) => state,
+            Err(e) => {
+                let _ = reply.try_post(cx, Err(e.to_string()));
+                return Ok(());
+            }
+        };
+
+        // Hand off the wait to a tokio task using a freshly-minted
+        // `Proc::client` as the posting context. Without this hop the
+        // handler would park on `rx.recv()` while still holding the
+        // manager's mailbox; a symmetric `RawQueuePair` from the peer
+        // would then queue a `CreatePeerQueuePair` we can't dispatch,
+        // and both managers deadlock until timeout.
+        let client_name = ActorId::anonymous(cx.proc().proc_id().clone()).to_string();
+        let client = cx.proc().client(&client_name);
+        let timeout = hyperactor_config::global::get(crate::config::RDMA_QP_INIT_TIMEOUT);
+
+        tokio::spawn(async move {
+            let result: Result<IbvQueuePair, String> = async {
+                let peer_info_result = tokio::time::timeout(timeout, rx.recv())
+                    .await
+                    .map_err(|_| format!("RawQueuePair init timed out after {timeout:?}"))?
+                    .map_err(|e| format!("RawQueuePair reply port closed: {e}"))?;
+                let peer_info = peer_info_result?;
+                qp.connect(&peer_info)
+                    .map_err(|e| format!("could not connect QP: {e}"))?;
+                Ok(qp)
+            }
+            .await;
+            let _ = reply.try_post(&client, result);
+        });
         Ok(())
     }
 }
@@ -1111,59 +901,6 @@ impl Handler<CreatePeerQueuePair<IbvManagerActor>> for IbvManagerActor {
         match self.create_peer_qp(&qp_key, &sender_info) {
             Ok(local_info) => reply.post(cx, Ok(local_info)),
             Err(e) => reply.post(cx, Err(e.to_string())),
-        }
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl Handler<EnsureQueuePair<IbvManagerActor>> for IbvManagerActor {
-    async fn handle(
-        &mut self,
-        cx: &Context<Self>,
-        msg: EnsureQueuePair<IbvManagerActor>,
-    ) -> Result<(), anyhow::Error> {
-        let EnsureQueuePair {
-            sender,
-            sender_device,
-            receiver_device,
-            reply,
-        } = msg;
-        let qp_key = QpKey {
-            self_device: receiver_device,
-            other_id: sender.actor_addr().id().clone(),
-            other_device: sender_device,
-        };
-        let state = match self.ensure_queue_pair_impl(cx, sender, &qp_key) {
-            Ok(state) => state,
-            Err(e) => {
-                reply.post(cx, PeerInfo(Err(e.to_string())));
-                return Ok(());
-            }
-        };
-        match state {
-            QpState::Pending {
-                info, initializer, ..
-            } => {
-                let notify_rts = initializer.bind::<QueuePairInitializer<Self>>().port();
-                reply.post(cx, PeerInfo(Ok((info.clone(), notify_rts))));
-            }
-            QpState::Ready(_) => {
-                // `Ready` means a prior handshake completed and the
-                // initializer was stopped — we can't hand back an
-                // initializer ref. Reaching here represents a logic
-                // error (peer is asking us to redo a handshake we've
-                // already finished); surface it as `Err`.
-                reply.post(
-                    cx,
-                    PeerInfo(Err(format!(
-                        "EnsureQueuePair on already-Ready entry {qp_key:?}"
-                    ))),
-                );
-            }
-            QpState::Failed(error) => {
-                reply.post(cx, PeerInfo(Err(error.clone())));
-            }
         }
         Ok(())
     }
@@ -1206,139 +943,6 @@ impl IbvManagerLocalMessageHandler for IbvManagerActor {
             .insert(remote_buf_id, (buf.clone(), mrv));
         Ok(Ok(buf))
     }
-
-    async fn request_queue_pair(
-        &mut self,
-        cx: &Context<Self>,
-        other: ActorRef<IbvManagerActor>,
-        self_device: String,
-        other_device: String,
-        reply: OncePortHandle<Result<IbvQueuePair, String>>,
-    ) -> Result<(), anyhow::Error> {
-        let qp_key = QpKey {
-            self_device,
-            other_id: other.actor_addr().id().clone(),
-            other_device,
-        };
-        let state = match self.ensure_queue_pair_impl(cx, other, &qp_key) {
-            Ok(state) => state,
-            Err(e) => {
-                reply.post(cx, Err(e.to_string()));
-                return Ok(());
-            }
-        };
-        match state {
-            QpState::Pending { waiters, .. } => waiters.push(reply),
-            QpState::Ready(qp) => reply.post(cx, Ok(qp.clone())),
-            QpState::Failed(error) => reply.post(cx, Err(error.clone())),
-        }
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl Handler<QpInitializerDone> for IbvManagerActor {
-    async fn handle(
-        &mut self,
-        cx: &Context<Self>,
-        msg: QpInitializerDone,
-    ) -> Result<(), anyhow::Error> {
-        let QpInitializerDone { qp_key, qp } = msg;
-        let qp = qp.into_inner();
-        // Take the entry out, transition to Ready, drain waiters,
-        // then stop the initializer.
-        let initializer = match self.qps.remove(&qp_key) {
-            Some(QpState::Pending {
-                waiters,
-                initializer,
-                ..
-            }) => {
-                for w in waiters {
-                    w.post(cx, Ok(qp.clone()));
-                }
-                initializer
-            }
-            other => {
-                unreachable!("QpInitializerDone received but state is {other:?}: {qp_key:?}")
-            }
-        };
-        self.qps.insert(qp_key.clone(), QpState::Ready(qp));
-        initializer.drain_and_stop("QpInitializerDone")?;
-        let status = initializer.await;
-        if status.is_failed() {
-            // The QP itself is already `Ready` and waiters have been
-            // drained, so a non-clean initializer shutdown is not
-            // user-visible — log and move on rather than crashing
-            // the manager.
-            tracing::error!(
-                "QueuePairInitializer for {qp_key:?} terminated with failure after Done: {status:?}"
-            );
-        }
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl Handler<QpInitializerFailed> for IbvManagerActor {
-    async fn handle(
-        &mut self,
-        cx: &Context<Self>,
-        msg: QpInitializerFailed,
-    ) -> Result<(), anyhow::Error> {
-        let QpInitializerFailed { qp_key, error } = msg;
-        let initializer = match self.qps.remove(&qp_key) {
-            Some(QpState::Pending {
-                waiters,
-                initializer,
-                ..
-            }) => {
-                for w in waiters {
-                    w.post(cx, Err(error.clone()));
-                }
-                initializer
-            }
-            other => {
-                unreachable!("QpInitializerFailed received but state is {other:?}: {qp_key:?}")
-            }
-        };
-        // Tombstone the entry: subsequent `RequestQueuePair` calls
-        // for the same key surface the same error rather than
-        // retrying or hanging. TODO: add recovery.
-        self.qps.insert(qp_key.clone(), QpState::Failed(error));
-        initializer.drain_and_stop("QpInitializerFailed")?;
-        let status = initializer.await;
-        if status.is_failed() {
-            tracing::error!(
-                "QueuePairInitializer for {qp_key:?} terminated with failure after Failed: {status:?}"
-            );
-        }
-        Ok(())
-    }
-}
-
-/// DEPRECATED — slated for removal in the follow-up diff.
-///
-/// Free helper around [`IbvManagerLocalMessage::RequestQueuePair`] — opens
-/// a `OncePortHandle` for the reply, sends the message, and awaits the
-/// answer. Exists because `RequestQueuePair` doesn't use `#[reply]`
-/// (the handler may park the port until the QP becomes `Ready`), so
-/// the auto-derived client method only does fire-and-forget.
-pub(super) async fn request_queue_pair(
-    actor: &ActorHandle<IbvManagerActor>,
-    cx: &(impl hyperactor::context::Actor + Send + Sync),
-    other: ActorRef<IbvManagerActor>,
-    self_device: String,
-    other_device: String,
-) -> Result<Result<IbvQueuePair, String>, anyhow::Error> {
-    let (reply, rx) = cx
-        .mailbox()
-        .open_once_port::<Result<IbvQueuePair, String>>();
-    actor
-        .request_queue_pair(cx, other, self_device, other_device, reply)
-        .await?;
-    rx.recv()
-        .await
-        .map_err(|e| anyhow::anyhow!("request_queue_pair port closed: {e}"))
 }
 
 /// Wrapper around [`ActorHandle<IbvManagerActor>`] that moves the RDMA
@@ -1352,129 +956,6 @@ impl std::ops::Deref for IbvBackend {
     type Target = ActorHandle<IbvManagerActor>;
     fn deref(&self) -> &Self::Target {
         &self.0
-    }
-}
-
-#[expect(dead_code, reason = "DEPRECATED, removed in the follow-up diff")]
-impl IbvBackend {
-    /// DEPRECATED — replaced by [`QueuePairActor`]-driven CQ polling.
-    ///
-    /// Waits for the completion of RDMA operations.
-    ///
-    /// Polls the completion queue until all specified work requests complete
-    /// or until the timeout is reached. Pure CQ polling — no actor state needed.
-    async fn wait_for_completion(
-        local_buf: &IbvBuffer,
-        qp: &mut IbvQueuePair,
-        poll_target: PollTarget,
-        expected_wr_ids: &[u64],
-        timeout: Duration,
-    ) -> Result<(), anyhow::Error> {
-        let start_time = std::time::Instant::now();
-
-        let mut remaining: std::collections::HashSet<u64> =
-            expected_wr_ids.iter().copied().collect();
-        let mut poll_policy = PollSleepPolicy::new();
-
-        while start_time.elapsed() < timeout {
-            if remaining.is_empty() {
-                return Ok(());
-            }
-
-            match qp.poll_completion(poll_target, &remaining) {
-                Ok(completions) => {
-                    for (wr_id, wc_result) in completions {
-                        if let Err(e) = wc_result {
-                            return Err(anyhow::anyhow!(
-                                "RDMA polling completion failed: {} [lkey={}, rkey={}, addr=0x{:x}, size={}]",
-                                e,
-                                local_buf.lkey,
-                                local_buf.rkey,
-                                local_buf.addr,
-                                local_buf.size,
-                            ));
-                        }
-                        remaining.remove(&wr_id);
-                    }
-                    if remaining.is_empty() {
-                        return Ok(());
-                    }
-                    poll_policy.yield_now().await;
-                }
-                Err(e) => {
-                    return Err(anyhow::anyhow!(
-                        "RDMA CQ poll failed: {} [lkey={}, rkey={}, addr=0x{:x}, size={}]",
-                        e,
-                        local_buf.lkey,
-                        local_buf.rkey,
-                        local_buf.addr,
-                        local_buf.size,
-                    ));
-                }
-            }
-        }
-        tracing::error!(
-            "timed out while waiting on request completion for wr_ids={:?}",
-            remaining
-        );
-        Err(anyhow::anyhow!(
-            "[ibv_buffer({:?})] rdma operation did not complete in time (expected wr_ids={:?})",
-            local_buf,
-            expected_wr_ids
-        ))
-    }
-
-    /// DEPRECATED — replaced by [`SubmitOps`] dispatch into per-peer
-    /// [`QueuePairActor`]s.
-    ///
-    /// Core submit logic: registers a local MR via actor message,
-    /// resolves the remote `IbvBuffer` lazily, and executes the op.
-    /// `local_mrv` is kept in scope for the duration of the op so
-    /// its `Arc<IbvMemoryRegion>` (and the PD it lives on) survive
-    /// until completion; on drop, the FFI MR is deregistered.
-    async fn execute_op(
-        &self,
-        cx: &(impl hyperactor::context::Actor + Send + Sync),
-        op: IbvOp,
-        timeout: Duration,
-    ) -> Result<(), anyhow::Error> {
-        let (local_mrv, local_device_name) = self
-            .register_mr(cx, op.local_memory.addr(), op.local_memory.size())
-            .await?
-            .map_err(|e| anyhow::anyhow!(e))?;
-
-        let local_buffer = IbvBuffer {
-            mr_id: local_mrv.id,
-            lkey: local_mrv.lkey,
-            rkey: local_mrv.rkey,
-            addr: local_mrv.rdma_addr,
-            size: local_mrv.size,
-            device_name: local_device_name,
-        };
-
-        let result = async {
-            let mut qp = request_queue_pair(
-                &self.0,
-                cx,
-                op.remote_manager.clone(),
-                local_buffer.device_name.clone(),
-                op.remote_buffer.device_name.clone(),
-            )
-            .await?
-            .map_err(|e| anyhow::anyhow!(e))?;
-
-            let wr_id = match op.op_type {
-                RdmaOpType::WriteFromLocal => qp.put(local_buffer.clone(), op.remote_buffer)?,
-                RdmaOpType::ReadIntoLocal => qp.get(local_buffer.clone(), op.remote_buffer)?,
-            };
-
-            Self::wait_for_completion(&local_buffer, &mut qp, PollTarget::Send, &wr_id, timeout)
-                .await
-        }
-        .await;
-
-        drop(local_mrv);
-        result
     }
 }
 
@@ -1516,13 +997,13 @@ impl RdmaBackend for IbvBackend {
 
         let (reply, mut reply_rx) = cx.mailbox().open_port::<OpResult>();
 
-        self.0.post(
+        self.0.try_post(
             cx,
             SubmitOps {
                 ops: ibv_ops,
                 reply,
             },
-        );
+        )?;
 
         let mut failures: Vec<(usize, String)> = Vec::with_capacity(n);
         let mut received = 0usize;
