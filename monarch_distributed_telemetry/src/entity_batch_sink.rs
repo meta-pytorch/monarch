@@ -6,7 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! EntityDispatcher - Dispatches entity lifecycle events to Arrow RecordBatches
+//! EntityBatchSink - Collects entity lifecycle events as Arrow RecordBatches
 //!
 //! Produces tables:
 //! - `actors`: Actor creation events
@@ -20,7 +20,8 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use hyperactor_telemetry::EntityEvent;
-use hyperactor_telemetry::EntityEventDispatcher;
+use hyperactor_telemetry::TraceEvent;
+use hyperactor_telemetry::TraceEventSink;
 use monarch_record_batch::RecordBatchBuffer;
 use monarch_telemetry_schema::entity_tables::ACTOR_STATUS_EVENTS;
 use monarch_telemetry_schema::entity_tables::ACTORS;
@@ -44,8 +45,8 @@ pub use monarch_telemetry_schema::entity_tables::SentMessageBuffer;
 use crate::record_batch_sink::FlushCallback;
 use crate::timestamp_to_micros;
 
-/// Inner state of EntityDispatcher.
-struct EntityDispatcherInner {
+/// Inner state of EntityBatchSink.
+struct EntityBatchSinkInner {
     actors_buffer: ActorBuffer,
     meshes_buffer: MeshBuffer,
     actor_status_events_buffer: ActorStatusEventBuffer,
@@ -56,7 +57,7 @@ struct EntityDispatcherInner {
     flush_callback: FlushCallback,
 }
 
-impl EntityDispatcherInner {
+impl EntityBatchSinkInner {
     fn flush_buffer<B: RecordBatchBuffer>(
         buffer: &mut B,
         table_name: &str,
@@ -144,17 +145,18 @@ impl EntityDispatcherInner {
     }
 }
 
-/// Dispatches entity lifecycle events to Arrow RecordBatches.
+/// Collects entity lifecycle events into Arrow RecordBatches.
 ///
-/// This is separate from RecordBatchSink which handles tracing events (spans, events).
-/// Both use the same FlushCallback pattern to push batches to the database scanner's tables.
+/// This is the current in-process materializer for `TraceEvent::Entity`. It
+/// keeps today's `DatabaseScanner` query path working while entity production
+/// moves onto the unified trace dispatcher queue.
 #[derive(Clone)]
-pub struct EntityDispatcher {
-    inner: Arc<Mutex<EntityDispatcherInner>>,
+pub struct EntityBatchSink {
+    inner: Arc<Mutex<EntityBatchSinkInner>>,
 }
 
-impl EntityDispatcher {
-    /// Create a new EntityDispatcher with the specified batch size and flush callback.
+impl EntityBatchSink {
+    /// Create a new EntityBatchSink with the specified batch size and flush callback.
     ///
     /// The callback receives (table_name, record_batch) when a batch is ready.
     /// The callback should handle empty batches by creating the table with the
@@ -164,7 +166,7 @@ impl EntityDispatcher {
     /// * `batch_size` - Number of rows to buffer before flushing each table
     /// * `flush_callback` - Called with (table_name, record_batch) when a batch is ready
     pub fn new(batch_size: usize, flush_callback: FlushCallback) -> Self {
-        let inner = Arc::new(Mutex::new(EntityDispatcherInner {
+        let inner = Arc::new(Mutex::new(EntityBatchSinkInner {
             actors_buffer: ActorBuffer::default(),
             meshes_buffer: MeshBuffer::default(),
             actor_status_events_buffer: ActorStatusEventBuffer::default(),
@@ -177,9 +179,9 @@ impl EntityDispatcher {
         Self { inner }
     }
 
-    /// Flush all buffers, emitting batches for actors and meshes tables.
+    /// Flush all entity table buffers.
     ///
-    /// This always emits batches for both tables, even if they are empty.
+    /// This always emits batches for all entity tables, even if they are empty.
     /// The callback is expected to handle empty batches by creating the table
     /// with the correct schema but not appending empty data.
     pub fn flush(&self) -> anyhow::Result<()> {
@@ -191,8 +193,8 @@ impl EntityDispatcher {
     }
 }
 
-impl EntityEventDispatcher for EntityDispatcher {
-    fn dispatch(&self, event: EntityEvent) -> Result<(), anyhow::Error> {
+impl EntityBatchSink {
+    fn consume_entity(&self, event: EntityEvent) -> Result<(), anyhow::Error> {
         let mut inner = self
             .inner
             .lock()
@@ -268,5 +270,22 @@ impl EntityEventDispatcher for EntityDispatcher {
             }
         }
         Ok(())
+    }
+}
+
+impl TraceEventSink for EntityBatchSink {
+    fn consume(&mut self, event: &TraceEvent) -> Result<(), anyhow::Error> {
+        if let TraceEvent::Entity(event) = event {
+            self.consume_entity(event.clone())?;
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<(), anyhow::Error> {
+        EntityBatchSink::flush(self)
+    }
+
+    fn name(&self) -> &str {
+        "EntityBatchSink"
     }
 }

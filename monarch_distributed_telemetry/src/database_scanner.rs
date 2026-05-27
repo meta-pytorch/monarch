@@ -34,7 +34,7 @@ use pyo3::types::PyBytes;
 use pyo3::types::PyModule;
 use serde_multipart::Part;
 
-use crate::EntityDispatcher;
+use crate::EntityBatchSink;
 use crate::QueryResponse;
 use crate::RecordBatchSink;
 use crate::pyspy_table::PySpyDumpBuffer;
@@ -267,8 +267,8 @@ pub struct DatabaseScanner {
     retention_us: i64,
     /// Handle to flush the RecordBatchSink for trace events (spans, events)
     sink: Option<RecordBatchSink>,
-    /// Handle to flush the EntityDispatcher for entity events (actors, meshes)
-    dispatcher: Option<EntityDispatcher>,
+    /// Handle to flush the entity batch sink for entity events.
+    entity_sink: Option<EntityBatchSink>,
     /// Socket ingest tasks owned by this scanner.
     ///
     /// Keeping the handles here keeps the listener tasks alive for the scanner
@@ -287,7 +287,7 @@ impl DatabaseScanner {
             rank,
             retention_us: retention_secs as i64 * 1_000_000,
             sink: None,
-            dispatcher: None,
+            entity_sink: None,
             socket_ingest_handles: StdMutex::new(Vec::new()),
         };
 
@@ -296,10 +296,11 @@ impl DatabaseScanner {
         scanner.sink = Some(sink.clone());
         hyperactor_telemetry::register_sink(Box::new(sink));
 
-        // Create and register an EntityDispatcher for entity events (actors, meshes)
-        let dispatcher = scanner.create_entity_dispatcher(batch_size);
-        scanner.dispatcher = Some(dispatcher.clone());
-        hyperactor_telemetry::set_entity_dispatcher(Box::new(dispatcher));
+        // Current in-process telemetry now consumes entity events from the
+        // same `TraceEvent` dispatcher queue as spans and log events.
+        let entity_sink = scanner.create_entity_batch_sink(batch_size);
+        scanner.entity_sink = Some(entity_sink.clone());
+        hyperactor_telemetry::register_entity_sink(Box::new(entity_sink));
 
         // Pre-register py-spy tables so QueryEngine discovers them at setup time
         for (name, batch) in [
@@ -337,10 +338,10 @@ impl DatabaseScanner {
             sink.flush()
                 .map_err(|e| PyException::new_err(format!("failed to flush sink: {}", e)))?;
         }
-        if let Some(ref dispatcher) = self.dispatcher {
-            dispatcher
+        if let Some(ref entity_sink) = self.entity_sink {
+            entity_sink
                 .flush()
-                .map_err(|e| PyException::new_err(format!("failed to flush dispatcher: {}", e)))?;
+                .map_err(|e| PyException::new_err(format!("failed to flush entity sink: {}", e)))?;
         }
         self.apply_retention_policies()?;
         Ok(())
@@ -560,14 +561,14 @@ impl DatabaseScanner {
         )
     }
 
-    /// Create an EntityDispatcher that pushes batches to this scanner's tables.
+    /// Create an entity batch sink that pushes batches to this scanner's tables.
     ///
-    /// The dispatcher can be registered with hyperactor_telemetry::set_entity_dispatcher()
-    /// to receive entity events (actors, meshes) and store them as queryable tables.
-    pub fn create_entity_dispatcher(&self, batch_size: usize) -> EntityDispatcher {
+    /// The sink can be registered with hyperactor_telemetry::register_entity_sink()
+    /// to receive `TraceEvent::Entity` events and store them as queryable tables.
+    pub fn create_entity_batch_sink(&self, batch_size: usize) -> EntityBatchSink {
         let table_data = self.table_data.clone();
 
-        EntityDispatcher::new(
+        EntityBatchSink::new(
             batch_size,
             Box::new(move |table_name, batch| {
                 if let Err(e) = Self::push_batch_to_tables(&table_data, table_name, batch) {
@@ -1053,7 +1054,7 @@ mod tests {
             rank: 0,
             retention_us: 0,
             sink: None,
-            dispatcher: None,
+            entity_sink: None,
             socket_ingest_handles: StdMutex::new(Vec::new()),
         };
 
@@ -1289,7 +1290,7 @@ mod tests {
             rank: 0,
             retention_us: 0,
             sink: None,
-            dispatcher: None,
+            entity_sink: None,
             socket_ingest_handles: StdMutex::new(Vec::new()),
         };
 
@@ -1309,7 +1310,7 @@ mod tests {
             rank: 0,
             retention_us: 0,
             sink: None,
-            dispatcher: None,
+            entity_sink: None,
             socket_ingest_handles: StdMutex::new(Vec::new()),
         };
         assert!(scanner.store_pyspy_dump("x", "p", "not json").is_err());
@@ -1322,7 +1323,7 @@ mod tests {
             rank: 0,
             retention_us: 0,
             sink: None,
-            dispatcher: None,
+            entity_sink: None,
             socket_ingest_handles: StdMutex::new(Vec::new()),
         };
 
