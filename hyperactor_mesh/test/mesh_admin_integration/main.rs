@@ -310,12 +310,38 @@
 //!   with populated actor_id, proc_id, host, and url fields.
 //! - **MIT-76 (admin-schema):** `GET /v1/schema/admin` returns a
 //!   valid JSON Schema document.
+//!
+//! ### Inbound ordering API exposure
+//!
+//! - **MIT-77 (inbound-ordering API exposure):** `GET /v1/{actor}` for
+//!   a live actor built through `Instance::new` returns the three new
+//!   inbound-ordering fields (`instance_id`, `queue_depth`,
+//!   `inbound_ordering`). `inbound_ordering` is `Some` (IO-7),
+//!   `snapshot_complete` follows IO-4, `known_session_count` follows
+//!   IO-5, and the `returned_*` rollups follow IO-6. Identity-only
+//!   assertions; no workload-dependent values.
+//! - **MIT-78 (deterministic stalled inbound ordering API exposure):**
+//!   Spawning the `inbound_ordering_workload` binary and polling
+//!   `/v1/{stalled_receiver}` until convergence asserts both the IO-*
+//!   presentation invariants and the workload's deterministic content
+//!   totals: IO-4 (snapshot_complete derivation), IO-5
+//!   (known_session_count == sessions.len() + skipped_session_count,
+//!   == 3 for this workload: sender_a + sender_b + the workload's
+//!   bootstrap client session), IO-6 (returned_* rollups equal
+//!   recomputation over returned sessions), IO-7
+//!   (inbound_ordering.is_some()), plus returned_buffered_message_count
+//!   == 8 / returned_max_buffered_count == 5 and two distinct session
+//!   senders. Sister invariant to MIT-77 (happy-path transport): MIT-78
+//!   covers transport + presentation invariants + content against
+//!   manufactured deterministic state.
 
 mod admin;
 mod auth;
 mod config;
 mod dining;
 mod harness;
+mod inbound_ordering;
+mod inbound_ordering_workload;
 mod openapi;
 mod pyspy;
 mod ref_check;
@@ -326,18 +352,26 @@ mod tree;
 
 // --- dining family ---
 
-/// MIT-13, MIT-14, MIT-15, MIT-75, MIT-76: dining-based
+/// MIT-13, MIT-14, MIT-15, MIT-75, MIT-76, MIT-77: dining-based
 /// endpoint assertions — Rust binary.
 #[tokio::test]
 async fn test_dining_endpoints_rust() {
     dining::run_dining_endpoints_rust().await;
 }
 
-/// MIT-13, MIT-14, MIT-15, MIT-75, MIT-76: dining-based
+/// MIT-13, MIT-14, MIT-15, MIT-75, MIT-76, MIT-77: dining-based
 /// endpoint assertions — Python binary.
 #[tokio::test]
 async fn test_dining_endpoints_python() {
     dining::run_dining_endpoints_python().await;
+}
+
+// --- inbound ordering family ---
+
+/// MIT-78: deterministic stalled inbound ordering — Python workload.
+#[tokio::test]
+async fn test_inbound_ordering_workload() {
+    inbound_ordering_workload::run_inbound_ordering_workload().await;
 }
 
 // --- pyspy family ---
