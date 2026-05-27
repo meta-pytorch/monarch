@@ -13,4 +13,5 @@
 //! created once and never modified -- to change membership, create a
 //! new domain.
 
+pub mod cast_actor;
 mod tile;

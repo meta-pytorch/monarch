@@ -146,7 +146,6 @@ use crate::EndpointLocation;
 use crate::OncePortRef;
 use crate::PortAddr;
 use crate::PortRef;
-use crate::Proc;
 use crate::ProcAddr;
 use crate::accum::Accumulator;
 use crate::accum::ReducerSpec;
@@ -162,7 +161,6 @@ use crate::channel::SendError;
 use crate::channel::SendErrorReason;
 use crate::channel::TxStatus;
 use crate::context;
-use crate::gateway::Gateway;
 use crate::id::ActorId;
 use crate::metrics;
 use crate::ordering::SEQ_INFO;
@@ -1393,26 +1391,8 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
         // `MailboxSender`s to attempt to forward them back to their
         // senders.
         let (return_handle, mut undeliverable_rx) = undeliverable::new_undeliverable_port();
-        let server = self.clone();
         tokio::task::spawn(async move {
-            // Create a client for this task.
-            static NEXT_RANK: AtomicUsize = AtomicUsize::new(0);
-            let rank = NEXT_RANK.fetch_add(1, Ordering::Relaxed);
-            let addr = ChannelAddr::any(ChannelTransport::Local);
-            let proc_id = ProcAddr::instance(addr, format!("mailbox_server_{}", rank));
-            // Use this mailbox server as the forwarder, so we can use it to
-            // return message back to the sender.
-            //
-            // TODO(meriksen): use a global proc here when it materializes
-            let proc = Proc::builder()
-                .proc_id(proc_id.id().clone())
-                .shared_gateway(Gateway::configured(
-                    proc_id.location().clone(),
-                    BoxedMailboxSender::new(server),
-                ))
-                .build()
-                .expect("mailbox server proc builder is valid");
-            let client = proc.client("undeliverable_supervisor");
+            let client = crate::client("undeliverable_supervisor");
             while let Ok(undeliverable) = undeliverable_rx.recv().await {
                 match undeliverable {
                     Undeliverable::Message(mut envelope) => {
