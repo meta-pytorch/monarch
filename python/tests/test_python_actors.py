@@ -52,6 +52,7 @@ from monarch._src.job.process import ProcessJob
 from monarch.actor import (
     Accumulator,
     Actor,
+    ActorError,
     attach_to_workers,
     current_actor_name,
     current_rank,
@@ -1853,23 +1854,32 @@ def test_context_propagated_through_python_task_spawn_blocking():
     p.stop().get()
 
 
-@pytest.mark.timeout(15)
-def test_future_get_inside_async_loop_warns():
-    """Calling Future.get() from inside an active asyncio loop is deprecated:
-    it blocks the surrounding loop. Verify a DeprecationWarning fires while
-    the call still completes for backward compatibility; this will become a
-    RuntimeError in monarch v0.6.
-    """
-
-    async def runner() -> int:
+class GetInsideAsyncEndpointActor(Actor):
+    @endpoint
+    async def call_get(self) -> int:
         async def inner() -> int:
             return 1
 
-        f: Future[int] = Future(coro=inner())
-        with pytest.warns(DeprecationWarning, match="event loop"):
+        f = Future(coro=inner())
+        try:
             return f.get()
+        finally:
+            # Drain the inner coroutine to avoid an "never awaited" warning
+            # when Future.get() raises eagerly without ever scheduling it.
+            await f
 
-    assert asyncio.run(runner()) == 1
+
+@pytest.mark.timeout(15)
+@parametrize_config(actor_queue_dispatch={True, False})
+def test_future_get_inside_async_endpoint_raises():
+    """Calling Future.get() from inside an async endpoint must raise an
+    eager RuntimeError rather than block the surrounding event loop.
+    """
+    p = this_host().spawn_procs()
+    a = p.spawn("get_in_async", GetInsideAsyncEndpointActor)
+    with pytest.raises(ActorError, match="RuntimeError"):
+        a.call_get.call_one().get()
+    p.stop().get()
 
 
 class ActorWithCleanup(Actor):
