@@ -5126,6 +5126,87 @@ mod tests {
         assert!(proc.get_instance(second_ref.actor_addr()).is_some());
     }
 
+    /// Concurrent `set_default_location` and `handle.bind()` must not
+    /// corrupt the bindings. Every bound ref carries one of the racing
+    /// locations, and every bound ref is still resolvable via
+    /// `get_instance` (which keys on identity, not location).
+    #[async_timed_test(timeout_secs = 10)]
+    async fn test_default_location_concurrent_with_bind() {
+        let proc = Proc::isolated();
+        let gateway = proc.gateway();
+        let handle = proc.client("worker");
+
+        let loc_a: Location = ChannelAddr::Local(40001).into();
+        let loc_b: Location = ChannelAddr::Local(40002).into();
+
+        // Pre-set to loc_a so binds never observe the initial default
+        // location. Without this, a bind that runs before the setter's
+        // first write could see the initial location and fail the
+        // "one of two locations" assertion.
+        gateway.set_default_location(loc_a.clone());
+
+        let barrier = std::sync::Arc::new(Barrier::new(2));
+
+        let setter = {
+            let gateway = gateway.clone();
+            let loc_a = loc_a.clone();
+            let loc_b = loc_b.clone();
+            let barrier = barrier.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                for i in 0..100 {
+                    let loc = if i % 2 == 0 {
+                        loc_a.clone()
+                    } else {
+                        loc_b.clone()
+                    };
+                    gateway.set_default_location(loc);
+                    tokio::task::yield_now().await;
+                }
+            })
+        };
+
+        let binder = {
+            // Clone `handle` into the binder so the outer `handle` stays
+            // alive after the spawned task finishes. Without this, the
+            // only strong reference to the client's instance drops when
+            // the binder task ends and the `proc.get_instance(...)` checks
+            // below return None.
+            let handle = handle.clone();
+            let barrier = barrier.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                let mut refs = Vec::with_capacity(100);
+                for _ in 0..100 {
+                    refs.push(handle.bind::<()>());
+                    tokio::task::yield_now().await;
+                }
+                refs
+            })
+        };
+
+        setter.await.unwrap();
+        let refs = binder.await.unwrap();
+
+        // Every ref carries one of the two racing locations.
+        for r in &refs {
+            let loc = r.actor_addr().location();
+            assert!(
+                loc == &loc_a || loc == &loc_b,
+                "ref location {loc:?} is neither {loc_a:?} nor {loc_b:?}",
+            );
+        }
+
+        // Every ref is still resolvable via get_instance (identity-based).
+        for r in &refs {
+            assert!(
+                proc.get_instance(r.actor_addr()).is_some(),
+                "ref {:?} no longer resolves",
+                r.actor_addr(),
+            );
+        }
+    }
+
     #[test]
     fn test_builder_procs_can_share_gateway_with_distinct_ids() {
         let gateway = Gateway::new();
