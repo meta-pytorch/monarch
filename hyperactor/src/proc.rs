@@ -48,10 +48,16 @@
 //!
 //! ## Queue depth accounting invariants (PD-5*)
 //!
-//! - **PD-5a:** Per-actor queue depth counts work items enqueued for
-//!   handler execution but not yet received from `work_rx`.
-//! - **PD-5b:** Queue depth is incremented exactly once on every
-//!   enqueue into the actor work queue (in `HandlerPorts::get`).
+//! - **PD-5a:** Per-actor queue depth counts accepted handler work
+//!   not yet dequeued by the actor loop. Accounting increments in
+//!   `HandlerPorts::get`'s enqueue closure *before* the reorder-buffer
+//!   decision, so this counter includes both in-order messages waiting
+//!   in `work_rx` AND out-of-order messages held in the
+//!   `OrderedSender` reorder buffer. (Reflected at the introspection
+//!   layer in IO-3 of the `introspect` module doc.)
+//! - **PD-5b:** Queue depth is incremented exactly once per accepted
+//!   message in the enqueue closure of `HandlerPorts::get`, before
+//!   the in-order / out-of-order branch.
 //! - **PD-5c:** Queue depth is decremented exactly once on every
 //!   dequeue from `work_rx` (in the actor `run` loop).
 //! - **PD-5d:** Queue depth is intended to be non-negative; tests
@@ -2252,8 +2258,20 @@ impl<A: Actor> Instance<A> {
         let (introspect_port, introspect_receiver) = mailbox.open_port::<IntrospectMessage>();
         introspect_port.bind_handler_port();
 
+        let instance_id = Uuid::now_v7();
+
+        // Type-erased snapshot callback: captures `Arc<HandlerPorts<A>>::clone()`
+        // (the typed Arc), which lets `InstanceCellState` invoke
+        // `OrderedSender::snapshot` from non-generic code. Only the typed
+        // ports are captured; nothing cyclic (no Instance, no InstanceCell).
+        let workq_ports = ports.clone();
+        let inbound_ordering_snapshot: Option<
+            Box<dyn Fn() -> crate::ordering::OrderingSnapshot + Send + Sync>,
+        > = Some(Box::new(move || workq_ports.workq.snapshot()));
+
         let cell = InstanceCell::new(
             actor_id,
+            instance_id,
             actor_type,
             proc.clone(),
             actor_loop,
@@ -2261,8 +2279,8 @@ impl<A: Actor> Instance<A> {
             parent,
             ports.clone(),
             queue_depth,
+            inbound_ordering_snapshot,
         );
-        let instance_id = Uuid::now_v7();
         let inner = Arc::new(InstanceState {
             proc,
             cell,
@@ -3556,6 +3574,11 @@ struct InstanceCellState {
     /// The actor's id.
     actor_id: ActorAddr,
 
+    /// The actor instance's `Uuid::now_v7()` identity. Stable for the
+    /// lifetime of this instance; surfaced via `InstanceCell::instance_id`
+    /// and the `INSTANCE_ID` introspection attr.
+    instance_id: Uuid,
+
     /// Actor info contains the actor's type information.
     actor_type: ActorType,
 
@@ -3642,6 +3665,23 @@ struct InstanceCellState {
     /// A type-erased reference to HandlerPorts<A>, which allows us to
     /// recover an ActorHandle<A> by downcasting.
     ports: Arc<dyn Any + Send + Sync>,
+
+    /// Type-erased snapshot callback for inbound ordering state.
+    /// Captured at `Instance::new` from the typed `Arc<HandlerPorts<A>>`
+    /// (where `A` is in scope), erased to `dyn Fn() -> OrderingSnapshot`
+    /// so non-generic code in `InstanceCellState` can invoke it.
+    ///
+    /// Hygiene: the closure captures ONLY `Arc<HandlerPorts<A>>::clone()`
+    /// — never `Instance<A>` or `InstanceCell` — to avoid cyclic refs
+    /// back to the cell that holds this callback. Body is a single
+    /// `workq.snapshot()` call; bounded work, `try_lock`-based, never
+    /// blocks. See IO-1/IO-2 in `introspect` module doc.
+    ///
+    /// `None` only for hand-built fixtures or future code paths that
+    /// construct an `InstanceCellState` without going through
+    /// `Instance::new`; production live actors always install Some.
+    inbound_ordering_snapshot:
+        Option<Box<dyn Fn() -> crate::ordering::OrderingSnapshot + Send + Sync>>,
 }
 
 impl InstanceCellState {
@@ -3711,8 +3751,10 @@ fn select_eviction_candidates(
 impl InstanceCell {
     /// Creates a new instance cell with the provided internal state. If a parent
     /// is provided, it is linked to this cell.
+    #[allow(clippy::too_many_arguments)]
     fn new(
         actor_id: ActorAddr,
+        instance_id: Uuid,
         actor_type: ActorType,
         proc: Proc,
         actor_loop: Option<(
@@ -3723,12 +3765,16 @@ impl InstanceCell {
         parent: Option<InstanceCell>,
         ports: Arc<dyn Any + Send + Sync>,
         queue_depth: Arc<AtomicU64>,
+        inbound_ordering_snapshot: Option<
+            Box<dyn Fn() -> crate::ordering::OrderingSnapshot + Send + Sync>,
+        >,
     ) -> Self {
         let is_root = parent.is_none();
         let _ais = actor_id.to_string();
         let cell = Self {
             inner: Arc::new(InstanceCellState {
                 actor_id: actor_id.clone(),
+                instance_id,
                 actor_type,
                 proc: proc.clone(),
                 actor_loop,
@@ -3748,6 +3794,7 @@ impl InstanceCell {
                 supervision_event: std::sync::Mutex::new(None),
                 is_system: AtomicBool::new(false),
                 ports,
+                inbound_ordering_snapshot,
             }),
         };
         cell.maybe_link_parent();
@@ -3965,6 +4012,20 @@ impl InstanceCell {
     /// Current actor work-queue depth (PD-5).
     pub fn queue_depth(&self) -> u64 {
         self.inner.queue_depth.load(Ordering::Relaxed)
+    }
+
+    /// Stable per-instance identifier (`Uuid::now_v7`) assigned at
+    /// `Instance::new` and threaded through to the cell at construction.
+    pub fn instance_id(&self) -> Uuid {
+        self.inner.instance_id
+    }
+
+    /// Out-of-band inbound ordering snapshot. Returns `None` when no
+    /// snapshot callback was installed (see IO-1 in `introspect` module
+    /// doc). The callback uses `OrderedSender::snapshot` (`try_lock`,
+    /// non-blocking) and never perturbs ordering state.
+    pub fn inbound_ordering_snapshot(&self) -> Option<crate::ordering::OrderingSnapshot> {
+        self.inner.inbound_ordering_snapshot.as_ref().map(|f| f())
     }
 
     /// Get parent instance cell, if it exists.
@@ -5135,6 +5196,87 @@ mod tests {
         assert_eq!(proc.default_location(), gateway.default_location());
         assert_eq!(proc.proc_addr(), gateway.proc_addr(proc.proc_id()));
         assert!(proc.get_instance(second_ref.actor_addr()).is_some());
+    }
+
+    /// Concurrent `set_default_location` and `handle.bind()` must not
+    /// corrupt the bindings. Every bound ref carries one of the racing
+    /// locations, and every bound ref is still resolvable via
+    /// `get_instance` (which keys on identity, not location).
+    #[async_timed_test(timeout_secs = 10)]
+    async fn test_default_location_concurrent_with_bind() {
+        let proc = Proc::isolated();
+        let gateway = proc.gateway();
+        let handle = proc.client("worker");
+
+        let loc_a: Location = ChannelAddr::Local(40001).into();
+        let loc_b: Location = ChannelAddr::Local(40002).into();
+
+        // Pre-set to loc_a so binds never observe the initial default
+        // location. Without this, a bind that runs before the setter's
+        // first write could see the initial location and fail the
+        // "one of two locations" assertion.
+        gateway.set_default_location(loc_a.clone());
+
+        let barrier = std::sync::Arc::new(Barrier::new(2));
+
+        let setter = {
+            let gateway = gateway.clone();
+            let loc_a = loc_a.clone();
+            let loc_b = loc_b.clone();
+            let barrier = barrier.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                for i in 0..100 {
+                    let loc = if i % 2 == 0 {
+                        loc_a.clone()
+                    } else {
+                        loc_b.clone()
+                    };
+                    gateway.set_default_location(loc);
+                    tokio::task::yield_now().await;
+                }
+            })
+        };
+
+        let binder = {
+            // Clone `handle` into the binder so the outer `handle` stays
+            // alive after the spawned task finishes. Without this, the
+            // only strong reference to the client's instance drops when
+            // the binder task ends and the `proc.get_instance(...)` checks
+            // below return None.
+            let handle = handle.clone();
+            let barrier = barrier.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                let mut refs = Vec::with_capacity(100);
+                for _ in 0..100 {
+                    refs.push(handle.bind::<()>());
+                    tokio::task::yield_now().await;
+                }
+                refs
+            })
+        };
+
+        setter.await.unwrap();
+        let refs = binder.await.unwrap();
+
+        // Every ref carries one of the two racing locations.
+        for r in &refs {
+            let loc = r.actor_addr().location();
+            assert!(
+                loc == &loc_a || loc == &loc_b,
+                "ref location {loc:?} is neither {loc_a:?} nor {loc_b:?}",
+            );
+        }
+
+        // Every ref is still resolvable via get_instance (identity-based).
+        for r in &refs {
+            assert!(
+                proc.get_instance(r.actor_addr()).is_some(),
+                "ref {:?} no longer resolves",
+                r.actor_addr(),
+            );
+        }
     }
 
     #[test]
@@ -6665,6 +6807,130 @@ mod tests {
             depth, 0,
             "queue depth should return to 0 after all messages handled"
         );
+    }
+
+    // Test-only Named message + dedicated actor with explicit handler
+    // export, so the integration test can bind the BufferTestMsg
+    // handler port (`handle.bind()`) and drive ordered traffic through
+    // `OrderedSender`. Without the bind, `PortHandle::try_post` stamps
+    // `SeqInfo::Direct` and the enqueue closure takes the `direct_send`
+    // branch -- which never populates `OrderedSender::states`, leaving
+    // the snapshot empty.
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, typeuri::Named)]
+    struct BufferTestMsg;
+
+    #[derive(Debug, Default)]
+    #[hyperactor::export(handlers = [BufferTestMsg])]
+    struct BufferTestActor;
+
+    #[async_trait]
+    impl Actor for BufferTestActor {}
+
+    #[async_trait]
+    impl Handler<BufferTestMsg> for BufferTestActor {
+        async fn handle(
+            &mut self,
+            _cx: &crate::Context<Self>,
+            _msg: BufferTestMsg,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Exercises IO-1 ("active" branch: snapshot is `Some({enabled:
+    /// true, ...})`), IO-2 (publish-time state via `try_lock` populates
+    /// the session's buffered fields), and IO-3 (asserts `queue_depth`
+    /// is a propagated `u64` but makes NO arithmetic claim relating it
+    /// to `buffered_count`). End-to-end wiring proof: `Instance::new`
+    /// installs the snapshot callback, `InstanceCell::inbound_ordering_snapshot()`
+    /// invokes it, the resulting snapshot includes the buffered session
+    /// with its sender, `expected_next_seq`, and `buffered_count`, AND
+    /// `build_actor_attrs` (via `live_actor_payload`) publishes
+    /// `INBOUND_ORDERING` so it round-trips through `ActorAttrsView`.
+    /// The attrs-publish assertion catches accidental removal of the
+    /// `attrs.set(INBOUND_ORDERING, snapshot)` call site. Drives a
+    /// deterministic gap via `debug_skip_next_ordering_seq` so the test
+    /// is not timing-sensitive.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_inbound_ordering_snapshot_callback_publishes_session() {
+        use typeuri::Named;
+
+        // Pin reorder buffering ON regardless of any global config
+        // overrides set by other tests in the same binary. Without this
+        // guard the snapshot would observe `enabled = false` and the
+        // assertions below would fail when tests run in interleaved
+        // order.
+        let config = hyperactor_config::global::lock();
+        let _g = config.override_key(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let handle = proc.spawn_with_label("a", BufferTestActor);
+        let actor_id = handle.actor_addr().clone();
+
+        // Bind the handler ports so `handle.post` uses `SeqInfo::Session`
+        // (not `SeqInfo::Direct`). This is the equivalent of asking
+        // for a typed actor reference; for our purposes we only need
+        // the side effect of binding handler ports.
+        let _actor_ref: crate::ActorRef<BufferTestActor> = handle.bind();
+
+        // Reserve seq 1 on the actor's BufferTestMsg handler port so
+        // subsequent client posts get seqs 2..=N which then buffer
+        // (waiting for seq 1, which will never arrive).
+        let handler_port = actor_id.port_addr(Port::from(BufferTestMsg::port()));
+        // Reserve one seq directly on the client's sequencer. Equivalent
+        // to `Instance::debug_skip_next_ordering_seq(dest, 1)`, but
+        // inlined here so the test does not depend on a Client-side
+        // convenience method.
+        let _ = client.sequencer().assign_seq(&handler_port);
+
+        // Post three messages. These flow through MailboxExt::post ->
+        // HandlerPorts enqueue closure -> OrderedSender::send, where
+        // they buffer (out of order from seq 1's perspective).
+        for _ in 0..3 {
+            handle.post(&client, BufferTestMsg);
+        }
+        // Let the enqueues propagate to the buffer.
+        tokio::task::yield_now().await;
+
+        // Direct accessor: cell.inbound_ordering_snapshot() invokes the
+        // type-erased callback installed at Instance::new.
+        let cell = proc.get_instance(&actor_id).expect("actor exists");
+        let snapshot = cell
+            .inbound_ordering_snapshot()
+            .expect("snapshot callback should be installed for live actors");
+
+        assert!(snapshot.enabled, "buffering enabled by override");
+        assert_eq!(snapshot.sessions.len(), 1, "one client session expected");
+        let session = &snapshot.sessions[0];
+        assert_eq!(session.expected_next_seq, 1);
+        assert_eq!(session.buffered_count, 3);
+        assert_eq!(session.oldest_buffered_seq, Some(2));
+        assert_eq!(session.newest_buffered_seq, Some(4));
+        assert_eq!(
+            session.sender.as_ref(),
+            Some(client.mailbox().actor_addr()),
+            "session owner should be the posting client",
+        );
+
+        // Attrs-publish wiring: build_actor_attrs (via live_actor_payload)
+        // must call attrs.set(INBOUND_ORDERING, snapshot). Round-trip
+        // through ActorAttrsView and assert the same session.
+        let payload = crate::introspect::live_actor_payload(&cell);
+        let attrs: hyperactor_config::Attrs =
+            serde_json::from_str(&payload.attrs).expect("payload.attrs is well-formed JSON");
+        let view = crate::introspect::ActorAttrsView::from_attrs(&attrs)
+            .expect("attrs decode through ActorAttrsView");
+        let view_snapshot = view
+            .inbound_ordering
+            .as_ref()
+            .expect("INBOUND_ORDERING attr should be set by build_actor_attrs");
+        assert_eq!(view_snapshot, &snapshot);
+
+        // queue_depth scalar is propagated (no arithmetic relation to
+        // buffered_count asserted; IO-3 in introspect module doc).
+        let _: u64 = cell.queue_depth();
+        let _: u64 = view.queue_depth;
     }
 
     // PD-4/PD-5: proc-level queue pressure aggregation reports

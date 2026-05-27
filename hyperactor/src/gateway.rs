@@ -414,6 +414,7 @@ mod tests {
 
     use async_trait::async_trait;
     use hyperactor_config::Flattrs;
+    use timed_test::async_timed_test;
     use tokio::time;
 
     use super::*;
@@ -750,6 +751,93 @@ mod tests {
         assert_eq!(alpha_flushed.load(Ordering::SeqCst), 1);
         assert_eq!(beta_flushed.load(Ordering::SeqCst), 1);
         assert_eq!(forwarder_flushed.load(Ordering::SeqCst), 1);
+    }
+
+    /// Driving `Gateway::flush` concurrently with proc attach + drop must
+    /// not panic, deadlock, or leave the gateway in a torn state. The
+    /// flush impl snapshots the live proc set before awaiting, so
+    /// attaches/drops during flush should be invisible to the flush in
+    /// flight.
+    #[async_timed_test(timeout_secs = 10)]
+    async fn test_gateway_flush_concurrent_with_attach_and_drop() {
+        #[derive(Clone)]
+        struct NoopSender;
+
+        #[async_trait]
+        impl MailboxSender for NoopSender {
+            fn post_unchecked(
+                &self,
+                _envelope: MessageEnvelope,
+                _return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+            ) {
+                // Defensive no-op: this test shouldn't route messages.
+            }
+
+            async fn flush(&self) -> Result<(), anyhow::Error> {
+                Ok(())
+            }
+        }
+
+        let gateway = Gateway::configured(
+            channel::reserve_local_addr().into(),
+            BoxedMailboxSender::new(NoopSender),
+        );
+
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+
+        let flushes = {
+            let gateway = gateway.clone();
+            let barrier = barrier.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                for _ in 0..100 {
+                    gateway.flush().await.unwrap();
+                    tokio::task::yield_now().await;
+                }
+            })
+        };
+
+        let attach_drop = {
+            let gateway = gateway.clone();
+            let barrier = barrier.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                for i in 0..100 {
+                    let proc = Proc::builder()
+                        .proc_id(ProcId::instance(Label::strip(&format!("p{i}"))))
+                        .shared_gateway(gateway.clone())
+                        .build()
+                        .unwrap();
+                    // Hold the proc across at least one yield so it's
+                    // attached for an observable window before drop.
+                    tokio::task::yield_now().await;
+                    drop(proc);
+                }
+            })
+        };
+
+        flushes.await.unwrap();
+        attach_drop.await.unwrap();
+
+        // No torn state: a final flush succeeds.
+        gateway.flush().await.unwrap();
+
+        // All procs dropped — no weak entries should still upgrade. Stale
+        // weak entries may remain in the map (replaced on next attach with
+        // same id), so we don't assert on `len()`; we assert on live
+        // entries only.
+        assert_eq!(
+            gateway
+                .inner
+                .procs
+                .read()
+                .unwrap()
+                .values()
+                .filter_map(WeakProc::upgrade)
+                .count(),
+            0,
+            "no procs should still be live after attach_drop task completes",
+        );
     }
 
     /// After the gateway is dropped, `WeakGateway::post_unchecked`
