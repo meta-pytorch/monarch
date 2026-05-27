@@ -602,7 +602,6 @@ def configured_with_redirected_stdio(
     """Apply config overrides and capture stdio for the duration of
     the block."""
     with (
-        # pyre-fixme[6]: These override types are checked by the function.
         configured(**config_overrides) as config,
         redirected_stdio(capture_stderr) as paths,
     ):
@@ -1289,6 +1288,7 @@ class UndeliverableMessageSender(Actor):
         buf.write(b"123")
         port_ref.send(
             actor_instance._as_rust(),
+            # pyrefly: ignore [bad-argument-count, bad-argument-type]
             PythonMessage(PythonMessageKind.Result(None), buf.freeze()),
         )
 
@@ -1447,6 +1447,7 @@ def test_simple_bootstrap():
             procs.append(proc)
             workers.append(addr)
 
+        # pyrefly: ignore [bad-argument-type]
         hosts = attach_to_workers(ca="trust_all_connections", workers=workers)
 
         hello = hosts.spawn_procs().spawn("hello", Hello)
@@ -1531,6 +1532,7 @@ def test_config_propagates_to_host_agent():
             procs.append(proc)
             workers.append(addr)
 
+        # pyrefly: ignore [bad-argument-type]
         hosts = attach_to_workers(ca="trust_all_connections", workers=workers)
 
         # _spawn_admin() spawns MeshAdminAgent on the caller's local
@@ -1586,6 +1588,7 @@ def test_fd_bootstrap():
         # The client connects to the real port, not the fd syntax.
         workers.append(f"tcp://127.0.0.1:{port}")
 
+    # pyrefly: ignore [bad-argument-type]
     hosts = attach_to_workers(ca="trust_all_connections", workers=workers)
     hello = hosts.spawn_procs().spawn("hello", Hello)
 
@@ -1788,6 +1791,7 @@ def test_instance_name():
     logs.logger.error("HUH")
     assert "actor=<root>" in logs.contents
     try:
+        # pyrefly: ignore [bad-assignment]
         monarch.actor.config.prefix_python_logs_with_actor = False
         logs = CaptureLogs()
         logs.logger.error("HUH")
@@ -1881,8 +1885,9 @@ class ActorWithAsyncCleanup(Actor):
     async def check(self) -> None:
         pass
 
-    # Cleanup should match the async-ness of the other endpoints.
-    async def __cleanup__(self, exc: Exception | None):
+    # Cleanup should match the async-ness of the other endpoints
+    # to exercise the async `__cleanup__` dispatch path.
+    async def __cleanup__(self, exc: Exception | None):  # type: ignore[override]
         self.logger.info(f"Calling __cleanup__ on {self}, {exc=}")
         await self.counter.incr.call_one()
 
@@ -2093,9 +2098,7 @@ def test_graceful_shutdown_no_unacked_messages() -> None:
     env = os.environ.copy()
     env["HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT"] = "2s"
     if "FB_XAR_INVOKED_NAME" in os.environ:
-        pytest.skip(  # pyre-ignore[29]: pytest.skip is callable
-            "fbcode subprocess doesn't work right..."
-        )
+        pytest.skip("fbcode subprocess doesn't work right...")
     result = subprocess.run(
         [sys.executable, "-c", _GRACEFUL_SHUTDOWN_WORKER],
         env=env,
