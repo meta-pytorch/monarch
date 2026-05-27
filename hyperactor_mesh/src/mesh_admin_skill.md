@@ -53,9 +53,10 @@ All requests require the TLS flags above.
 
 ## One-shot diagnostic (recommended starting point)
 
-Run this first to get a structured JSON health report of the full mesh
-(root → hosts → service proc actors → every user proc → user actors).
-Exit code 0 = healthy, 1 = any failure.
+Run this first to verify reachability and topology of the full mesh
+(root → hosts → service proc actors → every user proc → user actors):
+for each node, the report confirms it returns a valid payload within
+budget. Exit code 0 = all reachable, 1 = any failure.
 
 ```
 cargo run -p hyperactor_mesh --bin hyperactor_mesh_admin_tui -- \
@@ -66,6 +67,13 @@ Each entry in `checks[]` includes `reference` (the exact ref that
 failed), `note` (role), `phase` (AdminInfra or Mesh), and `outcome`
 (Pass/Slow/Fail with `elapsed_ms` and `error`). Use failing
 `reference` values to probe further with the endpoints below.
+
+`--diagnose` covers reachability and topology — can we reach each
+node, does each return a valid payload — and does NOT inspect
+application-level state such as actor reorder buffers. A
+`--diagnose` PASS does not rule out a stalled actor; for ordering
+stalls see "Diagnose ordering stalls" and "Find any stalled actor
+in the mesh" below.
 
 ## Endpoints
 
@@ -283,6 +291,45 @@ trace-level debugging is needed. Filter with:
 `actor_status` starts with `failed`. Contains `error_message`,
 `root_cause_actor`, `occurred_at`, and `is_propagated`.
 
+## Diagnose ordering stalls
+
+`GET /v1/{actor}`. Look at `inbound_ordering`.
+
+- `inbound_ordering == null` — the actor doesn't go through the ordered work-queue path (IO-1: structural absence; e.g., an instance not built through `Instance::new`).
+- `inbound_ordering.enabled == false` — reorder buffering is off; `sessions` is empty regardless of traffic.
+- `inbound_ordering.snapshot_complete == false` — **partial snapshot**. `sessions` excludes any session that was held by a concurrent send at snapshot time. Every `returned_*` rollup is a **lower bound** over returned sessions only; the skipped sessions may themselves carry buffered messages. **Refetch before concluding "no stalls"** — a `returned_buffered_message_count == 0` reading is only authoritative when `snapshot_complete == true`. Usually a refetch yields a complete view; don't alert on partiality alone.
+- `inbound_ordering.snapshot_complete == true && inbound_ordering.returned_buffered_message_count == 0` — no stalls.
+- Otherwise: filter `sessions` for `buffered_count > 0`. Each stalled session has:
+  - `sender` — a string `ActorAddr` of the **session owner** (the actor whose `Sequencer` assigned the SEQ_INFO for this session). For direct sends and V1 cast, the session owner IS the logical sender. For V0 legacy cast, it is the forwarding CommActor.
+  - `expected_next_seq` — the seq the next contiguous send must carry to unblock the buffer.
+  - `oldest_buffered_seq` / `newest_buffered_seq` — the buffered seq range.
+- Diagnosis template: "`{actor}` is waiting for seq `{expected_next_seq}` from session owner `{sender}`; `{buffered_count}` messages buffered from seq `{oldest_buffered_seq}` to `{newest_buffered_seq}`." The waiting happens at the receiver: the session owner has already done its part (its seqs are in the buffer); the receiver is blocked until the missing seq arrives.
+- `known_session_count` is the only rollup that totals returned and skipped together (`sessions.len() + skipped_session_count`). All other `returned_*` rollups are scoped to returned sessions. `known_session_count` also includes idle / control-plane sessions (e.g., a `client.local` session from a bootstrap call) that have `buffered_count == 0`; those show up in the total but never as stalls. Always filter `sessions` by `buffered_count > 0` before applying the diagnosis template above.
+- `queue_depth` and `inbound_ordering.returned_buffered_message_count` are **independent diagnostics with different scopes** (IO-3). `queue_depth` is accepted handler work; `returned_buffered_message_count` is the reorder-buffer subset over returned sessions. No arithmetic or ordering relationship between the two is part of the API contract; don't derive one from the other.
+
+## Find any stalled actor in the mesh
+
+When you don't know which actor to look at, walk top-down and flag
+anything blocked. Reference-shape-agnostic: no name matching, no
+opaque-ref parsing beyond percent-encoding for the URL path.
+
+1. `GET {base}/v1/root`. The `children` are host references.
+2. For each host, `GET {base}/v1/{host_ref}`. The `children` are
+   proc references.
+3. For each proc, `GET {base}/v1/{proc_ref}`. The `children` are
+   actor references; user actors are those NOT also present in the
+   proc's `system_children` (see "Key fields" above).
+4. For each user actor, `GET {base}/v1/{actor_ref}` and read
+   `properties.Actor.inbound_ordering`.
+5. Flag any actor where `inbound_ordering` is non-null AND
+   `snapshot_complete == true` AND
+   `returned_buffered_message_count > 0`. (If `snapshot_complete ==
+   false`, refetch — partial snapshots are lower bounds and not
+   authoritative for "no stalls".)
+6. For each flagged actor, filter `sessions` by `buffered_count > 0`
+   and apply the diagnosis template from "Diagnose ordering stalls"
+   above to each remaining session.
+
 ## Navigation algorithm
 
 1. Fetch root:
@@ -350,8 +397,8 @@ measure improvement or regression.
 **Schema conformance (2 pts)**
 
 6. The root response from check 3 validates against the schema
-   from check 1 (parse schema as JSON Schema Draft 2020-12,
-   validate response structure).
+   from check 1 (validate response structure against the schema
+   using any available JSON Schema validator).
 7. The child response from check 4 also validates against the
    schema from check 1.
 
