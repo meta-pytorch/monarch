@@ -35,7 +35,6 @@ use hyperactor::Context;
 use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::OncePortRef;
 use hyperactor::PortHandle;
 use hyperactor::PortRef;
 use hyperactor::actor::Binds;
@@ -50,6 +49,7 @@ use typeuri::Named;
 
 use super::IbvBuffer;
 use super::IbvOp;
+use super::manager_actor::CreatePeerQueuePair;
 use super::manager_actor::EnsureQueuePair;
 use super::manager_actor::QpInitializerDone;
 use super::manager_actor::QpInitializerFailed;
@@ -1459,28 +1459,8 @@ pub(super) unsafe fn destroy_qp(qp: &IbvQueuePair) {
 // peer later wants to RDMA us, it spawns its own `QueuePairActor`
 // locally, which creates a fresh pair the same way.
 
-/// Cross-proc message: the active side asks the peer's manager to
-/// create and connect a mirror QP for an in-flight `QueuePairActor`.
-/// Generic over the manager actor type so test code can swap in a
-/// mock.
-#[derive(Debug, Serialize, Deserialize, Named)]
-#[serde(bound(serialize = "", deserialize = ""))]
-pub(super) struct CreatePeerQueuePair<M: Referable> {
-    /// The active side's manager.
-    pub(super) sender: ActorRef<M>,
-    /// Device the active side picked for its QP.
-    pub(super) sender_device: String,
-    /// Device the peer should create its mirror QP on.
-    pub(super) receiver_device: String,
-    /// Active side's endpoint, captured right after QP creation.
-    pub(super) sender_info: IbvQpInfo,
-    /// One-shot reply carrying the peer's endpoint, or an error.
-    pub(super) reply: OncePortRef<Result<IbvQpInfo, String>>,
-}
-
 /// Operations a [`QueuePairActor`] performs on its QP. Implemented
 /// on the real [`IbvQueuePair`] and on mocks in `#[cfg(test)]` code.
-#[allow(dead_code)] // not yet referenced by IbvManagerActor
 pub(super) trait QueuePair: std::fmt::Debug + Send + Sync + 'static {
     /// Returns the local endpoint other peers need in order to
     /// connect to this QP.
@@ -1594,7 +1574,6 @@ impl PollSleepPolicy {
 
 /// Bundle of trait bounds for an actor type that can serve as the
 /// peer manager — i.e. the recipient of [`CreatePeerQueuePair`].
-#[allow(dead_code)] // not yet referenced by IbvManagerActor
 pub(super) trait Manager:
     Actor + Referable + RemoteHandles<CreatePeerQueuePair<Self>>
 {
@@ -1624,7 +1603,6 @@ pub(super) struct OpResult {
 /// successfully, otherwise `Err` carrying the first per-WR error
 /// observed (held back until the op's other WRs also report, so the
 /// MR registration outlives the data path).
-#[allow(dead_code)] // not yet referenced by IbvManagerActor
 #[derive(Debug)]
 pub(super) struct ProcessOps<M: Referable> {
     pub(super) items: Vec<(usize, IbvOp<M>, IbvMemoryRegionView)>,
@@ -1672,7 +1650,6 @@ struct PostedOpEntry {
 /// RDMA hardware). The QP is constructed by the spawning manager
 /// and handed in as a spawn param; the actor owns it for life and
 /// drops it when the actor stops.
-#[allow(dead_code)] // not yet referenced by IbvManagerActor
 #[derive(Debug)]
 pub(super) struct QueuePairActor<M: Manager, Qp: QueuePair> {
     qp_key: QpKey,
@@ -1720,7 +1697,6 @@ pub(super) struct QueuePairActor<M: Manager, Qp: QueuePair> {
 }
 
 impl<M: Manager, Qp: QueuePair> QueuePairActor<M, Qp> {
-    #[allow(dead_code)] // not yet referenced by IbvManagerActor
     pub(super) fn new(
         qp_key: QpKey,
         local_manager: ActorRef<M>,

@@ -19,10 +19,12 @@ use hyperactor::Context;
 use hyperactor::Endpoint as _;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
+use hyperactor::Label;
 use hyperactor::OncePortRef;
 use hyperactor::Proc;
 use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
+use hyperactor::Uid;
 use hyperactor::channel::ChannelAddr;
 use hyperactor_config::Flattrs;
 
@@ -571,12 +573,15 @@ impl IbvTestEnv {
         let instance_1 = proc_1.client("client");
         let instance_2 = proc_2.client("client");
 
+        // Must match `RdmaManagerActor::local_handle`'s singleton lookup of "rdma_manager".
         let rdma_actor_1 = RdmaManagerActor::new(Some(config1), Flattrs::default()).await?;
-        let rdma_actor_handle_1 = proc_1.spawn(rdma_actor_1);
+        let rdma_actor_handle_1 =
+            proc_1.spawn_with_uid(Uid::singleton(Label::strip("rdma_manager")), rdma_actor_1)?;
         let actor_1: ActorRef<RdmaManagerActor> = rdma_actor_handle_1.bind();
 
         let rdma_actor_2 = RdmaManagerActor::new(Some(config2), Flattrs::default()).await?;
-        let rdma_actor_handle_2 = proc_2.spawn(rdma_actor_2);
+        let rdma_actor_handle_2 =
+            proc_2.spawn_with_uid(Uid::singleton(Label::strip("rdma_manager")), rdma_actor_2)?;
         let actor_2: ActorRef<RdmaManagerActor> = rdma_actor_handle_2.bind();
 
         let mut buf_vec = Vec::new();
