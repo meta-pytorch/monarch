@@ -15,7 +15,7 @@
 //! - `span_events`: Enter/exit/close events for spans
 //! - `events`: Tracing events (e.g., tracing::info!())
 //!
-//! For entity lifecycle events (actors, meshes), see EntityDispatcher.
+//! For entity lifecycle events (actors, meshes), see EntityBatchSink.
 
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -148,7 +148,7 @@ impl RecordBatchSinkInner {
 /// - `span_events`: Enter/exit/close events for spans
 /// - `events`: Tracing events (e.g., tracing::info!())
 ///
-/// For entity lifecycle events (actors, meshes), see EntityDispatcher.
+/// For entity lifecycle events (actors, meshes), see EntityBatchSink.
 #[derive(Clone)]
 pub struct RecordBatchSink {
     inner: Arc<Mutex<RecordBatchSinkInner>>,

@@ -15,7 +15,7 @@
 //! Data flows directly Rust-to-Rust via PortRef for efficiency.
 
 pub mod database_scanner;
-mod entity_dispatcher;
+mod entity_batch_sink;
 pub mod pyspy_table;
 pub mod query_engine;
 mod record_batch_sink;
@@ -25,7 +25,7 @@ pub use database_scanner::DatabaseScanner;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::record_batch::RecordBatch;
-pub use entity_dispatcher::EntityDispatcher;
+pub use entity_batch_sink::EntityBatchSink;
 use hyperactor::Bind;
 use hyperactor::Unbind;
 pub use monarch_telemetry_schema::serialize_batch;
