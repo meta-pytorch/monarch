@@ -131,6 +131,34 @@
 //!   `NodeProperties::Error` with a `malformed_*` code family,
 //!   without panic.
 //!
+//! ## Inbound ordering presentation (IO-*)
+//!
+//! Mesh-admin presentation extension of the cross-crate `IO-*`
+//! family. The lower-level invariants `IO-1` (tri-state absence),
+//! `IO-2` (publish-time `try_lock`), and `IO-3` (no arithmetic
+//! relation between `queue_depth` and reorder-buffer depth) live in
+//! `hyperactor::introspect`. The presentation layer below adds:
+//!
+//! - **IO-4 (snapshot_complete derivation):**
+//!   `InboundOrdering.snapshot_complete ==
+//!   (skipped_session_count == 0)`. Mirrors
+//!   `OrderingSnapshot::is_complete()` at the presentation layer.
+//! - **IO-5 (known_session_count totality):**
+//!   `InboundOrdering.known_session_count ==
+//!   sessions.len() + skipped_session_count`. The only rollup
+//!   that is a true total across returned and skipped sessions.
+//! - **IO-6 (returned_* scope):**
+//!   `returned_buffered_session_count`,
+//!   `returned_buffered_message_count`, and
+//!   `returned_max_buffered_count` are computed over `sessions`
+//!   only and are LOWER BOUNDS when `snapshot_complete == false`.
+//! - **IO-7 (live-actor exposure):** For any actor built through
+//!   `Instance::new`, `/v1/{actor}` exposes
+//!   `inbound_ordering: Some(...)` -- never `None`. `None`
+//!   indicates either structural absence (test fixtures,
+//!   hand-built `InstanceCellState`) or a regression in the
+//!   publish path.
+//!
 //! ## py-spy integration (PS-*)
 //!
 //! - **PS-1 (target locality):** `PySpyDump` always targets
@@ -930,6 +958,12 @@ wirevalue::register_type!(NodePayload);
 // Serialize/Deserialize required by wirevalue::register_type! and
 // ResolveReferenceResponse actor messaging. HTTP serialization uses
 // dto::NodePropertiesDto, not these derives.
+//
+// `inbound_ordering` is boxed because the per-session detail can grow
+// large, and every NodeProperties value is padded to the size of the
+// biggest variant; boxing keeps the cost on the Actor heap when actually
+// present rather than padding every Root/Host/Proc/Error value. The
+// wire format is unchanged (serde transparent over Box<T>).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
 pub enum NodeProperties {
     /// Synthetic mesh root node (not a real actor/proc).
@@ -961,12 +995,15 @@ pub enum NodeProperties {
     Actor {
         actor_status: String,
         actor_type: String,
+        instance_id: String,
         messages_processed: u64,
         created_at: Option<SystemTime>,
         last_message_handler: Option<String>,
         total_processing_time_us: u64,
+        queue_depth: u64,
         flight_recorder: Option<String>,
         is_system: bool,
+        inbound_ordering: Option<Box<InboundOrdering>>,
         failure_info: Option<FailureInfo>,
     },
     /// Error sentinel returned when a child reference cannot be resolved.
@@ -992,6 +1029,81 @@ pub struct FailureInfo {
     pub is_propagated: bool,
 }
 wirevalue::register_type!(FailureInfo);
+
+/// Mesh-admin presentation of inbound ordering state. Computed from
+/// the upstream `hyperactor::ordering::OrderingSnapshot`; rollup fields
+/// are derived at conversion time so consumers don't have to iterate
+/// sessions for the common "is anything stalled?" question.
+///
+/// Partial-snapshot semantics (IO-2): when `snapshot_complete == false`,
+/// `sessions` excludes any session held by a concurrent send. Rollups
+/// marked "returned" below are computed over `sessions` only and are
+/// LOWER BOUNDS in that case -- agents must refetch before concluding
+/// "no stalls". `known_session_count` is the exception: it counts both
+/// returned and skipped sessions.
+//
+// Serialize/Deserialize required by wirevalue::register_type! and
+// ResolveReferenceResponse actor messaging. HTTP serialization uses
+// dto::InboundOrderingDto, not these derives.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
+pub struct InboundOrdering {
+    /// Whether reorder buffering is enabled for this sender. When
+    /// `false`, messages flow via `direct_send` and `sessions` is
+    /// empty even under load.
+    pub enabled: bool,
+    /// IO-4: `true` iff `skipped_session_count == 0`. Mirrors
+    /// `OrderingSnapshot::is_complete()`.
+    pub snapshot_complete: bool,
+    /// Sessions whose mutex was held by a concurrent send when we
+    /// tried to snapshot. NOT in `sessions`.
+    pub skipped_session_count: usize,
+    /// IO-5: total live sessions known to `OrderedSender` at snapshot
+    /// time: `sessions.len() + skipped_session_count`. Includes idle /
+    /// drained sessions (state retained for duplicate-detection).
+    pub known_session_count: usize,
+    /// IO-6: sessions with `buffered_count > 0` AMONG RETURNED
+    /// sessions. Lower bound if `!snapshot_complete`.
+    pub returned_buffered_session_count: usize,
+    /// IO-6: sum of `buffered_count` OVER RETURNED sessions.
+    /// Reorder-buffer scope only (see IO-3 in `hyperactor::introspect`).
+    /// Lower bound if `!snapshot_complete`.
+    pub returned_buffered_message_count: usize,
+    /// IO-6: max of `buffered_count` OVER RETURNED sessions. Lower
+    /// bound if `!snapshot_complete`.
+    pub returned_max_buffered_count: usize,
+    /// Per-session entries, sorted by `session_id` (preserved from
+    /// upstream sort). API returns all returned sessions; TUI may
+    /// truncate.
+    pub sessions: Vec<hyperactor::ordering::OrderingSessionSnapshot>,
+}
+wirevalue::register_type!(InboundOrdering);
+
+impl From<hyperactor::ordering::OrderingSnapshot> for InboundOrdering {
+    fn from(s: hyperactor::ordering::OrderingSnapshot) -> Self {
+        let snapshot_complete = s.skipped_session_count == 0;
+        let returned_buffered_session_count =
+            s.sessions.iter().filter(|x| x.buffered_count > 0).count();
+        let returned_buffered_message_count: usize =
+            s.sessions.iter().map(|x| x.buffered_count).sum();
+        let returned_max_buffered_count = s
+            .sessions
+            .iter()
+            .map(|x| x.buffered_count)
+            .max()
+            .unwrap_or(0);
+        let known_session_count = s.sessions.len() + s.skipped_session_count;
+        Self {
+            enabled: s.enabled,
+            snapshot_complete,
+            skipped_session_count: s.skipped_session_count,
+            known_session_count,
+            returned_buffered_session_count,
+            returned_buffered_message_count,
+            returned_max_buffered_count,
+            sessions: s.sessions,
+        }
+    }
+}
 
 /// Mesh-layer conversion from a typed attrs view to `NodeProperties`.
 ///
@@ -1065,12 +1177,17 @@ impl IntoNodeProperties for hyperactor::introspect::ActorAttrsView {
         NodeProperties::Actor {
             actor_status,
             actor_type: self.actor_type,
+            instance_id: self.instance_id,
             messages_processed: self.messages_processed,
             created_at: self.created_at,
             last_message_handler: self.last_handler,
             total_processing_time_us: self.total_processing_time_us,
+            queue_depth: self.queue_depth,
             flight_recorder: self.flight_recorder,
             is_system: self.is_system,
+            inbound_ordering: self
+                .inbound_ordering
+                .map(|io| Box::new(InboundOrdering::from(io))),
             failure_info,
         }
     }
@@ -1551,12 +1668,14 @@ mod tests {
     #[test]
     fn test_derive_properties_valid_actor() {
         use hyperactor::introspect::ACTOR_TYPE;
+        use hyperactor::introspect::INSTANCE_ID;
         use hyperactor::introspect::MESSAGES_PROCESSED;
         use hyperactor::introspect::STATUS;
 
         let mut attrs = Attrs::new();
         attrs.set(STATUS, "running".into());
         attrs.set(ACTOR_TYPE, "TestActor".into());
+        attrs.set(INSTANCE_ID, "01900000-0000-7000-8000-000000000001".into());
         attrs.set(MESSAGES_PROCESSED, 7u64);
         let json = serde_json::to_string(&attrs).unwrap();
         let props = derive_properties(&json);
@@ -1613,11 +1732,13 @@ mod tests {
     #[test]
     fn test_ia6_actor_ignores_unknown_keys() {
         use hyperactor::introspect::ACTOR_TYPE;
+        use hyperactor::introspect::INSTANCE_ID;
         use hyperactor::introspect::STATUS;
 
         let mut attrs = Attrs::new();
         attrs.set(STATUS, "running".into());
         attrs.set(ACTOR_TYPE, "TestActor".into());
+        attrs.set(INSTANCE_ID, "01900000-0000-7000-8000-000000000001".into());
         let json = inject_unknown_key(&attrs);
         let props = derive_properties(&json);
         assert!(matches!(props, NodeProperties::Actor { .. }));
@@ -1714,12 +1835,15 @@ mod tests {
                 properties: NodeProperties::Actor {
                     actor_status: "running".into(),
                     actor_type: "MyActor".into(),
+                    instance_id: "01900000-0000-7000-8000-000000000001".into(),
                     messages_processed: 42,
                     created_at: Some(epoch),
                     last_message_handler: Some("handle_ping".into()),
                     total_processing_time_us: 1000,
+                    queue_depth: 0,
                     flight_recorder: None,
                     is_system: false,
+                    inbound_ordering: None,
                     failure_info: None,
                 },
                 children: vec![],

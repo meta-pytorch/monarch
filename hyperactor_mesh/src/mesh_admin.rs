@@ -1073,6 +1073,14 @@ impl Actor for MeshAdminAgent {
         }
         Ok(())
     }
+
+    async fn handle_invalid_reference(
+        &mut self,
+        cx: &Instance<Self>,
+        undeliverable: hyperactor::mailbox::Undeliverable<hyperactor::mailbox::MessageEnvelope>,
+    ) -> Result<(), anyhow::Error> {
+        self.handle_undeliverable_message(cx, undeliverable).await
+    }
 }
 
 /// Manual Handler impl — swallows `reply.send()` failures so the

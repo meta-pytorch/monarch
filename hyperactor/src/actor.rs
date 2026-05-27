@@ -189,14 +189,9 @@ pub trait Actor: Sized + Send + 'static {
 /// as a free function so that `Actor` implementations that override
 /// [`Actor::handle_undeliverable_message`] can fallback to this default.
 pub fn handle_undeliverable_message<A: Actor>(
-    cx: &Instance<A>,
+    _cx: &Instance<A>,
     undeliverable: Undeliverable<MessageEnvelope>,
 ) -> Result<(), anyhow::Error> {
-    match &undeliverable {
-        Undeliverable::Returned(envelope) => assert_eq!(envelope.sender(), cx.self_addr()),
-        Undeliverable::Report(report) => assert_eq!(&report.sender, cx.self_addr()),
-    }
-
     if matches!(
         undeliverable
             .root_delivery_failure()
@@ -225,13 +220,9 @@ fn undeliverable_reason_fails_actor(reason: &UndeliverableReason) -> bool {
 /// as a free function so that `Actor` implementations that override
 /// [`Actor::handle_invalid_reference`] can fallback to this default.
 pub fn handle_invalid_reference<A: Actor>(
-    cx: &Instance<A>,
+    _cx: &Instance<A>,
     undeliverable: Undeliverable<MessageEnvelope>,
 ) -> Result<(), anyhow::Error> {
-    match &undeliverable {
-        Undeliverable::Returned(envelope) => assert_eq!(envelope.sender(), cx.self_addr()),
-        Undeliverable::Report(report) => assert_eq!(&report.sender, cx.self_addr()),
-    }
     anyhow::bail!(undeliverable.into_error())
 }
 
@@ -1299,16 +1290,33 @@ mod tests {
         envelope
     }
 
-    async fn assert_delivery_policy_actor_remains_live(failure: DeliveryFailure) {
+    fn delivery_policy_report(
+        sender: ActorAddr,
+        dest: PortAddr,
+        failure: DeliveryFailure,
+    ) -> DeliveryFailureReport {
+        DeliveryFailureReport::new(
+            sender,
+            EndpointLocation::Port(dest),
+            Some("()".to_string()),
+            failure,
+        )
+    }
+
+    async fn assert_delivery_policy_actor_remains_live(
+        make_undeliverable: impl FnOnce(&ActorAddr, PortAddr) -> Undeliverable<MessageEnvelope>,
+    ) {
         let proc = Proc::isolated();
         let client = proc.client("client");
         let (sync_port, mut sync_rx) = client.open_port::<()>();
         let actor = DeliveryPolicyActor(sync_port.bind());
         let handle = proc.spawn_with_label("delivery_policy", actor);
         let dest = handle.actor_addr().port_addr(Port::from(1234));
-        let envelope = delivery_policy_envelope(handle.actor_addr(), dest, failure);
 
-        handle.post(&client, Undeliverable::Returned(envelope));
+        handle.post(
+            &client,
+            make_undeliverable(handle.actor_addr(), dest.clone()),
+        );
         handle.post(&client, ());
 
         tokio::time::timeout(Duration::from_secs(1), sync_rx.recv())
@@ -1319,7 +1327,9 @@ mod tests {
         assert_matches!(handle.await, ActorStatus::Stopped(reason) if reason == "test");
     }
 
-    async fn assert_delivery_policy_actor_fails(failure: DeliveryFailure) {
+    async fn assert_delivery_policy_actor_fails(
+        make_undeliverable: impl FnOnce(&ActorAddr, PortAddr) -> Undeliverable<MessageEnvelope>,
+    ) {
         let proc = Proc::isolated();
         let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
         let client = proc.client("client");
@@ -1327,9 +1337,11 @@ mod tests {
         let actor = DeliveryPolicyActor(sync_port.bind());
         let handle = proc.spawn_with_label("delivery_policy", actor);
         let dest = handle.actor_addr().port_addr(Port::from(1234));
-        let envelope = delivery_policy_envelope(handle.actor_addr(), dest, failure);
 
-        handle.post(&client, Undeliverable::Returned(envelope));
+        handle.post(
+            &client,
+            make_undeliverable(handle.actor_addr(), dest.clone()),
+        );
 
         assert_matches!(handle.await, ActorStatus::Failed(_));
     }
@@ -1337,27 +1349,58 @@ mod tests {
     #[tokio::test]
     async fn test_default_transport_undeliverable_policy_does_not_fail_actor() {
         let target = Addr::Proc(test_proc_id("target"));
-        assert_delivery_policy_actor_remains_live(DeliveryFailure::new(
-            UndeliverableReason::Transport(TransportFailure::new(
-                target,
-                TransportFailureReason::NoRoute,
-            )),
-        ))
+        let failure = DeliveryFailure::new(UndeliverableReason::Transport(TransportFailure::new(
+            target,
+            TransportFailureReason::NoRoute,
+        )));
+        assert_delivery_policy_actor_remains_live(|sender, dest| {
+            Undeliverable::Returned(delivery_policy_envelope(sender, dest, failure))
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_default_transport_report_policy_does_not_fail_actor() {
+        let target = Addr::Proc(test_proc_id("target"));
+        let failure = DeliveryFailure::new(UndeliverableReason::Transport(TransportFailure::new(
+            target,
+            TransportFailureReason::NoRoute,
+        )));
+        assert_delivery_policy_actor_remains_live(|sender, dest| {
+            Undeliverable::Report(delivery_policy_report(sender.clone(), dest, failure))
+        })
         .await;
     }
 
     #[tokio::test]
     async fn test_default_oversized_frame_transport_policy_fails_actor() {
         let target = Addr::Proc(test_proc_id("target"));
-        assert_delivery_policy_actor_fails(DeliveryFailure::new(UndeliverableReason::Transport(
-            TransportFailure::new(
-                target,
-                TransportFailureReason::OversizedFrame {
-                    len: 55001392,
-                    max: 50000000,
-                },
-            ),
-        )))
+        let failure = DeliveryFailure::new(UndeliverableReason::Transport(TransportFailure::new(
+            target,
+            TransportFailureReason::OversizedFrame {
+                len: 55001392,
+                max: 50000000,
+            },
+        )));
+        assert_delivery_policy_actor_fails(|sender, dest| {
+            Undeliverable::Returned(delivery_policy_envelope(sender, dest, failure))
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_default_oversized_frame_report_policy_fails_actor() {
+        let target = Addr::Proc(test_proc_id("target"));
+        let failure = DeliveryFailure::new(UndeliverableReason::Transport(TransportFailure::new(
+            target,
+            TransportFailureReason::OversizedFrame {
+                len: 55001392,
+                max: 50000000,
+            },
+        )));
+        assert_delivery_policy_actor_fails(|sender, dest| {
+            Undeliverable::Report(delivery_policy_report(sender.clone(), dest, failure))
+        })
         .await;
     }
 
@@ -1366,19 +1409,43 @@ mod tests {
         let port = test_proc_id("target")
             .actor_addr("actor")
             .port_addr(Port::from(1234));
-        assert_delivery_policy_actor_remains_live(DeliveryFailure::new(
-            UndeliverableReason::PortGone(PortGone::new(port, Some("()".to_string()))),
-        ))
+        let failure = DeliveryFailure::new(UndeliverableReason::PortGone(PortGone::new(
+            port,
+            Some("()".to_string()),
+        )));
+        assert_delivery_policy_actor_remains_live(|sender, dest| {
+            Undeliverable::Returned(delivery_policy_envelope(sender, dest, failure))
+        })
         .await;
     }
 
     #[tokio::test]
     async fn test_default_invalid_reference_policy_fails_actor() {
         let target = test_proc_id("target").actor_addr("actor");
-        assert_delivery_policy_actor_fails(DeliveryFailure::new(InvalidReference::new(
+        let failure = DeliveryFailure::new(InvalidReference::new(
             target,
             InvalidReferenceReason::ActorNotExist,
-        )))
+        ));
+        assert_delivery_policy_actor_fails(|sender, dest| {
+            Undeliverable::Returned(delivery_policy_envelope(sender, dest, failure))
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_default_invalid_reference_policy_allows_return_handle_sender_mismatch() {
+        let target = test_proc_id("target").actor_addr("actor");
+        let failure = DeliveryFailure::new(InvalidReference::new(
+            target,
+            InvalidReferenceReason::ActorNotExist,
+        ));
+        assert_delivery_policy_actor_fails(|_actor, dest| {
+            Undeliverable::Returned(delivery_policy_envelope(
+                &test_proc_id("sender").actor_addr("actor"),
+                dest,
+                failure,
+            ))
+        })
         .await;
     }
 
@@ -1387,7 +1454,11 @@ mod tests {
         let port = test_proc_id("target")
             .actor_addr("actor")
             .port_addr(Port::from(1234));
-        assert_delivery_policy_actor_fails(DeliveryFailure::new(ExpiredDelivery::new(port))).await;
+        let failure = DeliveryFailure::new(ExpiredDelivery::new(port));
+        assert_delivery_policy_actor_fails(|sender, dest| {
+            Undeliverable::Returned(delivery_policy_envelope(sender, dest, failure))
+        })
+        .await;
     }
 
     #[test]
