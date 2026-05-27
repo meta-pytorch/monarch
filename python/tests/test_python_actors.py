@@ -1855,10 +1855,9 @@ def test_context_propagated_through_python_task_spawn_blocking():
 
 @pytest.mark.timeout(15)
 def test_future_get_inside_async_loop_warns():
-    """Calling Future.get() from inside an active asyncio loop is deprecated:
-    it blocks the surrounding loop. Verify a DeprecationWarning fires while
-    the call still completes for backward compatibility; this will become a
-    RuntimeError in monarch v0.6.
+    """Calling Future.get() from inside an active asyncio loop blocks the
+    surrounding loop. Verify a UserWarning fires while the call still
+    completes for backward compatibility.
     """
 
     async def runner() -> int:
@@ -1866,7 +1865,7 @@ def test_future_get_inside_async_loop_warns():
             return 1
 
         f: Future[int] = Future(coro=inner())
-        with pytest.warns(DeprecationWarning, match="event loop"):
+        with pytest.warns(UserWarning, match="event loop"):
             return f.get()
 
     assert asyncio.run(runner()) == 1
