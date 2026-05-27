@@ -304,6 +304,13 @@ pub(crate) fn pyspy_workload_binary() -> PathBuf {
         .to_path_buf()
 }
 
+/// Resolve the inbound_ordering_workload binary via Buck resources.
+pub(crate) fn inbound_ordering_workload_binary() -> PathBuf {
+    buck_resources::get("monarch/hyperactor_mesh/inbound_ordering_workload")
+        .expect("inbound_ordering_workload resource not found")
+        .to_path_buf()
+}
+
 /// Build a canonical proc reference that is syntactically valid but
 /// points at an unreachable abstract unix socket.
 pub(crate) fn unreachable_proc_ref() -> String {
