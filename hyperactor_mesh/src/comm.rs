@@ -723,6 +723,57 @@ pub mod test_utils {
             Ok(())
         }
     }
+
+    // SENDER_ACTOR_ID capture fixture for the cast-correctness matrix tests.
+    // Kept in test_utils so #[hyperactor::spawnable]'s inventory::submit!
+    // registration is reliably picked up by Remote::collect() at runtime;
+    // #[doc(hidden)] because this is a test fixture, not API.
+
+    #[doc(hidden)]
+    #[derive(Debug, Clone, Serialize, Deserialize, Named, Bind, Unbind)]
+    pub struct SenderCaptureMsg();
+
+    #[doc(hidden)]
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
+    pub struct CapturedSender(pub Option<ActorAddr>);
+
+    #[doc(hidden)]
+    #[derive(Debug)]
+    #[hyperactor::export(SenderCaptureMsg { cast = true })]
+    #[hyperactor::spawnable]
+    pub struct SenderCapturingActor {
+        forward_port: PortRef<CapturedSender>,
+    }
+
+    #[doc(hidden)]
+    #[derive(Debug, Clone, Named, Serialize, Deserialize)]
+    pub struct SenderCapturingActorParams {
+        pub forward_port: PortRef<CapturedSender>,
+    }
+
+    #[async_trait]
+    impl Actor for SenderCapturingActor {}
+
+    #[async_trait]
+    impl hyperactor::RemoteSpawn for SenderCapturingActor {
+        type Params = SenderCapturingActorParams;
+
+        async fn new(params: Self::Params, _environment: Flattrs) -> Result<Self> {
+            let Self::Params { forward_port } = params;
+            Ok(Self { forward_port })
+        }
+    }
+
+    #[async_trait]
+    impl Handler<SenderCaptureMsg> for SenderCapturingActor {
+        async fn handle(&mut self, cx: &Context<Self>, _: SenderCaptureMsg) -> anyhow::Result<()> {
+            let sender = cx
+                .headers()
+                .get(hyperactor::mailbox::headers::SENDER_ACTOR_ID);
+            self.forward_port.post(cx, CapturedSender(sender));
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -906,6 +957,7 @@ mod tests {
 
     use hyperactor::ActorAddr;
     use hyperactor::ActorRef;
+    use hyperactor::Endpoint as _;
     use hyperactor::Index;
     use hyperactor::OncePortRef;
     use hyperactor::PortAddr;
@@ -932,6 +984,7 @@ mod tests {
 
     use super::*;
     use crate::ActorMesh;
+    use crate::ProcMesh;
     use crate::host_mesh::HostMesh;
     use crate::test_utils::local_host_mesh;
     use crate::testing;
@@ -1758,5 +1811,167 @@ mod tests {
             assert_eq!(val, 42);
         }
         let _ = host_mesh.shutdown(instance).await;
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // Cast correctness matrix: SENDER_ACTOR_ID stamping invariant verified at
+    // the receiver across direct, V1 native p2p, V1 native tree, and V0 legacy
+    // paths. Invariant: SENDER_ACTOR_ID == session owner (the actor whose
+    // Sequencer assigned the SEQ_INFO for this session).
+
+    struct SenderCaptureSetup {
+        instance: &'static Instance<testing::TestRootClient>,
+        host_mesh: HostMesh,
+        proc_mesh: ProcMesh,
+        actor_mesh: ActorMesh<SenderCapturingActor>,
+        rx: hyperactor::mailbox::PortReceiver<CapturedSender>,
+    }
+
+    async fn setup_sender_capture_mesh(num_ranks: usize) -> SenderCaptureSetup {
+        let instance = crate::testing::instance();
+        let host_mesh = local_host_mesh(num_ranks).await;
+        let proc_mesh = host_mesh
+            .spawn(
+                instance,
+                "sender_capture",
+                extent!(gpu = num_ranks),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let (tx, rx) = hyperactor::mailbox::open_port(instance);
+        let params = SenderCapturingActorParams {
+            forward_port: tx.bind(),
+        };
+        let actor_name = crate::mesh_id::ActorMeshId::instance(
+            hyperactor::id::Label::new("sender_capture").unwrap(),
+        );
+        let actor_mesh: ActorMesh<SenderCapturingActor> = proc_mesh
+            .spawn_with_name(&instance, actor_name, &params, None, true)
+            .await
+            .unwrap();
+        SenderCaptureSetup {
+            instance,
+            host_mesh,
+            proc_mesh,
+            actor_mesh,
+            rx,
+        }
+    }
+
+    /// Direct send: SENDER_ACTOR_ID at the receiver equals the caller's
+    /// `actor_addr` (MailboxExt::post stamps via the caller's Sequencer).
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_direct_send_sender_actor_id() {
+        let mut setup = setup_sender_capture_mesh(1).await;
+
+        let actor_ref = setup.actor_mesh.values().next().unwrap();
+        actor_ref.post(setup.instance, SenderCaptureMsg());
+
+        let captured = setup.rx.recv().await.unwrap();
+        assert_eq!(
+            captured,
+            CapturedSender(Some(setup.instance.self_addr().clone())),
+        );
+
+        let _ = setup.host_mesh.shutdown(setup.instance).await;
+    }
+
+    /// V1 native p2p cast: SENDER_ACTOR_ID at the receiver equals the
+    /// caster's `actor_addr`. SEQ_INFO is assigned at the cast origin's
+    /// Sequencer; CommActor::deliver_to_dest stamps from message.sender()
+    /// (which is the origin) on the leaf.
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_v1_native_p2p_sender_actor_id() {
+        let config = hyperactor_config::global::lock();
+        let _g1 = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
+        let _g2 = config.override_key(
+            hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER,
+            true,
+        );
+        let _g3 = config.override_key(crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD, 1024);
+
+        let mut setup = setup_sender_capture_mesh(1).await;
+        setup
+            .actor_mesh
+            .cast(setup.instance, SenderCaptureMsg())
+            .unwrap();
+
+        let captured = setup.rx.recv().await.unwrap();
+        assert_eq!(
+            captured,
+            CapturedSender(Some(setup.instance.self_addr().clone())),
+        );
+
+        let _ = setup.host_mesh.shutdown(setup.instance).await;
+    }
+
+    /// V1 native tree cast: SENDER_ACTOR_ID at every receiver equals the
+    /// caster's `actor_addr`. Origin propagates through the comm-tree
+    /// because each leaf's deliver_to_dest stamps from message.sender()
+    /// when SEQ_INFO is present on headers.
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_v1_native_tree_sender_actor_id() {
+        let config = hyperactor_config::global::lock();
+        let _g1 = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
+        let _g2 = config.override_key(
+            hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER,
+            true,
+        );
+        let _g3 = config.override_key(crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD, 0);
+
+        let mut setup = setup_sender_capture_mesh(8).await;
+        setup
+            .actor_mesh
+            .cast(setup.instance, SenderCaptureMsg())
+            .unwrap();
+
+        let num_points = setup.proc_mesh.extent().points().count();
+        let expected = CapturedSender(Some(setup.instance.self_addr().clone()));
+        for _ in 0..num_points {
+            let captured = setup.rx.recv().await.unwrap();
+            assert_eq!(captured, expected);
+        }
+
+        let _ = setup.host_mesh.shutdown(setup.instance).await;
+    }
+
+    /// V0 legacy cast: SENDER_ACTOR_ID at the receiver names the local
+    /// CommActor (session owner), NOT the caster. V0 doesn't propagate
+    /// SEQ_INFO from origin; deliver_to_dest skips its stamp-if-present
+    /// branch; MailboxExt::post on cx assigns SEQ_INFO via the CommActor's
+    /// Sequencer and stamps with the CommActor's actor_addr.
+    ///
+    /// V0 invariant: when V0 is retired this test can be deleted with no
+    /// loss of coverage.
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_v0_legacy_sender_actor_id() {
+        let config = hyperactor_config::global::lock();
+        let _g1 = config.override_key(ENABLE_NATIVE_V1_CASTING, false);
+        let _g2 = config.override_key(
+            hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER,
+            false,
+        );
+
+        let mut setup = setup_sender_capture_mesh(1).await;
+        setup
+            .actor_mesh
+            .cast(setup.instance, SenderCaptureMsg())
+            .unwrap();
+
+        let captured = setup.rx.recv().await.unwrap();
+        let captured_addr = captured.0.as_ref().expect("sender was stamped");
+        assert_ne!(
+            captured_addr,
+            setup.instance.self_addr(),
+            "V0 cast is relay-owned, not origin-owned",
+        );
+        assert!(
+            captured_addr.label().unwrap().as_str().contains("comm"),
+            "session owner should be structurally a comm actor; got {captured_addr:?}",
+        );
+
+        let _ = setup.host_mesh.shutdown(setup.instance).await;
     }
 }
