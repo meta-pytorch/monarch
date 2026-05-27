@@ -1753,6 +1753,14 @@ mod tests {
             let _ = self.tx.send(message);
             Ok(())
         }
+
+        async fn handle_invalid_reference(
+            &mut self,
+            cx: &Instance<Self>,
+            message: Undeliverable<MessageEnvelope>,
+        ) -> Result<(), anyhow::Error> {
+            self.handle_undeliverable_message(cx, message).await
+        }
     }
 
     #[async_trait]
