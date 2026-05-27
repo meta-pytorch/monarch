@@ -28,6 +28,8 @@ use tracing_subscriber::layer::Context;
 use tracing_subscriber::layer::Layer;
 use tracing_subscriber::registry::LookupSpan;
 
+use crate::EntityEvent;
+
 const QUEUE_CAPACITY: usize = 100_000;
 
 /// Type alias for trace event fields
@@ -85,6 +87,8 @@ pub enum TraceEvent {
         file: Option<&'static str>,
         line: Option<u32>,
     },
+    /// An entity lifecycle event emitted outside the tracing subscriber.
+    Entity(EntityEvent),
 }
 
 /// Simplified field value representation for trace events
@@ -535,6 +539,10 @@ fn worker_loop(
                     Some(targets) => targets.would_enable(target, level),
                     None => true,
                 },
+                // Target filters are tracing/log filters. Variants without
+                // target/level metadata, including semantic entity table rows,
+                // must reach sinks so each sink can decide whether to consume
+                // or ignore them.
                 _ => true,
             } && let Err(e) = sink.consume(&event)
             {
@@ -645,6 +653,28 @@ mod tests {
         }
     }
 
+    struct CountingSink {
+        entity_events: Arc<AtomicU64>,
+        target_filter: Option<Targets>,
+    }
+
+    impl TraceEventSink for CountingSink {
+        fn consume(&mut self, event: &TraceEvent) -> Result<(), anyhow::Error> {
+            if matches!(event, TraceEvent::Entity(_)) {
+                self.entity_events.fetch_add(1, Ordering::Relaxed);
+            }
+            Ok(())
+        }
+
+        fn target_filter(&self) -> Option<&Targets> {
+            self.target_filter.as_ref()
+        }
+
+        fn flush(&mut self) -> Result<(), anyhow::Error> {
+            Ok(())
+        }
+    }
+
     fn span_close(id: u64) -> TraceEvent {
         TraceEvent::SpanClose {
             id,
@@ -666,6 +696,19 @@ mod tests {
             file: Some("test.rs"),
             line: Some(1),
         }
+    }
+
+    fn entity_event() -> TraceEvent {
+        TraceEvent::Entity(EntityEvent::Mesh(crate::MeshEvent {
+            id: 11,
+            timestamp: SystemTime::now(),
+            class: "Host".to_string(),
+            given_name: "test_mesh".to_string(),
+            full_name: "test_mesh".to_string(),
+            shape_json: "{}".to_string(),
+            parent_mesh_id: None,
+            parent_view_json: None,
+        }))
     }
 
     fn socket_path(name: &str) -> std::path::PathBuf {
@@ -718,6 +761,21 @@ mod tests {
 
         drop(dispatcher);
         assert!(recorded.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn entity_event_bypasses_target_filter_and_reaches_sink() {
+        let entity_events = Arc::new(AtomicU64::new(0));
+        let sink = CountingSink {
+            entity_events: Arc::clone(&entity_events),
+            target_filter: Some(Targets::new().with_default(LevelFilter::OFF)),
+        };
+        let dispatcher = TraceEventDispatcher::new(vec![Box::new(sink)]);
+
+        dispatcher.send_event(entity_event());
+
+        drop(dispatcher);
+        assert_eq!(entity_events.load(Ordering::Relaxed), 1);
     }
 
     #[test]
