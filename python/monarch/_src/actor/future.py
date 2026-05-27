@@ -112,8 +112,8 @@ class Future(Generic[R]):
         if in_asyncio or in_tokio:
             warnings.warn(
                 "Future.get() called from within an active event loop blocks it; "
-                "use 'await' instead. This will become a RuntimeError in monarch v0.6.",
-                DeprecationWarning,
+                "use 'await' instead.",
+                UserWarning,
                 stacklevel=2,
             )
             # Forward the event directly to Rust tracing so we capture it in
