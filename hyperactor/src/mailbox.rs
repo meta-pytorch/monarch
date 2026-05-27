@@ -1571,6 +1571,10 @@ impl MailboxClient {
                             reason,
                         }) => {
                             let target = message.dest().clone();
+                            let reason_text = reason
+                                .as_ref()
+                                .map(ToString::to_string)
+                                .unwrap_or_else(|| "channel closed".to_owned());
                             let reason = match reason {
                                 Some(SendErrorReason::OversizedFrame { len, max }) => {
                                     TransportFailureReason::OversizedFrame { len, max }
@@ -1584,7 +1588,7 @@ impl MailboxClient {
                             ));
                             message.undeliverable_with_failure(
                                 DeliveryError::BrokenLink(format!(
-                                    "failed to enqueue in MailboxClient when processing buffer: {error} with reason {reason:?}"
+                                    "failed to enqueue in MailboxClient when processing buffer: {error} with reason {reason_text}"
                                 )),
                                 failure,
                                 return_handle_0,
