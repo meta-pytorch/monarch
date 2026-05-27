@@ -218,7 +218,7 @@ impl CodeSyncManager {
         cx: &Context<'a, Self>,
     ) -> Result<&'a ActorHandle<RsyncActor>> {
         self.rsync
-            .get_or_try_init(async move { RsyncActor::default().spawn(cx) })
+            .get_or_try_init(async move { Ok(cx.spawn(RsyncActor::default())) })
             .await
     }
 
@@ -227,7 +227,7 @@ impl CodeSyncManager {
         cx: &Context<'a, Self>,
     ) -> Result<&'a ActorHandle<AutoReloadActor>> {
         self.auto_reload
-            .get_or_try_init(async move { AutoReloadActor::new().await?.spawn(cx) })
+            .get_or_try_init(async move { Ok(cx.spawn(AutoReloadActor::new().await?)) })
             .await
     }
 
@@ -236,7 +236,7 @@ impl CodeSyncManager {
         cx: &Context<'a, Self>,
     ) -> Result<&'a ActorHandle<CondaSyncActor>> {
         self.conda_sync
-            .get_or_try_init(async move { CondaSyncActor::default().spawn(cx) })
+            .get_or_try_init(async move { Ok(cx.spawn(CondaSyncActor::default())) })
             .await
     }
 }

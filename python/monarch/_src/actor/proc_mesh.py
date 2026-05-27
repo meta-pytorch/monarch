@@ -276,7 +276,6 @@ class SetupActor(Actor):
                     await user_setup()
                 else:
                     with fake_sync_state():
-                        # pyre-ignore[29]: user_setup is callable here
                         user_setup()
 
 
@@ -388,6 +387,7 @@ class ProcMesh(MeshTrait):
         return self._region.slice()
 
     @property
+    # pyrefly: ignore [bad-override]
     def _labels(self) -> List[str]:
         return self._region.labels
 
@@ -545,6 +545,7 @@ class ProcMesh(MeshTrait):
         )
 
         init_message = _create_endpoint_message(
+            # pyrefly: ignore [bad-argument-type]
             MethodSpecifier.Init(),
             inspect.signature(Class.__init__),
             (
@@ -615,9 +616,11 @@ class ProcMesh(MeshTrait):
         return self._device_mesh.activate()
 
     def rank_tensor(self, dim: str | Sequence[str]) -> "Tensor":
+        # pyrefly: ignore [missing-attribute]
         return self._maybe_device_mesh.rank(dim)
 
     def rank_tensors(self) -> Dict[str, "Tensor"]:
+        # pyrefly: ignore [missing-attribute]
         return self._maybe_device_mesh.ranks
 
     async def logging_option(
@@ -713,6 +716,7 @@ class ProcMesh(MeshTrait):
             root_region,
         )
 
+    # pyrefly: ignore [invalid-annotation]
     def __reduce_ex__(self, protocol: ...) -> Tuple[Any, Tuple[Any, ...]]:
         return ProcMesh, (
             self._proc_mesh,
@@ -831,7 +835,9 @@ class ProcMesh(MeshTrait):
                 # Check if we've already defined a workspace for this local path.
                 existing = workspaces.get(local)
                 if existing is not None:
+                    # pyrefly: ignore [missing-attribute]
                     assert existing.method == CodeSyncMethod.Rsync()
+                    # pyrefly: ignore [missing-attribute]
                     remote = existing.remote
                 else:
                     # Otherwise, add the workspace to the list.
@@ -849,10 +855,12 @@ class ProcMesh(MeshTrait):
                     )
 
                 logging.info(
+                    # pyrefly: ignore [missing-attribute]
                     f"Syncing editable install of {name} from {local} (to {remote.location})"
                 )
 
                 # Make sure we fixup path prefixes to the editable install.
+                # pyrefly: ignore [missing-attribute]
                 conda_prefix_replacements[local] = remote.location
 
             workspaces[conda_prefix] = WorkspaceConfig(
@@ -864,6 +872,7 @@ class ProcMesh(MeshTrait):
                     ),
                     shape=WorkspaceShape.shared("gpus"),
                 ),
+                # pyrefly: ignore [bad-argument-type]
                 method=CodeSyncMethod.CondaSync(conda_prefix_replacements),
             )
 
@@ -886,7 +895,6 @@ class _ControllerController(Actor):
         # Internal mesh name mapped back to the key from _controllers.
         self._mesh_name_to_name: Dict[str, str] = {}
 
-    # pyre-ignore
     @endpoint
     def get_or_spawn(
         self,

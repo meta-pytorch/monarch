@@ -12,7 +12,12 @@ on:
         description: 'Override default CUDA runner label'
         required: false
         type: string
-        default: linux.g5.4xlarge.nvidia.gpu
+        # Matches what pytorch core uses for CUDA GPU smoke tests
+        # (caffe2/.github/workflows/generated-linux-binary-manywheel-nightly.yml).
+        # PR CI builds and tests at CUDA 13.0 because pytorch's own PR/trunk
+        # GPU jobs do the same (test-h100.yml runs on cuda13.0); release
+        # wheels ship cu132 from build-dist.yml on a CPU runner.
+        default: linux.g4dn.4xlarge.nvidia.gpu
     outputs:
       test-matrix:
         description: Test matrix (py3.10 only)
@@ -38,14 +43,20 @@ jobs:
         run: |
           set -euox pipefail
 
+          # PR CI is pinned to CUDA 13.0 (cu130) to match pytorch core: their
+          # PR/trunk GPU jobs (e.g. test-h100.yml) run cuda13.0, and the
+          # g4dn fleet's host driver currently fails nvidia-container-cli's
+          # check against cuda13.2 containers. Release/nightly wheels still
+          # ship cu132 via wheels.yml / publish_release.yml on a CPU runner.
+
           # Define test matrices (py3.10 only)
-          CUDA='{"name": "cuda", "runner": "${{ inputs.runner-cuda }}", "gpu-arch-type": "cuda", "gpu-arch-version": "12.8", "docker-image": "pytorch/manylinux2_28-builder:cuda12.8", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu128"}'
+          CUDA='{"name": "cuda", "runner": "${{ inputs.runner-cuda }}", "gpu-arch-type": "cuda", "gpu-arch-version": "13.0", "docker-image": "pytorch/manylinux2_28-builder:cuda13.0", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu130"}'
           ROCM_71='{"name": "rocm7.1", "runner": "${{ inputs.runner-rocm }}", "gpu-arch-type": "rocm", "gpu-arch-version": "7.1", "docker-image": "pytorch/manylinux2_28-builder:rocm7.1", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm7.1/"}'
           ROCM_72='{"name": "rocm7.2", "runner": "${{ inputs.runner-rocm }}", "gpu-arch-type": "rocm", "gpu-arch-version": "7.2", "docker-image": "pytorch/manylinux2_28-builder:rocm7.2", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm7.2/"}'
 
           # Define build matrices (includes python-version)
-          CUDA_PY310='{"name": "cuda", "python-version": "3.10", "docker-image": "pytorch/manylinux2_28-builder:cuda12.8", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu128"}'
-          CUDA_PY312='{"name": "cuda", "python-version": "3.12", "docker-image": "pytorch/manylinux2_28-builder:cuda12.8", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu128"}'
+          CUDA_PY310='{"name": "cuda", "python-version": "3.10", "docker-image": "pytorch/manylinux2_28-builder:cuda13.0", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu130"}'
+          CUDA_PY312='{"name": "cuda", "python-version": "3.12", "docker-image": "pytorch/manylinux2_28-builder:cuda13.0", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu130"}'
           ROCM_71_PY310='{"name": "rocm7.1", "python-version": "3.10", "docker-image": "pytorch/manylinux2_28-builder:rocm7.1", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm7.1/"}'
           ROCM_72_PY310='{"name": "rocm7.2", "python-version": "3.10", "docker-image": "pytorch/manylinux2_28-builder:rocm7.2", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm7.2/"}'
 
