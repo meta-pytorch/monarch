@@ -296,6 +296,7 @@ impl TraceEventSink for RecordBatchSink {
                 });
                 inner.flush_events_if_full()?;
             }
+            TraceEvent::Entity(_) => {}
         }
         Ok(())
     }
