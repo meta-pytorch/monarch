@@ -51,7 +51,7 @@ setup: |
   kubectl version --client || echo "kubectl installed"
 
   echo "=== Installing Python dependencies ==="
-  uv pip install --system torchmonarch-nightly
+  uv pip install --system --pre torchmonarch
   # Install SkyPilot with Kubernetes support for launching nested clusters
   uv pip install --system "skypilot[kubernetes]"
 

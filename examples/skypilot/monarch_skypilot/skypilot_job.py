@@ -10,7 +10,7 @@ Monarch JobTrait implementation for SkyPilot.
 SkyPilotJob allows running Monarch on Kubernetes and cloud VMs via SkyPilot.
 
 Requirements:
-    - pip install torchmonarch-nightly (or torchmonarch)
+    - pip install --pre torchmonarch (nightly) or pip install torchmonarch (stable)
     - pip install skypilot[kubernetes] (or other cloud backends)
 """
 
@@ -56,7 +56,7 @@ DEFAULT_SETUP_COMMANDS = """
 set -ex
 
 # Install torchmonarch from PyPI
-uv pip install --system torchmonarch-nightly
+uv pip install --system --pre torchmonarch
 
 echo "Done installing Monarch"
 """
@@ -136,7 +136,7 @@ class SkyPilotJob(JobTrait):
             python_exe: Python executable to use for worker processes.
             setup_commands: Optional setup commands to run before starting workers.
                            If None, uses DEFAULT_SETUP_COMMANDS which installs
-                           torchmonarch-nightly from PyPI.
+                           the torchmonarch nightly from PyPI.
             workdir: Local directory to sync to the cluster. If provided, this
                     directory will be uploaded to ~/sky_workdir on each node.
             file_mounts: Dictionary mapping remote paths to local paths for
