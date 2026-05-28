@@ -471,36 +471,6 @@ impl PortGone {
     }
 }
 
-/// Delivery errors occur during message posting.
-#[derive(
-    thiserror::Error,
-    Debug,
-    Serialize,
-    Deserialize,
-    typeuri::Named,
-    Clone,
-    PartialEq,
-    Eq
-)]
-pub enum DeliveryError {
-    /// The destination address is not reachable.
-    #[error("address not routable: {0}")]
-    Unroutable(String),
-
-    /// A broken link indicates that a link in the message
-    /// delivery path has failed.
-    #[error("broken link: {0}")]
-    BrokenLink(String),
-
-    /// A (local) mailbox delivery error.
-    #[error("mailbox error: {0}")]
-    Mailbox(String),
-
-    /// The message went through too many hops and has expired.
-    #[error("ttl expired")]
-    TtlExpired,
-}
-
 /// An envelope that carries a message destined to a remote actor.
 /// The envelope contains a serialized message along with its destination
 /// and sender.
@@ -514,9 +484,6 @@ pub struct MessageEnvelope {
 
     /// The serialized message.
     data: wirevalue::Any,
-
-    /// Error contains a delivery error when message delivery failed.
-    errors: Vec<DeliveryError>,
 
     /// Structured delivery failures. The first entry is the root delivery
     /// failure; later entries record subsequent failures while returning or
@@ -550,7 +517,6 @@ impl MessageEnvelope {
             sender,
             dest,
             data,
-            errors: Vec::new(),
             delivery_failures: Vec::new(),
             headers,
             ttl: hyperactor_config::global::get(crate::config::MESSAGE_TTL_DEFAULT),
@@ -581,7 +547,6 @@ impl MessageEnvelope {
             data: wirevalue::Any::serialize(value)?,
             sender: source.into(),
             dest: dest.into(),
-            errors: Vec::new(),
             delivery_failures: Vec::new(),
             ttl: hyperactor_config::global::get(crate::config::MESSAGE_TTL_DEFAULT),
             // By default, all undeliverable messages should be returned to the sender.
@@ -614,17 +579,13 @@ impl MessageEnvelope {
 
     /// Decrements the message's TTL by one hop.
     ///
-    /// Returns `Ok(())` if the TTL was greater than zero and
-    /// successfully decremented. If the TTL was already zero, no
-    /// decrement occurs and `Err(DeliveryError::TtlExpired)` is
-    /// returned, indicating that the message has expired and should
-    /// be treated as undeliverable.
-    fn dec_ttl_or_err(&mut self) -> Result<(), DeliveryError> {
+    /// Decrement the TTL if the message has not already expired.
+    fn decrement_ttl(&mut self) -> bool {
         if self.ttl == 0 {
-            Err(DeliveryError::TtlExpired)
+            false
         } else {
             self.ttl -= 1;
-            Ok(())
+            true
         }
     }
 
@@ -658,12 +619,6 @@ impl MessageEnvelope {
         self.dest.index() == Signal::port()
     }
 
-    /// Set a delivery error for the message. If errors are already set, append
-    /// it to the existing errors.
-    pub fn set_error(&mut self, error: DeliveryError) {
-        self.errors.push(error)
-    }
-
     /// Push a structured delivery failure onto this message's failure history.
     pub fn push_delivery_failure(&mut self, failure: DeliveryFailure) {
         self.delivery_failures.push(failure)
@@ -691,19 +646,19 @@ impl MessageEnvelope {
         self.return_undeliverable = return_undeliverable;
     }
 
-    /// The message has been determined to be undeliverable with the
-    /// provided error. Mark the envelope with the error and return to
-    /// sender.
+    /// The message has been determined to be undeliverable with the provided
+    /// failure. Mark the envelope with the failure and return it to the sender.
     pub fn undeliverable(
         mut self,
-        error: DeliveryError,
+        failure: DeliveryFailure,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
+        let error = failure.render_bounded();
         tracing::debug!(
             name = "undelivered_message_attempt",
             sender = self.sender.to_string(),
             dest = self.dest.to_string(),
-            error = error.to_string(),
+            error = %error,
             return_handle = %return_handle,
         );
         metrics::MAILBOX_UNDELIVERABLE_MESSAGES.add(
@@ -712,30 +667,12 @@ impl MessageEnvelope {
                 "sender_actor_id" => self.sender.to_string(),
                 "dest_actor_id" => self.dest.to_string(),
                 "message_type" => self.data.typename().unwrap_or("unknown"),
-                "error_type" =>  error.to_string(),
+                "error_type" => error,
             ),
         );
 
-        self.set_error(error);
-        undeliverable::return_undeliverable(return_handle, self);
-    }
-
-    /// Mark the message as undeliverable with both legacy and structured
-    /// failure information.
-    pub fn undeliverable_with_failure(
-        mut self,
-        error: DeliveryError,
-        failure: DeliveryFailure,
-        return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
-    ) {
         self.push_delivery_failure(failure);
-        self.undeliverable(error, return_handle);
-    }
-
-    /// Get the errors of why this message was undeliverable. Empty means this
-    /// message was not determined as undeliverable.
-    pub fn errors(&self) -> &Vec<DeliveryError> {
-        &self.errors
+        undeliverable::return_undeliverable(return_handle, self);
     }
 
     /// Get the structured delivery failures for this message. Empty means this
@@ -768,16 +705,6 @@ impl MessageEnvelope {
             );
         }
 
-        if !self.errors.is_empty() {
-            return Some(
-                self.errors
-                    .iter()
-                    .map(|e| e.to_string())
-                    .collect::<Vec<_>>()
-                    .join("; "),
-            );
-        }
-
         None
     }
 
@@ -786,7 +713,6 @@ impl MessageEnvelope {
             sender,
             dest,
             data,
-            errors,
             delivery_failures,
             headers,
             ttl,
@@ -797,7 +723,6 @@ impl MessageEnvelope {
             MessageMetadata {
                 sender,
                 dest,
-                errors,
                 delivery_failures,
                 headers,
                 ttl,
@@ -811,7 +736,6 @@ impl MessageEnvelope {
         let MessageMetadata {
             sender,
             dest,
-            errors,
             delivery_failures,
             headers,
             ttl,
@@ -822,7 +746,6 @@ impl MessageEnvelope {
             sender,
             dest,
             data,
-            errors,
             delivery_failures,
             headers,
             ttl,
@@ -862,7 +785,6 @@ impl fmt::Display for MessageEnvelope {
 pub struct MessageMetadata {
     sender: ActorAddr,
     dest: PortAddr,
-    errors: Vec<DeliveryError>,
     /// Structured delivery failures. The first entry is the root delivery
     /// failure; later entries record subsequent failures while returning or
     /// forwarding the same envelope.
@@ -1116,9 +1038,9 @@ pub trait MailboxSender: Send + Sync + Any {
         mut envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        if let Err(err) = envelope.dec_ttl_or_err() {
+        if !envelope.decrement_ttl() {
             let failure = DeliveryFailure::new(ExpiredDelivery::new(envelope.dest().clone()));
-            envelope.undeliverable_with_failure(err, failure, return_handle);
+            envelope.undeliverable(failure, return_handle);
             return;
         }
         self.post_unchecked(envelope, return_handle);
@@ -1415,9 +1337,6 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
                             }
                             Err(_) => {}
                         }
-                        envelope.set_error(DeliveryError::BrokenLink(
-                            "message was undeliverable".to_owned(),
-                        ));
                         let target = envelope.dest().clone();
                         envelope.ensure_root_delivery_failure(|| {
                             DeliveryFailure::new(UndeliverableReason::Transport(
@@ -1624,13 +1543,13 @@ impl MailboxClient {
                             let failure = DeliveryFailure::new(UndeliverableReason::Transport(
                                 TransportFailure::new(target, reason.clone()),
                             ));
-                            message.undeliverable_with_failure(
-                                DeliveryError::BrokenLink(format!(
-                                    "failed to enqueue in MailboxClient when processing buffer: {error} with reason {reason_text}"
-                                )),
-                                failure,
-                                return_handle_0,
+                            tracing::debug!(
+                                %error,
+                                send_error_reason = %reason_text,
+                                ?reason,
+                                "failed to enqueue in mailbox client while processing buffer",
                             );
+                            message.undeliverable(failure, return_handle_0);
                         }
                         Err(_) => {
                             // Oneshot sender was dropped — message was acked.
@@ -1708,9 +1627,6 @@ impl MailboxSender for MailboxClient {
         tracing::event!(target:"messages", tracing::Level::TRACE,  "size"=envelope.data.len(), "sender"= %envelope.sender, "dest" = %envelope.dest.actor_addr(), "port"= envelope.dest.index(), "message_type" = envelope.data.typename().unwrap_or("unknown"), "send_message");
         if let Err(err) = self.buffer.send((envelope, return_handle)) {
             let mpsc::error::SendError((envelope, return_handle)) = *err;
-            let err = DeliveryError::BrokenLink(
-                "failed to enqueue in MailboxClient; buffer's queue is closed".to_string(),
-            );
             let target = envelope.dest().clone();
             let failure =
                 DeliveryFailure::new(UndeliverableReason::Transport(TransportFailure::new(
@@ -1722,7 +1638,7 @@ impl MailboxSender for MailboxClient {
                 )));
 
             // Failed to enqueue.
-            envelope.undeliverable_with_failure(err, failure, return_handle);
+            envelope.undeliverable(failure, return_handle);
         } else {
             self.submitted.fetch_add(1, Ordering::SeqCst);
         }
@@ -2161,16 +2077,11 @@ impl MailboxSender for Mailbox {
         );
 
         if envelope.dest().actor_id() != self.inner.actor_id.id() {
-            let err = DeliveryError::Mailbox(format!(
-                "mailbox owner {} cannot deliver to {}",
-                self.inner.actor_id,
-                envelope.dest().actor_addr()
-            ));
             let failure = DeliveryFailure::new(InvalidReference::new(
                 envelope.dest().actor_addr(),
                 InvalidReferenceReason::WrongMailboxOwner,
             ));
-            return envelope.undeliverable_with_failure(err, failure, return_handle);
+            return envelope.undeliverable(failure, return_handle);
         }
 
         let port_index = envelope.dest().index();
@@ -2186,54 +2097,52 @@ impl MailboxSender for Mailbox {
         // test runs, explaining the longstanding flaky timeout failures.
         let port_sender = match self.inner.ports.get(&port_index) {
             None => {
-                let (err, failure) = unbound_port_delivery_failure(
+                let failure = unbound_port_delivery_failure(
                     envelope.dest(),
                     envelope.data(),
                     self.inner.next_port.load(Ordering::SeqCst),
                 );
-                return envelope.undeliverable_with_failure(err, failure, return_handle);
+                return envelope.undeliverable(failure, return_handle);
             }
             Some(ref_) => {
                 let closed = self.inner.closed.read().unwrap();
                 if let Some(status) = &*closed {
                     match status {
                         ActorStatus::Stopped(reason) => {
-                            let err = format!(
-                                "mailbox owner {} is stopped: {}",
-                                self.inner.actor_id, reason
+                            tracing::debug!(
+                                owner=%self.inner.actor_id,
+                                %reason,
+                                "mailbox owner is stopped",
                             );
                             let failure = DeliveryFailure::new(InvalidReference::new(
                                 envelope.dest().actor_addr(),
                                 InvalidReferenceReason::ActorStopped,
                             ));
-                            return envelope.undeliverable_with_failure(
-                                DeliveryError::Mailbox(err),
-                                failure,
-                                return_handle,
-                            );
+                            return envelope.undeliverable(failure, return_handle);
                         }
                         ActorStatus::Failed(actor_error) => {
-                            let err = format!(
-                                "mailbox owner {} failed: {}",
-                                self.inner.actor_id, actor_error
+                            tracing::debug!(
+                                owner=%self.inner.actor_id,
+                                %actor_error,
+                                "mailbox owner failed",
                             );
                             let failure = DeliveryFailure::new(InvalidReference::new(
                                 envelope.dest().actor_addr(),
                                 InvalidReferenceReason::ActorFailed,
                             ));
-                            return envelope.undeliverable_with_failure(
-                                DeliveryError::Mailbox(err),
-                                failure,
-                                return_handle,
-                            );
+                            return envelope.undeliverable(failure, return_handle);
                         }
                         _ => {
-                            let err = format!(
-                                "mailbox owner {} closed unexpectedly: {:?}",
-                                self.inner.actor_id, status
-                            );
-                            return envelope
-                                .undeliverable(DeliveryError::Mailbox(err), return_handle);
+                            let failure = DeliveryFailure::new(UndeliverableReason::Transport(
+                                TransportFailure::new(
+                                    envelope.dest().actor_addr(),
+                                    TransportFailureReason::LinkUnavailable(format!(
+                                        "mailbox owner {} closed unexpectedly: {:?}",
+                                        self.inner.actor_id, status
+                                    )),
+                                ),
+                            ));
+                            return envelope.undeliverable(failure, return_handle);
                         }
                     }
                 }
@@ -2249,7 +2158,6 @@ impl MailboxSender for Mailbox {
             mut headers,
             sender,
             dest,
-            errors: metadata_errors,
             delivery_failures,
             ttl,
             return_undeliverable,
@@ -2285,56 +2193,40 @@ impl MailboxSender for Mailbox {
             }
             Err(SerializedSendFailure::Dead { data, headers }) => {
                 self.inner.ports.remove(&port_index);
-                let (err, failure) = port_gone_delivery_failure(&dest, &data);
+                let failure = port_gone_delivery_failure(&dest, &data);
 
                 MessageEnvelope::seal(
                     MessageMetadata {
                         headers,
                         sender,
                         dest,
-                        errors: metadata_errors,
                         delivery_failures,
                         ttl,
                         return_undeliverable,
                     },
                     data,
                 )
-                .undeliverable_with_failure(err, failure, return_handle)
+                .undeliverable(failure, return_handle)
             }
             Err(SerializedSendFailure::Error(SerializedSendError {
                 data,
                 error: sender_error,
                 headers,
             })) => {
-                let failure = matches!(
-                    sender_error.kind(),
-                    MailboxSenderErrorKind::Deserialize(_, _)
-                )
-                .then(|| {
-                    DeliveryFailure::new(InvalidReference::new(
-                        dest.clone(),
-                        InvalidReferenceReason::ProtocolMismatch,
-                    ))
-                });
-                let err = DeliveryError::Mailbox(format!("{}", sender_error));
+                let failure = serialized_send_error_delivery_failure(&dest, &sender_error);
 
                 let envelope = MessageEnvelope::seal(
                     MessageMetadata {
                         headers,
                         sender,
                         dest,
-                        errors: metadata_errors,
                         delivery_failures,
                         ttl,
                         return_undeliverable,
                     },
                     data,
                 );
-                if let Some(failure) = failure {
-                    envelope.undeliverable_with_failure(err, failure, return_handle)
-                } else {
-                    envelope.undeliverable(err, return_handle)
-                }
+                envelope.undeliverable(failure, return_handle)
             }
         }
     }
@@ -2344,44 +2236,51 @@ fn unbound_port_delivery_failure(
     port: &PortAddr,
     data: &wirevalue::Any,
     next_port: u64,
-) -> (DeliveryError, DeliveryFailure) {
-    let error = unbound_port_delivery_error(port, data);
-    let failure = if port.is_handler_port() {
+) -> DeliveryFailure {
+    if port.is_handler_port() {
         DeliveryFailure::new(InvalidReference::new(
             port.clone(),
             InvalidReferenceReason::HandlerNotBound,
         ))
     } else if port.index() < next_port {
-        DeliveryFailure::new(port_gone(port, data))
+        port_gone_delivery_failure(port, data)
     } else {
         DeliveryFailure::new(InvalidReference::new(
             port.clone(),
             InvalidReferenceReason::PortNeverAllocated,
         ))
-    };
-
-    (error, failure)
+    }
 }
 
-fn port_gone_delivery_failure(
-    port: &PortAddr,
-    data: &wirevalue::Any,
-) -> (DeliveryError, DeliveryFailure) {
-    (
-        unbound_port_delivery_error(port, data),
-        DeliveryFailure::new(port_gone(port, data)),
-    )
+fn serialized_send_error_delivery_failure(
+    dest: &PortAddr,
+    sender_error: &MailboxSenderError,
+) -> DeliveryFailure {
+    match sender_error.kind() {
+        MailboxSenderErrorKind::Deserialize(_, _) => DeliveryFailure::new(InvalidReference::new(
+            dest.clone(),
+            InvalidReferenceReason::ProtocolMismatch,
+        )),
+        MailboxSenderErrorKind::Invalid => {
+            let reason = if dest.is_handler_port() {
+                InvalidReferenceReason::HandlerNotBound
+            } else {
+                InvalidReferenceReason::PortNeverAllocated
+            };
+            DeliveryFailure::new(InvalidReference::new(dest.clone(), reason))
+        }
+        MailboxSenderErrorKind::Closed => DeliveryFailure::new(UndeliverableReason::PortGone(
+            PortGone::new(dest.clone(), None),
+        )),
+        _ => DeliveryFailure::new(UndeliverableReason::Transport(TransportFailure::new(
+            dest.clone(),
+            TransportFailureReason::LinkUnavailable(sender_error.to_string()),
+        ))),
+    }
 }
 
-fn unbound_port_delivery_error(port: &PortAddr, data: &wirevalue::Any) -> DeliveryError {
-    DeliveryError::Unroutable(format!(
-        "port not bound in mailbox; port id: {}; message type: {}",
-        port.index(),
-        data.typename().map_or_else(
-            || format!("unregistered type hash {}", data.typehash()),
-            |name| name.to_string(),
-        )
-    ))
+fn port_gone_delivery_failure(port: &PortAddr, data: &wirevalue::Any) -> DeliveryFailure {
+    DeliveryFailure::new(port_gone(port, data))
 }
 
 fn port_gone(port: &PortAddr, data: &wirevalue::Any) -> UndeliverableReason {
@@ -3398,19 +3297,11 @@ impl MailboxSender for MailboxMuxer {
         let dest_actor_ref = envelope.dest().actor_addr();
         match self.mailboxes.get(dest_actor_ref.id()) {
             None => {
-                let err = format!(
-                    "no mailbox for actor {} registered in muxer",
-                    dest_actor_ref
-                );
                 let failure = DeliveryFailure::new(InvalidReference::new(
                     dest_actor_ref,
                     InvalidReferenceReason::ActorNotExist,
                 ));
-                envelope.undeliverable_with_failure(
-                    DeliveryError::Unroutable(err),
-                    failure,
-                    return_handle,
-                )
+                envelope.undeliverable(failure, return_handle)
             }
             Some(sender) => sender.post(envelope, return_handle),
         }
@@ -3515,13 +3406,7 @@ impl MailboxSender for MailboxRouter {
                 let failure = DeliveryFailure::new(UndeliverableReason::Transport(
                     TransportFailure::new(target, TransportFailureReason::NoRoute),
                 ));
-                envelope.undeliverable_with_failure(
-                    DeliveryError::Unroutable(
-                        "no destination found for actor in routing table".to_string(),
-                    ),
-                    failure,
-                    return_handle,
-                )
+                envelope.undeliverable(failure, return_handle)
             }
             Some(sender) => sender.post(envelope, return_handle),
         }
@@ -3608,11 +3493,7 @@ impl MailboxSender for WeakMailboxRouter {
                             "mailbox router is gone".to_string(),
                         ),
                     )));
-                envelope.undeliverable_with_failure(
-                    DeliveryError::BrokenLink("failed to upgrade WeakMailboxRouter".to_string()),
-                    failure,
-                    return_handle,
-                )
+                envelope.undeliverable(failure, return_handle)
             }
         }
     }
@@ -3857,11 +3738,7 @@ impl MailboxSender for DialMailboxRouter {
                             error: err.to_string(),
                         },
                     )));
-                envelope.undeliverable_with_failure(
-                    DeliveryError::Unroutable(format!("cannot dial destination: {err}")),
-                    failure,
-                    return_handle,
-                )
+                envelope.undeliverable(failure, return_handle)
             }
             Ok(sender) => sender.post(envelope, return_handle),
         }
@@ -3897,11 +3774,7 @@ impl MailboxSender for UnroutableMailboxSender {
             target,
             TransportFailureReason::NoRoute,
         )));
-        envelope.undeliverable_with_failure(
-            DeliveryError::Unroutable("destination not found in routing table".to_string()),
-            failure,
-            return_handle,
-        );
+        envelope.undeliverable(failure, return_handle);
     }
 }
 
@@ -3982,12 +3855,11 @@ mod tests {
     }
 
     #[test]
-    fn test_error_msg_prefers_structured_delivery_failure() {
+    fn test_error_msg_renders_structured_delivery_failure() {
         let sender = test_actor_id("0", "sender");
         let dest = test_port_id("0", "dest", 42);
         let mut envelope = MessageEnvelope::serialize(sender, dest.clone(), &42u64, Flattrs::new())
             .expect("serialize");
-        envelope.set_error(DeliveryError::BrokenLink("legacy error".to_string()));
         envelope.push_delivery_failure(DeliveryFailure::new(InvalidReference::new(
             dest,
             InvalidReferenceReason::PortNeverAllocated,
@@ -3996,24 +3868,6 @@ mod tests {
         let error = envelope.error_msg().expect("expected error");
         assert!(error.contains("delivery failure: invalid reference"));
         assert!(error.contains("port never allocated"));
-        assert!(
-            !error.contains("legacy error"),
-            "structured rendering should take precedence: {error}"
-        );
-    }
-
-    #[test]
-    fn test_error_msg_falls_back_to_legacy_delivery_error() {
-        let sender = test_actor_id("0", "sender");
-        let dest = test_port_id("0", "dest", 42);
-        let mut envelope =
-            MessageEnvelope::serialize(sender, dest, &42u64, Flattrs::new()).expect("serialize");
-        envelope.set_error(DeliveryError::BrokenLink("legacy error".to_string()));
-
-        assert_eq!(
-            envelope.error_msg().as_deref(),
-            Some("broken link: legacy error")
-        );
     }
 
     #[test]
@@ -5144,9 +4998,6 @@ mod tests {
                             "returned in unit test".to_string(),
                         ),
                     )),
-                ));
-                envelope.set_error(DeliveryError::BrokenLink(
-                    "returned in unit test".to_string(),
                 ));
                 UndeliverableMailboxSender
                     .post(envelope, /*unused */ monitored_return_handle());

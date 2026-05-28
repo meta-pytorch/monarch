@@ -17,7 +17,6 @@ use hyperactor::PortHandle;
 use hyperactor::Uid;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelError;
-use hyperactor::mailbox::DeliveryError;
 use hyperactor::mailbox::DeliveryFailure;
 use hyperactor::mailbox::MailboxClient;
 use hyperactor::mailbox::MailboxSender;
@@ -104,11 +103,7 @@ impl MailboxSender for LocalProcDialer {
                             },
                         ),
                     ));
-                    envelope.undeliverable_with_failure(
-                        DeliveryError::BrokenLink(format!("failed to dial proc: {}", e)),
-                        failure,
-                        return_handle,
-                    );
+                    envelope.undeliverable(failure, return_handle);
                 }
             }
         } else {

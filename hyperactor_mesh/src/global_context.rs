@@ -67,10 +67,8 @@ use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Signal;
 use hyperactor::id::Label;
 use hyperactor::id::Uid;
-use hyperactor::mailbox::DeliveryError;
 use hyperactor::mailbox::DeliveryFailure;
 use hyperactor::mailbox::MessageEnvelope;
-use hyperactor::mailbox::PortReceiver;
 use hyperactor::mailbox::TransportFailure;
 use hyperactor::mailbox::TransportFailureReason;
 use hyperactor::mailbox::Undeliverable;
@@ -311,9 +309,6 @@ impl Actor for GlobalClientActor {
                 ),
             ),
         )));
-        env.set_error(DeliveryError::BrokenLink(
-            "message returned to global root client".to_string(),
-        ));
         let actor_ref = env.dest().actor_addr();
         let headers = env.headers().clone();
         let event = ActorSupervisionEvent::new(

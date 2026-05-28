@@ -2729,6 +2729,7 @@ mod tests {
             .1
             .as_ref()
             .expect_err("op_idx 0 should fail because one WR errored");
+
         assert!(
             err.contains("isolated per-WR fail"),
             "op_idx 0 error should name the per-WR error: {err}",
