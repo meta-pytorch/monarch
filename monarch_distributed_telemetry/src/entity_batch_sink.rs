@@ -6,7 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! EntityDispatcher - Dispatches entity lifecycle events to Arrow RecordBatches
+//! EntityBatchSink - Collects entity lifecycle events as Arrow RecordBatches
 //!
 //! Produces tables:
 //! - `actors`: Actor creation events
@@ -20,124 +20,33 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use hyperactor_telemetry::EntityEvent;
-use hyperactor_telemetry::EntityEventDispatcher;
+use hyperactor_telemetry::TraceEvent;
+use hyperactor_telemetry::TraceEventSink;
 use monarch_record_batch::RecordBatchBuffer;
-use monarch_record_batch::RecordBatchRow;
+use monarch_telemetry_schema::entity_tables::ACTOR_STATUS_EVENTS;
+use monarch_telemetry_schema::entity_tables::ACTORS;
+pub use monarch_telemetry_schema::entity_tables::Actor;
+pub use monarch_telemetry_schema::entity_tables::ActorBuffer;
+pub use monarch_telemetry_schema::entity_tables::ActorStatusEvent;
+pub use monarch_telemetry_schema::entity_tables::ActorStatusEventBuffer;
+use monarch_telemetry_schema::entity_tables::MESHES;
+use monarch_telemetry_schema::entity_tables::MESSAGE_STATUS_EVENTS;
+use monarch_telemetry_schema::entity_tables::MESSAGES;
+pub use monarch_telemetry_schema::entity_tables::Mesh;
+pub use monarch_telemetry_schema::entity_tables::MeshBuffer;
+pub use monarch_telemetry_schema::entity_tables::Message;
+pub use monarch_telemetry_schema::entity_tables::MessageBuffer;
+pub use monarch_telemetry_schema::entity_tables::MessageStatusEvent;
+pub use monarch_telemetry_schema::entity_tables::MessageStatusEventBuffer;
+use monarch_telemetry_schema::entity_tables::SENT_MESSAGES;
+pub use monarch_telemetry_schema::entity_tables::SentMessage;
+pub use monarch_telemetry_schema::entity_tables::SentMessageBuffer;
 
 use crate::record_batch_sink::FlushCallback;
 use crate::timestamp_to_micros;
 
-/// Row data for the actors table.
-/// Logged when actors are created.
-#[derive(RecordBatchRow)]
-pub struct Actor {
-    /// Unique identifier for this actor
-    pub id: u64,
-    /// Timestamp in microseconds since Unix epoch
-    pub timestamp_us: i64,
-    /// ID of the mesh this actor belongs to
-    pub mesh_id: u64,
-    /// Rank index into the mesh shape
-    pub rank: u64,
-    /// Full hierarchical name of this actor
-    pub full_name: String,
-    /// User-facing name for this actor
-    pub display_name: Option<String>,
-}
-
-/// Row data for the meshes table.
-/// Logged when meshes are created.
-#[derive(RecordBatchRow)]
-pub struct Mesh {
-    /// Unique identifier for this mesh
-    pub id: u64,
-    /// Timestamp in microseconds since Unix epoch
-    pub timestamp_us: i64,
-    /// mesh class (e.g., "Proc", "Host", "Python<SomeUserDefinedActor>")
-    pub class: String,
-    /// User-provided name for this mesh
-    pub given_name: String,
-    /// Full hierarchical name as it appears in supervision events
-    pub full_name: String,
-    /// Shape of the mesh, serialized from ndslice::Extent
-    pub shape_json: String,
-    /// Parent mesh ID (None for root meshes)
-    pub parent_mesh_id: Option<u64>,
-    /// Region over which the parent spawned this mesh, serialized from ndslice::Region
-    pub parent_view_json: Option<String>,
-}
-
-/// Row data for the actor_status_events table.
-/// Logged when actors change status.
-#[derive(RecordBatchRow)]
-pub struct ActorStatusEvent {
-    /// Unique identifier for this event
-    pub id: u64,
-    /// Timestamp in microseconds since Unix epoch
-    pub timestamp_us: i64,
-    /// ID of the actor whose status changed
-    pub actor_id: u64,
-    /// New status value (e.g. "Created", "Idle", "Failed")
-    pub new_status: String,
-    /// Reason for the status change (e.g. error message for Failed)
-    pub reason: Option<String>,
-}
-
-/// Row data for the sent_messages table.
-///
-/// Tracks messages from the perspective of the sending actor.
-#[derive(RecordBatchRow)]
-pub struct SentMessage {
-    /// Unique identifier for this sent message record
-    pub id: u64,
-    /// Timestamp in microseconds since Unix epoch
-    pub timestamp_us: i64,
-    /// ID of the sending actor
-    pub sender_actor_id: u64,
-    /// ID of the actor mesh over which the message was sent (0 for point-to-point)
-    pub actor_mesh_id: u64,
-    /// Region over which the message was sent, serialized from ndslice::Region
-    pub view_json: String,
-    /// Shape of the message, serialized from ndslice::Shape
-    pub shape_json: String,
-}
-
-/// Row data for the messages table.
-///
-/// Tracks messages from the receiver's perspective.
-#[derive(RecordBatchRow)]
-pub struct Message {
-    /// Unique identifier for this received message
-    pub id: u64,
-    /// Timestamp in microseconds since Unix epoch
-    pub timestamp_us: i64,
-    /// Hash of sender's ActorAddr
-    pub from_actor_id: u64,
-    /// Hash of receiver's ActorAddr
-    pub to_actor_id: u64,
-    /// Message handler type name
-    pub endpoint: Option<String>,
-    /// Port identifier (reserved)
-    pub port_id: Option<u64>,
-}
-
-/// Row data for the message_status_events table.
-///
-/// Logs status transitions for received messages.
-#[derive(RecordBatchRow)]
-pub struct MessageStatusEvent {
-    /// Unique identifier for this status event
-    pub id: u64,
-    /// Timestamp in microseconds since Unix epoch
-    pub timestamp_us: i64,
-    /// FK to messages.id
-    pub message_id: u64,
-    /// Status value: "queued", "active", or "complete"
-    pub status: String,
-}
-
-/// Inner state of EntityDispatcher.
-struct EntityDispatcherInner {
+/// Inner state of EntityBatchSink.
+struct EntityBatchSinkInner {
     actors_buffer: ActorBuffer,
     meshes_buffer: MeshBuffer,
     actor_status_events_buffer: ActorStatusEventBuffer,
@@ -148,7 +57,7 @@ struct EntityDispatcherInner {
     flush_callback: FlushCallback,
 }
 
-impl EntityDispatcherInner {
+impl EntityBatchSinkInner {
     fn flush_buffer<B: RecordBatchBuffer>(
         buffer: &mut B,
         table_name: &str,
@@ -160,22 +69,22 @@ impl EntityDispatcherInner {
     }
 
     fn flush(&mut self) -> anyhow::Result<()> {
-        Self::flush_buffer(&mut self.actors_buffer, "actors", &self.flush_callback)?;
-        Self::flush_buffer(&mut self.meshes_buffer, "meshes", &self.flush_callback)?;
+        Self::flush_buffer(&mut self.actors_buffer, ACTORS, &self.flush_callback)?;
+        Self::flush_buffer(&mut self.meshes_buffer, MESHES, &self.flush_callback)?;
         Self::flush_buffer(
             &mut self.actor_status_events_buffer,
-            "actor_status_events",
+            ACTOR_STATUS_EVENTS,
             &self.flush_callback,
         )?;
         Self::flush_buffer(
             &mut self.sent_messages_buffer,
-            "sent_messages",
+            SENT_MESSAGES,
             &self.flush_callback,
         )?;
-        Self::flush_buffer(&mut self.messages_buffer, "messages", &self.flush_callback)?;
+        Self::flush_buffer(&mut self.messages_buffer, MESSAGES, &self.flush_callback)?;
         Self::flush_buffer(
             &mut self.message_status_events_buffer,
-            "message_status_events",
+            MESSAGE_STATUS_EVENTS,
             &self.flush_callback,
         )?;
         Ok(())
@@ -183,14 +92,14 @@ impl EntityDispatcherInner {
 
     fn flush_actors_if_full(&mut self) -> anyhow::Result<()> {
         if self.actors_buffer.len() >= self.batch_size {
-            Self::flush_buffer(&mut self.actors_buffer, "actors", &self.flush_callback)?;
+            Self::flush_buffer(&mut self.actors_buffer, ACTORS, &self.flush_callback)?;
         }
         Ok(())
     }
 
     fn flush_meshes_if_full(&mut self) -> anyhow::Result<()> {
         if self.meshes_buffer.len() >= self.batch_size {
-            Self::flush_buffer(&mut self.meshes_buffer, "meshes", &self.flush_callback)?;
+            Self::flush_buffer(&mut self.meshes_buffer, MESHES, &self.flush_callback)?;
         }
         Ok(())
     }
@@ -199,7 +108,7 @@ impl EntityDispatcherInner {
         if self.actor_status_events_buffer.len() >= self.batch_size {
             Self::flush_buffer(
                 &mut self.actor_status_events_buffer,
-                "actor_status_events",
+                ACTOR_STATUS_EVENTS,
                 &self.flush_callback,
             )?;
         }
@@ -210,7 +119,7 @@ impl EntityDispatcherInner {
         if self.sent_messages_buffer.len() >= self.batch_size {
             Self::flush_buffer(
                 &mut self.sent_messages_buffer,
-                "sent_messages",
+                SENT_MESSAGES,
                 &self.flush_callback,
             )?;
         }
@@ -219,7 +128,7 @@ impl EntityDispatcherInner {
 
     fn flush_messages_if_full(&mut self) -> anyhow::Result<()> {
         if self.messages_buffer.len() >= self.batch_size {
-            Self::flush_buffer(&mut self.messages_buffer, "messages", &self.flush_callback)?;
+            Self::flush_buffer(&mut self.messages_buffer, MESSAGES, &self.flush_callback)?;
         }
         Ok(())
     }
@@ -228,7 +137,7 @@ impl EntityDispatcherInner {
         if self.message_status_events_buffer.len() >= self.batch_size {
             Self::flush_buffer(
                 &mut self.message_status_events_buffer,
-                "message_status_events",
+                MESSAGE_STATUS_EVENTS,
                 &self.flush_callback,
             )?;
         }
@@ -236,17 +145,18 @@ impl EntityDispatcherInner {
     }
 }
 
-/// Dispatches entity lifecycle events to Arrow RecordBatches.
+/// Collects entity lifecycle events into Arrow RecordBatches.
 ///
-/// This is separate from RecordBatchSink which handles tracing events (spans, events).
-/// Both use the same FlushCallback pattern to push batches to the database scanner's tables.
+/// This is the current in-process materializer for `TraceEvent::Entity`. It
+/// keeps today's `DatabaseScanner` query path working while entity production
+/// moves onto the unified trace dispatcher queue.
 #[derive(Clone)]
-pub struct EntityDispatcher {
-    inner: Arc<Mutex<EntityDispatcherInner>>,
+pub struct EntityBatchSink {
+    inner: Arc<Mutex<EntityBatchSinkInner>>,
 }
 
-impl EntityDispatcher {
-    /// Create a new EntityDispatcher with the specified batch size and flush callback.
+impl EntityBatchSink {
+    /// Create a new EntityBatchSink with the specified batch size and flush callback.
     ///
     /// The callback receives (table_name, record_batch) when a batch is ready.
     /// The callback should handle empty batches by creating the table with the
@@ -256,7 +166,7 @@ impl EntityDispatcher {
     /// * `batch_size` - Number of rows to buffer before flushing each table
     /// * `flush_callback` - Called with (table_name, record_batch) when a batch is ready
     pub fn new(batch_size: usize, flush_callback: FlushCallback) -> Self {
-        let inner = Arc::new(Mutex::new(EntityDispatcherInner {
+        let inner = Arc::new(Mutex::new(EntityBatchSinkInner {
             actors_buffer: ActorBuffer::default(),
             meshes_buffer: MeshBuffer::default(),
             actor_status_events_buffer: ActorStatusEventBuffer::default(),
@@ -269,9 +179,9 @@ impl EntityDispatcher {
         Self { inner }
     }
 
-    /// Flush all buffers, emitting batches for actors and meshes tables.
+    /// Flush all entity table buffers.
     ///
-    /// This always emits batches for both tables, even if they are empty.
+    /// This always emits batches for all entity tables, even if they are empty.
     /// The callback is expected to handle empty batches by creating the table
     /// with the correct schema but not appending empty data.
     pub fn flush(&self) -> anyhow::Result<()> {
@@ -283,8 +193,8 @@ impl EntityDispatcher {
     }
 }
 
-impl EntityEventDispatcher for EntityDispatcher {
-    fn dispatch(&self, event: EntityEvent) -> Result<(), anyhow::Error> {
+impl EntityBatchSink {
+    fn consume_entity(&self, event: EntityEvent) -> Result<(), anyhow::Error> {
         let mut inner = self
             .inner
             .lock()
@@ -360,5 +270,22 @@ impl EntityEventDispatcher for EntityDispatcher {
             }
         }
         Ok(())
+    }
+}
+
+impl TraceEventSink for EntityBatchSink {
+    fn consume(&mut self, event: &TraceEvent) -> Result<(), anyhow::Error> {
+        if let TraceEvent::Entity(event) = event {
+            self.consume_entity(event.clone())?;
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<(), anyhow::Error> {
+        EntityBatchSink::flush(self)
+    }
+
+    fn name(&self) -> &str {
+        "EntityBatchSink"
     }
 }

@@ -20,3 +20,9 @@ def get_record_batch_flush_count() -> int:
 def reset_record_batch_flush_count() -> None:
     """Reset the flush counter to zero."""
     ...
+
+def _start_socket_ingest(
+    scanner: database_scanner.DatabaseScanner, socket_path: str
+) -> bool:
+    """Start Unix-socket ingest for a database scanner."""
+    ...
