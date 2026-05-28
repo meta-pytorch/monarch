@@ -179,6 +179,35 @@ use session::Session;
 use crate::config;
 use crate::metrics;
 
+/// TCP keepalive probe interval after the idle period elapses.
+const TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Number of failed keepalive probes before the kernel marks the
+/// connection dead.
+const TCP_KEEPALIVE_RETRIES: u32 = 3;
+
+/// Enable TCP keepalive on a freshly-created socket so the kernel can
+/// surface peer death on otherwise-idle connections.
+/// [`config::CHANNEL_TCP_KEEPALIVE_IDLE`] is the kernel idle period —
+/// the gap from last activity to the first probe — so on a healthy
+/// idle connection it's also the probe cadence. Total detection time
+/// is `idle + TCP_KEEPALIVE_RETRIES * TCP_KEEPALIVE_INTERVAL`. Logs
+/// and ignores errors: keepalive is best-effort and some test
+/// harnesses use sockets that don't support it.
+fn set_tcp_keepalive(stream: &tokio::net::TcpStream) {
+    let idle = hyperactor_config::global::get(config::CHANNEL_TCP_KEEPALIVE_IDLE);
+
+    let ka = socket2::TcpKeepalive::new()
+        .with_time(idle)
+        .with_interval(TCP_KEEPALIVE_INTERVAL)
+        .with_retries(TCP_KEEPALIVE_RETRIES);
+
+    let sock = socket2::SockRef::from(stream);
+    if let Err(err) = sock.set_tcp_keepalive(&ka) {
+        tracing::warn!(?err, "failed to set TCP keepalive on stream");
+    }
+}
+
 pub(crate) enum LinkStatus {
     NeverConnected,
     Connected(tokio::time::Instant),
@@ -1069,6 +1098,8 @@ pub enum ServerError {
 pub enum ClientError {
     #[error("connection to {0} failed: {1}: {2}")]
     Connect(ChannelAddr, std::io::Error, String),
+    #[error("connection to {0} failed after {1:?} of retries: {2}")]
+    ConnectTimeout(ChannelAddr, Duration, #[source] std::io::Error),
     #[error("unable to resolve address: {0}")]
     Resolve(ChannelAddr),
     #[error("io: {0} {1}")]
@@ -1419,12 +1450,14 @@ pub(crate) mod tcp {
 
         async fn next(&mut self) -> Result<Self::Stream, ClientError> {
             let session_id = self.session_id;
+            let reconnect_timeout =
+                hyperactor_config::global::get(config::CHANNEL_RECONNECT_TIMEOUT);
             let mut backoff = ExponentialBackoffBuilder::new()
                 .with_initial_interval(Duration::from_millis(1))
                 .with_multiplier(2.0)
                 .with_randomization_factor(0.1)
                 .with_max_interval(Duration::from_millis(1000))
-                .with_max_elapsed_time(None)
+                .with_max_elapsed_time(Some(reconnect_timeout))
                 .build();
             loop {
                 match TcpStream::connect(&self.addr).await {
@@ -1436,6 +1469,7 @@ pub(crate) mod tcp {
                                 "cannot disable Nagle algorithm".to_string(),
                             )
                         })?;
+                        set_tcp_keepalive(&stream);
                         write_link_init(&mut stream, session_id, self.stream_id)
                             .await
                             .map_err(|err| ClientError::Io(self.dest(), err))?;
@@ -1443,8 +1477,15 @@ pub(crate) mod tcp {
                     }
                     Err(err) => {
                         tracing::debug!(error = %err, "tcp connect failed, backing off");
-                        if let Some(delay) = backoff.next_backoff() {
-                            tokio::time::sleep(delay).await;
+                        match backoff.next_backoff() {
+                            Some(delay) => tokio::time::sleep(delay).await,
+                            None => {
+                                return Err(ClientError::ConnectTimeout(
+                                    self.dest(),
+                                    reconnect_timeout,
+                                    err,
+                                ));
+                            }
                         }
                     }
                 }
@@ -1472,6 +1513,7 @@ pub(crate) mod tcp {
             stream
                 .set_nodelay(true)
                 .map_err(|err| ServerError::Io(ChannelAddr::Tcp(self.addr), err))?;
+            set_tcp_keepalive(&stream);
             Ok((stream, ChannelAddr::Tcp(peer_addr)))
         }
     }
@@ -1810,12 +1852,14 @@ pub(crate) mod tls {
                     "invalid server name".to_string(),
                 )
             })?;
+            let reconnect_timeout =
+                hyperactor_config::global::get(config::CHANNEL_RECONNECT_TIMEOUT);
             let mut backoff = ExponentialBackoffBuilder::new()
                 .with_initial_interval(Duration::from_millis(1))
                 .with_multiplier(2.0)
                 .with_randomization_factor(0.1)
                 .with_max_interval(Duration::from_millis(1000))
-                .with_max_elapsed_time(None)
+                .with_max_elapsed_time(Some(reconnect_timeout))
                 .build();
             loop {
                 let mut addrs = (self.hostname.as_ref(), self.port)
@@ -1831,6 +1875,7 @@ pub(crate) mod tls {
                                 "cannot disable Nagle algorithm".to_string(),
                             )
                         })?;
+                        set_tcp_keepalive(&stream);
                         let mut tls_stream = self
                             .connector
                             .connect(server_name.clone(), stream)
@@ -1854,8 +1899,15 @@ pub(crate) mod tls {
                     }
                     Err(err) => {
                         tracing::debug!(error = %err, "tls connect failed, backing off");
-                        if let Some(delay) = backoff.next_backoff() {
-                            tokio::time::sleep(delay).await;
+                        match backoff.next_backoff() {
+                            Some(delay) => tokio::time::sleep(delay).await,
+                            None => {
+                                return Err(ClientError::ConnectTimeout(
+                                    self.dest(),
+                                    reconnect_timeout,
+                                    err,
+                                ));
+                            }
                         }
                     }
                 }
@@ -2415,6 +2467,35 @@ mod tests {
                     ..
                 })
             );
+        }
+    }
+
+    #[async_timed_test(timeout_secs = 20)]
+    #[cfg_attr(not(fbcode_build), ignore)]
+    async fn test_tcp_unreachable_peer_surfaces_closed() {
+        // With a bounded reconnect timeout, dialing an unreachable peer must
+        // surface as TxStatus::Closed — not loop forever. The
+        // `async_timed_test` timeout above is the only failure backstop; the
+        // body itself is purely event-driven on the status watch.
+        let config = hyperactor_config::global::lock();
+        // `connect_by` retries `link.next()` until MESSAGE_DELIVERY_TIMEOUT
+        // when an outbound message is pending. Bound both so the test surfaces
+        // Closed within a few seconds rather than the 30s default.
+        let _g1 = config.override_key(config::CHANNEL_RECONNECT_TIMEOUT, Duration::from_secs(1));
+        let _g2 = config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(3));
+
+        // Bind a listener to grab a free local port, then drop it so connects
+        // get ECONNREFUSED.
+        let (addr, rx) =
+            server::serve::<u64>(ChannelAddr::Tcp("[::1]:0".parse().unwrap()), None).unwrap();
+        drop(rx);
+
+        let tx = channel::dial::<u64>(addr.clone()).unwrap();
+        tx.post(123); // primes the send loop so the connect path runs
+
+        let mut status = tx.status().clone();
+        while !status.borrow_and_update().is_closed() {
+            status.changed().await.unwrap();
         }
     }
 
