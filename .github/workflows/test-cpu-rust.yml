@@ -17,9 +17,11 @@ jobs:
           - name: x86_64
             runner: linux.4xlarge
             docker-image: pytorch/almalinux-builder
+            cargo-jobs: 16
           - name: arm64
-            runner: linux.arm64.2xlarge
+            runner: linux.arm64.m8g.4xlarge
             docker-image: pytorch/manylinuxaarch64-builder:cuda13.2
+            cargo-jobs: 8
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     with:
       timeout: 120
@@ -48,13 +50,17 @@ jobs:
         pip install --pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu132
 
         # Run CPU-safe Rust tests (no GPU hardware available)
+        echo "=== Runner spec ==="
+        lscpu | grep -E '^(Architecture|Model name|CPU\(s\)):' || true
+        free -h || true
+        echo "=== end runner spec ==="
         echo "Running CPU Rust tests..."
         # Capture the test exit code so stage_test_artifacts still runs on
         # failure (otherwise set -e would exit before any artifacts are
         # uploaded). Exclude crates that require GPU hardware, CUDA libraries,
         # or torch C++ headers (libtorch) not available on CPU-only runners.
         rc=0
-        timeout 12m cargo nextest run --workspace --profile ci \
+        CARGO_BUILD_JOBS=${{ matrix.cargo-jobs }} timeout 15m cargo nextest run --workspace --profile ci \
           -E "$(cat .config/nextest-filter.txt)" \
           --exclude monarch_messages \
           --exclude monarch_tensor_worker \

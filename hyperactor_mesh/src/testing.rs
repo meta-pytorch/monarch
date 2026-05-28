@@ -31,7 +31,6 @@ use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Signal;
 use hyperactor::channel::ChannelTransport;
-use hyperactor::mailbox::PortReceiver;
 use hyperactor::proc::WorkCell;
 use hyperactor::supervision::ActorSupervisionEvent;
 #[cfg(fbcode_build)]
@@ -186,7 +185,7 @@ fn process_name(pid: u32) -> Option<String> {
 
 #[derive(Debug)]
 pub struct TestRootClient {
-    signal_rx: PortReceiver<Signal>,
+    signal_rx: mpsc::UnboundedReceiver<Signal>,
     supervision_rx: mpsc::UnboundedReceiver<ActorSupervisionEvent>,
     work_rx: mpsc::UnboundedReceiver<WorkCell<Self>>,
 }
@@ -223,7 +222,7 @@ impl TestRootClient {
                             };
                         }
                     }
-                    _ = self.signal_rx.recv() => {
+                    Some(_) = self.signal_rx.recv() => {
                         // TODO: do we need any signal handling for the root client?
                     }
                     Some(supervision_event) = self.supervision_rx.recv() => {
