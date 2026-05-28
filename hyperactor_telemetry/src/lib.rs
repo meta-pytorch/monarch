@@ -70,6 +70,7 @@ pub mod sqlite;
 pub mod task;
 pub mod trace;
 pub mod trace_dispatcher;
+mod unix_sink;
 
 // Re-export key types for external sink implementations
 use std::collections::hash_map::DefaultHasher;
@@ -98,6 +99,9 @@ use trace_dispatcher::TraceFields;
 pub use tracing;
 pub use tracing::Level;
 use tracing_appender::rolling::RollingFileAppender;
+pub use unix_sink::set_unix_socket_sink_path;
+pub use unix_sink::unix_socket_sink_dropped_frames;
+pub use unix_sink::unix_socket_sink_is_active;
 
 #[cfg(all(fbcode_build, target_os = "linux"))]
 use crate::config::ENABLE_OTEL_METRICS;
@@ -234,13 +238,14 @@ lazy_static! {
         let (sender, receiver) = mpsc::channel();
         (sender, Mutex::new(Some(receiver)))
     };
-    /// Global unified entity event dispatcher with pre-registration buffering.
-    /// Events emitted before a dispatcher is registered are buffered and replayed
-    /// when `set_entity_dispatcher` is called. This ensures bootstrap actors
-    /// (e.g., HostAgent and ProcAgent) are captured even though they are spawned before the
-    /// telemetry system is initialized.
-    static ref ENTITY_EVENT_STATE: Mutex<EntityEventState> = Mutex::new(
-        EntityEventState::Buffering(Vec::new())
+    /// Short bootstrap buffer for entity events that fire before the current
+    /// in-process entity materializer has registered as a `TraceEventSink`.
+    ///
+    /// This is not a second dispatcher. It preserves today's early actor/mesh
+    /// visibility while still replaying through the unified `TraceEvent` queue
+    /// once both the dispatcher sender and an entity sink exist.
+    static ref ENTITY_EVENT_BUFFER: Mutex<EntityEventBuffer> = Mutex::new(
+        EntityEventBuffer::default()
     );
 }
 
@@ -251,19 +256,19 @@ const SYNTHETIC_USER_SPAN_TRACK_NAME: &str = "python";
 /// Install the sender for the active dispatcher so synthesized events can join the
 /// same pipeline as events captured from native `tracing` callbacks.
 pub(crate) fn set_synthetic_trace_event_sender(sender: mpsc::SyncSender<TraceEvent>) {
+    let mut buffer = ENTITY_EVENT_BUFFER
+        .lock()
+        .expect("ENTITY_EVENT_BUFFER mutex should not be poisoned");
     *SYNTHETIC_TRACE_EVENT_SENDER
         .lock()
-        .expect("SYNTHETIC_TRACE_EVENT_SENDER mutex should not be poisoned") = Some(sender);
+        .expect("SYNTHETIC_TRACE_EVENT_SENDER mutex should not be poisoned") = Some(sender.clone());
+    buffer.drain_registered_events(&sender);
 }
 
 /// Sends a synthesized trace event to the active dispatcher queue.
 /// Returns `true` if sent successfully.
 pub(crate) fn emit_trace_event(event: TraceEvent) -> bool {
-    let sender = SYNTHETIC_TRACE_EVENT_SENDER
-        .lock()
-        .expect("SYNTHETIC_TRACE_EVENT_SENDER mutex should not be poisoned")
-        .clone();
-    match sender {
+    match synthetic_trace_event_sender() {
         Some(sender) => sender.try_send(event).is_ok(),
         None => false,
     }
@@ -327,17 +332,7 @@ pub fn end_user_span(id: u64) {
     });
 }
 
-/// State machine for the entity event dispatcher.
-/// Starts in `Buffering`, collecting events until a dispatcher is registered.
-/// Transitions to `Dispatching` on `set_entity_dispatcher`, replaying buffered
-/// events and dropping the buffer so it cannot accumulate further.
-enum EntityEventState {
-    Buffering(Vec<EntityEvent>),
-    Dispatching(Box<dyn EntityEventDispatcher>),
-}
-
 /// Event data for actor creation.
-/// This is passed to EntityEventDispatcher implementations when an actor is spawned.
 #[derive(Debug, Clone)]
 pub struct ActorEvent {
     /// Unique identifier for this actor (hashed from ActorAddr)
@@ -354,15 +349,12 @@ pub struct ActorEvent {
     pub display_name: Option<String>,
 }
 
-/// Notify the registered dispatcher that an actor was created.
-/// If no dispatcher is registered yet, the event is buffered and will be
-/// replayed when `set_entity_dispatcher` is called.
+/// Notify telemetry that an actor was created.
 pub fn notify_actor_created(event: ActorEvent) {
-    dispatch_or_buffer(EntityEvent::Actor(event));
+    emit_entity_event(EntityEvent::Actor(event));
 }
 
 /// Event data for mesh creation.
-/// This is passed to EntityEventDispatcher implementations when a mesh is spawned.
 #[derive(Debug, Clone)]
 pub struct MeshEvent {
     /// Unique identifier for this mesh (hashed)
@@ -383,15 +375,12 @@ pub struct MeshEvent {
     pub parent_view_json: Option<String>,
 }
 
-/// Notify the registered dispatcher that a mesh was created.
-/// If no dispatcher is registered yet, the event is buffered and will be
-/// replayed when `set_entity_dispatcher` is called.
+/// Notify telemetry that a mesh was created.
 pub fn notify_mesh_created(event: MeshEvent) {
-    dispatch_or_buffer(EntityEvent::Mesh(event));
+    emit_entity_event(EntityEvent::Mesh(event));
 }
 
 /// Event data for actor status changes.
-/// This is passed to EntityEventDispatcher implementations when an actor changes status.
 #[derive(Debug, Clone)]
 pub struct ActorStatusEvent {
     /// Unique identifier for this event
@@ -406,11 +395,9 @@ pub struct ActorStatusEvent {
     pub reason: Option<String>,
 }
 
-/// Notify the registered dispatcher that an actor changed status.
-/// If no dispatcher is registered yet, the event is buffered and will be
-/// replayed when `set_entity_dispatcher` is called.
+/// Notify telemetry that an actor changed status.
 pub fn notify_actor_status_changed(event: ActorStatusEvent) {
-    dispatch_or_buffer(EntityEvent::ActorStatus(event));
+    emit_entity_event(EntityEvent::ActorStatus(event));
 }
 
 /// Event fired when a message is sent to an actor mesh.
@@ -434,11 +421,9 @@ pub struct SentMessageEvent {
     pub shape_json: String,
 }
 
-/// Notify the registered dispatcher that a message was sent.
-/// If no dispatcher is registered yet, the event is buffered and will be
-/// replayed when `set_entity_dispatcher` is called.
+/// Notify telemetry that a message was sent.
 pub fn notify_sent_message(event: SentMessageEvent) {
-    dispatch_or_buffer(EntityEvent::SentMessage(event));
+    emit_entity_event(EntityEvent::SentMessage(event));
 }
 
 /// Event fired when a message is received (from receiver's perspective).
@@ -457,9 +442,9 @@ pub struct MessageEvent {
     pub port_id: Option<u64>,
 }
 
-/// Notify the registered dispatcher that a message was received.
+/// Notify telemetry that a message was received.
 pub fn notify_message(event: MessageEvent) {
-    dispatch_or_buffer(EntityEvent::Message(event));
+    emit_entity_event(EntityEvent::Message(event));
 }
 
 /// Event fired when a received message changes status.
@@ -474,9 +459,9 @@ pub struct MessageStatusEvent {
     pub status: String,
 }
 
-/// Notify the registered dispatcher that a message changed status.
+/// Notify telemetry that a message changed status.
 pub fn notify_message_status(event: MessageStatusEvent) {
-    dispatch_or_buffer(EntityEvent::MessageStatus(event));
+    emit_entity_event(EntityEvent::MessageStatus(event));
 }
 
 static ACTOR_STATUS_SEQ: AtomicU64 = AtomicU64::new(1);
@@ -541,91 +526,74 @@ pub enum EntityEvent {
     MessageStatus(MessageStatusEvent),
 }
 
-/// Trait for dispatchers that receive unified entity events.
-///
-/// This is the preferred way to receive entity lifecycle events. Implement this
-/// trait and register with `set_entity_dispatcher` to receive notifications for
-/// all entity types (actors, meshes, etc.) through a single callback.
-///
-/// The dispatcher pattern routes events to appropriate handlers based on the
-/// event type (Actor, Mesh, etc.), distinguishing this from TraceEventSink
-/// which handles tracing spans and events.
-///
-/// # Example
-/// ```ignore
-/// use hyperactor_telemetry::{set_entity_dispatcher, EntityEventDispatcher, EntityEvent};
-///
-/// struct MyEntityDispatcher;
-/// impl EntityEventDispatcher for MyEntityDispatcher {
-///     fn dispatch(&self, event: EntityEvent) -> Result<(), anyhow::Error> {
-///         match event {
-///             EntityEvent::Actor(actor) => println!("Actor: {}", actor.full_name),
-///             EntityEvent::Mesh(mesh) => println!("Mesh: {}", mesh.full_name),
-///             EntityEvent::ActorStatus(status) => println!("Status: {}", status.new_status),
-///             EntityEvent::SentMessage(msg) => println!("Sent: {}", msg.id),
-///             EntityEvent::Message(msg) => println!("Recv: {}", msg.id),
-///             EntityEvent::MessageStatus(s) => println!("Status: {}", s.status),
-///         }
-///         Ok(())
-///     }
-/// }
-///
-/// set_entity_dispatcher(Box::new(MyEntityDispatcher));
-/// ```
-pub trait EntityEventDispatcher: Send + Sync {
-    /// Dispatch an entity event to the appropriate handler.
-    fn dispatch(&self, event: EntityEvent) -> Result<(), anyhow::Error>;
+const MAX_BUFFERED_ENTITY_EVENTS: usize = 1000;
+
+enum EntityEventBuffer {
+    WaitingForEntitySink(Vec<EntityEvent>),
+    EntitySinkRegistered(Vec<EntityEvent>),
 }
 
-/// Dispatch an entity event to the registered dispatcher, or buffer it if none is set.
-fn dispatch_or_buffer(event: EntityEvent) {
-    if let Ok(mut state) = ENTITY_EVENT_STATE.lock() {
-        match &mut *state {
-            EntityEventState::Dispatching(d) => {
-                if let Err(e) = d.dispatch(event) {
-                    tracing::error!("failed to dispatch entity event: {:?}", e);
-                }
-            }
-            EntityEventState::Buffering(buf) => {
-                // TODO: Disable buffer cap once dispatcher is enabled by default.
-                const MAX_BUFFERED_EVENTS: usize = 1000;
-                if buf.len() < MAX_BUFFERED_EVENTS {
-                    buf.push(event);
-                    if buf.len() == MAX_BUFFERED_EVENTS {
+impl Default for EntityEventBuffer {
+    fn default() -> Self {
+        Self::WaitingForEntitySink(Vec::new())
+    }
+}
+
+impl EntityEventBuffer {
+    fn event_to_send(
+        &mut self,
+        event: EntityEvent,
+        sender: Option<mpsc::SyncSender<TraceEvent>>,
+    ) -> Option<(mpsc::SyncSender<TraceEvent>, EntityEvent)> {
+        match (self, sender) {
+            (Self::EntitySinkRegistered(_), Some(sender)) => Some((sender, event)),
+            (Self::WaitingForEntitySink(events), _)
+            | (Self::EntitySinkRegistered(events), None) => {
+                if events.len() < MAX_BUFFERED_ENTITY_EVENTS {
+                    events.push(event);
+                    if events.len() == MAX_BUFFERED_ENTITY_EVENTS {
                         tracing::warn!(
-                            "entity event buffer full ({MAX_BUFFERED_EVENTS}); \
-                             dropping further events until a dispatcher is registered"
+                            "entity event buffer full ({MAX_BUFFERED_ENTITY_EVENTS}); dropping further events until an entity sink and dispatcher sender are registered"
                         );
                     }
                 }
+                None
+            }
+        }
+    }
+
+    fn register_entity_sink(&mut self) {
+        if let Self::WaitingForEntitySink(events) = self {
+            *self = Self::EntitySinkRegistered(std::mem::take(events));
+        }
+    }
+
+    fn drain_registered_events(&mut self, sender: &mpsc::SyncSender<TraceEvent>) {
+        if let Self::EntitySinkRegistered(events) = self {
+            for event in std::mem::take(events) {
+                let _ = sender.try_send(TraceEvent::Entity(event));
             }
         }
     }
 }
 
-/// Set the dispatcher to receive all entity events.
-///
-/// Any events that were emitted before this call are replayed to the new dispatcher
-/// in order. All subsequent events are dispatched directly.
-///
-/// Note: Only one dispatcher is supported. Setting a new dispatcher replaces any
-/// previously set dispatcher.
-pub fn set_entity_dispatcher(dispatcher: Box<dyn EntityEventDispatcher>) {
-    if let Ok(mut state) = ENTITY_EVENT_STATE.lock() {
-        // Take buffered events if transitioning from Buffering; empty vec otherwise.
-        let buffered =
-            match std::mem::replace(&mut *state, EntityEventState::Dispatching(dispatcher)) {
-                EntityEventState::Buffering(buf) => buf,
-                EntityEventState::Dispatching(_) => Vec::new(),
-            };
-        for event in buffered {
-            if let EntityEventState::Dispatching(d) = &*state
-                && let Err(e) = d.dispatch(event)
-            {
-                tracing::error!("failed to dispatch buffered entity event: {:?}", e);
-            }
-        }
+/// Emit an entity event through the unified trace dispatcher queue.
+fn emit_entity_event(event: EntityEvent) {
+    let mut buffer = ENTITY_EVENT_BUFFER
+        .lock()
+        .expect("ENTITY_EVENT_BUFFER mutex should not be poisoned");
+    let sender = synthetic_trace_event_sender();
+
+    if let Some((sender, event)) = buffer.event_to_send(event, sender) {
+        let _ = sender.try_send(TraceEvent::Entity(event));
     }
+}
+
+fn synthetic_trace_event_sender() -> Option<mpsc::SyncSender<TraceEvent>> {
+    SYNTHETIC_TRACE_EVENT_SENDER
+        .lock()
+        .expect("SYNTHETIC_TRACE_EVENT_SENDER mutex should not be poisoned")
+        .clone()
 }
 
 /// Register a sink to receive trace events.
@@ -648,6 +616,31 @@ pub fn register_sink(sink: Box<dyn TraceEventSink>) {
     let sender = &SINK_CONTROL_CHANNEL.0;
     if let Err(e) = sender.send(DispatcherControl::AddSink(sink)) {
         eprintln!("[telemetry] failed to register sink: {}", e);
+    }
+}
+
+/// Register the current `DatabaseScanner` entity sink.
+///
+/// Actor, mesh, and message events can be produced before `DatabaseScanner`
+/// starts. Until then, `ENTITY_EVENT_BUFFER` keeps a small bounded list of
+/// those early events. Registering this sink lets the dispatcher deliver
+/// `TraceEvent::Entity` events to the in-process scanner, then replays the
+/// buffered events through the same dispatcher queue.
+///
+/// This is a temporary bridge for `DatabaseScanner`: it keeps the existing
+/// query path alive while entity producers move to `TraceEvent::Entity`. Once
+/// `UnixSocketSink` writes entity table frames, `DatabaseScanner` should stop
+/// registering an entity sink here.
+pub fn register_entity_sink(sink: Box<dyn TraceEventSink>) {
+    register_sink(sink);
+
+    let mut buffer = ENTITY_EVENT_BUFFER
+        .lock()
+        .expect("ENTITY_EVENT_BUFFER mutex should not be poisoned");
+    let sender = synthetic_trace_event_sender();
+    buffer.register_entity_sink();
+    if let Some(sender) = sender {
+        buffer.drain_registered_events(&sender);
     }
 }
 
@@ -1057,6 +1050,8 @@ pub fn initialize_logging_with_log_prefix(
                 ));
             }
 
+            sinks.push(unix_sink::install_unix_socket_sink_inactive());
+
             let dispatcher = trace_dispatcher::TraceEventDispatcher::new(sinks);
             let synthetic_sender = dispatcher.sender();
 
@@ -1149,6 +1144,8 @@ pub fn initialize_logging_with_log_prefix(
             if let Some(log_sink) = otlp::otlp_log_sink() {
                 sinks.push(log_sink);
             }
+
+            sinks.push(unix_sink::install_unix_socket_sink_inactive());
 
             let dispatcher = trace_dispatcher::TraceEventDispatcher::new(sinks);
             let synthetic_sender = dispatcher.sender();
