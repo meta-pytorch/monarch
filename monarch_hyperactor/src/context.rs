@@ -90,6 +90,12 @@ impl PyInstance {
     }
 
     #[pyo3(signature = (reason = None))]
+    fn kill(&self, reason: Option<&str>) -> PyResult<()> {
+        let reason = reason.unwrap_or("(no reason provided)");
+        Ok(self.inner.kill(reason).map_err(anyhow::Error::from)?)
+    }
+
+    #[pyo3(signature = (reason = None))]
     fn stop(&self, reason: Option<&str>) -> PyResult<()> {
         tracing::info!(actor_id = %self.inner.self_addr(), "stopping PyInstance");
         let reason = reason.unwrap_or("(no reason provided)");
