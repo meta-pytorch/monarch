@@ -52,9 +52,9 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
+use crate::RdmaAction;
 use crate::RdmaManagerActor;
 use crate::RdmaOp;
-use crate::RdmaOpType;
 use crate::ReleaseBufferClient;
 use crate::backend::RdmaBackend;
 use crate::backend::RdmaRemoteBackendContext;
@@ -90,7 +90,7 @@ pub enum RdmaLocalBackend {
 }
 
 impl RdmaLocalBackend {
-    async fn submit(
+    pub(crate) async fn submit(
         &mut self,
         cx: &(impl context::Actor + Send + Sync),
         ops: Vec<RdmaOp>,
@@ -141,18 +141,9 @@ impl RdmaRemoteBuffer {
         local: Arc<KeepaliveLocalMemory>,
         timeout: u64,
     ) -> Result<bool, anyhow::Error> {
-        let mut backend = self.choose_backend(client).await?;
-        backend
-            .submit(
-                client,
-                vec![RdmaOp {
-                    op_type: RdmaOpType::WriteFromLocal,
-                    local,
-                    remote: self.clone(),
-                }],
-                Duration::from_secs(timeout),
-            )
-            .await?;
+        let mut action = RdmaAction::new();
+        action.add_write_from_local(self.clone(), local)?;
+        action.submit(client, Duration::from_secs(timeout)).await?;
         Ok(true)
     }
 
@@ -163,18 +154,9 @@ impl RdmaRemoteBuffer {
         local: Arc<KeepaliveLocalMemory>,
         timeout: u64,
     ) -> Result<bool, anyhow::Error> {
-        let mut backend = self.choose_backend(client).await?;
-        backend
-            .submit(
-                client,
-                vec![RdmaOp {
-                    op_type: RdmaOpType::ReadIntoLocal,
-                    local,
-                    remote: self.clone(),
-                }],
-                Duration::from_secs(timeout),
-            )
-            .await?;
+        let mut action = RdmaAction::new();
+        action.add_read_into_local(self.clone(), local)?;
+        action.submit(client, Duration::from_secs(timeout)).await?;
         Ok(true)
     }
 
@@ -205,7 +187,7 @@ impl RdmaRemoteBuffer {
     }
 
     /// Whether this buffer has an ibverbs backend context.
-    fn has_ibverbs_backend(&self) -> bool {
+    pub(crate) fn has_ibverbs_backend(&self) -> bool {
         self.backends
             .iter()
             .any(|b| matches!(b, RdmaRemoteBackendContext::Ibverbs(..)))

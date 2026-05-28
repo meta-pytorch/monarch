@@ -69,7 +69,6 @@ use hyperactor::id::Label;
 use hyperactor::id::Uid;
 use hyperactor::mailbox::DeliveryFailure;
 use hyperactor::mailbox::MessageEnvelope;
-use hyperactor::mailbox::PortReceiver;
 use hyperactor::mailbox::TransportFailure;
 use hyperactor::mailbox::TransportFailureReason;
 use hyperactor::mailbox::Undeliverable;
@@ -176,7 +175,7 @@ fn get_global_supervision_sink() -> Option<PortRef<ActorSupervisionEvent>> {
 #[hyperactor::export(handlers = [MeshFailure])]
 pub struct GlobalClientActor {
     /// Control signals for the actor's proc (shutdown, etc.).
-    signal_rx: PortReceiver<Signal>,
+    signal_rx: mpsc::UnboundedReceiver<Signal>,
     /// Supervision events delivered to this actor instance.
     ///
     /// The root client is a monitor, so it should process these
@@ -211,7 +210,7 @@ impl GlobalClientActor {
                             };
                         }
                     }
-                    _ = self.signal_rx.recv() => {
+                    Some(_) = self.signal_rx.recv() => {
                         // TODO: do we need any signal handling for the root client?
                     }
                     Some(supervision_event) = self.supervision_rx.recv() => {
