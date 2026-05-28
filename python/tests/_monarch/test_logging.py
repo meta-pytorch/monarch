@@ -6,8 +6,9 @@
 
 # pyre-strict
 
+import asyncio
 import logging
-from typing import Any
+from typing import Any, Callable
 from unittest import IsolatedAsyncioTestCase, TestCase
 from unittest.mock import Mock, patch
 
@@ -48,6 +49,73 @@ class LoggingManagerTest(TestCase):
         self.assertEqual(args[0], "post_run_cell")
         # Check that the callback is callable
         self.assertTrue(callable(args[1]))
+
+    @pytest.mark.oss_skip  # type: ignore: IPython.get_ipython doesn't exist in OSS CI
+    @patch("monarch._src.actor.logging.IN_IPYTHON", True)
+    @patch("IPython.get_ipython")
+    @patch("monarch._src.actor.logging._global_flush_registered", False)
+    @patch("monarch._src.actor.logging._flush_all_proc_mesh_logs_async")
+    @patch("monarch._src.actor.logging.flush_all_proc_mesh_logs")
+    def test_post_run_cell_callback_in_sync_context_calls_sync_flush(
+        self,
+        mock_sync_flush: Mock,
+        mock_async_flush: Mock,
+        mock_get_ipython: Mock,
+    ) -> None:
+        # Setup: register the post_run_cell callback and capture it.
+        mock_ipython = Mock()
+        mock_get_ipython.return_value = mock_ipython
+        self.logging_manager.register_flusher_if_in_ipython()
+        callback = mock_ipython.events.register.call_args[0][1]
+
+        # Execute: fire the callback in a sync context (no running loop).
+        callback(None)
+
+        # Assert: sync flush ran; async helper was not scheduled.
+        mock_sync_flush.assert_called_once()
+        mock_async_flush.assert_not_called()
+
+    @pytest.mark.oss_skip  # type: ignore: IPython.get_ipython doesn't exist in OSS CI
+    @patch("monarch._src.actor.logging.IN_IPYTHON", True)
+    @patch("IPython.get_ipython")
+    @patch("monarch._src.actor.logging._global_flush_registered", False)
+    @patch("monarch._src.actor.logging._flush_all_proc_mesh_logs_async")
+    @patch("monarch._src.actor.logging.flush_all_proc_mesh_logs")
+    def test_post_run_cell_callback_in_async_context_schedules_async_flush(
+        self,
+        mock_sync_flush: Mock,
+        mock_async_flush: Mock,
+        mock_get_ipython: Mock,
+    ) -> None:
+        # Setup: register the post_run_cell callback and capture it.
+        mock_ipython = Mock()
+        mock_get_ipython.return_value = mock_ipython
+
+        # The patched async helper must still produce an awaitable so that
+        # loop.create_task does not complain.
+        async def _coro() -> None:
+            return None
+
+        mock_async_flush.return_value = _coro()
+
+        self.logging_manager.register_flusher_if_in_ipython()
+        callback: Callable[[object], None] = mock_ipython.events.register.call_args[0][
+            1
+        ]
+
+        # Execute: fire the callback from within a running asyncio loop. This
+        # is the path that would raise the RuntimeError landed in D104448236
+        # if the implementation called Future.get() directly.
+        async def driver() -> None:
+            callback(None)
+            # Drain pending tasks so the scheduled coroutine actually runs.
+            await asyncio.sleep(0)
+
+        asyncio.run(driver())
+
+        # Assert: async helper was scheduled; sync flush was not called.
+        mock_async_flush.assert_called_once()
+        mock_sync_flush.assert_not_called()
 
     @patch("monarch._src.actor.logging.IN_IPYTHON", False)
     def test_enable_fd_capture_if_not_in_ipython_returns_none(self) -> None:
