@@ -849,7 +849,6 @@ mod tests {
     use hyperactor::actor::Signal;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::mailbox;
-    use hyperactor::mailbox::PortReceiver;
     use hyperactor::proc::WorkCell;
     use hyperactor::supervision::ActorSupervisionEvent;
     use hyperactor_mesh::host_mesh::HostMesh;
@@ -868,7 +867,7 @@ mod tests {
     /// Handles MeshFailure by panicking (test failure).
     #[derive(Debug)]
     struct TestClient {
-        signal_rx: PortReceiver<Signal>,
+        signal_rx: mpsc::UnboundedReceiver<Signal>,
         supervision_rx: mpsc::UnboundedReceiver<ActorSupervisionEvent>,
         work_rx: mpsc::UnboundedReceiver<WorkCell<Self>>,
     }
@@ -899,7 +898,7 @@ mod tests {
                                 None => break,
                             }
                         }
-                        _ = self.signal_rx.recv() => {}
+                        Some(_) = self.signal_rx.recv() => {}
                         Some(event) = self.supervision_rx.recv() => {
                             let _ = instance
                                 .handle_supervision_event(&mut self, event)
