@@ -9,8 +9,10 @@
 //! DatabaseScanner - Local MemTable operations, scans with child stream merging
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
+use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
@@ -32,8 +34,9 @@ use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use pyo3::types::PyModule;
 use serde_multipart::Part;
+use tokio::task::AbortHandle;
 
-use crate::EntityDispatcher;
+use crate::EntityBatchSink;
 use crate::QueryResponse;
 use crate::RecordBatchSink;
 use crate::pyspy_table::PySpyDumpBuffer;
@@ -150,6 +153,25 @@ impl TableStore {
         }
     }
 
+    /// Register an empty table with an authoritative schema.
+    pub fn register_table(&self, table_name: &str, schema: SchemaRef) -> anyhow::Result<()> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
+
+        match guard.get(table_name) {
+            Some(table) if table.schema() != schema => {
+                anyhow::bail!("schema mismatch for registered table {table_name}")
+            }
+            Some(_) => Ok(()),
+            None => {
+                guard.insert(table_name.to_string(), Arc::new(LiveTableData::new(schema)));
+                Ok(())
+            }
+        }
+    }
+
     /// Ingest a `RecordBatch` into a named table (TS-2).
     ///
     /// Async so callers in async contexts can await directly without
@@ -169,6 +191,31 @@ impl TableStore {
                 .or_insert_with(|| Arc::new(LiveTableData::new(batch.schema())))
                 .clone()
         };
+        table.push(batch).await;
+        Ok(())
+    }
+
+    /// Push a batch to a table that must already be registered.
+    pub async fn push_to_registered(
+        &self,
+        table_name: &str,
+        batch: RecordBatch,
+    ) -> anyhow::Result<()> {
+        let table = {
+            let guard = self
+                .inner
+                .lock()
+                .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
+            guard
+                .get(table_name)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("unknown registered table {table_name}"))?
+        };
+
+        if table.schema() != batch.schema() {
+            anyhow::bail!("schema mismatch for registered table {table_name}");
+        }
+
         table.push(batch).await;
         Ok(())
     }
@@ -210,6 +257,9 @@ const DEFAULT_RETENTION_SECS: u64 = 10 * 60;
 /// Tables that keep only recent data; all others have unlimited retention.
 const RETENTION_TABLES: &[&str] = &["sent_messages", "messages", "message_status_events"];
 
+/// Interval between routine retention sweeps.
+const RETENTION_INTERVAL: Duration = Duration::from_secs(30);
+
 #[pyclass(
     name = "DatabaseScanner",
     module = "monarch._rust_bindings.monarch_distributed_telemetry.database_scanner"
@@ -222,8 +272,19 @@ pub struct DatabaseScanner {
     retention_us: i64,
     /// Handle to flush the RecordBatchSink for trace events (spans, events)
     sink: Option<RecordBatchSink>,
-    /// Handle to flush the EntityDispatcher for entity events (actors, meshes)
-    dispatcher: Option<EntityDispatcher>,
+    /// Handle to flush the entity batch sink for entity events.
+    entity_sink: Option<EntityBatchSink>,
+    /// Socket ingest tasks owned by this scanner.
+    ///
+    /// Keeping the handles here keeps the listener tasks alive for the scanner
+    /// lifetime. Dropping the scanner drops each handle, which aborts the
+    /// corresponding background task.
+    socket_ingest_handles: StdMutex<Vec<crate::socket_ingest::IngestServerHandle>>,
+    /// Collector-side retention task owned by this scanner.
+    ///
+    /// Producer-side `UnixSocketSink` flushes only move frames into storage;
+    /// retention policy belongs here where the table store is owned.
+    retention_task: StdMutex<Option<AbortHandle>>,
 }
 
 #[pymethods]
@@ -236,7 +297,9 @@ impl DatabaseScanner {
             rank,
             retention_us: retention_secs as i64 * 1_000_000,
             sink: None,
-            dispatcher: None,
+            entity_sink: None,
+            socket_ingest_handles: StdMutex::new(Vec::new()),
+            retention_task: StdMutex::new(None),
         };
 
         // Create and register a RecordBatchSink for trace events (spans, events)
@@ -244,10 +307,11 @@ impl DatabaseScanner {
         scanner.sink = Some(sink.clone());
         hyperactor_telemetry::register_sink(Box::new(sink));
 
-        // Create and register an EntityDispatcher for entity events (actors, meshes)
-        let dispatcher = scanner.create_entity_dispatcher(batch_size);
-        scanner.dispatcher = Some(dispatcher.clone());
-        hyperactor_telemetry::set_entity_dispatcher(Box::new(dispatcher));
+        // Current in-process telemetry now consumes entity events from the
+        // same `TraceEvent` dispatcher queue as spans and log events.
+        let entity_sink = scanner.create_entity_batch_sink(batch_size);
+        scanner.entity_sink = Some(entity_sink.clone());
+        hyperactor_telemetry::register_entity_sink(Box::new(entity_sink));
 
         // Pre-register py-spy tables so QueryEngine discovers them at setup time
         for (name, batch) in [
@@ -285,10 +349,10 @@ impl DatabaseScanner {
             sink.flush()
                 .map_err(|e| PyException::new_err(format!("failed to flush sink: {}", e)))?;
         }
-        if let Some(ref dispatcher) = self.dispatcher {
-            dispatcher
+        if let Some(ref entity_sink) = self.entity_sink {
+            entity_sink
                 .flush()
-                .map_err(|e| PyException::new_err(format!("failed to flush dispatcher: {}", e)))?;
+                .map_err(|e| PyException::new_err(format!("failed to flush entity sink: {}", e)))?;
         }
         self.apply_retention_policies()?;
         Ok(())
@@ -403,6 +467,138 @@ impl DatabaseScanner {
 }
 
 impl DatabaseScanner {
+    /// Register an empty table with an authoritative schema.
+    pub fn register_table(&self, table_name: &str, schema: SchemaRef) -> anyhow::Result<()> {
+        self.table_store().register_table(table_name, schema)
+    }
+
+    /// Push a batch to a table that must already be registered.
+    pub async fn push_to_registered(
+        &self,
+        table_name: &str,
+        batch: RecordBatch,
+    ) -> anyhow::Result<()> {
+        self.table_store()
+            .push_to_registered(table_name, batch)
+            .await
+    }
+
+    /// Push a batch to a registered table from synchronous callers.
+    pub fn push_to_registered_blocking(
+        &self,
+        table_name: &str,
+        batch: RecordBatch,
+    ) -> anyhow::Result<()> {
+        let store = self.table_store();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            tokio::task::block_in_place(|| {
+                handle.block_on(store.push_to_registered(table_name, batch))
+            })
+        } else {
+            get_tokio_runtime().block_on(store.push_to_registered(table_name, batch))
+        }
+    }
+
+    /// Start Unix-socket ingest for this scanner if no collector owns the path.
+    pub fn start_socket_ingest(&self, socket_path: &Path) -> anyhow::Result<bool> {
+        match crate::socket_ingest::non_destructive_bind(socket_path)? {
+            crate::socket_ingest::BindOutcome::Bound(listener) => {
+                let handle = crate::socket_ingest::run_ingest_server(listener, self.table_store())?;
+                self.start_periodic_retention()?;
+                self.socket_ingest_handles
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("lock poisoned"))?
+                    .push(handle);
+                Ok(true)
+            }
+            crate::socket_ingest::BindOutcome::SkippedExistingCollector => Ok(false),
+        }
+    }
+
+    fn start_periodic_retention(&self) -> anyhow::Result<()> {
+        if self.retention_us == 0 {
+            return Ok(());
+        }
+
+        // Socket ingest can append directly into `TableStore` without a
+        // scanner query/flush. Keep retention as low-frequency collector
+        // maintenance instead of coupling DataFusion filtering to producer
+        // flushes or per-frame ingest.
+        let mut guard = self
+            .retention_task
+            .lock()
+            .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
+        if guard.is_some() {
+            return Ok(());
+        }
+
+        *guard = Some(Self::spawn_periodic_retention_task(
+            self.table_data.clone(),
+            self.retention_us,
+        ));
+        Ok(())
+    }
+
+    fn spawn_periodic_retention_task(
+        table_data: Arc<StdMutex<HashMap<String, Arc<LiveTableData>>>>,
+        retention_us: i64,
+    ) -> AbortHandle {
+        let handle = get_tokio_runtime().spawn(async move {
+            loop {
+                tokio::time::sleep(RETENTION_INTERVAL).await;
+                let now_us = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("system clock before unix epoch")
+                    .as_micros() as i64;
+                let where_clause = Self::retention_where_clause(retention_us, now_us);
+                if let Err(error) =
+                    Self::apply_retention_policies_to_tables(&table_data, &where_clause).await
+                {
+                    tracing::warn!("periodic telemetry retention failed: {error}");
+                }
+            }
+        });
+        handle.abort_handle()
+    }
+
+    async fn apply_retention_policies_to_tables(
+        table_data: &Arc<StdMutex<HashMap<String, Arc<LiveTableData>>>>,
+        where_clause: &str,
+    ) -> anyhow::Result<()> {
+        for &table_name in RETENTION_TABLES {
+            let table = table_data
+                .lock()
+                .map_err(|_| anyhow::anyhow!("lock poisoned"))?
+                .get(table_name)
+                .cloned();
+            if let Some(table) = table {
+                table.apply_retention(table_name, where_clause).await?;
+            }
+        }
+        Ok(())
+    }
+
+    fn retention_where_clause(retention_us: i64, now_us: i64) -> String {
+        let cutoff = now_us - retention_us;
+        format!("timestamp_us > {cutoff}")
+    }
+
+    #[cfg(test)]
+    fn spawn_triggered_retention_task(
+        table_data: Arc<StdMutex<HashMap<String, Arc<LiveTableData>>>>,
+        retention_us: i64,
+        mut receiver: tokio::sync::mpsc::Receiver<(i64, tokio::sync::oneshot::Sender<()>)>,
+    ) -> AbortHandle {
+        let handle = get_tokio_runtime().spawn(async move {
+            while let Some((now_us, ack)) = receiver.recv().await {
+                let where_clause = Self::retention_where_clause(retention_us, now_us);
+                let _ = Self::apply_retention_policies_to_tables(&table_data, &where_clause).await;
+                let _ = ack.send(());
+            }
+        });
+        handle.abort_handle()
+    }
+
     /// Push a batch into the named table in `table_data`.
     ///
     /// # Ingestion invariants (ID-*)
@@ -461,14 +657,14 @@ impl DatabaseScanner {
         )
     }
 
-    /// Create an EntityDispatcher that pushes batches to this scanner's tables.
+    /// Create an entity batch sink that pushes batches to this scanner's tables.
     ///
-    /// The dispatcher can be registered with hyperactor_telemetry::set_entity_dispatcher()
-    /// to receive entity events (actors, meshes) and store them as queryable tables.
-    pub fn create_entity_dispatcher(&self, batch_size: usize) -> EntityDispatcher {
+    /// The sink can be registered with hyperactor_telemetry::register_entity_sink()
+    /// to receive `TraceEvent::Entity` events and store them as queryable tables.
+    pub fn create_entity_batch_sink(&self, batch_size: usize) -> EntityBatchSink {
         let table_data = self.table_data.clone();
 
-        EntityDispatcher::new(
+        EntityBatchSink::new(
             batch_size,
             Box::new(move |table_name, batch| {
                 if let Err(e) = Self::push_batch_to_tables(&table_data, table_name, batch) {
@@ -664,13 +860,21 @@ impl DatabaseScanner {
             .duration_since(UNIX_EPOCH)
             .expect("system clock before unix epoch")
             .as_micros() as i64;
-        let cutoff = now_us - self.retention_us;
-        let where_clause = format!("timestamp_us > {cutoff}");
-
-        for &table_name in RETENTION_TABLES {
-            self.apply_retention(table_name, &where_clause)?;
-        }
-        Ok(())
+        let where_clause = Self::retention_where_clause(self.retention_us, now_us);
+        let result = if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            tokio::task::block_in_place(|| {
+                handle.block_on(Self::apply_retention_policies_to_tables(
+                    &self.table_data,
+                    &where_clause,
+                ))
+            })
+        } else {
+            get_tokio_runtime().block_on(Self::apply_retention_policies_to_tables(
+                &self.table_data,
+                &where_clause,
+            ))
+        };
+        result.map_err(|e| PyException::new_err(e.to_string()))
     }
 
     /// Return an opaque [`TableStore`] handle for external callers.
@@ -781,6 +985,16 @@ impl DatabaseScanner {
     }
 }
 
+impl Drop for DatabaseScanner {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.retention_task.lock()
+            && let Some(handle) = guard.take()
+        {
+            handle.abort();
+        }
+    }
+}
+
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<DatabaseScanner>()?;
     Ok(())
@@ -800,11 +1014,29 @@ mod tests {
     use datafusion::arrow::datatypes::Field;
     use datafusion::arrow::datatypes::Schema;
     use datafusion::arrow::record_batch::RecordBatch;
+    use monarch_telemetry_schema::entity_tables::ACTORS;
+    use monarch_telemetry_schema::entity_tables::Actor;
+    use monarch_telemetry_schema::entity_tables::ActorBuffer;
+    use monarch_telemetry_schema::entity_tables::MESSAGE_STATUS_EVENTS;
+    use monarch_telemetry_schema::entity_tables::MESSAGES;
+    use monarch_telemetry_schema::entity_tables::Message;
+    use monarch_telemetry_schema::entity_tables::MessageBuffer;
+    use monarch_telemetry_schema::entity_tables::MessageStatusEvent;
+    use monarch_telemetry_schema::entity_tables::MessageStatusEventBuffer;
+    use monarch_telemetry_schema::entity_tables::SENT_MESSAGES;
+    use monarch_telemetry_schema::entity_tables::SentMessage;
+    use monarch_telemetry_schema::entity_tables::SentMessageBuffer;
 
     use super::*;
 
     fn make_batch(values: &[i64]) -> RecordBatch {
         let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int64, false)]));
+        let col = Int64Array::from(values.to_vec());
+        RecordBatch::try_new(schema, vec![Arc::new(col)]).unwrap()
+    }
+
+    fn make_other_batch(values: &[i64]) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new("y", DataType::Int64, false)]));
         let col = Int64Array::from(values.to_vec());
         RecordBatch::try_new(schema, vec![Arc::new(col)]).unwrap()
     }
@@ -816,6 +1048,118 @@ mod tests {
             .iter()
             .map(|b| b.num_rows())
             .sum()
+    }
+
+    fn test_scanner(retention_us: i64) -> DatabaseScanner {
+        DatabaseScanner {
+            table_data: Arc::new(StdMutex::new(HashMap::new())),
+            rank: 0,
+            retention_us,
+            sink: None,
+            entity_sink: None,
+            socket_ingest_handles: StdMutex::new(Vec::new()),
+            retention_task: StdMutex::new(None),
+        }
+    }
+
+    async fn ingest_batch(scanner: &DatabaseScanner, table_name: &str, batch: RecordBatch) {
+        scanner
+            .table_store()
+            .ingest_batch(table_name, batch)
+            .await
+            .unwrap();
+    }
+
+    async fn ingest_retention_rows(scanner: &DatabaseScanner, old_us: i64, fresh_us: i64) {
+        let mut sent = SentMessageBuffer::default();
+        sent.insert(SentMessage {
+            id: 1,
+            timestamp_us: old_us,
+            sender_actor_id: 10,
+            actor_mesh_id: 20,
+            view_json: "{}".to_string(),
+            shape_json: "{}".to_string(),
+        });
+        sent.insert(SentMessage {
+            id: 2,
+            timestamp_us: fresh_us,
+            sender_actor_id: 11,
+            actor_mesh_id: 21,
+            view_json: "{}".to_string(),
+            shape_json: "{}".to_string(),
+        });
+        ingest_batch(
+            scanner,
+            SENT_MESSAGES,
+            sent.drain_to_record_batch().unwrap(),
+        )
+        .await;
+
+        let mut messages = MessageBuffer::default();
+        messages.insert(Message {
+            id: 3,
+            timestamp_us: old_us,
+            from_actor_id: 10,
+            to_actor_id: 30,
+            endpoint: Some("old".to_string()),
+            port_id: None,
+        });
+        messages.insert(Message {
+            id: 4,
+            timestamp_us: fresh_us,
+            from_actor_id: 11,
+            to_actor_id: 31,
+            endpoint: Some("fresh".to_string()),
+            port_id: Some(4),
+        });
+        ingest_batch(scanner, MESSAGES, messages.drain_to_record_batch().unwrap()).await;
+
+        let mut statuses = MessageStatusEventBuffer::default();
+        statuses.insert(MessageStatusEvent {
+            id: 5,
+            timestamp_us: old_us,
+            message_id: 3,
+            status: "queued".to_string(),
+        });
+        statuses.insert(MessageStatusEvent {
+            id: 6,
+            timestamp_us: fresh_us,
+            message_id: 4,
+            status: "complete".to_string(),
+        });
+        ingest_batch(
+            scanner,
+            MESSAGE_STATUS_EVENTS,
+            statuses.drain_to_record_batch().unwrap(),
+        )
+        .await;
+
+        let mut actors = ActorBuffer::default();
+        actors.insert(Actor {
+            id: 7,
+            timestamp_us: old_us,
+            mesh_id: 70,
+            rank: 0,
+            full_name: "old".to_string(),
+            display_name: None,
+        });
+        actors.insert(Actor {
+            id: 8,
+            timestamp_us: fresh_us,
+            mesh_id: 80,
+            rank: 1,
+            full_name: "fresh".to_string(),
+            display_name: Some("fresh".to_string()),
+        });
+        ingest_batch(scanner, ACTORS, actors.drain_to_record_batch().unwrap()).await;
+    }
+
+    async fn table_row_count_async(scanner: &DatabaseScanner, table_name: &str) -> usize {
+        let table = scanner.table_data.lock().unwrap().get(table_name).cloned();
+        match table {
+            Some(table) => row_count(&table).await,
+            None => 0,
+        }
     }
 
     #[tokio::test]
@@ -849,6 +1193,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_push_to_registered_appends_registered_table() {
+        let store = TableStore::new_empty();
+        store.register_table("t", make_batch(&[]).schema()).unwrap();
+
+        store
+            .push_to_registered("t", make_batch(&[1, 2]))
+            .await
+            .unwrap();
+
+        let table = store.inner.lock().unwrap().get("t").unwrap().clone();
+        assert_eq!(row_count(&table).await, 2);
+    }
+
+    #[tokio::test]
+    async fn test_push_to_registered_rejects_unknown_table() {
+        let store = TableStore::new_empty();
+
+        let err = store
+            .push_to_registered("missing", make_batch(&[1]))
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains("unknown registered table missing"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_push_to_registered_rejects_schema_mismatch() {
+        let store = TableStore::new_empty();
+        store.register_table("t", make_batch(&[]).schema()).unwrap();
+
+        let err = store
+            .push_to_registered("t", make_other_batch(&[1]))
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("schema mismatch for registered table t"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
     async fn test_concurrent_push_during_retention() {
         // Verify that a push() concurrent with apply_retention() is not lost.
         let table = Arc::new(LiveTableData::new(make_batch(&[]).schema()));
@@ -869,6 +1259,43 @@ mod tests {
         // If push ran first: 1,2,3,4,5,10,11 -> retain x>=3 -> 3,4,5,10,11 = 5 rows
         // If push ran after: 1,2,3,4,5 -> retain x>=3 -> 3,4,5 -> push 10,11 = 5 rows
         assert_eq!(row_count(&table).await, 5);
+    }
+
+    #[tokio::test]
+    async fn test_periodic_retention_task_filters_retention_tables() {
+        let scanner = test_scanner(10_000_000);
+        let now_us = 100_000_000;
+        let old_us = now_us - 20_000_000;
+        let fresh_us = now_us - 5_000_000;
+        ingest_retention_rows(&scanner, old_us, fresh_us).await;
+
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let handle = DatabaseScanner::spawn_triggered_retention_task(
+            scanner.table_data.clone(),
+            scanner.retention_us,
+            receiver,
+        );
+        let (ack_sender, ack_receiver) = tokio::sync::oneshot::channel();
+        sender.send((now_us, ack_sender)).await.unwrap();
+        ack_receiver.await.unwrap();
+        handle.abort();
+
+        assert_eq!(table_row_count_async(&scanner, SENT_MESSAGES).await, 1);
+        assert_eq!(table_row_count_async(&scanner, MESSAGES).await, 1);
+        assert_eq!(
+            table_row_count_async(&scanner, MESSAGE_STATUS_EVENTS).await,
+            1
+        );
+        assert_eq!(table_row_count_async(&scanner, ACTORS).await, 2);
+    }
+
+    #[test]
+    fn test_retention_secs_zero_starts_no_task() {
+        let scanner = test_scanner(0);
+
+        scanner.start_periodic_retention().unwrap();
+
+        assert!(scanner.retention_task.lock().unwrap().is_none());
     }
 
     fn table_row_count(scanner: &DatabaseScanner, table_name: &str) -> usize {
@@ -897,13 +1324,7 @@ mod tests {
 
     #[test]
     fn test_store_pyspy_dump_creates_normalized_rows() {
-        let scanner = DatabaseScanner {
-            table_data: Arc::new(StdMutex::new(HashMap::new())),
-            rank: 0,
-            retention_us: 0,
-            sink: None,
-            dispatcher: None,
-        };
+        let scanner = test_scanner(0);
 
         let json = r#"{
             "Ok": {
@@ -1132,13 +1553,7 @@ mod tests {
 
     #[test]
     fn test_store_pyspy_dump_failed_result_no_rows() {
-        let scanner = DatabaseScanner {
-            table_data: Arc::new(StdMutex::new(HashMap::new())),
-            rank: 0,
-            retention_us: 0,
-            sink: None,
-            dispatcher: None,
-        };
+        let scanner = test_scanner(0);
 
         let json =
             r#"{"Failed": {"pid": 1, "binary": "py-spy", "exit_code": 1, "stderr": "error"}}"#;
@@ -1151,25 +1566,13 @@ mod tests {
 
     #[test]
     fn test_store_pyspy_dump_invalid_json_errors() {
-        let scanner = DatabaseScanner {
-            table_data: Arc::new(StdMutex::new(HashMap::new())),
-            rank: 0,
-            retention_us: 0,
-            sink: None,
-            dispatcher: None,
-        };
+        let scanner = test_scanner(0);
         assert!(scanner.store_pyspy_dump("x", "p", "not json").is_err());
     }
 
     #[test]
     fn test_store_pyspy_dump_multiple_threads() {
-        let scanner = DatabaseScanner {
-            table_data: Arc::new(StdMutex::new(HashMap::new())),
-            rank: 0,
-            retention_us: 0,
-            sink: None,
-            dispatcher: None,
-        };
+        let scanner = test_scanner(0);
 
         let json = r#"{
             "Ok": {
