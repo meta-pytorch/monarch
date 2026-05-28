@@ -221,6 +221,28 @@ impl Actor for CommActor {
     async fn handle_undeliverable_message(
         &mut self,
         cx: &Instance<Self>,
+        _reason: hyperactor::mailbox::UndeliverableReason,
+        undelivered: hyperactor::mailbox::Undeliverable<hyperactor::mailbox::MessageEnvelope>,
+    ) -> Result<(), anyhow::Error> {
+        self.return_delivery_failure_to_origin(cx, undelivered)
+            .await
+    }
+
+    async fn handle_invalid_reference(
+        &mut self,
+        cx: &Instance<Self>,
+        _invalid: hyperactor::mailbox::InvalidReference,
+        undelivered: hyperactor::mailbox::Undeliverable<hyperactor::mailbox::MessageEnvelope>,
+    ) -> Result<(), anyhow::Error> {
+        self.return_delivery_failure_to_origin(cx, undelivered)
+            .await
+    }
+}
+
+impl CommActor {
+    async fn return_delivery_failure_to_origin(
+        &mut self,
+        cx: &Instance<Self>,
         undelivered: hyperactor::mailbox::Undeliverable<hyperactor::mailbox::MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
         let mut message_envelope = match undelivered {
@@ -272,16 +294,6 @@ impl Actor for CommActor {
         Ok(())
     }
 
-    async fn handle_invalid_reference(
-        &mut self,
-        cx: &Instance<Self>,
-        undelivered: hyperactor::mailbox::Undeliverable<hyperactor::mailbox::MessageEnvelope>,
-    ) -> Result<(), anyhow::Error> {
-        self.handle_undeliverable_message(cx, undelivered).await
-    }
-}
-
-impl CommActor {
     /// Forward the message to the comm actor on the given peer rank.
     fn forward<M: RemoteMessage>(
         cx: &Context<Self>,

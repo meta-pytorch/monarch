@@ -236,39 +236,8 @@ impl GlobalClientActor {
                 .handle_unhandled_supervision_event(instance, event);
         })
     }
-}
 
-/// Handle a returned (undeliverable) message observed by the
-/// process-global root client.
-///
-/// The global root client is a **monitor**, not a participant: it
-/// must not crash or propagate failures just because a routed message
-/// could not be delivered.
-///
-/// Instead, we translate the undeliverable into an
-/// `ActorSupervisionEvent` and forward it to the **active**
-/// `ProcMesh` via the process-global supervision sink ("last sink
-/// wins"). If no sink has been installed yet (e.g., before the first
-/// `ProcMesh` allocation completes), we log and drop the event.
-#[async_trait]
-impl Actor for GlobalClientActor {
-    /// The global root client is the root of the supervision tree:
-    /// there is no parent to escalate to. Child-actor failures (e.g.
-    /// ActorMeshControllers detecting dead procs after mesh teardown)
-    /// are expected and must not crash the process.
-    async fn handle_supervision_event(
-        &mut self,
-        _this: &Instance<Self>,
-        event: &ActorSupervisionEvent,
-    ) -> Result<bool, anyhow::Error> {
-        tracing::warn!(
-            %event,
-            "global root client absorbed child supervision event",
-        );
-        Ok(true)
-    }
-
-    async fn handle_undeliverable_message(
+    async fn report_delivery_failure(
         &mut self,
         cx: &Instance<Self>,
         undeliverable: Undeliverable<MessageEnvelope>,
@@ -333,13 +302,62 @@ impl Actor for GlobalClientActor {
         }
         Ok(())
     }
+}
 
-    async fn handle_invalid_reference(
+/// Handle a returned (undeliverable) message observed by the
+/// process-global root client.
+///
+/// The global root client is a **monitor**, not a participant: it
+/// must not crash or propagate failures just because a routed message
+/// could not be delivered.
+///
+/// Instead, we translate the undeliverable into an
+/// `ActorSupervisionEvent` and forward it to the **active**
+/// `ProcMesh` via the process-global supervision sink ("last sink
+/// wins"). If no sink has been installed yet (e.g., before the first
+/// `ProcMesh` allocation completes), we log and drop the event.
+#[async_trait]
+impl Actor for GlobalClientActor {
+    /// The global root client is the root of the supervision tree:
+    /// there is no parent to escalate to. Child-actor failures (e.g.
+    /// ActorMeshControllers detecting dead procs after mesh teardown)
+    /// are expected and must not crash the process.
+    async fn handle_supervision_event(
+        &mut self,
+        _this: &Instance<Self>,
+        event: &ActorSupervisionEvent,
+    ) -> Result<bool, anyhow::Error> {
+        tracing::warn!(
+            %event,
+            "global root client absorbed child supervision event",
+        );
+        Ok(true)
+    }
+
+    async fn handle_delivery_failure_event(
         &mut self,
         cx: &Instance<Self>,
         undeliverable: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
-        self.handle_undeliverable_message(cx, undeliverable).await
+        self.report_delivery_failure(cx, undeliverable).await
+    }
+
+    async fn handle_undeliverable_message(
+        &mut self,
+        cx: &Instance<Self>,
+        _reason: UndeliverableReason,
+        undeliverable: Undeliverable<MessageEnvelope>,
+    ) -> Result<(), anyhow::Error> {
+        self.report_delivery_failure(cx, undeliverable).await
+    }
+
+    async fn handle_invalid_reference(
+        &mut self,
+        cx: &Instance<Self>,
+        _invalid: hyperactor::mailbox::InvalidReference,
+        undeliverable: Undeliverable<MessageEnvelope>,
+    ) -> Result<(), anyhow::Error> {
+        self.report_delivery_failure(cx, undeliverable).await
     }
 }
 

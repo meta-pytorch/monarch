@@ -1045,7 +1045,7 @@ impl Actor for MeshAdminAgent {
     /// via `cx.spawn()` whose `#[export]` list does not include it).
     /// When the message cannot be delivered, the routing layer
     /// bounces an `Undeliverable` back to the sender. The default
-    /// `Actor::handle_undeliverable_message` calls `bail!()`, which
+    /// delivery-failure handling would fail the actor, which
     /// would kill this admin agent and — via supervision cascade —
     /// take down the entire admin process with `exit(1)`.
     ///
@@ -1054,6 +1054,7 @@ impl Actor for MeshAdminAgent {
     async fn handle_undeliverable_message(
         &mut self,
         _cx: &Instance<Self>,
+        _reason: hyperactor::mailbox::UndeliverableReason,
         undeliverable: hyperactor::mailbox::Undeliverable<hyperactor::mailbox::MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
         match undeliverable {
@@ -1076,10 +1077,30 @@ impl Actor for MeshAdminAgent {
 
     async fn handle_invalid_reference(
         &mut self,
-        cx: &Instance<Self>,
+        _cx: &Instance<Self>,
+        invalid: hyperactor::mailbox::InvalidReference,
         undeliverable: hyperactor::mailbox::Undeliverable<hyperactor::mailbox::MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
-        self.handle_undeliverable_message(cx, undeliverable).await
+        tracing::debug!(
+            %invalid,
+            "admin agent: invalid reference from introspection probe, ignoring",
+        );
+        match undeliverable {
+            hyperactor::mailbox::Undeliverable::Returned(envelope) => {
+                tracing::debug!(
+                    "admin agent: undeliverable message to {} (invalid reference), ignoring",
+                    envelope.dest(),
+                );
+            }
+            hyperactor::mailbox::Undeliverable::Report(report) => {
+                tracing::debug!(
+                    "admin agent: undeliverable message report to {} ({}), ignoring",
+                    report.dest,
+                    report.error_msg().unwrap_or_default(),
+                );
+            }
+        }
+        Ok(())
     }
 }
 

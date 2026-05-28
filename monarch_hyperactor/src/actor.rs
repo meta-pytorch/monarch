@@ -30,6 +30,7 @@ use hyperactor::context::Actor as ContextActor;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::mailbox::UndeliverableMessageError;
+use hyperactor::mailbox::UndeliverableReason;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::IndexedErasedUnbound;
@@ -1005,6 +1006,7 @@ impl Actor for PythonActor {
     async fn handle_undeliverable_message(
         &mut self,
         ins: &Instance<Self>,
+        reason: UndeliverableReason,
         mut envelope: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
         if envelope
@@ -1078,7 +1080,7 @@ impl Actor for PythonActor {
         .await?;
 
         if !handled {
-            hyperactor::actor::handle_undeliverable_message(ins, envelope)
+            hyperactor::actor::handle_undeliverable_message(ins, reason, envelope)
         } else {
             Ok(())
         }

@@ -1745,7 +1745,7 @@ mod tests {
 
     #[async_trait]
     impl Actor for UndeliverableCollector {
-        async fn handle_undeliverable_message(
+        async fn handle_delivery_failure_event(
             &mut self,
             _cx: &Instance<Self>,
             message: Undeliverable<MessageEnvelope>,
@@ -1754,12 +1754,24 @@ mod tests {
             Ok(())
         }
 
-        async fn handle_invalid_reference(
+        async fn handle_undeliverable_message(
             &mut self,
-            cx: &Instance<Self>,
+            _cx: &Instance<Self>,
+            _reason: hyperactor::mailbox::UndeliverableReason,
             message: Undeliverable<MessageEnvelope>,
         ) -> Result<(), anyhow::Error> {
-            self.handle_undeliverable_message(cx, message).await
+            let _ = self.tx.send(message);
+            Ok(())
+        }
+
+        async fn handle_invalid_reference(
+            &mut self,
+            _cx: &Instance<Self>,
+            _invalid: hyperactor::mailbox::InvalidReference,
+            message: Undeliverable<MessageEnvelope>,
+        ) -> Result<(), anyhow::Error> {
+            let _ = self.tx.send(message);
+            Ok(())
         }
     }
 
