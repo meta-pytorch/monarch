@@ -273,13 +273,6 @@ pub trait Handler<M>: Actor {
 /// in [crate::ordering::Sequencer::assign_seq] and the registry of bypass types
 /// in [crate::ordering::is_bypass_workq_type_id].
 #[async_trait]
-impl<A: Actor> Handler<Signal> for A {
-    async fn handle(&mut self, _cx: &Context<Self>, _message: Signal) -> Result<(), anyhow::Error> {
-        unimplemented!("signal handler should not be called directly")
-    }
-}
-
-#[async_trait]
 impl<A: Actor> Handler<crate::introspect::IntrospectMessage> for A {
     async fn handle(
         &mut self,
@@ -553,6 +546,11 @@ pub enum ActorErrorKind {
     /// The actor was explicitly aborted with the provided reason.
     #[error("actor explicitly aborted due to: {0}")]
     Aborted(String),
+
+    /// The actor's signal channel was closed before the actor loop exited
+    /// normally.
+    #[error("signal channel closed")]
+    SignalChannelClosed,
 }
 
 impl ActorErrorKind {
@@ -664,7 +662,6 @@ pub enum Signal {
     /// hierarchy.
     Kill(String),
 }
-wirevalue::register_type!(Signal);
 
 impl fmt::Display for Signal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

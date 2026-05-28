@@ -19,10 +19,12 @@ use hyperactor::Context;
 use hyperactor::Endpoint as _;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
+use hyperactor::Label;
 use hyperactor::OncePortRef;
 use hyperactor::Proc;
 use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
+use hyperactor::Uid;
 use hyperactor::channel::ChannelAddr;
 use hyperactor_config::Flattrs;
 
@@ -40,7 +42,7 @@ use crate::rdma_manager_actor::RdmaManagerActor;
 use crate::validate_execution_context;
 
 // HACK — `NoKeepalive` keeps nothing alive. Test buffers are
-// either CPU `Box<[u8]>`s owned by `IbvTestEnv` (which lives across
+// either CPU `Box<[u8]>`s owned by `DoorbellTestEnv` (which lives across
 // the whole test) or raw CUDA allocations leaked by `CudaActor` for
 // the lifetime of the process.
 //
@@ -54,6 +56,8 @@ impl Keepalive for NoKeepalive {}
 
 #[derive(Debug)]
 struct SendSyncCudaContext(rdmaxcel_sys::CUcontext);
+// SAFETY: `CUcontext` is opaque driver state designed to be shared
+// across threads via `cuCtxSetCurrent`.
 unsafe impl Send for SendSyncCudaContext {}
 unsafe impl Sync for SendSyncCudaContext {}
 
@@ -272,21 +276,9 @@ impl Handler<CudaActorMessage> for CudaActor {
     }
 }
 
-/// Waits for the completion of RDMA operations.
-///
-/// This function polls for the completion of RDMA operations by repeatedly
-/// checking the completion queue until all expected work requests complete
-/// or the specified timeout is reached.
-///
-/// # Arguments
-/// * `qp` - The RDMA Queue Pair to poll for completion
-/// * `poll_target` - Which CQ to poll (Send or Recv)
-/// * `expected_wr_ids` - Slice of work request IDs to wait for
-/// * `timeout_secs` - Timeout in seconds
-///
-/// # Returns
-/// `Ok(true)` if all operations complete successfully within the timeout,
-/// or an error if the timeout is reached
+/// Polls `qp` until every wr in `expected_wr_ids` has completed or
+/// `timeout_secs` elapses. Used by the doorbell tests that drive raw
+/// QPs (see [`super::doorbell_tests`]).
 pub async fn wait_for_completion(
     qp: &mut IbvQueuePair,
     poll_target: PollTarget,
@@ -303,10 +295,12 @@ pub async fn wait_for_completion(
             return Ok(true);
         }
 
-        let wr_ids_to_poll: Vec<u64> = remaining.iter().copied().collect();
-        match qp.poll_completion(poll_target, &wr_ids_to_poll) {
+        match qp.poll_completion(poll_target, &remaining) {
             Ok(completions) => {
-                for (wr_id, _wc) in completions {
+                for (wr_id, wc_result) in completions {
+                    if let Err(e) = wc_result {
+                        return Err(anyhow::anyhow!("WR {} completion failed: {}", wr_id, e));
+                    }
                     remaining.remove(&wr_id);
                 }
                 if remaining.is_empty() {
@@ -315,7 +309,7 @@ pub async fn wait_for_completion(
                 tokio::time::sleep(Duration::from_millis(1)).await;
             }
             Err(e) => {
-                return Err(anyhow::anyhow!(e));
+                return Err(anyhow::anyhow!("CQ poll failed: {}", e));
             }
         }
     }
@@ -332,8 +326,11 @@ pub async fn send_wqe_gpu(
     rhandle: &IbvBuffer,
     op_type: u32,
 ) -> Result<(), anyhow::Error> {
+    // SAFETY: `qp` is borrowed for the duration of this call; the
+    // `rdmaxcel_qp` pointer is consumed before we return, so the QP's
+    // `Drop` cannot run mid-use.
     unsafe {
-        let ibv_qp = qp.qp as *mut rdmaxcel_sys::rdmaxcel_qp;
+        let ibv_qp = qp.as_ptr();
         let dv_qp = qp.dv_qp as *mut rdmaxcel_sys::mlx5dv_qp;
         let send_wqe_idx = rdmaxcel_sys::rdmaxcel_qp_load_send_wqe_idx(ibv_qp);
         let params = rdmaxcel_sys::wqe_params_t {
@@ -364,9 +361,11 @@ pub async fn recv_wqe_gpu(
     _rhandle: &IbvBuffer,
     op_type: u32,
 ) -> Result<(), anyhow::Error> {
-    // Populate params using lhandle and rhandle
+    // SAFETY: `qp` is borrowed for the duration of this call; the
+    // `rdmaxcel_qp` pointer is consumed before we return, so the QP's
+    // `Drop` cannot run mid-use.
     unsafe {
-        let rdmaxcel_qp = qp.qp as *mut rdmaxcel_sys::rdmaxcel_qp;
+        let rdmaxcel_qp = qp.as_ptr();
         let dv_qp = qp.dv_qp as *mut rdmaxcel_sys::mlx5dv_qp;
         let recv_wqe_idx = rdmaxcel_sys::rdmaxcel_qp_load_recv_wqe_idx(rdmaxcel_qp);
         let params = rdmaxcel_sys::wqe_params_t {
@@ -389,17 +388,21 @@ pub async fn recv_wqe_gpu(
     Ok(())
 }
 
+/// Rings the device doorbell for every posted-but-undoorbelled WQE on
+/// `qp`'s send queue.
 pub async fn ring_db_gpu(qp: &IbvQueuePair) -> Result<(), anyhow::Error> {
     tokio::time::sleep(Duration::from_millis(2)).await;
+    // SAFETY: `qp` is borrowed for the duration of this call; the
+    // `rdmaxcel_qp` pointer is consumed before we return, so the QP's
+    // `Drop` cannot run mid-use.
     unsafe {
+        let rdmaxcel_qp = qp.as_ptr();
         let dv_qp = qp.dv_qp as *mut rdmaxcel_sys::mlx5dv_qp;
         let base_ptr = (*dv_qp).sq.buf as *mut u8;
         let wqe_cnt = (*dv_qp).sq.wqe_cnt;
         let stride = (*dv_qp).sq.stride;
-        let send_wqe_idx =
-            rdmaxcel_sys::rdmaxcel_qp_load_send_wqe_idx(qp.qp as *mut rdmaxcel_sys::rdmaxcel_qp);
-        let mut send_db_idx =
-            rdmaxcel_sys::rdmaxcel_qp_load_send_db_idx(qp.qp as *mut rdmaxcel_sys::rdmaxcel_qp);
+        let send_wqe_idx = rdmaxcel_sys::rdmaxcel_qp_load_send_wqe_idx(rdmaxcel_qp);
+        let mut send_db_idx = rdmaxcel_sys::rdmaxcel_qp_load_send_db_idx(rdmaxcel_qp);
         if (wqe_cnt as u64) < (send_wqe_idx - send_db_idx) {
             return Err(anyhow::anyhow!("Overflow of WQE, possible data loss"));
         }
@@ -408,28 +411,28 @@ pub async fn ring_db_gpu(qp: &IbvQueuePair) -> Result<(), anyhow::Error> {
             let src_ptr = base_ptr.wrapping_add(offset as usize);
             rdmaxcel_sys::launch_db_ring((*dv_qp).bf.reg, src_ptr as *mut std::ffi::c_void);
             send_db_idx += 1;
-            rdmaxcel_sys::rdmaxcel_qp_store_send_db_idx(
-                qp.qp as *mut rdmaxcel_sys::rdmaxcel_qp,
-                send_db_idx,
-            );
+            rdmaxcel_sys::rdmaxcel_qp_store_send_db_idx(rdmaxcel_qp, send_db_idx);
         }
     }
     Ok(())
 }
 
-/// Wait for completion on a specific completion queue
+/// Polls a single completion on `qp`'s send or recv CQ using the
+/// GPU-driven `launch_cqe_poll` kernel.
 pub async fn wait_for_completion_gpu(
     qp: &mut IbvQueuePair,
     poll_target: PollTarget,
     timeout_secs: u64,
 ) -> Result<bool, anyhow::Error> {
+    // SAFETY: `qp` is borrowed mutably for the duration of this call;
+    // the `rdmaxcel_qp` pointer is consumed before we return, so the
+    // QP's `Drop` cannot run mid-use.
     unsafe {
         let start_time = Instant::now();
         let timeout = Duration::from_secs(timeout_secs);
-        let ibv_qp = qp.qp as *mut rdmaxcel_sys::rdmaxcel_qp;
+        let ibv_qp = qp.as_ptr();
 
         while start_time.elapsed() < timeout {
-            // Get the appropriate completion queue and index based on the poll target
             let (cq, idx, cq_type_str) = match poll_target {
                 PollTarget::Send => (
                     qp.dv_send_cq as *mut rdmaxcel_sys::mlx5dv_cq,
@@ -443,12 +446,10 @@ pub async fn wait_for_completion_gpu(
                 ),
             };
 
-            // Poll the completion queue
             let result = rdmaxcel_sys::launch_cqe_poll(cq as *mut std::ffi::c_void, idx as i32);
 
             match result {
                 rdmaxcel_sys::CQE_POLL_TRUE => {
-                    // Update the appropriate index based on the poll target
                     match poll_target {
                         PollTarget::Send => {
                             rdmaxcel_sys::rdmaxcel_qp_fetch_add_send_cq_idx(ibv_qp);
@@ -463,7 +464,6 @@ pub async fn wait_for_completion_gpu(
                     return Err(anyhow::anyhow!("Error polling {} completion", cq_type_str));
                 }
                 _ => {
-                    // No completion yet, sleep and try again
                     tokio::time::sleep(Duration::from_millis(1)).await;
                 }
             }
@@ -474,7 +474,7 @@ pub async fn wait_for_completion_gpu(
 }
 
 #[allow(dead_code)]
-pub struct IbvTestEnv {
+pub struct DoorbellTestEnv {
     buffer_1: Buffer,
     buffer_2: Buffer,
     pub client_1: hyperactor::Client,
@@ -485,7 +485,7 @@ pub struct IbvTestEnv {
     pub ibv_actor_2: ActorRef<IbvManagerActor>,
     /// In-proc handles for the same actors as `ibv_actor_*`.
     /// Tests that need to call local-only messages such as
-    /// `RequestQueuePair` go through these.
+    /// `RawQueuePair` go through these.
     pub ibv_handle_1: ActorHandle<IbvManagerActor>,
     pub ibv_handle_2: ActorHandle<IbvManagerActor>,
     pub rdma_handle_1: RdmaRemoteBuffer,
@@ -507,6 +507,7 @@ pub struct Buffer {
     #[allow(dead_code)]
     cpu_ref: Option<Box<[u8]>>,
 }
+
 /// Helper function to parse accelerator strings
 async fn parse_accel(accel: &str, config: &mut IbvConfig) -> (String, usize) {
     let (backend, idx) = accel.split_once(':').unwrap();
@@ -520,7 +521,7 @@ async fn parse_accel(accel: &str, config: &mut IbvConfig) -> (String, usize) {
     (backend.to_string(), parsed_idx)
 }
 
-impl IbvTestEnv {
+impl DoorbellTestEnv {
     /// Sets up the RDMA test environment with a specified QP type.
     ///
     /// This function initializes the RDMA test environment by setting up two actor meshes
@@ -539,11 +540,9 @@ impl IbvTestEnv {
         accel2: &str,
         qp_type: super::primitives::IbvQpType,
     ) -> Result<Self, anyhow::Error> {
-        // Use device selection logic to find optimal RDMA devices
         let mut config1 = IbvConfig::targeting(accel1);
         let mut config2 = IbvConfig::targeting(accel2);
 
-        // Set the QP type
         config1.qp_type = qp_type;
         config2.qp_type = qp_type;
 
@@ -554,9 +553,6 @@ impl IbvTestEnv {
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
         let id = COUNTER.fetch_add(1, Ordering::Relaxed);
 
-        // Create separate procs so each RdmaManagerActor lives in its
-        // own proc (matching production layout). Using Proc::direct
-        // gives us ActorHandles for local-only request_buffer calls.
         let proc_1 = Proc::direct(
             ChannelAddr::any(hyperactor::channel::ChannelTransport::Unix),
             format!("rdma_test_{id}_a"),
@@ -569,12 +565,15 @@ impl IbvTestEnv {
         let instance_1 = proc_1.client("client");
         let instance_2 = proc_2.client("client");
 
+        // Must match `RdmaManagerActor::local_handle`'s singleton lookup of "rdma_manager".
         let rdma_actor_1 = RdmaManagerActor::new(Some(config1), Flattrs::default()).await?;
-        let rdma_actor_handle_1 = proc_1.spawn(rdma_actor_1);
+        let rdma_actor_handle_1 =
+            proc_1.spawn_with_uid(Uid::singleton(Label::strip("rdma_manager")), rdma_actor_1)?;
         let actor_1: ActorRef<RdmaManagerActor> = rdma_actor_handle_1.bind();
 
         let rdma_actor_2 = RdmaManagerActor::new(Some(config2), Flattrs::default()).await?;
-        let rdma_actor_handle_2 = proc_2.spawn(rdma_actor_2);
+        let rdma_actor_handle_2 =
+            proc_2.spawn_with_uid(Uid::singleton(Label::strip("rdma_manager")), rdma_actor_2)?;
         let actor_2: ActorRef<RdmaManagerActor> = rdma_actor_handle_2.bind();
 
         let mut buf_vec = Vec::new();
@@ -588,7 +587,6 @@ impl IbvTestEnv {
         let local_memory_1: Arc<KeepaliveLocalMemory>;
         let local_memory_2: Arc<KeepaliveLocalMemory>;
 
-        // Process first accelerator
         if parsed_accel1.0 == "cpu" {
             let mut buffer = vec![0u8; buffer_size].into_boxed_slice();
             let ptr = buffer.as_mut_ptr() as u64;
@@ -597,7 +595,6 @@ impl IbvTestEnv {
                 len: buffer.len(),
                 cpu_ref: Some(buffer),
             });
-            // See the module-level note on `NoKeepalive`.
             local_memory_1 = Arc::new(KeepaliveLocalMemory::new(
                 ptr as usize,
                 buffer_size,
@@ -610,7 +607,6 @@ impl IbvTestEnv {
                 .request_buffer(&instance_1, local_memory_1.clone())
                 .await?;
         } else {
-            // CUDA case - spawn CudaActor on the same proc
             let cuda_actor = CudaActor::new(parsed_accel1.1 as i32, Flattrs::default()).await?;
             let cuda_handle = proc_1.spawn(cuda_actor);
             let cuda_actor_ref_1: ActorRef<CudaActor> = cuda_handle.bind();
@@ -620,7 +616,6 @@ impl IbvTestEnv {
                 .await?;
             rdma_handle_1 = rdma_buf;
             device_ptr_1 = Some(dev_ptr);
-            // See the module-level note on `NoKeepalive`.
             local_memory_1 = Arc::new(KeepaliveLocalMemory::new(
                 dev_ptr,
                 buffer_size,
@@ -635,7 +630,6 @@ impl IbvTestEnv {
             cuda_actor_1 = Some(cuda_actor_ref_1);
         }
 
-        // Process second accelerator
         if parsed_accel2.0 == "cpu" {
             let mut buffer = vec![0u8; buffer_size].into_boxed_slice();
             let ptr = buffer.as_mut_ptr() as u64;
@@ -644,7 +638,6 @@ impl IbvTestEnv {
                 len: buffer.len(),
                 cpu_ref: Some(buffer),
             });
-            // See the module-level note on `NoKeepalive`.
             local_memory_2 = Arc::new(KeepaliveLocalMemory::new(
                 ptr as usize,
                 buffer_size,
@@ -657,7 +650,6 @@ impl IbvTestEnv {
                 .request_buffer(&instance_2, local_memory_2.clone())
                 .await?;
         } else {
-            // CUDA case - spawn CudaActor on the same proc
             let cuda_actor = CudaActor::new(parsed_accel2.1 as i32, Flattrs::default()).await?;
             let cuda_handle = proc_2.spawn(cuda_actor);
             let cuda_actor_ref_2: ActorRef<CudaActor> = cuda_handle.bind();
@@ -667,7 +659,6 @@ impl IbvTestEnv {
                 .await?;
             rdma_handle_2 = rdma_buf;
             device_ptr_2 = Some(dev_ptr);
-            // See the module-level note on `NoKeepalive`.
             local_memory_2 = Arc::new(KeepaliveLocalMemory::new(
                 dev_ptr,
                 buffer_size,
@@ -752,15 +743,6 @@ impl IbvTestEnv {
     }
 
     /// Sets up the RDMA test environment with auto-detected QP type.
-    ///
-    /// This is a convenience wrapper around `setup_with_qp_type` that uses
-    /// `IbvQpType::Auto` to automatically select the appropriate QP type.
-    ///
-    /// # Arguments
-    ///
-    /// * `buffer_size` - The size of the buffers to be used in the test.
-    /// * `accel1` - Accelerator for first actor (e.g., "cpu:0", "cuda:0")
-    /// * `accel2` - Accelerator for second actor (e.g., "cpu:0", "cuda:1")
     pub async fn setup(
         buffer_size: usize,
         accel1: &str,
@@ -779,7 +761,6 @@ impl IbvTestEnv {
         let mut temp_buffer_1 = vec![0u8; size];
         let mut temp_buffer_2 = vec![0u8; size];
 
-        // Read buffer 1
         if let Some(cuda_actor) = &self.cuda_actor_1 {
             cuda_actor
                 .verify_buffer(
@@ -799,7 +780,6 @@ impl IbvTestEnv {
             }
         }
 
-        // Read buffer 2
         if let Some(cuda_actor) = &self.cuda_actor_2 {
             cuda_actor
                 .verify_buffer(
@@ -819,7 +799,6 @@ impl IbvTestEnv {
             }
         }
 
-        // Compare buffers
         for i in 0..size {
             if temp_buffer_1[i] != temp_buffer_2[i] {
                 return Err(anyhow::anyhow!(
