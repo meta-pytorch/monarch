@@ -9,6 +9,7 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 use std::ops::Deref;
 use std::sync::Arc;
+use std::time::Duration;
 
 use hyperactor_mesh::ActorMesh;
 use monarch_hyperactor::context::PyInstance;
@@ -16,6 +17,7 @@ use monarch_hyperactor::proc_mesh::PyProcMesh;
 use monarch_hyperactor::pytokio::PyPythonTask;
 use monarch_hyperactor::runtime::monarch_with_gil_blocking;
 use monarch_hyperactor::runtime::signal_safe_block_on;
+use monarch_rdma::RdmaAction;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
 use monarch_rdma::RdmaRemoteBuffer;
@@ -193,6 +195,75 @@ impl PyLocalMemoryHandle {
 #[derive(Clone, Named)]
 struct PyRdmaBuffer {
     buffer: RdmaRemoteBuffer,
+}
+
+/// Batched RDMA action exposed to Python. Wraps a [`RdmaAction`] behind
+/// an async mutex so concurrent `submit` calls from Python serialize
+/// (preserving the local-range overlap guarantee), and mutations via
+/// `add_*` while a submit is in flight are rejected.
+#[pyclass(name = "_RdmaAction", module = "monarch._rust_bindings.rdma")]
+pub struct PyRdmaAction {
+    inner: Arc<tokio::sync::Mutex<RdmaAction>>,
+}
+
+impl PyRdmaAction {
+    fn try_lock_sync(&self) -> PyResult<tokio::sync::MutexGuard<'_, RdmaAction>> {
+        self.inner.try_lock().map_err(|_| {
+            PyRuntimeError::new_err(
+                "RdmaAction is currently being submitted; await the in-flight \
+                 submit before mutating it",
+            )
+        })
+    }
+}
+
+#[pymethods]
+impl PyRdmaAction {
+    #[new]
+    fn new() -> Self {
+        Self {
+            inner: Arc::new(tokio::sync::Mutex::new(RdmaAction::new())),
+        }
+    }
+
+    fn add_read_into_local(
+        &self,
+        remote: PyRdmaBuffer,
+        local: PyLocalMemoryHandle,
+    ) -> PyResult<()> {
+        self.try_lock_sync()?
+            .add_read_into_local(remote.buffer, Arc::new(local.inner))
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(())
+    }
+
+    fn add_write_from_local(
+        &self,
+        remote: PyRdmaBuffer,
+        local: PyLocalMemoryHandle,
+    ) -> PyResult<()> {
+        self.try_lock_sync()?
+            .add_write_from_local(remote.buffer, Arc::new(local.inner))
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Submit the queued ops. Returns a [`PyPythonTask`] that resolves
+    /// when every op completes (or the first error). Concurrent submits
+    /// queue on the inner async mutex and run one at a time, so the
+    /// local-range overlap checks performed at `add_*` time remain
+    /// meaningful.
+    fn submit(&self, _py: Python<'_>, client: PyInstance, timeout: u64) -> PyResult<PyPythonTask> {
+        let inner = self.inner.clone();
+        PyPythonTask::new(async move {
+            let mut action = inner.lock().await;
+            action
+                .submit(client.deref(), Duration::from_secs(timeout))
+                .await
+                .map_err(|e| PyException::new_err(format!("RdmaAction.submit failed: {}", e)))?;
+            Ok(())
+        })
+    }
 }
 
 async fn create_rdma_buffer(
@@ -402,6 +473,7 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
 
     module.add_class::<PyLocalMemoryHandle>()?;
     module.add_class::<PyRdmaBuffer>()?;
+    module.add_class::<PyRdmaAction>()?;
     module.add_class::<PyRdmaManager>()?;
     py_module_add_function!(
         module,
