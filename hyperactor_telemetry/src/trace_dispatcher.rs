@@ -28,6 +28,8 @@ use tracing_subscriber::layer::Context;
 use tracing_subscriber::layer::Layer;
 use tracing_subscriber::registry::LookupSpan;
 
+use crate::EntityEvent;
+
 const QUEUE_CAPACITY: usize = 100_000;
 
 /// Type alias for trace event fields
@@ -85,6 +87,8 @@ pub enum TraceEvent {
         file: Option<&'static str>,
         line: Option<u32>,
     },
+    /// An entity lifecycle event emitted outside the tracing subscriber.
+    Entity(EntityEvent),
 }
 
 /// Simplified field value representation for trace events
@@ -527,6 +531,21 @@ fn worker_loop(
         }
     }
 
+    fn process_control_messages(
+        control_receiver: Option<&mpsc::Receiver<DispatcherControl>>,
+        sinks: &mut Vec<Box<dyn TraceEventSink>>,
+    ) {
+        if let Some(ctrl_rx) = control_receiver {
+            while let Ok(control) = ctrl_rx.try_recv() {
+                match control {
+                    DispatcherControl::AddSink(sink) => {
+                        sinks.push(sink);
+                    }
+                }
+            }
+        }
+    }
+
     fn dispatch_to_sinks(sinks: &mut [Box<dyn TraceEventSink>], event: TraceEvent) {
         for sink in sinks {
             if match &event {
@@ -535,6 +554,10 @@ fn worker_loop(
                     Some(targets) => targets.would_enable(target, level),
                     None => true,
                 },
+                // Target filters are tracing/log filters. Variants without
+                // target/level metadata, including semantic entity table rows,
+                // must reach sinks so each sink can decide whether to consume
+                // or ignore them.
                 _ => true,
             } && let Err(e) = sink.consume(&event)
             {
@@ -553,19 +576,13 @@ fn worker_loop(
             events_since_flush += 1;
         }
 
-        // Process any pending control messages (e.g., adding new sinks)
-        if let Some(ref ctrl_rx) = control_receiver {
-            while let Ok(control) = ctrl_rx.try_recv() {
-                match control {
-                    DispatcherControl::AddSink(sink) => {
-                        sinks.push(sink);
-                    }
-                }
-            }
-        }
-
         match receiver.recv_timeout(FLUSH_INTERVAL) {
             Ok(event) => {
+                // A control message may have arrived while we were blocked in
+                // `recv_timeout`. Drain it before dispatching the event that
+                // woke us so dynamically registered sinks see subsequent
+                // replayed events.
+                process_control_messages(control_receiver.as_ref(), &mut sinks);
                 dispatch_to_sinks(&mut sinks, event);
                 events_since_flush += 1;
 
@@ -586,6 +603,11 @@ fn worker_loop(
             }
         }
     }
+
+    // The event queues are closing, but the control queue is independent.
+    // Apply any sink registrations already queued before draining telemetry
+    // events so shutdown delivery follows the same ordering as the live loop.
+    process_control_messages(control_receiver.as_ref(), &mut sinks);
 
     while let Ok(event) = dropped_receiver.try_recv() {
         dispatch_to_sinks(&mut sinks, event);
@@ -617,10 +639,17 @@ impl Drop for WorkerHandle {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Read;
+    use std::os::unix::net::UnixListener;
     use std::sync::Arc;
     use std::sync::Mutex;
+    use std::sync::atomic::AtomicU64;
+    use std::sync::atomic::Ordering;
+    use std::sync::mpsc;
 
     use super::*;
+
+    static TEST_SEQ: AtomicU64 = AtomicU64::new(0);
 
     #[derive(Default)]
     struct RecordingSink {
@@ -638,11 +667,83 @@ mod tests {
         }
     }
 
+    struct CountingSink {
+        entity_events: Arc<AtomicU64>,
+        target_filter: Option<Targets>,
+    }
+
+    impl TraceEventSink for CountingSink {
+        fn consume(&mut self, event: &TraceEvent) -> Result<(), anyhow::Error> {
+            if matches!(event, TraceEvent::Entity(_)) {
+                self.entity_events.fetch_add(1, Ordering::Relaxed);
+            }
+            Ok(())
+        }
+
+        fn target_filter(&self) -> Option<&Targets> {
+            self.target_filter.as_ref()
+        }
+
+        fn flush(&mut self) -> Result<(), anyhow::Error> {
+            Ok(())
+        }
+    }
+
     fn span_close(id: u64) -> TraceEvent {
         TraceEvent::SpanClose {
             id,
             timestamp: SystemTime::now(),
         }
+    }
+
+    fn event() -> TraceEvent {
+        TraceEvent::Event {
+            name: "test_event",
+            target: "test",
+            level: tracing::Level::INFO,
+            fields: TraceFields::new(),
+            timestamp: SystemTime::now(),
+            parent_span: None,
+            thread_id: "1",
+            thread_name: "test",
+            module_path: Some("test"),
+            file: Some("test.rs"),
+            line: Some(1),
+        }
+    }
+
+    fn entity_event() -> TraceEvent {
+        TraceEvent::Entity(EntityEvent::Mesh(crate::MeshEvent {
+            id: 11,
+            timestamp: SystemTime::now(),
+            class: "Host".to_string(),
+            given_name: "test_mesh".to_string(),
+            full_name: "test_mesh".to_string(),
+            shape_json: "{}".to_string(),
+            parent_mesh_id: None,
+            parent_view_json: None,
+        }))
+    }
+
+    fn socket_path(name: &str) -> std::path::PathBuf {
+        let seq = TEST_SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "monarch_trace_dispatcher_{}_{}",
+            std::process::id(),
+            seq
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join(name)
+    }
+
+    fn read_frame_table(listener: UnixListener) -> String {
+        let (mut stream, _addr) = listener.accept().unwrap();
+        let mut name_len_bytes = [0; 2];
+        stream.read_exact(&mut name_len_bytes).unwrap();
+        let name_len = u16::from_be_bytes(name_len_bytes) as usize;
+        let mut name_bytes = vec![0; name_len];
+        stream.read_exact(&mut name_bytes).unwrap();
+        String::from_utf8(name_bytes).unwrap()
     }
 
     #[test]
@@ -674,5 +775,81 @@ mod tests {
 
         drop(dispatcher);
         assert!(recorded.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn entity_event_bypasses_target_filter_and_reaches_sink() {
+        let entity_events = Arc::new(AtomicU64::new(0));
+        let sink = CountingSink {
+            entity_events: Arc::clone(&entity_events),
+            target_filter: Some(Targets::new().with_default(LevelFilter::OFF)),
+        };
+        let dispatcher = TraceEventDispatcher::new(vec![Box::new(sink)]);
+
+        dispatcher.send_event(entity_event());
+
+        drop(dispatcher);
+        assert_eq!(entity_events.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn shutdown_drain_processes_pending_sink_registration() {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let (dropped_sender, dropped_receiver) = mpsc::channel();
+        let (control_sender, control_receiver) = mpsc::channel();
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let dropped_events = Arc::new(AtomicU64::new(0));
+
+        let worker = std::thread::spawn(move || {
+            worker_loop(
+                receiver,
+                dropped_receiver,
+                Some(control_receiver),
+                Vec::new(),
+                dropped_events,
+            );
+        });
+
+        // Let the worker pass its top-of-loop dropped-event drain and block on
+        // the main event receiver. The queued dropped event below then reaches
+        // the shutdown drain path, where pending sink registrations must be
+        // applied first.
+        std::thread::sleep(Duration::from_millis(200));
+
+        control_sender
+            .send(DispatcherControl::AddSink(Box::new(RecordingSink {
+                events: Arc::clone(&recorded),
+            })))
+            .unwrap();
+        dropped_sender.send(span_close(7)).unwrap();
+
+        drop(sender);
+        drop(dropped_sender);
+        drop(control_sender);
+        worker.join().unwrap();
+
+        assert_eq!(recorded.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn unix_socket_sink_receives_dispatched_event() {
+        let path = socket_path("telemetry.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let read_handle = std::thread::spawn(move || {
+            sender.send(read_frame_table(listener)).unwrap();
+        });
+
+        let sink = Arc::new(crate::unix_sink::UnixSocketSink::new());
+        sink.set_path(path).unwrap();
+        let dispatcher =
+            TraceEventDispatcher::new(vec![crate::unix_sink::adapter_for_test(Arc::clone(&sink))]);
+
+        dispatcher.send_event(event());
+
+        drop(dispatcher);
+        let table_name = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+        read_handle.join().unwrap();
+        assert_eq!(table_name, monarch_telemetry_schema::trace_tables::EVENTS);
     }
 }
