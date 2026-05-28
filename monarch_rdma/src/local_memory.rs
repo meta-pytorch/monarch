@@ -15,6 +15,9 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::Condvar;
 use std::sync::Mutex;
+use std::sync::OnceLock;
+
+use crate::backend::ibverbs::primitives::IbvMemoryRegionView;
 
 /// Returns `true` when `addr` is a CUDA device pointer.
 ///
@@ -339,6 +342,55 @@ pub trait Keepalive: Send + Sync {}
 
 impl Keepalive for Box<[u8]> {}
 
+/// Backing state of a [`KeepaliveLocalMemory`].
+///
+/// Holds the addressing/bandwidth metadata, the access-coordination
+/// lock, and a single-slot home for an [`IbvMemoryRegionView`]
+/// registered against this region. Cloning shares the slot and the
+/// access lock by `Arc`, so every handle derived from the same
+/// allocation observes the same registered MR and the same
+/// reader/writer coordination.
+///
+/// All access goes through methods on [`KeepaliveLocalMemory`];
+/// nothing outside the module pokes at these fields directly.
+#[derive(Clone)]
+pub(crate) struct LocalMemoryInner {
+    addr: usize,
+    size: usize,
+    /// Bandwidth (bytes/s) for direct host-thread pointer access, or `None`
+    /// if the memory is not host-accessible.
+    direct_access_host_bandwidth: Option<u64>,
+    /// Bandwidth (bytes/s) for direct device-thread pointer access, or
+    /// `None` if the memory is not device-accessible.
+    direct_access_device_bandwidth: Option<u64>,
+    /// Per-allocation slot for the [`IbvMemoryRegionView`] registered
+    /// against this region. Populated lazily by
+    /// `IbvManagerActor::resolve_local_mr` on first use.
+    mr_slot: Arc<OnceLock<IbvMemoryRegionView>>,
+    /// Coordinates concurrent reads, exclusive writes, and parallel
+    /// disjoint writes against this region.
+    access: Arc<AccessLock>,
+}
+
+impl LocalMemoryInner {
+    fn new(addr: usize, size: usize) -> Self {
+        // TODO(slurye): Using placeholder values for now. Fill in with real values.
+        let (host_bw, device_bw) = if is_device_ptr(addr) {
+            (None, Some(1))
+        } else {
+            (Some(1), None)
+        };
+        Self {
+            addr,
+            size,
+            direct_access_host_bandwidth: host_bw,
+            direct_access_device_bandwidth: device_bw,
+            mr_slot: Arc::new(OnceLock::new()),
+            access: Arc::new(AccessLock::new()),
+        }
+    }
+}
+
 /// Local memory handle that keeps its backing allocation alive via an
 /// [`Arc<dyn Keepalive>`].
 ///
@@ -360,32 +412,22 @@ impl Keepalive for Box<[u8]> {}
 /// memory is not directly accessible from that context.
 #[derive(Clone)]
 pub struct KeepaliveLocalMemory {
-    addr: usize,
-    size: usize,
-    /// Bandwidth (bytes/s) for direct host-thread pointer access, or `None`
-    /// if the memory is not host-accessible.
-    direct_access_host_bandwidth: Option<u64>,
-    /// Bandwidth (bytes/s) for direct device-thread pointer access, or
-    /// `None` if the memory is not device-accessible.
-    direct_access_device_bandwidth: Option<u64>,
+    inner: LocalMemoryInner,
     _keepalive: Arc<dyn Keepalive>,
-    /// Coordinates concurrent reads, exclusive writes, and parallel
-    /// disjoint writes against this region.
-    access: Arc<AccessLock>,
 }
 
 impl Debug for KeepaliveLocalMemory {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("KeepaliveLocalMemory")
-            .field("addr", &self.addr)
-            .field("size", &self.size)
+            .field("addr", &self.inner.addr)
+            .field("size", &self.inner.size)
             .field(
                 "direct_access_host_bandwidth",
-                &self.direct_access_host_bandwidth,
+                &self.inner.direct_access_host_bandwidth,
             )
             .field(
                 "direct_access_device_bandwidth",
-                &self.direct_access_device_bandwidth,
+                &self.inner.direct_access_device_bandwidth,
             )
             .finish_non_exhaustive()
     }
@@ -396,30 +438,29 @@ impl KeepaliveLocalMemory {
     /// `addr` is a device pointer and sets the bandwidth fields
     /// accordingly.
     pub fn new(addr: usize, size: usize, keepalive: Arc<dyn Keepalive>) -> Self {
-        // TODO(slurye): Using placeholder values for now. Fill in with real values.
-        let (host_bw, device_bw) = if is_device_ptr(addr) {
-            (None, Some(1))
-        } else {
-            (Some(1), None)
-        };
         Self {
-            addr,
-            size,
-            direct_access_host_bandwidth: host_bw,
-            direct_access_device_bandwidth: device_bw,
+            inner: LocalMemoryInner::new(addr, size),
             _keepalive: keepalive,
-            access: Arc::new(AccessLock::new()),
         }
     }
 
     /// Starting virtual address of the memory region.
     pub fn addr(&self) -> usize {
-        self.addr
+        self.inner.addr
     }
 
     /// Size of the memory region in bytes.
     pub fn size(&self) -> usize {
-        self.size
+        self.inner.size
+    }
+
+    /// Shared slot for the [`IbvMemoryRegionView`] registered against
+    /// this region. Populated lazily by
+    /// [`IbvManagerActor::resolve_local_mr`] on first use; the slot
+    /// is cloned `Arc` so every handle derived from the same
+    /// allocation sees the same registered MR.
+    pub fn mr_slot(&self) -> &Arc<OnceLock<IbvMemoryRegionView>> {
+        &self.inner.mr_slot
     }
 
     /// Copy `dst.len()` bytes from this memory region starting at `offset`
@@ -441,19 +482,19 @@ impl KeepaliveLocalMemory {
     /// no such external access produces a torn read of
     /// `offset..offset + dst.len()` for the duration of this call.
     pub unsafe fn read_at(&self, offset: usize, dst: &mut [u8]) -> Result<(), anyhow::Error> {
-        let _guard = self.access.read();
-        check_bounds(offset, dst.len(), self.size)?;
+        let _guard = self.inner.access.read();
+        check_bounds(offset, dst.len(), self.inner.size)?;
         // SAFETY: the `_keepalive` field keeps the allocation live, the
         // read guard above excludes concurrent exclusive and disjoint
         // writers that share this lock, `check_bounds` verified the access
         // is in range, and the caller upholds the no-external-writer
         // obligation documented on this method.
         unsafe {
-            if self.direct_access_host_bandwidth.is_some() {
-                read_cpu(self.addr, offset, dst);
+            if self.inner.direct_access_host_bandwidth.is_some() {
+                read_cpu(self.inner.addr, offset, dst);
                 Ok(())
             } else {
-                read_gpu(self.addr, offset, dst)
+                read_gpu(self.inner.addr, offset, dst)
             }
         }
     }
@@ -473,19 +514,19 @@ impl KeepaliveLocalMemory {
     /// covers liveness only; the caller must ensure no concurrent
     /// external reader or writer observes an overlapping byte range.
     pub unsafe fn write_at(&self, offset: usize, src: &[u8]) -> Result<(), anyhow::Error> {
-        let _guard = self.access.exclusive();
-        check_bounds(offset, src.len(), self.size)?;
+        let _guard = self.inner.access.exclusive();
+        check_bounds(offset, src.len(), self.inner.size)?;
         // SAFETY: the `_keepalive` field keeps the allocation live, the
         // exclusive guard above excludes every other reader and writer
         // that shares this lock, `check_bounds` verified the access is
         // in range, and the caller upholds the no-external-access
         // obligation documented on this method.
         unsafe {
-            if self.direct_access_host_bandwidth.is_some() {
-                write_cpu(self.addr, offset, src);
+            if self.inner.direct_access_host_bandwidth.is_some() {
+                write_cpu(self.inner.addr, offset, src);
                 Ok(())
             } else {
-                write_gpu(self.addr, offset, src)
+                write_gpu(self.inner.addr, offset, src)
             }
         }
     }
@@ -504,8 +545,8 @@ impl KeepaliveLocalMemory {
     /// byte range that overlaps `offset..offset + src.len()`. Disjoint
     /// byte ranges across concurrent disjoint callers are sound.
     pub unsafe fn write_at_disjoint(&self, offset: usize, src: &[u8]) -> Result<(), anyhow::Error> {
-        let _guard = self.access.disjoint_write();
-        check_bounds(offset, src.len(), self.size)?;
+        let _guard = self.inner.access.disjoint_write();
+        check_bounds(offset, src.len(), self.inner.size)?;
         // SAFETY: the `_keepalive` field keeps the allocation live, the
         // disjoint-write guard above excludes concurrent readers and
         // exclusive writers that share this lock, `check_bounds`
@@ -513,11 +554,11 @@ impl KeepaliveLocalMemory {
         // safety obligations documented on this method (no external access,
         // no overlap with other concurrent disjoint writers).
         unsafe {
-            if self.direct_access_host_bandwidth.is_some() {
-                write_cpu(self.addr, offset, src);
+            if self.inner.direct_access_host_bandwidth.is_some() {
+                write_cpu(self.inner.addr, offset, src);
                 Ok(())
             } else {
-                write_gpu(self.addr, offset, src)
+                write_gpu(self.inner.addr, offset, src)
             }
         }
     }
