@@ -54,6 +54,7 @@ use crate::RemoteMessage;
 use crate::channel::ChannelAddr;
 use crate::channel::ChannelError;
 use crate::channel::ChannelTransport;
+use crate::channel::CloseReason;
 use crate::channel::Rx;
 use crate::channel::SendError;
 use crate::channel::SendErrorReason;
@@ -600,7 +601,9 @@ async fn dispatch_duplex_stream<In: RemoteMessage, Out: RemoteMessage>(
     // fails after the link's receiver above is dropped.
     sessions.remove(&session_id);
 
-    let _ = notify.send(TxStatus::Closed("duplex session ended".into()));
+    let _ = notify.send(TxStatus::Closed(CloseReason::Other(
+        "duplex session ended".into(),
+    )));
 }
 
 /// Establish a duplex (bidirectional) session over the given link.
@@ -815,7 +818,9 @@ pub(crate) fn spawn<Out: RemoteMessage, In: RemoteMessage>(
             }
         }
 
-        let _ = notify.send(TxStatus::Closed("duplex session ended".into()));
+        let _ = notify.send(TxStatus::Closed(CloseReason::Other(
+            "duplex session ended".into(),
+        )));
     });
     let tx = DuplexTx::new(outbound_tx, addr.clone(), status);
     let rx = DuplexRx::new(inbound_rx, addr.clone());
