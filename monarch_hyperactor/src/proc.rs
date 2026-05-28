@@ -14,7 +14,6 @@ use std::time::Duration;
 use anyhow::Result;
 use hyperactor::Client;
 use hyperactor::RemoteMessage;
-use hyperactor::actor::Signal;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::proc::Proc;
@@ -323,7 +322,6 @@ impl PySerialized {
 pub struct InstanceWrapper<M: RemoteMessage> {
     instance: Client,
     message_receiver: PortReceiver<M>,
-    signal_receiver: PortReceiver<Signal>,
     status: InstanceStatus,
     actor_id: hyperactor::ActorAddr,
 }
@@ -334,14 +332,11 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
         // TEMPORARY: remove after using fixed handler ports.
         let (_handler_port, message_receiver) = instance.bind_handler_port::<M>();
 
-        let (_signal_port, signal_receiver) = instance.bind_handler_port::<Signal>();
-
         let actor_id = instance.self_addr().clone();
 
         Ok(Self {
             instance,
             message_receiver,
-            signal_receiver,
             status: InstanceStatus::Running,
             actor_id,
         })
@@ -364,29 +359,12 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
         Ok(())
     }
 
-    /// Make sure the actor is running in detached mode and is alive.
-    fn ensure_detached_and_alive(&mut self) -> Result<()> {
+    /// Make sure the actor is still alive (in the `Running` state).
+    fn ensure_alive(&self) -> Result<()> {
         anyhow::ensure!(
             self.status == InstanceStatus::Running,
             "actor is not running"
         );
-
-        // This is a little weird as we are potentially stopping before responding to messages
-        // but in reality if we receive stop signal and not stop and drain in most cases its
-        // probably ok to stop early.
-        // Also an implicit assumption here is that is the signal is stop and drain we allow things
-        // to continue as there will hopefully not be new messages coming in. But need a proper draining
-        // flow for this.
-        // TODO: T208289078
-        let signals = self.signal_receiver.drain();
-        if signals
-            .into_iter()
-            .any(|sig| matches!(sig, Signal::Stop(_)))
-        {
-            self.status = InstanceStatus::Stopped;
-            anyhow::bail!("actor has been stopped");
-        }
-
         Ok(())
     }
 
@@ -405,7 +383,7 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
                 Some(0) => "polling",
                 Some(_) => "blocking_with_timeout",
             }));
-        self.ensure_detached_and_alive()?;
+        self.ensure_alive()?;
         match timeout_msec {
             // Blocking wait for next message.
             None => {
@@ -441,7 +419,7 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
     /// Put the actor in stopped mode and return any messages that were received.
     #[hyperactor::instrument(fields(actor_id=hyperactor::internal_macro_support::tracing::field::display(self.actor_addr())))]
     pub fn drain_and_stop(&mut self) -> Result<Vec<M>> {
-        self.ensure_detached_and_alive()?;
+        self.ensure_alive()?;
         let messages: Vec<M> = self.message_receiver.drain().into_iter().collect();
         tracing::info!("stopping the client actor in Python client");
         self.status = InstanceStatus::Stopped;

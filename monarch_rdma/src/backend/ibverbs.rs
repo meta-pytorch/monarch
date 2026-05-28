@@ -28,11 +28,11 @@ pub use queue_pair::IbvQueuePair;
 pub use queue_pair::PollTarget;
 
 #[cfg(test)]
-mod ibv_manager_actor_tests;
+mod doorbell_test_utils;
+#[cfg(test)]
+mod doorbell_tests;
 #[cfg(test)]
 mod mlx5dv_tests;
-#[cfg(test)]
-mod test_utils;
 
 use crate::RdmaOpType;
 use crate::local_memory::KeepaliveLocalMemory;
