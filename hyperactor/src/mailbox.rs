@@ -2080,7 +2080,11 @@ impl MailboxSender for Mailbox {
                 self.inner.actor_id,
                 envelope.dest().actor_addr()
             ));
-            return envelope.undeliverable(err, return_handle);
+            let failure = DeliveryFailure::new(InvalidReference::new(
+                envelope.dest().actor_addr(),
+                InvalidReferenceReason::WrongMailboxOwner,
+            ));
+            return envelope.undeliverable_with_failure(err, failure, return_handle);
         }
 
         let port_index = envelope.dest().index();
@@ -2108,16 +2112,30 @@ impl MailboxSender for Mailbox {
                                 "mailbox owner {} is stopped: {}",
                                 self.inner.actor_id, reason
                             );
-                            return envelope
-                                .undeliverable(DeliveryError::Mailbox(err), return_handle);
+                            let failure = DeliveryFailure::new(InvalidReference::new(
+                                envelope.dest().actor_addr(),
+                                InvalidReferenceReason::ActorStopped,
+                            ));
+                            return envelope.undeliverable_with_failure(
+                                DeliveryError::Mailbox(err),
+                                failure,
+                                return_handle,
+                            );
                         }
                         ActorStatus::Failed(actor_error) => {
                             let err = format!(
                                 "mailbox owner {} failed: {}",
                                 self.inner.actor_id, actor_error
                             );
-                            return envelope
-                                .undeliverable(DeliveryError::Mailbox(err), return_handle);
+                            let failure = DeliveryFailure::new(InvalidReference::new(
+                                envelope.dest().actor_addr(),
+                                InvalidReferenceReason::ActorFailed,
+                            ));
+                            return envelope.undeliverable_with_failure(
+                                DeliveryError::Mailbox(err),
+                                failure,
+                                return_handle,
+                            );
                         }
                         _ => {
                             let err = format!(
@@ -3807,6 +3825,16 @@ mod tests {
                 .expect("expected error")
                 .contains("cannot deliver to")
         );
+        let root_failure = undelivered
+            .root_delivery_failure()
+            .expect("expected root delivery failure");
+        let DeliveryFailureKind::InvalidReference(invalid_reference) = &root_failure.kind else {
+            panic!("expected invalid reference, got {root_failure}");
+        };
+        assert_eq!(
+            invalid_reference.reason,
+            InvalidReferenceReason::WrongMailboxOwner
+        );
     }
 
     #[tokio::test]
@@ -5427,20 +5455,28 @@ mod tests {
 
         mailbox.post(envelope, return_handle);
 
-        let undeliverable = tokio::time::timeout(Duration::from_secs(1), return_rx.recv())
+        let undelivered = tokio::time::timeout(Duration::from_secs(1), return_rx.recv())
             .await
             .expect("timed out waiting for undeliverable")
-            .expect("return port closed");
-
-        let err = undeliverable
+            .expect("return port closed")
             .into_message()
-            .expect("expected returned envelope")
-            .error_msg()
-            .expect("expected error");
+            .expect("expected returned envelope");
+
+        let err = undelivered.error_msg().expect("expected error");
         assert!(
             err.contains(&format!("owner {} is stopped", actor_id)),
             "error should indicate actor stopped: {}",
             err
+        );
+        let root_failure = undelivered
+            .root_delivery_failure()
+            .expect("expected root delivery failure");
+        let DeliveryFailureKind::InvalidReference(invalid_reference) = &root_failure.kind else {
+            panic!("expected invalid reference, got {root_failure}");
+        };
+        assert_eq!(
+            invalid_reference.reason,
+            InvalidReferenceReason::ActorStopped
         );
     }
 
@@ -5472,20 +5508,28 @@ mod tests {
 
         mailbox.post(envelope, return_handle);
 
-        let undeliverable = tokio::time::timeout(Duration::from_secs(1), return_rx.recv())
+        let undelivered = tokio::time::timeout(Duration::from_secs(1), return_rx.recv())
             .await
             .expect("timed out waiting for undeliverable")
-            .expect("return port closed");
-
-        let err = undeliverable
+            .expect("return port closed")
             .into_message()
-            .expect("expected returned envelope")
-            .error_msg()
-            .expect("expected error");
+            .expect("expected returned envelope");
+
+        let err = undelivered.error_msg().expect("expected error");
         assert!(
             err.contains(&format!("owner {} failed", actor_id)),
             "error should indicate actor failed: {}",
             err
+        );
+        let root_failure = undelivered
+            .root_delivery_failure()
+            .expect("expected root delivery failure");
+        let DeliveryFailureKind::InvalidReference(invalid_reference) = &root_failure.kind else {
+            panic!("expected invalid reference, got {root_failure}");
+        };
+        assert_eq!(
+            invalid_reference.reason,
+            InvalidReferenceReason::ActorFailed
         );
     }
 
