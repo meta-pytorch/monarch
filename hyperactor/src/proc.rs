@@ -3457,6 +3457,10 @@ impl<A: Actor> context::Actor for Context<'_, A> {
     fn instance(&self) -> &Instance<A> {
         self
     }
+
+    fn headers(&self) -> &Flattrs {
+        Context::headers(self)
+    }
 }
 
 impl<A: Actor> context::Actor for &Instance<A> {
@@ -3470,6 +3474,10 @@ impl<A: Actor> context::Actor for &Context<'_, A> {
     type A = A;
     fn instance(&self) -> &Instance<A> {
         self
+    }
+
+    fn headers(&self) -> &Flattrs {
+        Context::headers(self)
     }
 }
 
