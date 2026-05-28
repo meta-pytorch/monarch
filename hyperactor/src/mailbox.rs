@@ -465,10 +465,6 @@ pub enum DeliveryError {
     #[error("mailbox error: {0}")]
     Mailbox(String),
 
-    /// A multicast related delivery error.
-    #[error("multicast error: {0}")]
-    Multicast(String),
-
     /// The message went through too many hops and has expired.
     #[error("ttl expired")]
     TtlExpired,
@@ -720,6 +716,11 @@ impl MessageEnvelope {
     /// Get the root structured delivery failure for this message.
     pub fn root_delivery_failure(&self) -> Option<&DeliveryFailure> {
         self.delivery_failures.first()
+    }
+
+    /// Get the root structured delivery failure mutably.
+    pub fn root_delivery_failure_mut(&mut self) -> Option<&mut DeliveryFailure> {
+        self.delivery_failures.first_mut()
     }
 
     /// Get the string representation of the errors of this message was
