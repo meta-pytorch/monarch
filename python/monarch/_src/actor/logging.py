@@ -6,6 +6,7 @@
 
 # pyre-strict
 
+import asyncio
 import logging
 import threading
 import warnings
@@ -23,6 +24,10 @@ logger: logging.Logger = logging.getLogger(__name__)
 
 _global_flush_registered = False
 _global_flush_lock = threading.Lock()
+# Strong references to in-flight async flush tasks scheduled from the
+# post_run_cell callback. The event loop only weak-refs tasks, so without
+# this set a flush task could be garbage-collected mid-execution.
+_pending_flush_tasks: set[asyncio.Task[None]] = set()
 
 FD_READ_CHUNK_SIZE = 4096
 
@@ -34,6 +39,15 @@ def flush_all_proc_mesh_logs() -> None:
     for pm in get_active_proc_meshes():
         if pm._logging_manager._logging_mesh_client is not None:
             pm._logging_manager.flush()
+
+
+async def _flush_all_proc_mesh_logs_async() -> None:
+    """Async counterpart to ``flush_all_proc_mesh_logs``."""
+    from monarch._src.actor.proc_mesh import get_active_proc_meshes
+
+    for pm in get_active_proc_meshes():
+        if pm._logging_manager._logging_mesh_client is not None:
+            await pm._logging_manager.flush_async()
 
 
 class LoggingManager:
@@ -67,10 +81,22 @@ class LoggingManager:
 
                     ipython = get_ipython()
                     assert ipython is not None
-                    ipython.events.register(
-                        "post_run_cell",
-                        lambda _: flush_all_proc_mesh_logs(),
-                    )
+
+                    def _post_run_cell_flush(_: object) -> None:
+                        # For async cells the loop is still running when the
+                        # callback fires; `flush()` would then call
+                        # `Future.get()` inside that loop, which is an error.
+                        # Schedule the async flush on the loop instead.
+                        try:
+                            loop = asyncio.get_running_loop()
+                        except RuntimeError:
+                            flush_all_proc_mesh_logs()
+                        else:
+                            task = loop.create_task(_flush_all_proc_mesh_logs_async())
+                            _pending_flush_tasks.add(task)
+                            task.add_done_callback(_pending_flush_tasks.discard)
+
+                    ipython.events.register("post_run_cell", _post_run_cell_flush)
                     _global_flush_registered = True
 
     def enable_fd_capture_if_in_ipython(self) -> Optional[Tuple[int, int]]:

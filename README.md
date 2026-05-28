@@ -53,25 +53,16 @@ View Monarch's hosted documentation
 ### Installing from Pre-built Wheels
 
 Monarch provides pre-built wheels that work regardless of what version of
-PyTorch you have installed:
+PyTorch you have installed.  You can get these with `pip` or `uv`:
 
-#### Stable
-
-```sh
-pip install torchmonarch
-```
-
-#### Nightly
-
-```sh
-pip install --pre torchmonarch
-```
-
-Or install a specific nightly version:
-
-```sh
-pip install torchmonarch==0.3.0.dev20260106
-```
+- **Using PIP**:
+  - stable: `pip install torchmonarch`
+  - nightly: `pip install --pre torchmonarch`
+  - specific: `pip install torchmonarch==v0.6.0.dev20260526`
+- **Using UV** - note, you can also just use `uv pip install ...` and match the above pip commands; but the ones below add monarch to your UV project properly.
+  - stable: `uv add torchmonarch`
+  - nightly: `uv add --prerelease=allow torchmonarch`
+  - specific: `uv add torchmonarch==v0.6.0.dev20260526`
 
 ### Build and Install from Source
 
