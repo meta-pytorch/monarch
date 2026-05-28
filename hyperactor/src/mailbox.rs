@@ -197,6 +197,25 @@ impl<M: Message + Named + Serialize + DeserializeOwned> RemoteMessage for M {}
 /// Type alias for bytestring data used throughout the system.
 pub type Data = Vec<u8>;
 
+const MAX_RENDERED_DELIVERY_FAILURE_ATTRS_LEN: usize = 1024;
+
+fn truncate_for_delivery_failure_rendering(value: String) -> String {
+    if value.len() <= MAX_RENDERED_DELIVERY_FAILURE_ATTRS_LEN {
+        return value;
+    }
+
+    let mut truncated = value;
+    let truncate_at = truncated
+        .char_indices()
+        .map(|(index, _)| index)
+        .take_while(|index| *index <= MAX_RENDERED_DELIVERY_FAILURE_ATTRS_LEN)
+        .last()
+        .unwrap_or(0);
+    truncated.truncate(truncate_at);
+    truncated.push_str("...");
+    truncated
+}
+
 /// A structured delivery failure with optional metadata.
 #[derive(thiserror::Error, Debug, Serialize, Deserialize, typeuri::Named, Clone)]
 #[error("{kind}")]
@@ -223,6 +242,18 @@ impl DeliveryFailure {
             kind: kind.into(),
             attrs,
         }
+    }
+
+    /// Render this failure for human-facing diagnostics.
+    pub fn render_bounded(&self) -> String {
+        let mut rendered = format!("delivery failure: {}", self.kind);
+        if !self.attrs.is_empty() {
+            rendered.push_str("; attrs: ");
+            rendered.push_str(&truncate_for_delivery_failure_rendering(
+                self.attrs.to_string(),
+            ));
+        }
+        rendered
     }
 }
 
@@ -727,17 +758,27 @@ impl MessageEnvelope {
     /// undeliverable. None means this message was not determined as
     /// undeliverable.
     pub fn error_msg(&self) -> Option<String> {
-        if self.errors.is_empty() {
-            None
-        } else {
-            Some(
+        if !self.delivery_failures.is_empty() {
+            return Some(
+                self.delivery_failures
+                    .iter()
+                    .map(DeliveryFailure::render_bounded)
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            );
+        }
+
+        if !self.errors.is_empty() {
+            return Some(
                 self.errors
                     .iter()
                     .map(|e| e.to_string())
                     .collect::<Vec<_>>()
                     .join("; "),
-            )
+            );
         }
+
+        None
     }
 
     fn open(self) -> (MessageMetadata, wirevalue::Any) {
@@ -3929,6 +3970,67 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_error_msg_prefers_structured_delivery_failure() {
+        let sender = test_actor_id("0", "sender");
+        let dest = test_port_id("0", "dest", 42);
+        let mut envelope = MessageEnvelope::serialize(sender, dest.clone(), &42u64, Flattrs::new())
+            .expect("serialize");
+        envelope.set_error(DeliveryError::BrokenLink("legacy error".to_string()));
+        envelope.push_delivery_failure(DeliveryFailure::new(InvalidReference::new(
+            dest,
+            InvalidReferenceReason::PortNeverAllocated,
+        )));
+
+        let error = envelope.error_msg().expect("expected error");
+        assert!(error.contains("delivery failure: invalid reference"));
+        assert!(error.contains("port never allocated"));
+        assert!(
+            !error.contains("legacy error"),
+            "structured rendering should take precedence: {error}"
+        );
+    }
+
+    #[test]
+    fn test_error_msg_falls_back_to_legacy_delivery_error() {
+        let sender = test_actor_id("0", "sender");
+        let dest = test_port_id("0", "dest", 42);
+        let mut envelope =
+            MessageEnvelope::serialize(sender, dest, &42u64, Flattrs::new()).expect("serialize");
+        envelope.set_error(DeliveryError::BrokenLink("legacy error".to_string()));
+
+        assert_eq!(
+            envelope.error_msg().as_deref(),
+            Some("broken link: legacy error")
+        );
+    }
+
+    #[test]
+    fn test_delivery_failure_rendering_bounds_attrs() {
+        use hyperactor_config::attrs::declare_attrs;
+
+        declare_attrs! {
+            attr TEST_DELIVERY_FAILURE_ATTR: String;
+        }
+
+        let target = test_port_id("0", "dest", 42);
+        let mut attrs = Flattrs::new();
+        let large_value = "x".repeat(MAX_RENDERED_DELIVERY_FAILURE_ATTRS_LEN * 2);
+        attrs.set(TEST_DELIVERY_FAILURE_ATTR, large_value.clone());
+        let failure = DeliveryFailure::with_attrs(
+            InvalidReference::new(target, InvalidReferenceReason::PortNeverAllocated),
+            attrs,
+        );
+        let rendered = failure.render_bounded();
+
+        assert!(rendered.contains("port never allocated"));
+        assert!(rendered.contains("..."));
+        assert!(
+            !rendered.contains(&large_value),
+            "rendering must not include unbounded attr values"
+        );
+    }
+
     #[tokio::test]
     async fn test_mailbox_basic() {
         let mbox = Mailbox::new(test_actor_id("0", "test"));
@@ -3973,7 +4075,7 @@ mod tests {
             undelivered
                 .error_msg()
                 .expect("expected error")
-                .contains("cannot deliver to")
+                .contains("wrong mailbox owner")
         );
         let root_failure = undelivered
             .root_delivery_failure()
@@ -4273,8 +4375,8 @@ mod tests {
         assert!(
             envelope
                 .error_msg()
-                .is_some_and(|message| message.contains("deserialization error")),
-            "expected deserialization error in {envelope}",
+                .is_some_and(|message| message.contains("protocol mismatch")),
+            "expected protocol mismatch in {envelope}",
         );
         let invalid_reference = root_invalid_reference(&envelope);
         assert_eq!(invalid_reference.target, target);
@@ -4329,8 +4431,8 @@ mod tests {
             .expect("expected returned envelope");
         let first_error = envelope.error_msg().expect("expected delivery error");
         assert!(
-            first_error.contains("port not bound in mailbox"),
-            "expected unbound-port error in {envelope}",
+            first_error.contains("port gone"),
+            "expected port-gone error in {envelope}",
         );
         assert!(
             !mbox.inner.ports.contains_key(&port_index),
@@ -4377,8 +4479,8 @@ mod tests {
         assert!(
             envelope
                 .error_msg()
-                .is_some_and(|message| message.contains("deserialization error")),
-            "expected deserialization error in {envelope}",
+                .is_some_and(|message| message.contains("protocol mismatch")),
+            "expected protocol mismatch in {envelope}",
         );
         let invalid_reference = root_invalid_reference(&envelope);
         assert_eq!(invalid_reference.target, target);
@@ -5901,7 +6003,7 @@ mod tests {
 
         let err = undelivered.error_msg().expect("expected error");
         assert!(
-            err.contains(&format!("owner {} is stopped", actor_id)),
+            err.contains("actor stopped"),
             "error should indicate actor stopped: {}",
             err
         );
@@ -5954,7 +6056,7 @@ mod tests {
 
         let err = undelivered.error_msg().expect("expected error");
         assert!(
-            err.contains(&format!("owner {} failed", actor_id)),
+            err.contains("actor failed"),
             "error should indicate actor failed: {}",
             err
         );
