@@ -170,7 +170,7 @@ use crate::port::Port;
 
 mod undeliverable;
 /// For [`Undeliverable`], a message type for delivery failures.
-pub use undeliverable::LostMessage;
+pub use undeliverable::DeliveryFailureReport;
 pub use undeliverable::Undeliverable;
 pub use undeliverable::UndeliverableMessageError;
 pub use undeliverable::custom_monitored_return_handle;
@@ -1318,20 +1318,20 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
             let client = crate::client("undeliverable_supervisor");
             while let Ok(undeliverable) = undeliverable_rx.recv().await {
                 match undeliverable {
-                    Undeliverable::Message(mut envelope) => {
+                    Undeliverable::Returned(mut envelope) => {
                         match envelope.deserialized::<Undeliverable<MessageEnvelope>>() {
-                            Ok(Undeliverable::Message(e)) => {
+                            Ok(Undeliverable::Returned(e)) => {
                                 // A non-returnable undeliverable.
                                 UndeliverableMailboxSender.post(e, monitored_return_handle());
                                 continue;
                             }
-                            Ok(Undeliverable::Lost(lost)) => {
+                            Ok(Undeliverable::Report(report)) => {
                                 tracing::error!(
-                                    sender = %lost.sender,
-                                    dest = %lost.dest,
-                                    message_type = lost.message_type.as_deref().unwrap_or("unknown"),
-                                    error = %lost.error,
-                                    "lost message was undeliverable"
+                                    sender = %report.sender,
+                                    dest = %report.dest,
+                                    message_type = report.message_type.as_deref().unwrap_or("unknown"),
+                                    error = %report.error_msg().unwrap_or_default(),
+                                    "undeliverable message report was undeliverable"
                                 );
                                 continue;
                             }
@@ -1356,16 +1356,16 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
                         return_port.post_serialized(
                             &client,
                             Flattrs::new(),
-                            wirevalue::Any::serialize(&Undeliverable::Message(envelope)).unwrap(),
+                            wirevalue::Any::serialize(&Undeliverable::Returned(envelope)).unwrap(),
                         );
                     }
-                    Undeliverable::Lost(lost) => {
+                    Undeliverable::Report(report) => {
                         tracing::error!(
-                            sender = %lost.sender,
-                            dest = %lost.dest,
-                            message_type = lost.message_type.as_deref().unwrap_or("unknown"),
-                            error = %lost.error,
-                            "lost message was undeliverable"
+                            sender = %report.sender,
+                            dest = %report.dest,
+                            message_type = report.message_type.as_deref().unwrap_or("unknown"),
+                            error = %report.error_msg().unwrap_or_default(),
+                            "undeliverable message report was undeliverable"
                         );
                     }
                 }
@@ -2458,7 +2458,7 @@ where
     {
         if let Err(err) = self.try_post(cx, message) {
             cx.instance()
-                .report_lost_message(LostMessage::from_send_error::<M>(
+                .report_delivery_failure(DeliveryFailureReport::from_send_error::<M>(
                     cx.mailbox().actor_addr().clone(),
                     self.endpoint_location(),
                     &err,
@@ -2602,7 +2602,7 @@ where
         let endpoint_location = self.endpoint_location();
         if let Err(err) = self.try_post(cx, message) {
             cx.instance()
-                .report_lost_message(LostMessage::from_send_error::<M>(
+                .report_delivery_failure(DeliveryFailureReport::from_send_error::<M>(
                     cx.mailbox().actor_addr().clone(),
                     endpoint_location,
                     &err,
@@ -3928,7 +3928,7 @@ mod tests {
 
         mbox.post(envelope, return_handle);
 
-        let Undeliverable::Message(undelivered) =
+        let Undeliverable::Returned(undelivered) =
             tokio::time::timeout(Duration::from_secs(1), return_rx.recv())
                 .await
                 .expect("timed out waiting for undeliverable")
@@ -4937,7 +4937,7 @@ mod tests {
             wirevalue::Any::serialize(&1u64).unwrap(),
             Flattrs::new(),
         );
-        return_handle.post(&client, Undeliverable::Message(message));
+        return_handle.post(&client, Undeliverable::Returned(message));
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
@@ -4980,7 +4980,7 @@ mod tests {
         );
         let proc = Proc::isolated();
         let client = proc.client("client");
-        return_handle.post(&client, Undeliverable::Message(envelope.clone()));
+        return_handle.post(&client, Undeliverable::Returned(envelope.clone()));
         // Check we receive the undelivered message.
         assert!(
             tokio::time::timeout(tokio::time::Duration::from_secs(1), return_receiver.recv())
@@ -4990,7 +4990,7 @@ mod tests {
         // Setup a monitor for the receiver and show that if there are
         // no outstanding return handles it terminates.
         let monitor_handle = tokio::spawn(async move {
-            while let Ok(Undeliverable::Message(mut envelope)) = return_receiver.recv().await {
+            while let Ok(Undeliverable::Returned(mut envelope)) = return_receiver.recv().await {
                 envelope.push_delivery_failure(DeliveryFailure::new(
                     UndeliverableReason::Transport(TransportFailure::new(
                         envelope.dest().clone(),

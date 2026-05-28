@@ -877,7 +877,7 @@ mod tests {
         // bounce synchronously to our return port.
         weak.post(envelope, return_handle);
 
-        let Undeliverable::Message(envelope) =
+        let Undeliverable::Returned(envelope) =
             time::timeout(Duration::from_secs(5), return_rx.recv())
                 .await
                 .expect("return_rx timed out")

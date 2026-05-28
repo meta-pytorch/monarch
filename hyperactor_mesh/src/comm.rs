@@ -224,9 +224,9 @@ impl Actor for CommActor {
         undelivered: hyperactor::mailbox::Undeliverable<hyperactor::mailbox::MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
         let mut message_envelope = match undelivered {
-            Undeliverable::Message(message_envelope) => message_envelope,
-            Undeliverable::Lost(lost) => {
-                anyhow::bail!(UndeliverableMessageError::Lost { lost });
+            Undeliverable::Returned(message_envelope) => message_envelope,
+            Undeliverable::Report(report) => {
+                anyhow::bail!(UndeliverableMessageError::Report { report });
             }
         };
 
@@ -248,7 +248,7 @@ impl Actor for CommActor {
             // original sender of the cast message.
             message_envelope.set_header(CAST_ORIGINATING_SENDER, sender.clone());
 
-            return_port.post(cx, Undeliverable::Message(message_envelope.clone()));
+            return_port.post(cx, Undeliverable::Returned(message_envelope.clone()));
             return Ok(());
         }
 
@@ -262,7 +262,7 @@ impl Actor for CommActor {
                 &sender,
                 return_port.port_addr(),
             );
-            return_port.post(cx, Undeliverable::Message(message_envelope.clone()));
+            return_port.post(cx, Undeliverable::Returned(message_envelope.clone()));
             return Ok(());
         }
 

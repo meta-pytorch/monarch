@@ -28,15 +28,16 @@
 //!     {sender}"`. Sender/dest in this variant refer to the *original*
 //!     envelope, so headlining `dest` would misstate the failing hop;
 //!     the return-to-sender hop is the one that actually failed.
+//!   - `Report` → `"undeliverable message report to {dest}"`. The
+//!     payload is unavailable, so the report carries structured
+//!     delivery failures rather than the original envelope.
 //!
 //!   Both shapes only relocate UE-2 stable rendered fields into the
 //!   headline; no unbounded surface is introduced.
 //!
 //! - **UE-4 (neutral wording).** Top-line wording is neutral re.
-//!   request/reply classification. The three shapes — `"undeliverable
-//!   message for {operation} ({adverb})"`, `"undeliverable message to
-//!   {dest}"`, and `"undeliverable return to original sender
-//!   {sender}"` — describe a bounce without claiming send-kind.
+//!   request/reply classification. The top-line shapes describe a
+//!   bounce without claiming send-kind.
 //!
 //! - **UE-5 (message-type fallback).** When wirevalue type resolution
 //!   is unavailable (`envelope.data().typename()` returns `None`), the
@@ -54,6 +55,7 @@ use serde::Serialize;
 use thiserror::Error;
 
 use crate::ActorAddr;
+use crate::Addr;
 use crate::Client;
 use crate::EndpointLocation;
 // for macros
@@ -73,33 +75,112 @@ use crate::mailbox::headers::OPERATION_ADVERB;
 use crate::mailbox::headers::OPERATION_ENDPOINT;
 use crate::mailbox::headers::RUST_MESSAGE_TYPE;
 
-/// Metadata for a message that could not be delivered and could not be
-/// returned.
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, typeuri::Named)]
-pub struct LostMessage {
+/// Metadata for a delivery failure whose original payload is unavailable.
+#[derive(Debug, Serialize, Deserialize, Clone, typeuri::Named)]
+pub struct DeliveryFailureReport {
     /// The actor that attempted the send.
     pub sender: ActorAddr,
     /// The destination that rejected the message.
     pub dest: EndpointLocation,
     /// The message type, if known.
     pub message_type: Option<String>,
-    /// The delivery failure.
-    pub error: String,
+    /// The delivery failures. The first entry is the root failure; later
+    /// entries are failures encountered while returning or forwarding the
+    /// failed message.
+    pub delivery_failures: Vec<DeliveryFailure>,
 }
 
-impl LostMessage {
-    /// Construct lost-message metadata from a local send error.
+impl DeliveryFailureReport {
+    /// Construct delivery-failure metadata.
+    pub fn new(
+        sender: ActorAddr,
+        dest: EndpointLocation,
+        message_type: Option<String>,
+        failure: DeliveryFailure,
+    ) -> Self {
+        Self {
+            sender,
+            dest,
+            message_type,
+            delivery_failures: vec![failure],
+        }
+    }
+
+    /// Construct delivery-failure metadata from a local send error.
     pub(crate) fn from_send_error<M: Message>(
         sender: ActorAddr,
         dest: EndpointLocation,
         error: &MailboxSenderError,
     ) -> Self {
+        let failure = match &dest {
+            EndpointLocation::Port(port) => {
+                super::serialized_send_error_delivery_failure(port, error)
+            }
+            EndpointLocation::Actor(actor) => {
+                DeliveryFailure::new(UndeliverableReason::Transport(TransportFailure::new(
+                    actor.clone(),
+                    TransportFailureReason::LinkUnavailable(error.to_string()),
+                )))
+            }
+            EndpointLocation::Local { actor, .. } => {
+                DeliveryFailure::new(UndeliverableReason::Transport(TransportFailure::new(
+                    actor.clone(),
+                    TransportFailureReason::LinkUnavailable(error.to_string()),
+                )))
+            }
+        };
         Self {
             sender,
             dest,
             message_type: Some(std::any::type_name::<M>().to_string()),
-            error: error.to_string(),
+            delivery_failures: vec![failure],
         }
+    }
+
+    /// Construct delivery-failure metadata from a link-unavailable reason.
+    pub(crate) fn link_unavailable<M: Message>(
+        sender: ActorAddr,
+        dest: EndpointLocation,
+        error: impl Into<String>,
+    ) -> Self {
+        let failure = DeliveryFailure::new(UndeliverableReason::Transport(TransportFailure::new(
+            delivery_failure_target(&dest),
+            TransportFailureReason::LinkUnavailable(error.into()),
+        )));
+        Self::new(
+            sender,
+            dest,
+            Some(std::any::type_name::<M>().to_string()),
+            failure,
+        )
+    }
+
+    /// Get the root structured delivery failure for this report.
+    pub fn root_delivery_failure(&self) -> Option<&DeliveryFailure> {
+        self.delivery_failures.first()
+    }
+
+    /// Get the string representation of the errors in this report.
+    pub fn error_msg(&self) -> Option<String> {
+        if self.delivery_failures.is_empty() {
+            return None;
+        }
+
+        Some(
+            self.delivery_failures
+                .iter()
+                .map(DeliveryFailure::render_bounded)
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
+    }
+}
+
+fn delivery_failure_target(dest: &EndpointLocation) -> Addr {
+    match dest {
+        EndpointLocation::Actor(actor) => actor.clone().into(),
+        EndpointLocation::Port(port) => port.clone().into(),
+        EndpointLocation::Local { actor, .. } => actor.clone().into(),
     }
 }
 
@@ -108,32 +189,72 @@ impl LostMessage {
     clippy::large_enum_variant,
     reason = "returned messages stay inline so callers can recover the original payload without extra allocation"
 )]
-#[derive(
-    Debug,
-    EnumAsInner,
-    Serialize,
-    Deserialize,
-    Clone,
-    PartialEq,
-    typeuri::Named
-)]
+#[derive(Debug, EnumAsInner, Serialize, Deserialize, Clone, typeuri::Named)]
 pub enum Undeliverable<M: Message> {
     /// The message was returned intact.
-    Message(M),
-    /// The message was lost before it could be returned.
-    Lost(LostMessage),
+    Returned(M),
+    /// Delivery failed, but the original payload is unavailable.
+    Report(DeliveryFailureReport),
 }
 
 impl<M: Message> Undeliverable<M> {
     /// Construct an undeliverable message that preserves the original payload.
     pub fn message(message: M) -> Self {
-        Self::Message(message)
+        Self::Returned(message)
     }
 
-    /// Construct an undeliverable message that carries only lost-message
+    /// Borrow the returned payload, if the payload was returned.
+    pub fn as_message(&self) -> Option<&M> {
+        match self {
+            Self::Returned(message) => Some(message),
+            Self::Report(_) => None,
+        }
+    }
+
+    /// Mutably borrow the returned payload, if the payload was returned.
+    pub fn as_message_mut(&mut self) -> Option<&mut M> {
+        match self {
+            Self::Returned(message) => Some(message),
+            Self::Report(_) => None,
+        }
+    }
+
+    /// Consume this undeliverable notification and return its payload, if the
+    /// payload was returned.
+    #[expect(
+        clippy::result_large_err,
+        reason = "preserve the old helper shape while callers migrate to explicit variants"
+    )]
+    pub fn into_message(self) -> Result<M, Self> {
+        match self {
+            Self::Returned(message) => Ok(message),
+            report @ Self::Report(_) => Err(report),
+        }
+    }
+
+    /// Construct an undeliverable message that carries only delivery-failure
     /// metadata.
-    pub fn lost(message: LostMessage) -> Self {
-        Self::Lost(message)
+    pub fn report(report: DeliveryFailureReport) -> Self {
+        Self::Report(report)
+    }
+}
+
+impl Undeliverable<MessageEnvelope> {
+    /// Get the root structured delivery failure for this undeliverable
+    /// notification.
+    pub fn root_delivery_failure(&self) -> Option<&DeliveryFailure> {
+        match self {
+            Self::Returned(envelope) => envelope.root_delivery_failure(),
+            Self::Report(report) => report.root_delivery_failure(),
+        }
+    }
+
+    /// Convert this undeliverable notification into the corresponding error.
+    pub fn into_error(self) -> UndeliverableMessageError {
+        match self {
+            Self::Returned(envelope) => UndeliverableMessageError::DeliveryFailure { envelope },
+            Self::Report(report) => UndeliverableMessageError::Report { report },
+        }
     }
 }
 
@@ -165,7 +286,7 @@ pub fn monitored_return_handle() -> PortHandle<Undeliverable<MessageEnvelope>> {
         crate::init::get_runtime().spawn(async move {
             while let Ok(undeliverable) = rx.recv().await {
                 match undeliverable {
-                    Undeliverable::Message(mut envelope) => {
+                    Undeliverable::Returned(mut envelope) => {
                         envelope.push_delivery_failure(DeliveryFailure::new(
                             UndeliverableReason::Transport(TransportFailure::new(
                                 envelope.dest().clone(),
@@ -177,13 +298,13 @@ pub fn monitored_return_handle() -> PortHandle<Undeliverable<MessageEnvelope>> {
                         super::UndeliverableMailboxSender
                             .post(envelope, /*unused */ h.clone());
                     }
-                    Undeliverable::Lost(lost) => {
+                    Undeliverable::Report(report) => {
                         tracing::error!(
-                            sender = %lost.sender,
-                            dest = %lost.dest,
-                            message_type = lost.message_type.as_deref().unwrap_or("unknown"),
-                            error = %lost.error,
-                            "lost message returned to undeliverable port"
+                            sender = %report.sender,
+                            dest = %report.dest,
+                            message_type = report.message_type.as_deref().unwrap_or("unknown"),
+                            error = %report.error_msg().unwrap_or_default(),
+                            "undeliverable message report returned to undeliverable port"
                         );
                     }
                 }
@@ -205,7 +326,7 @@ pub fn custom_monitored_return_handle(caller: &str) -> PortHandle<Undeliverable<
     tokio::task::spawn(async move {
         while let Ok(undeliverable) = rx.recv().await {
             match undeliverable {
-                Undeliverable::Message(mut envelope) => {
+                Undeliverable::Returned(mut envelope) => {
                     envelope.push_delivery_failure(DeliveryFailure::new(
                         UndeliverableReason::Transport(TransportFailure::new(
                             envelope.dest().clone(),
@@ -216,13 +337,13 @@ pub fn custom_monitored_return_handle(caller: &str) -> PortHandle<Undeliverable<
                     ));
                     tracing::error!("{caller} took back an undeliverable message: {}", envelope);
                 }
-                Undeliverable::Lost(lost) => {
+                Undeliverable::Report(report) => {
                     tracing::error!(
-                        sender = %lost.sender,
-                        dest = %lost.dest,
-                        message_type = lost.message_type.as_deref().unwrap_or("unknown"),
-                        error = %lost.error,
-                        "{caller} took back a lost message"
+                        sender = %report.sender,
+                        dest = %report.dest,
+                        message_type = report.message_type.as_deref().unwrap_or("unknown"),
+                        error = %report.error_msg().unwrap_or_default(),
+                        "{caller} took back an undeliverable message report"
                     );
                 }
             }
@@ -266,10 +387,10 @@ pub enum UndeliverableMessageError {
         envelope: MessageEnvelope,
     },
 
-    /// A message was lost before it could be returned.
-    Lost {
-        /// The lost-message metadata.
-        lost: LostMessage,
+    /// Delivery failed, but the original payload is unavailable.
+    Report {
+        /// The delivery-failure report.
+        report: DeliveryFailureReport,
     },
 }
 
@@ -285,8 +406,8 @@ fn undeliverable_prefix(error: &UndeliverableMessageError) -> String {
     let envelope = match error {
         UndeliverableMessageError::DeliveryFailure { envelope }
         | UndeliverableMessageError::ReturnFailure { envelope } => envelope,
-        UndeliverableMessageError::Lost { lost } => {
-            return format!("lost message to {}", lost.dest);
+        UndeliverableMessageError::Report { report } => {
+            return format!("undeliverable message report to {}", report.dest);
         }
     };
     if let Some(endpoint) = envelope.headers().get(OPERATION_ENDPOINT) {
@@ -306,7 +427,9 @@ fn undeliverable_prefix(error: &UndeliverableMessageError) -> String {
                 envelope.sender()
             )
         }
-        UndeliverableMessageError::Lost { lost } => format!("lost message to {}", lost.dest),
+        UndeliverableMessageError::Report { report } => {
+            format!("undeliverable message report to {}", report.dest)
+        }
     }
 }
 
@@ -331,20 +454,24 @@ impl std::fmt::Display for UndeliverableMessageError {
                 "original sender",
                 "original dest",
             ),
-            UndeliverableMessageError::Lost { lost } => {
+            UndeliverableMessageError::Report { report } => {
                 writeln!(f, "{}:", undeliverable_prefix(self))?;
                 writeln!(
                     f,
-                    "\tdescription: message was lost before it could be returned"
+                    "\tdescription: delivery failed and the original payload is unavailable"
                 )?;
-                writeln!(f, "\tsender: {}", lost.sender)?;
-                writeln!(f, "\tdest: {}", lost.dest)?;
+                writeln!(f, "\tsender: {}", report.sender)?;
+                writeln!(f, "\tdest: {}", report.dest)?;
                 writeln!(
                     f,
                     "\tmessage type: {}",
-                    lost.message_type.as_deref().unwrap_or("unknown")
+                    report.message_type.as_deref().unwrap_or("unknown")
                 )?;
-                writeln!(f, "\terror: {}", lost.error)?;
+                writeln!(
+                    f,
+                    "\terror: {}",
+                    report.error_msg().unwrap_or("<none>".to_string())
+                )?;
                 return Ok(());
             }
         };

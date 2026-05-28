@@ -274,15 +274,16 @@ impl Actor for GlobalClientActor {
         undeliverable: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
         let mut env = match undeliverable {
-            Undeliverable::Message(env) => env,
-            Undeliverable::Lost(lost) => {
-                let actor_ref = lost.dest.actor_addr();
+            Undeliverable::Returned(env) => env,
+            Undeliverable::Report(report) => {
+                let actor_ref = report.dest.actor_addr();
+                let error = report.error_msg().unwrap_or_default();
                 let event = ActorSupervisionEvent::new(
                     actor_ref.clone(),
                     None,
                     ActorStatus::generic_failure(format!(
                         "message not delivered to {}: {}",
-                        lost.dest, lost.error
+                        report.dest, error
                     )),
                     None,
                 );
@@ -293,8 +294,8 @@ impl Actor for GlobalClientActor {
                     None => {
                         tracing::warn!(
                             actor=%actor_ref,
-                            error=%lost.error,
-                            "no supervision sink; lost message logged but not forwarded"
+                            error=%error,
+                            "no supervision sink; delivery failure report logged but not forwarded"
                         );
                     }
                 }
@@ -583,7 +584,7 @@ mod tests {
         let client_actor_id: hyperactor::ActorAddr = client.self_addr().clone();
         let undeliverable_port =
             PortRef::<Undeliverable<MessageEnvelope>>::attest_handler_port(&client_actor_id);
-        undeliverable_port.post(client, Undeliverable::Message(env));
+        undeliverable_port.post(client, Undeliverable::Returned(env));
     }
 
     /// Verifies that creating a `ProcMesh` installs the
