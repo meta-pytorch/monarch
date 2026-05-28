@@ -3443,12 +3443,19 @@ impl MailboxSender for MailboxRouter {
     ) {
         let dest_actor_ref = envelope.dest().actor_addr();
         match self.sender(&dest_actor_ref) {
-            None => envelope.undeliverable(
-                DeliveryError::Unroutable(
-                    "no destination found for actor in routing table".to_string(),
-                ),
-                return_handle,
-            ),
+            None => {
+                let target = envelope.dest().clone();
+                let failure = DeliveryFailure::new(UndeliverableReason::Transport(
+                    TransportFailure::new(target, TransportFailureReason::NoRoute),
+                ));
+                envelope.undeliverable_with_failure(
+                    DeliveryError::Unroutable(
+                        "no destination found for actor in routing table".to_string(),
+                    ),
+                    failure,
+                    return_handle,
+                )
+            }
             Some(sender) => sender.post(envelope, return_handle),
         }
     }
@@ -3525,10 +3532,21 @@ impl MailboxSender for WeakMailboxRouter {
     ) {
         match self.upgrade() {
             Some(router) => router.post(envelope, return_handle),
-            None => envelope.undeliverable(
-                DeliveryError::BrokenLink("failed to upgrade WeakMailboxRouter".to_string()),
-                return_handle,
-            ),
+            None => {
+                let target = envelope.dest().clone();
+                let failure =
+                    DeliveryFailure::new(UndeliverableReason::Transport(TransportFailure::new(
+                        target,
+                        TransportFailureReason::LinkUnavailable(
+                            "mailbox router is gone".to_string(),
+                        ),
+                    )));
+                envelope.undeliverable_with_failure(
+                    DeliveryError::BrokenLink("failed to upgrade WeakMailboxRouter".to_string()),
+                    failure,
+                    return_handle,
+                )
+            }
         }
     }
 
@@ -3762,10 +3780,22 @@ impl MailboxSender for DialMailboxRouter {
         };
 
         match self.dial(&addr, &dest_actor_ref) {
-            Err(err) => envelope.undeliverable(
-                DeliveryError::Unroutable(format!("cannot dial destination: {err}")),
-                return_handle,
-            ),
+            Err(err) => {
+                let target = envelope.dest().clone();
+                let failure =
+                    DeliveryFailure::new(UndeliverableReason::Transport(TransportFailure::new(
+                        target,
+                        TransportFailureReason::DialFailed {
+                            addr,
+                            error: err.to_string(),
+                        },
+                    )));
+                envelope.undeliverable_with_failure(
+                    DeliveryError::Unroutable(format!("cannot dial destination: {err}")),
+                    failure,
+                    return_handle,
+                )
+            }
             Ok(sender) => sender.post(envelope, return_handle),
         }
     }
@@ -3795,8 +3825,14 @@ impl MailboxSender for UnroutableMailboxSender {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        envelope.undeliverable(
+        let target = envelope.dest().clone();
+        let failure = DeliveryFailure::new(UndeliverableReason::Transport(TransportFailure::new(
+            target,
+            TransportFailureReason::NoRoute,
+        )));
+        envelope.undeliverable_with_failure(
             DeliveryError::Unroutable("destination not found in routing table".to_string()),
+            failure,
             return_handle,
         );
     }
@@ -3834,6 +3870,18 @@ mod tests {
 
     fn test_actor_ref(proc_name: &str, actor_name: &str) -> Addr {
         Addr::Actor(test_actor_id(proc_name, actor_name))
+    }
+
+    fn root_transport_failure(envelope: &MessageEnvelope) -> &TransportFailure {
+        let root_failure = envelope
+            .root_delivery_failure()
+            .expect("expected root delivery failure");
+        let DeliveryFailureKind::Undeliverable(UndeliverableReason::Transport(transport)) =
+            &root_failure.kind
+        else {
+            panic!("expected transport failure, got {root_failure}");
+        };
+        transport
     }
 
     #[test]
@@ -4493,10 +4541,20 @@ mod tests {
         let (return_handle, mut return_receiver) =
             crate::mailbox::undeliverable::new_undeliverable_port();
         let (port, _receiver) = mbox4.open_once_port();
+        let port = port.bind();
+        let target: Addr = port.port_addr().clone().into();
         router
-            .serialize_and_send_once(port.bind(), 0, return_handle.clone())
+            .serialize_and_send_once(port, 0, return_handle.clone())
             .unwrap();
-        assert!(return_receiver.recv().await.is_ok());
+        let undelivered = return_receiver
+            .recv()
+            .await
+            .unwrap()
+            .into_message()
+            .expect("expected returned envelope");
+        let transport = root_transport_failure(&undelivered);
+        assert_eq!(transport.target, target);
+        assert_eq!(transport.reason, TransportFailureReason::NoRoute);
 
         let router = router.fallback(mbox4.clone().into_boxed());
         let (port, receiver) = mbox4.open_once_port();
@@ -4504,6 +4562,61 @@ mod tests {
             .serialize_and_send_once(port.bind(), 0, return_handle)
             .unwrap();
         assert_eq!(receiver.recv().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_weak_mailbox_router_records_link_unavailable_failure() {
+        let router = MailboxRouter::new();
+        let weak_router = router.downgrade();
+        drop(router);
+
+        let mbox = Mailbox::new(test_actor_id("0", "actor0"));
+        let (port, _receiver) = mbox.open_once_port::<u64>();
+        let port = port.bind();
+        let target: Addr = port.port_addr().clone().into();
+        let (return_handle, mut return_receiver) =
+            crate::mailbox::undeliverable::new_undeliverable_port();
+
+        weak_router
+            .serialize_and_send_once(port, 123u64, return_handle)
+            .unwrap();
+
+        let undelivered = return_receiver
+            .recv()
+            .await
+            .unwrap()
+            .into_message()
+            .expect("expected returned envelope");
+        let transport = root_transport_failure(&undelivered);
+        assert_eq!(transport.target, target);
+        assert_eq!(
+            transport.reason,
+            TransportFailureReason::LinkUnavailable("mailbox router is gone".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_unroutable_mailbox_sender_records_no_route_failure() {
+        let mbox = Mailbox::new(test_actor_id("0", "actor0"));
+        let (port, _receiver) = mbox.open_once_port::<u64>();
+        let port = port.bind();
+        let target: Addr = port.port_addr().clone().into();
+        let (return_handle, mut return_receiver) =
+            crate::mailbox::undeliverable::new_undeliverable_port();
+
+        UnroutableMailboxSender
+            .serialize_and_send_once(port, 123u64, return_handle)
+            .unwrap();
+
+        let undelivered = return_receiver
+            .recv()
+            .await
+            .unwrap()
+            .into_message()
+            .expect("expected returned envelope");
+        let transport = root_transport_failure(&undelivered);
+        assert_eq!(transport.target, target);
+        assert_eq!(transport.reason, TransportFailureReason::NoRoute);
     }
 
     #[tokio::test]
@@ -4574,6 +4687,45 @@ mod tests {
                 .lookup_addr(&test_actor_id("world0_0", "actor"))
                 .unwrap(),
             fallback,
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dial_mailbox_router_records_dial_failure() {
+        let router = DialMailboxRouter::new();
+        let addr = ChannelAddr::Local(9_876_543_210);
+        let mbox = Mailbox::new(test_actor_id("world0_0", "actor0"));
+        router.bind(test_proc_ref("world0_0"), addr.clone());
+
+        let (port, _receiver) = mbox.open_once_port::<u64>();
+        let port = port.bind();
+        let target: Addr = port.port_addr().clone().into();
+        let (return_handle, mut return_receiver) =
+            crate::mailbox::undeliverable::new_undeliverable_port();
+
+        router
+            .serialize_and_send_once(port, 123u64, return_handle)
+            .unwrap();
+
+        let undelivered = return_receiver
+            .recv()
+            .await
+            .unwrap()
+            .into_message()
+            .expect("expected returned envelope");
+        let transport = root_transport_failure(&undelivered);
+        assert_eq!(transport.target, target);
+        let TransportFailureReason::DialFailed {
+            addr: failure_addr,
+            error,
+        } = &transport.reason
+        else {
+            panic!("expected dial failure, got {}", transport.reason);
+        };
+        assert_eq!(failure_addr, &addr);
+        assert!(
+            error.contains("channel closed"),
+            "unexpected error: {error}"
         );
     }
 
