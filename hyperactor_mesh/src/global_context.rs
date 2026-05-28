@@ -69,7 +69,6 @@ use hyperactor::id::Label;
 use hyperactor::id::Uid;
 use hyperactor::mailbox::DeliveryFailure;
 use hyperactor::mailbox::MessageEnvelope;
-use hyperactor::mailbox::PortReceiver;
 use hyperactor::mailbox::TransportFailure;
 use hyperactor::mailbox::TransportFailureReason;
 use hyperactor::mailbox::Undeliverable;
