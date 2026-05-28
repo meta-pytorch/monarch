@@ -11,11 +11,9 @@
 
 use std::any::TypeId;
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::fmt;
 use std::ops::DerefMut;
 use std::sync::Arc;
-use std::sync::LazyLock;
 use std::sync::Mutex;
 
 use dashmap::DashMap;
@@ -30,40 +28,31 @@ use uuid::Uuid;
 
 use crate::ActorAddr;
 use crate::PortAddr;
-use crate::actor::Signal;
 use crate::introspect::IntrospectMessage;
 
-// Bypass-actor-workq registry: message types whose receivers are delivered via
+// Bypass-actor-workq: message types whose receivers are delivered via
 // dedicated channels rather than the actor's work queue.
 //
-// Types in this registry share two invariants that the framework must honor:
-//   1. Their actor port is pre-registered via `Ports::open_message_port` in
-//      `Instance::new`; `Ports::get` rejects them via `is_bypass_workq_type_id` so
-//      they can't accidentally be wired to the work queue.
-//   2. Their sender-side sequence numbers must NOT share the per-actor seq
+// The bypass-workq message type shares two invariants that the framework
+// must honor:
+//   1. Its actor port is pre-registered via `Ports::open_message_port` in
+//      `Instance::new`; `Ports::get` rejects it via `is_bypass_workq_type_id`
+//      so it can't accidentally be wired to the work queue.
+//   2. Its sender-side sequence numbers must NOT share the per-actor seq
 //      counter (`SeqKey::Actor`), because the work queue never observes them
 //      and would otherwise see seq gaps that buffer subsequent workq messages
-//      indefinitely. `Sequencer::assign_seq` uses `SeqKey::Port` for these.
-//
-// When adding a new bypass-channel actor-port message type, update both lists.
-// A future move to `inventory`-driven registration can collapse them.
-
-static BYPASS_TYPE_IDS: LazyLock<HashSet<TypeId>> =
-    LazyLock::new(|| HashSet::from([TypeId::of::<Signal>(), TypeId::of::<IntrospectMessage>()]));
-
-static BYPASS_ACTOR_PORTS: LazyLock<HashSet<u64>> =
-    LazyLock::new(|| HashSet::from([Signal::port(), IntrospectMessage::port()]));
+//      indefinitely. `Sequencer::assign_seq` uses `SeqKey::Port` for them.
 
 /// Returns true if `id` is the `TypeId` of a bypass-channel message type
 /// (i.e. one that must not be wired through `Ports::get`).
 pub(crate) fn is_bypass_workq_type_id(id: TypeId) -> bool {
-    BYPASS_TYPE_IDS.contains(&id)
+    id == TypeId::of::<IntrospectMessage>()
 }
 
 /// Returns true if `port` is the actor-port index of a bypass-channel
 /// message type (i.e. the sequencer must use `SeqKey::Port` for it).
 pub(crate) fn is_bypass_workq_actor_port(port: u64) -> bool {
-    BYPASS_ACTOR_PORTS.contains(&port)
+    port == IntrospectMessage::port()
 }
 
 /// A client's re-ordering buffer state.
@@ -772,18 +761,6 @@ mod tests {
     fn bypass_registry_introspect_message() {
         assert!(is_bypass_workq_type_id(TypeId::of::<IntrospectMessage>()));
         assert!(is_bypass_workq_actor_port(IntrospectMessage::port()));
-    }
-
-    #[test]
-    fn bypass_registry_signal() {
-        assert!(is_bypass_workq_type_id(TypeId::of::<Signal>()));
-        assert!(is_bypass_workq_actor_port(Signal::port()));
-    }
-
-    #[test]
-    fn bypass_registry_lists_have_matching_lengths() {
-        // If this fails, BYPASS_TYPE_IDS and BYPASS_ACTOR_PORTS have drifted.
-        assert_eq!(BYPASS_TYPE_IDS.len(), BYPASS_ACTOR_PORTS.len());
     }
 
     #[test]
