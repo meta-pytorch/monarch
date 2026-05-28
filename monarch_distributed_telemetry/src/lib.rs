@@ -15,18 +15,20 @@
 //! Data flows directly Rust-to-Rust via PortRef for efficiency.
 
 pub mod database_scanner;
-mod entity_dispatcher;
+mod entity_batch_sink;
 pub mod pyspy_table;
 pub mod query_engine;
 mod record_batch_sink;
+pub mod socket_ingest;
 
 pub use database_scanner::DatabaseScanner;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::record_batch::RecordBatch;
-pub use entity_dispatcher::EntityDispatcher;
+pub use entity_batch_sink::EntityBatchSink;
 use hyperactor::Bind;
 use hyperactor::Unbind;
+pub use monarch_telemetry_schema::serialize_batch;
 use pyo3::prelude::*;
 pub use pyspy_table::PySpyDump;
 pub use pyspy_table::PySpyFrame;
@@ -73,14 +75,6 @@ pub(crate) fn serialize_schema(schema: &SchemaRef) -> anyhow::Result<Vec<u8>> {
     Ok(buf)
 }
 
-pub(crate) fn serialize_batch(batch: &RecordBatch) -> anyhow::Result<Vec<u8>> {
-    let mut buf = Vec::new();
-    let mut writer = StreamWriter::try_new(&mut buf, &batch.schema())?;
-    writer.write(batch)?;
-    writer.finish()?;
-    Ok(buf)
-}
-
 // ============================================================================
 // Python module registration
 // ============================================================================
@@ -113,9 +107,18 @@ fn reset_record_batch_flush_count() {
     reset_flush_count()
 }
 
+/// Start Unix-socket ingest for a database scanner.
+#[pyfunction]
+fn _start_socket_ingest(scanner: PyRef<'_, DatabaseScanner>, socket_path: &str) -> PyResult<bool> {
+    scanner
+        .start_socket_ingest(std::path::Path::new(socket_path))
+        .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))
+}
+
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(enable_record_batch_tracing, module)?)?;
     module.add_function(wrap_pyfunction!(get_record_batch_flush_count, module)?)?;
     module.add_function(wrap_pyfunction!(reset_record_batch_flush_count, module)?)?;
+    module.add_function(wrap_pyfunction!(_start_socket_ingest, module)?)?;
     Ok(())
 }

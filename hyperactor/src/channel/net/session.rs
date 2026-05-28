@@ -946,8 +946,8 @@ pub(super) enum SendLoopError {
     ServerClosed,
     /// Delivery timeout on oldest unacked message.
     DeliveryTimeout,
-    /// Frame exceeds maximum allowed size.
-    OversizedFrame(String),
+    /// Frame `size` exceeded `max` (= `CODEC_MAX_FRAME_LENGTH`).
+    OversizedFrame { size: usize, max: usize },
 }
 
 impl fmt::Display for SendLoopError {
@@ -958,7 +958,11 @@ impl fmt::Display for SendLoopError {
             Self::Rejected(r) => write!(f, "rejected: {r}"),
             Self::ServerClosed => write!(f, "server closed"),
             Self::DeliveryTimeout => write!(f, "delivery timeout"),
-            Self::OversizedFrame(r) => write!(f, "oversized frame: {r}"),
+            Self::OversizedFrame { size, max } => write!(
+                f,
+                "oversized frame: rejecting oversize frame: len={size} > max={max}. \
+                 ack will not arrive before timeout; increase CODEC_MAX_FRAME_LENGTH to allow."
+            ),
         }
     }
 }
@@ -1333,8 +1337,8 @@ where
                     .outbox
                     .pop_front()
                     .expect("not empty")
-                    .try_return(Some(reason.clone()));
-                return Err(SendLoopError::OversizedFrame(reason.to_string()));
+                    .try_return(Some(reason));
+                return Err(SendLoopError::OversizedFrame { size: len, max });
             }
             let message = deliveries.outbox.front_message().expect("not empty");
             pending = Some(stream.write(message.framed()));
