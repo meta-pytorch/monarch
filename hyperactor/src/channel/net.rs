@@ -269,10 +269,33 @@ fn log_send_error(
             );
             true
         }
-        session::SendLoopError::OversizedFrame(reason) => {
-            tracing::error!(dest = %dest, session_id, mode, "oversized frame: {reason}; {link_status}");
+        session::SendLoopError::OversizedFrame { size, max } => {
+            tracing::error!(
+                dest = %dest,
+                session_id,
+                mode,
+                "oversized frame: len={size} > max={max}; {link_status}"
+            );
             true
         }
+    }
+}
+
+/// Map a terminal [`session::SendLoopError`] to a typed [`CloseReason`] for
+/// the `TxStatus` watcher. Variants that callers want to branch on (e.g.
+/// `DialMailboxRouter` keys cache eviction on `SequenceMismatch`) get their
+/// own typed reason; the rest flatten to `Other` carrying the same
+/// `{log_id}: {e}` text used previously for logging.
+fn classify_send_loop_error(error: &session::SendLoopError, log_id: &str) -> CloseReason {
+    match error {
+        session::SendLoopError::Rejected(reason) if reason.contains("out-of-sequence message") => {
+            CloseReason::SequenceMismatch(reason.clone())
+        }
+        session::SendLoopError::OversizedFrame { size, max } => CloseReason::OversizedFrame {
+            size: *size,
+            max: *max,
+        },
+        _ => CloseReason::Other(format!("{log_id}: {error}")),
     }
 }
 
@@ -501,7 +524,7 @@ pub(crate) fn spawn_unordered<M: RemoteMessage>(links: Vec<impl Link + 'static>)
         }
 
         let reason = format!("{log_id}: dispatcher closed");
-        let _ = notify.send(TxStatus::Closed(reason.into()));
+        let _ = notify.send(TxStatus::Closed(CloseReason::Other(reason)));
     });
 
     tx
@@ -536,12 +559,16 @@ fn spawn_inner<M: RemoteMessage>(link: impl Link) -> NetTx<M> {
                         error = %err,
                         "failed to push message to outbox"
                     );
-                    let _ = notify.send(TxStatus::Closed("failed to push to outbox".into()));
+                    let _ = notify.send(TxStatus::Closed(CloseReason::Other(
+                        "failed to push to outbox".into(),
+                    )));
                     return;
                 }
             }
             None => {
-                let _ = notify.send(TxStatus::Closed("sender dropped".into()));
+                let _ = notify.send(TxStatus::Closed(CloseReason::Other(
+                    "sender dropped".into(),
+                )));
                 return;
             }
         }
@@ -556,7 +583,7 @@ fn spawn_inner<M: RemoteMessage>(link: impl Link) -> NetTx<M> {
 
         let mut link_status = LinkStatus::NeverConnected;
 
-        let reason: String = 'outer: loop {
+        let reason: CloseReason = 'outer: loop {
             let connected = match deliveries.expiry_time() {
                 Some(deadline) => match session.connect_by(deadline).await {
                     Ok(s) => s,
@@ -574,12 +601,12 @@ fn spawn_inner<M: RemoteMessage>(link: impl Link) -> NetTx<M> {
                         tracing::error!(
                             dest = %dest, session_id = session_id.0, "{}", error_msg
                         );
-                        break 'outer format!("{log_id}: {error_msg}");
+                        break 'outer CloseReason::Other(format!("{log_id}: {error_msg}"));
                     }
                 },
                 None => match session.connect().await {
                     Ok(s) => s,
-                    Err(_) => break 'outer "session shut down".into(),
+                    Err(_) => break 'outer CloseReason::Other("session shut down".into()),
                 },
             };
 
@@ -637,7 +664,7 @@ fn spawn_inner<M: RemoteMessage>(link: impl Link) -> NetTx<M> {
                 }
                 Err(ref e) => {
                     if log_send_error(e, &dest, session_id.0, "simplex", &link_status) {
-                        break 'outer format!("{log_id}: {e}");
+                        break 'outer classify_send_loop_error(e, &log_id);
                     }
                     // Recoverable error — reconnect after backoff.
                     if let Some(delay) = reconnect_backoff.next_backoff() {
@@ -658,22 +685,23 @@ fn spawn_inner<M: RemoteMessage>(link: impl Link) -> NetTx<M> {
             dest = %dest, session_id = session_id.0, "NetTx closing: {reason}"
         );
 
+        let reason_str = reason.to_string();
         receiver.close();
         deliveries
             .unacked
             .deque
             .drain(..)
             .chain(deliveries.outbox.deque.drain(..))
-            .for_each(|queued| queued.try_return(Some(reason.clone())));
+            .for_each(|queued| queued.try_return(Some(reason_str.clone())));
         while let Ok((msg, return_channel, _)) = receiver.try_recv() {
             let _ = return_channel.send(SendError {
                 error: ChannelError::Closed,
                 message: msg,
-                reason: Some(reason.clone()),
+                reason: Some(reason_str.clone()),
             });
         }
 
-        let _ = notify.send(TxStatus::Closed(reason.into()));
+        let _ = notify.send(TxStatus::Closed(reason));
     });
     tx
 }
