@@ -18,6 +18,7 @@ use serde::Serialize;
 #[macro_use]
 mod macros;
 
+mod action;
 pub mod backend;
 pub mod config;
 pub mod device_selection;
@@ -35,6 +36,7 @@ pub use backend::ibverbs::primitives::*;
 pub fn rdma_supported() -> bool {
     ibverbs_supported() || hyperactor_config::global::get(config::RDMA_ALLOW_TCP_FALLBACK)
 }
+pub use action::RdmaAction;
 pub use rdma_components::RdmaRemoteBuffer;
 pub use rdma_components::SegmentScannerFn;
 // Re-export segment scanner types for extension crate
