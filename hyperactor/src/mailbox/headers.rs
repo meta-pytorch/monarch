@@ -174,7 +174,7 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
-    use crate::actor::Signal;
+    use crate::introspect::IntrospectMessage;
     use crate::port::Port;
     use crate::testing::ids::test_actor_id;
 
@@ -188,15 +188,15 @@ mod tests {
     fn handler_port(actor_name: &str) -> (ActorAddr, PortAddr) {
         let addr: ActorAddr = test_actor_id(actor_name, "worker");
         // Use a fabricated handler-port index (high bit set) by going through
-        // the existing Signal::port() / IntrospectMessage::port() — they're
-        // bypass ports though, so for a NON-bypass handler port we'll use
-        // an explicit message type. Easier: spin up via Port::from of any
-        // u64 with the handler bit set. Since the test util test_actor_id
-        // already returns an ActorAddr, and the only requirement is that
-        // .is_handler_port() is true, we construct a PortAddr that points
-        // to a known handler port — for headers tests we can use
-        // Signal::port() (a bypass handler port — gate should skip it) or
-        // a fabricated non-bypass handler. Use TestHandlerMsg below.
+        // the existing IntrospectMessage::port() — it's a bypass port though,
+        // so for a NON-bypass handler port we'll use an explicit message
+        // type. Easier: spin up via Port::from of any u64 with the handler
+        // bit set. Since the test util test_actor_id already returns an
+        // ActorAddr, and the only requirement is that .is_handler_port() is
+        // true, we construct a PortAddr that points to a known handler port
+        // — for headers tests we can use IntrospectMessage::port() (a bypass
+        // handler port — gate should skip it) or a fabricated non-bypass
+        // handler. Use TestHandlerMsg below.
         let port = addr.port_addr(Port::from(TestHandlerMsg::port()));
         (addr, port)
     }
@@ -212,7 +212,7 @@ mod tests {
 
     fn bypass_port(actor_name: &str) -> (ActorAddr, PortAddr) {
         let addr: ActorAddr = test_actor_id(actor_name, "worker");
-        let port = addr.port_addr(Port::from(Signal::port()));
+        let port = addr.port_addr(Port::from(IntrospectMessage::port()));
         (addr, port)
     }
 

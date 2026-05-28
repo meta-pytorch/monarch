@@ -247,12 +247,6 @@ pub(crate) struct PythonPortHandle {
     inner: PortHandle<PythonMessage>,
 }
 
-impl PythonPortHandle {
-    pub(crate) fn new(inner: PortHandle<PythonMessage>) -> Self {
-        Self { inner }
-    }
-}
-
 #[pymethods]
 impl PythonPortHandle {
     fn send(&self, instance: &PyInstance, message: PythonMessage) -> PyResult<()> {
