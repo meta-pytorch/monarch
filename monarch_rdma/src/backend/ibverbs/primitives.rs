@@ -1040,6 +1040,24 @@ impl IbvWc {
     pub fn is_valid(&self) -> bool {
         self.valid
     }
+
+    #[cfg(test)]
+    pub(super) fn for_test(wr_id: u64, valid: bool) -> Self {
+        Self {
+            wr_id,
+            len: 0,
+            valid,
+            error: None,
+            opcode: rdmaxcel_sys::ibv_wc_opcode::IBV_WC_RDMA_WRITE,
+            bytes: None,
+            qp_num: 0,
+            src_qp: 0,
+            pkey_index: 0,
+            slid: 0,
+            sl: 0,
+            dlid_path_bits: 0,
+        }
+    }
 }
 
 #[cfg(test)]
