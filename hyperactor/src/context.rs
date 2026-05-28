@@ -24,6 +24,8 @@ use backoff::ExponentialBackoffBuilder;
 use backoff::backoff::Backoff;
 use dashmap::DashSet;
 use hyperactor_config::Flattrs;
+use hyperactor_config::attrs::OPERATION_CONTEXT_HEADER;
+use hyperactor_config::attrs::copy_marked_flattrs;
 
 use crate::ActorAddr;
 use crate::Instance;
@@ -96,6 +98,15 @@ pub trait Actor: Mailbox {
     {
         self.instance().spawn_with_uid(uid, actor)
     }
+
+    /// The inbound message headers associated with this context, if any.
+    ///
+    /// Plain [`Instance`] send contexts are not handling an inbound message, so
+    /// they use the default empty header set.
+    fn headers(&self) -> &Flattrs {
+        static EMPTY_HEADERS: OnceLock<Flattrs> = OnceLock::new();
+        EMPTY_HEADERS.get_or_init(Flattrs::new)
+    }
 }
 
 /// An internal extension trait for Mailbox contexts.
@@ -127,6 +138,12 @@ pub(crate) trait MailboxExt: Mailbox {
 // context, mailboxes are few and long-lived; unbounded growth is not
 // a realistic concern.
 static CAN_SEND_WARNED_MAILBOXES: OnceLock<DashSet<ActorAddr>> = OnceLock::new();
+
+fn operation_context_headers(headers: &Flattrs) -> Flattrs {
+    let mut operation_headers = Flattrs::new();
+    copy_marked_flattrs(&mut operation_headers, headers, OPERATION_CONTEXT_HEADER);
+    operation_headers
+}
 
 /// Only actors CanSend because they need a return port.
 impl<T: Actor + Send + Sync> MailboxExt for T {
@@ -192,11 +209,26 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
         fn post(
             proc: &Proc,
             sender: &ActorAddr,
+            sequencer: &crate::ordering::Sequencer,
             port_id: PortAddr,
+            mut headers: Flattrs,
             msg: wirevalue::Any,
             return_undeliverable: bool,
         ) {
-            let mut envelope = MessageEnvelope::new(sender.clone(), port_id, msg, Flattrs::new());
+            assert!(
+                !headers.contains_key(SEQ_INFO),
+                "SEQ_INFO must not be set on split-port forwarded headers"
+            );
+            let seq_info = sequencer.assign_seq(&port_id);
+            crate::mailbox::headers::stamp_sender_actor_id(
+                &mut headers,
+                &seq_info,
+                &port_id,
+                sender,
+            );
+            headers.set(SEQ_INFO, seq_info);
+
+            let mut envelope = MessageEnvelope::new(sender.clone(), port_id, msg, headers);
             envelope.set_return_undeliverable(return_undeliverable);
             mailbox::MailboxSender::post(
                 proc,
@@ -216,6 +248,7 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
             .port_addr(Port::from(port_index));
         let proc = self.instance().proc().clone();
         let sender = self.mailbox().actor_addr().clone();
+        let sequencer = self.instance().sequencer().clone();
         let reducer = reducer_spec
             .map(
                 |ReducerSpec {
@@ -237,11 +270,14 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
             None => {
                 let proc = proc.clone();
                 let sender = sender.clone();
-                Box::new(move |_headers: Flattrs, serialized: wirevalue::Any| {
+                let sequencer = sequencer.clone();
+                Box::new(move |headers: Flattrs, serialized: wirevalue::Any| {
                     post(
                         &proc,
                         &sender,
+                        &sequencer,
                         port_id.clone(),
+                        operation_context_headers(&headers),
                         serialized,
                         return_undeliverable,
                     );
@@ -261,15 +297,18 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
                         let port_id = port_id.clone();
                         let proc = proc.clone();
                         let sender = sender.clone();
+                        let sequencer = sequencer.clone();
                         tokio::spawn(async move {
                             while sleeper.sleep().await {
                                 let mut buf = buffer.lock().unwrap();
                                 match buf.reduce() {
                                     None => (),
-                                    Some(Ok(reduced)) => post(
+                                    Some(Ok((headers, reduced))) => post(
                                         &proc,
                                         &sender,
+                                        &sequencer,
                                         port_id.clone(),
+                                        headers,
                                         reduced,
                                         return_undeliverable,
                                     ),
@@ -308,6 +347,7 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
                     );
 
                     let error_port_id = split_port.clone();
+                    let sequencer = sequencer.clone();
                     Box::new(move |headers: Flattrs, update: wirevalue::Any| {
                         // Hold the lock until messages are sent. This is to avoid another
                         // invocation of this method trying to send message concurrently and
@@ -315,18 +355,20 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
                         //
                         // We also always acquire alarm *after* the buffer, to avoid deadlocks.
                         let mut buf = buffer.lock().unwrap();
-                        match buf.push(update) {
+                        match buf.push(headers.clone(), update) {
                             None => {
                                 let interval = backoff.lock().unwrap().next_backoff().unwrap();
                                 alarm.lock().unwrap().rearm(interval);
                                 Ok(mailbox::SerializedSendDisposition::Delivered)
                             }
-                            Some(Ok(reduced)) => {
+                            Some(Ok((headers, reduced))) => {
                                 alarm.lock().unwrap().disarm();
                                 post(
                                     &proc,
                                     &sender,
+                                    &sequencer,
                                     port_id.clone(),
+                                    headers,
                                     reduced,
                                     return_undeliverable,
                                 );
@@ -370,6 +412,7 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
                     let error_port_id = split_port.clone();
                     let proc = proc.clone();
                     let sender = sender.clone();
+                    let sequencer = sequencer.clone();
 
                     Box::new(move |headers: Flattrs, update: wirevalue::Any| {
                         let mut buf = buffer.lock().unwrap();
@@ -379,12 +422,14 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
                                 headers,
                             });
                         }
-                        match buf.push(update) {
-                            Ok(Some(reduced)) => {
+                        match buf.push(headers.clone(), update) {
+                            Ok(Some((headers, reduced))) => {
                                 post(
                                     &proc,
                                     &sender,
+                                    &sequencer,
                                     port_id.clone(),
+                                    headers,
                                     reduced,
                                     return_undeliverable,
                                 );
@@ -416,6 +461,7 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
 
 struct UpdateBuffer {
     buffered: Vec<wirevalue::Any>,
+    headers: Option<Flattrs>,
     reducer: Box<dyn ErasedCommReducer + Send + Sync + 'static>,
 }
 
@@ -423,19 +469,31 @@ impl UpdateBuffer {
     fn new(reducer: Box<dyn ErasedCommReducer + Send + Sync + 'static>) -> Self {
         Self {
             buffered: Vec::new(),
+            headers: None,
             reducer,
         }
     }
 
     fn pop(&mut self) -> Option<wirevalue::Any> {
-        self.buffered.pop()
+        let value = self.buffered.pop();
+        if self.buffered.is_empty() {
+            self.headers = None;
+        }
+        value
     }
 
     /// Push a new item to the buffer, and optionally return any items that should
     /// be flushed.
-    fn push(&mut self, serialized: wirevalue::Any) -> Option<anyhow::Result<wirevalue::Any>> {
+    fn push(
+        &mut self,
+        headers: Flattrs,
+        serialized: wirevalue::Any,
+    ) -> Option<anyhow::Result<(Flattrs, wirevalue::Any)>> {
         let limit = hyperactor_config::global::get(config::SPLIT_MAX_BUFFER_SIZE);
 
+        if self.headers.is_none() {
+            self.headers = Some(operation_context_headers(&headers));
+        }
         self.buffered.push(serialized);
         if self.buffered.len() >= limit {
             self.reduce()
@@ -444,14 +502,16 @@ impl UpdateBuffer {
         }
     }
 
-    fn reduce(&mut self) -> Option<anyhow::Result<wirevalue::Any>> {
+    fn reduce(&mut self) -> Option<anyhow::Result<(Flattrs, wirevalue::Any)>> {
         if self.buffered.is_empty() {
             None
         } else {
+            let headers = self.headers.take().unwrap_or_else(Flattrs::new);
             match self.reducer.reduce_updates(take(&mut self.buffered)) {
-                Ok(reduced) => Some(Ok(reduced)),
+                Ok(reduced) => Some(Ok((headers, reduced))),
                 Err((e, b)) => {
                     self.buffered = b;
+                    self.headers = Some(headers);
                     Some(Err(e))
                 }
             }
@@ -461,6 +521,7 @@ impl UpdateBuffer {
 
 struct OnceBuffer {
     accumulated: Option<wirevalue::Any>,
+    headers: Option<Flattrs>,
     reducer: Box<dyn ErasedCommReducer + Send + Sync + 'static>,
     expected: usize,
     count: usize,
@@ -471,6 +532,7 @@ impl OnceBuffer {
     fn new(reducer: Box<dyn ErasedCommReducer + Send + Sync + 'static>, expected: usize) -> Self {
         Self {
             accumulated: None,
+            headers: None,
             reducer,
             expected,
             count: 0,
@@ -483,9 +545,13 @@ impl OnceBuffer {
     /// the buffer is broken and returns the rejected value.
     fn push(
         &mut self,
+        headers: Flattrs,
         value: wirevalue::Any,
-    ) -> Result<Option<wirevalue::Any>, (wirevalue::Any, anyhow::Error)> {
+    ) -> Result<Option<(Flattrs, wirevalue::Any)>, (wirevalue::Any, anyhow::Error)> {
         self.count += 1;
+        if self.headers.is_none() {
+            self.headers = Some(operation_context_headers(&headers));
+        }
         self.accumulated = match self.accumulated.take() {
             None => Some(value),
             Some(acc) => match self.reducer.reduce_updates(vec![acc, value]) {
@@ -502,7 +568,10 @@ impl OnceBuffer {
         };
         if self.count >= self.expected {
             self.done = true;
-            Ok(self.accumulated.take())
+            Ok(self
+                .accumulated
+                .take()
+                .map(|reduced| (self.headers.take().unwrap_or_else(Flattrs::new), reduced)))
         } else {
             Ok(None)
         }
