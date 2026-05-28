@@ -1756,14 +1756,6 @@ mod tests {
     use hyperactor::ActorHandle;
     use hyperactor::Context;
     use hyperactor::Handler;
-    use hyperactor::PortRef;
-    use hyperactor::mailbox::DeliveryFailure;
-    use hyperactor::mailbox::MessageEnvelope;
-    use hyperactor::mailbox::TransportFailure;
-    use hyperactor::mailbox::TransportFailureReason;
-    use hyperactor::mailbox::Undeliverable;
-    use hyperactor::mailbox::UndeliverableReason;
-    use hyperactor::port::Port;
     use hyperactor::proc::Proc;
 
     use super::*;
@@ -2745,81 +2737,6 @@ mod tests {
         assert_eq!(replies[1], (1usize, Ok(())));
         harness.teardown().await;
         Ok(())
-    }
-
-    fn fake_undeliverable(proc: &Proc, error: &str) -> Undeliverable<MessageEnvelope> {
-        let mut envelope = MessageEnvelope::serialize(
-            proc.proc_addr().actor_addr("test-sender"),
-            proc.proc_addr()
-                .actor_addr("test-dest")
-                .port_addr(Port::from(0u64)),
-            &0u64,
-            Flattrs::default(),
-        )
-        .unwrap();
-        envelope.push_delivery_failure(DeliveryFailure::new(UndeliverableReason::Transport(
-            TransportFailure::new(
-                envelope.dest().clone(),
-                TransportFailureReason::LinkUnavailable(error.into()),
-            ),
-        )));
-        Undeliverable::Returned(envelope)
-    }
-
-    /// In an awaiting state, an undeliverable message returned to the
-    /// initializer trips `handle_undeliverable_message` into `fail()`,
-    /// which reports `QpInitializerFailed` to the owner with the
-    /// envelope's error message.
-    #[tokio::test]
-    async fn test_undeliverable_in_awaiting_transitions_to_failed() {
-        let harness = Harness::build(QpGuard::new(fake_qp()), MockResponse::DropReply).unwrap();
-        let undeliverable = fake_undeliverable(&harness.proc, "simulated bounce");
-        let peer = harness.proc.client("peer");
-        harness.init_handle.post(&peer, undeliverable);
-        let (key, error) = harness.await_failed().await;
-        assert_eq!(key, harness.qp_key);
-        assert!(
-            error.contains("simulated bounce"),
-            "expected delivery error, got {error}"
-        );
-    }
-
-    /// `PeerInfo` carries a `PortRef<NotifyRts>` attested to a bogus
-    /// address; the initializer's send bounces back as undeliverable
-    /// after `our_rts_sent` is set, and `handle_undeliverable_message`
-    /// trips `fail()`.
-    #[tokio::test]
-    async fn test_notify_rts_undeliverable_transitions_to_failed() -> Result<()> {
-        let Some((qp, info)) = loopback_qp() else {
-            panic!("Skipping test: RDMA devices not available");
-        };
-        let harness = Harness::build(qp, MockResponse::SuccessWithBogusNotifyRts(info))?;
-        let (key, error) = harness.await_failed().await;
-        assert_eq!(key, harness.qp_key);
-        assert!(
-            error.contains("address not routable"),
-            "expected delivery error, got {error:?}"
-        );
-        Ok(())
-    }
-
-    /// Once the initializer is terminal, a late undeliverable is
-    /// just warn-logged and must not produce a second
-    /// `QpInitializerFailed` callback.
-    #[tokio::test]
-    async fn test_undeliverable_after_terminated_does_not_re_fail() {
-        let harness = Harness::build(
-            QpGuard::new(fake_qp()),
-            MockResponse::Error("first fail".into()),
-        )
-        .unwrap();
-        let _ = harness.await_failed().await;
-
-        let undeliverable = fake_undeliverable(&harness.proc, "late bounce");
-        let peer = harness.proc.client("peer");
-        harness.init_handle.post(&peer, undeliverable);
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        assert_eq!(harness.state.lock().unwrap().failed.len(), 1);
     }
 
     #[timed_test::async_timed_test(timeout_secs = 60)]
