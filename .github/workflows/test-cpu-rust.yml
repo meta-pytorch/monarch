@@ -55,12 +55,14 @@ jobs:
         free -h || true
         echo "=== end runner spec ==="
         echo "Running CPU Rust tests..."
+        # The CI profile is configured in .config/nextest.toml
+        # It includes individual test timeouts and a timeout for the entire test run.
         # Capture the test exit code so stage_test_artifacts still runs on
         # failure (otherwise set -e would exit before any artifacts are
         # uploaded). Exclude crates that require GPU hardware, CUDA libraries,
         # or torch C++ headers (libtorch) not available on CPU-only runners.
         rc=0
-        CARGO_BUILD_JOBS=${{ matrix.cargo-jobs }} timeout 15m cargo nextest run --workspace --profile ci \
+        CARGO_BUILD_JOBS=${{ matrix.cargo-jobs }} cargo nextest run --workspace --profile ci \
           -E "$(cat .config/nextest-filter.txt)" \
           --exclude monarch_messages \
           --exclude monarch_tensor_worker \

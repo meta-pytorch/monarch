@@ -7,6 +7,10 @@ slow-timeout = { period = "30s", terminate-after = 10 }
 fail-fast = false
 # Cap parallelism to reduce contention-induced timeouts on shared CI runners.
 test-threads = 4
+# Timeout for the entire suite, only used in CI to prevent running forever.
+# Use this instead of the shell "timeout" function because this way will exclude
+# build time.
+global-timeout = "15m"
 
 [profile.ci.junit]
 path = "junit.xml"
