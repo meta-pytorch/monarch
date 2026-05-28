@@ -50,6 +50,7 @@ use crate::RemoteMessage;
 use crate::channel::ChannelAddr;
 use crate::channel::ChannelError;
 use crate::channel::SendError;
+use crate::channel::SendErrorReason;
 use crate::config;
 use crate::metrics;
 
@@ -367,7 +368,7 @@ impl<M: RemoteMessage> QueuedMessage<M> {
     /// `Frame::Message<M>` and return it to the original
     /// sender. Falls back to logging if the frame is not a
     /// message or deserialization fails.
-    pub(super) fn try_return(self, reason: Option<String>) {
+    pub(super) fn try_return(self, reason: Option<SendErrorReason>) {
         match serde_multipart::deserialize_bincode::<Frame<M>>(self.message) {
             Ok(Frame::Message(_, msg)) => {
                 let _ = self.return_channel.send(SendError {
@@ -1331,13 +1332,13 @@ where
             let len = deliveries.outbox.front_size().expect("not empty");
             let max = stream.max_frame_len();
             if len > max {
-                let err = SendLoopError::OversizedFrame { size: len, max };
+                let reason = SendErrorReason::OversizedFrame { len, max };
                 deliveries
                     .outbox
                     .pop_front()
                     .expect("not empty")
-                    .try_return(Some(err.to_string()));
-                return Err(err);
+                    .try_return(Some(reason));
+                return Err(SendLoopError::OversizedFrame { size: len, max });
             }
             let message = deliveries.outbox.front_message().expect("not empty");
             pending = Some(stream.write(message.framed()));

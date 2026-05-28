@@ -159,6 +159,7 @@ use crate::channel::ChannelError;
 use crate::channel::ChannelTransport;
 use crate::channel::CloseReason;
 use crate::channel::SendError;
+use crate::channel::SendErrorReason;
 use crate::channel::TxStatus;
 use crate::context;
 use crate::id::ActorId;
@@ -1494,6 +1495,9 @@ impl<T: Message> Buffer<T> {
 
 /// A mailbox server client that transmits messages on a Tx channel.
 pub struct MailboxClient {
+    // The channel address.
+    addr: ChannelAddr,
+
     // The unbounded sender.
     buffer: Buffer<MessageEnvelope>,
 
@@ -1534,8 +1538,10 @@ impl MailboxClient {
         let buffer = {
             let completed = completed.clone();
             let completed_notify = completed_notify.clone();
+            let addr = addr.clone();
             Buffer::new(move |envelope, return_handle| {
                 let tx = Arc::clone(&tx);
+                let addr = addr.clone();
                 let (return_channel, return_receiver) =
                     oneshot::channel::<SendError<MessageEnvelope>>();
                 // Set up for delivery failure.
@@ -1549,10 +1555,27 @@ impl MailboxClient {
                             message,
                             reason,
                         }) => {
-                            message.undeliverable(
+                            let target = message.dest().clone();
+                            let reason_text = reason
+                                .as_ref()
+                                .map(ToString::to_string)
+                                .unwrap_or_else(|| "channel closed".to_owned());
+                            let reason = match reason {
+                                Some(SendErrorReason::OversizedFrame { len, max }) => {
+                                    TransportFailureReason::OversizedFrame { len, max }
+                                }
+                                Some(SendErrorReason::Other(_)) | None => {
+                                    TransportFailureReason::ChannelClosed { addr }
+                                }
+                            };
+                            let failure = DeliveryFailure::new(UndeliverableReason::Transport(
+                                TransportFailure::new(target, reason.clone()),
+                            ));
+                            message.undeliverable_with_failure(
                                 DeliveryError::BrokenLink(format!(
-                                    "failed to enqueue in MailboxClient when processing buffer: {error} with reason {reason:?}"
+                                    "failed to enqueue in MailboxClient when processing buffer: {error} with reason {reason_text}"
                                 )),
+                                failure,
                                 return_handle_0,
                             );
                         }
@@ -1569,6 +1592,7 @@ impl MailboxClient {
             })
         };
         let this = Self {
+            addr: addr.clone(),
             buffer,
             _tx_monitoring: tx_monitoring.clone(),
             submitted: Arc::new(AtomicUsize::new(0)),
@@ -1634,9 +1658,18 @@ impl MailboxSender for MailboxClient {
             let err = DeliveryError::BrokenLink(
                 "failed to enqueue in MailboxClient; buffer's queue is closed".to_string(),
             );
+            let target = envelope.dest().clone();
+            let failure =
+                DeliveryFailure::new(UndeliverableReason::Transport(TransportFailure::new(
+                    target,
+                    TransportFailureReason::LinkUnavailable(format!(
+                        "mailbox client buffer is closed for {}",
+                        self.addr
+                    )),
+                )));
 
             // Failed to enqueue.
-            envelope.undeliverable(err, return_handle);
+            envelope.undeliverable_with_failure(err, failure, return_handle);
         } else {
             self.submitted.fetch_add(1, Ordering::SeqCst);
         }
@@ -4382,6 +4415,45 @@ mod tests {
         assert_eq!(receiver.recv().await.unwrap(), 123u64);
         serve_handle.stop("fromt test");
         serve_handle.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_mailbox_client_records_channel_closed_failure() {
+        let mbox = Mailbox::new(test_actor_id("0", "actor0"));
+        let (tx, rx) = channel::local::new();
+        drop(rx);
+        let client = MailboxClient::new(tx);
+        let addr = client.addr.clone();
+
+        let (port, _receiver) = mbox.open_once_port::<u64>();
+        let port = port.bind();
+        let target: Addr = port.port_addr().clone().into();
+        let (return_handle, mut return_receiver) =
+            crate::mailbox::undeliverable::new_undeliverable_port();
+
+        client
+            .serialize_and_send_once(port, 123u64, return_handle)
+            .unwrap();
+
+        let undelivered = tokio::time::timeout(Duration::from_secs(1), return_receiver.recv())
+            .await
+            .expect("timed out waiting for undeliverable")
+            .expect("return port closed")
+            .into_message()
+            .expect("expected returned envelope");
+        let root_failure = undelivered
+            .root_delivery_failure()
+            .expect("expected root delivery failure");
+        let DeliveryFailureKind::Undeliverable(UndeliverableReason::Transport(transport)) =
+            &root_failure.kind
+        else {
+            panic!("expected transport failure, got {root_failure}");
+        };
+        assert_eq!(transport.target, target);
+        assert_eq!(
+            transport.reason,
+            TransportFailureReason::ChannelClosed { addr }
+        );
     }
 
     #[tokio::test]
