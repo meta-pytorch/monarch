@@ -15,11 +15,6 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use anyhow::Result;
-use hyperactor::Proc;
-use hyperactor::channel::ChannelAddr;
-use hyperactor::channel::ChannelTransport;
-use hyperactor::mailbox::BoxedMailboxSender;
-use hyperactor::mailbox::PanickingMailboxSender;
 use once_cell::sync::Lazy;
 use once_cell::unsync::OnceCell as UnsyncOnceCell;
 use pyo3::PyResult;
@@ -93,16 +88,6 @@ pub fn shutdown_tokio_runtime(py: Python<'_>) {
         };
         rt.shutdown_timeout(Duration::from_secs(1));
     });
-}
-
-/// A global runtime proc used by this crate.
-pub(crate) fn get_proc_runtime() -> &'static Proc {
-    static RUNTIME_PROC: OnceLock<Proc> = OnceLock::new();
-    RUNTIME_PROC.get_or_init(|| {
-        let addr = ChannelAddr::any(ChannelTransport::Local);
-        let proc_id = hyperactor::ProcAddr::instance(addr, "monarch_hyperactor_runtime");
-        Proc::configured(proc_id, BoxedMailboxSender::new(PanickingMailboxSender))
-    })
 }
 
 /// Stores the native thread ID of the main Python thread.

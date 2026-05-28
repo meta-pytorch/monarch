@@ -554,7 +554,7 @@ pub struct ActorInstance<A: Actor> {
     /// Supervision events delivered to this actor.
     pub supervision: mpsc::UnboundedReceiver<ActorSupervisionEvent>,
     /// Control signals for the actor.
-    pub signal: PortReceiver<Signal>,
+    pub signal: mpsc::UnboundedReceiver<Signal>,
     /// Primary work queue for handler dispatch.
     pub work: mpsc::UnboundedReceiver<WorkCell<A>>,
 }
@@ -2202,7 +2202,7 @@ pub struct InstanceReceivers<A: Actor> {
     /// Signal and supervision receivers for the actor loop. `None`
     /// for detached/client instances that don't run an actor loop.
     actor_loop: Option<(
-        PortReceiver<Signal>,
+        mpsc::UnboundedReceiver<Signal>,
         mpsc::UnboundedReceiver<ActorSupervisionEvent>,
     )>,
     /// Work queue for dispatching messages to actor handlers.
@@ -2243,11 +2243,11 @@ impl<A: Actor> Instance<A> {
         let actor_loop_ports = if detached {
             None
         } else {
-            let (signal_port, signal_receiver) = mailbox.open_port::<Signal>();
+            let (signal_tx, signal_receiver) = mpsc::unbounded_channel::<Signal>();
             let (supervision_tx, supervision_receiver) =
                 mpsc::unbounded_channel::<ActorSupervisionEvent>();
             Some((
-                (signal_port, supervision_tx),
+                (signal_tx, supervision_tx),
                 (signal_receiver, supervision_receiver),
             ))
         };
@@ -2617,10 +2617,10 @@ impl<A: Actor> Instance<A> {
         self.inner.mailbox.open_once_port()
     }
 
-    /// Return this actor's runtime signal port.
+    /// Return this actor's runtime signal sender.
     #[doc(hidden)]
-    pub fn signal_port(&self) -> PortHandle<Signal> {
-        self.inner.cell.signal_port()
+    pub fn signal_sender(&self) -> mpsc::UnboundedSender<Signal> {
+        self.inner.cell.signal_sender()
     }
 
     /// Get the per-instance local storage.
@@ -2782,7 +2782,7 @@ impl<A: Actor> Instance<A> {
         mut self,
         mut actor: A,
         actor_loop_receivers: (
-            PortReceiver<Signal>,
+            mpsc::UnboundedReceiver<Signal>,
             mpsc::UnboundedReceiver<ActorSupervisionEvent>,
         ),
         mut work_rx: mpsc::UnboundedReceiver<WorkCell<A>>,
@@ -2877,7 +2877,7 @@ impl<A: Actor> Instance<A> {
         &mut self,
         actor: &mut A,
         mut actor_loop_receivers: (
-            PortReceiver<Signal>,
+            mpsc::UnboundedReceiver<Signal>,
             mpsc::UnboundedReceiver<ActorSupervisionEvent>,
         ),
         work_rx: &mut mpsc::UnboundedReceiver<WorkCell<A>>,
@@ -2936,10 +2936,19 @@ impl<A: Actor> Instance<A> {
         let (mut signal_receiver, _) = actor_loop_receivers;
         while self.inner.cell.child_count() > 0 {
             match tokio::time::timeout(Duration::from_millis(500), signal_receiver.recv()).await {
-                Ok(signal) => {
-                    if let Signal::ChildStopped(uid) = signal? {
-                        assert!(self.inner.cell.get_child(&uid).is_none());
-                    }
+                Ok(Some(Signal::ChildStopped(uid))) => {
+                    assert!(self.inner.cell.get_child(&uid).is_none());
+                }
+                // Drain only tracks child termination; other signals are
+                // intentionally swallowed here.
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    // Signal channel closed: no further ChildStopped will
+                    // arrive, so we can no longer track child termination.
+                    // Drop remaining links and exit the drain loop, mirroring
+                    // the timeout branch below.
+                    self.inner.cell.unlink_all();
+                    break;
                 }
                 Err(_) => {
                     tracing::warn!(
@@ -3004,7 +3013,7 @@ impl<A: Actor> Instance<A> {
         &mut self,
         actor: &mut A,
         actor_loop_receivers: &mut (
-            PortReceiver<Signal>,
+            mpsc::UnboundedReceiver<Signal>,
             mpsc::UnboundedReceiver<ActorSupervisionEvent>,
         ),
         work_rx: &mut mpsc::UnboundedReceiver<WorkCell<A>>,
@@ -3027,9 +3036,11 @@ impl<A: Actor> Instance<A> {
             tokio::select! {
                 biased;
                 signal = signal_receiver.recv() => {
-                    let signal = signal.map_err(ActorError::from);
+                    let signal = signal.ok_or_else(|| {
+                        ActorError::new(self.self_addr(), ActorErrorKind::SignalChannelClosed)
+                    })?;
                     tracing::debug!("received signal {signal:?}");
-                    match signal? {
+                    match signal {
                         Signal::Stop(reason) => {
                             self.change_status(ActorStatus::Stopping);
                             self.inner
@@ -3595,9 +3606,9 @@ struct InstanceCellState {
     /// The proc in which the actor is running.
     proc: Proc,
 
-    /// Control port handles to the actor loop, if one is running.
+    /// Control plane message senders to the actor loop, if one is running.
     actor_loop: Option<(
-        PortHandle<Signal>,
+        mpsc::UnboundedSender<Signal>,
         mpsc::UnboundedSender<ActorSupervisionEvent>,
     )>,
 
@@ -3768,7 +3779,7 @@ impl InstanceCell {
         actor_type: ActorType,
         proc: Proc,
         actor_loop: Option<(
-            PortHandle<Signal>,
+            mpsc::UnboundedSender<Signal>,
             mpsc::UnboundedSender<ActorSupervisionEvent>,
         )>,
         status: watch::Receiver<ActorStatus>,
@@ -3853,22 +3864,20 @@ impl InstanceCell {
         self.inner.supervision_event.lock().unwrap().clone()
     }
 
-    fn signal_port(&self) -> PortHandle<Signal> {
+    fn signal_sender(&self) -> mpsc::UnboundedSender<Signal> {
         self.inner
             .actor_loop
             .as_ref()
-            .map(|(signal_port, _)| signal_port.clone())
-            .unwrap_or_else(|| panic!("{} has no runtime signal port", self.actor_addr()))
+            .map(|(signal_tx, _)| signal_tx.clone())
+            .unwrap_or_else(|| panic!("{} has no runtime signal sender", self.actor_addr()))
     }
 
     /// Send a signal to the actor.
     pub fn signal(&self, signal: Signal) -> Result<(), ActorError> {
-        if let Some((signal_port, _)) = &self.inner.actor_loop {
-            // A global signal client is used to send signals to the actor.
-            static CLIENT: OnceLock<Client> = OnceLock::new();
-            let client = CLIENT.get_or_init(|| Proc::global().client("global_signal_client"));
-            signal_port.post(client, signal);
-            Ok(())
+        if let Some((signal_tx, _)) = &self.inner.actor_loop {
+            signal_tx.send(signal).map_err(|_| {
+                ActorError::new(self.actor_addr(), ActorErrorKind::SignalChannelClosed)
+            })
         } else {
             tracing::warn!(
                 "{}: attempted to send signal {} to detached actor",
@@ -4151,12 +4160,6 @@ impl InstanceCell {
     /// We should find some (better) way to consolidate the two.
     pub(crate) fn bind<A: Actor, R: Binds<A>>(&self, ports: &HandlerPorts<A>) -> ActorRef<R> {
         <R as Binds<A>>::bind(ports);
-        // Signal: registered directly in Instance::new() and handled
-        // by the actor loop's select!. The port remains unbound
-        // because runtime signals are sent through InstanceCell's
-        // stored PortHandle, not as externally addressable actor
-        // messages.
-        //
         // Undeliverable: dispatched through the work queue to the
         // actor's Handler<Undeliverable<MessageEnvelope>>.
         //
@@ -4845,14 +4848,6 @@ mod tests {
         snapshot.spawned_handle.await;
         actor.drain_and_stop("test complete").unwrap();
         actor.await;
-    }
-
-    #[tokio::test]
-    async fn test_client_instance_can_bind_signal_port() {
-        let proc = Proc::isolated();
-        let client = proc.client("client");
-
-        let (_signal_port, _signal_rx) = client.bind_handler_port::<Signal>();
     }
 
     #[expect(
