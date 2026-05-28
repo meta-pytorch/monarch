@@ -725,7 +725,7 @@ def test_sent_messages_table(
             elif send_path == "choose":
                 workers.ping.choose().get()
 
-        # Verify the schema matches SentMessage struct in entity_dispatcher.rs
+        # Verify the schema matches the shared SentMessage telemetry row.
         # (only check once, for the "call" path)
         if send_path == "call":
             result = engine.query(
