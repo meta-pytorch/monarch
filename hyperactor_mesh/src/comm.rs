@@ -231,6 +231,14 @@ impl Actor for CommActor {
             .post(message_envelope, /*unused */ monitored_return_handle());
         Ok(())
     }
+
+    async fn handle_invalid_reference(
+        &mut self,
+        cx: &Instance<Self>,
+        undelivered: hyperactor::mailbox::Undeliverable<hyperactor::mailbox::MessageEnvelope>,
+    ) -> Result<(), anyhow::Error> {
+        self.handle_undeliverable_message(cx, undelivered).await
+    }
 }
 
 impl CommActor {

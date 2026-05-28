@@ -324,6 +324,14 @@ impl Actor for GlobalClientActor {
         }
         Ok(())
     }
+
+    async fn handle_invalid_reference(
+        &mut self,
+        cx: &Instance<Self>,
+        undeliverable: Undeliverable<MessageEnvelope>,
+    ) -> Result<(), anyhow::Error> {
+        self.handle_undeliverable_message(cx, undeliverable).await
+    }
 }
 
 /// `MeshFailure` is a terminal supervision signal for an `ActorMesh`.

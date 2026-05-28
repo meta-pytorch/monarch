@@ -43,12 +43,16 @@ use crate::Message;
 use crate::RemoteMessage;
 use crate::context;
 use crate::endpoint::Endpoint;
+use crate::mailbox::DeliveryFailure;
+use crate::mailbox::DeliveryFailureKind;
 use crate::mailbox::MailboxError;
 use crate::mailbox::MailboxSenderError;
 use crate::mailbox::MessageEnvelope;
 use crate::mailbox::PortHandle;
+use crate::mailbox::TransportFailureReason;
 use crate::mailbox::Undeliverable;
 use crate::mailbox::UndeliverableMessageError;
+use crate::mailbox::UndeliverableReason;
 use crate::message::Castable;
 use crate::message::IndexedErasedUnbound;
 use crate::proc::Context;
@@ -165,6 +169,15 @@ pub trait Actor: Sized + Send + 'static {
         handle_undeliverable_message(cx, envelope)
     }
 
+    /// Default invalid-reference handling behavior.
+    async fn handle_invalid_reference(
+        &mut self,
+        cx: &Instance<Self>,
+        envelope: Undeliverable<MessageEnvelope>,
+    ) -> Result<(), anyhow::Error> {
+        handle_invalid_reference(cx, envelope)
+    }
+
     /// If overridden, we will use this name in place of the
     /// ActorAddr for talking about this actor in supervision error
     /// messages.
@@ -177,16 +190,52 @@ pub trait Actor: Sized + Send + 'static {
 /// as a free function so that `Actor` implementations that override
 /// [`Actor::handle_undeliverable_message`] can fallback to this default.
 pub fn handle_undeliverable_message<A: Actor>(
-    cx: &Instance<A>,
+    _cx: &Instance<A>,
     undeliverable: Undeliverable<MessageEnvelope>,
 ) -> Result<(), anyhow::Error> {
     match undeliverable {
         Undeliverable::Message(envelope) => {
-            assert_eq!(envelope.sender(), cx.self_addr());
+            if matches!(
+                envelope
+                    .root_delivery_failure()
+                    .map(|failure| &failure.kind),
+                Some(DeliveryFailureKind::Undeliverable(reason))
+                    if !undeliverable_reason_fails_actor(reason)
+            ) {
+                return Ok(());
+            }
+
             anyhow::bail!(UndeliverableMessageError::DeliveryFailure { envelope });
         }
         Undeliverable::Lost(lost) => {
-            assert_eq!(&lost.sender, cx.self_addr());
+            anyhow::bail!(UndeliverableMessageError::Lost { lost });
+        }
+    }
+}
+
+fn undeliverable_reason_fails_actor(reason: &UndeliverableReason) -> bool {
+    matches!(
+        reason,
+        UndeliverableReason::Transport(transport)
+            if matches!(
+                &transport.reason,
+                TransportFailureReason::OversizedFrame { .. }
+            )
+    )
+}
+
+/// Default implementation of [`Actor::handle_invalid_reference`]. Defined
+/// as a free function so that `Actor` implementations that override
+/// [`Actor::handle_invalid_reference`] can fallback to this default.
+pub fn handle_invalid_reference<A: Actor>(
+    _cx: &Instance<A>,
+    undeliverable: Undeliverable<MessageEnvelope>,
+) -> Result<(), anyhow::Error> {
+    match undeliverable {
+        Undeliverable::Message(envelope) => {
+            anyhow::bail!(UndeliverableMessageError::DeliveryFailure { envelope });
+        }
+        Undeliverable::Lost(lost) => {
             anyhow::bail!(UndeliverableMessageError::Lost { lost });
         }
     }
@@ -249,6 +298,77 @@ impl<A: Actor> Handler<crate::introspect::IntrospectMessage> for A {
     }
 }
 
+enum DeliveryFailurePolicy {
+    InvalidReference,
+    Expired,
+    Undeliverable,
+}
+
+fn delivery_failure_policy(message: &Undeliverable<MessageEnvelope>) -> DeliveryFailurePolicy {
+    match message {
+        Undeliverable::Message(envelope) => match envelope
+            .root_delivery_failure()
+            .map(|failure| &failure.kind)
+        {
+            Some(DeliveryFailureKind::InvalidReference(_)) => {
+                DeliveryFailurePolicy::InvalidReference
+            }
+            Some(DeliveryFailureKind::Expired(_)) => DeliveryFailurePolicy::Expired,
+            Some(DeliveryFailureKind::Undeliverable(_)) | None => {
+                DeliveryFailurePolicy::Undeliverable
+            }
+        },
+        Undeliverable::Lost(_) => DeliveryFailurePolicy::Undeliverable,
+    }
+}
+
+struct DeliveryFailureLogFields {
+    sender: ActorAddr,
+    dest: EndpointLocation,
+    error: DeliveryFailureLogError,
+}
+
+impl DeliveryFailureLogFields {
+    fn new(message: &Undeliverable<MessageEnvelope>) -> Self {
+        match message {
+            Undeliverable::Message(envelope) => Self {
+                sender: envelope.sender().clone(),
+                dest: EndpointLocation::Port(envelope.dest().clone()),
+                error: DeliveryFailureLogError::DeliveryFailures(
+                    envelope.delivery_failures().to_vec(),
+                ),
+            },
+            Undeliverable::Lost(lost) => Self {
+                sender: lost.sender.clone(),
+                dest: lost.dest.clone(),
+                error: DeliveryFailureLogError::Lost(lost.error.clone()),
+            },
+        }
+    }
+}
+
+enum DeliveryFailureLogError {
+    DeliveryFailures(Vec<DeliveryFailure>),
+    Lost(String),
+}
+
+impl fmt::Display for DeliveryFailureLogError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DeliveryFailures(failures) => {
+                for (index, failure) in failures.iter().enumerate() {
+                    if index > 0 {
+                        write!(f, "; ")?;
+                    }
+                    write!(f, "{}", failure)?;
+                }
+                Ok(())
+            }
+            Self::Lost(error) => write!(f, "{}", error),
+        }
+    }
+}
+
 /// This handler provides a default behavior when a message sent by
 /// the actor to another is returned due to delivery failure.
 #[async_trait]
@@ -258,38 +378,53 @@ impl<A: Actor> Handler<Undeliverable<MessageEnvelope>> for A {
         cx: &Context<Self>,
         message: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
-        let (sender, dest, error) = match &message {
-            Undeliverable::Message(envelope) => (
-                envelope.sender().to_string(),
-                envelope.dest().to_string(),
-                envelope.error_msg().unwrap_or_default(),
-            ),
-            Undeliverable::Lost(lost) => (
-                lost.sender.to_string(),
-                lost.dest.to_string(),
-                lost.error.clone(),
-            ),
+        let log_fields = (tracing::enabled!(tracing::Level::DEBUG)
+            || tracing::enabled!(tracing::Level::ERROR))
+        .then(|| DeliveryFailureLogFields::new(&message));
+        let result = match delivery_failure_policy(&message) {
+            DeliveryFailurePolicy::InvalidReference => {
+                self.handle_invalid_reference(cx, message).await
+            }
+            DeliveryFailurePolicy::Expired => match message {
+                Undeliverable::Message(envelope) => {
+                    Err(UndeliverableMessageError::DeliveryFailure { envelope }.into())
+                }
+                Undeliverable::Lost(lost) => Err(UndeliverableMessageError::Lost { lost }.into()),
+            },
+            DeliveryFailurePolicy::Undeliverable => {
+                self.handle_undeliverable_message(cx, message).await
+            }
         };
-        match self.handle_undeliverable_message(cx, message).await {
+        match result {
             Ok(_) => {
-                tracing::debug!(
-                    actor_id = %cx.self_addr(),
-                    name = "undeliverable_message_handled",
-                    %sender,
-                    %dest,
-                    error,
-                );
+                if let Some(log_fields) = log_fields {
+                    tracing::debug!(
+                        actor_id = %cx.self_addr(),
+                        name = "undeliverable_message_handled",
+                        sender = %log_fields.sender,
+                        dest = %log_fields.dest,
+                        error = %log_fields.error,
+                    );
+                }
                 Ok(())
             }
             Err(e) => {
-                tracing::error!(
-                    actor_id = %cx.self_addr(),
-                    name = "undeliverable_message",
-                    %sender,
-                    %dest,
-                    error,
-                    handler_error = %e,
-                );
+                if let Some(log_fields) = log_fields {
+                    tracing::error!(
+                        actor_id = %cx.self_addr(),
+                        name = "undeliverable_message",
+                        sender = %log_fields.sender,
+                        dest = %log_fields.dest,
+                        error = %log_fields.error,
+                        handler_error = %e,
+                    );
+                } else {
+                    tracing::error!(
+                        actor_id = %cx.self_addr(),
+                        name = "undeliverable_message",
+                        handler_error = %e,
+                    );
+                }
                 Err(e)
             }
         }
@@ -1096,6 +1231,7 @@ macro_rules! assert_behaves {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::sync::Mutex;
     use std::time::Duration;
 
@@ -1110,6 +1246,7 @@ mod tests {
     use crate::ActorRef;
     use crate::Addr;
     use crate::OncePortHandle;
+    use crate::PortAddr;
     use crate::PortRef;
     use crate::config;
     use crate::context::Mailbox as _;
@@ -1117,11 +1254,20 @@ mod tests {
     use crate::introspect::IntrospectResult;
     use crate::introspect::IntrospectView;
     use crate::mailbox::BoxableMailboxSender as _;
+    use crate::mailbox::DeliveryFailure;
+    use crate::mailbox::ExpiredDelivery;
+    use crate::mailbox::InvalidReference;
+    use crate::mailbox::InvalidReferenceReason;
     use crate::mailbox::MailboxSender;
+    use crate::mailbox::PortGone;
     use crate::mailbox::PortLocation;
+    use crate::mailbox::TransportFailure;
+    use crate::mailbox::TransportFailureReason;
+    use crate::mailbox::UndeliverableReason;
     use crate::mailbox::monitored_return_handle;
     use crate::ordering::SEQ_INFO;
     use crate::ordering::SeqInfo;
+    use crate::port::Port;
     use crate::testing::ids::test_proc_id;
     use crate::testing::pingpong::PingPongActor;
     use crate::testing::pingpong::PingPongMessage;
@@ -1140,6 +1286,144 @@ mod tests {
             port.post(cx, message);
             Ok(())
         }
+    }
+
+    #[derive(Debug)]
+    struct DeliveryPolicyActor(PortRef<()>);
+
+    #[async_trait]
+    impl Actor for DeliveryPolicyActor {}
+
+    #[async_trait]
+    impl Handler<()> for DeliveryPolicyActor {
+        async fn handle(&mut self, cx: &Context<Self>, _message: ()) -> Result<(), anyhow::Error> {
+            self.0.post(cx, ());
+            Ok(())
+        }
+    }
+
+    fn delivery_policy_envelope(
+        sender: &ActorAddr,
+        dest: PortAddr,
+        failure: DeliveryFailure,
+    ) -> MessageEnvelope {
+        let mut envelope =
+            MessageEnvelope::serialize(sender.clone(), dest, &(), Flattrs::new()).unwrap();
+        envelope.push_delivery_failure(failure);
+        envelope
+    }
+
+    async fn assert_delivery_policy_actor_remains_live(failure: DeliveryFailure) {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let (sync_port, mut sync_rx) = client.open_port::<()>();
+        let actor = DeliveryPolicyActor(sync_port.bind());
+        let handle = proc.spawn_with_label("delivery_policy", actor);
+        let dest = handle.actor_addr().port_addr(Port::from(1234));
+        let envelope = delivery_policy_envelope(handle.actor_addr(), dest, failure);
+
+        handle.post(&client, Undeliverable::Message(envelope));
+        handle.post(&client, ());
+
+        tokio::time::timeout(Duration::from_secs(1), sync_rx.recv())
+            .await
+            .expect("actor should remain live")
+            .expect("sync port should receive response");
+        handle.drain_and_stop("test").unwrap();
+        assert_matches!(handle.await, ActorStatus::Stopped(reason) if reason == "test");
+    }
+
+    async fn assert_delivery_policy_actor_fails(failure: DeliveryFailure) {
+        assert_delivery_policy_actor_fails_with_sender(failure, |actor_addr| actor_addr.clone())
+            .await;
+    }
+
+    async fn assert_delivery_policy_actor_fails_with_sender(
+        failure: DeliveryFailure,
+        envelope_sender: impl FnOnce(&ActorAddr) -> ActorAddr,
+    ) {
+        let proc = Proc::isolated();
+        let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
+        let client = proc.client("client");
+        let (sync_port, _sync_rx) = client.open_port::<()>();
+        let actor = DeliveryPolicyActor(sync_port.bind());
+        let handle = proc.spawn_with_label("delivery_policy", actor);
+        let dest = handle.actor_addr().port_addr(Port::from(1234));
+        let sender = envelope_sender(handle.actor_addr());
+        let envelope = delivery_policy_envelope(&sender, dest, failure);
+
+        handle.post(&client, Undeliverable::Message(envelope));
+
+        assert_matches!(handle.await, ActorStatus::Failed(_));
+    }
+
+    #[tokio::test]
+    async fn test_default_transport_undeliverable_policy_does_not_fail_actor() {
+        let target = Addr::Proc(test_proc_id("target"));
+        assert_delivery_policy_actor_remains_live(DeliveryFailure::new(
+            UndeliverableReason::Transport(TransportFailure::new(
+                target,
+                TransportFailureReason::NoRoute,
+            )),
+        ))
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_default_oversized_frame_transport_policy_fails_actor() {
+        let target = Addr::Proc(test_proc_id("target"));
+        assert_delivery_policy_actor_fails(DeliveryFailure::new(UndeliverableReason::Transport(
+            TransportFailure::new(
+                target,
+                TransportFailureReason::OversizedFrame {
+                    len: 55001392,
+                    max: 50000000,
+                },
+            ),
+        )))
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_default_port_gone_policy_does_not_fail_actor() {
+        let port = test_proc_id("target")
+            .actor_addr("actor")
+            .port_addr(Port::from(1234));
+        assert_delivery_policy_actor_remains_live(DeliveryFailure::new(
+            UndeliverableReason::PortGone(PortGone::new(port, Some("()".to_string()))),
+        ))
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_default_invalid_reference_policy_fails_actor() {
+        let target = test_proc_id("target").actor_addr("actor");
+        assert_delivery_policy_actor_fails(DeliveryFailure::new(InvalidReference::new(
+            target,
+            InvalidReferenceReason::ActorNotExist,
+        )))
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_default_invalid_reference_policy_allows_return_handle_sender_mismatch() {
+        let target = test_proc_id("target").actor_addr("actor");
+        assert_delivery_policy_actor_fails_with_sender(
+            DeliveryFailure::new(InvalidReference::new(
+                target,
+                InvalidReferenceReason::ActorNotExist,
+            )),
+            |_| test_proc_id("sender").actor_addr("actor"),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_default_expired_delivery_policy_fails_actor() {
+        let port = test_proc_id("target")
+            .actor_addr("actor")
+            .port_addr(Port::from(1234));
+        assert_delivery_policy_actor_fails(DeliveryFailure::new(ExpiredDelivery::new(port))).await;
     }
 
     #[tokio::test]

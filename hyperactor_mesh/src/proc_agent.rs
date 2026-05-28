@@ -691,6 +691,14 @@ impl Actor for ProcAgent {
             handle_undeliverable_message(cx, envelope)
         }
     }
+
+    async fn handle_invalid_reference(
+        &mut self,
+        cx: &Instance<Self>,
+        envelope: Undeliverable<MessageEnvelope>,
+    ) -> Result<(), anyhow::Error> {
+        self.handle_undeliverable_message(cx, envelope).await
+    }
 }
 
 #[async_trait]
