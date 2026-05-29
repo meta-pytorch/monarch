@@ -12,15 +12,18 @@ license = "BSD-3-Clause"
 [dependencies]
 anyhow = "1.0.102"
 async-trait = "0.1.86"
+erased-serde = "0.4.10"
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
 ndslice = { version = "0.0.0", path = "../ndslice" }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 typeuri = { version = "0.0.0", path = "../typeuri" }
+uuid = { version = "1.23.0", features = ["rng-getrandom", "serde", "v4", "v5", "v6", "v7", "v8"] }
 wirevalue = { version = "0.0.0", path = "../wirevalue" }
 
 [dev-dependencies]
+inventory = "0.3.24"
 proptest = "1.11.0"
 timed_test = { version = "0.0.0", path = "../timed_test" }
 tokio = { version = "1.52.3", features = ["full", "test-util", "tracing"] }
