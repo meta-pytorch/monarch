@@ -5,14 +5,13 @@
 # LICENSE file in the root directory of this source tree.
 
 # pyre-unsafe
-import ctypes
 import functools
 import logging
 import sys
+import threading
 import warnings
-from collections import defaultdict
-from enum import Enum
-from typing import Any, cast, Dict, List, Optional, Tuple, TYPE_CHECKING
+from collections import OrderedDict
+from typing import Any, cast, Dict, Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
     import torch
@@ -29,31 +28,73 @@ _NATIVE_RDMA_IMPORT_ERROR: Optional[ImportError] = None
 
 try:
     from monarch._rust_bindings.rdma import (
+        _assert_1d_contiguous,
+        _get_memoryview_addr_and_size,
+        _get_tensor_addr_and_size,
         _LocalMemoryHandle,
+        _make_local_memory_handle_from_memoryview,
+        _make_local_memory_handle_from_tensor,
+        _RdmaAction,
         _RdmaBuffer,
         _RdmaManager,
+        _WeakLocalMemoryHandle,
         is_ibverbs_available as _is_ibverbs_available,
         rdma_supported as _rdma_supported,
     )
 except ImportError as e:
-    _NATIVE_RDMA_IMPORT_ERROR = e
-    logging.warning("RDMA native bindings are not available: %s", e)
+    # These fallbacks let the module import on platforms without the native
+    # RDMA bindings; every entry point raises on use. We hide them from the
+    # type checker with `if not TYPE_CHECKING` so it resolves these names to
+    # their real types from the `try` import (via the `.pyi` stub) rather
+    # than the catch-all `_UnavailableNativeBinding`, which has none of the
+    # real attributes. At runtime `TYPE_CHECKING` is `False`, so the
+    # fallbacks below are the ones that take effect.
+    if not TYPE_CHECKING:
+        _NATIVE_RDMA_IMPORT_ERROR = e
+        logging.warning("RDMA native bindings are not available: %s", e)
 
-    class _UnavailableNativeBinding:
-        def __init__(self, *args: Any, **kwargs: Any) -> None:
+        class _UnavailableNativeBinding:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                raise ImportError(
+                    "RDMA native bindings are not available on this platform"
+                ) from _NATIVE_RDMA_IMPORT_ERROR
+
+        _LocalMemoryHandle = _UnavailableNativeBinding
+        _WeakLocalMemoryHandle = _UnavailableNativeBinding
+        _RdmaAction = _UnavailableNativeBinding
+        _RdmaBuffer = _UnavailableNativeBinding
+        _RdmaManager = _UnavailableNativeBinding
+
+        def _make_local_memory_handle_from_memoryview(mv: memoryview) -> Any:
             raise ImportError(
                 "RDMA native bindings are not available on this platform"
             ) from _NATIVE_RDMA_IMPORT_ERROR
 
-    _LocalMemoryHandle = _UnavailableNativeBinding
-    _RdmaBuffer = _UnavailableNativeBinding
-    _RdmaManager = _UnavailableNativeBinding
+        def _make_local_memory_handle_from_tensor(tensor: Any) -> Any:
+            raise ImportError(
+                "RDMA native bindings are not available on this platform"
+            ) from _NATIVE_RDMA_IMPORT_ERROR
 
-    def _is_ibverbs_available() -> bool:
-        return False
+        def _assert_1d_contiguous(buf: Any) -> None:
+            raise ImportError(
+                "RDMA native bindings are not available on this platform"
+            ) from _NATIVE_RDMA_IMPORT_ERROR
 
-    def _rdma_supported() -> bool:
-        return False
+        def _get_memoryview_addr_and_size(mv: memoryview) -> tuple[int, int]:
+            raise ImportError(
+                "RDMA native bindings are not available on this platform"
+            ) from _NATIVE_RDMA_IMPORT_ERROR
+
+        def _get_tensor_addr_and_size(tensor: Any) -> tuple[int, int]:
+            raise ImportError(
+                "RDMA native bindings are not available on this platform"
+            ) from _NATIVE_RDMA_IMPORT_ERROR
+
+        def _is_ibverbs_available() -> bool:
+            return False
+
+        def _rdma_supported() -> bool:
+            return False
 
 
 # RDMARead/WriteTransferWarnings are warnings that are only printed once per process.
@@ -134,14 +175,6 @@ def _ensure_init_rdma_manager() -> Shared[None]:
     return PythonTask.from_coroutine(task()).spawn()
 
 
-def _get_error(buf: object) -> ValueError:
-    return ValueError(
-        "RDMABuffer only supports 1d contiguous torch.Tensor or 1d c-contiguous memoryview. Got: {}".format(
-            buf
-        )
-    )
-
-
 def _is_torch_tensor(obj: object) -> bool:
     """Check whether obj is a torch.Tensor without importing torch."""
     torch_mod = sys.modules.get("torch")
@@ -150,56 +183,62 @@ def _is_torch_tensor(obj: object) -> bool:
     return isinstance(obj, torch_mod.Tensor)
 
 
-def _assert_1d_contiguous(buf: "torch.Tensor | memoryview") -> None:
-    if _is_torch_tensor(buf):
-        if buf.dim() != 1 or not buf.is_contiguous():  # type: ignore[union-attr]
-            raise _get_error(buf)
-    elif isinstance(buf, memoryview):
-        if buf.ndim != 1 or not buf.c_contiguous:
-            raise _get_error(buf)
-    else:
-        raise _get_error(buf)
-
-
-def _get_memoryview_addr_and_size(buf: memoryview) -> tuple[int, int]:
-    addr = ctypes.addressof(ctypes.c_char.from_buffer(buf))
-    size = buf.nbytes
-    return addr, size
-
-
-def _get_tensor_addr_and_size(tensor: "torch.Tensor") -> tuple[int, int]:
-    data_ptr: int = tensor.untyped_storage().data_ptr()
-    # Calculate the actual starting address of the tensor data
-    # storage_offset() can return either int or torch.SymInt in newer PyTorch versions
-    try:
-        storage_offset = int(tensor.storage_offset())
-    except Exception as e:
-        raise RuntimeError("Failed to convert tensor.storage_offset() to int.") from e
-    offset: int = storage_offset * tensor.element_size()
-    addr: int = data_ptr + offset
-    size: int = tensor.element_size() * tensor.numel()
-    return addr, size
-
-
-def _get_addr_and_size(buf: "torch.Tensor | memoryview") -> tuple[int, int]:
-    _assert_1d_contiguous(buf)
-    if isinstance(buf, memoryview):
-        return _get_memoryview_addr_and_size(buf)
-    elif _is_torch_tensor(buf):
-        return _get_tensor_addr_and_size(buf)  # type: ignore[arg-type]
-    # This shouldn't happen unless there is a bug, handle the type in caller.
-    raise RuntimeError(
-        "Trying to get address and size of unsupported type. Expected memoryview or torch.Tensor. Got: {}".format(
-            type(buf)
-        )
-    )
+# Cache of weak handles to local memory regions, keyed by
+# `(backing_id, addr, size)`. `backing_id` is `id(t.untyped_storage())`
+# for tensors and `id(mv)` for memoryviews — i.e. the id of the
+# stable underlying allocation rather than the id of any per-call
+# tensor view; transient views like `tensor.view(...).flatten()` thus
+# share a cache entry with the original tensor. `addr` and `size`
+# further disambiguate different slices of the same backing.
+#
+# The cached `_WeakLocalMemoryHandle` does NOT pin the backing, so
+# the cache cannot prolong an allocation's lifetime; when the backing
+# is garbage-collected, `weak.upgrade()` returns `None` on the next
+# lookup and we register fresh.
+_LOCAL_MEMORY_CACHE_CAPACITY = 1024
+_local_memory_cache: "OrderedDict[Tuple[int, int, int], _WeakLocalMemoryHandle]" = (
+    OrderedDict()
+)
+# Serializes the multi-step get/move_to_end/del/setitem/popitem sequence in
+# `_make_local_memory_handle`; the GIL only makes the individual ops atomic.
+_local_memory_cache_lock = threading.Lock()
 
 
 def _make_local_memory_handle(
     data: "torch.Tensor | memoryview",
 ) -> _LocalMemoryHandle:
-    addr, size = _get_addr_and_size(data)
-    return _LocalMemoryHandle(obj=data, addr=addr, size=size)
+    _assert_1d_contiguous(data)
+    if isinstance(data, memoryview):
+        backing_id = id(data)
+        addr, size = _get_memoryview_addr_and_size(data)
+    elif _is_torch_tensor(data):
+        backing_id = id(data.untyped_storage())  # type: ignore[union-attr]
+        addr, size = _get_tensor_addr_and_size(data)
+    else:
+        raise RuntimeError(
+            "Trying to make a local memory handle for an unsupported type. "
+            "Expected memoryview or torch.Tensor. Got: {}".format(type(data))
+        )
+    key = (backing_id, addr, size)
+    with _local_memory_cache_lock:
+        weak = _local_memory_cache.get(key)
+        if weak is not None:
+            cached = weak.upgrade()
+            if cached is not None:
+                _local_memory_cache.move_to_end(key)
+                return cached
+            del _local_memory_cache[key]
+    if isinstance(data, memoryview):
+        strong = _make_local_memory_handle_from_memoryview(data)
+    else:
+        strong = _make_local_memory_handle_from_tensor(data)
+    weak = strong.downgrade()
+    if weak is not None:
+        with _local_memory_cache_lock:
+            _local_memory_cache[key] = weak
+            while len(_local_memory_cache) > _LOCAL_MEMORY_CACHE_CAPACITY:
+                _local_memory_cache.popitem(last=False)
+    return strong
 
 
 class RdmaController(Actor):
@@ -218,7 +257,6 @@ class RdmaController(Actor):
                     coro=cast("PythonTask[Any]", proc_mesh._proc_mesh.task())
                 )
                 return none_throws(
-                    # pyrefly: ignore [missing-attribute]
                     await _RdmaManager.create_rdma_manager_nonblocking(
                         proc_mesh_result, context().actor_instance
                     )
@@ -281,7 +319,7 @@ def _check_cuda_expandable_segments_enabled() -> bool:
             return False
         return True
 
-    except Exception as e:
+    except Exception:
         warnings.warn(
             "Unable to verify CUDA allocator configuration.\n"
             "Please ensure expandable segments are enabled for best RDMA performance with CUDA tensors:\n"
@@ -340,11 +378,9 @@ class RDMABuffer:
         handle = _make_local_memory_handle(data)
 
         try:
-            # pyrefly: ignore [missing-attribute]
             if handle.size == 0:
                 raise ValueError("Cannot create RDMABuffer with size 0.")
             ctx = context()
-            # pyrefly: ignore [missing-attribute]
             self._buffer: _RdmaBuffer = _RdmaBuffer.create_rdma_buffer_blocking(
                 local=handle,
                 client=ctx.actor_instance,
@@ -360,107 +396,54 @@ class RDMABuffer:
         return get_rdma_backend()
 
     def size(self) -> int:
-        # pyrefly: ignore [missing-attribute]
         return self._buffer.size()
 
     def read_into(
         self,
         dst: "torch.Tensor | memoryview",
         *,
-        timeout: int = 3,
-    ) -> Future[Optional[int]]:
-        """
-        Read data from the RDMABuffer into a destination tensor.
+        timeout: int = 60,
+    ) -> Future[None]:
+        """Read data from this RDMABuffer into ``dst``.
 
-        The destination tensor must be contiguous (including tensor views/slices).
+        ``dst`` must be a 1D contiguous tensor or c-contiguous memoryview
+        whose byte-size is at least ``self.size()``.
+
         Args:
             dst: Destination tensor or memoryview to read into.
         Keyword Args:
-            timeout (int, optional): Timeout in seconds for the operation. Defaults to 3s.
+            timeout (int, optional): Timeout in seconds. Defaults to 60s.
         Returns:
-            Future[Optional[int]]: A Monarch Future that can be awaited or called with .get() for blocking operation.
-
+            Future[None]: A Monarch Future that resolves to ``None`` when
+                the read completes.
         Raises:
-            ValueError: If the destination tensor size is smaller than the RDMA buffer size.
-
-        Note:
-            Currently only CPU tensors are fully supported. GPU tensors will be temporarily
-            copied to CPU, which may impact performance.
+            ValueError: If ``dst`` is smaller than the RDMA buffer.
         """
-        handle = _make_local_memory_handle(dst)
-
-        # pyrefly: ignore [missing-attribute]
-        if self.size() > handle.size:
-            raise ValueError(
-                # pyrefly: ignore [missing-attribute]
-                f"Destination tensor size ({handle.size}) must be >= RDMA buffer size ({self.size()})"
-            )
-
-        client = context().actor_instance
-
-        async def read_into_nonblocking() -> Optional[int]:
-            await _ensure_init_rdma_manager()
-
-            # pyrefly: ignore [missing-attribute]
-            res = await self._buffer.read_into(
-                dst=handle,
-                client=client,
-                timeout=timeout,
-            )
-            return res
-
-        return Future(coro=read_into_nonblocking())
+        return RDMAAction().read_remote(dst, self).submit(timeout=timeout)
 
     def write_from(
         self,
         src: "torch.Tensor | memoryview",
         *,
-        timeout: int = 3,
+        timeout: int = 60,
     ) -> Future[None]:
-        """
-        Write data from a source tensor into the RDMABuffer.
+        """Write data from ``src`` into this RDMABuffer.
+
+        ``src`` must be a 1D contiguous tensor or c-contiguous memoryview
+        whose byte-size is at most ``self.size()``.
 
         Args:
-            src: Source tensor containing data to be written to the RDMA buffer.
-                                Must be a contiguous tensor (including tensor views/slices).
-                                Either src or addr/size must be provided.
+            src: Source tensor or memoryview containing the bytes to
+                write to the RDMA buffer.
         Keyword Args:
-            timeout (int, optional): Timeout in seconds for the operation. Defaults to 3s.
-
+            timeout (int, optional): Timeout in seconds. Defaults to 60s.
         Returns:
-            Future[None]: A Monarch Future object that can be awaited or called with .get()
-                         for blocking operation. Returns None when completed successfully.
-
+            Future[None]: A Monarch Future that resolves to ``None`` when
+                the write completes.
         Raises:
-            ValueError: If the source tensor size exceeds the RDMA buffer size.
-
-        Note:
-            Currently only CPU tensors are fully supported. GPU tensors will be temporarily
-            copied to CPU, which may impact performance.
+            ValueError: If ``src`` exceeds the RDMA buffer size.
         """
-
-        handle = _make_local_memory_handle(src)
-
-        # pyrefly: ignore [missing-attribute]
-        if handle.size > self.size():
-            raise ValueError(
-                # pyrefly: ignore [missing-attribute]
-                f"Source tensor size ({handle.size}) must be <= RDMA buffer size ({self.size()})"
-            )
-        client = context().actor_instance
-
-        async def write_from_nonblocking() -> None:
-            await _ensure_init_rdma_manager()
-
-            # pyrefly: ignore [missing-attribute]
-            res = await self._buffer.write_from(
-                src=handle,
-                client=client,
-                timeout=timeout,
-            )
-            return res
-
-        return Future(coro=write_from_nonblocking())
+        return RDMAAction().write_remote(self, src).submit(timeout=timeout)
 
     def drop(self) -> Future[None]:
         """
@@ -470,8 +453,6 @@ class RDMABuffer:
 
         async def drop_nonblocking() -> None:
             await _ensure_init_rdma_manager()
-
-            # pyrefly: ignore [missing-attribute]
             await self._buffer.drop(
                 client=client,
             )
@@ -483,7 +464,6 @@ class RDMABuffer:
         """
         The owner reference (str)
         """
-        # pyrefly: ignore [missing-attribute]
         return self._buffer.owner_actor_id()
 
 
@@ -492,214 +472,48 @@ if TYPE_CHECKING:
 
 
 class RDMAAction:
+    """Schedule a batch of RDMA operations and submit them as one unit.
+
+    All bookkeeping (per-op validation, intra-batch local-memory race
+    detection, backend grouping, parallel dispatch) lives in the Rust
+    `_RdmaAction`; this class is a thin wrapper around it.
     """
-    Schedule a bunch of actions at once. This provides an opportunity to
-    optimize bulk RDMA transactions without exposing complexity to users.
-
-    """
-
-    class RDMAOp(Enum):
-        """Enumeration of RDMA operation types."""
-
-        READ_INTO = "read_into"
-        WRITE_FROM = "write_from"
-        FETCH_ADD = "fetch_add"
-        COMPARE_AND_SWAP = "compare_and_swap"
 
     def __init__(self) -> None:
-        self._instructs: "List[Tuple[RDMAAction.RDMAOp, RDMABuffer, LocalMemory]]" = []
-        self._memory_dependencies: Dict[Tuple[int, int], RDMAAction.RDMAOp] = {}
+        self._inner: _RdmaAction = _RdmaAction()
 
-    def _check_and_merge_overlapping_range(
-        self, addr: int, size: int, op: "RDMAAction.RDMAOp"
-    ) -> None:
-        """
-        Check for overlapping ranges and merge if found.
-
-        Returns the final range to use (either new_range or expanded merged range).
-        Updates self._memory_dependencies in place if merging occurs.
-        """
-        new_start, new_end = addr, addr + size
-
-        # Find overlapping range
-        overlapping_range = None
-        for existing_start, existing_end in self._memory_dependencies:
-            # Check if ranges overlap
-            if not (new_end <= existing_start or existing_end <= new_start):
-                overlapping_range = (existing_start, existing_end)
-                break
-
-        # No overlap found - good to go
-        if overlapping_range is None:
-            self._memory_dependencies[(new_start, new_end)] = op
-            return
-
-        # Overlap found - merge ranges
-        existing_op = self._memory_dependencies[overlapping_range]
-
-        # Merge ops, only safe if neither is write_from at the moment
-        if existing_op == self.RDMAOp.WRITE_FROM or op == self.RDMAOp.WRITE_FROM:
-            raise ValueError(
-                f"Same data range already has a write_from within RDMAAction: {existing_op} vs {op}"
-            )
-
-        # Create expanded range that covers both
-        expanded_range = (
-            min(overlapping_range[0], new_start),
-            max(overlapping_range[1], new_end),
-        )
-
-        # range is unchanged - no need to update
-        if expanded_range == (new_start, new_end):
-            return
-
-        # Update dictionary: remove old range, add expanded range
-        del self._memory_dependencies[overlapping_range]
-        self._memory_dependencies[expanded_range] = op
-
-        # now since merged, possible need to merge again
-        return self._check_and_merge_overlapping_range(
-            expanded_range[0], expanded_range[1] - expanded_range[0], op
-        )
-
-    def read_into(
-        self, src: RDMABuffer, dst: "LocalMemory | List[LocalMemory]"
-    ) -> Self:
-        """
-        Read from src RDMA buffer into dst memory.
-
-        Args:
-            src: Source RDMA buffer to read from
-            dst: Destination local memory to read into
-                   If dst is a list, it is the concatenation of the data in the list
-        """
-        # Throw NotImplementedError for lists to simplify logic
-        if isinstance(dst, list):
-            raise NotImplementedError("List destinations not yet supported")
-
-        addr, size = _get_addr_and_size(dst)
-
-        if size < src.size():
-            raise ValueError(
-                f"dst memory size ({size}) must be >= src buffer size ({src.size()})"
-            )
-
-        self._check_and_merge_overlapping_range(addr, size, self.RDMAOp.READ_INTO)
-
-        self._instructs.append((self.RDMAOp.READ_INTO, src, dst))
-
+    def read_remote(self, dst: "LocalMemory", src: RDMABuffer) -> Self:
+        """Queue a read from RDMA buffer ``src`` into local memory ``dst``."""
+        handle = _make_local_memory_handle(dst)
+        self._inner.add_read_into_local(remote=src._buffer, local=handle)
         return self
 
-    def write_from(
-        self, src: RDMABuffer, dst: "LocalMemory | List[LocalMemory]"
-    ) -> Self:
-        """
-        Write from dst memory to src RDMA buffer.
-
-        Args:
-            src: Destination RDMA buffer to write to
-            dst: Source local memory to write from
-                   If local is a list, it is the concatenation of the data in the list
-        """
-        # Throw NotImplementedError for lists to simplify logic
-        if isinstance(dst, list):
-            raise NotImplementedError("List sources not yet supported")
-
-        addr, size = _get_addr_and_size(dst)
-
-        if size > src.size():
-            raise ValueError(
-                f"Local memory size ({size}) must be <= src buffer size ({src.size()})"
-            )
-
-        self._check_and_merge_overlapping_range(addr, size, self.RDMAOp.WRITE_FROM)
-
-        self._instructs.append((self.RDMAOp.WRITE_FROM, src, dst))
-
+    def write_remote(self, dst: RDMABuffer, src: "LocalMemory") -> Self:
+        """Queue a write from local memory ``src`` into RDMA buffer ``dst``."""
+        handle = _make_local_memory_handle(src)
+        self._inner.add_write_from_local(remote=dst._buffer, local=handle)
         return self
 
     def fetch_add(self, src: RDMABuffer, dst: "LocalMemory", add: int) -> Self:
-        """
-        Perform atomic fetch-and-add operation on src RDMA buffer.
-
-        Args:
-            src: src RDMA buffer to perform operation on
-            dst: Local memory to store the original value
-            add: Value to add to the src buffer
-
-        Atomically:
-            *dst = *src
-            *src = *src + add
-
-        Note: src/dst are 8 bytes
-        """
         raise NotImplementedError("Not yet supported")
 
     def compare_and_swap(
         self, src: RDMABuffer, dst: "LocalMemory", compare: int, swap: int
     ) -> Self:
-        """
-        Perform atomic compare-and-swap operation on src RDMA buffer.
-
-        Args:
-            src: src RDMA buffer to perform operation on
-            dst: Local memory to store the original value
-            compare: Value to compare against
-            swap: Value to swap in if comparison succeeds
-
-        Atomically:
-            *dst = *src;
-            if (*src == compare) {
-                *src = swap
-            }
-
-        Note: src/dst are 8 bytes
-        """
         raise NotImplementedError("Not yet supported")
 
-    def submit(self) -> Future[None]:
+    def submit(self, *, timeout: int = 60) -> Future[None]:
+        """Schedule the queued ops. Safe to call multiple times.
+
+        The returned Future does not resolve until every op in the batch
+        completes, or until the timeout is reached. If any op fails, the
+        Future resolves with an exception.
         """
-        Schedules the work (can be called multiple times to schedule the same work more than once).
-        Future completes when all the work is done.
+        client = context().actor_instance
+        inner = self._inner
 
-        Executes futures for each src actor independently and concurrently for optimal performance.
-        """
+        async def run() -> None:
+            await _ensure_init_rdma_manager()
+            await inner.submit(client=client, timeout=timeout)
 
-        async def submit_all_work() -> None:
-            if not self._instructs:
-                return
-
-            work = defaultdict(list)
-
-            # Group operations by owner for concurrent execution per owner
-            for op, src, dst in self._instructs:
-                if op == self.RDMAOp.READ_INTO:
-                    fut = src.read_into(dst)
-                elif op == self.RDMAOp.WRITE_FROM:
-                    fut = src.write_from(dst)
-                else:
-                    raise NotImplementedError(f"Unknown RDMA operation: {op}")
-                work[src.owner].append(fut)
-
-            # Create a list of tasks, one per owner, that wait for all that owner's futures sequentially
-            owner_tasks = []
-
-            for _, futures in work.items():
-                # Create a coroutine that processes all futures for a qp sequentially
-                async def process_owner_futures(owner_futures_list=futures):
-                    """Process all futures for a single qp sequentially"""
-                    for future in owner_futures_list:
-                        await future
-
-                # Convert to PythonTask for Monarch's native concurrency
-                owner_task = PythonTask.from_coroutine(process_owner_futures())
-                owner_tasks.append(owner_task)
-
-            # Spawn all owner tasks concurrently and collect their shared handles
-            shared_tasks = [task.spawn() for task in owner_tasks]
-
-            # Wait for all owner tasks to complete concurrently
-            for shared_task in shared_tasks:
-                await shared_task
-
-        return Future(coro=submit_all_work())
+        return Future(coro=run())
