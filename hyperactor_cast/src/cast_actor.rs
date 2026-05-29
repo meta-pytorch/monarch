@@ -232,6 +232,24 @@ impl CastDomainRef {
         Ok(())
     }
 
+    /// Tear down this cast domain.
+    ///
+    /// This is a best-effort, fire-and-forget operation: the request is posted
+    /// to the domain entry point and then forwarded through the installed cast
+    /// tree. Duplicate destroy requests are intentionally ignored by receivers.
+    /// If the mailbox layer bounces a downstream destroy message, the failure is
+    /// returned to the originating actor's handler port, but successful teardown
+    /// is not acknowledged.
+    pub fn destroy(&self, cx: &impl context::Actor) {
+        self.entry_point.post(
+            cx,
+            DestroyCastDomain {
+                domain_id: self.id.clone(),
+                origin: cx.mailbox().actor_addr().clone(),
+            },
+        );
+    }
+
     /// Allocate one normal sender-side sequence number per destination rank.
     ///
     /// This is the same model used by v1 `CommActor`: the cast message carries
@@ -303,6 +321,7 @@ const CAST_ACTOR_NAME: &str = "cast";
 #[hyperactor::export(
     handlers = [
         CreateCastDomain,
+        DestroyCastDomain,
         CastMessage
     ],
 )]
@@ -418,7 +437,22 @@ impl CastActor {
             return Ok(());
         }
 
-        // 2. Failure while delivering from this CastActor to the local
+        // 2. Failure while forwarding a destroy request.
+        if let Ok(message) = message_envelope.deserialized::<DestroyCastDomain>() {
+            let return_port = PortRef::attest_handler_port(&message.origin);
+            annotate_cast_failure(
+                &mut message_envelope,
+                cx.self_addr(),
+                "destroy",
+                &message.origin,
+                return_port.port_addr(),
+            );
+            message_envelope.set_header(CAST_ORIGINATING_SENDER, message.origin.clone());
+            return_port.post(cx, Undeliverable::Returned(message_envelope.clone()));
+            return Ok(());
+        }
+
+        // 3. Failure while delivering from this CastActor to the local
         // destination actor.
         if let Some(sender) = message_envelope.headers().get(CAST_ORIGINATING_SENDER) {
             let return_port = PortRef::attest_handler_port(&sender);
@@ -433,7 +467,7 @@ impl CastActor {
             return Ok(());
         }
 
-        // 3. A return of an undeliverable message was itself returned.
+        // 4. A return of an undeliverable message was itself returned.
         UndeliverableMailboxSender
             .post(message_envelope, /*unused */ monitored_return_handle());
         Ok(())
@@ -726,6 +760,57 @@ impl Handler<CastMessage> for CastActor {
     }
 }
 
+/// Internal command to destroy a casting domain and release its local routing state.
+///
+/// Sent to the entry-point [`CastActor`] by [`CastDomainRef::destroy`]. The
+/// teardown propagates through the tree: each node removes its [`CastHop`] and
+/// forwards [`DestroyCastDomain`] to its next hops. This is intentionally
+/// idempotent and best-effort; unknown domains are ignored, and mailbox-level
+/// undeliverable failures are returned to [`DestroyCastDomain::origin`].
+#[derive(Debug, Serialize, Deserialize, typeuri::Named)]
+struct DestroyCastDomain {
+    /// The domain to tear down.
+    domain_id: CastDomainId,
+    /// Actor that initiated teardown and should receive undeliverable returns.
+    origin: ActorAddr,
+}
+wirevalue::register_type!(DestroyCastDomain);
+
+#[async_trait]
+impl Handler<DestroyCastDomain> for CastActor {
+    #[tracing::instrument(
+        level = "debug",
+        skip_all,
+        fields(domain_id = %message.domain_id)
+    )]
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: DestroyCastDomain,
+    ) -> Result<(), anyhow::Error> {
+        let Some(cast_hop) = self.installed_hops.remove(&message.domain_id) else {
+            return Ok(());
+        };
+
+        #[cfg(test)]
+        {
+            tests::capture_destroyed_domain(cx, message.domain_id.domain_id());
+        }
+
+        for next_hop in &cast_hop.next_hops {
+            next_hop.post(
+                cx,
+                DestroyCastDomain {
+                    domain_id: message.domain_id.clone(),
+                    origin: message.origin.clone(),
+                },
+            );
+        }
+
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -805,9 +890,14 @@ mod tests {
 
     static INSTALLED_DOMAINS: OnceLock<Mutex<HashMap<Uid, BTreeMap<String, CastHopSnapshot>>>> =
         OnceLock::new();
+    static DESTROYED_DOMAINS: OnceLock<Mutex<HashMap<Uid, BTreeSet<String>>>> = OnceLock::new();
 
     fn installed_domains() -> &'static Mutex<HashMap<Uid, BTreeMap<String, CastHopSnapshot>>> {
         INSTALLED_DOMAINS.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    fn destroyed_domains() -> &'static Mutex<HashMap<Uid, BTreeSet<String>>> {
+        DESTROYED_DOMAINS.get_or_init(|| Mutex::new(HashMap::new()))
     }
 
     pub(crate) fn capture_installed_domain(
@@ -834,12 +924,32 @@ mod tests {
             .insert(proc_name, snapshot);
     }
 
+    pub(crate) fn capture_destroyed_domain(cx: &Context<'_, CastActor>, domain_id: &Uid) {
+        let proc_name = cx.self_addr().proc_addr().log_name().to_string();
+        destroyed_domains()
+            .lock()
+            .unwrap()
+            .entry(domain_id.clone())
+            .or_default()
+            .insert(proc_name);
+    }
+
     fn clear_captured_domains() {
         installed_domains().lock().unwrap().clear();
+        destroyed_domains().lock().unwrap().clear();
     }
 
     fn captured_domain_snapshots(domain_id: &Uid) -> BTreeMap<String, CastHopSnapshot> {
         installed_domains()
+            .lock()
+            .unwrap()
+            .get(domain_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn destroyed_domain_snapshots(domain_id: &Uid) -> BTreeSet<String> {
+        destroyed_domains()
             .lock()
             .unwrap()
             .get(domain_id)
@@ -1139,6 +1249,29 @@ mod tests {
                 )
             })
         }
+
+        async fn wait_for_destroyed_domain_snapshots(
+            &self,
+            domain_id: &Uid,
+            expected_count: usize,
+        ) -> BTreeSet<String> {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let snapshots = destroyed_domain_snapshots(domain_id);
+                    if snapshots.len() == expected_count {
+                        return snapshots;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| {
+                panic!(
+                    "timed out waiting for {expected_count} destroyed domain snapshots; saw {:?}",
+                    destroyed_domain_snapshots(domain_id)
+                )
+            })
+        }
     }
 
     proptest! {
@@ -1372,6 +1505,102 @@ mod tests {
                 Some("endpoint.call()")
             );
         }
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_destroy_domain_rejects_later_casts() {
+        let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client_proc".into()).unwrap();
+        let client = client_proc.client("client");
+        let cast_proc = Proc::direct(ChannelTransport::Unix.any(), "cast_proc".into()).unwrap();
+        let actor_instance = cast_proc.actor_instance::<CastActor>("cast").unwrap();
+        let mut cast_actor = CastActor::default();
+        let cx = Context::new(&actor_instance.instance, Flattrs::new());
+
+        let receiver_id = ActorAddr::root(cast_proc.proc_addr().clone(), Label::strip("receiver"));
+        let cast_domain_id = CastDomainId::new();
+        let region = Region::from(Shape::unity());
+        let root_tile = MaterializedTile::new(Tile::from_view(&region), vec![receiver_id]);
+
+        Handler::<CreateCastDomain>::handle(
+            &mut cast_actor,
+            &cx,
+            CreateCastDomain {
+                cast_domain_id: cast_domain_id.clone(),
+                region,
+                tiling_policy: TilingPolicy::BlockPartitioning,
+                tile: root_tile,
+            },
+        )
+        .await
+        .unwrap();
+
+        Handler::<DestroyCastDomain>::handle(
+            &mut cast_actor,
+            &cx,
+            DestroyCastDomain {
+                domain_id: cast_domain_id.clone(),
+                origin: client.self_addr().clone(),
+            },
+        )
+        .await
+        .unwrap();
+
+        // Destroy is idempotent: a repeated teardown is a benign no-op.
+        Handler::<DestroyCastDomain>::handle(
+            &mut cast_actor,
+            &cx,
+            DestroyCastDomain {
+                domain_id: cast_domain_id.clone(),
+                origin: client.self_addr().clone(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let mut headers = Flattrs::new();
+        headers.set(CAST_ORIGINATING_SENDER, client.self_addr().clone());
+
+        let err = Handler::<CastMessage>::handle(
+            &mut cast_actor,
+            &cx,
+            CastMessage {
+                cast_domain_id,
+                session_id: client.sequencer().session_id(),
+                seqs: ValueMesh::new(Region::from(Shape::unity()), vec![1]).unwrap(),
+                lineage: Vec::new(),
+                headers,
+                dest_port: <IndexedErasedUnbound<TestDelivery>>::port(),
+                data: ErasedUnbound::try_from_message(TestDelivery {
+                    payload: "hello".to_string(),
+                })
+                .unwrap(),
+            },
+        )
+        .await
+        .unwrap_err();
+
+        let err = err.to_string();
+        assert!(err.contains("unknown domain"), "unexpected error: {err}");
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_destroy_domain_propagates_to_all_hops() {
+        clear_captured_domains();
+
+        let test_mesh = CastTestMesh::new(8);
+        let root_domain = test_mesh.root_domain(shape!(a = 2, b = 2, c = 2));
+        let domain_id = root_domain.domain_id().clone();
+        test_mesh.wait_for_domain_snapshots(&domain_id, 8).await;
+
+        root_domain.destroy(&test_mesh.client);
+
+        let destroyed = test_mesh
+            .wait_for_destroyed_domain_snapshots(&domain_id, 8)
+            .await;
+        assert_eq!(
+            destroyed,
+            (0..8).map(|rank| format!("proc_{rank}")).collect()
+        );
     }
 
     // -- Port splitting test infrastructure --
