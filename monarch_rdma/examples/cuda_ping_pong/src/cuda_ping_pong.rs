@@ -157,8 +157,18 @@ pub fn ping_pong(
 // keepalive (or equivalent) and arrange for the buffer to be released
 // while the CUDA context is still live, e.g., via an explicit
 // shutdown handler on the actor.
-struct NoKeepalive;
-impl Keepalive for NoKeepalive {}
+struct NoKeepalive {
+    addr: usize,
+    size: usize,
+}
+impl Keepalive for NoKeepalive {
+    fn addr(&self) -> usize {
+        self.addr
+    }
+    fn size(&self) -> usize {
+        self.size
+    }
+}
 
 // Constants for default values
 const DEFAULT_BUFFER_SIZE_MB: usize = 32; // `must be multiple of 2MB
@@ -451,8 +461,7 @@ impl Handler<InitializeBuffer> for CudaRdmaActor {
             let addr = self.cu_ptr;
             let size = self.cpu_buffer.len();
             // See the module-level note on `NoKeepalive`.
-            let local_memory: Arc<KeepaliveLocalMemory> =
-                Arc::new(KeepaliveLocalMemory::new(addr, size, Arc::new(NoKeepalive)));
+            let local_memory = KeepaliveLocalMemory::new(Arc::new(NoKeepalive { addr, size }));
             let handle = self
                 .rdma_manager
                 .downcast_handle(cx)

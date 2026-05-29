@@ -333,14 +333,43 @@ impl Drop for AccessExclusiveGuard<'_> {
     }
 }
 
-/// Marker trait: the implementor keeps a backing memory allocation alive.
+/// Trait for values that keep a backing memory allocation alive and
+/// know its address and size.
 ///
 /// As long as a value implementing this trait exists, the memory region
-/// described by the containing [`KeepaliveLocalMemory`] is guaranteed to
-/// remain valid.
-pub trait Keepalive: Send + Sync {}
+/// it describes is guaranteed to remain valid.
+pub trait Keepalive: Send + Sync {
+    /// Start address of the memory region this keepalive pins.
+    fn addr(&self) -> usize;
 
-impl Keepalive for Box<[u8]> {}
+    /// Size in bytes of the memory region this keepalive pins.
+    fn size(&self) -> usize;
+
+    /// Produce a [`WeakKeepalive`] pointing at the same underlying
+    /// resource. Defaults to `None` for impls with no weak form.
+    fn downgrade(&self) -> Option<Arc<dyn WeakKeepalive>> {
+        None
+    }
+}
+
+/// Counterpart to [`Keepalive`]: a non-pinning reference to the same
+/// underlying resource that can be re-promoted to a [`Keepalive`] as
+/// long as the resource is still alive.
+pub trait WeakKeepalive: Send + Sync {
+    /// Re-acquire a strong [`Keepalive`] for the underlying resource,
+    /// or `None` if the referent has gone away.
+    fn upgrade(&self) -> Option<Arc<dyn Keepalive>>;
+}
+
+impl Keepalive for Box<[u8]> {
+    fn addr(&self) -> usize {
+        self.as_ptr() as usize
+    }
+
+    fn size(&self) -> usize {
+        self.len()
+    }
+}
 
 /// Backing state of a [`KeepaliveLocalMemory`].
 ///
@@ -434,10 +463,14 @@ impl Debug for KeepaliveLocalMemory {
 }
 
 impl KeepaliveLocalMemory {
-    /// Create a new handle. Probes the CUDA driver to determine whether
-    /// `addr` is a device pointer and sets the bandwidth fields
-    /// accordingly.
-    pub fn new(addr: usize, size: usize, keepalive: Arc<dyn Keepalive>) -> Self {
+    /// Create a new handle. Derives `addr` and `size` from the
+    /// `keepalive` via [`Keepalive::addr`] /
+    /// [`Keepalive::size`], then probes the CUDA driver to
+    /// determine whether the address is a device pointer and sets the
+    /// bandwidth fields accordingly.
+    pub fn new(keepalive: Arc<dyn Keepalive>) -> Self {
+        let addr = keepalive.addr();
+        let size = keepalive.size();
         Self {
             inner: LocalMemoryInner::new(addr, size),
             _keepalive: keepalive,
@@ -562,6 +595,69 @@ impl KeepaliveLocalMemory {
             }
         }
     }
+
+    /// Pair off a [`WeakLocalMemory`] that shares this handle's
+    /// [`LocalMemoryInner`] (and therefore the same MR slot and
+    /// access lock). Returns `None` when the underlying [`Keepalive`]
+    /// does not provide a weak form.
+    pub fn downgrade(&self) -> Option<WeakLocalMemory> {
+        let weak_keepalive = self._keepalive.downgrade()?;
+        Some(WeakLocalMemory {
+            inner: self.inner.clone(),
+            weak_keepalive,
+        })
+    }
+}
+
+/// Non-pinning counterpart of [`KeepaliveLocalMemory`].
+///
+/// Holds the shared [`LocalMemoryInner`] (so a re-promoted strong
+/// handle sees the same MR slot and access lock) plus a
+/// [`WeakKeepalive`] that can be upgraded to a fresh
+/// [`Arc<dyn Keepalive>`] as long as the referent is still alive.
+#[derive(Clone)]
+pub struct WeakLocalMemory {
+    inner: LocalMemoryInner,
+    weak_keepalive: Arc<dyn WeakKeepalive>,
+}
+
+impl WeakLocalMemory {
+    /// Starting virtual address of the memory region.
+    pub fn addr(&self) -> usize {
+        self.inner.addr
+    }
+
+    /// Size of the memory region in bytes.
+    pub fn size(&self) -> usize {
+        self.inner.size
+    }
+
+    /// Materialize a strong [`KeepaliveLocalMemory`] sharing this
+    /// handle's [`LocalMemoryInner`]. Returns `None` if the
+    /// referent has gone away **or** if its currently-computed
+    /// `(addr, size)` no longer matches the values stored on this
+    /// handle — the latter guarding against the live referent
+    /// describing a different memory region than the one this weak
+    /// handle was paired with at downgrade time.
+    pub fn upgrade(&self) -> Option<KeepaliveLocalMemory> {
+        let keepalive = self.weak_keepalive.upgrade()?;
+        let new_addr = keepalive.addr();
+        let new_size = keepalive.size();
+        if new_addr != self.inner.addr || new_size != self.inner.size {
+            tracing::warn!(
+                expected_addr = self.inner.addr,
+                actual_addr = new_addr,
+                expected_size = self.inner.size,
+                actual_size = new_size,
+                "WeakLocalMemory upgrade rejected: backing keepalive's (addr, size) changed since downgrade",
+            );
+            return None;
+        }
+        Some(KeepaliveLocalMemory {
+            inner: self.inner.clone(),
+            _keepalive: keepalive,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -571,9 +667,7 @@ mod tests {
     // -- KeepaliveLocalMemory (host) --
 
     fn host_keepalive_mem(data: Box<[u8]>) -> KeepaliveLocalMemory {
-        let addr = data.as_ptr() as usize;
-        let size = data.len();
-        KeepaliveLocalMemory::new(addr, size, Arc::new(data))
+        KeepaliveLocalMemory::new(Arc::new(data))
     }
 
     #[test]

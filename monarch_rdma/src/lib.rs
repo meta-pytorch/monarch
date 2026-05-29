@@ -9,8 +9,6 @@
 // RDMA requires frequent unsafe code blocks
 #![allow(clippy::undocumented_unsafe_blocks)]
 
-use std::sync::Arc;
-
 use local_memory::KeepaliveLocalMemory;
 use serde::Deserialize;
 use serde::Serialize;
@@ -58,7 +56,7 @@ pub enum RdmaOpType {
 #[derive(Debug)]
 pub struct RdmaOp {
     pub op_type: RdmaOpType,
-    pub local: Arc<KeepaliveLocalMemory>,
+    pub local: KeepaliveLocalMemory,
     pub remote: RdmaRemoteBuffer,
 }
 

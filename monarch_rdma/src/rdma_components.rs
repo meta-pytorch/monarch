@@ -43,7 +43,6 @@
 /// Maximum size for a single RDMA operation in bytes (1 GiB)
 use std::fs;
 use std::result::Result;
-use std::sync::Arc;
 use std::time::Duration;
 
 use hyperactor::ActorRef;
@@ -138,7 +137,7 @@ impl RdmaRemoteBuffer {
     pub async fn write_from_local(
         &self,
         client: &(impl context::Actor + Send + Sync),
-        local: Arc<KeepaliveLocalMemory>,
+        local: KeepaliveLocalMemory,
         timeout: u64,
     ) -> Result<bool, anyhow::Error> {
         let mut action = RdmaAction::new();
@@ -151,7 +150,7 @@ impl RdmaRemoteBuffer {
     pub async fn read_into_local(
         &self,
         client: &(impl context::Actor + Send + Sync),
-        local: Arc<KeepaliveLocalMemory>,
+        local: KeepaliveLocalMemory,
         timeout: u64,
     ) -> Result<bool, anyhow::Error> {
         let mut action = RdmaAction::new();

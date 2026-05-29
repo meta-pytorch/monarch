@@ -14,7 +14,6 @@
 //! across the available backends in parallel on [`RdmaAction::submit`].
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Duration;
 
 use hyperactor::context;
@@ -73,7 +72,7 @@ impl RdmaAction {
     pub fn add_read_into_local(
         &mut self,
         remote: RdmaRemoteBuffer,
-        local: Arc<KeepaliveLocalMemory>,
+        local: KeepaliveLocalMemory,
     ) -> Result<&mut Self, anyhow::Error> {
         if local.size() < remote.size {
             anyhow::bail!(
@@ -96,7 +95,7 @@ impl RdmaAction {
     pub fn add_write_from_local(
         &mut self,
         remote: RdmaRemoteBuffer,
-        local: Arc<KeepaliveLocalMemory>,
+        local: KeepaliveLocalMemory,
     ) -> Result<&mut Self, anyhow::Error> {
         if local.size() > remote.size {
             anyhow::bail!(

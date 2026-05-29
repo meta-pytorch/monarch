@@ -2396,15 +2396,21 @@ mod tests {
 
     /// No-op [`Keepalive`] for tests that mint a [`KeepaliveLocalMemory`]
     /// from a fake address never actually read or written through.
-    struct FakeKeepalive;
-    impl Keepalive for FakeKeepalive {}
+    struct FakeKeepalive {
+        addr: usize,
+        size: usize,
+    }
+    impl Keepalive for FakeKeepalive {
+        fn addr(&self) -> usize {
+            self.addr
+        }
+        fn size(&self) -> usize {
+            self.size
+        }
+    }
 
-    fn fake_local_memory(addr: usize, size: usize) -> Arc<KeepaliveLocalMemory> {
-        Arc::new(KeepaliveLocalMemory::new(
-            addr,
-            size,
-            Arc::new(FakeKeepalive),
-        ))
+    fn fake_local_memory(addr: usize, size: usize) -> KeepaliveLocalMemory {
+        KeepaliveLocalMemory::new(Arc::new(FakeKeepalive { addr, size }))
     }
 
     fn fake_mrv(id: usize, addr: usize, size: usize) -> IbvMemoryRegionView {

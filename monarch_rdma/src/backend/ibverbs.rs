@@ -8,8 +8,6 @@
 
 //! ibverbs backend implementation for RDMA operations.
 
-use std::sync::Arc;
-
 use hyperactor::ActorRef;
 use hyperactor::actor::Referable;
 use serde::Deserialize;
@@ -59,7 +57,7 @@ pub struct IbvBuffer {
 #[derive(Debug, Named)]
 pub struct IbvOp<M: Referable = IbvManagerActor> {
     pub op_type: RdmaOpType,
-    pub local_memory: Arc<KeepaliveLocalMemory>,
+    pub local_memory: KeepaliveLocalMemory,
     pub remote_buffer: IbvBuffer,
     pub remote_manager: ActorRef<M>,
 }
@@ -70,7 +68,7 @@ impl<M: Referable> Clone for IbvOp<M> {
     fn clone(&self) -> Self {
         Self {
             op_type: self.op_type,
-            local_memory: Arc::clone(&self.local_memory),
+            local_memory: self.local_memory.clone(),
             remote_buffer: self.remote_buffer.clone(),
             remote_manager: self.remote_manager.clone(),
         }

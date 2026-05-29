@@ -144,7 +144,7 @@ pub enum IbvManagerLocalMessage {
     /// is deregistered on [`IbvManagerMessage::ReleaseBuffer`].
     RegisterRemoteBuffer {
         remote_buf_id: usize,
-        local: Arc<KeepaliveLocalMemory>,
+        local: KeepaliveLocalMemory,
         #[reply]
         reply: OncePortHandle<Result<IbvBuffer, String>>,
     },
@@ -922,7 +922,7 @@ impl IbvManagerLocalMessageHandler for IbvManagerActor {
         &mut self,
         _cx: &Context<Self>,
         remote_buf_id: usize,
-        local: Arc<KeepaliveLocalMemory>,
+        local: KeepaliveLocalMemory,
     ) -> Result<Result<IbvBuffer, String>, anyhow::Error> {
         if let Some((buf, _)) = self.buffer_registrations.get(&remote_buf_id) {
             return Ok(Ok(buf.clone()));
@@ -1227,17 +1227,11 @@ mod tests {
             let local = match device {
                 BufferDevice::Cpu => {
                     let buf: Box<[u8]> = vec![pattern; size].into_boxed_slice();
-                    let addr = buf.as_ptr() as usize;
-                    Arc::new(KeepaliveLocalMemory::new(addr, size, Arc::new(buf)))
+                    KeepaliveLocalMemory::new(Arc::new(buf))
                 }
                 BufferDevice::Cuda(device_id) => {
                     let alloc = CudaAllocator::get().allocate(device_id, size, size);
-                    let addr = alloc.ptr();
-                    let local = Arc::new(KeepaliveLocalMemory::new(
-                        addr,
-                        size,
-                        Arc::new(alloc.clone()),
-                    ));
+                    let local = KeepaliveLocalMemory::new(Arc::new(alloc.clone()));
                     self.cuda_allocs.push(alloc);
                     let fill = vec![pattern; size];
                     // SAFETY: `local` is freshly constructed; no other
