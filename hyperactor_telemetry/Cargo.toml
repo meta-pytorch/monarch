@@ -40,7 +40,7 @@ tracing-subscriber = { version = "0.3.23", features = ["chrono", "env-filter", "
 whoami = "1.5"
 
 [dev-dependencies]
-quickcheck = "1.0"
+quickcheck = "1.1"
 quickcheck_macros = "1.2.0"
 tracing-test = { version = "0.2.6", features = ["no-env-filter"] }
 
