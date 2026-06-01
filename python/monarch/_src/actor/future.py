@@ -107,6 +107,38 @@ class Future(Generic[R]):
         )
 
     def get(self, timeout: Optional[float] = None) -> R:
+        """Get the result of the Future.
+
+        Caveats:
+
+        This method is designed to be used in places where event loops are not available. Besides that, you should
+        avoid using this method if possible. Instead, use `await`. This is because when Future.get() is called from
+        within an active event loop, it blocks synchronously and does not yield control. That may degrade performance
+        by preventing other tasks from running, and can potentially cause deadlocks if this future depends on them.
+
+        examples:
+
+        This is not recommended because `fut.get()` blocks the event loop and might lead to issues explained above.
+        ```
+        def inner_func(fut):
+            result = fut.get()
+            # ...
+
+        async def out_func(fut):
+            inner_func(fut)
+        ```
+
+        This is okay because everything is running synchronously.
+        ```
+        def inner_func(fut):
+            result = fut.get()
+            # ...
+
+        def main():
+            # ...
+            inner_func(fut)
+        ```
+        """
         in_asyncio = asyncio._get_running_loop() is not None
         in_tokio = is_tokio_thread()
         if in_asyncio or in_tokio:
