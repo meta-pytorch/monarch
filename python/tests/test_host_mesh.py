@@ -23,7 +23,7 @@ import cloudpickle
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
 from monarch._rust_bindings.monarch_hyperactor.shape import Point, Shape, Slice
-from monarch._src.actor.actor_mesh import _client_context, Actor, attach_client, context
+from monarch._src.actor.actor_mesh import _client_context, Actor, attach, context
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.host_mesh import HostMesh, this_host, this_proc
 from monarch._src.actor.pickle import flatten, unflatten
@@ -545,7 +545,7 @@ class DuplexProcessJob(ProcessJob):
     """ProcessJob that also exposes a duplex socket on the first host.
 
     The duplex address is available via ``duplex_addr`` after calling
-    ``state()``.  Pass this value to ``attach_client(...)`` before the
+    ``state()``.  Pass this value to ``attach(...)`` before the
     first ``context()`` call so the client bootstraps by attaching to
     the worker.
     """
@@ -627,7 +627,7 @@ class EchoActor(Actor):
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
 async def test_client_attach_addr() -> None:
-    """Verify ``attach_client(...)`` causes the client to bootstrap by
+    """Verify ``attach(...)`` causes the client to bootstrap by
     attaching to the worker, and that subsequent mesh operations route
     exclusively over the duplex channel.
 
@@ -643,7 +643,7 @@ async def test_client_attach_addr() -> None:
     # `scoped_state(job)` connects via `attach_to_workers`, which would
     # otherwise bootstrap the client unattached.
     job.apply()
-    attach_client(job.duplex_addr)
+    attach(job.duplex_addr)
     with scoped_state(job, cached_path=None) as state:
         context()
 
@@ -677,7 +677,7 @@ async def test_client_attach_addr() -> None:
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
 def test_client_attach_addr_this_host_and_this_proc() -> None:
-    """After bootstrapping with ``attach_client(...)``, ``this_host()``
+    """After bootstrapping with ``attach(...)``, ``this_host()``
     returns the host-local mesh on this machine (not the attached host)
     and ``this_proc()`` returns the local client proc whose gateway is
     now connected to the remote gateway. The local client procs remain
@@ -690,7 +690,7 @@ def test_client_attach_addr_this_host_and_this_proc() -> None:
     # Attach the client to the worker before any client bootstrap (see
     # test_client_attach_addr).
     job.apply()
-    attach_client(job.duplex_addr)
+    attach(job.duplex_addr)
     with scoped_state(job, cached_path=None):
         context()
 
@@ -728,7 +728,7 @@ def test_client_attach_addr_this_host_spawns_locally() -> None:
     # Attach the client to the worker before any client bootstrap (see
     # test_client_attach_addr).
     job.apply()
-    attach_client(job.duplex_addr)
+    attach(job.duplex_addr)
     with scoped_state(job, cached_path=None) as state:
         context()
 

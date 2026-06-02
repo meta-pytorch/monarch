@@ -136,7 +136,7 @@ def bootstrap_host(
       the duplex, and inbound traffic from the duplex is delivered into
       local procs. `this_host()` still names the current machine; `via`
       only controls how this host's procs are reached. Supplied via the
-      `attach_client` entrypoint.
+      `attach` entrypoint.
     """
     ...
 

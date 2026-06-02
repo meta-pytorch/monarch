@@ -415,7 +415,7 @@ def _init_client_context(via: Optional[str] = None) -> Context:
     traffic forwards over the duplex, and the remote gateway routes
     return traffic back over the same duplex. ``this_host()`` still
     names the current machine; attach only controls how the host's
-    procs are reached, not the host's identity. Use ``attach_client``
+    procs are reached, not the host's identity. Use ``attach``
     to supply ``via`` before the client context is first used.
     """
     import atexit
@@ -457,7 +457,7 @@ def _init_client_context(via: Optional[str] = None) -> Context:
 _client_context: _Lazy[Context] = _Lazy(_init_client_context)
 
 
-def attach_client(addr: str) -> None:
+def attach(addr: str) -> None:
     """Bootstrap this process's client by attaching its gateway to the
     remote duplex server at ``addr`` (a ZMQ-style address, e.g.
     ``"ipc:///tmp/sock"`` or ``"tcp://host:port"``).
@@ -476,7 +476,7 @@ def attach_client(addr: str) -> None:
     with _client_context._lock:
         if _client_context._val is not None:
             raise RuntimeError(
-                "client already bootstrapped; call attach_client(addr) before "
+                "client already bootstrapped; call attach(addr) before "
                 "the first context()/this_host()/this_proc()"
             )
         _client_context._val = _init_client_context(via=addr)

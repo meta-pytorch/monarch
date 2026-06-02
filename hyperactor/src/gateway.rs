@@ -41,6 +41,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::watch;
 use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 
 use crate::Location;
 use crate::PortAddr;
@@ -172,7 +173,7 @@ impl crate::mailbox::MailboxSender for AttachSender {
 }
 
 /// A pre-bound duplex server ready to be handed to
-/// [`Gateway::accept_with_server`]. Used by callers (e.g. `Host`)
+/// [`Gateway::serve_duplex_with_server`]. Used by callers (e.g. `Host`)
 /// that need to know the bound address before they start the accept
 /// loop.
 pub struct PreboundAcceptServer {
@@ -193,6 +194,33 @@ impl PreboundAcceptServer {
     /// The bound address.
     pub fn addr(&self) -> &ChannelAddr {
         self.inner.addr()
+    }
+}
+
+/// A host frontend bound by [`Gateway::bind_frontend`] and served by
+/// [`Gateway::serve_frontend`]. Duplex-capable transports yield a
+/// gateway-attach-capable accept loop; simplex transports yield a
+/// straight mailbox serve. Callers (e.g. `Host`) hold this opaquely
+/// between bind and serve and never inspect the transport themselves.
+pub enum GatewayFrontend {
+    /// A duplex accept loop endpoint.
+    Duplex(PreboundAcceptServer),
+    /// A simplex receiver for transports that cannot carry duplex.
+    Simplex {
+        /// The bound frontend address.
+        addr: ChannelAddr,
+        /// The receiver served straight into the gateway.
+        rx: channel::ChannelRx<MessageEnvelope>,
+    },
+}
+
+impl GatewayFrontend {
+    /// The bound frontend address.
+    pub fn addr(&self) -> &ChannelAddr {
+        match self {
+            GatewayFrontend::Duplex(server) => server.addr(),
+            GatewayFrontend::Simplex { addr, .. } => addr,
+        }
     }
 }
 
@@ -470,7 +498,7 @@ impl Gateway {
     /// entry on drop.
     ///
     /// Used both internally (by [`Gateway::attach`] and the duplex
-    /// accept loop in [`Gateway::accept`]) and externally (by hosts
+    /// accept loop in [`Gateway::serve_duplex`]) and externally (by hosts
     /// that have spawned child procs reachable through a dial-based
     /// sender). The host publishes the child's address with a
     /// `Via(child_uid, ...)` prefix and registers the sender here
@@ -539,60 +567,116 @@ impl Gateway {
     /// * a regular [`MessageEnvelope`] enters the inbound branch and
     ///   is served straight through.
     ///
-    /// Returns a [`GatewayServeHandle`] of kind `Accept`. The accept
-    /// loop respects `.stop("reason")`.
-    pub fn accept(&self, addr: ChannelAddr) -> Result<GatewayServeHandle, ChannelError> {
-        // Local transport can't carry duplex; fall back to simple serve.
+    /// Returns a [`GatewayServeHandle`] of kind `ServeDuplex`. The
+    /// accept loop respects `.stop("reason")`.
+    ///
+    /// Errors if `addr`'s transport cannot carry the duplex protocol
+    /// (e.g. local transport). Callers that may be handed a non-duplex
+    /// address should branch on
+    /// [`ChannelTransport::supports_duplex`] and use [`serve`] instead.
+    pub fn serve_duplex(&self, addr: ChannelAddr) -> Result<GatewayServeHandle, ChannelError> {
         if !addr.transport().supports_duplex() {
-            return self.serve(addr);
+            return Err(ChannelError::Other(anyhow::anyhow!(
+                "serve_duplex requires a duplex-capable transport, but {addr} does not support duplex"
+            )));
         }
         let server = PreboundAcceptServer::duplex(addr, None)
             .map_err(|e| ChannelError::Other(anyhow::anyhow!("{e}")))?;
-        Ok(self.accept_with_server(server))
+        Ok(self.serve_duplex_with_server(server))
     }
 
-    /// Accept variant that takes a pre-bound [`PreboundAcceptServer`].
-    /// Use when the caller needs to know the bound address before
-    /// starting the accept loop (e.g. to construct addresses that
-    /// reference it).
-    pub fn accept_with_server(&self, server: PreboundAcceptServer) -> GatewayServeHandle {
+    /// [`serve_duplex`] variant that takes a pre-bound
+    /// [`PreboundAcceptServer`]. Use when the caller needs to know the
+    /// bound address before starting the accept loop (e.g. to construct
+    /// addresses that reference it).
+    pub fn serve_duplex_with_server(&self, server: PreboundAcceptServer) -> GatewayServeHandle {
         let frontend_addr = server.addr().clone();
         let location = Location::from(frontend_addr.clone());
         self.add_server(location.clone());
 
-        let (stopped_tx, stopped_rx) = watch::channel(false);
-        let (handle_stopped_tx, mut handle_stopped_rx) = watch::channel(false);
+        // The accept loop and its per-connection tasks are driven by a
+        // single cancellation token. `stop()` cancels it; dropping the
+        // handle without stopping leaves the token uncancelled, so the
+        // loop keeps running — matching the [`MailboxServerHandle`]
+        // detach-on-drop convention.
+        let cancel_token = CancellationToken::new();
+        let loop_token = cancel_token.clone();
         let gateway = self.clone();
-        let stopped_tx_clone = stopped_tx.clone();
         let inner = server.inner;
         let join_handle = tokio::spawn(async move {
-            // Forward only an *observed* true on the public stop watch
-            // into the accept loop's watch. If the public sender is
-            // dropped (the handle drops without an explicit stop),
-            // `wait_for` returns Err and we propagate nothing — the
-            // accept loop keeps running, matching the
-            // [`MailboxServerHandle`] detach-on-drop convention.
-            tokio::spawn(async move {
-                if handle_stopped_rx.wait_for(|stopped| *stopped).await.is_ok() {
-                    let _ = stopped_tx_clone.send(true);
-                }
-            });
-            duplex_accept_loop(inner, frontend_addr, gateway, stopped_rx).await;
+            duplex_accept_loop(inner, frontend_addr, gateway, loop_token).await;
             Ok::<(), MailboxServerError>(())
         });
-        let handle = MailboxServerHandle::from_parts(join_handle, handle_stopped_tx);
+        // The inner handle exists only so `join()`/`await` can await the
+        // accept-loop task; its stop watch is never signaled, because
+        // stop flows through `cancel_token` instead.
+        let (idle_stop_tx, _idle_stop_rx) = watch::channel(false);
+        let handle = MailboxServerHandle::from_parts(join_handle, idle_stop_tx);
         GatewayServeHandle {
             gateway: self.clone(),
             handle,
             stopped: false,
-            kind: HandleKind::Accept {
+            kind: HandleKind::ServeDuplex {
                 location: Some(location),
-                _stopped_tx: stopped_tx,
+                cancel_token,
             },
         }
     }
 
-    /// Connect this gateway to a peer gateway's [`accept`] endpoint
+    /// Bind this gateway's host frontend on `addr`, choosing a duplex
+    /// accept server or a simplex receiver based on the transport, and
+    /// adopt the bound address as the gateway's advertised location.
+    ///
+    /// Splitting bind from [`serve_frontend`] lets a caller construct
+    /// procs whose addresses derive from this gateway's (now
+    /// frontend-aware) default location *before* the accept loop runs.
+    /// This owns all the connectivity policy a host used to carry: the
+    /// transport choice and the location adoption live here, so callers
+    /// operate on the gateway without inspecting transports or
+    /// rewriting its location.
+    ///
+    /// The frontend address is adopted only when no via session is
+    /// active. A via session's `default_location` is
+    /// `Via(self_uid, peer_addr)`; overwriting it with the bare
+    /// frontend address would drop the prefix and leave every proc on
+    /// this gateway advertised at an address the peer cannot reach.
+    pub fn bind_frontend(
+        &self,
+        addr: ChannelAddr,
+        listener: Option<std::net::TcpListener>,
+    ) -> Result<GatewayFrontend, ChannelError> {
+        let frontend = if addr.transport().supports_duplex() {
+            GatewayFrontend::Duplex(
+                PreboundAcceptServer::duplex(addr, listener)
+                    .map_err(|e| ChannelError::Other(anyhow::anyhow!("{e}")))?,
+            )
+        } else {
+            // Local transports can't carry the duplex protocol; bind a
+            // simplex receiver directly.
+            let (addr, rx) = channel::serve_with_listener(addr, listener)?;
+            GatewayFrontend::Simplex { addr, rx }
+        };
+        if self.default_location().as_via().is_none() {
+            self.set_default_location(Location::from(frontend.addr().clone()));
+        }
+        Ok(frontend)
+    }
+
+    /// Serve a frontend previously bound by [`bind_frontend`]. Duplex
+    /// frontends run the gateway-attach accept loop; simplex frontends
+    /// run a straight mailbox serve.
+    pub fn serve_frontend(&self, frontend: GatewayFrontend) -> GatewayServeHandle {
+        match frontend {
+            GatewayFrontend::Duplex(server) => self.serve_duplex_with_server(server),
+            GatewayFrontend::Simplex { rx, .. } => {
+                use crate::mailbox::MailboxServer as _;
+                let raw = self.clone().serve(rx);
+                GatewayServeHandle::from_simplex(self.clone(), raw)
+            }
+        }
+    }
+
+    /// Connect this gateway to a peer gateway's [`serve_duplex`] endpoint
     /// using the attach handshake.
     ///
     /// Dials `addr`, sends this gateway's uid as [`AttachRequest`],
@@ -754,7 +838,7 @@ impl fmt::Debug for Gateway {
 }
 
 /// A running gateway server. Returned by [`Gateway::serve`],
-/// [`Gateway::accept`], and [`Gateway::serve_via`].
+/// [`Gateway::serve_duplex`], and [`Gateway::serve_via`].
 ///
 /// The same type covers all three flavors; the internal [`HandleKind`]
 /// carries flavor-specific teardown state. Shutdown is two steps:
@@ -776,11 +860,11 @@ enum HandleKind {
     /// handles built from a pre-bound receiver via [`from_simplex`].
     Serve { location: Option<Location> },
     /// A duplex accept loop. Same active-server bookkeeping as
-    /// [`Serve`]; `_stopped_tx` keeps the per-loop watch alive so the
-    /// loop can observe `.stop()`.
-    Accept {
+    /// [`Serve`]; `cancel_token` stops the loop and its per-connection
+    /// tasks when [`stop`](GatewayServeHandle::stop) cancels it.
+    ServeDuplex {
         location: Option<Location>,
-        _stopped_tx: watch::Sender<bool>,
+        cancel_token: CancellationToken,
     },
     /// An outbound attach session. Owns the duplex client and the
     /// previous gateway state so stop/drop can restore them.
@@ -795,7 +879,7 @@ impl fmt::Debug for GatewayServeHandle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let variant = match &self.kind {
             HandleKind::Serve { .. } => "Serve",
-            HandleKind::Accept { .. } => "Accept",
+            HandleKind::ServeDuplex { .. } => "ServeDuplex",
             HandleKind::ServeVia { .. } => "ServeVia",
         };
         f.debug_struct("GatewayServeHandle")
@@ -818,16 +902,27 @@ impl GatewayServeHandle {
     }
 
     /// Signal the underlying server to stop and run the flavor-specific
-    /// cleanup: remove the active-server location (`Serve`/`Accept`) or
-    /// restore the swapped forwarder and default location (`ServeVia`).
-    /// Idempotent: later calls are no-ops. Call [`join`](Self::join)
-    /// afterward to await teardown.
+    /// cleanup: remove the active-server location (`Serve`/`ServeDuplex`)
+    /// or restore the swapped forwarder and default location
+    /// (`ServeVia`). Idempotent: later calls are no-ops. Call
+    /// [`join`](Self::join) afterward to await teardown.
     pub fn stop(&mut self, reason: &str) {
         if self.stopped {
             return;
         }
         self.stopped = true;
-        self.handle.stop(reason);
+        // `ServeDuplex` is driven by its cancellation token, not the
+        // inner mailbox-server watch (whose receiver is unused), so
+        // signal the token here and leave the inner handle alone.
+        match &self.kind {
+            HandleKind::ServeDuplex { cancel_token, .. } => {
+                tracing::info!("stopping gateway duplex accept loop; reason: {reason}");
+                cancel_token.cancel();
+            }
+            HandleKind::Serve { .. } | HandleKind::ServeVia { .. } => {
+                self.handle.stop(reason);
+            }
+        }
         self.run_cleanup();
     }
 
@@ -855,7 +950,7 @@ impl GatewayServeHandle {
 
     fn run_cleanup(&mut self) {
         match &mut self.kind {
-            HandleKind::Serve { location } | HandleKind::Accept { location, .. } => {
+            HandleKind::Serve { location } | HandleKind::ServeDuplex { location, .. } => {
                 if let Some(loc) = location.take() {
                     self.gateway.remove_server(&loc);
                 }
@@ -916,13 +1011,13 @@ async fn duplex_accept_loop(
     mut duplex_server: channel::duplex::DuplexServer<MessageEnvelope, AttachWire>,
     frontend_addr: ChannelAddr,
     gateway: Gateway,
-    stopped_rx: watch::Receiver<bool>,
+    cancel_token: CancellationToken,
 ) {
     let mut tasks: JoinSet<()> = JoinSet::new();
     loop {
         let accept = tokio::select! {
             result = duplex_server.accept() => result,
-            () = wait_for_stop(stopped_rx.clone()) => break,
+            () = cancel_token.cancelled() => break,
         };
         let (mut duplex_rx, duplex_tx) = match accept {
             Ok(pair) => pair,
@@ -950,14 +1045,14 @@ async fn duplex_accept_loop(
                 uid = %peer_uid,
                 "duplex accepted gateway-attach connection",
             );
-            // Reply with the via location the peer should advertise.
-            let via_location = gateway.default_location().with_via(peer_uid.clone());
-            duplex_tx.post(AttachWire::Ack(AttachAck {
-                location: via_location,
-            }));
-
-            let sender = AttachSender(duplex_tx).into_boxed();
-            let attach_guard = match gateway.attach_peer(peer_uid, sender) {
+            // Register the peer *before* acknowledging, so the handshake
+            // reflects the actual server-side state. If registration
+            // fails (e.g. a duplicate uid), drop the connection without
+            // sending an `AttachAck`: the client then observes the closed
+            // channel instead of adopting a via location and forwarder
+            // for a session the peer discarded.
+            let sender = AttachSender(duplex_tx.clone()).into_boxed();
+            let attach_guard = match gateway.attach_peer(peer_uid.clone(), sender) {
                 Ok(guard) => guard,
                 Err(err) => {
                     tracing::warn!(
@@ -967,12 +1062,19 @@ async fn duplex_accept_loop(
                     continue;
                 }
             };
+
+            // Reply with the via location the peer should advertise.
+            let via_location = gateway.default_location().with_via(peer_uid);
+            duplex_tx.post(AttachWire::Ack(AttachAck {
+                location: via_location,
+            }));
+
             let mut handle = gateway.serve_rx(duplex_rx);
-            let conn_stop = stopped_rx.clone();
+            let conn_token = cancel_token.clone();
             tasks.spawn(async move {
                 tokio::select! {
                     _ = &mut handle => {}
-                    () = wait_for_stop(conn_stop) => {
+                    () = conn_token.cancelled() => {
                         handle.stop("gateway accept loop stopping");
                         let _ = handle.await;
                     }
@@ -988,7 +1090,7 @@ async fn duplex_accept_loop(
             // session task to exit and the inbound receiver to
             // close after a single message.
             let gw = gateway.clone();
-            let conn_stop = stopped_rx.clone();
+            let conn_token = cancel_token.clone();
             tasks.spawn(async move {
                 let _keep_alive = duplex_tx;
                 let rx = PrependRx {
@@ -998,7 +1100,7 @@ async fn duplex_accept_loop(
                 let mut handle = gw.serve_rx(rx);
                 tokio::select! {
                     _ = &mut handle => {}
-                    () = wait_for_stop(conn_stop) => {
+                    () = conn_token.cancelled() => {
                         handle.stop("gateway accept loop stopping");
                         let _ = handle.await;
                     }
@@ -1009,13 +1111,6 @@ async fn duplex_accept_loop(
 
     while tasks.join_next().await.is_some() {}
     duplex_server.join().await;
-}
-
-async fn wait_for_stop(mut stopped_rx: watch::Receiver<bool>) {
-    let ok = stopped_rx.wait_for(|stopped| *stopped).await.is_ok();
-    if !ok {
-        std::future::pending::<()>().await;
-    }
 }
 
 /// [`Rx<MessageEnvelope>`] adapter that yields a single pre-read
@@ -1219,7 +1314,7 @@ mod tests {
     /// inherit the via prefix and route across the link.
     ///
     /// Production cross-process attach is [`Gateway::serve_via`] /
-    /// [`Gateway::accept`]; this is just enough wiring to test the
+    /// [`Gateway::serve_duplex`]; this is just enough wiring to test the
     /// gateway's via routing locally.
     trait GatewayAttachExt {
         fn attach(&self, peer: &Gateway) -> AttachGuard;
@@ -1919,7 +2014,7 @@ mod tests {
 
     /// End-to-end gateway-to-gateway attach via the new protocol:
     /// the client gateway calls `serve_via` against a peer that
-    /// called `accept`; the handshake assigns the client a via
+    /// called `serve_duplex`; the handshake assigns the client a via
     /// location and installs the duplex sender; outbound traffic from
     /// the client's gateway falls through to the duplex; inbound
     /// envelopes addressed to procs on the server gateway are peeled
@@ -1931,7 +2026,7 @@ mod tests {
         // to reach.
         let server_gw = Gateway::new();
         let server_addr = ChannelAddr::any(ChannelTransport::Unix);
-        let mut accept_handle = server_gw.accept(server_addr).unwrap();
+        let mut accept_handle = server_gw.serve_duplex(server_addr).unwrap();
         let server_addr = server_gw.default_location().addr().clone();
 
         let server_proc = Proc::builder()

@@ -357,8 +357,7 @@ static VIA_SERVE_HANDLE: OnceLock<hyperactor::gateway::GatewayServeHandle> = Onc
 /// local procs by the gateway's routing. The local host still owns
 /// its own frontend address; ``via`` only adds a forwarding path. The
 /// returned ``PyHostMesh`` / ``PyProcMesh`` / ``PyInstance`` all live
-/// on the local host's procs — there is no separate "attached client
-/// proc" in this design.
+/// on the local host's procs.
 ///
 /// This should be called only once, at process initialization.
 #[pyfunction]
