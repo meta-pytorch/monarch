@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use hyperactor::ActorHandle;
 use hyperactor::Endpoint as _;
+use hyperactor::Gateway;
 use hyperactor::Instance;
 use hyperactor::Proc;
 use hyperactor::id::Label;
@@ -343,8 +344,9 @@ static HOST_SHUTDOWN_HANDLE: OnceLock<
 ///
 /// The HostMesh is served on the default transport.
 ///
-/// This should be called only once, at process initialization
+/// This should be called only once, at process initialization.
 #[pyfunction]
+#[pyo3(signature = (bootstrap_cmd))]
 fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPythonTask> {
     let bootstrap_cmd = match bootstrap_cmd {
         Some(cmd) => cmd.to_rust(),
@@ -358,6 +360,7 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
             None,
             false,
             None,
+            Gateway::global().clone(),
         )
         .await
         .map_err(|e| PyException::new_err(e.to_string()))?;
