@@ -71,7 +71,6 @@ criterion = { version = "0.5.1", features = ["async_tokio", "csv_output"] }
 inventory = "0.3.24"
 jsonschema = "0.17.0"
 maplit = "1.0"
-proptest = "1.11.0"
 timed_test = { version = "0.0.0", path = "../timed_test" }
 
 [lints]
