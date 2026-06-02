@@ -47,6 +47,7 @@
 
 use hyperactor::ActorRef;
 use hyperactor::Endpoint as _;
+use hyperactor::Gateway;
 use hyperactor::Handler;
 use hyperactor::accum::StreamingReducerOpts;
 use hyperactor::channel::ChannelTransport;
@@ -467,7 +468,12 @@ impl HostMesh {
         let addr = hyperactor_config::global::get_cloned(DEFAULT_TRANSPORT).binding_addr();
 
         let manager = BootstrapProcManager::new(bootstrap_cmd)?;
-        let host = Host::new(manager, addr).await?;
+        // Use a dedicated gateway, not the process-wide global one. This
+        // host coexists with the global-context singleton host (see
+        // `global_context`), which owns the global gateway; sharing it
+        // would collide on the legacy `service`/`local` pseudo-singleton
+        // proc ids.
+        let host = Host::new_with_gateway(manager, addr, None, Gateway::new()).await?;
         let addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let host_mesh_agent = system_proc
@@ -531,7 +537,11 @@ impl HostMesh {
         let spawn: ProcManagerSpawnFn =
             Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None))));
         let manager = LocalProcManager::new(spawn);
-        let host = Host::new(manager, addr).await?;
+        // Each in-process host gets its own gateway, not the
+        // process-wide global one. Several hosts coexist in one process
+        // here, and the legacy `service`/`local` pseudo-singleton proc
+        // ids would collide if they all attached to the same gateway.
+        let host = Host::new_with_gateway(manager, addr, None, Gateway::new()).await?;
         let addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let host_mesh_agent = system_proc
