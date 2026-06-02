@@ -405,10 +405,18 @@ class _Lazy(Generic[T]):
         return self._val
 
 
-def _init_client_context() -> Context:
+def _init_client_context(via: Optional[str] = None) -> Context:
     """
     Create a client context that bootstraps an actor instance running on a real
     local proc mesh on a real local host mesh.
+
+    When ``via`` is a non-empty ZMQ-style address, the local client's
+    gateway is connected to the gateway serving that address: outbound
+    traffic forwards over the duplex, and the remote gateway routes
+    return traffic back over the same duplex. ``this_host()`` still
+    names the current machine; attach only controls how the host's
+    procs are reached, not the host's identity. Use ``attach_client``
+    to supply ``via`` before the client context is first used.
     """
     import atexit
 
@@ -417,7 +425,7 @@ def _init_client_context() -> Context:
     from monarch._src.actor.proc_mesh import ProcMesh
 
     hy_host_mesh, hy_proc_mesh, hy_instance = bootstrap_host(
-        default_bootstrap_cmd()
+        default_bootstrap_cmd(), via=via
     ).block_on()
 
     ctx = Context._from_instance(cast(Instance, hy_instance))  # type: ignore
@@ -447,6 +455,31 @@ def _init_client_context() -> Context:
 
 
 _client_context: _Lazy[Context] = _Lazy(_init_client_context)
+
+
+def attach_client(addr: str) -> None:
+    """Bootstrap this process's client by attaching its gateway to the
+    remote duplex server at ``addr`` (a ZMQ-style address, e.g.
+    ``"ipc:///tmp/sock"`` or ``"tcp://host:port"``).
+
+    Outbound client traffic is forwarded over the duplex and the remote
+    gateway routes return traffic back, so the client need not be
+    directly reachable by the procs in the mesh — e.g. a client running
+    outside a Kubernetes cluster whose procs run inside it.
+
+    Must be called before the client context is bootstrapped — i.e.
+    before the first ``context()`` / ``this_host()`` / ``this_proc()``
+    on the client; raises ``RuntimeError`` if the client context has
+    already been bootstrapped. ``this_host()`` still names the current
+    machine — attach only changes how this host's procs are reached.
+    """
+    with _client_context._lock:
+        if _client_context._val is not None:
+            raise RuntimeError(
+                "client already bootstrapped; call attach_client(addr) before "
+                "the first context()/this_host()/this_proc()"
+            )
+        _client_context._val = _init_client_context(via=addr)
 
 
 _shutdown_done = False

@@ -163,7 +163,16 @@ pub struct Host<M> {
     /// `Via(child_uid, ...)` prefix and reached via
     /// [`Gateway::attach_peer`] with a dial-based sender per child.
     /// Unknown destinations fall through to the gateway's forwarder
-    /// (a [`DialMailboxRouter`] by default).
+    /// (a [`DialMailboxRouter`] by default; replaced by
+    /// [`Gateway::serve_via`] when a duplex peer is attached).
+    ///
+    /// When the caller wires up a peer connection (with
+    /// [`Gateway::serve_via`] or [`Gateway::attach`]) *before*
+    /// constructing the host, all of these procs inherit the via
+    /// prefix in their bound addresses automatically: their port
+    /// locations are derived dynamically from this gateway's
+    /// [`Location::default_location`], which the peer link
+    /// rewrites to `Via(self_uid, peer_default)`.
     gateway: Gateway,
     manager: M,
     service_proc: Proc,
@@ -172,11 +181,24 @@ pub struct Host<M> {
     frontend: Option<Frontend>,
 }
 
-/// Pre-bound frontend receiver the host hands to its gateway on
-/// [`Host::serve`]. The bound address is tracked separately as
-/// [`Host::frontend_addr`].
-struct Frontend {
-    rx: hyperactor::channel::ChannelRx<MessageEnvelope>,
+/// [`Host::serve`]. Duplex transports become a
+/// gateway-attach-capable accept loop; simplex transports become a
+/// straight mailbox-server serve.
+enum Frontend {
+    Duplex(hyperactor::gateway::PreboundAcceptServer),
+    Simplex {
+        addr: ChannelAddr,
+        rx: hyperactor::channel::ChannelRx<MessageEnvelope>,
+    },
+}
+
+impl Frontend {
+    fn addr(&self) -> &ChannelAddr {
+        match self {
+            Frontend::Duplex(server) => server.addr(),
+            Frontend::Simplex { addr, .. } => addr,
+        }
+    }
 }
 
 impl<M: ProcManager> Host<M> {
@@ -216,14 +238,29 @@ impl<M: ProcManager> Host<M> {
         listener: Option<std::net::TcpListener>,
         gateway: Gateway,
     ) -> Result<Self, HostError> {
-        // Bind the host's frontend eagerly so we know its address;
-        // hand the bound receiver to the gateway on `serve()`.
-        let (frontend_addr, rx) = channel::serve_with_listener(addr, listener)?;
-        let frontend = Frontend { rx };
-        // Adopt the local frontend address as the gateway's default
-        // so the legacy pseudo-singleton procs (service, local) carry
-        // it.
-        gateway.set_default_location(Location::from(frontend_addr.clone()));
+        // hand the bound server to the gateway's accept loop on
+        // `serve()`.
+        let frontend = if addr.transport().supports_duplex() {
+            let server = hyperactor::gateway::PreboundAcceptServer::duplex(addr, listener)?;
+            Frontend::Duplex(server)
+        } else {
+            // Local transports don't carry the duplex protocol; bind
+            // a simplex receiver directly.
+            let (addr, rx) = channel::serve_with_listener(addr, listener)?;
+            Frontend::Simplex { addr, rx }
+        };
+        let frontend_addr = frontend.addr().clone();
+        // Only adopt the local frontend address as the gateway's
+        // default when no via location has been installed yet (e.g.
+        // by a prior `Gateway::serve_via`). When a via session is
+        // active, the gateway's `default_location` is
+        // `Via(client_uid, peer_addr)` — overwriting it with the
+        // bare local address would silently drop the prefix, leaving
+        // every proc on this gateway advertised with an address the
+        // attached peer cannot reach.
+        if gateway.default_location().as_via().is_none() {
+            gateway.set_default_location(Location::from(frontend_addr.clone()));
+        }
 
         // Establish a backend channel on the preferred transport.
         let (backend_addr, backend_rx) = channel::serve(ChannelAddr::any(manager.transport()))?;
@@ -232,7 +269,10 @@ impl<M: ProcManager> Host<M> {
         // share the host's gateway just like spawned children would
         // — no special routing path. Their bound port addresses are
         // derived dynamically from the gateway's `default_location`
-        // at bind time.
+        // at bind time, so a peer link established *before* this
+        // point (via [`Gateway::serve_via`] or [`Gateway::attach`])
+        // is honored automatically — every advertised address
+        // carries the via prefix and is reachable through the link.
         let service_proc = Proc::legacy_service_pseudo_singleton_on_gateway(gateway.clone());
         let local_proc = Proc::legacy_local_pseudo_singleton_on_gateway(gateway.clone());
         let service_proc_id = service_proc.proc_addr().clone();
@@ -278,9 +318,14 @@ impl<M: ProcManager> Host<M> {
     /// resolves.
     pub fn serve(&mut self) -> Result<GatewayServeHandle, HostError> {
         let frontend = self.frontend.take().ok_or(HostError::AlreadyServing)?;
-        use hyperactor::mailbox::MailboxServer as _;
-        let raw = self.gateway.clone().serve(frontend.rx);
-        Ok(GatewayServeHandle::from_simplex(self.gateway.clone(), raw))
+        Ok(match frontend {
+            Frontend::Duplex(server) => self.gateway.accept_with_server(server),
+            Frontend::Simplex { addr: _, rx } => {
+                use hyperactor::mailbox::MailboxServer as _;
+                let raw = self.gateway.clone().serve(rx);
+                GatewayServeHandle::from_simplex(self.gateway.clone(), raw)
+            }
+        })
     }
 
     /// The underlying proc manager.
@@ -308,9 +353,9 @@ impl<M: ProcManager> Host<M> {
     }
 
     /// Spawn a new process with the given `name`. On success, the
-    /// proc has been spawned, and is reachable through the returned
-    /// proc address. Its id derives from `name`; its location carries
-    /// a via hop that routes through this host's frontend.
+    /// proc has been spawned, and is reachable through the returned,
+    /// direct-addressed ProcId, which will be
+    /// `ProcId(self.addr(), name)`.
     pub async fn spawn(
         &mut self,
         name: String,

@@ -249,10 +249,16 @@ impl HostShutdownHandle {
 
 /// Bootstrap a host in this process using a caller-provided gateway.
 ///
-/// The caller passes the [`Gateway`] in — typically [`Gateway::new`].
-/// The host's `system_proc` and `local_proc` are registered with the
-/// gateway during construction — no special routing path; they share
-/// the gateway like any other local proc.
+/// The caller passes the [`Gateway`] in — typically [`Gateway::new`],
+/// but it may have been pre-configured (e.g., via
+/// [`Gateway::serve_via`] or [`Gateway::attach`] to connect to
+/// another gateway) before this call. The host's `system_proc` and
+/// `local_proc` are registered with the gateway during construction
+/// — no special routing path; they share the gateway like any other
+/// local proc. If the gateway has a via prefix in its
+/// `default_location` at this point, every port bound on these
+/// procs inherits that prefix and is reachable from the attached
+/// peer through the via mechanism.
 ///
 /// Returns `(host_mesh_agent, shutdown_handle)`:
 ///

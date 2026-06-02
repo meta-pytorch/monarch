@@ -33,22 +33,31 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::RwLock;
 use std::sync::Weak;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::StreamExt as _;
+use serde::Deserialize;
+use serde::Serialize;
+use tokio::sync::watch;
+use tokio::task::JoinSet;
 
 use crate::Location;
 use crate::PortAddr;
+use crate::ProcAddr;
 use crate::ProcId;
 use crate::channel;
 use crate::channel::ChannelAddr;
 use crate::channel::ChannelError;
 use crate::channel::ChannelTransport;
+use crate::channel::Rx;
+use crate::channel::Tx;
 use crate::id::Uid;
 use crate::mailbox::BoxedMailboxSender;
 use crate::mailbox::DeliveryFailure;
 use crate::mailbox::DialMailboxRouter;
 use crate::mailbox::IntoBoxedMailboxSender as _;
+use crate::mailbox::MailboxClient;
 use crate::mailbox::MailboxSender as _;
 use crate::mailbox::MailboxServer as _;
 use crate::mailbox::MailboxServerError;
@@ -62,6 +71,155 @@ use crate::mailbox::UndeliverableReason;
 use crate::mailbox::UnroutableMailboxSender;
 use crate::proc::Proc;
 use crate::proc::WeakProc;
+
+// ---------------------------------------------------------------------------
+// Gateway attach protocol
+// ---------------------------------------------------------------------------
+//
+// Gateways are the connectivity layer; all on-the-wire attach is
+// gateway-to-gateway. A client gateway dials a peer's accept endpoint
+// and sends [`AttachRequest`] carrying its own uid; the peer replies
+// with [`AttachAck`] carrying the via location through which the client
+// is reachable, then both ends serve regular [`MessageEnvelope`]
+// traffic on the same duplex.
+
+/// Label used for attach-control sigil envelopes.
+const ATTACH_SIGIL_LABEL: &str = "attach";
+
+/// Upper bound on how long [`Gateway::serve_via`] waits for the peer's
+/// [`AttachAck`]. A peer that accepts the connection but never replies
+/// (hung, misconfigured, or running an older protocol) would otherwise
+/// block the caller — typically Python `bootstrap_host` — indefinitely.
+const ATTACH_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// First message a gateway sends when attaching to a peer. The peer
+/// records `uid` in its [`peers`] table; afterwards, any
+/// destination whose outermost location hop is `Via(uid, ...)` is
+/// peeled by the peer and forwarded back over the duplex.
+#[derive(Debug, Clone, Serialize, Deserialize, typeuri::Named)]
+pub(crate) struct AttachRequest {
+    /// The attaching gateway's uid.
+    pub(crate) uid: Uid,
+}
+wirevalue::register_type!(AttachRequest);
+
+/// Acknowledgement returned by a peer gateway during attach. Carries
+/// the via location the client should advertise as its
+/// [`default_location`] — `Via(client_uid, peer_default_location)`.
+#[derive(Debug, Clone, Serialize, Deserialize, typeuri::Named)]
+pub(crate) struct AttachAck {
+    /// The location through which the client is now reachable.
+    pub(crate) location: Location,
+}
+wirevalue::register_type!(AttachAck);
+
+/// Wire protocol for the peer → client direction on a duplex attach
+/// connection.
+#[derive(Debug, Serialize, Deserialize, typeuri::Named)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "wire-protocol enum; boxing Envelope would ripple through channel/networking destructure sites"
+)]
+pub(crate) enum AttachWire {
+    /// First message: the peer acknowledges and assigns a via location.
+    Ack(AttachAck),
+    /// Subsequent messages: routed envelopes.
+    Envelope(MessageEnvelope),
+}
+wirevalue::register_type!(AttachWire);
+
+/// [`Rx<MessageEnvelope>`](channel::Rx) adapter that unwraps
+/// [`AttachWire::Envelope`] from a duplex receiver. Errors if the
+/// peer sends another [`AttachWire::Ack`] after the handshake.
+pub(crate) struct AttachRx(pub(crate) channel::duplex::DuplexRx<AttachWire>);
+
+#[async_trait]
+impl channel::Rx<MessageEnvelope> for AttachRx {
+    async fn recv(&mut self) -> Result<MessageEnvelope, ChannelError> {
+        match self.0.recv().await? {
+            AttachWire::Envelope(envelope) => Ok(envelope),
+            AttachWire::Ack(_) => Err(ChannelError::Other(anyhow::anyhow!(
+                "unexpected attach ack after handshake"
+            ))),
+        }
+    }
+
+    fn addr(&self) -> ChannelAddr {
+        self.0.addr()
+    }
+
+    async fn join(self) {
+        self.0.join().await
+    }
+}
+
+/// [`MailboxSender`] adapter that wraps outbound [`MessageEnvelope`]s
+/// in [`AttachWire::Envelope`] before posting to a peer's
+/// [`DuplexTx<AttachWire>`]. Used on the accept side to send messages
+/// to an attached client gateway.
+#[derive(Clone)]
+pub(crate) struct AttachSender(pub(crate) channel::duplex::DuplexTx<AttachWire>);
+
+#[async_trait]
+impl crate::mailbox::MailboxSender for AttachSender {
+    fn post_unchecked(
+        &self,
+        envelope: MessageEnvelope,
+        _return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+    ) {
+        self.0.post(AttachWire::Envelope(envelope));
+    }
+}
+
+/// A pre-bound duplex server ready to be handed to
+/// [`Gateway::accept_with_server`]. Used by callers (e.g. `Host`)
+/// that need to know the bound address before they start the accept
+/// loop.
+pub struct PreboundAcceptServer {
+    inner: channel::duplex::DuplexServer<MessageEnvelope, AttachWire>,
+}
+
+impl PreboundAcceptServer {
+    /// Bind a duplex server at `addr`, optionally reusing a
+    /// caller-provided `listener`.
+    pub fn duplex(
+        addr: ChannelAddr,
+        listener: Option<std::net::TcpListener>,
+    ) -> Result<Self, channel::ServerError> {
+        let inner = channel::duplex::serve::<MessageEnvelope, AttachWire>(addr, listener)?;
+        Ok(Self { inner })
+    }
+
+    /// The bound address.
+    pub fn addr(&self) -> &ChannelAddr {
+        self.inner.addr()
+    }
+}
+
+/// Serialize a control payload into a placeholder [`MessageEnvelope`]
+/// suitable for posting on a duplex client→peer channel.
+///
+/// Sender/dest ids are placeholders the peer consumes without routing;
+/// `return_undeliverable` is cleared so an envelope that ever escapes
+/// into the forwarder is dropped rather than bounced to the fake
+/// sender.
+fn build_sigil_envelope<T>(payload: &T) -> anyhow::Result<MessageEnvelope>
+where
+    T: serde::Serialize + typeuri::Named,
+{
+    let signal_actor_id = crate::ActorAddr::root(
+        ProcAddr::singleton(
+            ChannelAddr::any(channel::ChannelTransport::Local),
+            ATTACH_SIGIL_LABEL,
+        ),
+        crate::id::Label::strip(ATTACH_SIGIL_LABEL),
+    );
+    let signal_port = signal_actor_id.port_addr(crate::port::Port::from(0u64));
+    let mut envelope =
+        MessageEnvelope::serialize(signal_actor_id, signal_port, payload, Default::default())?;
+    envelope.set_return_undeliverable(false);
+    Ok(envelope)
+}
 
 /// Connectivity boundary for one or more procs.
 #[derive(Clone)]
@@ -155,15 +313,16 @@ struct GatewayState {
     /// The location to use when no server is active.
     fallback_location: Location,
 
-    /// The location used when constructing routeable addresses for
-    /// newly bound refs. Attaching this gateway to a peer may replace
-    /// it with `Via(self.uid, peer_default_location)` so addresses
-    /// handed out by this gateway carry the via prefix and route back
-    /// through the peer.
+    /// newly bound refs. After [`Gateway::serve_via`], this is replaced
+    /// with the peer-supplied `Via(self.uid, peer_default_location)`
+    /// location, so any address handed out by this gateway carries the
+    /// via prefix and is source-routable back through the duplex.
     default_location: RwLock<Location>,
 
     /// Sender used to forward messages whose destination is neither an
-    /// attached proc nor matched by [`peers`].
+    /// attached proc nor matched by [`peers`]. Swapped in by
+    /// [`Gateway::serve_via`] and restored when the resulting handle
+    /// is dropped or joined.
     forwarder: RwLock<BoxedMailboxSender>,
 
     /// Local delivery targets registered with this gateway, keyed by
@@ -234,8 +393,8 @@ impl Gateway {
         }
     }
 
-    /// This gateway's stable uid — the routing key peers use to reach
-    /// procs attached here, by addressing them as
+    /// This gateway's stable uid. Peers route messages back to procs
+    /// attached here by addressing them as
     /// `Location::Via(this_uid, inner)`.
     pub fn uid(&self) -> &Uid {
         &self.inner.uid
@@ -270,15 +429,15 @@ impl Gateway {
     /// Internal-only: only [`Proc`] construction calls this, and the
     /// resulting [`AttachedProcGuard`] is held inside the proc itself
     /// so the proc's lifetime drives detachment. The public Gateway
-    /// API exposes peer connectivity via [`Gateway::attach_peer`] (a
-    /// sender-based via entry for a peer gateway uid), which does not
-    /// take a [`Proc`].
+    /// API exposes peer connectivity via [`Gateway::attach`] (an
+    /// in-process bidirectional bind), [`Gateway::attach_peer`] (a
+    /// sender-based via entry for a peer gateway uid), and
+    /// [`Gateway::serve_via`] (a duplex-attach connection to a remote
+    /// gateway). None of those take a [`Proc`].
     ///
     /// Panics if a live proc with the same id is already attached. A
     /// dead entry whose [`WeakProc`] has been dropped is replaced
-    /// silently; this can occur in the brief window between the last
-    /// strong proc reference dropping and its [`AttachedProcGuard`]
-    /// field drop removing the table entry.
+    /// silently.
     pub(crate) fn attach_proc(&self, proc: &Proc) -> AttachedProcGuard {
         let proc_id = proc.proc_id().clone();
         let weak = proc.downgrade();
@@ -310,9 +469,11 @@ impl Gateway {
     /// `sender` after peeling the hop. The returned guard removes the
     /// entry on drop.
     ///
-    /// Used by hosts that have spawned child procs reachable through a
-    /// dial-based sender: the host publishes the child's address with
-    /// a `Via(child_uid, ...)` prefix and registers the sender here
+    /// Used both internally (by [`Gateway::attach`] and the duplex
+    /// accept loop in [`Gateway::accept`]) and externally (by hosts
+    /// that have spawned child procs reachable through a dial-based
+    /// sender). The host publishes the child's address with a
+    /// `Via(child_uid, ...)` prefix and registers the sender here
     /// under the same `uid`.
     ///
     /// Returns [`PeerAttachError`] if a peer with the same uid is
@@ -359,7 +520,133 @@ impl Gateway {
             gateway: self.clone(),
             handle,
             stopped: false,
-            location: Some(location),
+            kind: HandleKind::Serve {
+                location: Some(location),
+            },
+        })
+    }
+
+    /// Open a duplex endpoint that accepts both regular inbound
+    /// envelope traffic and gateway-attach handshakes from peers.
+    ///
+    /// On each connection the accept loop reads the first message:
+    /// * an [`AttachRequest`] sigil enters the attach branch — this
+    ///   gateway records the peer's uid in `peers` (so source
+    ///   routes addressed to `Via(peer_uid, ...)` flow back through
+    ///   the duplex), replies with [`AttachAck`] carrying
+    ///   `Via(peer_uid, default_location)`, and serves remaining
+    ///   traffic from the duplex into this gateway.
+    /// * a regular [`MessageEnvelope`] enters the inbound branch and
+    ///   is served straight through.
+    ///
+    /// Returns a [`GatewayServeHandle`] of kind `Accept`. The accept
+    /// loop respects `.stop("reason")`.
+    pub fn accept(&self, addr: ChannelAddr) -> Result<GatewayServeHandle, ChannelError> {
+        // Local transport can't carry duplex; fall back to simple serve.
+        if !addr.transport().supports_duplex() {
+            return self.serve(addr);
+        }
+        let server = PreboundAcceptServer::duplex(addr, None)
+            .map_err(|e| ChannelError::Other(anyhow::anyhow!("{e}")))?;
+        Ok(self.accept_with_server(server))
+    }
+
+    /// Accept variant that takes a pre-bound [`PreboundAcceptServer`].
+    /// Use when the caller needs to know the bound address before
+    /// starting the accept loop (e.g. to construct addresses that
+    /// reference it).
+    pub fn accept_with_server(&self, server: PreboundAcceptServer) -> GatewayServeHandle {
+        let frontend_addr = server.addr().clone();
+        let location = Location::from(frontend_addr.clone());
+        self.add_server(location.clone());
+
+        let (stopped_tx, stopped_rx) = watch::channel(false);
+        let (handle_stopped_tx, mut handle_stopped_rx) = watch::channel(false);
+        let gateway = self.clone();
+        let stopped_tx_clone = stopped_tx.clone();
+        let inner = server.inner;
+        let join_handle = tokio::spawn(async move {
+            // Forward only an *observed* true on the public stop watch
+            // into the accept loop's watch. If the public sender is
+            // dropped (the handle drops without an explicit stop),
+            // `wait_for` returns Err and we propagate nothing — the
+            // accept loop keeps running, matching the
+            // [`MailboxServerHandle`] detach-on-drop convention.
+            tokio::spawn(async move {
+                if handle_stopped_rx.wait_for(|stopped| *stopped).await.is_ok() {
+                    let _ = stopped_tx_clone.send(true);
+                }
+            });
+            duplex_accept_loop(inner, frontend_addr, gateway, stopped_rx).await;
+            Ok::<(), MailboxServerError>(())
+        });
+        let handle = MailboxServerHandle::from_parts(join_handle, handle_stopped_tx);
+        GatewayServeHandle {
+            gateway: self.clone(),
+            handle,
+            stopped: false,
+            kind: HandleKind::Accept {
+                location: Some(location),
+                _stopped_tx: stopped_tx,
+            },
+        }
+    }
+
+    /// Connect this gateway to a peer gateway's [`accept`] endpoint
+    /// using the attach handshake.
+    ///
+    /// Dials `addr`, sends this gateway's uid as [`AttachRequest`],
+    /// receives [`AttachAck`] with the via location the peer assigned,
+    /// sets that location as this gateway's [`default_location`] (so
+    /// every address handed out by this gateway carries the via
+    /// prefix), installs the duplex sender as this gateway's outbound
+    /// forwarder, and serves inbound traffic from the duplex locally.
+    ///
+    /// The returned [`GatewayServeHandle`] of kind `ServeVia` owns the
+    /// duplex session and the inbound serve handle. Dropping it (or
+    /// awaiting `.join()`) restores the previous forwarder and tears
+    /// down the duplex.
+    pub async fn serve_via(&self, addr: ChannelAddr) -> anyhow::Result<GatewayServeHandle> {
+        let my_uid = self.inner.uid.clone();
+        let mut duplex_client = channel::duplex::dial::<MessageEnvelope, AttachWire>(addr)?;
+        let duplex_tx = duplex_client.tx();
+        let mut duplex_rx = duplex_client
+            .take_rx()
+            .expect("dial returns a fresh DuplexClient with rx present");
+
+        duplex_tx.post(build_sigil_envelope(&AttachRequest { uid: my_uid })?);
+
+        let ack = match tokio::time::timeout(ATTACH_HANDSHAKE_TIMEOUT, duplex_rx.recv())
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "attach handshake timed out after {:?} waiting for AttachAck",
+                    ATTACH_HANDSHAKE_TIMEOUT
+                )
+            })?? {
+            AttachWire::Ack(a) => a,
+            AttachWire::Envelope(_) => anyhow::bail!("expected attach ack as first message"),
+        };
+
+        let previous_default_location = {
+            let mut default = self.inner.default_location.write().unwrap();
+            std::mem::replace(&mut *default, ack.location)
+        };
+
+        let previous_forwarder = {
+            let mut forwarder = self.inner.forwarder.write().unwrap();
+            std::mem::replace(&mut *forwarder, MailboxClient::new(duplex_tx).into_boxed())
+        };
+        let serve_handle = self.serve_rx(AttachRx(duplex_rx));
+        Ok(GatewayServeHandle {
+            gateway: self.clone(),
+            handle: serve_handle,
+            stopped: false,
+            kind: HandleKind::ServeVia {
+                duplex_client: Some(duplex_client),
+                previous_forwarder: Some(previous_forwarder),
+                previous_default_location: Some(previous_default_location),
+            },
         })
     }
 
@@ -466,72 +753,295 @@ impl fmt::Debug for Gateway {
     }
 }
 
-/// A running gateway server. Returned by [`Gateway::serve`] and
-/// [`Gateway::from_simplex`].
+/// A running gateway server. Returned by [`Gateway::serve`],
+/// [`Gateway::accept`], and [`Gateway::serve_via`].
 ///
-/// Shutdown is two steps: [`stop`](Self::stop) signals the server and
-/// performs the active-server cleanup, and [`join`](Self::join) awaits
-/// teardown. They are independent — `join` does not stop, so a caller
-/// that wants both must call `stop` first.
+/// The same type covers all three flavors; the internal [`HandleKind`]
+/// carries flavor-specific teardown state. Shutdown is two steps:
+/// [`stop`](Self::stop) signals the server and runs the flavor-specific
+/// cleanup, and [`join`](Self::join) awaits teardown. They are
+/// independent — `join` does not stop, so a caller that wants both must
+/// call `stop` first.
 pub struct GatewayServeHandle {
     gateway: Gateway,
     handle: MailboxServerHandle,
     stopped: bool,
-    /// Location added to the gateway's `active_servers` list when this
-    /// handle was created. `None` for handles built from a pre-bound
-    /// receiver via [`from_simplex`] that the caller is tracking
-    /// separately. Taken by `stop` so cleanup runs at most once.
-    location: Option<Location>,
+    kind: HandleKind,
+}
+
+/// Per-flavor teardown state for a [`GatewayServeHandle`].
+enum HandleKind {
+    /// A simple serve on a [`ChannelAddr`]. `location` is added to the
+    /// gateway's active-server list and removed on stop. `None` for
+    /// handles built from a pre-bound receiver via [`from_simplex`].
+    Serve { location: Option<Location> },
+    /// A duplex accept loop. Same active-server bookkeeping as
+    /// [`Serve`]; `_stopped_tx` keeps the per-loop watch alive so the
+    /// loop can observe `.stop()`.
+    Accept {
+        location: Option<Location>,
+        _stopped_tx: watch::Sender<bool>,
+    },
+    /// An outbound attach session. Owns the duplex client and the
+    /// previous gateway state so stop/drop can restore them.
+    ServeVia {
+        duplex_client: Option<channel::duplex::DuplexClient<MessageEnvelope, AttachWire>>,
+        previous_forwarder: Option<BoxedMailboxSender>,
+        previous_default_location: Option<Location>,
+    },
 }
 
 impl fmt::Debug for GatewayServeHandle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let variant = match &self.kind {
+            HandleKind::Serve { .. } => "Serve",
+            HandleKind::Accept { .. } => "Accept",
+            HandleKind::ServeVia { .. } => "ServeVia",
+        };
         f.debug_struct("GatewayServeHandle")
-            .field("location", &self.location)
+            .field("kind", &variant)
             .finish()
     }
 }
 
 impl GatewayServeHandle {
-    /// Wrap a raw [`MailboxServerHandle`] from a simplex serve as a
-    /// [`GatewayServeHandle`] with no active-server bookkeeping. Used
-    /// when the caller passes a pre-bound receiver to the gateway
-    /// (e.g. a local-transport Host).
+    /// [`GatewayServeHandle`] of kind `Serve` with no active-server
+    /// bookkeeping. Used when the caller passes a pre-bound receiver
+    /// to the gateway (e.g. a local-transport Host).
     pub fn from_simplex(gateway: Gateway, handle: MailboxServerHandle) -> Self {
         Self {
             gateway,
             handle,
             stopped: false,
-            location: None,
+            kind: HandleKind::Serve { location: None },
         }
     }
 
-    /// Signal the underlying server to stop and unwind the
-    /// active-server bookkeeping. Idempotent: later calls are no-ops.
-    /// Call [`join`](Self::join) afterward to await teardown.
+    /// Signal the underlying server to stop and run the flavor-specific
+    /// cleanup: remove the active-server location (`Serve`/`Accept`) or
+    /// restore the swapped forwarder and default location (`ServeVia`).
+    /// Idempotent: later calls are no-ops. Call [`join`](Self::join)
+    /// afterward to await teardown.
     pub fn stop(&mut self, reason: &str) {
         if self.stopped {
             return;
         }
         self.stopped = true;
         self.handle.stop(reason);
-        if let Some(loc) = self.location.take() {
-            self.gateway.remove_server(&loc);
-        }
+        self.run_cleanup();
     }
 
-    /// Await teardown of the underlying server, returning its join
-    /// result. This does not signal the server to stop; call
-    /// [`stop`](Self::stop) first if the server is still running, or
-    /// `join` will block until the server terminates on its own.
-    pub async fn join(self) -> Result<(), MailboxServerError> {
-        match self.handle.await {
+    /// Await teardown of the underlying server (and any owned duplex
+    /// session), returning its join result. This does not signal the
+    /// server to stop; call [`stop`](Self::stop) first if it is still
+    /// running, or `join` will block until it terminates on its own.
+    pub async fn join(mut self) -> Result<(), MailboxServerError> {
+        let inner_result = (&mut self.handle).await;
+
+        // Drain any owned duplex session as part of join.
+        if let HandleKind::ServeVia { duplex_client, .. } = &mut self.kind
+            && let Some(client) = duplex_client.take()
+        {
+            client.join().await;
+        }
+        match inner_result {
             Ok(Ok(())) => Ok(()),
             Ok(Err(err)) => Err(err),
             Err(join_err) => Err(MailboxServerError::Channel(ChannelError::Other(
                 anyhow::anyhow!("gateway serve task join error: {join_err}"),
             ))),
         }
+    }
+
+    fn run_cleanup(&mut self) {
+        match &mut self.kind {
+            HandleKind::Serve { location } | HandleKind::Accept { location, .. } => {
+                if let Some(loc) = location.take() {
+                    self.gateway.remove_server(&loc);
+                }
+            }
+            HandleKind::ServeVia {
+                previous_forwarder,
+                previous_default_location,
+                ..
+            } => {
+                if let Some(prev) = previous_forwarder.take() {
+                    *self.gateway.inner.forwarder.write().unwrap() = prev;
+                }
+                if let Some(prev) = previous_default_location.take() {
+                    *self.gateway.inner.default_location.write().unwrap() = prev;
+                }
+            }
+        }
+    }
+}
+
+impl Drop for GatewayServeHandle {
+    fn drop(&mut self) {
+        // Graceful teardown is `stop()` + `join().await`. As a safety
+        // net, the `ServeVia` variant must restore the swapped
+        // forwarder/default_location on drop: it installed a forwarder
+        // backed by the duplex client this handle owns, so dropping
+        // without restoring would leave the gateway holding a dead
+        // sender. The `Serve`/`Accept` active-server bookkeeping is
+        // intentionally left to an explicit `stop()`.
+        if self.stopped {
+            return;
+        }
+        if let HandleKind::ServeVia {
+            previous_forwarder,
+            previous_default_location,
+            ..
+        } = &mut self.kind
+        {
+            if let Some(prev) = previous_forwarder.take() {
+                *self.gateway.inner.forwarder.write().unwrap() = prev;
+            }
+            if let Some(prev) = previous_default_location.take() {
+                *self.gateway.inner.default_location.write().unwrap() = prev;
+            }
+        }
+    }
+}
+
+/// Accept loop body shared by all duplex servers attached to a
+/// gateway. Each accepted connection is dispatched based on its first
+/// message:
+///
+/// * [`AttachWire`] sigil (`AttachRequest`) — register the peer in
+///   `peers`, reply with [`AttachAck`] carrying the via
+///   location, then serve remaining envelope traffic from the duplex.
+/// * regular [`MessageEnvelope`] — serve straight through.
+async fn duplex_accept_loop(
+    mut duplex_server: channel::duplex::DuplexServer<MessageEnvelope, AttachWire>,
+    frontend_addr: ChannelAddr,
+    gateway: Gateway,
+    stopped_rx: watch::Receiver<bool>,
+) {
+    let mut tasks: JoinSet<()> = JoinSet::new();
+    loop {
+        let accept = tokio::select! {
+            result = duplex_server.accept() => result,
+            () = wait_for_stop(stopped_rx.clone()) => break,
+        };
+        let (mut duplex_rx, duplex_tx) = match accept {
+            Ok(pair) => pair,
+            Err(e) => {
+                tracing::info!(
+                    frontend_addr = frontend_addr.to_string(),
+                    error = %e,
+                    "duplex accept loop ended"
+                );
+                break;
+            }
+        };
+
+        let first_msg = match duplex_rx.recv().await {
+            Ok(msg) => msg,
+            Err(e) => {
+                tracing::info!(error = %e, "duplex connection closed before first message");
+                continue;
+            }
+        };
+
+        if let Ok(attach_request) = first_msg.deserialized::<AttachRequest>() {
+            let peer_uid = attach_request.uid;
+            tracing::info!(
+                uid = %peer_uid,
+                "duplex accepted gateway-attach connection",
+            );
+            // Reply with the via location the peer should advertise.
+            let via_location = gateway.default_location().with_via(peer_uid.clone());
+            duplex_tx.post(AttachWire::Ack(AttachAck {
+                location: via_location,
+            }));
+
+            let sender = AttachSender(duplex_tx).into_boxed();
+            let attach_guard = match gateway.attach_peer(peer_uid, sender) {
+                Ok(guard) => guard,
+                Err(err) => {
+                    tracing::warn!(
+                        uid = %err.uid,
+                        "ignoring duplicate gateway-attach connection"
+                    );
+                    continue;
+                }
+            };
+            let mut handle = gateway.serve_rx(duplex_rx);
+            let conn_stop = stopped_rx.clone();
+            tasks.spawn(async move {
+                tokio::select! {
+                    _ = &mut handle => {}
+                    () = wait_for_stop(conn_stop) => {
+                        handle.stop("gateway accept loop stopping");
+                        let _ = handle.await;
+                    }
+                }
+                drop(attach_guard);
+                tracing::info!("gateway-attach connection closed");
+            });
+        } else {
+            // Regular inbound connection: route messages, no
+            // outbound tag-0x01 traffic. The DuplexTx is held for
+            // the lifetime of the connection: dropping it closes
+            // the session's outbound channel, which causes the
+            // session task to exit and the inbound receiver to
+            // close after a single message.
+            let gw = gateway.clone();
+            let conn_stop = stopped_rx.clone();
+            tasks.spawn(async move {
+                let _keep_alive = duplex_tx;
+                let rx = PrependRx {
+                    first: Some(first_msg),
+                    inner: duplex_rx,
+                };
+                let mut handle = gw.serve_rx(rx);
+                tokio::select! {
+                    _ = &mut handle => {}
+                    () = wait_for_stop(conn_stop) => {
+                        handle.stop("gateway accept loop stopping");
+                        let _ = handle.await;
+                    }
+                }
+            });
+        }
+    }
+
+    while tasks.join_next().await.is_some() {}
+    duplex_server.join().await;
+}
+
+async fn wait_for_stop(mut stopped_rx: watch::Receiver<bool>) {
+    let ok = stopped_rx.wait_for(|stopped| *stopped).await.is_ok();
+    if !ok {
+        std::future::pending::<()>().await;
+    }
+}
+
+/// [`Rx<MessageEnvelope>`] adapter that yields a single pre-read
+/// envelope before delegating to an inner receiver. Used by the
+/// duplex accept loop to re-inject the first message it consumed for
+/// connection-type dispatch.
+struct PrependRx<R> {
+    first: Option<MessageEnvelope>,
+    inner: R,
+}
+
+#[async_trait]
+impl<R: channel::Rx<MessageEnvelope> + Send> channel::Rx<MessageEnvelope> for PrependRx<R> {
+    async fn recv(&mut self) -> Result<MessageEnvelope, ChannelError> {
+        if let Some(msg) = self.first.take() {
+            return Ok(msg);
+        }
+        self.inner.recv().await
+    }
+
+    fn addr(&self) -> ChannelAddr {
+        self.inner.addr()
+    }
+
+    async fn join(self) {
+        self.inner.join().await
     }
 }
 
@@ -708,9 +1218,9 @@ mod tests {
     /// uid (`Via(self_uid, peer_default)`), so procs bound afterward
     /// inherit the via prefix and route across the link.
     ///
-    /// This is just enough wiring to test the gateway's via routing
-    /// locally; cross-process attach over a duplex transport is a
-    /// follow-up.
+    /// Production cross-process attach is [`Gateway::serve_via`] /
+    /// [`Gateway::accept`]; this is just enough wiring to test the
+    /// gateway's via routing locally.
     trait GatewayAttachExt {
         fn attach(&self, peer: &Gateway) -> AttachGuard;
     }
@@ -1389,8 +1899,8 @@ mod tests {
         assert_ne!(loc1, loc3);
 
         // Middle handle stops first: default stays at loc3 (still the
-        // last entry in active_servers). `stop` performs the cleanup;
-        // `join` just awaits teardown.
+        // last entry in active_servers). `stop` runs the cleanup;
+        // `join` awaits teardown.
         s2.stop("test");
         s2.join().await.unwrap();
         assert_eq!(gateway.default_location(), loc3);
@@ -1405,6 +1915,72 @@ mod tests {
         s1.stop("test");
         s1.join().await.unwrap();
         assert_eq!(gateway.default_location(), fallback);
+    }
+
+    /// End-to-end gateway-to-gateway attach via the new protocol:
+    /// the client gateway calls `serve_via` against a peer that
+    /// called `accept`; the handshake assigns the client a via
+    /// location and installs the duplex sender; outbound traffic from
+    /// the client's gateway falls through to the duplex; inbound
+    /// envelopes addressed to procs on the server gateway are peeled
+    /// at the via boundary and routed locally.
+    #[tokio::test]
+    async fn test_gateway_serve_via_peer() {
+        // The server gateway accepts duplex attaches on a unix
+        // address. Spawn a proc on it so the client has a destination
+        // to reach.
+        let server_gw = Gateway::new();
+        let server_addr = ChannelAddr::any(ChannelTransport::Unix);
+        let mut accept_handle = server_gw.accept(server_addr).unwrap();
+        let server_addr = server_gw.default_location().addr().clone();
+
+        let server_proc = Proc::builder()
+            .proc_id(ProcId::instance(Label::strip("echo")))
+            .shared_gateway(server_gw.clone())
+            .build()
+            .unwrap();
+        let server_inst = server_proc.client("recv");
+        let (server_port, mut server_rx) = server_inst.bind_handler_port::<u64>();
+        let PortLocation::Bound(server_dest) = server_port.location() else {
+            panic!("server port must be bound");
+        };
+
+        // The client gateway dials the server's accept endpoint.
+        // After handshake, the client's default_location is wrapped in
+        // Via(client_uid, server_addr).
+        let client_gw = Gateway::new();
+        let pre_default = client_gw.default_location();
+        let serve_via = client_gw.serve_via(server_addr.clone()).await.unwrap();
+        let post_default = client_gw.default_location();
+        assert_ne!(
+            pre_default, post_default,
+            "serve_via must update default_location"
+        );
+        let (via_uid, inner) = post_default.as_via().expect("default must be via");
+        assert_eq!(via_uid, client_gw.uid());
+        assert_eq!(inner.addr(), &server_addr);
+
+        // Post directly to the server proc through the client gateway —
+        // since the server proc is on the server gateway, the
+        // envelope flows out via the duplex and the server peels at
+        // the post_unchecked via-first path.
+        let sender = test_actor_id("client", "sender");
+        client_gw.post(
+            MessageEnvelope::serialize(sender, server_dest.clone(), &7u64, Flattrs::new()).unwrap(),
+            monitored_return_handle(),
+        );
+        let received = time::timeout(Duration::from_secs(5), server_rx.recv())
+            .await
+            .expect("server_rx timed out")
+            .expect("server_rx closed");
+        assert_eq!(received, 7);
+
+        // Drop the via handle: client's default_location is restored.
+        drop(serve_via);
+        assert_eq!(client_gw.default_location(), pre_default);
+
+        // Clean up the accept loop.
+        accept_handle.stop("test cleanup");
     }
 
     /// `Gateway::attach(&Gateway)` is purely via-based:
