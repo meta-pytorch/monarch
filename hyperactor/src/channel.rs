@@ -421,6 +421,20 @@ impl TlsAddr {
     }
 }
 
+impl FromStr for TlsAddr {
+    type Err = anyhow::Error;
+
+    fn from_str(addr: &str) -> Result<Self, Self::Err> {
+        let (hostname, port_str) = addr
+            .rsplit_once(':')
+            .ok_or_else(|| anyhow::anyhow!("invalid TLS address: {}", addr))?;
+        let port = port_str
+            .parse()
+            .map_err(|_| anyhow::anyhow!("invalid TLS address port: {}", port_str))?;
+        Ok(Self::new(hostname, port))
+    }
+}
+
 impl fmt::Display for TlsAddr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}:{}", self.hostname, self.port)
@@ -448,6 +462,12 @@ pub enum ChannelTransport {
     /// Transport over a TCP connection with configurable TLS support
     Tls,
 
+    /// Transport over a QUIC connection with configurable TLS support.
+    Quic,
+
+    /// Transport over a QUIC connection with TLS support within Meta.
+    MetaQuic(TlsMode),
+
     /// Local transports uses an in-process registry and mpsc channels.
     Local,
 
@@ -461,6 +481,8 @@ impl fmt::Display for ChannelTransport {
             Self::Tcp(mode) => write!(f, "tcp({:?})", mode),
             Self::MetaTls(mode) => write!(f, "metatls({:?})", mode),
             Self::Tls => write!(f, "tls"),
+            Self::Quic => write!(f, "quic"),
+            Self::MetaQuic(mode) => write!(f, "metaquic({:?})", mode),
             Self::Local => write!(f, "local"),
             Self::Unix => write!(f, "unix"),
         }
@@ -482,10 +504,16 @@ impl FromStr for ChannelTransport {
             "local" => Ok(ChannelTransport::Local),
             "unix" => Ok(ChannelTransport::Unix),
             "tls" => Ok(ChannelTransport::Tls),
+            "quic" => Ok(ChannelTransport::Quic),
             s if s.starts_with("metatls(") && s.ends_with(")") => {
                 let inner = &s["metatls(".len()..s.len() - 1];
                 let mode = inner.parse()?;
                 Ok(ChannelTransport::MetaTls(mode))
+            }
+            s if s.starts_with("metaquic(") && s.ends_with(")") => {
+                let inner = &s["metaquic(".len()..s.len() - 1];
+                let mode = inner.parse()?;
+                Ok(ChannelTransport::MetaQuic(mode))
             }
             unknown => Err(anyhow::anyhow!("unknown channel transport: {}", unknown)),
         }
@@ -517,6 +545,8 @@ impl ChannelTransport {
             ChannelTransport::Tcp(_) => true,
             ChannelTransport::MetaTls(_) => true,
             ChannelTransport::Tls => true,
+            ChannelTransport::Quic => true,
+            ChannelTransport::MetaQuic(_) => true,
             ChannelTransport::Local => false,
             ChannelTransport::Unix => false,
         }
@@ -531,6 +561,8 @@ impl ChannelTransport {
             ChannelTransport::Tcp(_) => true,
             ChannelTransport::MetaTls(_) => true,
             ChannelTransport::Tls => true,
+            ChannelTransport::Quic => false,
+            ChannelTransport::MetaQuic(_) => false,
             ChannelTransport::Unix => true,
             ChannelTransport::Local => false,
         }
@@ -636,6 +668,7 @@ pub type Port = u16;
 ///
 /// - `tcp:127.0.0.1:1234` - localhost port 1234 over TCP
 /// - `tcp:192.168.0.1:1111` - 192.168.0.1 port 1111 over TCP
+/// - `quic:example.com:1234` - example.com port 1234 over QUIC
 /// - `local:123` - the (in-process) local port 123
 /// - `unix:/some/path` - the Unix socket at `/some/path`
 ///
@@ -675,6 +708,14 @@ pub enum ChannelAddr {
     /// An address to establish TCP channels with configurable TLS support.
     /// Uses TlsAddr with hostname and port.
     Tls(TlsAddr),
+
+    /// An address to establish QUIC channels with configurable TLS support.
+    /// Uses TlsAddr with hostname and port.
+    Quic(TlsAddr),
+
+    /// An address to establish QUIC channels with TLS support within Meta.
+    /// Uses TlsAddr with hostname and port.
+    MetaQuic(TlsAddr),
 
     /// Local addresses are registered in-process and given an integral
     /// index.
@@ -777,6 +818,18 @@ impl ChannelAddr {
                 };
                 Self::MetaTls(TlsAddr::new(host_address, 0))
             }
+            ChannelTransport::MetaQuic(mode) => {
+                let host_address = match mode {
+                    TlsMode::Hostname => hostname::get()
+                        .ok()
+                        .and_then(|hostname| hostname.to_str().map(|s| s.to_string()))
+                        .unwrap_or("unknown_host".to_string()),
+                    TlsMode::IpV6 => {
+                        get_host_ipv6_address().expect("failed to retrieve ipv6 address")
+                    }
+                };
+                Self::MetaQuic(TlsAddr::new(host_address, 0))
+            }
             ChannelTransport::Local => Self::Local(0),
             ChannelTransport::Tls => {
                 let host_address = hostname::get()
@@ -784,6 +837,13 @@ impl ChannelAddr {
                     .and_then(|hostname| hostname.to_str().map(|s| s.to_string()))
                     .unwrap_or("localhost".to_string());
                 Self::Tls(TlsAddr::new(host_address, 0))
+            }
+            ChannelTransport::Quic => {
+                let host_address = hostname::get()
+                    .ok()
+                    .and_then(|hostname| hostname.to_str().map(|s| s.to_string()))
+                    .unwrap_or("localhost".to_string());
+                Self::Quic(TlsAddr::new(host_address, 0))
             }
             // This works because the file will be deleted but we know we have a unique file by this point.
             ChannelTransport::Unix => Self::Unix(net::unix::SocketAddr::from_str("").unwrap()),
@@ -806,6 +866,12 @@ impl ChannelAddr {
                 Err(_) => ChannelTransport::MetaTls(TlsMode::Hostname),
             },
             Self::Tls(_) => ChannelTransport::Tls,
+            Self::Quic(_) => ChannelTransport::Quic,
+            Self::MetaQuic(addr) => match addr.hostname.parse::<IpAddr>() {
+                Ok(IpAddr::V6(_)) => ChannelTransport::MetaQuic(TlsMode::IpV6),
+                Ok(IpAddr::V4(_)) => ChannelTransport::MetaQuic(TlsMode::Hostname),
+                Err(_) => ChannelTransport::MetaQuic(TlsMode::Hostname),
+            },
             Self::Local(_) => ChannelTransport::Local,
             Self::Unix(_) => ChannelTransport::Unix,
             // bind_to's transport is what is actually used in communication.
@@ -831,6 +897,8 @@ impl fmt::Display for ChannelAddr {
             Self::Tcp(addr) => write!(f, "tcp:{}", addr),
             Self::MetaTls(addr) => write!(f, "metatls:{}", addr),
             Self::Tls(addr) => write!(f, "tls:{}", addr),
+            Self::Quic(addr) => write!(f, "quic:{}", addr),
+            Self::MetaQuic(addr) => write!(f, "metaquic:{}", addr),
             Self::Local(index) => write!(f, "local:{}", index),
             Self::Unix(addr) => write!(f, "unix:{}", addr),
             Self::Alias { dial_to, bind_to } => {
@@ -855,6 +923,8 @@ impl FromStr for ChannelAddr {
                 .map_err(anyhow::Error::from),
             Some(("metatls", rest)) => net::meta::parse(rest).map_err(|e| e.into()),
             Some(("tls", rest)) => net::tls::parse(rest).map_err(|e| e.into()),
+            Some(("quic", rest)) => TlsAddr::from_str(rest).map(Self::Quic),
+            Some(("metaquic", rest)) => TlsAddr::from_str(rest).map(Self::MetaQuic),
             Some(("unix", rest)) => Ok(Self::Unix(net::unix::SocketAddr::from_str(rest)?)),
             Some(("alias", _)) => Err(anyhow::anyhow!(
                 "detect possible alias address, but we currently do not support \
@@ -891,6 +961,8 @@ impl ChannelAddr {
     /// - inproc://endpoint-name (equivalent to local)
     /// - ipc://path (equivalent to unix)
     /// - metatls://hostname:port or metatls://*:port
+    /// - quic://hostname:port or quic://*:port
+    /// - metaquic://hostname:port or metaquic://*:port
     /// - Alias format: dial_to_url@bind_to_url (e.g., tcp://host:port@tcp://host:port)
     ///   Note: Alias format is currently only supported for TCP addresses
     pub fn from_zmq_url(address: &str) -> Result<Self, anyhow::Error> {
@@ -970,7 +1042,7 @@ impl ChannelAddr {
                 Ok((Self::Local(port), None))
             }
             "ipc" => Ok((Self::Unix(net::unix::SocketAddr::from_str(address)?), None)),
-            "metatls" | "tls" => {
+            "metatls" | "tls" | "quic" | "metaquic" => {
                 let (host, port, listener) = Self::parse_host_port_or_fd(address)?;
                 let hostname = if host == "*" {
                     std::net::Ipv6Addr::UNSPECIFIED.to_string()
@@ -979,6 +1051,8 @@ impl ChannelAddr {
                 };
                 let addr = match scheme {
                     "metatls" => Self::MetaTls(TlsAddr::new(hostname, port)),
+                    "metaquic" => Self::MetaQuic(TlsAddr::new(hostname, port)),
+                    "quic" => Self::Quic(TlsAddr::new(hostname, port)),
                     _ => Self::Tls(TlsAddr::new(hostname, port)),
                 };
                 Ok((addr, listener))
@@ -1023,6 +1097,8 @@ impl ChannelAddr {
             Self::Tcp(addr) => format!("tcp://{}", addr),
             Self::MetaTls(addr) => format!("metatls://{}:{}", addr.hostname, addr.port),
             Self::Tls(addr) => format!("tls://{}:{}", addr.hostname, addr.port),
+            Self::Quic(addr) => format!("quic://{}:{}", addr.hostname, addr.port),
+            Self::MetaQuic(addr) => format!("metaquic://{}:{}", addr.hostname, addr.port),
             Self::Local(index) => format!("inproc://{}", index),
             Self::Unix(addr) => format!("ipc://{}", addr),
             Self::Alias { dial_to, bind_to } => {
@@ -1159,6 +1235,12 @@ pub fn dial<M: RemoteMessage>(addr: ChannelAddr) -> Result<ChannelTx<M>, Channel
         | ChannelAddr::MetaTls(_) => {
             ChannelTxKind::Net(net::spawn(net::link(addr, net::SessionId::random(), 0)?))
         }
+        ChannelAddr::Quic(_) | ChannelAddr::MetaQuic(_) => {
+            return Err(ChannelError::InvalidAddress(format!(
+                "unsupported channel transport: {}",
+                addr
+            )));
+        }
         ChannelAddr::Alias { dial_to, .. } => dial(*dial_to)?.inner,
     };
     Ok(ChannelTx { inner })
@@ -1265,6 +1347,9 @@ fn serve_inner<M: RemoteMessage>(
             let (addr, rx) = net::server::serve::<M>(addr, listener)?;
             Ok((addr, ChannelRxKind::Net(rx)))
         }
+        ChannelAddr::Quic(_) | ChannelAddr::MetaQuic(_) => Err(ChannelError::InvalidAddress(
+            format!("unsupported channel transport: {}", addr),
+        )),
         ChannelAddr::Local(0) => {
             assert!(
                 listener.is_none(),
@@ -1348,6 +1433,14 @@ mod tests {
                     8080,
                 )),
             ),
+            (
+                "quic<DELIM>example.com:443",
+                ChannelAddr::Quic(TlsAddr::new("example.com", 443)),
+            ),
+            (
+                "metaquic<DELIM>example.com:443",
+                ChannelAddr::MetaQuic(TlsAddr::new("example.com", 443)),
+            ),
             #[cfg(target_os = "linux")]
             ("local<DELIM>123", ChannelAddr::Local(123)),
             (
@@ -1424,6 +1517,30 @@ mod tests {
         assert_eq!(
             ChannelAddr::from_zmq_url("metatls://192.168.1.1:443").unwrap(),
             ChannelAddr::MetaTls(TlsAddr::new("192.168.1.1", 443))
+        );
+
+        // Test quic with hostname
+        assert_eq!(
+            ChannelAddr::from_zmq_url("quic://example.com:443").unwrap(),
+            ChannelAddr::Quic(TlsAddr::new("example.com", 443))
+        );
+
+        // Test quic wildcard binding
+        assert_eq!(
+            ChannelAddr::from_zmq_url("quic://*:8443").unwrap(),
+            ChannelAddr::Quic(TlsAddr::new("::", 8443))
+        );
+
+        // Test metaquic with hostname
+        assert_eq!(
+            ChannelAddr::from_zmq_url("metaquic://example.com:443").unwrap(),
+            ChannelAddr::MetaQuic(TlsAddr::new("example.com", 443))
+        );
+
+        // Test metaquic wildcard binding
+        assert_eq!(
+            ChannelAddr::from_zmq_url("metaquic://*:8443").unwrap(),
+            ChannelAddr::MetaQuic(TlsAddr::new("::", 8443))
         );
 
         // Test metatls with wildcard (should use IPv6 unspecified address)
