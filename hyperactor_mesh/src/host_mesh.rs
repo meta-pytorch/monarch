@@ -160,8 +160,15 @@ impl HostRef {
     }
 
     /// The ProcAddr for the proc with name `name` on this host.
+    ///
+    /// Mirrors the convention of `Host::spawn`: a spawned child proc is
+    /// advertised at `Via(proc_uid, host_addr)` so the host's gateway
+    /// peels the outer hop via [`Gateway::attach_peer`] and forwards to
+    /// the child's serving address. Without the via prefix the host
+    /// would bounce the envelope as a self-loop.
     fn named_proc(&self, id: &ResourceId) -> ProcAddr {
-        id.proc_addr(self.0.clone())
+        let location = hyperactor::Location::from(self.0.clone()).with_via(id.uid().clone());
+        ProcAddr::new(id.proc_id(), location)
     }
 
     /// The service proc on this host.

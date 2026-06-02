@@ -49,26 +49,92 @@ use crate::id::Uid;
 use crate::parse;
 use crate::port::Port;
 
-/// A network location, wrapping a [`ChannelAddr`].
-#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct Location(ChannelAddr);
+/// A network location.
+///
+/// Two variants: a terminal [`ChannelAddr`], or a "via" hop carrying
+/// the [`Uid`] of a gateway through which the inner location is
+/// reachable. The via form is a source route — a message addressed to
+/// `Via(uid, inner)` is forwarded by the gateway holding that `uid` and
+/// then routed by the inner location.
+///
+/// Display syntax:
+///
+/// ```text
+/// location := via* zmq-url
+/// via      := uid "."
+/// uid      := label | "<" base58 ">" | label "<" base58 ">"
+/// ```
+///
+/// The parser sniffs the ZMQ URL scheme (`<scheme>://`) to split the
+/// via list from the URL — so any uid form accepted by [`Uid`]
+/// (singleton label, unlabeled instance, or labeled instance) is
+/// admitted in via position.
+///
+/// Examples:
+///
+/// * `<2MuAHeDjLCEd>.tcp://[::1]:2345` — one unlabeled instance via.
+/// * `host<7PDmJtQJB5S>.tcp://[::1]:2345` — labeled instance via.
+/// * `client.host<7PDmJtQJB5S>.tcp://[::1]:2345` — a singleton via
+///   stacked on a labeled instance via.
+#[derive(
+    Clone,
+    EnumAsInner,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize
+)]
+pub enum Location {
+    /// A terminal channel address. Routed directly.
+    Addr(ChannelAddr),
+    /// A via hop: messages for this location are forwarded by the
+    /// gateway holding `Uid`, which peels this prefix off the
+    /// destination before routing the inner location.
+    Via(Uid, Box<Location>),
+}
 
 impl Location {
-    /// Returns the underlying channel address.
+    /// Returns the innermost channel address, peeling all via hops.
     pub fn addr(&self) -> &ChannelAddr {
-        &self.0
+        match self {
+            Location::Addr(addr) => addr,
+            Location::Via(_, inner) => inner.addr(),
+        }
+    }
+
+    /// Wrap this location in a via hop carrying `uid`. Vias act like a
+    /// stack: the outermost (most recently added) hop is the first the
+    /// receiving gateway peels off.
+    pub fn with_via(self, uid: Uid) -> Self {
+        Location::Via(uid, Box::new(self))
+    }
+
+    /// Pop the outermost via hop. Returns `Ok((uid, inner))` when this
+    /// is a `Via`, or `Err(self)` when it is a terminal `Addr`, so the
+    /// caller can recover the unchanged location.
+    pub fn pop_via(self) -> Result<(Uid, Location), Location> {
+        match self {
+            Location::Via(uid, inner) => Ok((uid, *inner)),
+            addr @ Location::Addr(_) => Err(addr),
+        }
     }
 }
 
 impl From<ChannelAddr> for Location {
     fn from(addr: ChannelAddr) -> Self {
-        Self(addr)
+        Location::Addr(addr)
     }
 }
 
 impl fmt::Display for Location {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0.to_zmq_url())
+        match self {
+            Location::Addr(addr) => f.write_str(&addr.to_zmq_url()),
+            Location::Via(uid, inner) => write!(f, "{uid}.{inner}"),
+        }
     }
 }
 
@@ -82,7 +148,7 @@ impl FromStr for Location {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        ChannelAddr::from_zmq_url(s).map(Self)
+        parse::addr::parse_location_str(s).map_err(|err| anyhow::anyhow!("{err}"))
     }
 }
 
