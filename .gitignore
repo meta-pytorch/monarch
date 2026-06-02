@@ -18,7 +18,6 @@ torchmonarch.egg-info/*
 
 # Rust stuff
 target/
-Cargo.lock
 
 # mdbook output
 books/hyperactor-book/book/**
@@ -48,4 +47,3 @@ disabled_tests.txt
 
 # whittle
 .whittle.json
-
