@@ -9,6 +9,7 @@
 //! The CastActor: a system actor that bootstraps and manages casting domains.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -129,14 +130,20 @@ impl CastDomainId {
         );
 
         let root_rank = region.slice().offset();
-        let entry_point = &members[&root_rank];
-        let member_mesh = ValueMesh::build_indexed(region.clone(), members.clone())?;
+        let entry_point = members
+            .get(&root_rank)
+            .expect("members coverage was checked above")
+            .clone();
+        let member_mesh = Arc::new(ValueMesh::build_indexed(region.clone(), members)?);
+
         let domain_ref = CastDomainRef::from_entry_point(
             self.clone(),
-            cast_actor_ref_for_member(entry_point),
-            member_mesh,
+            cast_actor_ref_for_member(&entry_point),
+            Arc::clone(&member_mesh),
         );
-        let root_tile = MaterializedTile::from_map(Tile::from_view(&region), members);
+        let root_tile =
+            MaterializedTile::from_value_mesh_with_tile(Tile::from_view(&region), member_mesh);
+
         domain_ref.entry_point.post(
             cx,
             CreateCastDomain {
@@ -167,7 +174,7 @@ pub struct CastDomainRef {
     /// Entry-point [`CastActor`] ref for initiating casts.
     entry_point: ActorRef<CastActor>,
     /// Destination actor addresses keyed by this domain's rank space.
-    members: ValueMesh<ActorAddr>,
+    members: Arc<ValueMesh<ActorAddr>>,
 }
 
 impl CastDomainRef {
@@ -175,7 +182,7 @@ impl CastDomainRef {
     fn from_entry_point(
         id: CastDomainId,
         entry_point: ActorRef<CastActor>,
-        members: ValueMesh<ActorAddr>,
+        members: Arc<ValueMesh<ActorAddr>>,
     ) -> Self {
         Self {
             id,
@@ -263,7 +270,7 @@ impl CastDomainRef {
         dest_port: u64,
     ) -> Result<(Uuid, ValueMesh<u64>)> {
         let sequencer = cx.instance().sequencer();
-        let seqs = self.members.clone().map_into(|member| {
+        let seqs = self.members.as_ref().map_into(|member| {
             let port = member.port_addr(Port::from(dest_port));
             let SeqInfo::Session { session_id: _, seq } = sequencer.assign_seq(&port) else {
                 unreachable!("assign_seq always returns SeqInfo::Session");
@@ -1291,7 +1298,10 @@ mod tests {
                 .iter()
                 .map(|rank| (rank, member(rank)))
                 .collect::<HashMap<_, _>>();
-            let root_tile = MaterializedTile::from_map(Tile::from_view(&region), members.clone());
+            let root_tile = MaterializedTile::from_value_mesh_with_tile(
+                Tile::from_view(&region),
+                Arc::new(ValueMesh::build_indexed(region.clone(), members.clone()).unwrap()),
+            );
 
             let mut seen_roots = BTreeSet::new();
             validate_domain_tree(&members, &root_tile, &mut seen_roots)?;
@@ -1309,7 +1319,10 @@ mod tests {
                 .iter()
                 .map(|rank| (rank, member(rank)))
                 .collect::<HashMap<_, _>>();
-            let root = MaterializedTile::from_map(Tile::from_view(&region), members.clone());
+            let root = MaterializedTile::from_value_mesh_with_tile(
+                Tile::from_view(&region),
+                Arc::new(ValueMesh::build_indexed(region.clone(), members.clone()).unwrap()),
+            );
             let mut seen_roots = BTreeSet::new();
 
             validate_domain_tree(&members, &root, &mut seen_roots)?;
@@ -1526,7 +1539,10 @@ mod tests {
         let receiver_id = ActorAddr::root(cast_proc.proc_addr().clone(), Label::strip("receiver"));
         let cast_domain_id = CastDomainId::new();
         let region = Region::from(Shape::unity());
-        let root_tile = MaterializedTile::new(Tile::from_view(&region), vec![receiver_id]);
+        let root_tile = MaterializedTile::from_value_mesh_with_tile(
+            Tile::from_view(&region),
+            Arc::new(ValueMesh::new(region.clone(), vec![receiver_id]).unwrap()),
+        );
 
         Handler::<CreateCastDomain>::handle(
             &mut cast_actor,
