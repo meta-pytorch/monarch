@@ -64,16 +64,17 @@
 
 #![allow(dead_code)]
 
-use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
+use hyperactor::value_mesh::ValueMesh;
 use ndslice::Region;
 use ndslice::Slice;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
+use serde::de::Error as DeError;
 use serde::ser::SerializeStruct;
 
 /// Decomposable affine tile.
@@ -155,19 +156,19 @@ impl Tile {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct MaterializedTile<T> {
     tile: Tile,
-    items_by_rank: Arc<HashMap<usize, T>>,
+    items: Arc<ValueMesh<T>>,
 }
 
-impl<T: Serialize> Serialize for MaterializedTile<T> {
+impl<T: Serialize + 'static> Serialize for MaterializedTile<T> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        // In memory, child materialized tiles created by `subtile()` may share
-        // a root-level `items_by_rank` map so that further subtiles are O(1).
-        // On the wire, send only the active tile's items in `tile.space()`
-        // iteration order. The serialized tile carries the ranks, so the
-        // receiver can rebuild the compact rank map without index shifts.
+        // In memory, child materialized tiles created by `subtile()` share a
+        // root-level ValueMesh so that further subtiles are O(1). On the wire,
+        // send only the active tile's items in `tile.ranks()` order. The
+        // serialized tile carries the ranks, so the receiver can rebuild a
+        // compact ValueMesh without index shifts.
         let mut state = serializer.serialize_struct("MaterializedTile", 2)?;
         state.serialize_field("tile", &self.tile)?;
         state.serialize_field("items", &self.items().collect::<Vec<_>>())?;
@@ -175,7 +176,7 @@ impl<T: Serialize> Serialize for MaterializedTile<T> {
     }
 }
 
-impl<'de, T: Deserialize<'de>> Deserialize<'de> for MaterializedTile<T> {
+impl<'de, T: Deserialize<'de> + 'static> Deserialize<'de> for MaterializedTile<T> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -186,39 +187,40 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for MaterializedTile<T> {
             items: Vec<T>,
         }
 
-        // The wire form stores only active-tile items. `new()` zips those
-        // values with the serialized tile's ranks, rebuilding a rank-addressed
-        // map scoped to this tile rather than the sender's full shared map.
+        // Wire carries only this tile's items, positional in `tile.ranks()` order
+        // (see `Serialize`); rebuild a `ValueMesh` scoped to the tile, not the
+        // sender's (shared, possibly larger) backing.
         let wire = MaterializedTileWire::deserialize(deserializer)?;
-        Ok(Self::new(wire.tile, wire.items))
+
+        let items = Arc::new(
+            ValueMesh::new(
+                Region::new(
+                    (0..wire.tile.space().sizes().len())
+                        .map(|dim| format!("dim{dim}"))
+                        .collect(),
+                    wire.tile.space().clone(),
+                ),
+                wire.items,
+            )
+            .map_err(|err| D::Error::custom(format!("invalid materialized tile items: {err}")))?,
+        );
+        Ok(Self::from_value_mesh_with_tile(wire.tile, items))
     }
 }
 
-impl<T> MaterializedTile<T> {
-    /// Pair `tile` with one item per rank in `tile.ranks()` order.
+impl<T: 'static> MaterializedTile<T> {
+    /// Construct a materialized tile from a complete item mesh and explicit
+    /// tile geometry.
     ///
-    /// The item at position `i` in `items` is associated with the `i`th rank
-    /// yielded by `tile.ranks()`.
-    pub(crate) fn new(tile: Tile, items: Vec<T>) -> Self {
-        assert_eq!(tile.rank_count(), items.len());
-        let items_by_rank = tile.ranks().zip(items).collect();
-        Self {
-            tile,
-            items_by_rank: Arc::new(items_by_rank),
-        }
-    }
-
-    /// Construct a materialized tile from items already keyed by rank.
-    ///
-    /// `items_by_rank` must contain exactly one item for every rank covered by
-    /// `tile`.
-    pub(crate) fn from_map(tile: Tile, items_by_rank: HashMap<usize, T>) -> Self {
-        assert_eq!(tile.rank_count(), items_by_rank.len());
-        assert!(tile.ranks().all(|rank| items_by_rank.contains_key(&rank)));
-        Self {
-            tile,
-            items_by_rank: Arc::new(items_by_rank),
-        }
+    /// `items` may cover a larger region than `tile`, but it must contain every
+    /// base rank covered by `tile`.
+    pub(crate) fn from_value_mesh_with_tile(tile: Tile, items: Arc<ValueMesh<T>>) -> Self {
+        debug_assert!(
+            tile.ranks()
+                .all(|rank| items.get_by_base_rank(rank).is_some()),
+            "tile ranks must be covered by the items mesh",
+        );
+        Self { tile, items }
     }
 
     /// Geometry carried by this materialized tile.
@@ -236,7 +238,7 @@ impl<T> MaterializedTile<T> {
         if !self.tile.space().contains(rank) {
             return None;
         }
-        self.items_by_rank.get(&rank)
+        self.items.get_by_base_rank(rank)
     }
 
     /// Item at this tile's natural representative rank.
@@ -277,11 +279,11 @@ impl<T> MaterializedTile<T> {
     pub(crate) fn subtile(&self, tile: Tile) -> Self {
         debug_assert!(
             tile.ranks()
-                .all(|rank| self.items_by_rank.contains_key(&rank))
+                .all(|rank| self.items.get_by_base_rank(rank).is_some())
         );
         Self {
             tile,
-            items_by_rank: Arc::clone(&self.items_by_rank),
+            items: Arc::clone(&self.items),
         }
     }
 }
@@ -1013,10 +1015,10 @@ mod tests {
         // ```
         let view = Region::from(shape!(row = 2, col = 4));
         let root = Tile::from_view(&view);
-        let materialized = MaterializedTile::new(
-            root.clone(),
-            root.ranks().map(|rank| format!("A{rank}")).collect(),
-        );
+        let mesh =
+            ValueMesh::new(view, root.ranks().map(|rank| format!("A{rank}")).collect()).unwrap();
+        let materialized =
+            MaterializedTile::from_value_mesh_with_tile(root.clone(), Arc::new(mesh));
         let child =
             materialized.subtile(Tile::from_space(root.space().select(0, 1, 2, 1).unwrap()));
 
