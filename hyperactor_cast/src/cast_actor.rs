@@ -42,10 +42,8 @@ use hyperactor::value_mesh::ValueMesh;
 use hyperactor_config::Flattrs;
 use ndslice::Point;
 use ndslice::Region;
-use ndslice::Shape;
 use ndslice::view::BuildFromRegionIndexed;
 use ndslice::view::MapIntoExt;
-use ndslice::view::Ranked;
 use ndslice::view::View;
 use serde::Deserialize;
 use serde::Serialize;
@@ -94,6 +92,26 @@ pub struct CastDomainId {
     domain_id: Uid,
 }
 
+/// Parameters for materializing a cast domain.
+///
+/// Bundles the arguments needed to materialize a domain, grouping the
+/// tightly-coupled `logical_region` and `routing_region` with the other
+/// materialization parameters.
+pub struct MaterializeParams {
+    /// Maps base rank to destination actor address.
+    pub members: HashMap<usize, ActorAddr>,
+    /// The caller-visible rank space: determines [`CAST_POINT`] and is what
+    /// callers use for later slicing.
+    pub logical_region: Region,
+    /// The communication rank space: tiled to build the cast tree. Most callers
+    /// should pass the same [`Region`] for both `logical_region` and
+    /// `routing_region`. Pass different regions only when the same base ranks
+    /// have been reshaped for routing.
+    pub routing_region: Region,
+    /// Policy for partitioning the routing region into tiles.
+    pub tiling_policy: TilingPolicy,
+}
+
 impl CastDomainId {
     /// Create a new domain id.
     pub fn new() -> Self {
@@ -107,49 +125,74 @@ impl CastDomainId {
         &self.domain_id
     }
 
-    /// Materialize this domain id over concrete members and return an
-    /// addressable domain handle.
+    /// Materialize this domain using logical and routing regions.
     ///
-    /// `members` maps domain rank to member actor address. `shape` describes
-    /// the logical root shape of the domain; tiling and communication are
-    /// derived internally.
+    /// See [`MaterializeParams`] for details on the parameters.
+    ///
+    /// A valid pair of regions may have different dimensions, but must enumerate the same
+    /// base ranks in the same order so sender-side sequence vectors and
+    /// destination actor mappings remain aligned.
+    ///
+    /// ```text
+    /// no reshape:
+    /// logical_region == routing_region
+    ///
+    /// rank: 0 1 2 3
+    /// iter: 0 1 2 3
+    ///
+    /// valid reshape:
+    /// logical_region:            routing_region:
+    /// rank: 0 1 2 3              col:   0 1
+    /// iter: 0 1 2 3              row=0: 0 1
+    ///                            row=1: 2 3
+    ///                            iter:  0 1 2 3
+    ///
+    /// both iterators yield 0, 1, 2, 3, so they describe the same domain
+    /// members while allowing the routing policy to tile a 2-D tree.
+    /// ```
     pub fn materialize(
         self,
         cx: &impl context::Actor,
-        members: HashMap<usize, ActorAddr>,
-        shape: Shape,
-        tiling_policy: TilingPolicy,
+        params: MaterializeParams,
     ) -> anyhow::Result<CastDomainRef> {
-        let region = Region::from(shape);
+        let MaterializeParams {
+            members,
+            logical_region,
+            routing_region,
+            tiling_policy,
+        } = params;
+        ensure_same_rank_order(&logical_region, &routing_region)?;
         anyhow::ensure!(
-            members.len() == region.num_ranks()
-                && region
+            members.len() == logical_region.num_ranks()
+                && logical_region
                     .slice()
                     .iter()
                     .all(|rank| members.contains_key(&rank)),
             "members must contain exactly one actor address for every domain rank"
         );
 
-        let root_rank = region.slice().offset();
+        let root_rank = logical_region.slice().offset();
         let entry_point = members
             .get(&root_rank)
             .expect("members coverage was checked above")
             .clone();
-        let member_mesh = Arc::new(ValueMesh::build_indexed(region.clone(), members)?);
+        let member_mesh = Arc::new(ValueMesh::build_indexed(logical_region.clone(), members)?);
 
         let domain_ref = CastDomainRef::from_entry_point(
             self.clone(),
             cast_actor_ref_for_member(&entry_point),
             Arc::clone(&member_mesh),
         );
-        let root_tile =
-            MaterializedTile::from_value_mesh_with_tile(Tile::from_view(&region), member_mesh);
+        let root_tile = MaterializedTile::from_value_mesh_with_tile(
+            Tile::from_view(&routing_region),
+            member_mesh,
+        );
 
         domain_ref.entry_point.post(
             cx,
             CreateCastDomain {
                 cast_domain_id: self,
-                region,
+                logical_region,
                 tiling_policy,
                 tile: root_tile,
             },
@@ -218,16 +261,49 @@ impl CastDomainRef {
     /// whose entrypoint is the slice's actual root CastActor. The parent ref's
     /// dense members are used only to derive the slice definition and sender
     /// side sequence map; the cast path enters directly at the slice root.
+    ///
+    /// `logical_region` is the caller-visible slice: it determines
+    /// [`CAST_POINT`] and future slicing from the returned ref.
+    /// `routing_region` is the communication slice: it is tiled to install the
+    /// slice cast tree. Most callers should pass the same [`Region`] for both
+    /// arguments. Pass different regions only when the same slice ranks have
+    /// been reshaped for routing.
+    ///
+    /// A valid pair may have different dimensions, but must enumerate the same
+    /// base ranks in the same order.
+    ///
+    /// ```text
+    /// parent domain ranks:
+    /// 0 1 2 3 4 5 6 7
+    ///
+    /// valid unreshaped slice:
+    /// logical_region == routing_region
+    ///
+    /// rank: 2 3 4 5
+    /// iter: 2 3 4 5
+    ///
+    /// valid reshaped slice:
+    /// logical_region:            routing_region:
+    /// rank: 2 3 4 5              col:   0 1
+    /// iter: 2 3 4 5              row=0: 2 3
+    ///                            row=1: 4 5
+    ///                            iter:  2 3 4 5
+    ///
+    /// both iterators yield 2, 3, 4, 5, so the same destination actors are
+    /// reached while the routing tree sees a 2-D rank space.
+    /// ```
     pub fn materialize_slice(
         &self,
         cx: &impl context::Actor,
-        region: Region,
+        logical_region: Region,
+        routing_region: Region,
         tiling_policy: TilingPolicy,
     ) -> anyhow::Result<CastDomainRef> {
         let slice_id = CastDomainId::new();
-        let slice_member_mesh = Arc::new(self.members.subset(region.clone())?);
+        ensure_same_rank_order(&logical_region, &routing_region)?;
+        let slice_member_mesh = Arc::new(self.members.subset(logical_region.clone())?);
         let slice_tile = MaterializedTile::from_value_mesh_with_tile(
-            Tile::from_view(&region),
+            Tile::from_view(&routing_region),
             Arc::clone(&slice_member_mesh),
         );
 
@@ -247,7 +323,7 @@ impl CastDomainRef {
             cx,
             CreateCastDomain {
                 cast_domain_id: slice_id.clone(),
-                region,
+                logical_region,
                 tiling_policy,
                 tile: slice_tile,
             },
@@ -330,6 +406,20 @@ impl CastDomainRef {
     }
 }
 
+fn ensure_same_rank_order(logical_region: &Region, routing_region: &Region) -> Result<()> {
+    anyhow::ensure!(
+        logical_region.num_ranks() == routing_region.num_ranks()
+            && logical_region
+                .slice()
+                .iter()
+                .eq(routing_region.slice().iter()),
+        "routing region {} must enumerate the same ranks in the same order as logical region {}",
+        routing_region,
+        logical_region
+    );
+    Ok(())
+}
+
 /// Return the tiles directly reached from `tile` by the current communication
 /// algorithm.
 ///
@@ -390,9 +480,9 @@ pub struct CastActor {
 /// One tile-local hop in an installed cast tree.
 #[derive(Debug, Clone)]
 struct CastHop {
-    /// Current hop representative's point in the full domain region.
+    /// Current hop representative's point in the logical domain region.
     point_in_domain: Point,
-    /// Current hop representative's base rank in the full domain region.
+    /// Current hop representative's base rank in the logical domain region.
     base_rank_in_domain: usize,
     /// Precomputed outgoing routes to communication-child tiles.
     next_hops: Vec<ActorRef<CastActor>>,
@@ -536,10 +626,14 @@ impl CastActor {
 /// receiving [`CastActor`] stores its [`CastHop`], computes outgoing next hops
 /// from its materialized tile, and forwards this same message with the
 /// corresponding communication-child tile.
+///
+/// `logical_region` is the user-visible rankspace used for [`CAST_POINT`].
+/// `tile` may come from a reshaped routing rankspace, but it must enumerate the
+/// same base ranks in the same order.
 #[derive(Debug, Serialize, Deserialize, typeuri::Named)]
 struct CreateCastDomain {
     cast_domain_id: CastDomainId,
-    region: Region,
+    logical_region: Region,
     tiling_policy: TilingPolicy,
     tile: MaterializedTile<ActorAddr>,
 }
@@ -563,7 +657,7 @@ impl Handler<CreateCastDomain> for CastActor {
     ) -> Result<(), anyhow::Error> {
         let CreateCastDomain {
             cast_domain_id,
-            region,
+            logical_region,
             tiling_policy,
             tile,
         } = message;
@@ -580,7 +674,7 @@ impl Handler<CreateCastDomain> for CastActor {
                 cx,
                 CreateCastDomain {
                     cast_domain_id: cast_domain_id.clone(),
-                    region: region.clone(),
+                    logical_region: logical_region.clone(),
                     tiling_policy,
                     tile: next_tile,
                 },
@@ -590,7 +684,7 @@ impl Handler<CreateCastDomain> for CastActor {
         }
 
         let cast_hop = CastHop {
-            point_in_domain: region.point_of_base_rank(tile.root_rank())?,
+            point_in_domain: logical_region.point_of_base_rank(tile.root_rank())?,
             base_rank_in_domain: tile.root_rank(),
             next_hops,
             local_actor: tile
@@ -884,7 +978,10 @@ mod tests {
     use ndslice::Shape;
     use ndslice::Slice;
     use ndslice::ViewExt;
+    use ndslice::reshape::Limit;
+    use ndslice::reshape::reshape_shape;
     use ndslice::shape;
+    use ndslice::view::Ranked;
     use proptest::prelude::*;
     use timed_test::async_timed_test;
     use typeuri::Named;
@@ -1038,17 +1135,27 @@ mod tests {
             .range("row", ndslice::Range(1, Some(3), 1))
             .unwrap();
         let members = members(8);
-        let parent_members = ValueMesh::new(parent_view.clone(), members.clone()).unwrap();
-
-        let child_members = parent_members.subset(child_view.clone()).unwrap();
-        let child_members = (0..Ranked::region(&child_members).num_ranks())
-            .map(|rank| Ranked::get(&child_members, rank).unwrap().clone())
+        let member_mesh = ValueMesh::new(parent_view.clone(), members.clone()).unwrap();
+        let child_members = Arc::new(member_mesh.subset(child_view.clone()).unwrap());
+        let child_dense_members = (0..Ranked::region(child_members.as_ref()).num_ranks())
+            .map(|rank| Ranked::get(child_members.as_ref(), rank).unwrap().clone())
             .collect::<Vec<_>>();
+        let child_tile = MaterializedTile::from_value_mesh_with_tile(
+            Tile::from_view(&child_view),
+            Arc::clone(&child_members),
+        );
 
         // child local ranks -> parent/base ranks:
         // row=0: 0->2  1->3
         // row=1: 2->4  3->5
-        assert_eq!(child_members, &members[2..6]);
+        assert_eq!(child_dense_members, &members[2..6]);
+
+        // child base ranks preserve the parent rank keys:
+        // row=1: 2  3
+        // row=2: 4  5
+        for (rank, member) in members.iter().enumerate().take(6).skip(2) {
+            assert_eq!(child_tile.item_at(rank), Some(member));
+        }
     }
 
     // -- Integration test infrastructure --
@@ -1305,12 +1412,16 @@ mod tests {
         }
 
         fn root_domain(&self, shape: Shape) -> CastDomainRef {
+            let region = Region::from(shape);
             CastDomainId::new()
                 .materialize(
                     &self.client,
-                    self.domain_members(),
-                    shape,
-                    TilingPolicy::BlockPartitioning,
+                    MaterializeParams {
+                        members: self.domain_members(),
+                        logical_region: region.clone(),
+                        routing_region: region,
+                        tiling_policy: TilingPolicy::BlockPartitioning,
+                    },
                 )
                 .unwrap()
         }
@@ -1322,8 +1433,17 @@ mod tests {
         }
 
         fn root_domain_with_policy(&self, shape: Shape, policy: TilingPolicy) -> CastDomainRef {
+            let region = Region::from(shape);
             CastDomainId::new()
-                .materialize(&self.client, self.member_ids.clone(), shape, policy)
+                .materialize(
+                    &self.client,
+                    MaterializeParams {
+                        members: self.member_ids.clone(),
+                        logical_region: region.clone(),
+                        routing_region: region,
+                        tiling_policy: policy,
+                    },
+                )
                 .unwrap()
         }
 
@@ -1386,7 +1506,17 @@ mod tests {
                 .collect::<HashMap<_, _>>();
             let root_tile = MaterializedTile::from_value_mesh_with_tile(
                 Tile::from_view(&region),
-                Arc::new(ValueMesh::build_indexed(region.clone(), members.clone()).unwrap()),
+                Arc::new(
+                ValueMesh::new(
+                    region.clone(),
+                    region
+                        .slice()
+                        .iter()
+                        .map(|rank| members.get(&rank).unwrap().clone())
+                        .collect(),
+                )
+                .unwrap(),
+            ),
             );
 
             let mut seen_roots = BTreeSet::new();
@@ -1407,7 +1537,17 @@ mod tests {
                 .collect::<HashMap<_, _>>();
             let root = MaterializedTile::from_value_mesh_with_tile(
                 Tile::from_view(&region),
-                Arc::new(ValueMesh::build_indexed(region.clone(), members.clone()).unwrap()),
+                Arc::new(
+                ValueMesh::new(
+                    region.clone(),
+                    region
+                        .slice()
+                        .iter()
+                        .map(|rank| members.get(&rank).unwrap().clone())
+                        .collect(),
+                )
+                .unwrap(),
+            ),
             );
             let mut seen_roots = BTreeSet::new();
 
@@ -1497,6 +1637,53 @@ mod tests {
             assert_eq!(snapshot.local_actor_proc, proc_name);
             assert_eq!(snapshot.next_hop_procs, expected_next_hops[&proc_name]);
         }
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_routing_shape_can_differ_from_logical_region() {
+        clear_captured_domains();
+
+        let test_mesh = CastTestMesh::new(8);
+        let logical_shape = shape!(rank = 8);
+        let logical_region = Region::from(logical_shape);
+        let routing_region =
+            Region::from(reshape_shape(&Shape::from(&logical_region), Limit::from(2)).shape);
+        let root_domain = CastDomainId::new()
+            .materialize(
+                &test_mesh.client,
+                MaterializeParams {
+                    members: test_mesh.domain_members(),
+                    logical_region: logical_region.clone(),
+                    routing_region,
+                    tiling_policy: TilingPolicy::BlockPartitioning,
+                },
+            )
+            .unwrap();
+        let snapshots = test_mesh
+            .wait_for_domain_snapshots(root_domain.domain_id(), 8)
+            .await;
+
+        for rank in 0..8 {
+            let proc_name = format!("proc_{rank}");
+            let snapshot = snapshots
+                .get(&proc_name)
+                .unwrap_or_else(|| panic!("missing snapshot for {proc_name}"));
+            assert_eq!(
+                snapshot.point_in_domain,
+                logical_region.point_of_base_rank(rank).unwrap()
+            );
+        }
+
+        // If routing used the logical 1D shape directly, proc_0 would fan out
+        // to proc_1 through proc_7. The reshaped 2x2x2 routing shape bounds
+        // the first-hop fanout while preserving logical delivery points.
+        assert_eq!(
+            snapshots["proc_0"].next_hop_procs,
+            ["proc_1", "proc_2", "proc_4"]
+                .into_iter()
+                .map(str::to_string)
+                .collect()
+        );
     }
 
     fn expected_reply_counts(proc_names: &[&str]) -> BTreeMap<String, u64> {
@@ -1669,7 +1856,7 @@ mod tests {
             &cx,
             CreateCastDomain {
                 cast_domain_id: cast_domain_id.clone(),
-                region,
+                logical_region: region.clone(),
                 tiling_policy: TilingPolicy::BlockPartitioning,
                 tile: root_tile,
             },
@@ -1709,7 +1896,7 @@ mod tests {
             CastMessage {
                 cast_domain_id,
                 session_id: client.sequencer().session_id(),
-                seqs: ValueMesh::new(Region::from(Shape::unity()), vec![1]).unwrap(),
+                seqs: ValueMesh::new(region, vec![1]).unwrap(),
                 lineage: Vec::new(),
                 headers,
                 dest_port: <IndexedErasedUnbound<TestDelivery>>::port(),
@@ -1772,6 +1959,7 @@ mod tests {
             let slice_cast_domain = root_cast_domain
                 .materialize_slice(
                     &test_mesh.client,
+                    slice_region.clone(),
                     slice_region,
                     TilingPolicy::BlockPartitioning,
                 )
@@ -1797,32 +1985,38 @@ mod tests {
         test_mesh.spawn_delivery_receivers();
         let root = test_mesh.root_domain(shape!(rank = 4));
 
+        let rank_0_to_2_region = Region::from(shape!(rank = 4))
+            .range("rank", ndslice::Range(0, Some(2), 1))
+            .unwrap();
         let rank_0_to_2 = root
             .materialize_slice(
                 &test_mesh.client,
-                Region::from(shape!(rank = 4))
-                    .range("rank", ndslice::Range(0, Some(2), 1))
-                    .unwrap(),
+                rank_0_to_2_region.clone(),
+                rank_0_to_2_region,
                 TilingPolicy::BlockPartitioning,
             )
             .unwrap();
 
+        let rank_1_to_3_region = Region::from(shape!(rank = 4))
+            .range("rank", ndslice::Range(1, Some(3), 1))
+            .unwrap();
         let rank_1_to_3 = root
             .materialize_slice(
                 &test_mesh.client,
-                Region::from(shape!(rank = 4))
-                    .range("rank", ndslice::Range(1, Some(3), 1))
-                    .unwrap(),
+                rank_1_to_3_region.clone(),
+                rank_1_to_3_region,
                 TilingPolicy::BlockPartitioning,
             )
             .unwrap();
 
+        let rank_2_to_4_region = Region::from(shape!(rank = 4))
+            .range("rank", ndslice::Range(2, Some(4), 1))
+            .unwrap();
         let rank_2_to_4 = root
             .materialize_slice(
                 &test_mesh.client,
-                Region::from(shape!(rank = 4))
-                    .range("rank", ndslice::Range(2, Some(4), 1))
-                    .unwrap(),
+                rank_2_to_4_region.clone(),
+                rank_2_to_4_region,
                 TilingPolicy::BlockPartitioning,
             )
             .unwrap();
