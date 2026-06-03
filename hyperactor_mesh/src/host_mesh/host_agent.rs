@@ -38,7 +38,6 @@ use hyperactor::ProcAddr;
 use hyperactor::RefClient;
 use hyperactor::RemoteEndpoint as _;
 use hyperactor::context;
-use hyperactor::mailbox::MailboxServerHandle;
 use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::Attrs;
 use serde::Deserialize;
@@ -89,7 +88,7 @@ pub enum HostAgentMode {
         /// If set, the ShutdownHost handler sends the frontend mailbox server
         /// handle back to the bootstrap loop via this channel once shutdown is
         /// complete, so the caller can drain it and exit.
-        shutdown_tx: Option<tokio::sync::oneshot::Sender<MailboxServerHandle>>,
+        shutdown_tx: Option<tokio::sync::oneshot::Sender<hyperactor::gateway::GatewayServeHandle>>,
     },
     Local(Host<LocalProcManager<ProcManagerSpawnFn>>),
 }
@@ -311,7 +310,7 @@ pub struct HostAgent {
     /// mailbox starts routing messages. Sent back to the bootstrap loop via
     /// `shutdown_tx` when the host shuts down so the caller can
     /// drain it.
-    mailbox_handle: Option<MailboxServerHandle>,
+    mailbox_handle: Option<hyperactor::gateway::GatewayServeHandle>,
 }
 
 impl HostAgent {
@@ -1545,6 +1544,13 @@ mod tests {
             )
             .await
             .unwrap();
+        // The host advertises spawned procs with a
+        // `Via(proc_uid, Addr(host_addr))` location so its gateway can
+        // peel and forward to the child's serving address. Construct
+        // the expected proc_addr the same way.
+        let expected_location =
+            hyperactor::Location::from(host_addr.clone()).with_via(id.uid().clone());
+        let expected_proc_addr = ProcAddr::new(id.proc_id(), expected_location);
         assert_matches!(
             host_agent.get_state(&client, id.clone()).await.unwrap(),
             resource::State {
@@ -1562,8 +1568,9 @@ mod tests {
                 }),
                 ..
             } if id == resource_id
-              && proc_id == id.proc_addr(host_addr.clone())
-              && mesh_agent == ActorRef::attest(id.proc_addr(host_addr.clone()).actor_addr(crate::proc_agent::PROC_AGENT_ACTOR_NAME)) && bootstrap_command == Some(BootstrapCommand::test())
+              && proc_id == expected_proc_addr
+              && mesh_agent == ActorRef::attest(expected_proc_addr.actor_addr(crate::proc_agent::PROC_AGENT_ACTOR_NAME))
+              && bootstrap_command == Some(BootstrapCommand::test())
               && mesh_agent == proc_status_mesh_agent
         );
     }
