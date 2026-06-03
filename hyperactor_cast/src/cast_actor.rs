@@ -46,6 +46,7 @@ use ndslice::Shape;
 use ndslice::view::BuildFromRegionIndexed;
 use ndslice::view::MapIntoExt;
 use ndslice::view::Ranked;
+use ndslice::view::View;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -204,6 +205,54 @@ impl CastDomainRef {
     /// The [`CastActor`] entry point for this domain.
     pub fn entry_point(&self) -> &ActorRef<CastActor> {
         &self.entry_point
+    }
+
+    /// Destination actor addresses keyed by this domain's rank space.
+    pub fn members(&self) -> &ValueMesh<ActorAddr> {
+        &self.members
+    }
+
+    /// Materialize a new slice domain described relative to this domain.
+    ///
+    /// The returned ref is the handle for the slice. It gets a fresh domain id
+    /// whose entrypoint is the slice's actual root CastActor. The parent ref's
+    /// dense members are used only to derive the slice definition and sender
+    /// side sequence map; the cast path enters directly at the slice root.
+    pub fn materialize_slice(
+        &self,
+        cx: &impl context::Actor,
+        region: Region,
+        tiling_policy: TilingPolicy,
+    ) -> anyhow::Result<CastDomainRef> {
+        let slice_id = CastDomainId::new();
+        let slice_member_mesh = Arc::new(self.members.subset(region.clone())?);
+        let slice_tile = MaterializedTile::from_value_mesh_with_tile(
+            Tile::from_view(&region),
+            Arc::clone(&slice_member_mesh),
+        );
+
+        let slice_entrypoint = cast_actor_ref_for_member(
+            slice_tile
+                .root_item()
+                .ok_or_else(|| anyhow::anyhow!("slice root tile must have at least one member"))?,
+        );
+
+        let slice_ref = CastDomainRef::from_entry_point(
+            slice_id.clone(),
+            slice_entrypoint.clone(),
+            slice_member_mesh,
+        );
+
+        slice_entrypoint.post(
+            cx,
+            CreateCastDomain {
+                cast_domain_id: slice_id.clone(),
+                region,
+                tiling_policy,
+                tile: slice_tile,
+            },
+        );
+        Ok(slice_ref)
     }
 
     /// Cast a message to all members of this domain with caller-supplied headers.
@@ -715,12 +764,9 @@ impl Handler<CastMessage> for CastActor {
         {
             let seq = *message
                 .seqs
-                .get(domain.point_in_domain.rank())
+                .get_by_base_rank(domain.base_rank_in_domain)
                 .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "missing seq for domain rank {}",
-                        domain.point_in_domain.rank()
-                    )
+                    anyhow::anyhow!("missing seq for base rank {}", domain.base_rank_in_domain)
                 })?;
             let mut headers = message.headers.clone();
             headers.set(CAST_POINT, domain.point_in_domain.clone());
@@ -837,6 +883,7 @@ mod tests {
     use hyperactor::proc::Proc;
     use ndslice::Shape;
     use ndslice::Slice;
+    use ndslice::ViewExt;
     use ndslice::shape;
     use proptest::prelude::*;
     use timed_test::async_timed_test;
@@ -963,6 +1010,45 @@ mod tests {
             .get(domain_id)
             .cloned()
             .unwrap_or_default()
+    }
+
+    fn members(count: usize) -> Vec<ActorAddr> {
+        (0..count)
+            .map(|i| {
+                ActorAddr::root(
+                    format!("proc{i}@inproc://{i}").parse::<ProcAddr>().unwrap(),
+                    Label::strip("member"),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_subset_members_preserves_selected_member_order() {
+        // parent local ranks / members:
+        //
+        // row=0: 0  1      members[0] members[1]
+        // row=1: 2  3      members[2] members[3]
+        // row=2: 4  5      members[4] members[5]
+        // row=3: 6  7      members[6] members[7]
+        let parent_view = Region::from(shape!(row = 4, col = 2));
+
+        // selected region = row 1..3
+        let child_view = parent_view
+            .range("row", ndslice::Range(1, Some(3), 1))
+            .unwrap();
+        let members = members(8);
+        let parent_members = ValueMesh::new(parent_view.clone(), members.clone()).unwrap();
+
+        let child_members = parent_members.subset(child_view.clone()).unwrap();
+        let child_members = (0..Ranked::region(&child_members).num_ranks())
+            .map(|rank| Ranked::get(&child_members, rank).unwrap().clone())
+            .collect::<Vec<_>>();
+
+        // child local ranks -> parent/base ranks:
+        // row=0: 0->2  1->3
+        // row=1: 2->4  3->5
+        assert_eq!(child_members, &members[2..6]);
     }
 
     // -- Integration test infrastructure --
@@ -1413,6 +1499,40 @@ mod tests {
         }
     }
 
+    fn expected_reply_counts(proc_names: &[&str]) -> BTreeMap<String, u64> {
+        proc_names
+            .iter()
+            .map(|proc_name| (proc_name.to_string(), 1))
+            .collect()
+    }
+
+    async fn cast_and_collect_reply_counts(
+        test_mesh: &CastTestMesh,
+        cast_domain: &CastDomainRef,
+        payload: &str,
+    ) -> BTreeMap<String, u64> {
+        let (reply_handle, reply_rx) = context::Mailbox::mailbox(&test_mesh.client)
+            .open_reduce_port(TestReplyCountsAccumulator);
+        let reply_ref = reply_handle.bind();
+
+        cast_domain
+            .cast(
+                &test_mesh.client,
+                Flattrs::new(),
+                TestRequestWithReply {
+                    payload: payload.to_string(),
+                    reply_to: reply_ref,
+                },
+            )
+            .unwrap();
+
+        match tokio::time::timeout(Duration::from_secs(5), reply_rx.recv()).await {
+            Ok(Ok(reply_counts)) => reply_counts.counts_by_proc,
+            Ok(Err(e)) => panic!("reply recv error: {e}"),
+            Err(_) => panic!("timed out waiting for reduced replies"),
+        }
+    }
+
     #[async_timed_test(timeout_secs = 30)]
     async fn test_cast_message_delivery_8_procs() {
         let config = hyperactor_config::global::lock();
@@ -1624,6 +1744,146 @@ mod tests {
             destroyed,
             (0..8).map(|rank| format!("proc_{rank}")).collect()
         );
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_slice_cast_reaches_exactly_selected_members() {
+        let n = 8;
+        let mut test_mesh = CastTestMesh::new(n);
+        test_mesh.spawn_split_port_receivers();
+        let root_cast_domain = test_mesh.root_domain(shape!(a = 2, b = 2, c = 2));
+
+        for (case_name, range, expected_procs) in [
+            (
+                "a_0_to_1",
+                ndslice::Range(0, Some(1), 1),
+                ["proc_0", "proc_1", "proc_2", "proc_3"],
+            ),
+            (
+                "a_1_to_2",
+                ndslice::Range(1, Some(2), 1),
+                ["proc_4", "proc_5", "proc_6", "proc_7"],
+            ),
+        ] {
+            let payload = format!("slice-{case_name}");
+            let slice_region = Region::from(shape!(a = 2, b = 2, c = 2))
+                .range("a", range)
+                .unwrap();
+            let slice_cast_domain = root_cast_domain
+                .materialize_slice(
+                    &test_mesh.client,
+                    slice_region,
+                    TilingPolicy::BlockPartitioning,
+                )
+                .unwrap();
+
+            assert_eq!(
+                cast_and_collect_reply_counts(&test_mesh, &slice_cast_domain, &payload,).await,
+                expected_reply_counts(&expected_procs)
+            );
+        }
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_sender_sequenced_casts_are_observed_in_projection_order() {
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(
+            hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER,
+            true,
+        );
+
+        let n = 4;
+        let mut test_mesh = CastTestMesh::new(n);
+        test_mesh.spawn_delivery_receivers();
+        let root = test_mesh.root_domain(shape!(rank = 4));
+
+        let rank_0_to_2 = root
+            .materialize_slice(
+                &test_mesh.client,
+                Region::from(shape!(rank = 4))
+                    .range("rank", ndslice::Range(0, Some(2), 1))
+                    .unwrap(),
+                TilingPolicy::BlockPartitioning,
+            )
+            .unwrap();
+
+        let rank_1_to_3 = root
+            .materialize_slice(
+                &test_mesh.client,
+                Region::from(shape!(rank = 4))
+                    .range("rank", ndslice::Range(1, Some(3), 1))
+                    .unwrap(),
+                TilingPolicy::BlockPartitioning,
+            )
+            .unwrap();
+
+        let rank_2_to_4 = root
+            .materialize_slice(
+                &test_mesh.client,
+                Region::from(shape!(rank = 4))
+                    .range("rank", ndslice::Range(2, Some(4), 1))
+                    .unwrap(),
+                TilingPolicy::BlockPartitioning,
+            )
+            .unwrap();
+
+        let casts = [
+            (
+                &root,
+                "root-0",
+                vec!["proc_0", "proc_1", "proc_2", "proc_3"],
+            ),
+            (&rank_0_to_2, "rank_0_to_2-1", vec!["proc_0", "proc_1"]),
+            (&rank_1_to_3, "rank_1_to_3-2", vec!["proc_1", "proc_2"]),
+            (&rank_2_to_4, "rank_2_to_4-3", vec!["proc_2", "proc_3"]),
+            (
+                &root,
+                "root-4",
+                vec!["proc_0", "proc_1", "proc_2", "proc_3"],
+            ),
+        ];
+
+        let mut expected_histories: BTreeMap<String, Vec<String>> = test_mesh
+            .proc_names()
+            .into_iter()
+            .map(|proc_name| (proc_name, Vec::new()))
+            .collect();
+
+        for (domain, payload, expected_receivers) in &casts {
+            domain
+                .cast(
+                    &test_mesh.client,
+                    Flattrs::new(),
+                    TestDelivery {
+                        payload: payload.to_string(),
+                    },
+                )
+                .unwrap();
+
+            for proc_name in expected_receivers {
+                expected_histories
+                    .get_mut(*proc_name)
+                    .unwrap()
+                    .push(payload.to_string());
+            }
+        }
+
+        let observed_histories: BTreeMap<String, Vec<String>> =
+            cast_and_collect_histories(&test_mesh, &root)
+                .await
+                .into_iter()
+                .map(|(proc_name, history)| {
+                    (
+                        proc_name,
+                        history
+                            .into_iter()
+                            .map(|delivery| delivery.payload)
+                            .collect(),
+                    )
+                })
+                .collect();
+
+        assert_eq!(observed_histories, expected_histories);
     }
 
     // -- Port splitting test infrastructure --
