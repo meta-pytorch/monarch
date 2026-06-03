@@ -537,6 +537,28 @@ impl<T: 'static> view::Ranked for ValueMesh<T> {
     }
 }
 
+impl<T: 'static> ValueMesh<T> {
+    /// Look up the value at `base_rank` — the rank in the **base space**
+    /// of this mesh's region, not the linearized ordinal that
+    /// [`view::Ranked::get`] takes.
+    ///
+    /// For a full region the two coincide; for a sliced sub-region they
+    /// differ — e.g. a row slice over base ranks `{2, 3, 4, 5}` has
+    /// ordinals `{0, 1, 2, 3}`. This resolves `base_rank` through the
+    /// region's geometry (`point_of_base_rank` → ordinal) and then
+    /// indexes, so callers address by the stable base-space rank and
+    /// never touch the ordinal.
+    ///
+    /// Returns `None` if `base_rank` is not contained in this region.
+    pub fn get_by_base_rank(&self, base_rank: usize) -> Option<&T> {
+        if !self.region.slice().contains(base_rank) {
+            return None;
+        }
+        let ordinal = self.region.point_of_base_rank(base_rank).ok()?.rank();
+        self.get(ordinal)
+    }
+}
+
 impl<T: Clone + 'static> view::RankedSliceable for ValueMesh<T> {
     fn sliced(&self, region: Region) -> Self {
         debug_assert!(region.is_subset(self.region()), "sliced: not a subset");
@@ -1083,6 +1105,31 @@ mod tests {
         assert_eq!(mesh.region().num_ranks(), 6);
         assert_eq!(mesh.values().count(), 6);
         assert_eq!(mesh.values().collect::<Vec<_>>(), vec![0, 1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn get_by_base_rank_resolves_through_region_geometry() {
+        // Full region: base rank == ordinal, so get_by_base_rank agrees
+        // with positional get; out-of-region base ranks return None.
+        let region: Region = extent!(row = 4, col = 2).into();
+        let mesh: ValueMesh<i32> =
+            ValueMesh::new(region.clone(), (0..8).map(|i| i * 10).collect()).unwrap();
+        assert_eq!(mesh.get_by_base_rank(0), Some(&0));
+        assert_eq!(mesh.get_by_base_rank(5), Some(&50));
+        assert_eq!(mesh.get_by_base_rank(8), None);
+
+        // Slice rows 1..3 -> base ranks {2, 3, 4, 5}, ordinals {0, 1, 2, 3};
+        // the sub-mesh carries values {20, 30, 40, 50}.
+        let sub = mesh.sliced(region.range("row", ndslice::Range(1, Some(3), 1)).unwrap());
+
+        // Addressed by BASE rank, which is the whole point:
+        assert_eq!(sub.get_by_base_rank(2), Some(&20)); // base 2 -> ordinal 0
+        assert_eq!(sub.get_by_base_rank(5), Some(&50)); // base 5 -> ordinal 3
+        assert_eq!(sub.get_by_base_rank(0), None); // below the slice
+        assert_eq!(sub.get_by_base_rank(6), None); // in the parent, not the slice
+
+        // Contrast: positional get still indexes by ordinal.
+        assert_eq!(sub.get(0), Some(&20)); // ordinal 0 == base rank 2
     }
 
     #[test]

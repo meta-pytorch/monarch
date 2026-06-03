@@ -253,6 +253,12 @@ inventory::submit! {
         builder_f: |_| Ok(Box::new(SemilatticeReducer::<PNCounterUpdate>(PhantomData))),
     }
 }
+inventory::submit! {
+    ReducerFactory {
+        typehash_f: <UnitReducer as Named>::typehash,
+        builder_f: |_| Ok(Box::new(UnitReducer)),
+    }
+}
 
 /// Build a reducer object with the given typehash's [CommReducer] type, and
 /// return the type-erased version of it.
@@ -334,6 +340,47 @@ impl<T: std::ops::Add<Output = T> + Copy + Named + 'static> Accumulator for SumA
 pub fn sum<T: std::ops::Add<Output = T> + Copy + Named + 'static>()
 -> impl Accumulator<State = T, Update = T> {
     SumAccumulator(PhantomData)
+}
+
+/// Reducer for the unit type `()`.
+#[derive(typeuri::Named)]
+struct UnitReducer;
+
+impl CommReducer for UnitReducer {
+    type Update = ();
+
+    fn reduce(&self, _left: (), _right: ()) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+/// Accumulate unit updates into a unit state.
+struct UnitAccumulator;
+
+impl Accumulator for UnitAccumulator {
+    type State = ();
+    type Update = ();
+
+    fn accumulate(&self, _state: &mut (), _update: ()) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn reducer_spec(&self) -> Option<ReducerSpec> {
+        Some(ReducerSpec {
+            typehash: <UnitReducer as Named>::typehash(),
+            builder_params: None,
+        })
+    }
+}
+
+/// Trivial `()` payload for scatter/gather patterns where the caller only
+/// cares that all expected replies arrived, not about any per-reply payload.
+///
+/// Note: this does not itself provide a barrier — the all-arrived guarantee
+/// comes from the reduce port's expected peer count. `unit()` just supplies
+/// the trivial `()` payload.
+pub fn unit() -> impl Accumulator<State = (), Update = ()> {
+    UnitAccumulator
 }
 
 /// Generic reducer for any JoinSemilattice type.
@@ -787,6 +834,26 @@ mod tests {
                 .unwrap()
                 .typehash,
             <SemilatticeReducer<Max<i64>> as Named>::typehash(),
+        );
+        assert_eq!(
+            unit().reducer_spec().unwrap().typehash,
+            <UnitReducer as Named>::typehash(),
+        );
+    }
+
+    #[test]
+    fn test_comm_reducer_unit() {
+        let unit_updates = serialize(vec![(), (), ()]);
+        let typehash = <UnitReducer as Named>::typehash();
+        assert_eq!(
+            resolve_reducer(typehash, None)
+                .unwrap()
+                .unwrap()
+                .reduce_updates(unit_updates)
+                .unwrap()
+                .deserialized::<()>()
+                .unwrap(),
+            (),
         );
     }
 
