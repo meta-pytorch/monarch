@@ -287,6 +287,7 @@ def pt_cuda_allocator_compatibility() -> bool:
     allocator_settings = snapshot.get("allocator_settings", {})
 
     # Check if expandable_segments is enabled
+    # pyrefly: ignore [missing-attribute]
     return allocator_settings.get("expandable_segments", False)
 
 
@@ -482,23 +483,31 @@ class RDMAAction:
     def __init__(self) -> None:
         self._inner: _RdmaAction = _RdmaAction()
 
+    # pyrefly: ignore [not-a-type]
     def read_remote(self, dst: "LocalMemory", src: RDMABuffer) -> Self:
         """Queue a read from RDMA buffer ``src`` into local memory ``dst``."""
         handle = _make_local_memory_handle(dst)
         self._inner.add_read_into_local(remote=src._buffer, local=handle)
         return self
 
+    # pyrefly: ignore [not-a-type]
     def write_remote(self, dst: RDMABuffer, src: "LocalMemory") -> Self:
         """Queue a write from local memory ``src`` into RDMA buffer ``dst``."""
         handle = _make_local_memory_handle(src)
         self._inner.add_write_from_local(remote=dst._buffer, local=handle)
         return self
 
+    # pyrefly: ignore [not-a-type]
     def fetch_add(self, src: RDMABuffer, dst: "LocalMemory", add: int) -> Self:
         raise NotImplementedError("Not yet supported")
 
     def compare_and_swap(
-        self, src: RDMABuffer, dst: "LocalMemory", compare: int, swap: int
+        self,
+        src: RDMABuffer,
+        dst: "LocalMemory",
+        compare: int,
+        swap: int,
+        # pyrefly: ignore [not-a-type]
     ) -> Self:
         raise NotImplementedError("Not yet supported")
 

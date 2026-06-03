@@ -497,7 +497,7 @@ impl Handler<CreateCastDomain> for CastActor {
         fields(
             domain_id = %message.cast_domain_id,
             rank = message.tile.root_rank(),
-            num_members = message.tile.len(),
+            num_members = message.tile.rank_count(),
         )
     )]
     async fn handle(
@@ -816,6 +816,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::collections::BTreeSet;
     use std::collections::HashMap;
+    use std::num::NonZeroUsize;
     use std::sync::Mutex;
     use std::sync::OnceLock;
     use std::time::Duration;
@@ -1225,6 +1226,12 @@ mod tests {
             (0..self.domain_members().len())
                 .map(|i| format!("proc_{i}"))
                 .collect()
+        }
+
+        fn root_domain_with_policy(&self, shape: Shape, policy: TilingPolicy) -> CastDomainRef {
+            CastDomainId::new()
+                .materialize(&self.client, self.member_ids.clone(), shape, policy)
+                .unwrap()
         }
 
         async fn wait_for_domain_snapshots(
@@ -1901,5 +1908,132 @@ mod tests {
             rank_paths, expected,
             "split-port tree doesn't mirror cast tree"
         );
+    }
+
+    // Tests that a serialized BoundedFanout policy drives cast-domain setup
+    // end to end. Each CastActor installs one CastHop; the expected_next_hops
+    // map below is the adjacency-list representation of the send tree that
+    // BoundedFanout should produce for an 8-rank 1D domain with fanout 2.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_create_cast_domain_with_bounded_fanout_installs_expected_hops() {
+        clear_captured_domains();
+
+        let test_mesh = CastTestMesh::new(8);
+        let root_domain = test_mesh.root_domain_with_policy(
+            shape!(a = 8),
+            TilingPolicy::BoundedFanout {
+                fanout: NonZeroUsize::new(2).unwrap(),
+            },
+        );
+        let snapshots = test_mesh
+            .wait_for_domain_snapshots(root_domain.domain_id(), 8)
+            .await;
+
+        let region = Region::from(shape!(a = 8));
+        // Hand-derived from a 1D extent-8 root with fanout=2: away-from-root
+        // indices [1..8) split into two left-heavy groups [1..5) and [5..8);
+        // each group recurses with the same policy.
+        let expected_next_hops: BTreeMap<String, BTreeSet<String>> = [
+            ("proc_0", vec!["proc_1", "proc_5"]),
+            ("proc_1", vec!["proc_2", "proc_4"]),
+            ("proc_2", vec!["proc_3"]),
+            ("proc_3", vec![]),
+            ("proc_4", vec![]),
+            ("proc_5", vec!["proc_6", "proc_7"]),
+            ("proc_6", vec![]),
+            ("proc_7", vec![]),
+        ]
+        .into_iter()
+        .map(|(proc_name, next_hops)| {
+            (
+                proc_name.to_string(),
+                next_hops
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect::<BTreeSet<_>>(),
+            )
+        })
+        .collect();
+
+        assert_eq!(
+            snapshots.keys().cloned().collect::<BTreeSet<_>>(),
+            (0..8).map(|rank| format!("proc_{rank}")).collect()
+        );
+
+        for rank in 0..8 {
+            let proc_name = format!("proc_{rank}");
+            let snapshot = snapshots
+                .get(&proc_name)
+                .unwrap_or_else(|| panic!("missing snapshot for {proc_name}"));
+
+            assert_eq!(snapshot.base_rank_in_domain, rank);
+            assert_eq!(
+                snapshot.point_in_domain,
+                region.point_of_base_rank(rank).unwrap()
+            );
+            assert_eq!(snapshot.local_actor_proc, proc_name);
+            assert_eq!(snapshot.next_hop_procs, expected_next_hops[&proc_name]);
+        }
+    }
+
+    // Tests that a serialized Bisection policy drives cast-domain setup end
+    // to end. Each CastActor installs one CastHop; the expected_next_hops
+    // map below is the adjacency-list representation of the send tree that
+    // Bisection should produce for an 8-rank 1D domain.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_create_cast_domain_with_bisection_installs_expected_hops() {
+        clear_captured_domains();
+
+        let test_mesh = CastTestMesh::new(8);
+        let root_domain = test_mesh.root_domain_with_policy(shape!(a = 8), TilingPolicy::Bisection);
+        let snapshots = test_mesh
+            .wait_for_domain_snapshots(root_domain.domain_id(), 8)
+            .await;
+
+        let region = Region::from(shape!(a = 8));
+        // Hand-derived from recursive halving on a 1D extent-8 root: each
+        // step emits an upper sibling and a lower anchor; anchor contraction
+        // promotes sibling descendants from the lower-half spine.
+        let expected_next_hops: BTreeMap<String, BTreeSet<String>> = [
+            ("proc_0", vec!["proc_1", "proc_2", "proc_4"]),
+            ("proc_1", vec![]),
+            ("proc_2", vec!["proc_3"]),
+            ("proc_3", vec![]),
+            ("proc_4", vec!["proc_5", "proc_6"]),
+            ("proc_5", vec![]),
+            ("proc_6", vec!["proc_7"]),
+            ("proc_7", vec![]),
+        ]
+        .into_iter()
+        .map(|(proc_name, next_hops)| {
+            (
+                proc_name.to_string(),
+                next_hops
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect::<BTreeSet<_>>(),
+            )
+        })
+        .collect();
+
+        assert_eq!(
+            snapshots.keys().cloned().collect::<BTreeSet<_>>(),
+            (0..8).map(|rank| format!("proc_{rank}")).collect()
+        );
+
+        for rank in 0..8 {
+            let proc_name = format!("proc_{rank}");
+            let snapshot = snapshots
+                .get(&proc_name)
+                .unwrap_or_else(|| panic!("missing snapshot for {proc_name}"));
+
+            assert_eq!(snapshot.base_rank_in_domain, rank);
+            assert_eq!(
+                snapshot.point_in_domain,
+                region.point_of_base_rank(rank).unwrap()
+            );
+            assert_eq!(snapshot.local_actor_proc, proc_name);
+            assert_eq!(snapshot.next_hop_procs, expected_next_hops[&proc_name]);
+        }
     }
 }
