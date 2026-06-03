@@ -13,7 +13,11 @@ serde = { version = "1.0.185", features = ["derive", "rc"] }
 monarch_cpp_static_libs = { path = "../monarch_cpp_static_libs" }
 
 [build-dependencies]
-bindgen = "0.70.1"
+# 0.72+ to match the internal Buck build's bindgen. Older 0.70 renders many
+# fully-defined records (`ibv_qp`, `ibv_cq`, `completion_cache`, ...) as
+# fieldless opaque blobs against this toolchain's libclang, which breaks field
+# access (e.g. `ibv_qp::qp_num`) and overflows the generated layout assertions.
+bindgen = "0.72"
 cc = "1.0"
 build_utils = { path = "../build_utils" }
 # Need monarch_cpp_static_libs as build-dep to get include paths via DEP_* env vars
