@@ -13,7 +13,7 @@ from isolate_in_subprocess import isolate_in_subprocess
 from monarch.actor import Actor, endpoint, this_host
 from monarch.config import configured
 from monarch.rdma import RDMABuffer
-from rdma_test_utils import RDMA_BACKENDS
+from rdma_test_utils import RDMA_BACKENDS, skip_if_ibverbs_unavailable
 
 
 class CpuActor(Actor):
@@ -59,6 +59,7 @@ async def test_rdma_buffer_cpu_memoryview(rdma_backend):
     if rdma_backend == "tcp":
         cm = configured(rdma_disable_ibverbs=True)
     else:
+        skip_if_ibverbs_unavailable()
         cm = configured(rdma_allow_tcp_fallback=False)
 
     with cm:
