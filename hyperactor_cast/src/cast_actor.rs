@@ -263,12 +263,11 @@ impl CastDomainRef {
     pub fn cast<M: hyperactor::message::Unbind + Serialize + Named>(
         &self,
         cx: &impl context::Actor,
-        mut headers: Flattrs,
+        headers: Flattrs,
         message: M,
     ) -> anyhow::Result<()> {
         let data = ErasedUnbound::try_from_message(message)?;
         let sender = cx.mailbox().actor_addr().clone();
-        headers.set(CAST_ORIGINATING_SENDER, sender);
         let dest_port = <IndexedErasedUnbound<M>>::port();
         let (session_id, seqs) = self.seqs_for_cast(cx, dest_port)?;
 
@@ -276,6 +275,7 @@ impl CastDomainRef {
             cx,
             CastMessage {
                 cast_domain_id: self.id.clone(),
+                sender,
                 session_id,
                 seqs,
                 #[cfg(test)]
@@ -470,24 +470,18 @@ impl CastActor {
 
         // 1. Case delivery failure at a "forwarding" step.
         if let Ok(message) = message_envelope.deserialized::<CastMessage>() {
-            let Some(sender) = message.headers.get(CAST_ORIGINATING_SENDER) else {
-                anyhow::bail!(
-                    "undeliverable CastMessage missing {}",
-                    CAST_ORIGINATING_SENDER.name()
-                );
-            };
-            let return_port = PortRef::attest_handler_port(&sender);
+            let return_port = PortRef::attest_handler_port(&message.sender);
             annotate_cast_failure(
                 &mut message_envelope,
                 cx.self_addr(),
                 "forward",
-                &sender,
+                &message.sender,
                 return_port.port_addr(),
             );
 
             // Needed so that the receiver of the undeliverable message can easily find the
             // original sender of the cast message.
-            message_envelope.set_header(CAST_ORIGINATING_SENDER, sender.clone());
+            message_envelope.set_header(CAST_ORIGINATING_SENDER, message.sender.clone());
 
             return_port.post(cx, Undeliverable::Returned(message_envelope.clone()));
             return Ok(());
@@ -715,6 +709,8 @@ impl ForwardLineage {
 struct CastMessage {
     /// The domain to cast into.
     cast_domain_id: CastDomainId,
+    /// Actor that initiated the cast.
+    sender: ActorAddr,
     /// Sender-side sequencer session for this cast.
     session_id: Uuid,
     /// Per-domain-rank sequence numbers allocated by the sender before routing.
@@ -770,13 +766,12 @@ impl Handler<CastMessage> for CastActor {
                 })?;
             let mut headers = message.headers.clone();
             headers.set(CAST_POINT, domain.point_in_domain.clone());
-            headers.set(
-                SEQ_INFO,
-                SeqInfo::Session {
-                    session_id: message.session_id,
-                    seq,
-                },
-            );
+            headers.set(CAST_ORIGINATING_SENDER, message.sender.clone());
+            let seq_info = SeqInfo::Session {
+                session_id: message.session_id,
+                seq,
+            };
+            headers.set(SEQ_INFO, seq_info.clone());
 
             #[cfg(not(test))]
             let _ = &local_lineage;
@@ -784,11 +779,14 @@ impl Handler<CastMessage> for CastActor {
             #[cfg(test)]
             headers.set(CAST_LINEAGE, local_lineage.ranks());
 
-            cx.post_with_external_seq_info(
-                domain.local_actor.port_addr(Port::from(message.dest_port)),
-                headers,
-                wirevalue::Any::serialize(&data)?,
+            let dest = domain.local_actor.port_addr(Port::from(message.dest_port));
+            hyperactor::mailbox::headers::stamp_sender_actor_id(
+                &mut headers,
+                &seq_info,
+                &dest,
+                &message.sender,
             );
+            cx.post_with_external_seq_info(dest, headers, wirevalue::Any::serialize(&data)?);
         }
 
         for next_hop in &domain.next_hops {
@@ -798,6 +796,7 @@ impl Handler<CastMessage> for CastActor {
                 cx,
                 CastMessage {
                     cast_domain_id: message.cast_domain_id.clone(),
+                    sender: message.sender.clone(),
                     session_id: message.session_id,
                     seqs: message.seqs.clone(),
                     #[cfg(test)]
@@ -1700,18 +1699,16 @@ mod tests {
         .await
         .unwrap();
 
-        let mut headers = Flattrs::new();
-        headers.set(CAST_ORIGINATING_SENDER, client.self_addr().clone());
-
         let err = Handler::<CastMessage>::handle(
             &mut cast_actor,
             &cx,
             CastMessage {
                 cast_domain_id,
+                sender: client.self_addr().clone(),
                 session_id: client.sequencer().session_id(),
                 seqs: ValueMesh::new(Region::from(Shape::unity()), vec![1]).unwrap(),
                 lineage: Vec::new(),
-                headers,
+                headers: Flattrs::new(),
                 dest_port: <IndexedErasedUnbound<TestDelivery>>::port(),
                 data: ErasedUnbound::try_from_message(TestDelivery {
                     payload: "hello".to_string(),
