@@ -561,6 +561,7 @@ impl ChannelTransport {
             ChannelTransport::Tcp(_) => true,
             ChannelTransport::MetaTls(_) => true,
             ChannelTransport::Tls => true,
+            // Quic actually supports duplex byte streams, but they are not yet tested.
             ChannelTransport::Quic => false,
             ChannelTransport::MetaQuic(_) => false,
             ChannelTransport::Unix => true,
@@ -1232,74 +1233,102 @@ pub fn dial<M: RemoteMessage>(addr: ChannelAddr) -> Result<ChannelTx<M>, Channel
         ChannelAddr::Tcp(_)
         | ChannelAddr::Unix(_)
         | ChannelAddr::Tls(_)
-        | ChannelAddr::MetaTls(_) => {
+        | ChannelAddr::MetaTls(_)
+        | ChannelAddr::Quic(_)
+        | ChannelAddr::MetaQuic(_) => {
             ChannelTxKind::Net(net::spawn(net::link(addr, net::SessionId::random(), 0)?))
-        }
-        ChannelAddr::Quic(_) | ChannelAddr::MetaQuic(_) => {
-            return Err(ChannelError::InvalidAddress(format!(
-                "unsupported channel transport: {}",
-                addr
-            )));
         }
         ChannelAddr::Alias { dial_to, .. } => dial(*dial_to)?.inner,
     };
     Ok(ChannelTx { inner })
 }
 
-/// Experimental: dial with out-of-order delivery and N parallel streams.
-///
-/// Opens N TCP connections sharing a single `SessionId` (distinct
-/// `stream_id` in `1..=num_streams` so the server routes them through
-/// the multi-stream receive path). Frames are load-balanced across
-/// streams via a shared MPMC work queue — idle writers pull next.
-/// API may change.
-///
-/// # Semantics (how this differs from [`dial`])
-///
-/// Multi-stream trades several of [`dial`]'s delivery guarantees for
-/// aggregate bandwidth. Use [`dial`] when any of these matter:
-///
-/// - **Ordering.** Messages are delivered to the receiver in *arrival
-///   order across streams*, not send order. Two messages posted back
-///   to back on the sender may reach the receiver out of order when
-///   they're carried on different TCP streams. [`dial`] is strictly
-///   in-order.
-///
-/// - **Retransmission on reconnect.** If a writer's TCP connection
-///   drops after the bytes of a message have been written but before
-///   the peer acks, that message is **not retransmitted** on the new
-///   connection. It may be silently lost. [`dial`] re-sends all
-///   unacked messages on reconnect.
-///
-/// - **Delivery timeouts.** No delivery timeout is enforced. On
-///   sustained peer outage, writers reconnect indefinitely (backoff
-///   capped at 5s); senders block in `send().await` with no bound.
-///   [`dial`] fails unacked sends after
-///   `MESSAGE_DELIVERY_TIMEOUT`.
-///
-/// - **`Tx::send` return semantics.** On session shutdown, messages
-///   still in the unacked buffer have their `return_channel` dropped.
-///   Per the [`Tx::send`] contract, this makes `send().await` return
-///   `Ok(())` for messages that may never have been delivered — i.e.
-///   a "success" return does not actually confirm delivery here.
-///   [`dial`] delivers a structured `SendError` instead.
-///
-/// # Ack semantics
-///
-/// Receivers ack a cumulative watermark: the highest `N` such that
-/// all of `0..=N` have been observed across all streams. Acks may
-/// stall behind a single missing seq on a slow stream.
-pub fn exp_dial_unordered<M: RemoteMessage>(
-    addr: ChannelAddr,
-    num_streams: usize,
-) -> Result<ChannelTx<M>, ChannelError> {
-    assert!(num_streams > 0);
-    let session_id = net::SessionId::random();
-    let links: Vec<net::NetLink> = (1..=num_streams)
-        .map(|i| net::link(addr.clone(), session_id, i as u8))
-        .collect::<Result<_, _>>()?;
-    let inner = ChannelTxKind::Net(net::spawn_unordered(links));
-    Ok(ChannelTx { inner })
+/// Channels that may deliver messages out of send order.
+pub mod unordered {
+    use super::*;
+
+    /// Dial with out-of-order delivery and N parallel streams.
+    ///
+    /// Opens N links sharing a single `SessionId` (distinct
+    /// `stream_id` in `1..=num_streams` so the server routes them
+    /// through the multi-stream receive path). Frames are
+    /// load-balanced across streams via a shared MPMC work queue —
+    /// idle writers pull next.
+    ///
+    /// # Semantics (how this differs from [`super::dial`])
+    ///
+    /// Multi-stream trades several of [`super::dial`]'s delivery
+    /// guarantees for aggregate bandwidth. Use [`super::dial`] when
+    /// any of these matter:
+    ///
+    /// - **Ordering.** Messages are delivered to the receiver in
+    ///   *arrival order across streams*, not send order. Two messages
+    ///   posted back to back on the sender may reach the receiver out
+    ///   of order when they're carried on different streams.
+    ///   [`super::dial`] is strictly in-order.
+    ///
+    /// - **Retransmission on reconnect.** If a writer's connection
+    ///   drops after the bytes of a message have been written but
+    ///   before the peer acks, that message is **not retransmitted**
+    ///   on the new connection. It may be silently lost.
+    ///   [`super::dial`] re-sends all unacked messages on reconnect.
+    ///
+    /// - **Delivery timeouts.** No delivery timeout is enforced. On
+    ///   sustained peer outage, writers reconnect indefinitely
+    ///   (backoff capped at 5s); senders block in `send().await` with
+    ///   no bound. [`super::dial`] fails unacked sends after
+    ///   `MESSAGE_DELIVERY_TIMEOUT`.
+    ///
+    /// - **`Tx::send` return semantics.** On session shutdown,
+    ///   messages still in the unacked buffer have their
+    ///   `return_channel` dropped. Per the [`Tx::send`] contract,
+    ///   this makes `send().await` return `Ok(())` for messages that
+    ///   may never have been delivered — i.e. a "success" return does
+    ///   not actually confirm delivery here. [`super::dial`] delivers
+    ///   a structured `SendError` instead.
+    ///
+    /// # Ack semantics
+    ///
+    /// Receivers ack a cumulative watermark: the highest `N` such
+    /// that all of `0..=N` have been observed across all streams.
+    /// Acks may stall behind a single missing seq on a slow stream.
+    #[track_caller]
+    pub fn dial<M: RemoteMessage>(
+        addr: ChannelAddr,
+        num_streams: usize,
+    ) -> Result<ChannelTx<M>, ChannelError> {
+        assert!(num_streams > 0);
+        let session_id = net::SessionId::random();
+        let links: Vec<net::NetLink> = (1..=num_streams)
+            .map(|i| net::link(addr.clone(), session_id, i as u8))
+            .collect::<Result<_, _>>()?;
+        let inner = ChannelTxKind::Net(net::spawn_unordered(links));
+        Ok(ChannelTx { inner })
+    }
+
+    /// Serve a receiver that accepts unordered senders.
+    ///
+    /// The network server already routes multi-stream sessions by
+    /// `SessionId`, so unordered serving uses the same listener as the
+    /// ordered channel API.
+    #[track_caller]
+    pub fn serve<M: RemoteMessage>(
+        addr: ChannelAddr,
+    ) -> Result<(ChannelAddr, ChannelRx<M>), ChannelError> {
+        super::serve(addr)
+    }
+
+    /// Serve with an optional pre-opened listener.
+    ///
+    /// Pre-opened listeners are only supported for TCP-based transports,
+    /// matching [`super::serve_with_listener`].
+    #[track_caller]
+    pub fn serve_with_listener<M: RemoteMessage>(
+        addr: ChannelAddr,
+        listener: Option<std::net::TcpListener>,
+    ) -> Result<(ChannelAddr, ChannelRx<M>), ChannelError> {
+        super::serve_with_listener(addr, listener)
+    }
 }
 
 /// Serve on the provided channel address. The server is turned down
@@ -1343,13 +1372,14 @@ fn serve_inner<M: RemoteMessage>(
             let (addr, rx) = net::server::serve::<M>(addr, listener)?;
             Ok((addr, ChannelRxKind::Net(rx)))
         }
-        ChannelAddr::Tcp(_) | ChannelAddr::Tls(_) | ChannelAddr::MetaTls(_) => {
+        ChannelAddr::Tcp(_)
+        | ChannelAddr::Tls(_)
+        | ChannelAddr::MetaTls(_)
+        | ChannelAddr::Quic(_)
+        | ChannelAddr::MetaQuic(_) => {
             let (addr, rx) = net::server::serve::<M>(addr, listener)?;
             Ok((addr, ChannelRxKind::Net(rx)))
         }
-        ChannelAddr::Quic(_) | ChannelAddr::MetaQuic(_) => Err(ChannelError::InvalidAddress(
-            format!("unsupported channel transport: {}", addr),
-        )),
         ChannelAddr::Local(0) => {
             assert!(
                 listener.is_none(),
