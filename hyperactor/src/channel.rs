@@ -561,6 +561,7 @@ impl ChannelTransport {
             ChannelTransport::Tcp(_) => true,
             ChannelTransport::MetaTls(_) => true,
             ChannelTransport::Tls => true,
+            // Quic actually supports duplex byte streams, but they are not yet tested.
             ChannelTransport::Quic => false,
             ChannelTransport::MetaQuic(_) => false,
             ChannelTransport::Unix => true,
