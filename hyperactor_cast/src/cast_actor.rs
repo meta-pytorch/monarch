@@ -22,6 +22,7 @@ use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Label;
 use hyperactor::PortRef;
+use hyperactor::RemoteEndpoint as _;
 use hyperactor::Uid;
 use hyperactor::UnboundPort;
 use hyperactor::UnboundPortKind;
@@ -271,8 +272,10 @@ impl CastDomainRef {
         let dest_port = <IndexedErasedUnbound<M>>::port();
         let (session_id, seqs) = self.seqs_for_cast(cx, dest_port)?;
 
-        self.entry_point.post(
+        let cast_headers = headers.clone();
+        self.entry_point.port().post_with_headers(
             cx,
+            headers,
             CastMessage {
                 cast_domain_id: self.id.clone(),
                 sender,
@@ -280,7 +283,7 @@ impl CastDomainRef {
                 seqs,
                 #[cfg(test)]
                 lineage: Vec::new(),
-                headers,
+                headers: cast_headers,
                 dest_port,
                 data,
             },
@@ -792,8 +795,10 @@ impl Handler<CastMessage> for CastActor {
         for next_hop in &domain.next_hops {
             #[cfg(not(test))]
             let _ = &local_lineage;
-            next_hop.post(
+            let forward_headers = message.headers.clone();
+            next_hop.port().post_with_headers(
                 cx,
+                forward_headers,
                 CastMessage {
                     cast_domain_id: message.cast_domain_id.clone(),
                     sender: message.sender.clone(),
