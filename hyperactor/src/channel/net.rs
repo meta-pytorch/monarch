@@ -1610,27 +1610,14 @@ pub(crate) mod meta {
     /// Creates a TLS connector by looking for necessary certs and keys in a Meta server environment.
     /// Supports optional client authentication (unlike the tls module which always requires it).
     fn tls_connector() -> Result<TlsConnector> {
-        // Ensure ring is installed as the process-level crypto provider.
-        // No-op when already installed (e.g. under Buck with native-tls).
-        let _ = rustls::crypto::ring::default_provider().install_default();
-
-        let ca_path = std::env::var_os(THRIFT_TLS_SRV_CA_PATH_ENV)
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(DEFAULT_SRV_CA_PATH));
-        let ca_pem = Pem::File(ca_path);
-        let root_store = tls::build_root_store(&ca_pem)?;
-
-        // If client certs are available, use mutual TLS; otherwise, no client auth
-        let config = rustls::ClientConfig::builder().with_root_certificates(Arc::new(root_store));
-
         let config = if let Some(bundle) = get_client_pem_bundle() {
-            let certs = tls::load_certs(&bundle.cert)?;
-            let key = tls::load_key(&bundle.key)?;
-            config
-                .with_client_auth_cert(certs, key)
-                .map_err(|e| anyhow::anyhow!("load client certs: {}", e))?
+            tls::client_config_from_bundle(&bundle)?
         } else {
-            config.with_no_client_auth()
+            let ca_path = std::env::var_os(THRIFT_TLS_SRV_CA_PATH_ENV)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(DEFAULT_SRV_CA_PATH));
+            let ca_pem = Pem::File(ca_path);
+            tls::client_config_from_ca(&ca_pem)?
         };
 
         Ok(TlsConnector::from(Arc::new(config)))
@@ -1669,7 +1656,9 @@ pub(crate) mod tls {
 
     use anyhow::Context;
     use anyhow::Result;
+    use rustls::ClientConfig;
     use rustls::RootCertStore;
+    use rustls::ServerConfig;
     use rustls::pki_types::CertificateDer;
     use rustls::pki_types::PrivateKeyDer;
     use rustls::pki_types::ServerName;
@@ -1749,21 +1738,25 @@ pub(crate) mod tls {
         }
     }
 
-    /// Creates a TLS acceptor using certificates from the provided PEM bundle.
-    /// If `enforce_client_tls` is true, requires client certificates for mutual TLS.
-    pub(super) fn tls_acceptor_from_bundle(
-        bundle: &PemBundle,
-        enforce_client_tls: bool,
-    ) -> Result<TlsAcceptor> {
+    fn install_default_crypto_provider() {
         // Ensure ring is installed as the process-level crypto provider.
         // No-op when already installed (e.g. under Buck with native-tls).
         let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+
+    /// Creates a Rustls server config using certificates from the provided PEM bundle.
+    /// If `enforce_client_tls` is true, requires client certificates for mutual TLS.
+    pub(super) fn server_config_from_bundle(
+        bundle: &PemBundle,
+        enforce_client_tls: bool,
+    ) -> Result<ServerConfig> {
+        install_default_crypto_provider();
 
         let certs = load_certs(&bundle.cert).context("load TLS certificate")?;
         let key = load_key(&bundle.key).context("load TLS key")?;
         let root_store = build_root_store(&bundle.ca).context("build root cert store")?;
 
-        let config = rustls::ServerConfig::builder();
+        let config = ServerConfig::builder();
         let config = if enforce_client_tls {
             // Build server config with mutual TLS (require client certs)
             let client_verifier =
@@ -1776,6 +1769,16 @@ pub(crate) mod tls {
         }
         .with_single_cert(certs, key)?;
 
+        Ok(config)
+    }
+
+    /// Creates a TLS acceptor using certificates from the provided PEM bundle.
+    /// If `enforce_client_tls` is true, requires client certificates for mutual TLS.
+    pub(super) fn tls_acceptor_from_bundle(
+        bundle: &PemBundle,
+        enforce_client_tls: bool,
+    ) -> Result<TlsAcceptor> {
+        let config = server_config_from_bundle(bundle, enforce_client_tls)?;
         Ok(TlsAcceptor::from(Arc::new(config)))
     }
 
@@ -1784,21 +1787,35 @@ pub(crate) mod tls {
         tls_acceptor_from_bundle(&get_pem_bundle(), true)
     }
 
-    /// Creates a TLS connector using certificates from the provided PEM bundle.
-    pub(super) fn tls_connector_from_bundle(bundle: &PemBundle) -> Result<TlsConnector> {
-        // Ensure ring is installed as the process-level crypto provider.
-        // No-op when already installed (e.g. under Buck with native-tls).
-        let _ = rustls::crypto::ring::default_provider().install_default();
+    /// Creates a Rustls client config using only CA roots.
+    pub(super) fn client_config_from_ca(ca_pem: &Pem) -> Result<ClientConfig> {
+        install_default_crypto_provider();
+
+        let root_store = build_root_store(ca_pem).context("build root cert store")?;
+        Ok(ClientConfig::builder()
+            .with_root_certificates(Arc::new(root_store))
+            .with_no_client_auth())
+    }
+
+    /// Creates a Rustls client config using certificates from the provided PEM bundle.
+    pub(super) fn client_config_from_bundle(bundle: &PemBundle) -> Result<ClientConfig> {
+        install_default_crypto_provider();
 
         let certs = load_certs(&bundle.cert).context("load TLS certificate")?;
         let key = load_key(&bundle.key).context("load TLS key")?;
         let root_store = build_root_store(&bundle.ca).context("build root cert store")?;
 
-        let config = rustls::ClientConfig::builder()
+        let config = ClientConfig::builder()
             .with_root_certificates(Arc::new(root_store))
             .with_client_auth_cert(certs, key)
             .context("configure client auth")?;
 
+        Ok(config)
+    }
+
+    /// Creates a TLS connector using certificates from the provided PEM bundle.
+    pub(super) fn tls_connector_from_bundle(bundle: &PemBundle) -> Result<TlsConnector> {
+        let config = client_config_from_bundle(bundle)?;
         Ok(TlsConnector::from(Arc::new(config)))
     }
 
@@ -2270,6 +2287,9 @@ pub fn try_tls_connector() -> Option<tokio_rustls::TlsConnector> {
     let oss_bundle = oss_pem_bundle();
     if let Ok(connector) = tls::tls_connector_from_bundle(&oss_bundle) {
         return Some(connector);
+    }
+    if let Ok(config) = tls::client_config_from_ca(&oss_bundle.ca) {
+        return Some(tokio_rustls::TlsConnector::from(Arc::new(config)));
     }
     tracing::debug!("OSS TLS connector failed, trying Meta paths");
 
