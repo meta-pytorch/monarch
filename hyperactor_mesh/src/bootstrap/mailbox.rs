@@ -223,4 +223,66 @@ mod tests {
         proc_dialer.post(envelope.clone(), return_handle.clone());
         assert_eq!(backend_rx.recv().await.unwrap().sender(), &second_actor_id);
     }
+
+    /// Same-host proc-to-proc traffic must keep using the direct
+    /// local-socket path even when destinations carry a `Via(uid,
+    /// Addr(host_addr))` source-routing prefix (the convention
+    /// `Host::spawn` now applies to every spawned child). The
+    /// `Via` should not push the envelope onto the slower backend
+    /// sender path.
+    #[tokio::test]
+    async fn test_proc_dialer_via_prefixed_dest() {
+        use hyperactor::Location;
+
+        let dir = tempfile::tempdir().unwrap();
+        let local_addr: ChannelAddr = "tcp:3.4.5.6:123".parse().unwrap();
+
+        // Build two sibling procs with the via-prefixed location
+        // convention used by `Host::spawn`.
+        let make_proc = |name: &str| -> hyperactor::ProcAddr {
+            let bare = hyperactor::ProcAddr::instance(local_addr.clone(), name);
+            let via = Location::from(local_addr.clone()).with_via(bare.id().uid().clone());
+            hyperactor::ProcAddr::new(bare.id().clone(), via)
+        };
+        let first = make_proc("first");
+        let second = make_proc("second");
+        assert!(
+            first.location().as_via().is_some(),
+            "test setup: spawned-proc address must carry a via prefix"
+        );
+
+        let (first_serve, _) = local_proc_addr(dir.path(), first.id()).unwrap();
+        let (_first_addr, mut first_rx) = channel::serve::<MessageEnvelope>(first_serve).unwrap();
+
+        let (backend_addr, mut backend_rx) =
+            channel::serve::<MessageEnvelope>(ChannelTransport::Unix.any()).unwrap();
+
+        let first_actor_id = first.actor_addr("actor");
+        let second_actor_id = second.actor_addr("actor");
+        let proc_dialer = LocalProcDialer::new(
+            local_addr.clone(),
+            dir.path().to_owned(),
+            MailboxClient::dial(backend_addr).unwrap(),
+        );
+        let (return_handle, _return_rx) = Mailbox::new(test_actor_id("world_0", "proc"))
+            .open_port::<Undeliverable<MessageEnvelope>>();
+
+        // `second` → `first`, both via-prefixed. Expect the
+        // envelope on `first`'s local socket (direct path), not on
+        // the backend.
+        let envelope = MessageEnvelope::new(
+            second_actor_id.clone(),
+            first_actor_id.port_addr(0.into()),
+            wirevalue::Any::serialize(&()).unwrap(),
+            Flattrs::new(),
+        );
+        proc_dialer.post(envelope, return_handle.clone());
+        assert_eq!(first_rx.recv().await.unwrap().sender(), &second_actor_id);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), backend_rx.recv())
+                .await
+                .is_err(),
+            "via-prefixed sibling traffic must not detour through the backend",
+        );
+    }
 }

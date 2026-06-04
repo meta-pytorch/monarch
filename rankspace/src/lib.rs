@@ -231,6 +231,7 @@
 //! rank (`rank -> data[rank]`), while a [`view::CompactView`] stores values by
 //! compact visible order (`rank -> visible_index -> data[visible_index]`).
 
+pub mod strategy;
 pub mod view;
 
 #[cfg(test)]

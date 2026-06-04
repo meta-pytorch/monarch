@@ -53,14 +53,10 @@ use typeuri::Named;
 
 use crate::RdmaAction;
 use crate::RdmaManagerActor;
-use crate::RdmaOp;
 use crate::ReleaseBufferClient;
-use crate::backend::RdmaBackend;
 use crate::backend::RdmaRemoteBackendContext;
 use crate::backend::ibverbs::IbvBuffer;
-use crate::backend::ibverbs::manager_actor::IbvBackend;
 use crate::backend::ibverbs::manager_actor::IbvManagerActor;
-use crate::backend::tcp::manager_actor::TcpBackend;
 use crate::backend::tcp::manager_actor::TcpManagerActor;
 use crate::local_memory::KeepaliveLocalMemory;
 
@@ -78,61 +74,7 @@ pub struct RdmaRemoteBuffer {
 }
 wirevalue::register_type!(RdmaRemoteBuffer);
 
-/// Backend handle returned by [`RdmaRemoteBuffer::choose_backend`].
-///
-/// `RdmaBackend` is not object-safe (associated type + generic parameter
-/// on `submit`), so we use an enum that delegates to the concrete handle.
-#[derive(Debug)]
-pub enum RdmaLocalBackend {
-    Ibv(IbvBackend),
-    Tcp(TcpBackend),
-}
-
-impl RdmaLocalBackend {
-    pub(crate) async fn submit(
-        &mut self,
-        cx: &(impl context::Actor + Send + Sync),
-        ops: Vec<RdmaOp>,
-        timeout: Duration,
-    ) -> Result<(), anyhow::Error> {
-        match self {
-            RdmaLocalBackend::Ibv(h) => h.submit(cx, ops, timeout).await,
-            RdmaLocalBackend::Tcp(h) => h.submit(cx, ops, timeout).await,
-        }
-    }
-}
-
 impl RdmaRemoteBuffer {
-    /// Choose the best available backend for this buffer.
-    ///
-    /// Prefers ibverbs when both the local and remote sides support it.
-    /// Falls back to TCP when ibverbs is unavailable and
-    /// [`RDMA_ALLOW_TCP_FALLBACK`](crate::config::RDMA_ALLOW_TCP_FALLBACK)
-    /// is enabled.
-    pub async fn choose_backend(
-        &self,
-        client: &(impl context::Actor + Send + Sync),
-    ) -> Result<RdmaLocalBackend, anyhow::Error> {
-        if self.has_ibverbs_backend() {
-            if let Ok(ibv_handle) = IbvManagerActor::local_handle(client).await {
-                return Ok(RdmaLocalBackend::Ibv(IbvBackend(ibv_handle)));
-            }
-
-            return self
-                .tcp_fallback_or_bail("no ibverbs backend on the local side", client)
-                .await;
-        }
-
-        self.tcp_fallback_or_bail(
-            &format!(
-                "no ibverbs backend on the remote side (owner={})",
-                self.owner.actor_addr()
-            ),
-            client,
-        )
-        .await
-    }
-
     /// Push data from local memory into this remote buffer (local->remote).
     pub async fn write_from_local(
         &self,
@@ -157,25 +99,6 @@ impl RdmaRemoteBuffer {
         action.add_read_into_local(self.clone(), local)?;
         action.submit(client, Duration::from_secs(timeout)).await?;
         Ok(true)
-    }
-
-    /// Get a TCP backend handle, or bail if TCP fallback is disabled.
-    async fn tcp_fallback_or_bail(
-        &self,
-        reason: &str,
-        client: &(impl context::Actor + Send + Sync),
-    ) -> Result<RdmaLocalBackend, anyhow::Error> {
-        if !hyperactor_config::global::get(crate::config::RDMA_ALLOW_TCP_FALLBACK) {
-            anyhow::bail!(
-                "{reason}, and TCP fallback is disabled; \
-                 enable it with monarch.configure(rdma_allow_tcp_fallback=True)"
-            );
-        }
-
-        tracing::warn!("falling back to TCP transport ({reason})");
-
-        let tcp_handle = TcpManagerActor::local_handle(client).await?;
-        Ok(RdmaLocalBackend::Tcp(TcpBackend(tcp_handle)))
     }
 
     /// Drop the buffer and release remote handles.
