@@ -97,6 +97,12 @@
 //!   (which clears both fields). Makes it structurally impossible
 //!   to have an orphaned overlay or a running job with no display
 //!   surface.
+//! - **TUI-22 (help-modal):** `show_help` is a synchronous static
+//!   detail-pane modal, not an [`ActiveJob`]. When true, ordinary
+//!   keypresses dismiss it before navigation/action handling; Ctrl-C
+//!   still requests quit. Rendering gives the help overlay precedence
+//!   over `app.overlay` and node detail, and help never mutates the
+//!   topology or detail cache.
 //!
 //! Py-spy overlay invariants:
 //!

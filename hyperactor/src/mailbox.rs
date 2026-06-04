@@ -609,6 +609,12 @@ impl MessageEnvelope {
         &self.dest
     }
 
+    /// Return this envelope with its destination replaced by `dest`.
+    pub fn with_dest(mut self, dest: PortAddr) -> Self {
+        self.dest = dest;
+        self
+    }
+
     /// The message headers.
     pub fn headers(&self) -> &Flattrs {
         &self.headers
