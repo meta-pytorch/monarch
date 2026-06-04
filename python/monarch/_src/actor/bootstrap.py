@@ -52,6 +52,15 @@ def run_worker_loop_forever(
         ipc://some_unique_string - unix sockets
         inproc://3423 - connection only accessible within the process
 
+    To bind to one interface but advertise a different one, append the bind
+    address after ``@``:
+
+        tcp://worker-fqdn:4444@tcp://0.0.0.0:4444
+
+    The server binds to ``tcp://0.0.0.0:4444`` so any local interface can
+    accept connections (e.g. ``localhost`` for ``kubectl port-forward``)
+    while peers still address the worker by its routable FQDN. Without the
+    ``@``-suffix, bind address equals advertised address.
 
     The server will accept a connection to a new root client and enable it to
     use this machine as a host. If the client disconnects or cannot be contacted, this server

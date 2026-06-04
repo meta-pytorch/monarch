@@ -128,13 +128,6 @@ wirevalue::register_type!(IbvManagerMessage);
 /// Local-only messages for [`IbvManagerActor`].
 #[derive(Handler, HandleClient, Debug)]
 pub enum IbvManagerLocalMessage {
-    /// Register a memory region, returning the MR view and device name.
-    RegisterMr {
-        addr: usize,
-        size: usize,
-        #[reply]
-        reply: OncePortHandle<Result<(IbvMemoryRegionView, String), String>>,
-    },
     /// Register a remote-facing buffer's MR and return its
     /// [`IbvBuffer`]. Called by
     /// [`crate::rdma_manager_actor::RdmaManagerActor::request_buffer`]
@@ -451,12 +444,21 @@ impl IbvManagerActor {
         lookup_segment_for_address(&get_registered_cuda_segments(pd), addr, size)
     }
 
-    fn register_mr_impl(
+    /// Resolve `mem` to an [`IbvMemoryRegionView`] using the slot
+    /// shared by every clone of `mem`. On a cold slot, registers the
+    /// region (CPU via `ibv_reg_mr`, CUDA via segment scanning or a
+    /// dmabuf MR) and installs the result; on a warm slot, returns the
+    /// previously-installed view.
+    fn resolve_local_mr(
         &mut self,
-        addr: usize,
-        size: usize,
-    ) -> Result<(IbvMemoryRegionView, String), anyhow::Error> {
-        unsafe {
+        mem: &KeepaliveLocalMemory,
+    ) -> Result<IbvMemoryRegionView, anyhow::Error> {
+        if let Some(mrv) = mem.mr_slot().get() {
+            return Ok(mrv.clone());
+        }
+        let addr = mem.addr();
+        let size = mem.size();
+        let mrv = unsafe {
             let mut mem_type: i32 = 0;
             let ptr = addr as rdmaxcel_sys::CUdeviceptr;
             let err = rdmaxcel_sys::rdmaxcel_cuPointerGetAttribute(
@@ -634,22 +636,8 @@ impl IbvManagerActor {
                     }),
                 );
             }
-            Ok((mrv, device_name))
-        }
-    }
-
-    /// Resolve `mem` to an [`IbvMemoryRegionView`] using the slot
-    /// shared by every clone of `mem`. On a cold slot, calls
-    /// [`Self::register_mr_impl`] and installs the result; on a warm
-    /// slot, returns the previously-installed view.
-    fn resolve_local_mr(
-        &mut self,
-        mem: &KeepaliveLocalMemory,
-    ) -> Result<IbvMemoryRegionView, anyhow::Error> {
-        if let Some(mrv) = mem.mr_slot().get() {
-            return Ok(mrv.clone());
-        }
-        let (mrv, _device_name) = self.register_mr_impl(mem.addr(), mem.size())?;
+            mrv
+        };
         Ok(mem.mr_slot().get_or_init(|| mrv).clone())
     }
 
@@ -909,15 +897,6 @@ impl Handler<CreatePeerQueuePair<IbvManagerActor>> for IbvManagerActor {
 #[async_trait]
 #[hyperactor::handle(IbvManagerLocalMessage)]
 impl IbvManagerLocalMessageHandler for IbvManagerActor {
-    async fn register_mr(
-        &mut self,
-        _cx: &Context<Self>,
-        addr: usize,
-        size: usize,
-    ) -> Result<Result<(IbvMemoryRegionView, String), String>, anyhow::Error> {
-        Ok(self.register_mr_impl(addr, size).map_err(|e| e.to_string()))
-    }
-
     async fn register_remote_buffer(
         &mut self,
         _cx: &Context<Self>,
@@ -927,7 +906,11 @@ impl IbvManagerLocalMessageHandler for IbvManagerActor {
         if let Some((buf, _)) = self.buffer_registrations.get(&remote_buf_id) {
             return Ok(Ok(buf.clone()));
         }
-        let (mrv, device_name) = match self.register_mr_impl(local.addr(), local.size()) {
+        // `resolve_local_mr` installs the view in `local`'s shared MR
+        // slot, so every clone of this handle — including the one the
+        // caller holds — reuses this registration instead of registering
+        // the same region again.
+        let mrv = match self.resolve_local_mr(&local) {
             Ok(v) => v,
             Err(e) => return Ok(Err(e.to_string())),
         };
@@ -937,7 +920,7 @@ impl IbvManagerLocalMessageHandler for IbvManagerActor {
             rkey: mrv.rkey,
             addr: mrv.rdma_addr,
             size: mrv.size,
-            device_name,
+            device_name: mrv.device_name.clone(),
         };
         self.buffer_registrations
             .insert(remote_buf_id, (buf.clone(), mrv));
@@ -1104,6 +1087,7 @@ mod tests {
 
     use super::IbvBackend;
     use super::IbvManagerActor;
+    use super::IbvManagerLocalMessageClient;
     use crate::IbvConfig;
     use crate::RdmaManagerActor;
     use crate::RdmaManagerMessageClient;
@@ -1594,6 +1578,32 @@ mod tests {
     // ====================================================================
     // Tests
     // ====================================================================
+
+    /// `register_remote_buffer` must populate the MR slot shared by
+    /// every clone of the `KeepaliveLocalMemory` it is handed, so that
+    /// later `resolve_local_mr` calls reuse the registered MR instead
+    /// of registering the same region again.
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_register_remote_buffer_fills_mr_slot() -> Result<(), anyhow::Error> {
+        require_rdma();
+        let env = TestEnv::same_config(IbvConfig::targeting("cpu:0")).await?;
+        let ibv_handle = IbvManagerActor::local_handle(&env.client).await?;
+        let buf: Box<[u8]> = vec![0u8; 1024].into_boxed_slice();
+        let local = KeepaliveLocalMemory::new(Arc::new(buf));
+        assert!(
+            local.mr_slot().get().is_none(),
+            "MR slot should be empty before registration",
+        );
+        ibv_handle
+            .register_remote_buffer(&env.client, 0, local.clone())
+            .await?
+            .map_err(|e| anyhow::anyhow!(e))?;
+        assert!(
+            local.mr_slot().get().is_some(),
+            "register_remote_buffer should populate the MR slot",
+        );
+        env.shutdown().await
+    }
 
     /// Cross-actor RDMA write over a single device (both sides target
     /// `cpu:0`). The two `RdmaManagerActor`s differ — this exercises
