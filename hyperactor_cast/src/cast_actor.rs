@@ -46,7 +46,6 @@ use ndslice::Region;
 use ndslice::Shape;
 use ndslice::view::BuildFromRegionIndexed;
 use ndslice::view::MapIntoExt;
-use ndslice::view::Ranked;
 use ndslice::view::View;
 use serde::Deserialize;
 use serde::Serialize;
@@ -323,7 +322,7 @@ impl CastDomainRef {
     ) -> Result<(Uuid, ValueMesh<u64>)> {
         let sequencer = cx.instance().sequencer();
         let seqs = self.members.as_ref().map_into(|member| {
-            let port = member.port_addr(Port::from(dest_port));
+            let port = member.port_addr(Port::handler_id(dest_port, None));
             let SeqInfo::Session { session_id: _, seq } = sequencer.assign_seq(&port) else {
                 unreachable!("assign_seq always returns SeqInfo::Session");
             };
@@ -782,7 +781,9 @@ impl Handler<CastMessage> for CastActor {
             #[cfg(test)]
             headers.set(CAST_LINEAGE, local_lineage.ranks());
 
-            let dest = domain.local_actor.port_addr(Port::from(message.dest_port));
+            let dest = domain
+                .local_actor
+                .port_addr(Port::handler_id(message.dest_port, None));
             hyperactor::mailbox::headers::stamp_sender_actor_id(
                 &mut headers,
                 &seq_info,

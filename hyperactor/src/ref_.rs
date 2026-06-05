@@ -43,6 +43,7 @@ use crate::mailbox::PortSink;
 use crate::message::Bind;
 use crate::message::Bindings;
 use crate::message::Unbind;
+use crate::port::ControlPort;
 use crate::port::Port;
 
 /// ActorRefs are typed references to actors.
@@ -59,7 +60,7 @@ impl<A: Referable> ActorRef<A> {
     where
         A: RemoteHandles<M>,
     {
-        PortRef::attest(self.actor_addr.port_addr(Port::from(<M as Named>::port())))
+        PortRef::attest(self.actor_addr.port_addr(Port::handler::<M>()))
     }
 
     /// The caller guarantees that the provided actor ID is also a valid,
@@ -273,7 +274,13 @@ impl<M: RemoteMessage> PortRef<M> {
     /// The caller attests that the provided actor exposes a reachable handler
     /// port for message type `M`.
     pub fn attest_handler_port(actor: &ActorAddr) -> Self {
-        PortRef::<M>::attest(actor.port_addr(Port::from(<M as Named>::port())))
+        PortRef::<M>::attest(actor.port_addr(Port::handler::<M>()))
+    }
+
+    /// The caller attests that the provided actor exposes a reachable control
+    /// port for message type `M`.
+    pub fn attest_control_port(actor: &ActorAddr, port: ControlPort) -> Self {
+        PortRef::<M>::attest(actor.port_addr(Port::control(port)))
     }
 
     /// The typehash of this port's reducer, if any. Reducers
