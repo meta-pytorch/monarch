@@ -890,6 +890,7 @@ mod tests {
     use ndslice::Slice;
     use ndslice::ViewExt;
     use ndslice::shape;
+    use ndslice::view::Ranked;
     use proptest::prelude::*;
     use timed_test::async_timed_test;
     use typeuri::Named;
