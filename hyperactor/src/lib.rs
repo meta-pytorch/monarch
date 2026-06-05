@@ -182,6 +182,8 @@ pub use mailbox::Message;
 pub use mailbox::OncePortHandle;
 pub use mailbox::PortHandle;
 pub use mailbox::RemoteMessage;
+pub use port::ControlPort;
+pub use port::Port;
 pub use proc::Context;
 pub use proc::Instance;
 pub use proc::InstanceCell;
