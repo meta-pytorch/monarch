@@ -151,8 +151,6 @@ use crate::accum::Accumulator;
 use crate::accum::ReducerSpec;
 use crate::accum::StreamingReducerOpts;
 use crate::actor::ActorStatus;
-use crate::actor::Signal;
-use crate::actor::remote::USER_PORT_OFFSET;
 use crate::channel;
 use crate::channel::ChannelAddr;
 use crate::channel::ChannelError;
@@ -166,6 +164,7 @@ use crate::id::ActorId;
 use crate::metrics;
 use crate::ordering::SEQ_INFO;
 use crate::ordering::SeqInfo;
+use crate::port::ControlPort;
 use crate::port::Port;
 
 mod undeliverable;
@@ -622,7 +621,8 @@ impl MessageEnvelope {
 
     /// Tells whether this is a signal message.
     pub fn is_signal(&self) -> bool {
-        self.dest.index() == Signal::port()
+        self.dest
+            .is_control_port_kind(crate::port::ControlPort::Signal)
     }
 
     /// Push a structured delivery failure onto this message's failure history.
@@ -1845,7 +1845,6 @@ impl Mailbox {
         (
             OncePortHandle {
                 mailbox: self.clone(),
-                port_index,
                 port_id: port_id.clone(),
                 sender,
                 reducer_spec: None,
@@ -1891,7 +1890,6 @@ impl Mailbox {
         (
             OncePortHandle {
                 mailbox: self.clone(),
-                port_index,
                 port_id: port_id.clone(),
                 sender,
                 reducer_spec,
@@ -1910,15 +1908,15 @@ impl Mailbox {
     }
 
     fn lookup_sender<M: RemoteMessage>(&self) -> Option<UnboundedPortSender<M>> {
-        let port_index = M::port();
-        self.inner.ports.get(&port_index).and_then(|boxed| {
+        let port = Port::handler::<M>();
+        self.inner.ports.get(&port).and_then(|boxed| {
             boxed
                 .as_any()
                 .downcast_ref::<UnboundedSender<M>>()
                 .map(|s| {
                     assert_eq!(
                         s.port_id,
-                        self.actor_addr().port_addr(Port::from(port_index)),
+                        self.actor_addr().port_addr(port.clone()),
                         "port_id mismatch in downcasted UnboundedSender"
                     );
                     s.sender.clone()
@@ -1948,7 +1946,7 @@ impl Mailbox {
         let port_ref = self
             .actor_addr()
             .port_addr(Port::from(handle.inner.port_index));
-        match self.inner.ports.entry(handle.inner.port_index) {
+        match self.inner.ports.entry(port_ref.port()) {
             Entry::Vacant(entry) => {
                 entry.insert(Arc::new(UnboundedSender::new(
                     handle.inner.sender.clone(),
@@ -1962,19 +1960,26 @@ impl Mailbox {
     }
 
     fn bind_to_handler_port<M: RemoteMessage>(&self, handle: &PortHandle<M>) {
+        self.bind_to_port(handle, Port::handler::<M>());
+    }
+
+    fn bind_to_control_port<M: RemoteMessage>(&self, handle: &PortHandle<M>, port: ControlPort) {
+        self.bind_to_port(handle, Port::control(port));
+    }
+
+    fn bind_to_port<M: RemoteMessage>(&self, handle: &PortHandle<M>, port: Port) {
         assert_eq!(
             handle.inner.mailbox.actor_addr(),
             self.actor_addr(),
             "port does not belong to mailbox"
         );
 
-        let port_index = M::port();
-        let port_ref = self.actor_addr().port_addr(Port::from(port_index));
-        match self.inner.ports.entry(port_index) {
+        let port_ref = self.actor_addr().port_addr(port.clone());
+        match self.inner.ports.entry(port) {
             Entry::Vacant(entry) => {
                 entry.insert(Arc::new(UnboundedSender::new(
                     handle.inner.sender.clone(),
-                    port_ref,
+                    port_ref.clone(),
                 )));
             }
             Entry::Occupied(_entry) => panic!("port {} already bound", port_ref),
@@ -1983,7 +1988,7 @@ impl Mailbox {
 
     fn bind_once<M: RemoteMessage>(&self, handle: OncePortHandle<M>) {
         let port_id = handle.port_addr().clone();
-        match self.inner.ports.entry(handle.port_index) {
+        match self.inner.ports.entry(port_id.port()) {
             Entry::Vacant(entry) => {
                 entry.insert(Arc::new(OnceSender::new(handle.sender, port_id.clone())));
             }
@@ -1998,7 +2003,7 @@ impl Mailbox {
             "port does not belong to mailbox"
         );
 
-        match self.inner.ports.entry(port_id.index()) {
+        match self.inner.ports.entry(port_id.port()) {
             Entry::Vacant(entry) => {
                 entry.insert(Arc::new(sender));
             }
@@ -2090,7 +2095,7 @@ impl MailboxSender for Mailbox {
             return envelope.undeliverable(failure, return_handle);
         }
 
-        let port_index = envelope.dest().index();
+        let port = envelope.dest().port();
 
         // Clone the Arc<dyn SerializedSender> out of the DashMap while holding
         // only a short-lived read lock, then release the lock before calling
@@ -2101,12 +2106,12 @@ impl MailboxSender for Mailbox {
         // (RwLock is not reentrant). DashMap uses a random per-process hasher,
         // so whether two port indices collide in the same shard varies across
         // test runs, explaining the longstanding flaky timeout failures.
-        let port_sender = match self.inner.ports.get(&port_index) {
+        let port_sender = match self.inner.ports.get(&port) {
             None => {
                 let failure = unbound_port_delivery_failure(
                     envelope.dest(),
                     envelope.data(),
-                    self.inner.next_port.load(Ordering::SeqCst),
+                    self.inner.next_ephemeral_port.load(Ordering::SeqCst),
                 );
                 return envelope.undeliverable(failure, return_handle);
             }
@@ -2194,11 +2199,11 @@ impl MailboxSender for Mailbox {
                 );
 
                 if disposition == SerializedSendDisposition::DeliveredAndExhausted {
-                    self.inner.ports.remove(&port_index);
+                    self.inner.ports.remove(&port);
                 }
             }
             Err(SerializedSendFailure::Dead { data, headers }) => {
-                self.inner.ports.remove(&port_index);
+                self.inner.ports.remove(&port);
                 let failure = port_gone_delivery_failure(&dest, &data);
 
                 MessageEnvelope::seal(
@@ -2241,20 +2246,21 @@ impl MailboxSender for Mailbox {
 fn unbound_port_delivery_failure(
     port: &PortAddr,
     data: &wirevalue::Any,
-    next_port: u64,
+    next_ephemeral_port: u64,
 ) -> DeliveryFailure {
     if port.is_handler_port() {
         DeliveryFailure::new(InvalidReference::new(
             port.clone(),
             InvalidReferenceReason::HandlerNotBound,
         ))
-    } else if port.index() < next_port {
-        port_gone_delivery_failure(port, data)
     } else {
-        DeliveryFailure::new(InvalidReference::new(
-            port.clone(),
-            InvalidReferenceReason::PortNeverAllocated,
-        ))
+        match port.ephemeral_index() {
+            Some(index) if index < next_ephemeral_port => port_gone_delivery_failure(port, data),
+            _ => DeliveryFailure::new(InvalidReference::new(
+                port.clone(),
+                InvalidReferenceReason::PortNeverAllocated,
+            )),
+        }
     }
 }
 
@@ -2515,11 +2521,19 @@ impl<M: RemoteMessage> PortHandle<M> {
     /// This is used by [`actor::Binder`] implementations to bind actor refs.
     /// This is not intended for general use.
     pub(crate) fn bind_handler_port(&self) {
-        let port_id = self
-            .inner
-            .mailbox
-            .actor_addr()
-            .port_addr(Port::from(M::port()));
+        self.bind_to_port(Port::handler::<M>());
+        self.inner.mailbox.bind_to_handler_port(self);
+    }
+
+    /// Bind this handle to a control port. This method will panic if the handle
+    /// is already bound.
+    pub(crate) fn bind_control_port(&self, port: ControlPort) {
+        self.bind_to_port(Port::control(port));
+        self.inner.mailbox.bind_to_control_port(self, port);
+    }
+
+    fn bind_to_port(&self, port: Port) {
+        let port_id = self.inner.mailbox.actor_addr().port_addr(port);
         {
             let mut guard = self.inner.bound.write().unwrap();
             if guard.is_some() {
@@ -2530,7 +2544,6 @@ impl<M: RemoteMessage> PortHandle<M> {
             }
             *guard = Some(port_id);
         }
-        self.inner.mailbox.bind_to_handler_port(self);
     }
 }
 
@@ -2552,7 +2565,6 @@ impl<M: Message> fmt::Display for PortHandle<M> {
 #[derive(Debug)]
 pub struct OncePortHandle<M: Message> {
     mailbox: Mailbox,
-    port_index: u64,
     port_id: PortAddr,
     sender: oneshot::Sender<M>,
     reducer_spec: Option<ReducerSpec>,
@@ -2717,8 +2729,8 @@ impl<M> PortReceiver<M> {
         drained
     }
 
-    fn port(&self) -> u64 {
-        self.port_id.index()
+    fn port(&self) -> Port {
+        self.port_id.port()
     }
 
     fn actor_addr(&self) -> ActorAddr {
@@ -2769,8 +2781,8 @@ impl<M> OncePortReceiver<M> {
             })
     }
 
-    fn port(&self) -> u64 {
-        self.port_id.index()
+    fn port(&self) -> Port {
+        self.port_id.port()
     }
 
     fn actor_addr(&self) -> ActorAddr {
@@ -3197,10 +3209,10 @@ struct State {
     // insert if it's serializable; otherwise don't.
     /// The set of active ports in the mailbox. All currently
     /// allocated ports are
-    ports: DashMap<u64, Arc<dyn SerializedSender>>,
+    ports: DashMap<Port, Arc<dyn SerializedSender>>,
 
-    /// The next port ID to allocate.
-    next_port: AtomicU64,
+    /// The next ephemeral port ID to allocate.
+    next_ephemeral_port: AtomicU64,
 
     /// If a value is present, the mailbox has been closed with the provided
     /// status, and any subsequent `Mailbox::post_unchecked` calls will fail.
@@ -3216,9 +3228,7 @@ impl State {
         Self {
             actor_id,
             ports: DashMap::new(),
-            // The first 1024 ports are allocated to actor handlers.
-            // Other port IDs are ephemeral.
-            next_port: AtomicU64::new(USER_PORT_OFFSET),
+            next_ephemeral_port: AtomicU64::new(0),
             closed: RwLock::new(None),
             handler_ingress: Arc::new(HandlerIngressGate::new()),
         }
@@ -3226,7 +3236,7 @@ impl State {
 
     /// Allocate a fresh port.
     fn allocate_port(&self) -> u64 {
-        self.next_port.fetch_add(1, Ordering::SeqCst)
+        self.next_ephemeral_port.fetch_add(1, Ordering::SeqCst)
     }
 }
 
@@ -3236,9 +3246,13 @@ impl fmt::Debug for State {
             .field("actor_id", &self.actor_id)
             .field(
                 "open_ports",
-                &self.ports.iter().map(|e| *e.key()).collect::<Vec<_>>(),
+                &self
+                    .ports
+                    .iter()
+                    .map(|e| e.key().clone())
+                    .collect::<Vec<_>>(),
             )
-            .field("next_port", &self.next_port)
+            .field("next_ephemeral_port", &self.next_ephemeral_port)
             .finish()
     }
 }
@@ -4096,7 +4110,7 @@ mod tests {
     #[tokio::test]
     async fn test_missing_never_allocated_port_records_invalid_reference() {
         let mbox = Mailbox::new(test_actor_id("0", "test"));
-        let dest = mbox.actor_addr().port_addr(Port::from(USER_PORT_OFFSET));
+        let dest = mbox.actor_addr().port_addr(Port::from(0));
         let envelope =
             MessageEnvelope::serialize(mbox.actor_addr().clone(), dest, &42u64, Flattrs::new())
                 .expect("serialize");
@@ -4256,7 +4270,7 @@ mod tests {
             InvalidReferenceReason::ProtocolMismatch
         );
         assert!(
-            mbox.inner.ports.contains_key(&port_index),
+            mbox.inner.ports.contains_key(&Port::from(port_index)),
             "deserialization mismatch should not evict reusable port",
         );
 
@@ -4284,7 +4298,7 @@ mod tests {
         drop(receiver);
 
         mbox.inner.ports.insert(
-            port_index,
+            Port::from(port_index),
             Arc::new(UnboundedSender::new(
                 UnboundedPortSender::Mpsc(sender),
                 port_id,
@@ -4306,7 +4320,7 @@ mod tests {
             "expected port-gone error in {envelope}",
         );
         assert!(
-            !mbox.inner.ports.contains_key(&port_index),
+            !mbox.inner.ports.contains_key(&Port::from(port_index)),
             "dead reusable port should be removed after send failure",
         );
 
@@ -4360,7 +4374,7 @@ mod tests {
             InvalidReferenceReason::ProtocolMismatch
         );
         assert!(
-            mbox.inner.ports.contains_key(&port_index),
+            mbox.inner.ports.contains_key(&Port::from(port_index)),
             "once port should survive deserialization mismatch before delivery",
         );
 
@@ -4374,7 +4388,7 @@ mod tests {
             123u64
         );
         assert!(
-            !mbox.inner.ports.contains_key(&port_index),
+            !mbox.inner.ports.contains_key(&Port::from(port_index)),
             "successful once send should remove the sender entry",
         );
     }
@@ -5821,7 +5835,7 @@ mod tests {
     #[test]
     fn test_bind_port_handle_to_handler_port() {
         let mbox = Mailbox::new(test_actor_id("0", "test"));
-        let default_port = mbox.actor_addr().port_addr(Port::from(String::port()));
+        let default_port = mbox.actor_addr().port_addr(Port::handler::<String>());
         let (handle, _rx) = mbox.open_port::<String>();
         // Handle's port index is allocated by mailbox, not the handler port.
         assert_ne!(default_port.index(), handle.inner.port_index);
