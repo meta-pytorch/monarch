@@ -36,9 +36,9 @@
 //!   `InstanceCell` never sets `last_message_handler` to
 //!   `IntrospectMessage`.
 //! - **S3.** Sender routing is unchanged -- senders target the same
-//!   `PortId` (`IntrospectMessage::port()`) across processes.
+//!   control `PortId` across processes.
 //! - **S4.** `IntrospectMessage` never produces a `WorkCell` --
-//!   pre-registration via `bind_handler_port` gives the introspect
+//!   pre-registration via `bind_control_port` gives the introspect
 //!   port its own channel, independent of the actor's work queue.
 //! - **S5.** Replies never use `PanickingMailboxSender` -- the
 //!   introspect task replies via `Mailbox::serialize_and_send_once`.

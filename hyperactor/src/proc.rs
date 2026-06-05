@@ -200,6 +200,7 @@ use crate::mailbox::UndeliverableReason;
 use crate::metrics::ACTOR_MESSAGE_HANDLER_DURATION;
 use crate::metrics::ACTOR_MESSAGE_QUEUE_SIZE;
 use crate::metrics::ACTOR_MESSAGES_RECEIVED;
+use crate::port::Port;
 use crate::subject::AsSubject as _;
 
 tokio::task_local! {
@@ -2171,13 +2172,12 @@ impl<A: Actor> Instance<A> {
         let (actor_loop, actor_loop_receivers) = actor_loop_ports.unzip();
 
         // Introspect port: a separate channel handled by a dedicated
-        // tokio task (not the actor's message loop). bind_handler_port()
-        // registers in the mailbox
-        // dispatch table at IntrospectMessage::port().
+        // tokio task (not the actor's message loop). bind_control_port()
+        // registers it in the mailbox dispatch table.
         //
         // Exercises S3, S4, S9 (see introspect module doc).
         let (introspect_port, introspect_receiver) = mailbox.open_port::<IntrospectMessage>();
-        introspect_port.bind_handler_port();
+        introspect_port.bind_control_port(crate::port::ControlPort::Introspect);
 
         let instance_id = Uuid::now_v7();
 
@@ -3544,7 +3544,7 @@ struct InstanceCellState {
     actor_task_handle: OnceLock<JoinHandle<()>>,
 
     /// The set of named ports that are exported by this actor.
-    exported_named_ports: DashMap<u64, &'static str>,
+    exported_named_ports: DashMap<Port, &'static str>,
 
     /// The number of messages processed by this actor.
     num_processed_messages: AtomicU64,
@@ -4089,7 +4089,7 @@ impl InstanceCell {
         for entry in ports.bound.iter() {
             self.inner
                 .exported_named_ports
-                .insert(*entry.key(), entry.value());
+                .insert(entry.key().clone(), entry.value());
         }
         ActorRef::attest(ActorAddr::new(
             self.actor_addr().id().clone(),
@@ -4182,7 +4182,7 @@ impl WeakInstanceCell {
 /// actor.
 pub struct HandlerPorts<A: Actor> {
     ports: DashMap<TypeId, Box<dyn Any + Send + Sync + 'static>>,
-    bound: DashMap<u64, &'static str>,
+    bound: DashMap<Port, &'static str>,
     mailbox: Mailbox,
     workq: OrderedSender<WorkCell<A>>,
     /// Per-actor queue depth (PD-5). Shared with `InstanceCellState`.
@@ -4322,8 +4322,8 @@ impl<A: Actor> HandlerPorts<A> {
     where
         A: Handler<M>,
     {
-        let port_index = M::port();
-        match self.bound.entry(port_index) {
+        let port = Port::handler::<M>();
+        match self.bound.entry(port.clone()) {
             Entry::Vacant(entry) => {
                 self.get::<M>().bind_handler_port();
                 entry.insert(M::typename());
@@ -4332,9 +4332,9 @@ impl<A: Actor> HandlerPorts<A> {
                 assert_eq!(
                     *entry.get(),
                     M::typename(),
-                    "bind {}: port index {} already bound to type {}",
+                    "bind {}: port {} already bound to type {}",
                     M::typename(),
-                    port_index,
+                    port,
                     entry.get(),
                 );
             }
@@ -4946,8 +4946,6 @@ mod tests {
     /// outbound envelope.
     #[tokio::test]
     async fn test_mailbox_ext_post_stamps_sender_actor_id() {
-        use typeuri::Named;
-
         use crate::mailbox::headers::SENDER_ACTOR_ID;
 
         #[derive(typeuri::Named)]
@@ -4981,7 +4979,7 @@ mod tests {
         // forwarder (CapturingSender), where we can inspect the headers.
         let remote_dest = ProcAddr::instance(ChannelAddr::Local(2), "remote")
             .actor_addr("worker")
-            .port_addr(Port::from(DestHandlerMsg::port()));
+            .port_addr(Port::handler::<DestHandlerMsg>());
 
         // UFCS to select MailboxExt::post over Endpoint::post (also in
         // scope at module level via `use ... as _`). Client implements
@@ -5090,7 +5088,7 @@ mod tests {
         let (port, mut receiver) = instance.bind_handler_port::<u64>();
 
         let PortLocation::Bound(default_dest) = port.location() else {
-            panic!("actor port must be bound");
+            panic!("handler port must be bound");
         };
         let alternate_dest =
             PortAddr::new(default_dest.id().clone(), ChannelAddr::Local(9876).into());
@@ -6897,8 +6895,6 @@ mod tests {
     /// is not timing-sensitive.
     #[async_timed_test(timeout_secs = 30)]
     async fn test_inbound_ordering_snapshot_callback_publishes_session() {
-        use typeuri::Named;
-
         // Pin reorder buffering ON regardless of any global config
         // overrides set by other tests in the same binary. Without this
         // guard the snapshot would observe `enabled = false` and the
@@ -6921,7 +6917,7 @@ mod tests {
         // Reserve seq 1 on the actor's BufferTestMsg handler port so
         // subsequent client posts get seqs 2..=N which then buffer
         // (waiting for seq 1, which will never arrive).
-        let handler_port = actor_id.port_addr(Port::from(BufferTestMsg::port()));
+        let handler_port = actor_id.port_addr(Port::handler::<BufferTestMsg>());
         // Reserve one seq directly on the client's sequencer. Equivalent
         // to `Instance::debug_skip_next_ordering_seq(dest, 1)`, but
         // inlined here so the test does not depend on a Client-side
