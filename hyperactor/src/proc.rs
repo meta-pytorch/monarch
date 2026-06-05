@@ -5943,10 +5943,10 @@ mod tests {
     // Supervision propagation is deterministic (uses Notify + channel
     // recv for ordering), but the chain of message passes is sensitive
     // to tokio runtime scheduling. Under suite-wide CPU contention this
-    // can take well above the natural sub-second runtime; 60s gives
+    // can take well above the natural sub-second runtime; 120s gives
     // headroom without masking genuine hangs.
     #[cfg_attr(not(target_os = "linux"), ignore = "linux-only")]
-    #[async_timed_test(timeout_secs = 60)]
+    #[async_timed_test(timeout_secs = 120)]
     async fn test_local_supervision_propagation() {
         hyperactor_telemetry::initialize_logging_for_test();
 
@@ -6139,7 +6139,6 @@ mod tests {
         );
     }
 
-    #[ignore = "until trace recording is turned back on"]
     #[test]
     fn test_handler_logging() {
         #[derive(Debug, Default)]
