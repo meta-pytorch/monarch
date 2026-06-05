@@ -273,6 +273,56 @@ CUresult rdmaxcel_cuPointerGetAttribute(
   return rdmaxcel::DriverAPI::get()->pointerGetAttribute_(data, attribute, ptr);
 }
 
+int rdmaxcel_cuPrimaryCtxActive(void) {
+#ifdef USE_ROCM
+  // Deliberately bypasses DriverAPI::get(), whose cudaFree(0) creates a
+  // context. RTLD_NOLOAD: if the HIP runtime is not even loaded, nothing has
+  // initialized HIP and no device pointer can exist.
+  void* handle = dlopen("libamdhip64.so", RTLD_LAZY | RTLD_NOLOAD);
+  if (!handle) {
+    return 0;
+  }
+  auto hip_init =
+      reinterpret_cast<hipError_t (*)(unsigned int)>(dlsym(handle, "hipInit"));
+  auto get_device_count = reinterpret_cast<hipError_t (*)(int*)>(
+      dlsym(handle, "hipGetDeviceCount"));
+  auto device_get = reinterpret_cast<hipError_t (*)(hipDevice_t*, int)>(
+      dlsym(handle, "hipDeviceGet"));
+  auto primary_ctx_get_state =
+      reinterpret_cast<hipError_t (*)(hipDevice_t, unsigned int*, int*)>(
+          dlsym(handle, "hipDevicePrimaryCtxGetState"));
+  if (!hip_init || !get_device_count || !device_get ||
+      !primary_ctx_get_state) {
+    return 0;
+  }
+  // hipInit initializes the driver but never creates a context, so it does
+  // not perturb torch's lazy runtime initialization.
+  if (hip_init(0) != hipSuccess) {
+    return 0;
+  }
+  int count = 0;
+  if (get_device_count(&count) != hipSuccess) {
+    return 0;
+  }
+  for (int i = 0; i < count; ++i) {
+    hipDevice_t dev = 0;
+    if (device_get(&dev, i) != hipSuccess) {
+      continue;
+    }
+    unsigned int flags = 0;
+    int active = 0;
+    if (primary_ctx_get_state(dev, &flags, &active) == hipSuccess && active) {
+      return 1;
+    }
+  }
+  return 0;
+#else
+  // CUDA: rdmaxcel attaching to the driver does not corrupt torch's runtime
+  // init, so always allow the pointer probe (behavior unchanged).
+  return 1;
+#endif
+}
+
 // Device management
 CUresult rdmaxcel_cuInit(unsigned int Flags) {
   return rdmaxcel::DriverAPI::get()->init_(Flags);
