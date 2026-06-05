@@ -276,7 +276,7 @@ The client must have direct network connectivity to the worker nodes:
 
 ### Default Image
 
-By default, `SkyPilotJob` uses the `pytorch/pytorch:2.9.1-cuda12.8-cudnn9-runtime` Docker image which has compatible system libraries for `torchmonarch-nightly`.
+By default, `SkyPilotJob` uses the `pytorch/pytorch:2.9.1-cuda12.8-cudnn9-runtime` Docker image which has compatible system libraries for `torchmonarch`.
 
 ## Troubleshooting tips
 

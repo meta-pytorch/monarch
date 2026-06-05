@@ -100,6 +100,29 @@ pub(crate) struct Labels {
     pub(crate) peak_depth: &'static str,
     pub(crate) last_busy: &'static str,
 
+    // Actor info: new scalar fields surfaced in the actor info block.
+    pub(crate) instance_id_label: &'static str,
+
+    // Inbound ordering pane labels. `{n}` / `{id}` placeholders are
+    // substituted with `String::replace` at render time.
+    pub(crate) pane_inbound_ordering: &'static str,
+    pub(crate) ordering_not_available: &'static str,
+    pub(crate) ordering_buffering_disabled: &'static str,
+    pub(crate) ordering_buffering_enabled: &'static str,
+    pub(crate) ordering_sessions_label: &'static str,
+    pub(crate) ordering_sessions_known: &'static str,
+    pub(crate) ordering_sessions_stalled: &'static str,
+    pub(crate) ordering_sessions_partial: &'static str,
+    pub(crate) ordering_buffered_label: &'static str,
+    pub(crate) ordering_max_in_worst: &'static str,
+    pub(crate) ordering_returned_total: &'static str,
+    pub(crate) ordering_col_owner: &'static str,
+    pub(crate) ordering_col_missing_seq: &'static str,
+    pub(crate) ordering_col_buffered: &'static str,
+    pub(crate) ordering_more_row: &'static str,
+    pub(crate) ordering_sender_fallback: &'static str,
+    pub(crate) ordering_footer: &'static str,
+
     // Failure detail labels
     pub(crate) error_message: &'static str,
     pub(crate) root_cause: &'static str,
@@ -192,6 +215,24 @@ impl Labels {
             queue_depth: "Queue depth: ",
             peak_depth: "Peak depth: ",
             last_busy: "Last busy: ",
+            instance_id_label: "Instance: ",
+            pane_inbound_ordering: "Inbound ordering",
+            ordering_not_available: "not available",
+            ordering_buffering_disabled: "disabled (direct_send)",
+            ordering_buffering_enabled: "enabled",
+            ordering_sessions_label: "sessions",
+            ordering_sessions_known: "of",
+            ordering_sessions_stalled: "stalled",
+            ordering_sessions_partial: "(partial: {n} skipped)",
+            ordering_buffered_label: "buffered",
+            ordering_max_in_worst: "max",
+            ordering_returned_total: "/session",
+            ordering_col_owner: "Owner",
+            ordering_col_missing_seq: "Need seq",
+            ordering_col_buffered: "Buffered",
+            ordering_more_row: "… and {n} more",
+            ordering_sender_fallback: "(no owner; session {id})",
+            ordering_footer: "Owner = SEQ_INFO session owner (V1 = sender; V0 = forwarding CommActor).",
             error_message: "Error: ",
             root_cause: "Root cause: ",
             failed_at: "Failed at: ",
@@ -231,7 +272,7 @@ impl Labels {
             pane_actor_details: "Actor Details",
             pane_flight_recorder: "Flight Recorder",
             pane_diagnostics: "Diagnostics",
-            footer_help_text: "q: quit | j/k: navigate | g/G: top/bottom | Tab: expand/collapse | c: collapse all | s: system procs | h: stopped actors | d: diag | p: py-spy | C: config",
+            footer_help_text: "q: quit | j/k: navigate | g/G: top/bottom | Tab: expand/collapse | c: collapse all | s: system procs | h: stopped actors | d: diag | p: py-spy | C: config | ?: help",
             footer_diag_running_help_text: "q: quit | Esc: cancel | j/k: scroll",
             footer_diag_completed_help_text: "q: quit | Esc: back to topology | j/k: scroll | r: rerun",
             footer_pyspy_help_text: "q: quit | Esc: back to topology | j/k: scroll | p: refresh",
@@ -275,6 +316,24 @@ impl Labels {
             queue_depth: "队列深度: ",
             peak_depth: "峰值深度: ",
             last_busy: "最近繁忙: ",
+            instance_id_label: "实例: ",
+            pane_inbound_ordering: "入站排序",
+            ordering_not_available: "不可用",
+            ordering_buffering_disabled: "已禁用 (direct_send)",
+            ordering_buffering_enabled: "已启用",
+            ordering_sessions_label: "会话",
+            ordering_sessions_known: "共",
+            ordering_sessions_stalled: "停滞",
+            ordering_sessions_partial: "（部分：跳过 {n}）",
+            ordering_buffered_label: "已缓冲",
+            ordering_max_in_worst: "最大",
+            ordering_returned_total: "/会话",
+            ordering_col_owner: "所有者",
+            ordering_col_missing_seq: "等待序号",
+            ordering_col_buffered: "已缓冲",
+            ordering_more_row: "… 还有 {n} 个",
+            ordering_sender_fallback: "（无所有者；会话 {id}）",
+            ordering_footer: "所有者 = SEQ_INFO 会话所有者（V1 = 发送者；V0 = 转发 CommActor）。",
             error_message: "错误: ",
             root_cause: "根因: ",
             failed_at: "失败时间: ",
@@ -314,7 +373,7 @@ impl Labels {
             pane_actor_details: "执行器详情",
             pane_flight_recorder: "飞行记录器",
             pane_diagnostics: "诊断",
-            footer_help_text: "q: 退出 | j/k: 导航 | g/G: 顶部/底部 | Tab: 展开/折叠 | c: 全部折叠 | s: 系统进程 | h: 已停止 | d: 诊断 | p: py-spy | C: 配置",
+            footer_help_text: "q: 退出 | j/k: 导航 | g/G: 顶部/底部 | Tab: 展开/折叠 | c: 全部折叠 | s: 系统进程 | h: 已停止 | d: 诊断 | p: py-spy | C: 配置 | ?: 帮助",
             footer_diag_running_help_text: "q: 退出 | Esc: 取消 | j/k: 滚动",
             footer_diag_completed_help_text: "q: 退出 | Esc: 返回拓扑 | j/k: 滚动 | r: 重新运行",
             footer_pyspy_help_text: "q: 退出 | Esc: 返回拓扑 | j/k: 滚动 | p: 刷新",
@@ -385,6 +444,9 @@ pub(crate) struct ColorScheme {
     pub(crate) detail_status_ok: Style, // actor status "Running"
     pub(crate) detail_status_warn: Style, // actor status non-Running (idle, etc.)
     pub(crate) detail_status_failed: Style, // actor status "failed:*"
+    pub(crate) detail_stalled: Style, // stalled inbound-ordering session row
+    pub(crate) detail_stalled_severe: Style, // stalled row above severity threshold
+    pub(crate) detail_alert_border: Style, // pane border when actionable alert present
     pub(crate) footer_help: Style,  // footer help bar text
     pub(crate) header_class_bracket: Style, // classification brackets in header
 }
@@ -451,6 +513,9 @@ impl ColorScheme {
                 .fg(aurora_orange)
                 .add_modifier(Modifier::BOLD),
             detail_status_failed: Style::default().fg(aurora_red).add_modifier(Modifier::BOLD),
+            detail_stalled: Style::default().fg(aurora_red),
+            detail_stalled_severe: Style::default().fg(aurora_red).add_modifier(Modifier::BOLD),
+            detail_alert_border: Style::default().fg(aurora_red),
             footer_help: Style::default().fg(polar3),
             header_class_bracket: Style::default().fg(polar3),
         }
@@ -511,6 +576,9 @@ impl ColorScheme {
             detail_status_ok: Style::default().fg(green),
             detail_status_warn: Style::default().fg(orange).add_modifier(Modifier::BOLD),
             detail_status_failed: Style::default().fg(red).add_modifier(Modifier::BOLD),
+            detail_stalled: Style::default().fg(red),
+            detail_stalled_severe: Style::default().fg(red).add_modifier(Modifier::BOLD),
+            detail_alert_border: Style::default().fg(red),
             footer_help: Style::default().fg(base7),
             header_class_bracket: Style::default().fg(base7),
         }

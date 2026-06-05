@@ -179,6 +179,35 @@ use session::Session;
 use crate::config;
 use crate::metrics;
 
+/// TCP keepalive probe interval after the idle period elapses.
+const TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Number of failed keepalive probes before the kernel marks the
+/// connection dead.
+const TCP_KEEPALIVE_RETRIES: u32 = 3;
+
+/// Enable TCP keepalive on a freshly-created socket so the kernel can
+/// surface peer death on otherwise-idle connections.
+/// [`config::CHANNEL_TCP_KEEPALIVE_IDLE`] is the kernel idle period —
+/// the gap from last activity to the first probe — so on a healthy
+/// idle connection it's also the probe cadence. Total detection time
+/// is `idle + TCP_KEEPALIVE_RETRIES * TCP_KEEPALIVE_INTERVAL`. Logs
+/// and ignores errors: keepalive is best-effort and some test
+/// harnesses use sockets that don't support it.
+fn set_tcp_keepalive(stream: &tokio::net::TcpStream) {
+    let idle = hyperactor_config::global::get(config::CHANNEL_TCP_KEEPALIVE_IDLE);
+
+    let ka = socket2::TcpKeepalive::new()
+        .with_time(idle)
+        .with_interval(TCP_KEEPALIVE_INTERVAL)
+        .with_retries(TCP_KEEPALIVE_RETRIES);
+
+    let sock = socket2::SockRef::from(stream);
+    if let Err(err) = sock.set_tcp_keepalive(&ka) {
+        tracing::warn!(?err, "failed to set TCP keepalive on stream");
+    }
+}
+
 pub(crate) enum LinkStatus {
     NeverConnected,
     Connected(tokio::time::Instant),
@@ -269,10 +298,33 @@ fn log_send_error(
             );
             true
         }
-        session::SendLoopError::OversizedFrame(reason) => {
-            tracing::error!(dest = %dest, session_id, mode, "oversized frame: {reason}; {link_status}");
+        session::SendLoopError::OversizedFrame { size, max } => {
+            tracing::error!(
+                dest = %dest,
+                session_id,
+                mode,
+                "oversized frame: len={size} > max={max}; {link_status}"
+            );
             true
         }
+    }
+}
+
+/// Map a terminal [`session::SendLoopError`] to a typed [`CloseReason`] for
+/// the `TxStatus` watcher. Variants that callers want to branch on (e.g.
+/// `DialMailboxRouter` keys cache eviction on `SequenceMismatch`) get their
+/// own typed reason; the rest flatten to `Other` carrying the same
+/// `{log_id}: {e}` text used previously for logging.
+fn classify_send_loop_error(error: &session::SendLoopError, log_id: &str) -> CloseReason {
+    match error {
+        session::SendLoopError::Rejected(reason) if reason.contains("out-of-sequence message") => {
+            CloseReason::SequenceMismatch(reason.clone())
+        }
+        session::SendLoopError::OversizedFrame { size, max } => CloseReason::OversizedFrame {
+            size: *size,
+            max: *max,
+        },
+        _ => CloseReason::Other(format!("{log_id}: {error}")),
     }
 }
 
@@ -501,7 +553,7 @@ pub(crate) fn spawn_unordered<M: RemoteMessage>(links: Vec<impl Link + 'static>)
         }
 
         let reason = format!("{log_id}: dispatcher closed");
-        let _ = notify.send(TxStatus::Closed(reason.into()));
+        let _ = notify.send(TxStatus::Closed(CloseReason::Other(reason)));
     });
 
     tx
@@ -536,12 +588,16 @@ fn spawn_inner<M: RemoteMessage>(link: impl Link) -> NetTx<M> {
                         error = %err,
                         "failed to push message to outbox"
                     );
-                    let _ = notify.send(TxStatus::Closed("failed to push to outbox".into()));
+                    let _ = notify.send(TxStatus::Closed(CloseReason::Other(
+                        "failed to push to outbox".into(),
+                    )));
                     return;
                 }
             }
             None => {
-                let _ = notify.send(TxStatus::Closed("sender dropped".into()));
+                let _ = notify.send(TxStatus::Closed(CloseReason::Other(
+                    "sender dropped".into(),
+                )));
                 return;
             }
         }
@@ -556,7 +612,7 @@ fn spawn_inner<M: RemoteMessage>(link: impl Link) -> NetTx<M> {
 
         let mut link_status = LinkStatus::NeverConnected;
 
-        let reason: String = 'outer: loop {
+        let reason: CloseReason = 'outer: loop {
             let connected = match deliveries.expiry_time() {
                 Some(deadline) => match session.connect_by(deadline).await {
                     Ok(s) => s,
@@ -574,12 +630,12 @@ fn spawn_inner<M: RemoteMessage>(link: impl Link) -> NetTx<M> {
                         tracing::error!(
                             dest = %dest, session_id = session_id.0, "{}", error_msg
                         );
-                        break 'outer format!("{log_id}: {error_msg}");
+                        break 'outer CloseReason::Other(format!("{log_id}: {error_msg}"));
                     }
                 },
                 None => match session.connect().await {
                     Ok(s) => s,
-                    Err(_) => break 'outer "session shut down".into(),
+                    Err(_) => break 'outer CloseReason::Other("session shut down".into()),
                 },
             };
 
@@ -637,7 +693,7 @@ fn spawn_inner<M: RemoteMessage>(link: impl Link) -> NetTx<M> {
                 }
                 Err(ref e) => {
                     if log_send_error(e, &dest, session_id.0, "simplex", &link_status) {
-                        break 'outer format!("{log_id}: {e}");
+                        break 'outer classify_send_loop_error(e, &log_id);
                     }
                     // Recoverable error — reconnect after backoff.
                     if let Some(delay) = reconnect_backoff.next_backoff() {
@@ -658,22 +714,29 @@ fn spawn_inner<M: RemoteMessage>(link: impl Link) -> NetTx<M> {
             dest = %dest, session_id = session_id.0, "NetTx closing: {reason}"
         );
 
+        let send_error_reason = match &reason {
+            CloseReason::OversizedFrame { size, max } => Some(SendErrorReason::OversizedFrame {
+                len: *size,
+                max: *max,
+            }),
+            _ => Some(SendErrorReason::Other(reason.to_string())),
+        };
         receiver.close();
         deliveries
             .unacked
             .deque
             .drain(..)
             .chain(deliveries.outbox.deque.drain(..))
-            .for_each(|queued| queued.try_return(Some(reason.clone())));
+            .for_each(|queued| queued.try_return(send_error_reason.clone()));
         while let Ok((msg, return_channel, _)) = receiver.try_recv() {
             let _ = return_channel.send(SendError {
                 error: ChannelError::Closed,
                 message: msg,
-                reason: Some(reason.clone()),
+                reason: send_error_reason.clone(),
             });
         }
 
-        let _ = notify.send(TxStatus::Closed(reason.into()));
+        let _ = notify.send(TxStatus::Closed(reason));
     });
     tx
 }
@@ -890,6 +953,10 @@ pub(crate) fn listen_with_prebound(
                 make_channel_addr(&hostname, local_addr.port()),
             ))
         }
+        ChannelAddr::Alias { dial_to, bind_to } => {
+            let (listener, _bound_addr) = listen(*bind_to)?;
+            Ok((listener, *dial_to))
+        }
         other => Err(ServerError::Listen(
             other.clone(),
             std::io::Error::other(format!("unsupported transport: {}", other)),
@@ -900,10 +967,6 @@ pub(crate) fn listen_with_prebound(
 /// Bind a listener for the given channel address. Returns the listener
 /// and the canonical address callers should advertise (which encodes
 /// the transport — e.g. `ChannelAddr::Tls` for TLS).
-#[expect(
-    dead_code,
-    reason = "canonical listen() entry point; callers currently route through listen_with_prebound"
-)]
 pub(crate) fn listen(addr: ChannelAddr) -> Result<(NetListener, ChannelAddr), ServerError> {
     listen_with_prebound(addr, None)
 }
@@ -966,7 +1029,11 @@ impl<M: RemoteMessage> Tx<M> for NetTx<M> {
             self.sender
                 .send((message, return_channel, tokio::time::Instant::now()))
         {
-            let reason = self.status.borrow().as_closed().map(|r| r.to_string());
+            let reason = self
+                .status
+                .borrow()
+                .as_closed()
+                .map(|r| SendErrorReason::Other(r.to_string()));
             let _ = return_channel.send(SendError {
                 error: ChannelError::Closed,
                 message,
@@ -1031,6 +1098,8 @@ pub enum ServerError {
 pub enum ClientError {
     #[error("connection to {0} failed: {1}: {2}")]
     Connect(ChannelAddr, std::io::Error, String),
+    #[error("connection to {0} failed after {1:?} of retries: {2}")]
+    ConnectTimeout(ChannelAddr, Duration, #[source] std::io::Error),
     #[error("unable to resolve address: {0}")]
     Resolve(ChannelAddr),
     #[error("io: {0} {1}")]
@@ -1381,12 +1450,14 @@ pub(crate) mod tcp {
 
         async fn next(&mut self) -> Result<Self::Stream, ClientError> {
             let session_id = self.session_id;
+            let reconnect_timeout =
+                hyperactor_config::global::get(config::CHANNEL_RECONNECT_TIMEOUT);
             let mut backoff = ExponentialBackoffBuilder::new()
                 .with_initial_interval(Duration::from_millis(1))
                 .with_multiplier(2.0)
                 .with_randomization_factor(0.1)
                 .with_max_interval(Duration::from_millis(1000))
-                .with_max_elapsed_time(None)
+                .with_max_elapsed_time(Some(reconnect_timeout))
                 .build();
             loop {
                 match TcpStream::connect(&self.addr).await {
@@ -1398,6 +1469,7 @@ pub(crate) mod tcp {
                                 "cannot disable Nagle algorithm".to_string(),
                             )
                         })?;
+                        set_tcp_keepalive(&stream);
                         write_link_init(&mut stream, session_id, self.stream_id)
                             .await
                             .map_err(|err| ClientError::Io(self.dest(), err))?;
@@ -1405,8 +1477,15 @@ pub(crate) mod tcp {
                     }
                     Err(err) => {
                         tracing::debug!(error = %err, "tcp connect failed, backing off");
-                        if let Some(delay) = backoff.next_backoff() {
-                            tokio::time::sleep(delay).await;
+                        match backoff.next_backoff() {
+                            Some(delay) => tokio::time::sleep(delay).await,
+                            None => {
+                                return Err(ClientError::ConnectTimeout(
+                                    self.dest(),
+                                    reconnect_timeout,
+                                    err,
+                                ));
+                            }
                         }
                     }
                 }
@@ -1434,6 +1513,7 @@ pub(crate) mod tcp {
             stream
                 .set_nodelay(true)
                 .map_err(|err| ServerError::Io(ChannelAddr::Tcp(self.addr), err))?;
+            set_tcp_keepalive(&stream);
             Ok((stream, ChannelAddr::Tcp(peer_addr)))
         }
     }
@@ -1772,12 +1852,14 @@ pub(crate) mod tls {
                     "invalid server name".to_string(),
                 )
             })?;
+            let reconnect_timeout =
+                hyperactor_config::global::get(config::CHANNEL_RECONNECT_TIMEOUT);
             let mut backoff = ExponentialBackoffBuilder::new()
                 .with_initial_interval(Duration::from_millis(1))
                 .with_multiplier(2.0)
                 .with_randomization_factor(0.1)
                 .with_max_interval(Duration::from_millis(1000))
-                .with_max_elapsed_time(None)
+                .with_max_elapsed_time(Some(reconnect_timeout))
                 .build();
             loop {
                 let mut addrs = (self.hostname.as_ref(), self.port)
@@ -1793,6 +1875,7 @@ pub(crate) mod tls {
                                 "cannot disable Nagle algorithm".to_string(),
                             )
                         })?;
+                        set_tcp_keepalive(&stream);
                         let mut tls_stream = self
                             .connector
                             .connect(server_name.clone(), stream)
@@ -1816,8 +1899,15 @@ pub(crate) mod tls {
                     }
                     Err(err) => {
                         tracing::debug!(error = %err, "tls connect failed, backing off");
-                        if let Some(delay) = backoff.next_backoff() {
-                            tokio::time::sleep(delay).await;
+                        match backoff.next_backoff() {
+                            Some(delay) => tokio::time::sleep(delay).await,
+                            None => {
+                                return Err(ClientError::ConnectTimeout(
+                                    self.dest(),
+                                    reconnect_timeout,
+                                    err,
+                                ));
+                            }
                         }
                     }
                 }
@@ -2380,8 +2470,42 @@ mod tests {
         }
     }
 
+    #[async_timed_test(timeout_secs = 20)]
+    #[cfg_attr(not(fbcode_build), ignore)]
+    async fn test_tcp_unreachable_peer_surfaces_closed() {
+        // With a bounded reconnect timeout, dialing an unreachable peer must
+        // surface as TxStatus::Closed — not loop forever. The
+        // `async_timed_test` timeout above is the only failure backstop; the
+        // body itself is purely event-driven on the status watch.
+        let config = hyperactor_config::global::lock();
+        // `connect_by` retries `link.next()` until MESSAGE_DELIVERY_TIMEOUT
+        // when an outbound message is pending. Bound both so the test surfaces
+        // Closed within a few seconds rather than the 30s default.
+        let _g1 = config.override_key(config::CHANNEL_RECONNECT_TIMEOUT, Duration::from_secs(1));
+        let _g2 = config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(3));
+
+        // Bind a listener to grab a free local port, then drop it so connects
+        // get ECONNREFUSED.
+        let (addr, rx) =
+            server::serve::<u64>(ChannelAddr::Tcp("[::1]:0".parse().unwrap()), None).unwrap();
+        drop(rx);
+
+        let tx = channel::dial::<u64>(addr.clone()).unwrap();
+        tx.post(123); // primes the send loop so the connect path runs
+
+        let mut status = tx.status().clone();
+        while !status.borrow_and_update().is_closed() {
+            status.changed().await.unwrap();
+        }
+    }
+
     // The message size is limited by CODEC_MAX_FRAME_LENGTH.
-    #[async_timed_test(timeout_secs = 5)]
+    //
+    // Sends a payload of `default_size_in_bytes` (100 MiB) over a TCP
+    // loopback. Real-time wall clock on a loaded build host can take
+    // several seconds; the 30s timeout is comfortable headroom while
+    // still surfacing genuine hangs.
+    #[async_timed_test(timeout_secs = 30)]
     // TODO: OSS: called `Result::unwrap()` on an `Err` value: Listen(Tcp([::1]:0), Os { code: 99, kind: AddrNotAvailable, message: "Cannot assign requested address" })
     #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_tcp_message_size() {

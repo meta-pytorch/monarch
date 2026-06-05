@@ -57,7 +57,9 @@ pub mod testactor;
 pub mod testing;
 mod testresource;
 pub mod transport;
-pub mod value_mesh;
+pub mod value_mesh {
+    pub use hyperactor::value_mesh::*;
+}
 
 use std::io;
 
@@ -115,6 +117,13 @@ pub type StatusMesh = ValueMesh<Status>;
 /// preserves first-appearance order in the compressed table.
 /// Construct via `ValueOverlay::try_from_runs` after normalizing.
 pub type StatusOverlay = value_mesh::ValueOverlay<Status>;
+
+hyperactor::internal_macro_support::inventory::submit! {
+    hyperactor::accum::ReducerFactory {
+        typehash_f: <hyperactor::value_mesh::ValueOverlayReducer<crate::resource::Status> as typeuri::Named>::typehash,
+        builder_f: |_| Ok(Box::new(hyperactor::value_mesh::ValueOverlayReducer::<crate::resource::Status>::new())),
+    }
+}
 
 /// Errors that occur during mesh operations.
 #[derive(Debug, EnumAsInner, thiserror::Error)]
@@ -290,6 +299,16 @@ impl From<view::InvalidCardinality> for Error {
         Error::InvalidRankCardinality {
             expected: e.expected,
             actual: e.actual,
+        }
+    }
+}
+
+impl From<hyperactor::value_mesh::ValueMeshError> for Error {
+    fn from(e: hyperactor::value_mesh::ValueMeshError) -> Self {
+        match e {
+            hyperactor::value_mesh::ValueMeshError::InvalidRankCardinality { expected, actual } => {
+                Error::InvalidRankCardinality { expected, actual }
+            }
         }
     }
 }

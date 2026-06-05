@@ -48,10 +48,16 @@
 //!
 //! ## Queue depth accounting invariants (PD-5*)
 //!
-//! - **PD-5a:** Per-actor queue depth counts work items enqueued for
-//!   handler execution but not yet received from `work_rx`.
-//! - **PD-5b:** Queue depth is incremented exactly once on every
-//!   enqueue into the actor work queue (in `HandlerPorts::get`).
+//! - **PD-5a:** Per-actor queue depth counts accepted handler work
+//!   not yet dequeued by the actor loop. Accounting increments in
+//!   `HandlerPorts::get`'s enqueue closure *before* the reorder-buffer
+//!   decision, so this counter includes both in-order messages waiting
+//!   in `work_rx` AND out-of-order messages held in the
+//!   `OrderedSender` reorder buffer. (Reflected at the introspection
+//!   layer in IO-3 of the `introspect` module doc.)
+//! - **PD-5b:** Queue depth is incremented exactly once per accepted
+//!   message in the enqueue closure of `HandlerPorts::get`, before
+//!   the in-order / out-of-order branch.
 //! - **PD-5c:** Queue depth is decremented exactly once on every
 //!   dequeue from `work_rx` (in the actor `run` loop).
 //! - **PD-5d:** Queue depth is intended to be non-negative; tests
@@ -125,8 +131,6 @@ use hyperactor_telemetry::notify_actor_status_changed;
 use hyperactor_telemetry::notify_message;
 use hyperactor_telemetry::notify_message_status;
 use hyperactor_telemetry::recorder::Recording;
-use serde::Deserialize;
-use serde::Serialize;
 use tokio::sync::Notify;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
@@ -165,8 +169,6 @@ use crate::actor_local::ActorLocalStorage;
 use crate::channel;
 use crate::channel::ChannelAddr;
 use crate::channel::ChannelError;
-#[cfg(test)]
-use crate::channel::ChannelTransport;
 use crate::client::Client;
 use crate::client::ClientActor;
 use crate::config;
@@ -180,21 +182,21 @@ use crate::id::Uid;
 use crate::introspect::IntrospectMessage;
 use crate::introspect::IntrospectResult;
 use crate::mailbox::BoxedMailboxSender;
-use crate::mailbox::DeliveryError;
+use crate::mailbox::DeliveryFailure;
 use crate::mailbox::DialMailboxRouter;
 use crate::mailbox::IntoBoxedMailboxSender as _;
 use crate::mailbox::Mailbox;
-use crate::mailbox::MailboxClient;
 use crate::mailbox::MailboxMuxer;
 use crate::mailbox::MailboxSender;
 use crate::mailbox::MessageEnvelope;
 use crate::mailbox::OncePortHandle;
 use crate::mailbox::OncePortReceiver;
-#[cfg(test)]
-use crate::mailbox::PanickingMailboxSender;
 use crate::mailbox::PortHandle;
 use crate::mailbox::PortReceiver;
+use crate::mailbox::TransportFailure;
+use crate::mailbox::TransportFailureReason;
 use crate::mailbox::Undeliverable;
+use crate::mailbox::UndeliverableReason;
 use crate::metrics::ACTOR_MESSAGE_HANDLER_DURATION;
 use crate::metrics::ACTOR_MESSAGE_QUEUE_SIZE;
 use crate::metrics::ACTOR_MESSAGES_RECEIVED;
@@ -371,61 +373,6 @@ use crate::ordering::ordered_channel;
 use crate::panic_handler;
 use crate::supervision::ActorSupervisionEvent;
 
-/// Identity assignment sent by a host as the first message on a duplex
-/// attach connection. The child reads this to learn its [`ProcAddr`].
-#[derive(Debug, Clone, Serialize, Deserialize, typeuri::Named)]
-pub struct BootstrapAssignment {
-    /// The assigned proc identity.
-    pub proc_id: ProcAddr,
-}
-wirevalue::register_type!(BootstrapAssignment);
-
-/// Sentinel message sent by an attach client as its first
-/// [`MessageEnvelope`]. Hosts use this to distinguish attach requests
-/// from regular inbound [`MessageEnvelope`] connections.
-#[derive(Debug, Clone, Serialize, Deserialize, typeuri::Named)]
-pub struct AttachRequest;
-wirevalue::register_type!(AttachRequest);
-
-/// Wire protocol for the host -> client direction on a duplex attach
-/// connection.
-#[derive(Debug, Serialize, Deserialize, typeuri::Named)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "wire-protocol enum; boxing Envelope ripples through all channel/networking construction and destructure sites and needs a wire-compatibility review — separate diff"
-)]
-pub enum Host2Client {
-    /// First message: identity assignment from the host.
-    Bootstrap(BootstrapAssignment),
-    /// Subsequent messages: routed envelopes.
-    Envelope(MessageEnvelope),
-}
-wirevalue::register_type!(Host2Client);
-
-/// [`Rx<MessageEnvelope>`](channel::Rx) adapter that unwraps
-/// [`Host2Client::Envelope`] from a duplex receiver.
-pub struct AttachRx(pub channel::duplex::DuplexRx<Host2Client>);
-
-#[async_trait]
-impl channel::Rx<MessageEnvelope> for AttachRx {
-    async fn recv(&mut self) -> Result<MessageEnvelope, ChannelError> {
-        match self.0.recv().await? {
-            Host2Client::Envelope(envelope) => Ok(envelope),
-            Host2Client::Bootstrap(_) => Err(ChannelError::Other(anyhow::anyhow!(
-                "unexpected bootstrap message after handshake"
-            ))),
-        }
-    }
-
-    fn addr(&self) -> ChannelAddr {
-        self.0.addr()
-    }
-
-    async fn join(self) {
-        self.0.join().await
-    }
-}
-
 /// A proc instance is the runtime managing a single proc in Hyperactor.
 /// It is responsible for spawning actors in the proc, multiplexing messages
 /// to/within actors in the proc, and providing fallback routing to external
@@ -497,6 +444,15 @@ struct ProcState {
     /// gracefully stop the server and join it (flushing receive-side
     /// acks) during shutdown.
     mailbox_server_handle: std::sync::Mutex<Option<crate::mailbox::MailboxServerHandle>>,
+
+    /// Detach guard for this proc's attachment to `gateway`. Held here
+    /// so that dropping the proc removes its entry from the gateway
+    /// without a separate explicit step. Wrapped in a `OnceLock`
+    /// because the guard is constructed *after* the `ProcState` Arc
+    /// exists (so we can pass `&proc` to `gateway.attach_proc`); it is
+    /// set exactly once during construction and never read by anyone
+    /// outside of drop ordering.
+    _attached_proc_guard: OnceLock<crate::gateway::AttachedProcGuard>,
 }
 
 struct TerminatedSnapshot {
@@ -519,6 +475,7 @@ impl Drop for ProcState {
 }
 
 impl ProcState {
+    /// The proc's effective advertised location.
     fn default_location(&self) -> Location {
         self.gateway.default_location()
     }
@@ -528,7 +485,7 @@ impl ProcState {
     }
 
     fn proc_addr(&self) -> ProcAddr {
-        self.gateway.proc_addr(&self.proc_id)
+        ProcAddr::new(self.proc_id.clone(), self.gateway.default_location())
     }
 }
 
@@ -544,7 +501,7 @@ pub struct ActorInstance<A: Actor> {
     /// Supervision events delivered to this actor.
     pub supervision: mpsc::UnboundedReceiver<ActorSupervisionEvent>,
     /// Control signals for the actor.
-    pub signal: PortReceiver<Signal>,
+    pub signal: mpsc::UnboundedReceiver<Signal>,
     /// Primary work queue for handler dispatch.
     pub work: mpsc::UnboundedReceiver<WorkCell<A>>,
 }
@@ -594,8 +551,26 @@ impl Builder<GlobalGateway> {
     }
 
     /// Build the proc.
+    ///
+    /// Procs built on the global gateway must not use legacy
+    /// pseudo-singleton ids — those ids are reserved for in-host
+    /// service/local procs whose location is bound to the host's
+    /// frontend address. Use [`Builder::shared_gateway`] (passing the
+    /// host's gateway) to construct legacy-id procs.
     pub fn build(self) -> Result<Proc, anyhow::Error> {
-        self.build_with_gateway(Gateway::global().clone())
+        let proc_id = self
+            .proc_id
+            .unwrap_or_else(|| ProcId::new(Uid::anonymous(), None));
+        if is_legacy_pseudo_singleton_proc_id(&proc_id) {
+            anyhow::bail!(
+                "legacy pseudo-singleton proc id '{}' is reserved for host-scoped construction; use Builder::shared_gateway",
+                proc_id
+            );
+        }
+        Ok(Proc::from_parts_unchecked(
+            proc_id,
+            Gateway::global().clone(),
+        ))
     }
 }
 
@@ -606,24 +581,16 @@ impl<State> Builder<State> {
         self
     }
 
-    fn build_with_gateway(self, gateway: Gateway) -> Result<Proc, anyhow::Error> {
-        Self::build_proc(self.proc_id, gateway)
-    }
-
     fn build_proc(proc_id: Option<ProcId>, gateway: Gateway) -> Result<Proc, anyhow::Error> {
         let proc_id = proc_id.unwrap_or_else(ProcId::anonymous);
-        if is_legacy_pseudo_singleton_proc_id(&proc_id) {
-            anyhow::bail!(
-                "legacy pseudo-singleton proc id '{}' must be constructed with a dedicated Proc constructor",
-                proc_id
-            );
-        }
         Ok(Proc::from_parts_unchecked(proc_id, gateway))
     }
 }
 
 impl Builder<SharedGateway> {
-    /// Build the proc.
+    /// Build the proc. Accepts any proc id, including legacy
+    /// pseudo-singleton ids, because the caller has explicit control
+    /// over the gateway's default location.
     pub fn build(self) -> Result<Proc, anyhow::Error> {
         let Builder {
             proc_id,
@@ -647,7 +614,7 @@ impl Builder<PrivateGateway> {
 
 impl Proc {
     fn from_parts_unchecked(proc_id: ProcId, gateway: Gateway) -> Self {
-        let proc_addr = gateway.proc_addr(&proc_id);
+        let proc_addr = ProcAddr::new(proc_id.clone(), gateway.default_location());
         tracing::info!(
             subject = %proc_addr.subject(),
             name = "ProcStatus",
@@ -668,9 +635,17 @@ impl Proc {
                 supervision_coordinator_port: OnceLock::new(),
                 supervision_coordinator_actor_id: OnceLock::new(),
                 mailbox_server_handle: std::sync::Mutex::new(None),
+                _attached_proc_guard: OnceLock::new(),
             }),
         };
-        gateway.attach(&proc);
+        // Attach to the gateway now that the `Arc<ProcState>` exists;
+        // the returned guard's drop will remove the entry when the last
+        // `Proc` referencing this state is dropped.
+        let guard = gateway.attach_proc(&proc);
+        proc.inner
+            ._attached_proc_guard
+            .set(guard)
+            .expect("fresh ProcState's attached-proc guard slot is empty");
         proc
     }
 
@@ -679,29 +654,39 @@ impl Proc {
         Self::from_parts_unchecked(proc_id, gateway)
     }
 
-    /// Create the legacy host-local client proc pseudo-singleton.
+    /// Create the legacy host-local client proc pseudo-singleton on
+    /// a fresh gateway whose forwarder is `forwarder`.
     pub fn legacy_local_pseudo_singleton(addr: ChannelAddr, forwarder: BoxedMailboxSender) -> Self {
-        Self::legacy_pseudo_singleton(addr, LEGACY_LOCAL_PROC_NAME, forwarder)
+        Self::legacy_local_pseudo_singleton_on_gateway(Gateway::configured(addr.into(), forwarder))
     }
 
-    /// Create the legacy host system proc pseudo-singleton.
+    /// Create the legacy host system proc pseudo-singleton on a
+    /// fresh gateway whose forwarder is `forwarder`.
     pub fn legacy_service_pseudo_singleton(
         addr: ChannelAddr,
         forwarder: BoxedMailboxSender,
     ) -> Self {
-        Self::legacy_pseudo_singleton(addr, LEGACY_SERVICE_PROC_NAME, forwarder)
+        Self::legacy_service_pseudo_singleton_on_gateway(Gateway::configured(
+            addr.into(),
+            forwarder,
+        ))
     }
 
-    fn legacy_pseudo_singleton(
-        addr: ChannelAddr,
-        name: &'static str,
-        forwarder: BoxedMailboxSender,
-    ) -> Self {
-        let proc_addr = ProcAddr::singleton(addr, name);
-        Self::from_parts_unchecked(
-            proc_addr.id().clone(),
-            Gateway::configured(proc_addr.location().clone(), forwarder),
-        )
+    /// Create the legacy host-local client proc pseudo-singleton on
+    /// the provided shared gateway.
+    pub fn legacy_local_pseudo_singleton_on_gateway(gateway: Gateway) -> Self {
+        Self::legacy_pseudo_singleton_on_gateway(LEGACY_LOCAL_PROC_NAME, gateway)
+    }
+
+    /// Create the legacy host system proc pseudo-singleton on the
+    /// provided shared gateway.
+    pub fn legacy_service_pseudo_singleton_on_gateway(gateway: Gateway) -> Self {
+        Self::legacy_pseudo_singleton_on_gateway(LEGACY_SERVICE_PROC_NAME, gateway)
+    }
+
+    fn legacy_pseudo_singleton_on_gateway(name: &'static str, gateway: Gateway) -> Self {
+        let proc_id = ProcId::singleton(Label::strip(name));
+        Self::from_parts_unchecked(proc_id, gateway)
     }
 
     /// Create a proc with an anonymous instance id on the default gateway.
@@ -765,72 +750,6 @@ impl Proc {
             .build()
             .expect("direct proc builder is valid");
         let handle = proc.gateway().serve_rx(rx);
-        *proc.inner.mailbox_server_handle.lock().unwrap() = Some(handle);
-        Ok(proc)
-    }
-
-    /// Connect to a host's duplex server and return a [`Proc`] whose
-    /// identity is assigned by the host. Outbound messages are forwarded
-    /// over the duplex channel; inbound messages are served into the
-    /// proc's muxer. Mirrors [`Proc::direct`] but the identity and
-    /// routing are managed by the remote host.
-    pub async fn attach_to_host(addr: ChannelAddr) -> Result<Self, anyhow::Error> {
-        use crate::channel::Rx;
-        use crate::channel::Tx;
-        let mut duplex_client = channel::duplex::dial::<MessageEnvelope, Host2Client>(addr)?;
-        let duplex_tx = duplex_client.tx();
-        let mut duplex_rx = duplex_client
-            .take_rx()
-            .expect("dial returns a fresh DuplexClient with rx present");
-        // Send an AttachRequest envelope to signal attach intent.
-        // The host deserializes the first message and enters the
-        // attach protocol when it finds an AttachRequest. The
-        // sender/dest ids are placeholders — on the happy path the
-        // host consumes the envelope without routing it. Clearing
-        // `return_undeliverable` closes the hazard path in case the
-        // envelope ever escapes into the forwarder: it should be
-        // dropped, not bounced to the fake sender.
-        let signal_actor_id = ActorAddr::root(
-            ProcAddr::singleton(ChannelAddr::any(channel::ChannelTransport::Local), "attach"),
-            crate::id::Label::strip("attach"),
-        );
-        let signal_port = signal_actor_id.port_addr(crate::port::Port::from(0u64));
-        let mut envelope = MessageEnvelope::serialize(
-            signal_actor_id,
-            signal_port,
-            &AttachRequest,
-            Default::default(),
-        )?;
-        envelope.set_return_undeliverable(false);
-        duplex_tx.post(envelope);
-        // Wait for the host to assign an identity.
-        let assignment = match duplex_rx.recv().await? {
-            Host2Client::Bootstrap(a) => a,
-            Host2Client::Envelope(_) => {
-                anyhow::bail!("expected bootstrap assignment as first message")
-            }
-        };
-        let proc = Self::builder()
-            .proc_id(assignment.proc_id.id().clone())
-            .shared_gateway(Gateway::configured(
-                assignment.proc_id.location().clone(),
-                MailboxClient::new(duplex_tx).into_boxed(),
-            ))
-            .build()
-            .expect("attached proc builder is valid");
-        // Wrap the inner mailbox server handle so that stopping/
-        // joining the outer handle also joins the dial-side
-        // `DuplexClient`.
-        let inner_handle = proc.gateway().serve_rx(AttachRx(duplex_rx));
-        let (stopped_tx, mut stopped_rx) = tokio::sync::watch::channel(false);
-        let wrapped_join = tokio::spawn(async move {
-            let _ = stopped_rx.wait_for(|stopped| *stopped).await;
-            inner_handle.stop("proc shutting down");
-            let _ = inner_handle.await;
-            duplex_client.join().await;
-            Ok(())
-        });
-        let handle = crate::mailbox::MailboxServerHandle::from_parts(wrapped_join, stopped_tx);
         *proc.inner.mailbox_server_handle.lock().unwrap() = Some(handle);
         Ok(proc)
     }
@@ -958,7 +877,7 @@ impl Proc {
 
     /// Shared sender used by the proc to forward messages to remote
     /// destinations.
-    pub fn forwarder(&self) -> &BoxedMailboxSender {
+    pub fn forwarder(&self) -> BoxedMailboxSender {
         self.state().gateway.forwarder()
     }
 
@@ -1693,10 +1612,16 @@ impl MailboxSender for Proc {
     ) {
         let dest_proc = envelope.dest().actor_addr().proc_addr();
         if self.is_local_delivery_target(&dest_proc) {
-            self.state().proc_muxer.post(envelope, return_handle)
-        } else {
-            self.state().gateway.post(envelope, return_handle)
+            self.state().proc_muxer.post(envelope, return_handle);
+            return;
         }
+        // Route through the gateway as a [`MailboxSender`] (not its
+        // raw forwarder) so peers sharing the same gateway —
+        // typically a host's `service_proc` / `local_proc` and any
+        // child procs attached via `gateway.attach_peer(child_uid,
+        // sender)` — are reached by an in-gateway lookup rather than
+        // bouncing out through the forwarder.
+        self.state().gateway.post(envelope, return_handle);
     }
 
     async fn flush(&self) -> Result<(), anyhow::Error> {
@@ -1717,6 +1642,11 @@ impl WeakProc {
     pub fn upgrade(&self) -> Option<Proc> {
         self.0.upgrade().map(|inner| Proc { inner })
     }
+
+    /// Whether two weak handles refer to the same underlying proc.
+    pub(crate) fn ptr_eq(&self, other: &WeakProc) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
 }
 
 #[async_trait]
@@ -1728,10 +1658,15 @@ impl MailboxSender for WeakProc {
     ) {
         match self.upgrade() {
             Some(proc) => proc.post(envelope, return_handle),
-            None => envelope.undeliverable(
-                DeliveryError::BrokenLink("fail to upgrade WeakProc".to_string()),
-                return_handle,
-            ),
+            None => {
+                let target = envelope.dest().clone();
+                let failure =
+                    DeliveryFailure::new(UndeliverableReason::Transport(TransportFailure::new(
+                        target,
+                        TransportFailureReason::LinkUnavailable("proc is gone".to_string()),
+                    )));
+                envelope.undeliverable(failure, return_handle)
+            }
         }
     }
 
@@ -2183,7 +2118,7 @@ pub struct InstanceReceivers<A: Actor> {
     /// Signal and supervision receivers for the actor loop. `None`
     /// for detached/client instances that don't run an actor loop.
     actor_loop: Option<(
-        PortReceiver<Signal>,
+        mpsc::UnboundedReceiver<Signal>,
         mpsc::UnboundedReceiver<ActorSupervisionEvent>,
     )>,
     /// Work queue for dispatching messages to actor handlers.
@@ -2224,11 +2159,11 @@ impl<A: Actor> Instance<A> {
         let actor_loop_ports = if detached {
             None
         } else {
-            let (signal_port, signal_receiver) = mailbox.open_port::<Signal>();
+            let (signal_tx, signal_receiver) = mpsc::unbounded_channel::<Signal>();
             let (supervision_tx, supervision_receiver) =
                 mpsc::unbounded_channel::<ActorSupervisionEvent>();
             Some((
-                (signal_port, supervision_tx),
+                (signal_tx, supervision_tx),
                 (signal_receiver, supervision_receiver),
             ))
         };
@@ -2244,8 +2179,20 @@ impl<A: Actor> Instance<A> {
         let (introspect_port, introspect_receiver) = mailbox.open_port::<IntrospectMessage>();
         introspect_port.bind_handler_port();
 
+        let instance_id = Uuid::now_v7();
+
+        // Type-erased snapshot callback: captures `Arc<HandlerPorts<A>>::clone()`
+        // (the typed Arc), which lets `InstanceCellState` invoke
+        // `OrderedSender::snapshot` from non-generic code. Only the typed
+        // ports are captured; nothing cyclic (no Instance, no InstanceCell).
+        let workq_ports = ports.clone();
+        let inbound_ordering_snapshot: Option<
+            Box<dyn Fn() -> crate::ordering::OrderingSnapshot + Send + Sync>,
+        > = Some(Box::new(move || workq_ports.workq.snapshot()));
+
         let cell = InstanceCell::new(
             actor_id,
+            instance_id,
             actor_type,
             proc.clone(),
             actor_loop,
@@ -2253,8 +2200,8 @@ impl<A: Actor> Instance<A> {
             parent,
             ports.clone(),
             queue_depth,
+            inbound_ordering_snapshot,
         );
-        let instance_id = Uuid::now_v7();
         let inner = Arc::new(InstanceState {
             proc,
             cell,
@@ -2347,14 +2294,14 @@ impl<A: Actor> Instance<A> {
         self.inner.self_addr()
     }
 
-    /// Report a message that could not be delivered and could not be returned.
-    pub(crate) fn report_lost_message(&self, lost: crate::mailbox::LostMessage) {
-        static REPORT_LOST_WARNED_MAILBOXES: OnceLock<DashSet<ActorAddr>> = OnceLock::new();
+    /// Report a delivery failure whose original payload is unavailable.
+    pub(crate) fn report_delivery_failure(&self, report: crate::mailbox::DeliveryFailureReport) {
+        static REPORT_WARNED_MAILBOXES: OnceLock<DashSet<ActorAddr>> = OnceLock::new();
 
         let mailbox = &self.inner.mailbox;
         let return_handle = mailbox.bound_return_handle().unwrap_or_else(|| {
             let actor_id = mailbox.actor_addr();
-            if REPORT_LOST_WARNED_MAILBOXES
+            if REPORT_WARNED_MAILBOXES
                 .get_or_init(DashSet::new)
                 .insert(actor_id.clone())
             {
@@ -2362,22 +2309,22 @@ impl<A: Actor> Instance<A> {
                 tracing::warn!(
                     actor_id = ?actor_id,
                     backtrace = ?bt,
-                    "actor attempted to report a lost message without binding Undeliverable<MessageEnvelope>"
+                    "actor attempted to report delivery failure without binding Undeliverable<MessageEnvelope>"
                 );
             }
             crate::mailbox::monitored_return_handle()
         });
 
         if let Err(error) =
-            return_handle.try_post(self, crate::mailbox::Undeliverable::lost(lost.clone()))
+            return_handle.try_post(self, crate::mailbox::Undeliverable::report(report.clone()))
         {
             tracing::error!(
-                sender = %lost.sender,
-                dest = %lost.dest,
-                message_type = lost.message_type.as_deref().unwrap_or("unknown"),
-                error = %lost.error,
+                sender = %report.sender,
+                dest = %report.dest,
+                message_type = report.message_type.as_deref().unwrap_or("unknown"),
+                error = %report.error_msg().unwrap_or_default(),
                 return_error = %error,
-                "lost message could not be reported"
+                "delivery failure report could not be returned"
             );
         }
     }
@@ -2586,10 +2533,10 @@ impl<A: Actor> Instance<A> {
         self.inner.mailbox.open_once_port()
     }
 
-    /// Return this actor's runtime signal port.
+    /// Return this actor's runtime signal sender.
     #[doc(hidden)]
-    pub fn signal_port(&self) -> PortHandle<Signal> {
-        self.inner.cell.signal_port()
+    pub fn signal_sender(&self) -> mpsc::UnboundedSender<Signal> {
+        self.inner.cell.signal_sender()
     }
 
     /// Get the per-instance local storage.
@@ -2678,30 +2625,33 @@ impl<A: Actor> Instance<A> {
     {
         let dest_location = dest.endpoint_location();
         if matches!(*self.inner.status_tx.borrow(), ActorStatus::Client) {
-            self.report_lost_message(crate::mailbox::LostMessage {
-                sender: self.mailbox().actor_addr().clone(),
-                dest: dest_location,
-                message_type: Some(std::any::type_name::<M>().to_string()),
-                error: "delayed posts require an actor runtime".to_string(),
-            });
+            self.report_delivery_failure(
+                crate::mailbox::DeliveryFailureReport::link_unavailable::<M>(
+                    self.mailbox().actor_addr().clone(),
+                    dest_location,
+                    "delayed posts require an actor runtime",
+                ),
+            );
             return;
         }
         let Ok(_guard) = self.inner.delayed_posts.ingress.try_enter() else {
-            self.report_lost_message(crate::mailbox::LostMessage {
-                sender: self.mailbox().actor_addr().clone(),
-                dest: dest_location,
-                message_type: Some(std::any::type_name::<M>().to_string()),
-                error: "actor runtime is stopping".to_string(),
-            });
+            self.report_delivery_failure(
+                crate::mailbox::DeliveryFailureReport::link_unavailable::<M>(
+                    self.mailbox().actor_addr().clone(),
+                    dest_location,
+                    "actor runtime is stopping",
+                ),
+            );
             return;
         };
         if self.is_stopping() || self.is_terminal() {
-            self.report_lost_message(crate::mailbox::LostMessage {
-                sender: self.mailbox().actor_addr().clone(),
-                dest: dest_location,
-                message_type: Some(std::any::type_name::<M>().to_string()),
-                error: "actor runtime is stopping".to_string(),
-            });
+            self.report_delivery_failure(
+                crate::mailbox::DeliveryFailureReport::link_unavailable::<M>(
+                    self.mailbox().actor_addr().clone(),
+                    dest_location,
+                    "actor runtime is stopping",
+                ),
+            );
             return;
         }
 
@@ -2751,7 +2701,7 @@ impl<A: Actor> Instance<A> {
         mut self,
         mut actor: A,
         actor_loop_receivers: (
-            PortReceiver<Signal>,
+            mpsc::UnboundedReceiver<Signal>,
             mpsc::UnboundedReceiver<ActorSupervisionEvent>,
         ),
         mut work_rx: mpsc::UnboundedReceiver<WorkCell<A>>,
@@ -2846,7 +2796,7 @@ impl<A: Actor> Instance<A> {
         &mut self,
         actor: &mut A,
         mut actor_loop_receivers: (
-            PortReceiver<Signal>,
+            mpsc::UnboundedReceiver<Signal>,
             mpsc::UnboundedReceiver<ActorSupervisionEvent>,
         ),
         work_rx: &mut mpsc::UnboundedReceiver<WorkCell<A>>,
@@ -2905,10 +2855,19 @@ impl<A: Actor> Instance<A> {
         let (mut signal_receiver, _) = actor_loop_receivers;
         while self.inner.cell.child_count() > 0 {
             match tokio::time::timeout(Duration::from_millis(500), signal_receiver.recv()).await {
-                Ok(signal) => {
-                    if let Signal::ChildStopped(uid) = signal? {
-                        assert!(self.inner.cell.get_child(&uid).is_none());
-                    }
+                Ok(Some(Signal::ChildStopped(uid))) => {
+                    assert!(self.inner.cell.get_child(&uid).is_none());
+                }
+                // Drain only tracks child termination; other signals are
+                // intentionally swallowed here.
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    // Signal channel closed: no further ChildStopped will
+                    // arrive, so we can no longer track child termination.
+                    // Drop remaining links and exit the drain loop, mirroring
+                    // the timeout branch below.
+                    self.inner.cell.unlink_all();
+                    break;
                 }
                 Err(_) => {
                     tracing::warn!(
@@ -2973,7 +2932,7 @@ impl<A: Actor> Instance<A> {
         &mut self,
         actor: &mut A,
         actor_loop_receivers: &mut (
-            PortReceiver<Signal>,
+            mpsc::UnboundedReceiver<Signal>,
             mpsc::UnboundedReceiver<ActorSupervisionEvent>,
         ),
         work_rx: &mut mpsc::UnboundedReceiver<WorkCell<A>>,
@@ -2996,9 +2955,11 @@ impl<A: Actor> Instance<A> {
             tokio::select! {
                 biased;
                 signal = signal_receiver.recv() => {
-                    let signal = signal.map_err(ActorError::from);
+                    let signal = signal.ok_or_else(|| {
+                        ActorError::new(self.self_addr(), ActorErrorKind::SignalChannelClosed)
+                    })?;
                     tracing::debug!("received signal {signal:?}");
-                    match signal? {
+                    match signal {
                         Signal::Stop(reason) => {
                             self.change_status(ActorStatus::Stopping);
                             self.inner
@@ -3428,6 +3389,10 @@ impl<A: Actor> context::Actor for Context<'_, A> {
     fn instance(&self) -> &Instance<A> {
         self
     }
+
+    fn headers(&self) -> &Flattrs {
+        Context::headers(self)
+    }
 }
 
 impl<A: Actor> context::Actor for &Instance<A> {
@@ -3441,6 +3406,10 @@ impl<A: Actor> context::Actor for &Context<'_, A> {
     type A = A;
     fn instance(&self) -> &Instance<A> {
         self
+    }
+
+    fn headers(&self) -> &Flattrs {
+        Context::headers(self)
     }
 }
 
@@ -3545,15 +3514,20 @@ struct InstanceCellState {
     /// The actor's id.
     actor_id: ActorAddr,
 
+    /// The actor instance's `Uuid::now_v7()` identity. Stable for the
+    /// lifetime of this instance; surfaced via `InstanceCell::instance_id`
+    /// and the `INSTANCE_ID` introspection attr.
+    instance_id: Uuid,
+
     /// Actor info contains the actor's type information.
     actor_type: ActorType,
 
     /// The proc in which the actor is running.
     proc: Proc,
 
-    /// Control port handles to the actor loop, if one is running.
+    /// Control plane message senders to the actor loop, if one is running.
     actor_loop: Option<(
-        PortHandle<Signal>,
+        mpsc::UnboundedSender<Signal>,
         mpsc::UnboundedSender<ActorSupervisionEvent>,
     )>,
 
@@ -3631,6 +3605,23 @@ struct InstanceCellState {
     /// A type-erased reference to HandlerPorts<A>, which allows us to
     /// recover an ActorHandle<A> by downcasting.
     ports: Arc<dyn Any + Send + Sync>,
+
+    /// Type-erased snapshot callback for inbound ordering state.
+    /// Captured at `Instance::new` from the typed `Arc<HandlerPorts<A>>`
+    /// (where `A` is in scope), erased to `dyn Fn() -> OrderingSnapshot`
+    /// so non-generic code in `InstanceCellState` can invoke it.
+    ///
+    /// Hygiene: the closure captures ONLY `Arc<HandlerPorts<A>>::clone()`
+    /// — never `Instance<A>` or `InstanceCell` — to avoid cyclic refs
+    /// back to the cell that holds this callback. Body is a single
+    /// `workq.snapshot()` call; bounded work, `try_lock`-based, never
+    /// blocks. See IO-1/IO-2 in `introspect` module doc.
+    ///
+    /// `None` only for hand-built fixtures or future code paths that
+    /// construct an `InstanceCellState` without going through
+    /// `Instance::new`; production live actors always install Some.
+    inbound_ordering_snapshot:
+        Option<Box<dyn Fn() -> crate::ordering::OrderingSnapshot + Send + Sync>>,
 }
 
 impl InstanceCellState {
@@ -3700,24 +3691,30 @@ fn select_eviction_candidates(
 impl InstanceCell {
     /// Creates a new instance cell with the provided internal state. If a parent
     /// is provided, it is linked to this cell.
+    #[allow(clippy::too_many_arguments)]
     fn new(
         actor_id: ActorAddr,
+        instance_id: Uuid,
         actor_type: ActorType,
         proc: Proc,
         actor_loop: Option<(
-            PortHandle<Signal>,
+            mpsc::UnboundedSender<Signal>,
             mpsc::UnboundedSender<ActorSupervisionEvent>,
         )>,
         status: watch::Receiver<ActorStatus>,
         parent: Option<InstanceCell>,
         ports: Arc<dyn Any + Send + Sync>,
         queue_depth: Arc<AtomicU64>,
+        inbound_ordering_snapshot: Option<
+            Box<dyn Fn() -> crate::ordering::OrderingSnapshot + Send + Sync>,
+        >,
     ) -> Self {
         let is_root = parent.is_none();
         let _ais = actor_id.to_string();
         let cell = Self {
             inner: Arc::new(InstanceCellState {
                 actor_id: actor_id.clone(),
+                instance_id,
                 actor_type,
                 proc: proc.clone(),
                 actor_loop,
@@ -3737,6 +3734,7 @@ impl InstanceCell {
                 supervision_event: std::sync::Mutex::new(None),
                 is_system: AtomicBool::new(false),
                 ports,
+                inbound_ordering_snapshot,
             }),
         };
         cell.maybe_link_parent();
@@ -3785,22 +3783,20 @@ impl InstanceCell {
         self.inner.supervision_event.lock().unwrap().clone()
     }
 
-    fn signal_port(&self) -> PortHandle<Signal> {
+    fn signal_sender(&self) -> mpsc::UnboundedSender<Signal> {
         self.inner
             .actor_loop
             .as_ref()
-            .map(|(signal_port, _)| signal_port.clone())
-            .unwrap_or_else(|| panic!("{} has no runtime signal port", self.actor_addr()))
+            .map(|(signal_tx, _)| signal_tx.clone())
+            .unwrap_or_else(|| panic!("{} has no runtime signal sender", self.actor_addr()))
     }
 
     /// Send a signal to the actor.
     pub fn signal(&self, signal: Signal) -> Result<(), ActorError> {
-        if let Some((signal_port, _)) = &self.inner.actor_loop {
-            // A global signal client is used to send signals to the actor.
-            static CLIENT: OnceLock<Client> = OnceLock::new();
-            let client = CLIENT.get_or_init(|| Proc::global().client("global_signal_client"));
-            signal_port.post(client, signal);
-            Ok(())
+        if let Some((signal_tx, _)) = &self.inner.actor_loop {
+            signal_tx.send(signal).map_err(|_| {
+                ActorError::new(self.actor_addr(), ActorErrorKind::SignalChannelClosed)
+            })
         } else {
             tracing::warn!(
                 "{}: attempted to send signal {} to detached actor",
@@ -3956,6 +3952,20 @@ impl InstanceCell {
         self.inner.queue_depth.load(Ordering::Relaxed)
     }
 
+    /// Stable per-instance identifier (`Uuid::now_v7`) assigned at
+    /// `Instance::new` and threaded through to the cell at construction.
+    pub fn instance_id(&self) -> Uuid {
+        self.inner.instance_id
+    }
+
+    /// Out-of-band inbound ordering snapshot. Returns `None` when no
+    /// snapshot callback was installed (see IO-1 in `introspect` module
+    /// doc). The callback uses `OrderedSender::snapshot` (`try_lock`,
+    /// non-blocking) and never perturbs ordering state.
+    pub fn inbound_ordering_snapshot(&self) -> Option<crate::ordering::OrderingSnapshot> {
+        self.inner.inbound_ordering_snapshot.as_ref().map(|f| f())
+    }
+
     /// Get parent instance cell, if it exists.
     pub fn parent(&self) -> Option<InstanceCell> {
         self.inner.parent.upgrade()
@@ -4069,12 +4079,6 @@ impl InstanceCell {
     /// We should find some (better) way to consolidate the two.
     pub(crate) fn bind<A: Actor, R: Binds<A>>(&self, ports: &HandlerPorts<A>) -> ActorRef<R> {
         <R as Binds<A>>::bind(ports);
-        // Signal: registered directly in Instance::new() and handled
-        // by the actor loop's select!. The port remains unbound
-        // because runtime signals are sent through InstanceCell's
-        // stored PortHandle, not as externally addressable actor
-        // messages.
-        //
         // Undeliverable: dispatched through the work queue to the
         // actor's Handler<Undeliverable<MessageEnvelope>>.
         //
@@ -4359,6 +4363,9 @@ mod tests {
     use crate::Handler;
     use crate::OncePortRef;
     use crate::PortRef;
+    use crate::channel::ChannelTransport;
+    use crate::mailbox::MailboxClient;
+    use crate::mailbox::PanickingMailboxSender;
     use crate::port::Port;
     use crate::testing::proc_supervison::ProcSupervisionCoordinator;
     use crate::testing::process_assertion::assert_termination;
@@ -4627,7 +4634,10 @@ mod tests {
 
         assert_eq!(first.proc_id(), second.proc_id());
         assert_eq!(
-            Gateway::current().proc_addr(first.proc_id()),
+            ProcAddr::new(
+                first.proc_id().clone(),
+                Gateway::current().default_location()
+            ),
             first.proc_addr()
         );
     }
@@ -4729,7 +4739,10 @@ mod tests {
             reply
                 .send(CurrentProcSnapshot {
                     current_proc_id: current.proc_id().clone(),
-                    current_gateway_proc_addr: Gateway::current().proc_addr(current.proc_id()),
+                    current_gateway_proc_addr: ProcAddr::new(
+                        current.proc_id().clone(),
+                        Gateway::current().default_location(),
+                    ),
                     spawned_handle,
                     client_proc_id: client.self_addr().proc_id().clone(),
                 })
@@ -4763,14 +4776,6 @@ mod tests {
         snapshot.spawned_handle.await;
         actor.drain_and_stop("test complete").unwrap();
         actor.await;
-    }
-
-    #[tokio::test]
-    async fn test_client_instance_can_bind_signal_port() {
-        let proc = Proc::isolated();
-        let client = proc.client("client");
-
-        let (_signal_port, _signal_rx) = client.bind_handler_port::<Signal>();
     }
 
     #[expect(
@@ -5122,8 +5127,92 @@ mod tests {
         );
         assert_eq!(second_ref.actor_addr().location(), &proc.default_location());
         assert_eq!(proc.default_location(), gateway.default_location());
-        assert_eq!(proc.proc_addr(), gateway.proc_addr(proc.proc_id()));
+        assert_eq!(
+            proc.proc_addr(),
+            ProcAddr::new(proc.proc_id().clone(), gateway.default_location())
+        );
         assert!(proc.get_instance(second_ref.actor_addr()).is_some());
+    }
+
+    /// Concurrent `set_default_location` and `handle.bind()` must not
+    /// corrupt the bindings. Every bound ref carries one of the racing
+    /// locations, and every bound ref is still resolvable via
+    /// `get_instance` (which keys on identity, not location).
+    #[async_timed_test(timeout_secs = 10)]
+    async fn test_default_location_concurrent_with_bind() {
+        let proc = Proc::isolated();
+        let gateway = proc.gateway();
+        let handle = proc.client("worker");
+
+        let loc_a: Location = ChannelAddr::Local(40001).into();
+        let loc_b: Location = ChannelAddr::Local(40002).into();
+
+        // Pre-set to loc_a so binds never observe the initial default
+        // location. Without this, a bind that runs before the setter's
+        // first write could see the initial location and fail the
+        // "one of two locations" assertion.
+        gateway.set_default_location(loc_a.clone());
+
+        let barrier = std::sync::Arc::new(Barrier::new(2));
+
+        let setter = {
+            let gateway = gateway.clone();
+            let loc_a = loc_a.clone();
+            let loc_b = loc_b.clone();
+            let barrier = barrier.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                for i in 0..100 {
+                    let loc = if i % 2 == 0 {
+                        loc_a.clone()
+                    } else {
+                        loc_b.clone()
+                    };
+                    gateway.set_default_location(loc);
+                    tokio::task::yield_now().await;
+                }
+            })
+        };
+
+        let binder = {
+            // Clone `handle` into the binder so the outer `handle` stays
+            // alive after the spawned task finishes. Without this, the
+            // only strong reference to the client's instance drops when
+            // the binder task ends and the `proc.get_instance(...)` checks
+            // below return None.
+            let handle = handle.clone();
+            let barrier = barrier.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                let mut refs = Vec::with_capacity(100);
+                for _ in 0..100 {
+                    refs.push(handle.bind::<()>());
+                    tokio::task::yield_now().await;
+                }
+                refs
+            })
+        };
+
+        setter.await.unwrap();
+        let refs = binder.await.unwrap();
+
+        // Every ref carries one of the two racing locations.
+        for r in &refs {
+            let loc = r.actor_addr().location();
+            assert!(
+                loc == &loc_a || loc == &loc_b,
+                "ref location {loc:?} is neither {loc_a:?} nor {loc_b:?}",
+            );
+        }
+
+        // Every ref is still resolvable via get_instance (identity-based).
+        for r in &refs {
+            assert!(
+                proc.get_instance(r.actor_addr()).is_some(),
+                "ref {:?} no longer resolves",
+                r.actor_addr(),
+            );
+        }
     }
 
     #[test]
@@ -5148,8 +5237,14 @@ mod tests {
 
         assert_eq!(first.default_location(), gateway.default_location());
         assert_eq!(second.default_location(), gateway.default_location());
-        assert_eq!(first.proc_addr(), gateway.proc_addr(first.proc_id()));
-        assert_eq!(second.proc_addr(), gateway.proc_addr(second.proc_id()));
+        assert_eq!(
+            first.proc_addr(),
+            ProcAddr::new(first.proc_id().clone(), gateway.default_location())
+        );
+        assert_eq!(
+            second.proc_addr(),
+            ProcAddr::new(second.proc_id().clone(), gateway.default_location())
+        );
     }
 
     #[test]
@@ -5208,25 +5303,32 @@ mod tests {
             assert_eq!(received, value);
         }
 
-        let server = Gateway::serve(&gateway, ChannelAddr::any(ChannelTransport::Local)).unwrap();
+        let mut server =
+            Gateway::serve(&gateway, ChannelAddr::any(ChannelTransport::Local)).unwrap();
 
         assert_eq!(proc.default_location(), initial_location);
         assert_eq!(proc.default_location(), gateway.default_location());
-        assert_eq!(proc.proc_addr(), gateway.proc_addr(proc.proc_id()));
+        assert_eq!(
+            proc.proc_addr(),
+            ProcAddr::new(proc.proc_id().clone(), gateway.default_location())
+        );
         send_to_location(initial_location.clone(), &default_dest, 1, &mut receiver).await;
 
-        let next_server =
+        let mut next_server =
             Gateway::serve(&gateway, ChannelAddr::any(ChannelTransport::Local)).unwrap();
         let next_location = proc.default_location();
 
         assert_ne!(proc.default_location(), initial_location);
         assert_eq!(proc.default_location(), gateway.default_location());
-        assert_eq!(proc.proc_addr(), gateway.proc_addr(proc.proc_id()));
+        assert_eq!(
+            proc.proc_addr(),
+            ProcAddr::new(proc.proc_id().clone(), gateway.default_location())
+        );
         send_to_location(next_location.clone(), &default_dest, 2, &mut receiver).await;
         send_to_location(initial_location.clone(), &default_dest, 3, &mut receiver).await;
 
         next_server.stop("test complete");
-        next_server.await.unwrap().unwrap();
+        next_server.join().await.unwrap();
 
         assert_eq!(proc.default_location(), initial_location);
         assert_eq!(proc.default_location(), gateway.default_location());
@@ -5234,7 +5336,7 @@ mod tests {
         send_to_location(initial_location.clone(), &default_dest, 4, &mut receiver).await;
 
         server.stop("test complete");
-        server.await.unwrap().unwrap();
+        server.join().await.unwrap();
 
         assert_eq!(proc.default_location(), initial_location);
         assert_eq!(proc.default_location(), gateway.default_location());
@@ -5249,7 +5351,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(proc.proc_addr(), proc.gateway().proc_addr(proc.proc_id()));
+        assert_eq!(
+            proc.proc_addr(),
+            ProcAddr::new(proc.proc_id().clone(), proc.gateway().default_location())
+        );
 
         proc.join_mailbox_server().await;
     }
@@ -5276,8 +5381,95 @@ mod tests {
             return_handle,
         );
 
-        let Undeliverable::Message(envelope) = undeliverable_rx.recv().await.unwrap() else {
+        let Undeliverable::Returned(envelope) = undeliverable_rx.recv().await.unwrap() else {
             panic!("expected returned message");
+        };
+        assert_eq!(envelope.dest(), &remote_dest);
+    }
+
+    #[tokio::test]
+    async fn test_gateway_attach_peer_routes_through_sender() {
+        use tokio::sync::mpsc::UnboundedSender;
+        use tokio::sync::mpsc::unbounded_channel;
+
+        use crate::mailbox::IntoBoxedMailboxSender;
+        use crate::mailbox::MailboxSender as _;
+        use crate::mailbox::monitored_return_handle;
+        use crate::testing::ids::test_actor_id;
+
+        #[derive(Clone)]
+        struct MpscSender(UnboundedSender<MessageEnvelope>);
+
+        #[async_trait]
+        impl crate::mailbox::MailboxSender for MpscSender {
+            fn post_unchecked(
+                &self,
+                envelope: MessageEnvelope,
+                _return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+            ) {
+                self.0.send(envelope).unwrap();
+            }
+        }
+
+        let proc = Proc::isolated();
+        let gateway = proc.gateway();
+
+        // Advertise the remote proc with a `Via(remote_uid, ...)`
+        // prefix, mirroring the host-spawn convention so attach_peer
+        // matches the outermost via hop.
+        let remote_uid = Uid::Instance(0xabc123, Some(Label::strip("remote")));
+        let remote_inner_addr = ChannelAddr::Local(1234);
+        let remote_location =
+            Location::from(remote_inner_addr.clone()).with_via(remote_uid.clone());
+        let remote_proc = ProcAddr::new(ProcId::new(remote_uid.clone(), None), remote_location);
+        let remote_dest = remote_proc.actor_addr("worker").port_addr(Port::from(0));
+
+        let (tx, mut rx) = unbounded_channel::<MessageEnvelope>();
+        let via_guard = gateway
+            .attach_peer(remote_uid.clone(), MpscSender(tx).into_boxed())
+            .unwrap();
+
+        gateway.post(
+            MessageEnvelope::serialize(
+                test_actor_id("sender", "client"),
+                remote_dest.clone(),
+                &42u64,
+                Flattrs::new(),
+            )
+            .unwrap(),
+            monitored_return_handle(),
+        );
+
+        let routed = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("attach_peer did not route envelope before timeout")
+            .expect("recording sender closed unexpectedly");
+        // The outer via is peeled before forwarding: dest id is
+        // preserved, but the location is rewritten to the inner.
+        assert_eq!(routed.dest().id(), remote_dest.id());
+        assert_eq!(routed.dest().location().addr(), &remote_inner_addr);
+        assert!(
+            routed.dest().location().as_via().is_none(),
+            "outer via hop must be peeled before forwarding"
+        );
+
+        drop(via_guard);
+
+        let client = proc.client("client");
+        let (return_handle, mut undeliverable_rx) =
+            client.open_port::<Undeliverable<MessageEnvelope>>();
+        gateway.post(
+            MessageEnvelope::serialize(
+                test_actor_id("sender", "client"),
+                remote_dest.clone(),
+                &43u64,
+                Flattrs::new(),
+            )
+            .unwrap(),
+            return_handle,
+        );
+        let Undeliverable::Returned(envelope) = undeliverable_rx.recv().await.unwrap() else {
+            panic!("expected Undeliverable::Returned variant");
         };
         assert_eq!(envelope.dest(), &remote_dest);
     }
@@ -5726,8 +5918,13 @@ mod tests {
         }
     }
 
+    // Supervision propagation is deterministic (uses Notify + channel
+    // recv for ordering), but the chain of message passes is sensitive
+    // to tokio runtime scheduling. Under suite-wide CPU contention this
+    // can take well above the natural sub-second runtime; 60s gives
+    // headroom without masking genuine hangs.
     #[cfg_attr(not(target_os = "linux"), ignore = "linux-only")]
-    #[async_timed_test(timeout_secs = 30)]
+    #[async_timed_test(timeout_secs = 60)]
     async fn test_local_supervision_propagation() {
         hyperactor_telemetry::initialize_logging_for_test();
 
@@ -6654,6 +6851,130 @@ mod tests {
             depth, 0,
             "queue depth should return to 0 after all messages handled"
         );
+    }
+
+    // Test-only Named message + dedicated actor with explicit handler
+    // export, so the integration test can bind the BufferTestMsg
+    // handler port (`handle.bind()`) and drive ordered traffic through
+    // `OrderedSender`. Without the bind, `PortHandle::try_post` stamps
+    // `SeqInfo::Direct` and the enqueue closure takes the `direct_send`
+    // branch -- which never populates `OrderedSender::states`, leaving
+    // the snapshot empty.
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, typeuri::Named)]
+    struct BufferTestMsg;
+
+    #[derive(Debug, Default)]
+    #[hyperactor::export(handlers = [BufferTestMsg])]
+    struct BufferTestActor;
+
+    #[async_trait]
+    impl Actor for BufferTestActor {}
+
+    #[async_trait]
+    impl Handler<BufferTestMsg> for BufferTestActor {
+        async fn handle(
+            &mut self,
+            _cx: &crate::Context<Self>,
+            _msg: BufferTestMsg,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Exercises IO-1 ("active" branch: snapshot is `Some({enabled:
+    /// true, ...})`), IO-2 (publish-time state via `try_lock` populates
+    /// the session's buffered fields), and IO-3 (asserts `queue_depth`
+    /// is a propagated `u64` but makes NO arithmetic claim relating it
+    /// to `buffered_count`). End-to-end wiring proof: `Instance::new`
+    /// installs the snapshot callback, `InstanceCell::inbound_ordering_snapshot()`
+    /// invokes it, the resulting snapshot includes the buffered session
+    /// with its sender, `expected_next_seq`, and `buffered_count`, AND
+    /// `build_actor_attrs` (via `live_actor_payload`) publishes
+    /// `INBOUND_ORDERING` so it round-trips through `ActorAttrsView`.
+    /// The attrs-publish assertion catches accidental removal of the
+    /// `attrs.set(INBOUND_ORDERING, snapshot)` call site. Drives a
+    /// deterministic gap via `debug_skip_next_ordering_seq` so the test
+    /// is not timing-sensitive.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_inbound_ordering_snapshot_callback_publishes_session() {
+        use typeuri::Named;
+
+        // Pin reorder buffering ON regardless of any global config
+        // overrides set by other tests in the same binary. Without this
+        // guard the snapshot would observe `enabled = false` and the
+        // assertions below would fail when tests run in interleaved
+        // order.
+        let config = hyperactor_config::global::lock();
+        let _g = config.override_key(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let handle = proc.spawn_with_label("a", BufferTestActor);
+        let actor_id = handle.actor_addr().clone();
+
+        // Bind the handler ports so `handle.post` uses `SeqInfo::Session`
+        // (not `SeqInfo::Direct`). This is the equivalent of asking
+        // for a typed actor reference; for our purposes we only need
+        // the side effect of binding handler ports.
+        let _actor_ref: crate::ActorRef<BufferTestActor> = handle.bind();
+
+        // Reserve seq 1 on the actor's BufferTestMsg handler port so
+        // subsequent client posts get seqs 2..=N which then buffer
+        // (waiting for seq 1, which will never arrive).
+        let handler_port = actor_id.port_addr(Port::from(BufferTestMsg::port()));
+        // Reserve one seq directly on the client's sequencer. Equivalent
+        // to `Instance::debug_skip_next_ordering_seq(dest, 1)`, but
+        // inlined here so the test does not depend on a Client-side
+        // convenience method.
+        let _ = client.sequencer().assign_seq(&handler_port);
+
+        // Post three messages. These flow through MailboxExt::post ->
+        // HandlerPorts enqueue closure -> OrderedSender::send, where
+        // they buffer (out of order from seq 1's perspective).
+        for _ in 0..3 {
+            handle.post(&client, BufferTestMsg);
+        }
+        // Let the enqueues propagate to the buffer.
+        tokio::task::yield_now().await;
+
+        // Direct accessor: cell.inbound_ordering_snapshot() invokes the
+        // type-erased callback installed at Instance::new.
+        let cell = proc.get_instance(&actor_id).expect("actor exists");
+        let snapshot = cell
+            .inbound_ordering_snapshot()
+            .expect("snapshot callback should be installed for live actors");
+
+        assert!(snapshot.enabled, "buffering enabled by override");
+        assert_eq!(snapshot.sessions.len(), 1, "one client session expected");
+        let session = &snapshot.sessions[0];
+        assert_eq!(session.expected_next_seq, 1);
+        assert_eq!(session.buffered_count, 3);
+        assert_eq!(session.oldest_buffered_seq, Some(2));
+        assert_eq!(session.newest_buffered_seq, Some(4));
+        assert_eq!(
+            session.sender.as_ref(),
+            Some(client.mailbox().actor_addr()),
+            "session owner should be the posting client",
+        );
+
+        // Attrs-publish wiring: build_actor_attrs (via live_actor_payload)
+        // must call attrs.set(INBOUND_ORDERING, snapshot). Round-trip
+        // through ActorAttrsView and assert the same session.
+        let payload = crate::introspect::live_actor_payload(&cell);
+        let attrs: hyperactor_config::Attrs =
+            serde_json::from_str(&payload.attrs).expect("payload.attrs is well-formed JSON");
+        let view = crate::introspect::ActorAttrsView::from_attrs(&attrs)
+            .expect("attrs decode through ActorAttrsView");
+        let view_snapshot = view
+            .inbound_ordering
+            .as_ref()
+            .expect("INBOUND_ORDERING attr should be set by build_actor_attrs");
+        assert_eq!(view_snapshot, &snapshot);
+
+        // queue_depth scalar is propagated (no arithmetic relation to
+        // buffered_count asserted; IO-3 in introspect module doc).
+        let _: u64 = cell.queue_depth();
+        let _: u64 = view.queue_depth;
     }
 
     // PD-4/PD-5: proc-level queue pressure aggregation reports

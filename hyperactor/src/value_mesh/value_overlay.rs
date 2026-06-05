@@ -27,14 +27,18 @@ pub enum BuildError {
     /// Two runs overlap or are unsorted: `prev.end > next.start`. The
     /// offending ranges are returned for debugging.
     OverlappingRanges {
+        /// Previous run seen while validating normalized order.
         prev: Range<usize>,
+        /// Current run that overlaps or sorts before `prev`.
         next: Range<usize>,
     },
 
     /// A run exceeds the region bounds when applying an overlay
     /// merge.
     OutOfBounds {
+        /// Range that exceeded the target region.
         range: Range<usize>,
+        /// Number of ranks in the target region.
         region_len: usize,
     },
 }

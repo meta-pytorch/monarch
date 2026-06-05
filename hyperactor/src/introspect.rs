@@ -118,6 +118,43 @@
 //!   required keys for that view are missing.
 //! - **AV-3 (unknown-key-tolerance):** Unknown attrs keys must not
 //!   affect successful decode outcome.
+//!
+//! ## Inbound ordering exposure invariants (IO-*)
+//!
+//! - **IO-1 (inbound-ordering tri-state semantics):**
+//!   `ActorAttrsView::inbound_ordering` carries three meaningful states
+//!   that consumers (DTO, TUI, agents) MUST distinguish:
+//!   * `None` -- no snapshot callback was installed. In current code
+//!     this means structural absence: an `InstanceCellState` not built
+//!     through `Instance::new` (hand-built test fixtures, or any future
+//!     code path that bypasses the constructor). Live actors built via
+//!     `Instance::new` always install Some, and terminated-actor
+//!     payloads -- which still go through `live_actor_payload(&cell)`
+//!     while the cell exists -- inherit that Some.
+//!   * `Some({enabled: false, ...})` -- ordered path exists but reorder
+//!     buffering is disabled; `sessions` is empty regardless of traffic.
+//!     Messages flow via `OrderedSender::direct_send`.
+//!   * `Some({enabled: true, ...})` -- buffering active; `sessions`
+//!     is meaningful.
+//!
+//!   `None` is NOT equivalent to `Some({enabled: false, ...})`.
+//! - **IO-2 (inbound-ordering reflects publish-time state):** When
+//!   present, the snapshot is computed at `build_actor_attrs`
+//!   invocation time via `OrderedSender::snapshot`. `last_released_seq`
+//!   etc. are point-in-time. Sessions held by a concurrent `send` show
+//!   up in `skipped_session_count` (never silently omitted);
+//!   `is_complete()` reports the all-clear.
+//! - **IO-3 (queue-depth and inbound-ordering are independent
+//!   diagnostics, no arithmetic contract):**
+//!   * `ACTOR_QUEUE_DEPTH` (per PD-5a/PD-5b in `proc.rs`): accepted
+//!     handler work not yet dequeued by the actor loop.
+//!   * `INBOUND_ORDERING.sessions[*].buffered_count`: messages held by
+//!     `OrderedSender` waiting for a seq gap to fill.
+//!
+//!   These are two independent point-in-time diagnostics. No
+//!   arithmetic or ordering relationship between them is part of the
+//!   API contract; the accounting paths are free to change. Consumers
+//!   must not derive one from the other.
 
 use std::fmt;
 use std::str::FromStr;
@@ -364,6 +401,39 @@ declare_attrs! {
         desc: "Whether the failure was propagated from a child".into(),
     })
     pub attr FAILURE_IS_PROPAGATED: bool = false;
+
+    /// Stable per-instance identifier (`Uuid::now_v7`) assigned at
+    /// `Instance::new`.
+    @meta(INTROSPECT = IntrospectAttr {
+        name: "instance_id".into(),
+        desc: "Stable per-instance Uuid::now_v7() identity assigned at Instance::new".into(),
+    })
+    pub attr INSTANCE_ID: String;
+
+    /// Accepted handler work not yet dequeued by the actor loop (per
+    /// `proc.rs` PD-5a/PD-5b). Independent of `INBOUND_ORDERING`:
+    /// no arithmetic or ordering relationship between the two is part
+    /// of the API contract. See IO-3.
+    @meta(INTROSPECT = IntrospectAttr {
+        name: "queue_depth".into(),
+        desc: "Accepted handler work not yet dequeued by the actor loop (PD-5a/b). Independent of inbound_ordering; no arithmetic contract -- see IO-3.".into(),
+    })
+    pub attr ACTOR_QUEUE_DEPTH: u64 = 0;
+
+    /// Per-session reorder state from `OrderedSender::snapshot`.
+    /// `sessions[*].buffered_count` reports messages held by
+    /// `OrderedSender` waiting for a seq gap to fill. Independent
+    /// diagnostic from `queue_depth`; no arithmetic contract -- see
+    /// IO-3.
+    ///
+    /// Absence (`None` on `ActorAttrsView`) means structural absence
+    /// (no snapshot callback installed). `Some({enabled: false, ...})`
+    /// means the path exists but buffering is disabled. See IO-1.
+    @meta(INTROSPECT = IntrospectAttr {
+        name: "inbound_ordering".into(),
+        desc: "Per-session reorder-buffer state from OrderedSender. Independent diagnostic from queue_depth; no arithmetic contract -- see IO-3. Absence vs Some({enabled: false}) is meaningful -- see IO-1.".into(),
+    })
+    pub attr INBOUND_ORDERING: crate::ordering::OrderingSnapshot;
 }
 
 // See FI-1 through FI-8 in module doc.
@@ -434,6 +504,8 @@ pub struct ActorAttrsView {
     pub status_reason: Option<String>,
     /// Fully-qualified actor type name.
     pub actor_type: String,
+    /// Stable per-instance identifier (`Uuid::now_v7`) as a string.
+    pub instance_id: String,
     /// Number of messages processed.
     pub messages_processed: u64,
     /// When this actor was created.
@@ -442,10 +514,20 @@ pub struct ActorAttrsView {
     pub last_handler: Option<String>,
     /// Total CPU time in message handlers (microseconds).
     pub total_processing_time_us: u64,
+    /// Accepted handler work not yet dequeued by the actor loop
+    /// (PD-5a/b). Independent diagnostic from `inbound_ordering`;
+    /// no arithmetic contract between the two -- see IO-3. Defaults
+    /// to 0 when the attr is absent.
+    pub queue_depth: u64,
     /// Flight recorder JSON, if available.
     pub flight_recorder: Option<String>,
     /// Whether this is a system/infrastructure actor.
     pub is_system: bool,
+    /// Per-session reorder state. `None` means no snapshot callback was
+    /// installed (structural absence per IO-1); `Some({enabled: false, ..})`
+    /// means buffering is disabled; `Some({enabled: true, ..})` means active.
+    /// Consumers must distinguish all three states.
+    pub inbound_ordering: Option<crate::ordering::OrderingSnapshot>,
     /// Failure details, present iff status == "failed".
     pub failure: Option<FailureAttrs>,
 }
@@ -466,12 +548,18 @@ impl ActorAttrsView {
             .get(ACTOR_TYPE)
             .ok_or_else(|| AttrsViewError::missing("actor_type"))?
             .clone();
+        let instance_id = attrs
+            .get(INSTANCE_ID)
+            .ok_or_else(|| AttrsViewError::missing("instance_id"))?
+            .clone();
         let messages_processed = *attrs.get(MESSAGES_PROCESSED).unwrap_or(&0);
         let created_at = attrs.get(CREATED_AT).copied();
         let last_handler = attrs.get(LAST_HANDLER).cloned();
         let total_processing_time_us = *attrs.get(TOTAL_PROCESSING_TIME_US).unwrap_or(&0);
+        let queue_depth = *attrs.get(ACTOR_QUEUE_DEPTH).unwrap_or(&0);
         let flight_recorder = attrs.get(FLIGHT_RECORDER).cloned();
         let is_system = *attrs.get(IS_SYSTEM).unwrap_or(&false);
+        let inbound_ordering = attrs.get(INBOUND_ORDERING).cloned();
 
         // IA-3 (one-sided): status_reason must not be present for
         // non-terminal status. The converse is not enforced —
@@ -540,12 +628,15 @@ impl ActorAttrsView {
             status,
             status_reason,
             actor_type,
+            instance_id,
             messages_processed,
             created_at,
             last_handler,
             total_processing_time_us,
+            queue_depth,
             flight_recorder,
             is_system,
+            inbound_ordering,
             failure,
         })
     }
@@ -558,6 +649,7 @@ impl ActorAttrsView {
             attrs.set(STATUS_REASON, reason.clone());
         }
         attrs.set(ACTOR_TYPE, self.actor_type.clone());
+        attrs.set(INSTANCE_ID, self.instance_id.clone());
         attrs.set(MESSAGES_PROCESSED, self.messages_processed);
         if let Some(t) = self.created_at {
             attrs.set(CREATED_AT, t);
@@ -566,10 +658,14 @@ impl ActorAttrsView {
             attrs.set(LAST_HANDLER, handler.clone());
         }
         attrs.set(TOTAL_PROCESSING_TIME_US, self.total_processing_time_us);
+        attrs.set(ACTOR_QUEUE_DEPTH, self.queue_depth);
         if let Some(fr) = &self.flight_recorder {
             attrs.set(FLIGHT_RECORDER, fr.clone());
         }
         attrs.set(IS_SYSTEM, self.is_system);
+        if let Some(snapshot) = &self.inbound_ordering {
+            attrs.set(INBOUND_ORDERING, snapshot.clone());
+        }
         if let Some(fi) = &self.failure {
             attrs.set(FAILURE_ERROR_MESSAGE, fi.error_message.clone());
             attrs.set(FAILURE_ROOT_CAUSE_ACTOR, fi.root_cause_actor.clone());
@@ -738,6 +834,15 @@ fn build_actor_attrs(cell: &crate::InstanceCell, snap: &ActorSnapshot) -> String
     attrs.set(CREATED_AT, cell.created_at());
     attrs.set(TOTAL_PROCESSING_TIME_US, cell.total_processing_time_us());
     attrs.set(IS_SYSTEM, snap.is_system);
+    attrs.set(INSTANCE_ID, cell.instance_id().to_string());
+    attrs.set(ACTOR_QUEUE_DEPTH, cell.queue_depth());
+
+    if let Some(snapshot) = cell.inbound_ordering_snapshot() {
+        // TODO: truncation / filtering of long session lists belongs at
+        // the API/DTO layer, not here. `build_actor_attrs` returns the
+        // full per-actor snapshot verbatim so consumers can decide.
+        attrs.set(INBOUND_ORDERING, snapshot);
+    }
 
     if let Some(handler) = &snap.last_handler {
         attrs.set(LAST_HANDLER, handler.clone());
@@ -994,6 +1099,9 @@ mod tests {
             ("failure_root_cause_name", FAILURE_ROOT_CAUSE_NAME.attrs()),
             ("failure_occurred_at", FAILURE_OCCURRED_AT.attrs()),
             ("failure_is_propagated", FAILURE_IS_PROPAGATED.attrs()),
+            ("instance_id", INSTANCE_ID.attrs()),
+            ("queue_depth", ACTOR_QUEUE_DEPTH.attrs()),
+            ("inbound_ordering", INBOUND_ORDERING.attrs()),
         ];
 
         for (expected_name, meta) in &cases {
@@ -1066,6 +1174,7 @@ mod tests {
         let mut attrs = Attrs::new();
         attrs.set(STATUS, "running".to_string());
         attrs.set(ACTOR_TYPE, "MyActor".to_string());
+        attrs.set(INSTANCE_ID, uuid::Uuid::from_u128(0xfeed_face).to_string());
         attrs.set(MESSAGES_PROCESSED, 42u64);
         attrs.set(CREATED_AT, SystemTime::UNIX_EPOCH);
         attrs.set(IS_SYSTEM, false);
@@ -1095,6 +1204,10 @@ mod tests {
         assert_eq!(view.status, "running");
         assert_eq!(view.actor_type, "MyActor");
         assert_eq!(view.messages_processed, 42);
+        // Default values for the new fields when not set in the
+        // running_actor_attrs() fixture.
+        assert_eq!(view.queue_depth, 0);
+        assert!(view.inbound_ordering.is_none());
         assert!(view.failure.is_none());
 
         let round_tripped = ActorAttrsView::from_attrs(&view.to_attrs()).unwrap();
@@ -1130,6 +1243,65 @@ mod tests {
         attrs.set(STATUS, "running".to_string());
         let err = ActorAttrsView::from_attrs(&attrs).unwrap_err();
         assert_eq!(err, AttrsViewError::MissingKey { key: "actor_type" });
+    }
+
+    /// AV-2: `instance_id` is a required key on the actor view --
+    /// every live actor's attrs bag carries one.
+    #[test]
+    fn test_actor_view_missing_instance_id() {
+        let mut attrs = Attrs::new();
+        attrs.set(STATUS, "running".to_string());
+        attrs.set(ACTOR_TYPE, "X".to_string());
+        let err = ActorAttrsView::from_attrs(&attrs).unwrap_err();
+        assert_eq!(err, AttrsViewError::MissingKey { key: "instance_id" });
+    }
+
+    /// AV-1 + IO-1: round-trip with inbound_ordering = Some(...).
+    /// Pins that the typed `OrderingSnapshot` survives the
+    /// Attrs encode/decode boundary.
+    #[test]
+    fn test_actor_view_round_trip_with_inbound_ordering() {
+        use crate::ordering::OrderingSessionSnapshot;
+        use crate::ordering::OrderingSnapshot;
+
+        let session_addr = test_actor_id("sender_proc", "sender_actor");
+        let snapshot = OrderingSnapshot {
+            enabled: true,
+            sessions: vec![OrderingSessionSnapshot {
+                session_id: uuid::Uuid::from_u128(7),
+                sender: Some(session_addr),
+                last_released_seq: 3,
+                expected_next_seq: 4,
+                buffered_count: 2,
+                oldest_buffered_seq: Some(5),
+                newest_buffered_seq: Some(6),
+            }],
+            skipped_session_count: 0,
+        };
+
+        let mut attrs = running_actor_attrs();
+        attrs.set(ACTOR_QUEUE_DEPTH, 7u64);
+        attrs.set(INBOUND_ORDERING, snapshot.clone());
+
+        let view = ActorAttrsView::from_attrs(&attrs).unwrap();
+        assert_eq!(view.queue_depth, 7);
+        assert_eq!(view.inbound_ordering.as_ref(), Some(&snapshot));
+
+        let round_tripped = ActorAttrsView::from_attrs(&view.to_attrs()).unwrap();
+        assert_eq!(round_tripped, view);
+    }
+
+    /// AV-1 + IO-1: round-trip with inbound_ordering = None survives
+    /// cleanly. Pins the "structural absence" semantics: round-tripping
+    /// the view does not invent a Some({enabled: false}) value.
+    #[test]
+    fn test_actor_view_round_trip_without_inbound_ordering() {
+        let view = ActorAttrsView::from_attrs(&running_actor_attrs()).unwrap();
+        assert!(view.inbound_ordering.is_none());
+
+        let round_tripped = ActorAttrsView::from_attrs(&view.to_attrs()).unwrap();
+        assert!(round_tripped.inbound_ordering.is_none());
+        assert_eq!(round_tripped, view);
     }
 
     #[test]

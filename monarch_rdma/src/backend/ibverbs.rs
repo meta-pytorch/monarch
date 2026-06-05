@@ -8,8 +8,6 @@
 
 //! ibverbs backend implementation for RDMA operations.
 
-use std::sync::Arc;
-
 use hyperactor::ActorRef;
 use hyperactor::actor::Referable;
 use serde::Deserialize;
@@ -20,7 +18,6 @@ pub mod device_selection;
 pub(crate) mod domain;
 pub mod manager_actor;
 pub mod primitives;
-mod processor_actor;
 pub mod queue_pair;
 
 use manager_actor::IbvManagerActor;
@@ -28,11 +25,11 @@ pub use queue_pair::IbvQueuePair;
 pub use queue_pair::PollTarget;
 
 #[cfg(test)]
-mod ibv_manager_actor_tests;
+mod doorbell_test_utils;
+#[cfg(test)]
+mod doorbell_tests;
 #[cfg(test)]
 mod mlx5dv_tests;
-#[cfg(test)]
-mod test_utils;
 
 use crate::RdmaOpType;
 use crate::local_memory::KeepaliveLocalMemory;
@@ -59,7 +56,7 @@ pub struct IbvBuffer {
 #[derive(Debug, Named)]
 pub struct IbvOp<M: Referable = IbvManagerActor> {
     pub op_type: RdmaOpType,
-    pub local_memory: Arc<KeepaliveLocalMemory>,
+    pub local_memory: KeepaliveLocalMemory,
     pub remote_buffer: IbvBuffer,
     pub remote_manager: ActorRef<M>,
 }
@@ -70,7 +67,7 @@ impl<M: Referable> Clone for IbvOp<M> {
     fn clone(&self) -> Self {
         Self {
             op_type: self.op_type,
-            local_memory: Arc::clone(&self.local_memory),
+            local_memory: self.local_memory.clone(),
             remote_buffer: self.remote_buffer.clone(),
             remote_manager: self.remote_manager.clone(),
         }

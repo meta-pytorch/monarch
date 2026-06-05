@@ -90,6 +90,12 @@ impl PyInstance {
     }
 
     #[pyo3(signature = (reason = None))]
+    fn kill(&self, reason: Option<&str>) -> PyResult<()> {
+        let reason = reason.unwrap_or("(no reason provided)");
+        Ok(self.inner.kill(reason).map_err(anyhow::Error::from)?)
+    }
+
+    #[pyo3(signature = (reason = None))]
     fn stop(&self, reason: Option<&str>) -> PyResult<()> {
         tracing::info!(actor_id = %self.inner.self_addr(), "stopping PyInstance");
         let reason = reason.unwrap_or("(no reason provided)");
@@ -125,6 +131,26 @@ impl PyInstance {
     /// before ProcAgent publishes its first introspection snapshot.
     fn set_system(&self) {
         self.inner.set_system();
+    }
+
+    /// Reserve `count` ordering seqs against the receiver actor's
+    /// `PythonMessage` handler port. Subsequent fire-and-forget
+    /// endpoint sends to `receiver` pick up at the post-reservation
+    /// seq, creating a deterministic gap visible through the
+    /// receiver's `OrderedSender::snapshot` and
+    /// `/v1/{receiver}.inbound_ordering`.
+    ///
+    /// Test/demo only. Underscore-prefixed; production code must not
+    /// use this. The port computation matches the one used by normal
+    /// Python `.broadcast()` / `.call_one()` sends, so the gap is
+    /// observable without any extra plumbing.
+    #[pyo3(name = "_debug_skip_next_ordering_seq")]
+    fn debug_skip_next_ordering_seq(&self, receiver: &PyActorAddr, count: u64) {
+        use typeuri::Named;
+
+        use crate::actor::PythonMessage;
+        let port_addr = receiver.inner.port_addr(PythonMessage::port().into());
+        self.inner.debug_skip_next_ordering_seq(&port_addr, count);
     }
 }
 

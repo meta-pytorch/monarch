@@ -45,6 +45,7 @@ from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._src.actor.actor_mesh import ActorMesh, Channel, context, Port
 from monarch._src.actor.future import Future
 from monarch._src.actor.host_mesh import _spawn_admin, HostMesh, this_host, this_proc
+from monarch._src.actor.logging import _pending_flush_tasks
 from monarch._src.actor.proc_mesh import get_or_spawn_controller, HyProcMesh
 from monarch._src.job.job import LoginJob, ProcessState
 from monarch._src.job.process import ProcessJob
@@ -110,7 +111,7 @@ async def test_choose():
     assert result == result2
 
     v2 = proc.spawn("sync_counter", SyncCounter, v)
-    result3 = v2.value_sync_endpoint.choose().get()
+    result3 = await v2.value_sync_endpoint.choose()
     assert_type(result, int)
     assert result2 == result3
     await proc.stop()
@@ -232,7 +233,7 @@ async def test_rank_string():
     per_host = {"hosts": 1, "gpus": 2}
     proc = this_host().spawn_procs(per_host=per_host)
     r = proc.spawn("runit", RunIt)
-    vm = r.return_current_rank_str.call().get()
+    vm = await r.return_current_rank_str.call()
     r0 = vm.flatten("r").slice(r=0).item()
     r1 = vm.flatten("r").slice(r=1).item()
     assert r0 == "{'hosts': 0/1, 'gpus': 0/2}"
@@ -806,23 +807,37 @@ async def test_flush_called_only_once() -> None:
                 "monarch._src.actor.logging.flush_all_proc_mesh_logs"
             ) as mock_flush,
             unittest.mock.patch(
+                "monarch._src.actor.logging._flush_all_proc_mesh_logs_async"
+            ) as mock_flush_async,
+            unittest.mock.patch(
                 "monarch._src.actor.logging.LoggingManager.enable_fd_capture_if_in_ipython",
                 return_value=None,
             ),
         ):
+
+            async def _coro() -> None:
+                return None
+
+            mock_flush_async.return_value = _coro()
+
             # Create 2 proc meshes with a large aggregation window
             pm1 = this_host().spawn_procs(per_host={"gpus": 2})
             _ = this_host().spawn_procs(per_host={"gpus": 2})
             # flush not yet called unless post_run_cell
             assert mock_flush.call_count == 0
+            assert mock_flush_async.call_count == 0
             assert mock_ipython.events.registers == 0
             await pm1.logging_option(stream_to_client=True, aggregate_window_sec=600)
             assert mock_ipython.events.registers == 1
 
-            # now, flush should be called only once
+            # The callback fires inside the test's running asyncio loop, so it
+            # schedules the async flush rather than calling the sync one. Drain
+            # pending tasks so the scheduled coroutine actually runs.
             mock_ipython.events.trigger("post_run_cell", unittest.mock.MagicMock())
+            await asyncio.sleep(0)
 
-            assert mock_flush.call_count == 1
+            assert mock_flush.call_count == 0
+            assert mock_flush_async.call_count == 1
             await pm1.stop()
 
 
@@ -866,19 +881,18 @@ async def test_flush_logs_ipython() -> None:
                     await am1.print.call("ipython1 test log")
                     await am2.print.call("ipython2 test log")
 
-                # Trigger the post_run_cell event which should flush logs
+                # Trigger the post_run_cell event which should flush logs.
+                # Inside an async loop the callback schedules an async flush
+                # task rather than blocking, so wait for those tasks to finish
+                # before moving on (the next iteration / final assertions rely
+                # on the flush actually having happened).
                 mock_ipython.events.trigger("post_run_cell", unittest.mock.MagicMock())
+                if _pending_flush_tasks:
+                    await asyncio.gather(*list(_pending_flush_tasks))
 
         # We expect to register post_run_cell hook only once per notebook/ipython session
         assert mock_ipython.events.registers == 1
         assert len(mock_ipython.events.callbacks["post_run_cell"]) == 1
-
-        # Flush to ensure all output is written before reading
-        sys.stdout.flush()
-
-        # Read the captured output
-        with open(paths.stdout, "r") as f:
-            stdout_content = f.read()
 
         # We triggered post_run_cell three times; in the current
         # implementation that yields three aggregated groups per
@@ -886,6 +900,24 @@ async def test_flush_logs_ipython() -> None:
         # all 10).
         pattern1 = r"\[\d+ similar log lines\].*ipython1 test log"
         pattern2 = r"\[\d+ similar log lines\].*ipython2 test log"
+
+        # The rust flush task completes via the awaited future, but the
+        # aggregated bytes still have to flow through the FD pipe set up by
+        # enable_fd_capture_if_in_ipython and the pump thread before they
+        # land in the captured temp file. Poll until both patterns appear
+        # the expected number of times, with a deadline.
+        deadline = time.monotonic() + 10
+        stdout_content = ""
+        while time.monotonic() < deadline:
+            sys.stdout.flush()
+            with open(paths.stdout, "r") as f:
+                stdout_content = f.read()
+            if (
+                len(re.findall(pattern1, stdout_content)) >= 3
+                and len(re.findall(pattern2, stdout_content)) >= 3
+            ):
+                break
+            await asyncio.sleep(0.5)
 
         assert len(re.findall(pattern1, stdout_content)) >= 3, stdout_content
         assert len(re.findall(pattern2, stdout_content)) >= 3, stdout_content
@@ -1022,7 +1054,7 @@ async def test_multiple_ongoing_flushes_no_deadlock() -> None:
             )
 
         # The last flush should not block
-        futures[-1].get()
+        await futures[-1]
         await pm.stop()
 
 
@@ -1135,7 +1167,7 @@ async def test_sync_workspace() -> None:
 
         # no file in remote workspace initially
         am = pm.spawn("ls", LsActor, workspace_dst)
-        for item in list(am.ls.call().get()):
+        for item in list(await am.ls.call()):
             assert len(item[1]) == 0
 
         # write a file to local workspace
@@ -1146,7 +1178,7 @@ async def test_sync_workspace() -> None:
 
         # force a sync and it should populate on the dst workspace
         await code_sync_mesh.sync_workspace(config.workspace, auto_reload=True)
-        for item in list(am.ls.call().get()):
+        for item in list(await am.ls.call()):
             assert len(item[1]) == 1
             assert item[1][0] == "new_file"
             file_path = os.path.join(workspace_dst, item[1][0])
@@ -1303,11 +1335,11 @@ async def test_undeliverable_message_with_override() -> None:
         "undeliverable_sender", UndeliverableMessageSenderWithOverride, receiver
     )
     sender.send_undeliverable.call()
-    sender, dest, error_msg = receiver.get_messages.call_one().get()
+    sender, dest, error_msg = await receiver.get_messages.call_one()
     assert sender != ""
     assert "bogus" in dest
     assert error_msg is not None
-    pm.stop().get()
+    await pm.stop()
 
 
 @pytest.mark.timeout(60)
@@ -1319,11 +1351,11 @@ async def test_undeliverable_message_without_override() -> None:
     monarch.actor.unhandled_fault_hook = lambda failure: None
     pm = this_host().spawn_procs(per_host={"gpus": 1})
     sender = pm.spawn("undeliverable_sender", UndeliverableMessageSender)
-    sender.send_undeliverable.call().get()
+    await sender.send_undeliverable.call()
     # Wait a few seconds to ensure that the undeliverable message is processed
     # without crashing anything
     await asyncio.sleep(5)
-    pm.stop().get()
+    await pm.stop()
 
 
 @parametrize_config(actor_queue_dispatch={True, False})
@@ -1823,10 +1855,9 @@ def test_context_propagated_through_python_task_spawn_blocking():
 
 @pytest.mark.timeout(15)
 def test_future_get_inside_async_loop_warns():
-    """Calling Future.get() from inside an active asyncio loop is deprecated:
-    it blocks the surrounding loop. Verify a DeprecationWarning fires while
-    the call still completes for backward compatibility; this will become a
-    RuntimeError in monarch v0.6.
+    """Calling Future.get() from inside an active asyncio loop blocks the
+    surrounding loop. Verify a UserWarning fires while the call still
+    completes for backward compatibility.
     """
 
     async def runner() -> int:
@@ -1834,7 +1865,7 @@ def test_future_get_inside_async_loop_warns():
             return 1
 
         f: Future[int] = Future(coro=inner())
-        with pytest.warns(DeprecationWarning, match="event loop"):
+        with pytest.warns(UserWarning, match="event loop"):
             return f.get()
 
     assert asyncio.run(runner()) == 1
@@ -2016,8 +2047,8 @@ async def test_run_forever_on_init():
     # Fake type, actually ActorMesh[Counter], but necessary for type-checking.
     send, recv = Channel[Counter].open()
     forever = pm.spawn("forever", RunForeverOnInitActor, pm, send)
-    counter = recv.recv().get()
-    assert counter.value.call_one().get() == 42
+    counter = await recv.recv()
+    assert await counter.value.call_one() == 42
     await cast(ActorMesh, forever).stop()
 
 

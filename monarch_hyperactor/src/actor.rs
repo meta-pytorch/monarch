@@ -15,13 +15,11 @@ use std::sync::OnceLock;
 use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
-use hyperactor::Client;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::OncePortHandle;
-use hyperactor::PortHandle;
 use hyperactor::Proc;
 use hyperactor::RemoteSpawn;
 use hyperactor::actor::ActorError;
@@ -32,6 +30,7 @@ use hyperactor::context::Actor as ContextActor;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::mailbox::UndeliverableMessageError;
+use hyperactor::mailbox::UndeliverableReason;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::IndexedErasedUnbound;
@@ -60,6 +59,7 @@ use pyo3::types::PyType;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_multipart::Part;
+use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use typeuri::Named;
 
@@ -71,7 +71,6 @@ use crate::local_state_broker::BrokerId;
 use crate::local_state_broker::LocalStateBrokerMessage;
 use crate::mailbox::EitherPortRef;
 use crate::mailbox::PyMailbox;
-use crate::mailbox::PythonPortHandle;
 use crate::mailbox::PythonUndeliverableMessageEnvelope;
 use crate::metrics::ENDPOINT_ACTOR_COUNT;
 use crate::metrics::ENDPOINT_ACTOR_ERROR;
@@ -81,7 +80,6 @@ use crate::pickle::pickle_to_part;
 use crate::proc::PyActorAddr;
 use crate::pympsc;
 use crate::pytokio::PythonTask;
-use crate::runtime::get_proc_runtime;
 use crate::runtime::get_tokio_runtime;
 use crate::runtime::monarch_with_gil;
 use crate::runtime::monarch_with_gil_blocking;
@@ -773,19 +771,23 @@ impl PythonActor {
                         }
                     }
                     signal = signal_rx.recv() => {
-                        let signal = signal.map_err(ActorError::from);
                         tracing::info!(actor_id = %instance.self_addr(), "client received signal {signal:?}");
                         match signal {
-                            Ok(signal@(Signal::Stop(_) | Signal::DrainAndStop(_))) => {
+                            Some(signal@(Signal::Stop(_) | Signal::DrainAndStop(_))) => {
                                 need_drain = matches!(signal, Signal::DrainAndStop(_));
                                 break None;
                             },
-                            Ok(Signal::ExitRequested(_)) => break None,
-                            Ok(Signal::ChildStopped(_)) => {},
-                            Ok(Signal::Kill(reason)) => {
+                            Some(Signal::ExitRequested(_)) => break None,
+                            Some(Signal::ChildStopped(_)) => {},
+                            Some(Signal::Kill(reason)) => {
                                 break Some(ActorError { actor_id: Box::new(instance.self_addr().clone()), kind: Box::new(ActorErrorKind::Aborted(reason)) })
                             },
-                            Err(err) => break Some(err),
+                            None => {
+                                break Some(ActorError {
+                                    actor_id: Box::new(instance.self_addr().clone()),
+                                    kind: Box::new(ActorErrorKind::SignalChannelClosed),
+                                })
+                            },
                         }
                     }
                     Some(supervision_event) = supervision_rx.recv() => {
@@ -895,36 +897,15 @@ impl Actor for PythonActor {
         if let PythonActorDispatchMode::Queue { receiver, .. } = &mut self.dispatch_mode {
             let receiver = receiver.take().unwrap();
 
-            // Create an error port that converts PythonMessage to an abort signal.
-            // This allows Python to send errors that trigger actor supervision.
-            let error_port: hyperactor::PortHandle<PythonMessage> =
-                this.signal_port().contramap(|msg: PythonMessage| {
-                    monarch_with_gil_blocking(|py| {
-                        let err = match msg.kind {
-                            PythonMessageKind::Exception { .. } => {
-                                // Deserialize the error from the message
-                                let cloudpickle = py.import("cloudpickle").unwrap();
-                                let err_obj = cloudpickle
-                                    .call_method1("loads", (msg.message.to_bytes().as_ref(),))
-                                    .unwrap();
-                                let py_err = pyo3::PyErr::from_value(err_obj);
-                                SerializablePyErr::from(py, &py_err)
-                            }
-                            _ => {
-                                let py_err = PyRuntimeError::new_err(format!(
-                                    "expected Exception, got {:?}",
-                                    msg.kind
-                                ));
-                                SerializablePyErr::from(py, &py_err)
-                            }
-                        };
-                        Signal::Kill(err.to_string())
-                    })
-                });
-
-            let error_port_handle = PythonPortHandle::new(error_port);
-
             monarch_with_gil(|py| {
+                let self_instance = self
+                    .instance
+                    .get_or_insert_with(|| {
+                        let inst: crate::context::PyInstance = this.into();
+                        inst.into_pyobject(py).unwrap().into()
+                    })
+                    .clone_ref(py);
+
                 let tl = self
                     .task_locals
                     .as_ref()
@@ -932,7 +913,7 @@ impl Actor for PythonActor {
                 let awaitable = self.actor.call_method(
                     py,
                     "_dispatch_loop",
-                    (receiver, error_port_handle),
+                    (receiver, self_instance),
                     None,
                 )?;
                 let future =
@@ -1025,6 +1006,7 @@ impl Actor for PythonActor {
     async fn handle_undeliverable_message(
         &mut self,
         ins: &Instance<Self>,
+        reason: UndeliverableReason,
         mut envelope: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
         if envelope
@@ -1035,9 +1017,9 @@ impl Actor for PythonActor {
             envelope = update_undeliverable_envelope_for_casting(envelope);
         }
         let envelope = match envelope {
-            Undeliverable::Message(envelope) => envelope,
-            Undeliverable::Lost(lost) => {
-                return Err(UndeliverableMessageError::Lost { lost }.into());
+            Undeliverable::Returned(envelope) => envelope,
+            Undeliverable::Report(report) => {
+                return Err(UndeliverableMessageError::Report { report }.into());
             }
         };
         assert_eq!(
@@ -1072,7 +1054,7 @@ impl Actor for PythonActor {
             }
             .into_bound_py_any(py)?;
             let py_envelope = PythonUndeliverableMessageEnvelope {
-                inner: Some(Undeliverable::Message(envelope)),
+                inner: Some(Undeliverable::Returned(envelope)),
             }
             .into_bound_py_any(py)?;
             let handled = self
@@ -1098,7 +1080,7 @@ impl Actor for PythonActor {
         .await?;
 
         if !handled {
-            hyperactor::actor::handle_undeliverable_message(ins, envelope)
+            hyperactor::actor::handle_undeliverable_message(ins, reason, envelope)
         } else {
             Ok(())
         }
@@ -1321,7 +1303,7 @@ impl PythonActor {
 
         // Spawn a child actor to await the Python handler method.
         tokio::spawn(handle_async_endpoint_panic(
-            cx.signal_port(),
+            cx.signal_sender(),
             PythonTask::new(future)?,
             receiver,
             cx.self_addr().to_string(),
@@ -1532,7 +1514,7 @@ impl Handler<MeshFailure> for PythonActor {
 }
 
 async fn handle_async_endpoint_panic(
-    panic_sender: PortHandle<Signal>,
+    panic_sender: mpsc::UnboundedSender<Signal>,
     task: PythonTask,
     side_channel: oneshot::Receiver<Py<PyAny>>,
     actor_id: String,
@@ -1585,9 +1567,9 @@ async fn handle_async_endpoint_panic(
     } {
         // Record error and panic metrics
         ENDPOINT_ACTOR_ERROR.add(1, attributes);
-        static CLIENT: OnceLock<Client> = OnceLock::new();
-        let client = CLIENT.get_or_init(|| get_proc_runtime().client("async_endpoint_handler"));
-        panic_sender.post(client, Signal::Kill(panic.to_string()));
+        if panic_sender.send(Signal::Kill(panic.to_string())).is_err() {
+            tracing::warn!("dropped panic signal: actor already stopped: {panic}");
+        }
     }
 
     // Record latency in microseconds

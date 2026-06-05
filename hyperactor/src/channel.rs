@@ -97,6 +97,27 @@ pub enum ChannelError {
     Timeout(std::time::Duration),
 }
 
+/// Structured context for a send error.
+#[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
+pub enum SendErrorReason {
+    /// The serialized frame exceeded the configured channel frame limit.
+    #[error(
+        "rejecting oversize frame: len={len} > max={max}. \
+        ack will not arrive before timeout; increase CODEC_MAX_FRAME_LENGTH to allow."
+    )]
+    OversizedFrame {
+        /// The serialized frame length.
+        len: usize,
+
+        /// The configured frame limit.
+        max: usize,
+    },
+
+    /// Other human-readable context.
+    #[error("{0}")]
+    Other(String),
+}
+
 /// An error that occurred during send. Returns the message that failed to send.
 #[derive(thiserror::Error, Debug)]
 #[error("{error} for reason {reason:?}")]
@@ -107,12 +128,51 @@ pub struct SendError<M: RemoteMessage> {
     /// Message that couldn't be sent
     pub message: M,
     /// Reason that message couldn't be sent, if any.
-    pub reason: Option<String>,
+    pub reason: Option<SendErrorReason>,
 }
 
 impl<M: RemoteMessage> From<SendError<M>> for ChannelError {
     fn from(error: SendError<M>) -> Self {
         error.error
+    }
+}
+
+/// Reason a [`TxStatus`] transitioned to `Closed`. Callers should branch on
+/// the typed variants for cases they care about (e.g. cache-eviction logic in
+/// `DialMailboxRouter` keys on `SequenceMismatch`); everything else falls
+/// into `Other` and is for display/logging only.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CloseReason {
+    /// The peer rejected our session because our sequence number did not
+    /// match what the peer's dispatcher expected — the K8s "out-of-sequence
+    /// message, expected seq 0, got N" case where the peer GC'd the
+    /// `SessionId` while we still hold an `Outbox.next_seq` past 0.
+    /// Re-dialing produces a fresh session that the peer accepts.
+    SequenceMismatch(String),
+    /// The peer rejected a frame whose length exceeded
+    /// `config::CODEC_MAX_FRAME_LENGTH`. Re-dialing will not help — the
+    /// message itself is the problem.
+    OversizedFrame {
+        /// Actual frame length in bytes.
+        size: usize,
+        /// `CODEC_MAX_FRAME_LENGTH` at the time of rejection.
+        max: usize,
+    },
+    /// Any close reason the transport hasn't classified further. The string
+    /// is for display/logging only — do not parse it. If a caller needs to
+    /// branch on a sub-case, lift it into its own variant on this enum.
+    Other(String),
+}
+
+impl fmt::Display for CloseReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SequenceMismatch(s) => write!(f, "stale session: {}", s),
+            Self::OversizedFrame { size, max } => {
+                write!(f, "oversized frame: len={size} > max={max}")
+            }
+            Self::Other(s) => f.write_str(s),
+        }
     }
 }
 
@@ -122,7 +182,7 @@ pub enum TxStatus {
     /// The tx is good.
     Active,
     /// The tx cannot be used for message delivery.
-    Closed(Arc<str>),
+    Closed(CloseReason),
 }
 
 /// The transmit end of an M-typed channel.
@@ -262,9 +322,9 @@ impl<M: RemoteMessage> MpscRx<M> {
 
 impl<M: RemoteMessage> Drop for MpscRx<M> {
     fn drop(&mut self) {
-        let _ = self
-            .status_sender
-            .send(TxStatus::Closed("receiver dropped".into()));
+        let _ = self.status_sender.send(TxStatus::Closed(CloseReason::Other(
+            "receiver dropped".into(),
+        )));
     }
 }
 

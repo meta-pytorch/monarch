@@ -88,19 +88,30 @@ use monarch_record_batch::RecordBatchRow;
 //
 // SR-1: Generated Arrow field names match the SQL-facing column names
 //       (the Rust field name IS the column name).
-// SR-2: ID columns (`snapshot_id`, `node_id`, `parent_id`, `child_id`,
-//       `failure_root_cause_actor`) are Arrow `Utf8`.
+// SR-2: ID and identity-string columns (`snapshot_id`, `node_id`,
+//       `parent_id`, `child_id`, `failure_root_cause_actor`,
+//       `instance_id`, `session_id`, `sender`) are Arrow `Utf8`.
 // SR-3: Time and count columns (`snapshot_ts`, `as_of`, `started_at`,
 //       `created_at`, `failure_occurred_at`, `num_hosts`,
 //       `host_num_procs`, `num_actors`, `stopped_retention_cap`,
 //       `failed_actor_count`, `messages_processed`,
-//       `total_processing_time_us`, `child_sort_key`) are Arrow `Int64`.
+//       `total_processing_time_us`, `queue_depth`, `child_sort_key`,
+//       `skipped_session_count`, `known_session_count`,
+//       `returned_buffered_session_count`,
+//       `returned_buffered_message_count`,
+//       `returned_max_buffered_count`, `last_released_seq`,
+//       `expected_next_seq`, `buffered_count`, `oldest_buffered_seq`,
+//       `newest_buffered_seq`) are Arrow `Int64`.
 // SR-4: Flag columns (`is_system`, `is_stopped`, `is_poisoned`,
-//       `failure_is_propagated`) are Arrow `Boolean`.
+//       `failure_is_propagated`, `enabled`, `snapshot_complete`) are
+//       Arrow `Boolean`.
 // SR-5: Optional source fields map to nullable Arrow columns; required
 //       fields are non-nullable. The optional fields are:
 //       `ActorNodeRow.created_at`, `ActorNodeRow.last_message_handler`,
-//       `ActorFailureRow.failure_root_cause_name`.
+//       `ActorFailureRow.failure_root_cause_name`,
+//       `OrderingSessionRow.sender`,
+//       `OrderingSessionRow.oldest_buffered_seq`,
+//       `OrderingSessionRow.newest_buffered_seq`.
 // SR-6: `drain_to_record_batch()` preserves row count and empties the
 //       buffer (zero rows remain after drain).
 
@@ -222,6 +233,10 @@ pub struct ActorNodeRow {
     pub actor_status: String,
     /// Actor type name.
     pub actor_type: String,
+    /// Stable per-instance identifier (UUID canonical form). Sourced
+    /// from `ActorAttrsView::instance_id` (`Uuid::now_v7` assigned at
+    /// `Instance::new`).
+    pub instance_id: String,
     /// Cumulative messages processed.
     pub messages_processed: i64,
     /// Actor creation time, microseconds since epoch. Nullable —
@@ -232,8 +247,101 @@ pub struct ActorNodeRow {
     pub last_message_handler: Option<String>,
     /// Cumulative message-processing wall time in microseconds.
     pub total_processing_time_us: i64,
+    /// Per-actor work queue depth at snapshot time. Cardinality of the
+    /// actor's handler input queue; independent diagnostic from
+    /// [`ActorInboundOrderingRow::returned_buffered_message_count`]
+    /// (IO-3: no arithmetic relationship between the two).
+    pub queue_depth: i64,
     /// Intrinsic system-actor classification from the actor itself.
     pub is_system: bool,
+}
+
+/// Snapshot-time inbound-ordering rollup for an actor. PK:
+/// `(snapshot_id, node_id)`, FK → `ActorNode(snapshot_id, node_id)`.
+///
+/// Conditional row: one row per actor that goes through the
+/// `OrderedSender` path (IO-1: `inbound_ordering: Some(...)`). Actors
+/// with `inbound_ordering: None` (structural absence — e.g., instance
+/// not built through `Instance::new`) have NO row, matching
+/// [`ActorFailureRow`] for `failure_info: None` actors.
+///
+/// `enabled == false` means buffering is off for this actor (messages
+/// flow via `direct_send`); the join to [`OrderingSessionRow`] on
+/// `(snapshot_id, node_id)` will be empty in that case.
+///
+/// `snapshot_complete == false` indicates IO-2 partial snapshot: rows
+/// in [`OrderingSessionRow`] for this key are a lower bound (skipped
+/// sessions are not enumerated). Use `skipped_session_count` to
+/// detect.
+#[derive(Debug, Clone, PartialEq, RecordBatchRow)]
+pub struct ActorInboundOrderingRow {
+    /// PK component. FK → `ActorNode(snapshot_id, node_id)`.
+    pub snapshot_id: String,
+    /// PK component. FK → `ActorNode(snapshot_id, node_id)`.
+    pub node_id: String,
+    /// `true` when reorder buffering is enabled for this actor.
+    pub enabled: bool,
+    /// IO-4: `true` iff `skipped_session_count == 0`.
+    pub snapshot_complete: bool,
+    /// Sessions held by a concurrent send at snapshot time
+    /// (`OrderedSender::snapshot` uses `try_lock`). Not enumerated in
+    /// [`OrderingSessionRow`].
+    pub skipped_session_count: i64,
+    /// IO-5: total live sessions = returned + skipped. The only
+    /// rollup that totals across both.
+    pub known_session_count: i64,
+    /// IO-6: sessions with `buffered_count > 0` AMONG RETURNED
+    /// sessions. Lower bound when `snapshot_complete = false`.
+    pub returned_buffered_session_count: i64,
+    /// IO-6: sum of `buffered_count` OVER RETURNED sessions. Lower
+    /// bound when `snapshot_complete = false`.
+    pub returned_buffered_message_count: i64,
+    /// IO-6: max of `buffered_count` OVER RETURNED sessions. Lower
+    /// bound when `snapshot_complete = false`.
+    pub returned_max_buffered_count: i64,
+}
+
+/// Per-returned-session detail of inbound-ordering state. PK:
+/// `(snapshot_id, node_id, session_id)`, FK →
+/// `ActorInboundOrdering(snapshot_id, node_id)`.
+///
+/// One row per RETURNED session at snapshot time. Skipped sessions
+/// (IO-2: held by a concurrent send during snapshotting) are not
+/// enumerated — only counted in
+/// [`ActorInboundOrderingRow::skipped_session_count`]. To detect
+/// "is this a complete view?", join to [`ActorInboundOrderingRow`]
+/// and check `snapshot_complete`.
+///
+/// `sender` is the session OWNER ActorAddr — the actor whose
+/// `Sequencer` assigned this session's SEQ_INFO. For direct sends and
+/// V1 cast that's the logical sender; for V0 legacy cast that's the
+/// forwarding `CommActor`. `None` is rare and occurs only when every
+/// message in this session bypassed the stamping path.
+#[derive(Debug, Clone, PartialEq, RecordBatchRow)]
+pub struct OrderingSessionRow {
+    /// PK component. FK → `ActorInboundOrdering(snapshot_id, node_id)`.
+    pub snapshot_id: String,
+    /// PK component. FK → `ActorInboundOrdering(snapshot_id, node_id)`.
+    pub node_id: String,
+    /// PK component. Session identifier (UUID canonical form).
+    pub session_id: String,
+    /// Session owner `ActorAddr` (canonical string form). `None` only
+    /// when every message in this session bypassed the normal
+    /// stamping path.
+    pub sender: Option<String>,
+    /// Highest seq released from the reorder buffer into the actor
+    /// work queue.
+    pub last_released_seq: i64,
+    /// `last_released_seq + 1` — the seq the next contiguous send
+    /// must carry for delivery without further buffering.
+    pub expected_next_seq: i64,
+    /// Messages held in the reorder buffer waiting for a seq gap to
+    /// be filled. Zero on healthy in-order sessions.
+    pub buffered_count: i64,
+    /// Lowest seq currently buffered. `None` when `buffered_count == 0`.
+    pub oldest_buffered_seq: Option<i64>,
+    /// Highest seq currently buffered. `None` when `buffered_count == 0`.
+    pub newest_buffered_seq: Option<i64>,
 }
 
 /// Snapshot-time failure projection for a failed actor. PK:
@@ -386,23 +494,78 @@ mod tests {
     #[test]
     fn test_actor_node_row_schema() {
         let schema = ActorNodeRowBuffer::schema();
-        assert_eq!(schema.fields().len(), 9);
+        assert_eq!(schema.fields().len(), 11);
         assert_field(&schema, 0, "snapshot_id", DataType::Utf8, false);
         assert_field(&schema, 1, "node_id", DataType::Utf8, false);
         assert_field(&schema, 2, "actor_status", DataType::Utf8, false);
         assert_field(&schema, 3, "actor_type", DataType::Utf8, false);
-        assert_field(&schema, 4, "messages_processed", DataType::Int64, false);
+        assert_field(&schema, 4, "instance_id", DataType::Utf8, false);
+        assert_field(&schema, 5, "messages_processed", DataType::Int64, false);
         // Genuinely optional source fields → nullable
-        assert_field(&schema, 5, "created_at", DataType::Int64, true);
-        assert_field(&schema, 6, "last_message_handler", DataType::Utf8, true);
+        assert_field(&schema, 6, "created_at", DataType::Int64, true);
+        assert_field(&schema, 7, "last_message_handler", DataType::Utf8, true);
         assert_field(
             &schema,
-            7,
+            8,
             "total_processing_time_us",
             DataType::Int64,
             false,
         );
-        assert_field(&schema, 8, "is_system", DataType::Boolean, false);
+        assert_field(&schema, 9, "queue_depth", DataType::Int64, false);
+        assert_field(&schema, 10, "is_system", DataType::Boolean, false);
+    }
+
+    // Verifies SR-1, SR-2, SR-3, SR-4, SR-5.
+    #[test]
+    fn test_actor_inbound_ordering_row_schema() {
+        let schema = ActorInboundOrderingRowBuffer::schema();
+        assert_eq!(schema.fields().len(), 9);
+        assert_field(&schema, 0, "snapshot_id", DataType::Utf8, false);
+        assert_field(&schema, 1, "node_id", DataType::Utf8, false);
+        assert_field(&schema, 2, "enabled", DataType::Boolean, false);
+        assert_field(&schema, 3, "snapshot_complete", DataType::Boolean, false);
+        assert_field(&schema, 4, "skipped_session_count", DataType::Int64, false);
+        assert_field(&schema, 5, "known_session_count", DataType::Int64, false);
+        assert_field(
+            &schema,
+            6,
+            "returned_buffered_session_count",
+            DataType::Int64,
+            false,
+        );
+        assert_field(
+            &schema,
+            7,
+            "returned_buffered_message_count",
+            DataType::Int64,
+            false,
+        );
+        assert_field(
+            &schema,
+            8,
+            "returned_max_buffered_count",
+            DataType::Int64,
+            false,
+        );
+    }
+
+    // Verifies SR-1, SR-2, SR-3, SR-5. Pins the IO-7 / Option<u64>
+    // nullability at the storage boundary: `sender`,
+    // `oldest_buffered_seq`, and `newest_buffered_seq` are the only
+    // nullable columns on this table.
+    #[test]
+    fn test_ordering_session_row_schema() {
+        let schema = OrderingSessionRowBuffer::schema();
+        assert_eq!(schema.fields().len(), 9);
+        assert_field(&schema, 0, "snapshot_id", DataType::Utf8, false);
+        assert_field(&schema, 1, "node_id", DataType::Utf8, false);
+        assert_field(&schema, 2, "session_id", DataType::Utf8, false);
+        assert_field(&schema, 3, "sender", DataType::Utf8, true);
+        assert_field(&schema, 4, "last_released_seq", DataType::Int64, false);
+        assert_field(&schema, 5, "expected_next_seq", DataType::Int64, false);
+        assert_field(&schema, 6, "buffered_count", DataType::Int64, false);
+        assert_field(&schema, 7, "oldest_buffered_seq", DataType::Int64, true);
+        assert_field(&schema, 8, "newest_buffered_seq", DataType::Int64, true);
     }
 
     // Verifies SR-1, SR-2, SR-3, SR-4, SR-5.
@@ -617,10 +780,12 @@ mod tests {
             node_id: "actor-1".into(),
             actor_status: "running".into(),
             actor_type: "Philosopher".into(),
+            instance_id: "019e5661-7d33-7380-9afe-699ffc567531".into(),
             messages_processed: 42,
             created_at: Some(999_000),
             last_message_handler: Some("grant_chopstick".into()),
             total_processing_time_us: 5000,
+            queue_depth: 8,
             is_system: false,
         });
         // Row with optional fields absent
@@ -629,10 +794,12 @@ mod tests {
             node_id: "actor-2".into(),
             actor_status: "idle".into(),
             actor_type: "Waiter".into(),
+            instance_id: String::new(),
             messages_processed: 0,
             created_at: None,
             last_message_handler: None,
             total_processing_time_us: 0,
+            queue_depth: 0,
             is_system: true,
         });
         let batch = buf.drain_to_record_batch().unwrap();
@@ -669,6 +836,125 @@ mod tests {
             .unwrap();
         assert!(!sys.value(0));
         assert!(sys.value(1));
+
+        // Check new non-optional columns
+        let inst = batch
+            .column_by_name("instance_id")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::StringArray>()
+            .unwrap();
+        assert_eq!(inst.value(0), "019e5661-7d33-7380-9afe-699ffc567531");
+        assert_eq!(inst.value(1), "");
+
+        let qd = batch
+            .column_by_name("queue_depth")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::Int64Array>()
+            .unwrap();
+        assert_eq!(qd.value(0), 8);
+        assert_eq!(qd.value(1), 0);
+    }
+
+    // Verifies SR-6.
+    #[test]
+    fn test_drain_actor_inbound_ordering_row() {
+        let mut buf = ActorInboundOrderingRowBuffer::default();
+        buf.insert(ActorInboundOrderingRow {
+            snapshot_id: "s1".into(),
+            node_id: "actor-1".into(),
+            enabled: true,
+            snapshot_complete: true,
+            skipped_session_count: 0,
+            known_session_count: 2,
+            returned_buffered_session_count: 1,
+            returned_buffered_message_count: 5,
+            returned_max_buffered_count: 5,
+        });
+        let batch = buf.drain_to_record_batch().unwrap();
+        assert_eq!(batch.num_rows(), 1);
+
+        let enabled = batch
+            .column_by_name("enabled")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::BooleanArray>()
+            .unwrap();
+        assert!(enabled.value(0));
+
+        let known = batch
+            .column_by_name("known_session_count")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::Int64Array>()
+            .unwrap();
+        assert_eq!(known.value(0), 2);
+    }
+
+    // Verifies SR-5, SR-6. Pins nullability of `sender`,
+    // `oldest_buffered_seq`, `newest_buffered_seq` at the storage
+    // layer (IO-7 / Option<u64> from the upstream snapshot).
+    #[test]
+    fn test_drain_ordering_session_row() {
+        let mut buf = OrderingSessionRowBuffer::default();
+        // Stalled session: sender + oldest/newest present.
+        buf.insert(OrderingSessionRow {
+            snapshot_id: "s1".into(),
+            node_id: "actor-1".into(),
+            session_id: "00000000-0000-0000-0000-000000000001".into(),
+            sender: Some("session_owner_addr".into()),
+            last_released_seq: 0,
+            expected_next_seq: 1,
+            buffered_count: 5,
+            oldest_buffered_seq: Some(2),
+            newest_buffered_seq: Some(6),
+        });
+        // Bypass-stamping session: sender None, no buffered messages,
+        // so oldest/newest also None.
+        buf.insert(OrderingSessionRow {
+            snapshot_id: "s1".into(),
+            node_id: "actor-1".into(),
+            session_id: "00000000-0000-0000-0000-000000000002".into(),
+            sender: None,
+            last_released_seq: 3,
+            expected_next_seq: 4,
+            buffered_count: 0,
+            oldest_buffered_seq: None,
+            newest_buffered_seq: None,
+        });
+        let batch = buf.drain_to_record_batch().unwrap();
+        assert_eq!(batch.num_rows(), 2);
+
+        let sender = batch
+            .column_by_name("sender")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::StringArray>()
+            .unwrap();
+        assert!(!sender.is_null(0));
+        assert_eq!(sender.value(0), "session_owner_addr");
+        assert!(sender.is_null(1));
+
+        let oldest = batch
+            .column_by_name("oldest_buffered_seq")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::Int64Array>()
+            .unwrap();
+        assert!(!oldest.is_null(0));
+        assert_eq!(oldest.value(0), 2);
+        assert!(oldest.is_null(1));
+
+        let newest = batch
+            .column_by_name("newest_buffered_seq")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::Int64Array>()
+            .unwrap();
+        assert!(!newest.is_null(0));
+        assert_eq!(newest.value(0), 6);
+        assert!(newest.is_null(1));
     }
 
     // Verifies SR-5, SR-6.

@@ -18,7 +18,7 @@
 //! # Snapshot integration invariants (SI-*)
 //!
 //! - **SI-1 (snapshot tables discoverable):** After
-//!   `register_snapshot_schemas`, the 9 snapshot table names appear
+//!   `register_snapshot_schemas`, the 11 snapshot table names appear
 //!   in `DatabaseScanner.table_names()` and are discoverable by
 //!   `QueryEngine.setup_tables()`.
 //! - **SI-2 (snapshot tables queryable):** After periodic capture
@@ -56,10 +56,12 @@ use monarch_distributed_telemetry::database_scanner::TableStore;
 use monarch_record_batch::RecordBatchBuffer;
 
 use crate::schema::ActorFailureRowBuffer;
+use crate::schema::ActorInboundOrderingRowBuffer;
 use crate::schema::ActorNodeRowBuffer;
 use crate::schema::ChildRowBuffer;
 use crate::schema::HostNodeRowBuffer;
 use crate::schema::NodeRowBuffer;
+use crate::schema::OrderingSessionRowBuffer;
 use crate::schema::ProcNodeRowBuffer;
 use crate::schema::ResolutionErrorRowBuffer;
 use crate::schema::RootNodeRowBuffer;
@@ -67,7 +69,7 @@ use crate::schema::SnapshotRowBuffer;
 use crate::service::CaptureSnapshot;
 use crate::service::SnapshotCaptureActor;
 
-/// Pre-register the 9 snapshot table schemas into `table_store`.
+/// Pre-register the 11 snapshot table schemas into `table_store`.
 ///
 /// Each table is registered with a zero-row `RecordBatch` carrying
 /// the correct Arrow schema. This must be called before the
@@ -84,6 +86,10 @@ pub async fn register_snapshot_schemas(table_store: &TableStore) -> anyhow::Resu
             ActorFailureRowBuffer::default().drain_to_record_batch()?,
         ),
         (
+            "actor_inbound_orderings",
+            ActorInboundOrderingRowBuffer::default().drain_to_record_batch()?,
+        ),
+        (
             "actor_nodes",
             ActorNodeRowBuffer::default().drain_to_record_batch()?,
         ),
@@ -96,6 +102,10 @@ pub async fn register_snapshot_schemas(table_store: &TableStore) -> anyhow::Resu
             HostNodeRowBuffer::default().drain_to_record_batch()?,
         ),
         ("nodes", NodeRowBuffer::default().drain_to_record_batch()?),
+        (
+            "ordering_sessions",
+            OrderingSessionRowBuffer::default().drain_to_record_batch()?,
+        ),
         (
             "proc_nodes",
             ProcNodeRowBuffer::default().drain_to_record_batch()?,
@@ -152,7 +162,7 @@ mod tests {
     use super::*;
     use crate::push::SNAPSHOT_TABLE_NAMES;
 
-    // SI-1: register_snapshot_schemas populates a TableStore with 9
+    // SI-1: register_snapshot_schemas populates a TableStore with 11
     // table names matching SNAPSHOT_TABLE_NAMES.
     #[tokio::test]
     async fn test_register_snapshot_schemas() {
@@ -160,7 +170,7 @@ mod tests {
         register_snapshot_schemas(&store).await.unwrap();
 
         let names = store.table_names().unwrap();
-        assert_eq!(names.len(), 9);
+        assert_eq!(names.len(), 11);
 
         let expected: Vec<String> = SNAPSHOT_TABLE_NAMES.iter().map(|s| s.to_string()).collect();
         assert_eq!(names, expected);
