@@ -68,18 +68,6 @@ declare_attrs! {
     ))
     pub attr RDMA_CQ_BUSY_POLL_WINDOW: Option<Duration> = None;
 
-    /// Capacity of the per-processor LRU cache that memoizes
-    /// `IbvMemoryRegionView`s by `(virtual_addr, size)`. Hits skip
-    /// the manager round-trip; misses ask the manager to register
-    /// the region and insert the result. A value of `0` is clamped
-    /// to `1` (the LRU is effectively disabled at that size, but
-    /// the processor still functions).
-    @meta(CONFIG = ConfigAttr::new(
-        Some("MONARCH_RDMA_MR_LRU_CACHE_SIZE".to_string()),
-        Some("rdma_mr_lru_cache_size".to_string()),
-    ))
-    pub attr RDMA_MR_LRU_CACHE_SIZE: usize = 1024;
-
     /// Per-side budget for the `QueuePairInitializer` handshake. The
     /// timer arms once when we send `EnsureQueuePair` and is rearmed
     /// after we hit RTS while still waiting for the peer's

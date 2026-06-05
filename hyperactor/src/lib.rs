@@ -52,6 +52,7 @@
 #![feature(box_patterns)]
 #![feature(btree_cursors)]
 #![feature(error_reporter)]
+#![feature(exact_size_is_empty)]
 #![feature(impl_trait_in_assoc_type)]
 #![feature(never_type)]
 #![feature(panic_update_hook)]
@@ -64,6 +65,7 @@ pub mod actor;
 pub mod actor_local;
 pub mod addr;
 pub mod channel;
+pub mod client;
 pub mod config;
 pub mod context;
 pub mod endpoint;
@@ -90,6 +92,7 @@ pub mod sync;
 /// Test utilities.
 pub mod testing;
 pub mod time;
+pub mod value_mesh;
 
 #[cfg(fbcode_build)]
 pub mod meta;
@@ -109,7 +112,9 @@ pub mod internal_macro_support {
 }
 
 pub use actor::Actor;
+pub use actor::ActorGuard;
 pub use actor::ActorHandle;
+pub use actor::AnyActorGuard;
 pub use actor::AnyActorHandle;
 pub use actor::Handler;
 pub use actor::HandlerInfo;
@@ -122,6 +127,7 @@ pub use addr::AddrParseError;
 pub use addr::Location;
 pub use addr::PortAddr;
 pub use addr::ProcAddr;
+pub use client::Client;
 pub use endpoint::Endpoint;
 pub use endpoint::EndpointLocation;
 pub use endpoint::RemoteEndpoint;
@@ -176,11 +182,7 @@ pub use mailbox::Message;
 pub use mailbox::OncePortHandle;
 pub use mailbox::PortHandle;
 pub use mailbox::RemoteMessage;
-pub use proc::AttachRequest;
-pub use proc::AttachRx;
-pub use proc::BootstrapAssignment;
 pub use proc::Context;
-pub use proc::Host2Client;
 pub use proc::Instance;
 pub use proc::InstanceCell;
 pub use proc::Proc;
@@ -208,6 +210,33 @@ pub use signal_handler::sigpipe_disposition;
 #[doc(inline)]
 pub use signal_handler::unregister_signal_cleanup;
 
+/// Serve the current gateway on the provided channel address.
+pub fn serve(
+    addr: channel::ChannelAddr,
+) -> Result<gateway::GatewayServeHandle, channel::ChannelError> {
+    Gateway::current().serve(addr)
+}
+
+/// Spawn a root actor with a fresh uid labeled from the actor type on the current proc.
+pub fn spawn<A: Actor>(actor: A) -> ActorHandle<A> {
+    Proc::current().spawn(actor)
+}
+
+/// Spawn a root actor with a fresh uid carrying a display label on the current proc.
+pub fn spawn_with_label<A: Actor>(label: &str, actor: A) -> ActorHandle<A> {
+    Proc::current().spawn_with_label(label, actor)
+}
+
+/// Spawn a root actor using an explicit uid on the current proc.
+pub fn spawn_with_uid<A: Actor>(uid: Uid, actor: A) -> anyhow::Result<ActorHandle<A>> {
+    Proc::current().spawn_with_uid(uid, actor)
+}
+
+/// Create a client actor on the current proc.
+pub fn client(label: &str) -> Client {
+    Proc::current().client(label)
+}
+
 mod private {
     /// Public trait in a private module for sealing traits within this crate:
     /// [Sealed trait pattern](https://rust-lang.github.io/api-guidelines/future-proofing.html#sealed-traits-protect-against-downstream-implementations-c-sealed).
@@ -218,6 +247,8 @@ mod private {
     impl<A: crate::Actor> Sealed for &crate::proc::Instance<A> {}
     impl<A: crate::Actor> Sealed for crate::proc::Context<'_, A> {}
     impl<A: crate::Actor> Sealed for &crate::proc::Context<'_, A> {}
+    impl Sealed for crate::client::Client {}
+    impl Sealed for &crate::client::Client {}
     impl Sealed for crate::mailbox::Mailbox {}
     impl Sealed for &crate::mailbox::Mailbox {}
     impl<A: crate::Actor> Sealed for &crate::actor::ActorHandle<A> {}

@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use hyperactor::ActorHandle;
 use hyperactor::Endpoint as _;
+use hyperactor::Gateway;
 use hyperactor::Instance;
 use hyperactor::Proc;
 use hyperactor::id::Label;
@@ -343,8 +344,9 @@ static HOST_SHUTDOWN_HANDLE: OnceLock<
 ///
 /// The HostMesh is served on the default transport.
 ///
-/// This should be called only once, at process initialization
+/// This should be called only once, at process initialization.
 #[pyfunction]
+#[pyo3(signature = (bootstrap_cmd))]
 fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPythonTask> {
     let bootstrap_cmd = match bootstrap_cmd {
         Some(cmd) => cmd.to_rust(),
@@ -358,6 +360,7 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
             None,
             false,
             None,
+            Gateway::global().clone(),
         )
         .await
         .map_err(|e| PyException::new_err(e.to_string()))?;
@@ -376,9 +379,7 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
 
         // We require a temporary instance to make a call to the host/proc agent.
         let temp_proc = Proc::isolated();
-        let (temp_instance, _) = temp_proc
-            .client("temp")
-            .map_err(|e| PyException::new_err(e.to_string()))?;
+        let temp_instance = temp_proc.client("temp");
 
         let local_proc_agent: hyperactor::ActorHandle<hyperactor_mesh::proc_agent::ProcAgent> =
             host_mesh_agent
@@ -515,9 +516,7 @@ fn shutdown_local_host_mesh() -> PyResult<PyPythonTask> {
     PyPythonTask::new(async move {
         // Create a temporary instance to send the shutdown message
         let temp_proc = hyperactor::Proc::isolated();
-        let (instance, _) = temp_proc
-            .client("shutdown_requester")
-            .map_err(|e| PyException::new_err(e.to_string()))?;
+        let instance = temp_proc.client("shutdown_requester");
 
         tracing::info!(
             "sending shutdown_host request to agent {}",

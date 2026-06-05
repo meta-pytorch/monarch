@@ -1040,7 +1040,20 @@ async def test_supervision_with_sending_error() -> None:
     # The global python actor __supervise__ hook should be called with the
     # failure containing the send error.
     assert len(errors) >= 1
-    error_msg = errors[0]
+    oversized_error = next(
+        (
+            error
+            for error in errors
+            if re.search(
+                "rejecting oversize frame: len=[0-9]+ > max=50000000.*CODEC_MAX_FRAME_LENGTH",
+                error,
+                flags=re.MULTILINE,
+            )
+        ),
+        None,
+    )
+    assert oversized_error is not None
+    error_msg = oversized_error
     # Make sure the error contains a few key things:
     # * Message from client was undeliverable
     #   * destination could be multiple actors like agent, healthy, etc. because all pending messages are sent back
@@ -1063,11 +1076,6 @@ async def test_supervision_with_sending_error() -> None:
         r"undeliverable message (to|for) .*client",
         error_msg,
         flags=re.DOTALL,
-    )
-    assert re.search(
-        "rejecting oversize frame: len=[0-9]+ > max=50000000.*CODEC_MAX_FRAME_LENGTH",
-        error_msg,
-        flags=re.MULTILINE,
     )
 
 
@@ -1184,6 +1192,7 @@ class ErrorActorWithSupervise(ErrorActor):
     @endpoint
     async def stop_subworker(self) -> None:
         """Stop the inner actor this one owns"""
+        # pyrefly: ignore [missing-attribute]
         await self.mesh.stop()
 
     @endpoint

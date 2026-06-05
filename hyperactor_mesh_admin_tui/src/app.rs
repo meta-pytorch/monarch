@@ -130,6 +130,11 @@ pub(crate) struct App {
     /// When `Some`, the detail pane renders the overlay instead of
     /// node details. Dismissed with Esc, scrolled with j/k.
     pub(crate) overlay: Option<Overlay>,
+
+    /// Whether the detail pane is showing the static help glossary.
+    /// When true, ordinary keypresses dismiss it before normal
+    /// navigation handling.
+    pub(crate) show_help: bool,
 }
 
 impl App {
@@ -168,6 +173,7 @@ impl App {
             lang_name,
             active_job: None,
             overlay: None,
+            show_help: false,
         }
     }
 
@@ -776,6 +782,17 @@ impl App {
     /// (e.g. after expanding nodes or toggling system-proc
     /// visibility).
     pub(crate) fn on_key(&mut self, key: KeyEvent) -> KeyResult {
+        // Help is a modal (TUI-22): while it is open, any key dismisses it
+        // before normal handling. Ctrl-C stays an emergency quit.
+        if self.show_help {
+            if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                self.should_quit = true;
+                return KeyResult::None;
+            }
+            self.show_help = false;
+            return KeyResult::None;
+        }
+
         // When an overlay is active, intercept navigation keys.
         // Shared across all overlay variants; variant-specific rerun
         // keys are dispatched by overlay_rerun_key.
@@ -819,6 +836,12 @@ impl App {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 // Ctrl+C: immediate quit
                 self.should_quit = true;
+                KeyResult::None
+            }
+            KeyCode::Char('?') => {
+                // Open the static help glossary (TUI-22). Only reachable
+                // here when no overlay / active job is up (guarded above).
+                self.show_help = true;
                 KeyResult::None
             }
             KeyCode::Up | KeyCode::Char('k') => {

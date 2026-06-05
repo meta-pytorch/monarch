@@ -87,7 +87,7 @@ wirevalue::register_type!(TcpDataChunk);
 #[derive(Debug)]
 struct TransferState {
     /// Buffer backing this transfer, provided at construction.
-    local_memory: Arc<KeepaliveLocalMemory>,
+    local_memory: KeepaliveLocalMemory,
 
     /// Number of chunks received so far.
     chunks_received: usize,
@@ -103,7 +103,7 @@ struct TransferState {
 impl TransferState {
     fn new(
         total_chunks: usize,
-        local_memory: Arc<KeepaliveLocalMemory>,
+        local_memory: KeepaliveLocalMemory,
         done: OncePortRef<Result<(), String>>,
     ) -> Self {
         Self {
@@ -143,7 +143,7 @@ struct TransferError {
 /// a remote TcpManagerActor.
 #[derive(Debug)]
 struct RegisterTransferLocal {
-    local_memory: Arc<KeepaliveLocalMemory>,
+    local_memory: KeepaliveLocalMemory,
     total_chunks: usize,
     done: OncePortRef<Result<(), String>>,
     // The transfer ID
@@ -155,7 +155,7 @@ struct RegisterTransferLocal {
 #[derive(Debug)]
 struct ExecuteTransferLocal {
     transfer_id: usize,
-    local_memory: Arc<KeepaliveLocalMemory>,
+    local_memory: KeepaliveLocalMemory,
     chunk_size: usize,
     dest_addr: ChannelAddr,
 }
@@ -248,7 +248,7 @@ impl TcpManagerActor {
 
     fn register_transfer(
         &mut self,
-        local_memory: Arc<KeepaliveLocalMemory>,
+        local_memory: KeepaliveLocalMemory,
         total_chunks: usize,
         done: OncePortRef<Result<(), String>>,
     ) -> usize {
@@ -265,7 +265,7 @@ impl TcpManagerActor {
         &mut self,
         cx: &Context<Self>,
         transfer_id: usize,
-        local_memory: Arc<KeepaliveLocalMemory>,
+        local_memory: KeepaliveLocalMemory,
         chunk_size: usize,
         dest_addr: ChannelAddr,
     ) -> Result<()> {
@@ -304,9 +304,7 @@ impl TcpManagerActor {
                     "tcp_chunk_sender_{}",
                     hyperactor_mesh::shortuuid::ShortUuid::generate()
                 );
-                let (instance, _handle) = proc
-                    .client(&sender_name)
-                    .expect("failed to create sender instance");
+                let instance = proc.client(&sender_name);
 
                 loop {
                     if cancel.is_cancelled() {
@@ -402,9 +400,7 @@ impl Actor for TcpManagerActor {
             self.receiver_done = Some(done_rx);
 
             tokio::spawn(async move {
-                let (instance, _handle) = proc
-                    .client(&receiver_name.to_string())
-                    .expect("failed to create receiver instance");
+                let instance = proc.client(&receiver_name.to_string());
 
                 loop {
                     let chunk = tokio::select! {
@@ -901,7 +897,7 @@ impl RdmaBackend for TcpBackend {
 
             let (remote_tcp_mgr, remote_buf_id) = op.remote.resolve_tcp()?;
             let tcp_op = TcpOp {
-                op_type: op.op_type.clone(),
+                op_type: op.op_type,
                 local_memory: op.local,
                 remote_tcp_manager: remote_tcp_mgr,
                 remote_buf_id,
@@ -971,10 +967,10 @@ mod tests {
     struct TcpTestProcEnv {
         proc: Proc,
         rdma_handle: ActorHandle<RdmaManagerActor>,
-        instance: hyperactor::Instance<()>,
+        instance: hyperactor::Client,
         tcp_backend: TcpBackend,
         rdma_remote_buf: crate::RdmaRemoteBuffer,
-        local_memory: Arc<KeepaliveLocalMemory>,
+        local_memory: KeepaliveLocalMemory,
     }
 
     impl Drop for TcpTestProcEnv {
@@ -1002,10 +998,10 @@ mod tests {
                 ChannelAddr::any(hyperactor::channel::ChannelTransport::Unix),
                 format!("tcp_test_{id}"),
             )?;
-            let (instance, _) = proc.client("client")?;
+            let instance = proc.client("client");
 
             let rdma_actor = RdmaManagerActor::new(None, Flattrs::default()).await?;
-            let rdma_handle = proc.spawn("rdma_manager", rdma_actor)?;
+            let rdma_handle = proc.spawn(rdma_actor);
 
             let tcp_ref = rdma_handle.get_tcp_actor_ref(&instance).await?;
             let tcp_backend = TcpBackend(
@@ -1035,7 +1031,7 @@ mod tests {
             buffer_size: usize,
         ) -> anyhow::Result<Self> {
             let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-            let (instance, _) = proc.client(&format!("client_{id}"))?;
+            let instance = proc.client(&format!("client_{id}"));
 
             let (local_memory, rdma_remote_buf) =
                 Self::alloc_cpu_buffer(&instance, rdma_handle, buffer_size).await?;
@@ -1051,17 +1047,12 @@ mod tests {
         }
 
         async fn alloc_cpu_buffer(
-            instance: &hyperactor::Instance<()>,
+            instance: &hyperactor::Client,
             rdma_handle: &ActorHandle<RdmaManagerActor>,
             buffer_size: usize,
-        ) -> anyhow::Result<(Arc<KeepaliveLocalMemory>, crate::RdmaRemoteBuffer)> {
+        ) -> anyhow::Result<(KeepaliveLocalMemory, crate::RdmaRemoteBuffer)> {
             let cpu_buf = vec![0u8; buffer_size].into_boxed_slice();
-            let ptr = cpu_buf.as_ptr() as usize;
-            let local_memory: Arc<KeepaliveLocalMemory> = Arc::new(KeepaliveLocalMemory::new(
-                ptr,
-                buffer_size,
-                Arc::new(cpu_buf),
-            ));
+            let local_memory = KeepaliveLocalMemory::new(Arc::new(cpu_buf));
             let rdma_remote_buf = rdma_handle
                 .request_buffer(instance, local_memory.clone())
                 .await?;
@@ -1592,10 +1583,10 @@ mod tests {
                 ChannelAddr::any(hyperactor::channel::ChannelTransport::Unix),
                 format!("tcp_gpu_test_{id}"),
             )?;
-            let (instance, _) = proc.client("client")?;
+            let instance = proc.client("client");
 
             let rdma_actor = RdmaManagerActor::new(None, Flattrs::default()).await?;
-            let rdma_handle = proc.spawn("rdma_manager", rdma_actor)?;
+            let rdma_handle = proc.spawn(rdma_actor);
 
             let tcp_ref = rdma_handle.get_tcp_actor_ref(&instance).await?;
             let tcp_backend = TcpBackend(
@@ -1605,11 +1596,7 @@ mod tests {
             );
 
             let alloc = CudaAllocator::get().allocate(device, buffer_size, buffer_size);
-            let local_memory: Arc<KeepaliveLocalMemory> = Arc::new(KeepaliveLocalMemory::new(
-                alloc.ptr(),
-                buffer_size,
-                Arc::new(alloc),
-            ));
+            let local_memory = KeepaliveLocalMemory::new(Arc::new(alloc));
             let rdma_remote_buf = rdma_handle
                 .request_buffer(&instance, local_memory.clone())
                 .await?;

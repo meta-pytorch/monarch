@@ -8,7 +8,7 @@
 
 //! Durable snapshot bundle export and import.
 //!
-//! A snapshot bundle is a directory containing 9 Arrow IPC files (one
+//! A snapshot bundle is a directory containing 11 Arrow IPC files (one
 //! per table) and a JSON manifest. It represents exactly one snapshot
 //! and is the persistence mechanism for historical TUI debugging.
 //!
@@ -120,6 +120,8 @@ fn counts_from_batches(batches: &[NamedBatch]) -> NodeCounts {
         proc_nodes: row_count("proc_nodes"),
         actor_nodes: row_count("actor_nodes"),
         actor_failures: row_count("actor_failures"),
+        actor_inbound_orderings: row_count("actor_inbound_orderings"),
+        ordering_sessions: row_count("ordering_sessions"),
         resolution_errors: row_count("resolution_errors"),
     }
 }
@@ -142,6 +144,8 @@ fn counts_from_loaded(loaded: &[(&str, usize)]) -> NodeCounts {
         proc_nodes: row_count("proc_nodes"),
         actor_nodes: row_count("actor_nodes"),
         actor_failures: row_count("actor_failures"),
+        actor_inbound_orderings: row_count("actor_inbound_orderings"),
+        ordering_sessions: row_count("ordering_sessions"),
         resolution_errors: row_count("resolution_errors"),
     }
 }
@@ -359,6 +363,8 @@ mod tests {
             proc_nodes: vec![],
             actor_nodes: vec![],
             actor_failures: vec![],
+            actor_inbound_orderings: vec![],
+            ordering_sessions: vec![],
             resolution_errors: vec![],
         }
     }
@@ -452,13 +458,17 @@ mod tests {
                 node_id: actor_id,
                 actor_status: "running".to_owned(),
                 actor_type: ACTOR_TYPE.to_owned(),
+                instance_id: String::new(),
                 messages_processed: 42,
                 created_at: Some(900_000),
                 last_message_handler: Some("handle_msg".to_owned()),
                 total_processing_time_us: 5000,
+                queue_depth: 0,
                 is_system: false,
             }],
             actor_failures: vec![],
+            actor_inbound_orderings: vec![],
+            ordering_sessions: vec![],
             resolution_errors: vec![],
         }
     }

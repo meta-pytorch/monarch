@@ -71,6 +71,7 @@ use crate::RemoteMessage;
 
 pub mod duplex;
 mod framed;
+pub(crate) mod quic;
 pub(super) mod server;
 pub(super) mod session;
 pub use server::ServerHandle;
@@ -179,6 +180,35 @@ use session::Session;
 use crate::config;
 use crate::metrics;
 
+/// TCP keepalive probe interval after the idle period elapses.
+const TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Number of failed keepalive probes before the kernel marks the
+/// connection dead.
+const TCP_KEEPALIVE_RETRIES: u32 = 3;
+
+/// Enable TCP keepalive on a freshly-created socket so the kernel can
+/// surface peer death on otherwise-idle connections.
+/// [`config::CHANNEL_TCP_KEEPALIVE_IDLE`] is the kernel idle period —
+/// the gap from last activity to the first probe — so on a healthy
+/// idle connection it's also the probe cadence. Total detection time
+/// is `idle + TCP_KEEPALIVE_RETRIES * TCP_KEEPALIVE_INTERVAL`. Logs
+/// and ignores errors: keepalive is best-effort and some test
+/// harnesses use sockets that don't support it.
+fn set_tcp_keepalive(stream: &tokio::net::TcpStream) {
+    let idle = hyperactor_config::global::get(config::CHANNEL_TCP_KEEPALIVE_IDLE);
+
+    let ka = socket2::TcpKeepalive::new()
+        .with_time(idle)
+        .with_interval(TCP_KEEPALIVE_INTERVAL)
+        .with_retries(TCP_KEEPALIVE_RETRIES);
+
+    let sock = socket2::SockRef::from(stream);
+    if let Err(err) = sock.set_tcp_keepalive(&ka) {
+        tracing::warn!(?err, "failed to set TCP keepalive on stream");
+    }
+}
+
 pub(crate) enum LinkStatus {
     NeverConnected,
     Connected(tokio::time::Instant),
@@ -269,10 +299,33 @@ fn log_send_error(
             );
             true
         }
-        session::SendLoopError::OversizedFrame(reason) => {
-            tracing::error!(dest = %dest, session_id, mode, "oversized frame: {reason}; {link_status}");
+        session::SendLoopError::OversizedFrame { size, max } => {
+            tracing::error!(
+                dest = %dest,
+                session_id,
+                mode,
+                "oversized frame: len={size} > max={max}; {link_status}"
+            );
             true
         }
+    }
+}
+
+/// Map a terminal [`session::SendLoopError`] to a typed [`CloseReason`] for
+/// the `TxStatus` watcher. Variants that callers want to branch on (e.g.
+/// `DialMailboxRouter` keys cache eviction on `SequenceMismatch`) get their
+/// own typed reason; the rest flatten to `Other` carrying the same
+/// `{log_id}: {e}` text used previously for logging.
+fn classify_send_loop_error(error: &session::SendLoopError, log_id: &str) -> CloseReason {
+    match error {
+        session::SendLoopError::Rejected(reason) if reason.contains("out-of-sequence message") => {
+            CloseReason::SequenceMismatch(reason.clone())
+        }
+        session::SendLoopError::OversizedFrame { size, max } => CloseReason::OversizedFrame {
+            size: *size,
+            max: *max,
+        },
+        _ => CloseReason::Other(format!("{log_id}: {error}")),
     }
 }
 
@@ -501,7 +554,7 @@ pub(crate) fn spawn_unordered<M: RemoteMessage>(links: Vec<impl Link + 'static>)
         }
 
         let reason = format!("{log_id}: dispatcher closed");
-        let _ = notify.send(TxStatus::Closed(reason.into()));
+        let _ = notify.send(TxStatus::Closed(CloseReason::Other(reason)));
     });
 
     tx
@@ -536,12 +589,16 @@ fn spawn_inner<M: RemoteMessage>(link: impl Link) -> NetTx<M> {
                         error = %err,
                         "failed to push message to outbox"
                     );
-                    let _ = notify.send(TxStatus::Closed("failed to push to outbox".into()));
+                    let _ = notify.send(TxStatus::Closed(CloseReason::Other(
+                        "failed to push to outbox".into(),
+                    )));
                     return;
                 }
             }
             None => {
-                let _ = notify.send(TxStatus::Closed("sender dropped".into()));
+                let _ = notify.send(TxStatus::Closed(CloseReason::Other(
+                    "sender dropped".into(),
+                )));
                 return;
             }
         }
@@ -556,7 +613,7 @@ fn spawn_inner<M: RemoteMessage>(link: impl Link) -> NetTx<M> {
 
         let mut link_status = LinkStatus::NeverConnected;
 
-        let reason: String = 'outer: loop {
+        let reason: CloseReason = 'outer: loop {
             let connected = match deliveries.expiry_time() {
                 Some(deadline) => match session.connect_by(deadline).await {
                     Ok(s) => s,
@@ -574,12 +631,12 @@ fn spawn_inner<M: RemoteMessage>(link: impl Link) -> NetTx<M> {
                         tracing::error!(
                             dest = %dest, session_id = session_id.0, "{}", error_msg
                         );
-                        break 'outer format!("{log_id}: {error_msg}");
+                        break 'outer CloseReason::Other(format!("{log_id}: {error_msg}"));
                     }
                 },
                 None => match session.connect().await {
                     Ok(s) => s,
-                    Err(_) => break 'outer "session shut down".into(),
+                    Err(_) => break 'outer CloseReason::Other("session shut down".into()),
                 },
             };
 
@@ -637,7 +694,7 @@ fn spawn_inner<M: RemoteMessage>(link: impl Link) -> NetTx<M> {
                 }
                 Err(ref e) => {
                     if log_send_error(e, &dest, session_id.0, "simplex", &link_status) {
-                        break 'outer format!("{log_id}: {e}");
+                        break 'outer classify_send_loop_error(e, &log_id);
                     }
                     // Recoverable error — reconnect after backoff.
                     if let Some(delay) = reconnect_backoff.next_backoff() {
@@ -658,22 +715,29 @@ fn spawn_inner<M: RemoteMessage>(link: impl Link) -> NetTx<M> {
             dest = %dest, session_id = session_id.0, "NetTx closing: {reason}"
         );
 
+        let send_error_reason = match &reason {
+            CloseReason::OversizedFrame { size, max } => Some(SendErrorReason::OversizedFrame {
+                len: *size,
+                max: *max,
+            }),
+            _ => Some(SendErrorReason::Other(reason.to_string())),
+        };
         receiver.close();
         deliveries
             .unacked
             .deque
             .drain(..)
             .chain(deliveries.outbox.deque.drain(..))
-            .for_each(|queued| queued.try_return(Some(reason.clone())));
+            .for_each(|queued| queued.try_return(send_error_reason.clone()));
         while let Ok((msg, return_channel, _)) = receiver.try_recv() {
             let _ = return_channel.send(SendError {
                 error: ChannelError::Closed,
                 message: msg,
-                reason: Some(reason.clone()),
+                reason: send_error_reason.clone(),
             });
         }
 
-        let _ = notify.send(TxStatus::Closed(reason.into()));
+        let _ = notify.send(TxStatus::Closed(reason));
     });
     tx
 }
@@ -685,6 +749,7 @@ pub(crate) enum NetLink {
     Tcp(tcp::TcpLink),
     Unix(unix::UnixLink),
     Tls(tls::TlsLink),
+    Quic(quic::QuicLink),
 }
 
 /// Create a link for the given channel address with the given
@@ -706,6 +771,18 @@ pub(crate) fn link(
         ChannelAddr::MetaTls(meta_addr) => {
             Ok(NetLink::Tls(meta::link(meta_addr, session_id, stream_id)?))
         }
+        ChannelAddr::Quic(quic_addr) => Ok(NetLink::Quic(quic::link(
+            quic_addr,
+            quic::QuicAddrType::Quic,
+            session_id,
+            stream_id,
+        )?)),
+        ChannelAddr::MetaQuic(meta_addr) => Ok(NetLink::Quic(quic::link(
+            meta_addr,
+            quic::QuicAddrType::MetaQuic,
+            session_id,
+            stream_id,
+        )?)),
         other => Err(ClientError::Connect(
             other,
             std::io::Error::other("unsupported transport"),
@@ -723,6 +800,7 @@ impl Link for NetLink {
             Self::Tcp(l) => l.dest(),
             Self::Unix(l) => l.dest(),
             Self::Tls(l) => l.dest(),
+            Self::Quic(l) => l.dest(),
         }
     }
 
@@ -731,6 +809,7 @@ impl Link for NetLink {
             Self::Tcp(l) => l.link_id(),
             Self::Unix(l) => l.link_id(),
             Self::Tls(l) => l.link_id(),
+            Self::Quic(l) => l.link_id(),
         }
     }
 
@@ -739,6 +818,7 @@ impl Link for NetLink {
             Self::Tcp(l) => Ok(Box::new(l.next().await?)),
             Self::Unix(l) => Ok(Box::new(l.next().await?)),
             Self::Tls(l) => Ok(Box::new(l.next().await?)),
+            Self::Quic(l) => Ok(Box::new(l.next().await?)),
         }
     }
 }
@@ -764,6 +844,7 @@ pub(crate) trait Listener: Send + Unpin + 'static {
 pub(crate) enum NetListener {
     Tcp(tcp::TcpSocketListener),
     Unix(unix::UnixSocketListener),
+    Quic(quic::QuicSocketListener),
 }
 
 #[async_trait]
@@ -777,6 +858,10 @@ impl Listener for NetListener {
                 Ok((Box::new(stream), addr))
             }
             Self::Unix(l) => {
+                let (stream, addr) = l.accept().await?;
+                Ok((Box::new(stream), addr))
+            }
+            Self::Quic(l) => {
                 let (stream, addr) = l.accept().await?;
                 Ok((Box::new(stream), addr))
             }
@@ -890,6 +975,29 @@ pub(crate) fn listen_with_prebound(
                 make_channel_addr(&hostname, local_addr.port()),
             ))
         }
+        addr @ (ChannelAddr::Quic(_) | ChannelAddr::MetaQuic(_)) => {
+            if prebound.is_some() {
+                return Err(ServerError::Listen(
+                    addr,
+                    std::io::Error::other("pre-opened listener not supported for QUIC transport"),
+                ));
+            }
+            let addr_type = match addr {
+                ChannelAddr::Quic(_) => quic::QuicAddrType::Quic,
+                ChannelAddr::MetaQuic(_) => quic::QuicAddrType::MetaQuic,
+                _ => unreachable!(),
+            };
+            let tls_addr = match addr {
+                ChannelAddr::Quic(a) | ChannelAddr::MetaQuic(a) => a,
+                _ => unreachable!(),
+            };
+            let (listener, bound_addr) = quic::listen(tls_addr, addr_type)?;
+            Ok((NetListener::Quic(listener), bound_addr))
+        }
+        ChannelAddr::Alias { dial_to, bind_to } => {
+            let (listener, _bound_addr) = listen(*bind_to)?;
+            Ok((listener, *dial_to))
+        }
         other => Err(ServerError::Listen(
             other.clone(),
             std::io::Error::other(format!("unsupported transport: {}", other)),
@@ -900,10 +1008,6 @@ pub(crate) fn listen_with_prebound(
 /// Bind a listener for the given channel address. Returns the listener
 /// and the canonical address callers should advertise (which encodes
 /// the transport — e.g. `ChannelAddr::Tls` for TLS).
-#[expect(
-    dead_code,
-    reason = "canonical listen() entry point; callers currently route through listen_with_prebound"
-)]
 pub(crate) fn listen(addr: ChannelAddr) -> Result<(NetListener, ChannelAddr), ServerError> {
     listen_with_prebound(addr, None)
 }
@@ -966,7 +1070,11 @@ impl<M: RemoteMessage> Tx<M> for NetTx<M> {
             self.sender
                 .send((message, return_channel, tokio::time::Instant::now()))
         {
-            let reason = self.status.borrow().as_closed().map(|r| r.to_string());
+            let reason = self
+                .status
+                .borrow()
+                .as_closed()
+                .map(|r| SendErrorReason::Other(r.to_string()));
             let _ = return_channel.send(SendError {
                 error: ChannelError::Closed,
                 message,
@@ -1031,6 +1139,8 @@ pub enum ServerError {
 pub enum ClientError {
     #[error("connection to {0} failed: {1}: {2}")]
     Connect(ChannelAddr, std::io::Error, String),
+    #[error("connection to {0} failed after {1:?} of retries: {2}")]
+    ConnectTimeout(ChannelAddr, Duration, #[source] std::io::Error),
     #[error("unable to resolve address: {0}")]
     Resolve(ChannelAddr),
     #[error("io: {0} {1}")]
@@ -1049,6 +1159,8 @@ pub(super) fn is_net_addr(addr: &ChannelAddr) -> bool {
         ChannelTransport::Tcp(_) => true,
         ChannelTransport::MetaTls(_) => true,
         ChannelTransport::Tls => true,
+        ChannelTransport::Quic => true,
+        ChannelTransport::MetaQuic(_) => true,
         ChannelTransport::Unix => true,
         _ => false,
     }
@@ -1381,12 +1493,14 @@ pub(crate) mod tcp {
 
         async fn next(&mut self) -> Result<Self::Stream, ClientError> {
             let session_id = self.session_id;
+            let reconnect_timeout =
+                hyperactor_config::global::get(config::CHANNEL_RECONNECT_TIMEOUT);
             let mut backoff = ExponentialBackoffBuilder::new()
                 .with_initial_interval(Duration::from_millis(1))
                 .with_multiplier(2.0)
                 .with_randomization_factor(0.1)
                 .with_max_interval(Duration::from_millis(1000))
-                .with_max_elapsed_time(None)
+                .with_max_elapsed_time(Some(reconnect_timeout))
                 .build();
             loop {
                 match TcpStream::connect(&self.addr).await {
@@ -1398,6 +1512,7 @@ pub(crate) mod tcp {
                                 "cannot disable Nagle algorithm".to_string(),
                             )
                         })?;
+                        set_tcp_keepalive(&stream);
                         write_link_init(&mut stream, session_id, self.stream_id)
                             .await
                             .map_err(|err| ClientError::Io(self.dest(), err))?;
@@ -1405,8 +1520,15 @@ pub(crate) mod tcp {
                     }
                     Err(err) => {
                         tracing::debug!(error = %err, "tcp connect failed, backing off");
-                        if let Some(delay) = backoff.next_backoff() {
-                            tokio::time::sleep(delay).await;
+                        match backoff.next_backoff() {
+                            Some(delay) => tokio::time::sleep(delay).await,
+                            None => {
+                                return Err(ClientError::ConnectTimeout(
+                                    self.dest(),
+                                    reconnect_timeout,
+                                    err,
+                                ));
+                            }
                         }
                     }
                 }
@@ -1434,6 +1556,7 @@ pub(crate) mod tcp {
             stream
                 .set_nodelay(true)
                 .map_err(|err| ServerError::Io(ChannelAddr::Tcp(self.addr), err))?;
+            set_tcp_keepalive(&stream);
             Ok((stream, ChannelAddr::Tcp(peer_addr)))
         }
     }
@@ -1514,8 +1637,9 @@ pub(crate) mod meta {
 
     /// Creates a TLS acceptor by looking for necessary certs and keys in a Meta server environment.
     pub(crate) fn tls_acceptor(enforce_client_tls: bool) -> Result<TlsAcceptor> {
-        let bundle = get_server_pem_bundle();
-        tls::tls_acceptor_from_bundle(&bundle, enforce_client_tls)
+        Ok(TlsAcceptor::from(Arc::new(server_config(
+            enforce_client_tls,
+        )?)))
     }
 
     /// Try to create a TLS connector for Meta environments.
@@ -1530,30 +1654,24 @@ pub(crate) mod meta {
     /// Creates a TLS connector by looking for necessary certs and keys in a Meta server environment.
     /// Supports optional client authentication (unlike the tls module which always requires it).
     fn tls_connector() -> Result<TlsConnector> {
-        // Ensure ring is installed as the process-level crypto provider.
-        // No-op when already installed (e.g. under Buck with native-tls).
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        Ok(TlsConnector::from(Arc::new(client_config()?)))
+    }
 
-        let ca_path = std::env::var_os(THRIFT_TLS_SRV_CA_PATH_ENV)
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(DEFAULT_SRV_CA_PATH));
-        let ca_pem = Pem::File(ca_path);
-        let root_store = tls::build_root_store(&ca_pem)?;
+    pub(super) fn server_config(enforce_client_tls: bool) -> Result<rustls::ServerConfig> {
+        let bundle = get_server_pem_bundle();
+        tls::server_config_from_bundle(&bundle, enforce_client_tls)
+    }
 
-        // If client certs are available, use mutual TLS; otherwise, no client auth
-        let config = rustls::ClientConfig::builder().with_root_certificates(Arc::new(root_store));
-
-        let config = if let Some(bundle) = get_client_pem_bundle() {
-            let certs = tls::load_certs(&bundle.cert)?;
-            let key = tls::load_key(&bundle.key)?;
-            config
-                .with_client_auth_cert(certs, key)
-                .map_err(|e| anyhow::anyhow!("load client certs: {}", e))?
+    pub(super) fn client_config() -> Result<rustls::ClientConfig> {
+        Ok(if let Some(bundle) = get_client_pem_bundle() {
+            tls::client_config_from_bundle(&bundle)?
         } else {
-            config.with_no_client_auth()
-        };
-
-        Ok(TlsConnector::from(Arc::new(config)))
+            let ca_path = std::env::var_os(THRIFT_TLS_SRV_CA_PATH_ENV)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(DEFAULT_SRV_CA_PATH));
+            let ca_pem = Pem::File(ca_path);
+            tls::client_config_from_ca(&ca_pem)?
+        })
     }
 
     /// Create a MetaTLS link to the given address.
@@ -1589,7 +1707,9 @@ pub(crate) mod tls {
 
     use anyhow::Context;
     use anyhow::Result;
+    use rustls::ClientConfig;
     use rustls::RootCertStore;
+    use rustls::ServerConfig;
     use rustls::pki_types::CertificateDer;
     use rustls::pki_types::PrivateKeyDer;
     use rustls::pki_types::ServerName;
@@ -1661,7 +1781,7 @@ pub(crate) mod tls {
     }
 
     /// Get the PEM bundle from configuration.
-    fn get_pem_bundle() -> PemBundle {
+    pub(super) fn get_pem_bundle() -> PemBundle {
         PemBundle {
             ca: hyperactor_config::global::get_cloned(TLS_CA),
             cert: hyperactor_config::global::get_cloned(TLS_CERT),
@@ -1669,21 +1789,25 @@ pub(crate) mod tls {
         }
     }
 
-    /// Creates a TLS acceptor using certificates from the provided PEM bundle.
-    /// If `enforce_client_tls` is true, requires client certificates for mutual TLS.
-    pub(super) fn tls_acceptor_from_bundle(
-        bundle: &PemBundle,
-        enforce_client_tls: bool,
-    ) -> Result<TlsAcceptor> {
+    fn install_default_crypto_provider() {
         // Ensure ring is installed as the process-level crypto provider.
         // No-op when already installed (e.g. under Buck with native-tls).
         let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+
+    /// Creates a Rustls server config using certificates from the provided PEM bundle.
+    /// If `enforce_client_tls` is true, requires client certificates for mutual TLS.
+    pub(super) fn server_config_from_bundle(
+        bundle: &PemBundle,
+        enforce_client_tls: bool,
+    ) -> Result<ServerConfig> {
+        install_default_crypto_provider();
 
         let certs = load_certs(&bundle.cert).context("load TLS certificate")?;
         let key = load_key(&bundle.key).context("load TLS key")?;
         let root_store = build_root_store(&bundle.ca).context("build root cert store")?;
 
-        let config = rustls::ServerConfig::builder();
+        let config = ServerConfig::builder();
         let config = if enforce_client_tls {
             // Build server config with mutual TLS (require client certs)
             let client_verifier =
@@ -1696,6 +1820,16 @@ pub(crate) mod tls {
         }
         .with_single_cert(certs, key)?;
 
+        Ok(config)
+    }
+
+    /// Creates a TLS acceptor using certificates from the provided PEM bundle.
+    /// If `enforce_client_tls` is true, requires client certificates for mutual TLS.
+    pub(super) fn tls_acceptor_from_bundle(
+        bundle: &PemBundle,
+        enforce_client_tls: bool,
+    ) -> Result<TlsAcceptor> {
+        let config = server_config_from_bundle(bundle, enforce_client_tls)?;
         Ok(TlsAcceptor::from(Arc::new(config)))
     }
 
@@ -1704,21 +1838,35 @@ pub(crate) mod tls {
         tls_acceptor_from_bundle(&get_pem_bundle(), true)
     }
 
-    /// Creates a TLS connector using certificates from the provided PEM bundle.
-    pub(super) fn tls_connector_from_bundle(bundle: &PemBundle) -> Result<TlsConnector> {
-        // Ensure ring is installed as the process-level crypto provider.
-        // No-op when already installed (e.g. under Buck with native-tls).
-        let _ = rustls::crypto::ring::default_provider().install_default();
+    /// Creates a Rustls client config using only CA roots.
+    pub(super) fn client_config_from_ca(ca_pem: &Pem) -> Result<ClientConfig> {
+        install_default_crypto_provider();
+
+        let root_store = build_root_store(ca_pem).context("build root cert store")?;
+        Ok(ClientConfig::builder()
+            .with_root_certificates(Arc::new(root_store))
+            .with_no_client_auth())
+    }
+
+    /// Creates a Rustls client config using certificates from the provided PEM bundle.
+    pub(super) fn client_config_from_bundle(bundle: &PemBundle) -> Result<ClientConfig> {
+        install_default_crypto_provider();
 
         let certs = load_certs(&bundle.cert).context("load TLS certificate")?;
         let key = load_key(&bundle.key).context("load TLS key")?;
         let root_store = build_root_store(&bundle.ca).context("build root cert store")?;
 
-        let config = rustls::ClientConfig::builder()
+        let config = ClientConfig::builder()
             .with_root_certificates(Arc::new(root_store))
             .with_client_auth_cert(certs, key)
             .context("configure client auth")?;
 
+        Ok(config)
+    }
+
+    /// Creates a TLS connector using certificates from the provided PEM bundle.
+    pub(super) fn tls_connector_from_bundle(bundle: &PemBundle) -> Result<TlsConnector> {
+        let config = client_config_from_bundle(bundle)?;
         Ok(TlsConnector::from(Arc::new(config)))
     }
 
@@ -1772,12 +1920,14 @@ pub(crate) mod tls {
                     "invalid server name".to_string(),
                 )
             })?;
+            let reconnect_timeout =
+                hyperactor_config::global::get(config::CHANNEL_RECONNECT_TIMEOUT);
             let mut backoff = ExponentialBackoffBuilder::new()
                 .with_initial_interval(Duration::from_millis(1))
                 .with_multiplier(2.0)
                 .with_randomization_factor(0.1)
                 .with_max_interval(Duration::from_millis(1000))
-                .with_max_elapsed_time(None)
+                .with_max_elapsed_time(Some(reconnect_timeout))
                 .build();
             loop {
                 let mut addrs = (self.hostname.as_ref(), self.port)
@@ -1793,6 +1943,7 @@ pub(crate) mod tls {
                                 "cannot disable Nagle algorithm".to_string(),
                             )
                         })?;
+                        set_tcp_keepalive(&stream);
                         let mut tls_stream = self
                             .connector
                             .connect(server_name.clone(), stream)
@@ -1816,8 +1967,15 @@ pub(crate) mod tls {
                     }
                     Err(err) => {
                         tracing::debug!(error = %err, "tls connect failed, backing off");
-                        if let Some(delay) = backoff.next_backoff() {
-                            tokio::time::sleep(delay).await;
+                        match backoff.next_backoff() {
+                            Some(delay) => tokio::time::sleep(delay).await,
+                            None => {
+                                return Err(ClientError::ConnectTimeout(
+                                    self.dest(),
+                                    reconnect_timeout,
+                                    err,
+                                ));
+                            }
                         }
                     }
                 }
@@ -1855,7 +2013,11 @@ pub(crate) mod tls {
 
         use super::*;
         use crate::channel::Rx;
+        use crate::channel::Tx;
+        use crate::channel::dial;
         use crate::channel::net::server;
+        use crate::channel::serve;
+        use crate::channel::unordered;
         use crate::config::Pem;
         use crate::config::TLS_CA;
         use crate::config::TLS_CERT;
@@ -1977,6 +2139,56 @@ u19txmtkiMEH+aNmekk=
             // Receive the message
             let received = rx.recv().await.expect("failed to receive");
             assert_eq!(received, 42u64);
+        }
+
+        #[async_timed_test(timeout_secs = 30)]
+        async fn test_quic_basic() {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+
+            let config = hyperactor_config::global::lock();
+            let _guard_cert =
+                config.override_key(TLS_CERT, Pem::Value(TEST_SERVER_CERT.as_bytes().to_vec()));
+            let _guard_key =
+                config.override_key(TLS_KEY, Pem::Value(TEST_SERVER_KEY.as_bytes().to_vec()));
+            let _guard_ca =
+                config.override_key(TLS_CA, Pem::Value(TEST_CA_CERT.as_bytes().to_vec()));
+
+            let (addr, mut rx) =
+                serve::<u64>(ChannelAddr::Quic(TlsAddr::new("localhost", 0))).unwrap();
+            let tx = dial::<u64>(addr).unwrap();
+
+            tx.post(42u64);
+
+            let received = rx.recv().await.expect("failed to receive");
+            assert_eq!(received, 42u64);
+        }
+
+        #[async_timed_test(timeout_secs = 30)]
+        async fn test_quic_unordered_basic() {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+
+            let config = hyperactor_config::global::lock();
+            let _guard_cert =
+                config.override_key(TLS_CERT, Pem::Value(TEST_SERVER_CERT.as_bytes().to_vec()));
+            let _guard_key =
+                config.override_key(TLS_KEY, Pem::Value(TEST_SERVER_KEY.as_bytes().to_vec()));
+            let _guard_ca =
+                config.override_key(TLS_CA, Pem::Value(TEST_CA_CERT.as_bytes().to_vec()));
+
+            let (addr, mut rx) =
+                unordered::serve::<u64>(ChannelAddr::Quic(TlsAddr::new("localhost", 0))).unwrap();
+            let tx = unordered::dial::<u64>(addr, 2).unwrap();
+
+            for i in 0..8 {
+                tx.post(i);
+            }
+
+            let mut received = Vec::new();
+            for _ in 0..8 {
+                received.push(rx.recv().await.expect("failed to receive"));
+            }
+            received.sort();
+            assert_eq!(received, (0..8).collect::<Vec<_>>());
         }
 
         #[async_timed_test(timeout_secs = 30)]
@@ -2181,6 +2393,9 @@ pub fn try_tls_connector() -> Option<tokio_rustls::TlsConnector> {
     if let Ok(connector) = tls::tls_connector_from_bundle(&oss_bundle) {
         return Some(connector);
     }
+    if let Ok(config) = tls::client_config_from_ca(&oss_bundle.ca) {
+        return Some(tokio_rustls::TlsConnector::from(Arc::new(config)));
+    }
     tracing::debug!("OSS TLS connector failed, trying Meta paths");
 
     if let Ok(connector) = meta::try_tls_connector() {
@@ -2380,8 +2595,42 @@ mod tests {
         }
     }
 
+    #[async_timed_test(timeout_secs = 20)]
+    #[cfg_attr(not(fbcode_build), ignore)]
+    async fn test_tcp_unreachable_peer_surfaces_closed() {
+        // With a bounded reconnect timeout, dialing an unreachable peer must
+        // surface as TxStatus::Closed — not loop forever. The
+        // `async_timed_test` timeout above is the only failure backstop; the
+        // body itself is purely event-driven on the status watch.
+        let config = hyperactor_config::global::lock();
+        // `connect_by` retries `link.next()` until MESSAGE_DELIVERY_TIMEOUT
+        // when an outbound message is pending. Bound both so the test surfaces
+        // Closed within a few seconds rather than the 30s default.
+        let _g1 = config.override_key(config::CHANNEL_RECONNECT_TIMEOUT, Duration::from_secs(1));
+        let _g2 = config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(3));
+
+        // Bind a listener to grab a free local port, then drop it so connects
+        // get ECONNREFUSED.
+        let (addr, rx) =
+            server::serve::<u64>(ChannelAddr::Tcp("[::1]:0".parse().unwrap()), None).unwrap();
+        drop(rx);
+
+        let tx = channel::dial::<u64>(addr.clone()).unwrap();
+        tx.post(123); // primes the send loop so the connect path runs
+
+        let mut status = tx.status().clone();
+        while !status.borrow_and_update().is_closed() {
+            status.changed().await.unwrap();
+        }
+    }
+
     // The message size is limited by CODEC_MAX_FRAME_LENGTH.
-    #[async_timed_test(timeout_secs = 5)]
+    //
+    // Sends a payload of `default_size_in_bytes` (100 MiB) over a TCP
+    // loopback. Real-time wall clock on a loaded build host can take
+    // several seconds; the 30s timeout is comfortable headroom while
+    // still surfacing genuine hangs.
+    #[async_timed_test(timeout_secs = 30)]
     // TODO: OSS: called `Result::unwrap()` on an `Err` value: Listen(Tcp([::1]:0), Os { code: 99, kind: AddrNotAvailable, message: "Cannot assign requested address" })
     #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_tcp_message_size() {

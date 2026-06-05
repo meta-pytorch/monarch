@@ -29,10 +29,25 @@ jobs:
     uses: ./.github/workflows/build-dist.yml
     with:
       python-versions: '["3.10", "3.11", "3.12", "3.13"]'
-      runner: linux.g5.4xlarge.nvidia.gpu
-      torch-spec: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu128'
-      gpu-arch-type: cuda
-      gpu-arch-version: '12.8'
+      # Nightly wheels ship cu132 even though PR CI tests at cu130 (see
+      # set-matrix.yaml): pytorch core does the same split — publish cu132
+      # binaries, GPU-test only at cu130 — because no g4dn-fleet AMI yet
+      # carries an NVIDIA driver that satisfies nvidia-container-cli's
+      # cuda>=13.2 check.
+      #
+      # Building a wheel needs the CUDA toolkit (nvcc, headers, libs) but not
+      # host-GPU access. The cuda13.2 builder image supplies the toolkit; we
+      # set gpu-arch-type=cpu so test-infra's linux_job_v2.yml skips the
+      # `setup-nvidia` step that mounts `--gpus all` and triggers
+      # nvidia-container-cli's host-driver-vs-CUDA version check. Passing an
+      # already-tagged docker-image makes test-infra use it verbatim instead
+      # of auto-suffixing it from gpu-arch-type/version.
+      runner: linux.c7i.2xlarge
+      docker-image: 'pytorch/manylinux2_28-builder:cuda13.2'
+      torch-spec: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu132'
+      gpu-arch-type: cpu
+      gpu-arch-version: ''
+      arch-label: cuda13.2
       platform: x86_64
 
   build-arm64:
@@ -40,10 +55,10 @@ jobs:
     with:
       python-versions: '["3.10", "3.11", "3.12", "3.13"]'
       runner: linux.arm64.2xlarge
-      docker-image: 'pytorch/manylinuxaarch64-builder:cuda12.8'
-      torch-spec: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu128'
+      docker-image: 'pytorch/manylinuxaarch64-builder:cuda13.2'
+      torch-spec: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu132'
       gpu-arch-type: cuda
-      gpu-arch-version: '12.8'
+      gpu-arch-version: '13.2'
       platform: aarch64
 
   build-macos:
@@ -101,7 +116,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           # Docker container only has python 3.12, so we need to use the x86_64 3.12 wheel.
-          name: monarch-py3.12-cuda12.8-x86_64
+          name: monarch-py3.12-cuda13.2-x86_64
           path: ${{ runner.temp }}/monarch_wheels
           merge-multiple: true
 
@@ -116,7 +131,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Get tag for publishing
-        run: echo "DOCKER_TAG=0.5.0.dev$(date +'%Y%m%d')-cuda12.6" >> $GITHUB_ENV
+        run: echo "DOCKER_TAG=0.6.0.dev$(date +'%Y%m%d')-cuda13.2" >> $GITHUB_ENV
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
@@ -130,6 +145,6 @@ jobs:
             ghcr.io/${{ github.repository }}-nightly:latest
           # TODO: find docker tag that gets updated automatically.
           build-args: |
-            PYTORCH_TAG=2.13.0.dev20260513-cuda12.6-cudnn9-runtime
+            PYTORCH_TAG=2.13.0.dev20260513-cuda13.2-cudnn9-runtime
           build-contexts: |
             monarch-wheels=${{ runner.temp }}/monarch_wheels

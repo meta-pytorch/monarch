@@ -4,30 +4,38 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-strict
+
 """
 Poll ci_signals_result until all oss_ci signals for a Phabricator diff version resolve.
 
-Two bugs found during testing and fixed here:
-  1. jf diff-properties returns the LATEST (post-landing) version FBID, not the
-     version that CI ran on.  The Skycastle phabricator_version_number flag gives
-     the correct version; we look up its FBID via phabricator_versions GraphQL.
-  2. ci_signals_result silently returns 0 results when the query uses a GraphQL
-     variable for the value field.  The FBID must be inlined into the query string.
+Auth uses the current user on devservers and the read-only diff reader bot in
+Sandcastle. This avoids depending on jf being installed on Sandcastle workers.
+
+Two implementation notes:
+  1. The version FBID must be looked up from phabricator_versions; jf diff-properties
+     returns the latest (post-landing) FBID which may differ from the CI version.
+  2. ci_signals_result silently returns 0 results when the FBID is a GraphQL variable;
+     the FBID must be inlined into the query string.
 
 Exits 0 if all OSS CI signals pass, 1 if any fail, 2 on timeout/infra error.
 
-Usage (via Skycastle buck_run):
+Usage (via Skycastle):
     buck run fbcode//monarch/ci:poll_github_ci -- --diff D12345678 --version-number 384114609
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 import time
+from typing import Any
 
-from security.frameworks.python.exec.subprocess import TrustedSubprocessWithList
+from libfb.py.environment import is_sandcastle
+from libfb.py.interngraph.auth.interngraph_crypto_auth_token_util import (
+    InternGraphCryptoAuthTokenUtil,
+)
+from libfb.py.interngraph.graphql.graphql_query import GraphQLClient
 
 
 OSS_SIGNAL_PREFIX = "meta-pytorch/monarch: CI /"
@@ -38,38 +46,67 @@ MAX_BACKOFF_SECS = 300
 _PASS_STATUSES = {"GOOD", "PASSED"}
 _FAIL_STATUSES = {"FAILED", "ERROR"}
 _WARN_STATUSES = {"WARNING", "WARNED"}
-# Any of the above = terminal; anything else (PENDING*, NOT_FOUND) = keep waiting
+
+# Matches PhabricatorAuthStrategyFactory.diff_reader_bot().
+_DIFF_READER_BOT_FBID = 89002005288303
+_DIFF_READER_BOT_SERVICE = "diff.reader.bot"
 
 
-def _jf(*args: str, timeout: int = 60) -> str:
-    result = TrustedSubprocessWithList.run(
-        executable="jf",
-        cmd_args=list(args),
-        capture_output=True,
-        text=True,
-        timeout=timeout,
+def _reader_bot_security_params() -> dict[str, str]:
+    cats = InternGraphCryptoAuthTokenUtil.get_serialized_token_list_for_service(
+        service_identity=_DIFF_READER_BOT_SERVICE,
+        service_user_fbid=_DIFF_READER_BOT_FBID,
+        app_id=GraphQLClient.INTERN_GRAPHQL_APP,
+        token_timeout_seconds=7200,
     )
-    if result.returncode != 0:
-        raise RuntimeError(f"jf {' '.join(args)} failed:\n{result.stderr.strip()}")
-    return result.stdout
+    return InternGraphCryptoAuthTokenUtil.get_auth_data(
+        app_id=GraphQLClient.INTERN_GRAPHQL_APP,
+        crypto_auth_tokens=cats,
+    )
+
+
+def _graphql(
+    query: str,
+    params: dict[str, Any] | None = None,
+    timeout_seconds: int = 60,
+) -> dict[str, Any]:
+    if is_sandcastle():
+        return GraphQLClient.intern_query(
+            query,
+            params or {},
+            security_params=_reader_bot_security_params(),
+            raise_exception=True,
+            timeout_seconds=timeout_seconds,
+        )
+
+    try:
+        return GraphQLClient.intern_query(
+            query,
+            params or {},
+            raise_exception=True,
+            timeout_seconds=timeout_seconds,
+        )
+    except RuntimeError:
+        return GraphQLClient.intern_query(
+            query,
+            params or {},
+            security_params=_reader_bot_security_params(),
+            raise_exception=True,
+            timeout_seconds=timeout_seconds,
+        )
 
 
 def _get_version_fbid(diff_num: int, version_num: int) -> str:
     """Look up the FBID for a specific phabricator version number.
 
-    ci_signals_result requires the version FBID (not the diff FBID or version
-    number).  We get it by querying phabricator_versions for the diff and
-    matching on the version number.
-
-    Note: the query uses an inline integer literal — variable substitution
-    silently returns 0 results from ci_signals_result due to a JF GraphQL quirk.
+    Uses the version list because diff-properties returns the latest version FBID,
+    which may differ from the CI version.
     """
     query = (
         "{ phabricator_diff(number: %d) "
         "{ phabricator_versions { edges { node { id number } } } } }" % diff_num
     )
-    raw = _jf("graphql", "--query", query)
-    data = json.loads(raw)
+    data = _graphql(query)
     edges = (
         data.get("phabricator_diff", {})
         .get("phabricator_versions", {})
@@ -84,19 +121,18 @@ def _get_version_fbid(diff_num: int, version_num: int) -> str:
     )
 
 
-def _get_oss_ci_signals(version_fbid: str) -> list[dict]:
-    """Return all oss_ci signals for this diff version whose name starts with
-    OSS_SIGNAL_PREFIX.
+def _get_oss_ci_signals(version_fbid: str) -> list[dict[str, Any]]:
+    """Return all oss_ci signals whose name starts with OSS_SIGNAL_PREFIX.
 
-    The FBID must be inlined into the query string — GraphQL variables cause
-    ci_signals_result to silently return 0 results (JF GraphQL bug).
+    The FBID must be inlined — GraphQL variables cause ci_signals_result to
+    silently return 0 results (JF GraphQL bug).
     """
+    version_fbid = str(int(version_fbid))
     query = (
         '{ ci_signals_result(query_key:{type:PHABRICATOR_VERSION_FBID,value:"%s"})'
         "{ signals(first:1000,filters:{}) { nodes { name status } } } }" % version_fbid
     )
-    raw = _jf("graphql", "--query", query, timeout=90)
-    data = json.loads(raw)
+    data = _graphql(query, timeout_seconds=90)
     nodes = data.get("ci_signals_result", {}).get("signals", {}).get("nodes", [])
     return [n for n in nodes if n["name"].startswith(OSS_SIGNAL_PREFIX)]
 
@@ -118,8 +154,6 @@ def main() -> None:
 
     diff_str = args.diff if args.diff.startswith("D") else f"D{args.diff}"
     diff_num = int(diff_str.lstrip("D"))
-
-    _jf("arcrc", "--reader-bot")
 
     print(f"Resolving version FBID for {diff_str} v{args.version_number}...")
     version_fbid = _get_version_fbid(diff_num, args.version_number)

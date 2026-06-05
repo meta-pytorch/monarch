@@ -50,6 +50,7 @@ def make_deterministic():
 
 
 def get_state() -> State:
+    # pyrefly: ignore [bad-argument-type]
     return State(*_get_state())
 
 

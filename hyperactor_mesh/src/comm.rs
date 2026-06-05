@@ -28,13 +28,13 @@ use hyperactor::Context;
 use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Instance;
+use hyperactor::PortAddr;
 use hyperactor::PortRef;
 use hyperactor::RemoteEndpoint as _;
 use hyperactor::RemoteMessage;
 use hyperactor::UnboundPort;
 use hyperactor::UnboundPortKind;
 use hyperactor::accum::ReducerMode;
-use hyperactor::mailbox::DeliveryError;
 use hyperactor::mailbox::MailboxSender;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::mailbox::UndeliverableMailboxSender;
@@ -68,6 +68,43 @@ declare_attrs! {
         Some("enable_native_v1_casting".to_string()),
     ))
     pub attr ENABLE_NATIVE_V1_CASTING: bool = true;
+
+    /// The multicast phase that attached context to a delivery failure.
+    pub attr MULTICAST_FAILURE_PHASE: String;
+
+    /// The comm actor that attached multicast context to a delivery failure.
+    pub attr MULTICAST_FAILURE_COMM_ACTOR: ActorAddr;
+
+    /// The originating cast sender.
+    pub attr MULTICAST_FAILURE_ORIGIN: ActorAddr;
+
+    /// The return port used to send the undeliverable message to the origin.
+    pub attr MULTICAST_FAILURE_RETURN_PORT: String;
+}
+
+fn annotate_multicast_failure(
+    envelope: &mut hyperactor::mailbox::MessageEnvelope,
+    comm_actor: &ActorAddr,
+    phase: &str,
+    origin: &ActorAddr,
+    return_port: &PortAddr,
+) {
+    let actor_mesh_id = envelope.headers().get(CAST_ACTOR_MESH_ID);
+    if let Some(failure) = envelope.root_delivery_failure_mut() {
+        failure
+            .attrs
+            .set(MULTICAST_FAILURE_PHASE, phase.to_string());
+        failure
+            .attrs
+            .set(MULTICAST_FAILURE_COMM_ACTOR, comm_actor.clone());
+        failure.attrs.set(MULTICAST_FAILURE_ORIGIN, origin.clone());
+        failure
+            .attrs
+            .set(MULTICAST_FAILURE_RETURN_PORT, return_port.to_string());
+        if let Some(actor_mesh_id) = actor_mesh_id {
+            failure.attrs.set(CAST_ACTOR_MESH_ID, actor_mesh_id);
+        }
+    }
 }
 
 /// Parameters to initialize the CommActor
@@ -184,12 +221,34 @@ impl Actor for CommActor {
     async fn handle_undeliverable_message(
         &mut self,
         cx: &Instance<Self>,
+        _reason: hyperactor::mailbox::UndeliverableReason,
+        undelivered: hyperactor::mailbox::Undeliverable<hyperactor::mailbox::MessageEnvelope>,
+    ) -> Result<(), anyhow::Error> {
+        self.return_delivery_failure_to_origin(cx, undelivered)
+            .await
+    }
+
+    async fn handle_invalid_reference(
+        &mut self,
+        cx: &Instance<Self>,
+        _invalid: hyperactor::mailbox::InvalidReference,
+        undelivered: hyperactor::mailbox::Undeliverable<hyperactor::mailbox::MessageEnvelope>,
+    ) -> Result<(), anyhow::Error> {
+        self.return_delivery_failure_to_origin(cx, undelivered)
+            .await
+    }
+}
+
+impl CommActor {
+    async fn return_delivery_failure_to_origin(
+        &mut self,
+        cx: &Instance<Self>,
         undelivered: hyperactor::mailbox::Undeliverable<hyperactor::mailbox::MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
         let mut message_envelope = match undelivered {
-            Undeliverable::Message(message_envelope) => message_envelope,
-            Undeliverable::Lost(lost) => {
-                anyhow::bail!(UndeliverableMessageError::Lost { lost });
+            Undeliverable::Returned(message_envelope) => message_envelope,
+            Undeliverable::Report(report) => {
+                anyhow::bail!(UndeliverableMessageError::Report { report });
             }
         };
 
@@ -199,30 +258,33 @@ impl Actor for CommActor {
         {
             let sender = message.sender();
             let return_port = PortRef::attest_handler_port(sender);
-            message_envelope.set_error(DeliveryError::Multicast(format!(
-                "comm actor {} failed to forward the cast message; returning to origin {}",
+            annotate_multicast_failure(
+                &mut message_envelope,
                 cx.self_addr(),
+                "forward",
+                sender,
                 return_port.port_addr(),
-            )));
+            );
 
             // Needed so that the receiver of the undeliverable message can easily find the
             // original sender of the cast message.
             message_envelope.set_header(CAST_ORIGINATING_SENDER, sender.clone());
 
-            return_port.post(cx, Undeliverable::Message(message_envelope.clone()));
+            return_port.post(cx, Undeliverable::Returned(message_envelope.clone()));
             return Ok(());
         }
 
         // 2. Case delivery failure at a "deliver here" step.
         if let Some(sender) = message_envelope.headers().get(CAST_ORIGINATING_SENDER) {
             let return_port = PortRef::attest_handler_port(&sender);
-            message_envelope.set_error(DeliveryError::Multicast(format!(
-                "comm actor {} failed to deliver the cast message to the dest \
-                actor; returning to origin {}",
+            annotate_multicast_failure(
+                &mut message_envelope,
                 cx.self_addr(),
+                "deliver_here",
+                &sender,
                 return_port.port_addr(),
-            )));
-            return_port.post(cx, Undeliverable::Message(message_envelope.clone()));
+            );
+            return_port.post(cx, Undeliverable::Returned(message_envelope.clone()));
             return Ok(());
         }
 
@@ -231,9 +293,7 @@ impl Actor for CommActor {
             .post(message_envelope, /*unused */ monitored_return_handle());
         Ok(())
     }
-}
 
-impl CommActor {
     /// Forward the message to the comm actor on the given peer rank.
     fn forward<M: RemoteMessage>(
         cx: &Context<Self>,
@@ -313,14 +373,31 @@ impl CommActor {
         replace_with_self_ranks(&cast_point, message.data_mut())?;
 
         set_cast_info_on_headers(&mut headers, cast_point, message.sender().clone());
-        cx.post_with_external_seq_info(
-            cx.self_addr()
-                .proc_addr()
-                .actor_addr_uid(message.dest_port().actor_uid().clone())
-                .port_addr(hyperactor::port::Port::from(message.dest_port().port())),
-            headers,
-            wirevalue::Any::serialize(message.data())?,
-        );
+
+        // Bind dest ONCE so we can pass to both the stamp helper and the
+        // post call.
+        let dest = cx
+            .self_addr()
+            .proc_addr()
+            .actor_addr_uid(message.dest_port().actor_uid().clone())
+            .port_addr(hyperactor::port::Port::from(message.dest_port().port()));
+
+        // Stamp SENDER_ACTOR_ID when headers already carry SEQ_INFO (V1
+        // path). V0 path leaves SEQ_INFO absent here; MailboxExt::post will
+        // assign it and stamp via its own helper call later. Flattrs::get
+        // returns an owned typed value, so seq_info isn't borrowed from
+        // headers and we can pass &mut headers to the helper without
+        // a borrow-checker conflict.
+        if let Some(seq_info) = headers.get(SEQ_INFO) {
+            hyperactor::mailbox::headers::stamp_sender_actor_id(
+                &mut headers,
+                &seq_info,
+                &dest,
+                message.sender(),
+            );
+        }
+
+        cx.post_with_external_seq_info(dest, headers, wirevalue::Any::serialize(message.data())?);
 
         Ok(())
     }
@@ -706,6 +783,57 @@ pub mod test_utils {
             Ok(())
         }
     }
+
+    // SENDER_ACTOR_ID capture fixture for the cast-correctness matrix tests.
+    // Kept in test_utils so #[hyperactor::spawnable]'s inventory::submit!
+    // registration is reliably picked up by Remote::collect() at runtime;
+    // #[doc(hidden)] because this is a test fixture, not API.
+
+    #[doc(hidden)]
+    #[derive(Debug, Clone, Serialize, Deserialize, Named, Bind, Unbind)]
+    pub struct SenderCaptureMsg();
+
+    #[doc(hidden)]
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
+    pub struct CapturedSender(pub Option<ActorAddr>);
+
+    #[doc(hidden)]
+    #[derive(Debug)]
+    #[hyperactor::export(SenderCaptureMsg { cast = true })]
+    #[hyperactor::spawnable]
+    pub struct SenderCapturingActor {
+        forward_port: PortRef<CapturedSender>,
+    }
+
+    #[doc(hidden)]
+    #[derive(Debug, Clone, Named, Serialize, Deserialize)]
+    pub struct SenderCapturingActorParams {
+        pub forward_port: PortRef<CapturedSender>,
+    }
+
+    #[async_trait]
+    impl Actor for SenderCapturingActor {}
+
+    #[async_trait]
+    impl hyperactor::RemoteSpawn for SenderCapturingActor {
+        type Params = SenderCapturingActorParams;
+
+        async fn new(params: Self::Params, _environment: Flattrs) -> Result<Self> {
+            let Self::Params { forward_port } = params;
+            Ok(Self { forward_port })
+        }
+    }
+
+    #[async_trait]
+    impl Handler<SenderCaptureMsg> for SenderCapturingActor {
+        async fn handle(&mut self, cx: &Context<Self>, _: SenderCaptureMsg) -> anyhow::Result<()> {
+            let sender = cx
+                .headers()
+                .get(hyperactor::mailbox::headers::SENDER_ACTOR_ID);
+            self.forward_port.post(cx, CapturedSender(sender));
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -728,16 +856,12 @@ mod tests {
     async fn buffering_fixture(
         proc_name: &str,
     ) -> (
-        Instance<()>,
+        hyperactor::Client,
         hyperactor::mailbox::PortReceiver<TestMessage>,
         hyperactor::ActorHandle<CommActor>,
         crate::mesh_id::ActorMeshId,
-        // Drop guards: client handle, test actor handle, test actor ref.
-        (
-            hyperactor::ActorHandle<()>,
-            hyperactor::ActorHandle<TestActor>,
-            ActorRef<TestActor>,
-        ),
+        // Drop guards: test actor handle, test actor ref.
+        (hyperactor::ActorHandle<TestActor>, ActorRef<TestActor>),
     ) {
         use hyperactor::Proc;
         use hyperactor::RemoteSpawn;
@@ -745,7 +869,7 @@ mod tests {
         use hyperactor::id::Label;
 
         let proc = Proc::direct(ChannelTransport::Unix.any(), proc_name.to_string()).unwrap();
-        let (client, client_handle) = proc.client("client").unwrap();
+        let client = proc.client("client");
 
         let actor_mesh_id = crate::mesh_id::ActorMeshId::instance(Label::new("test").unwrap());
 
@@ -759,19 +883,19 @@ mod tests {
             .unwrap();
         let test_ref: ActorRef<TestActor> = test_handle.bind::<TestActor>();
 
-        let comm_handle = proc.spawn("comm", CommActor::default()).unwrap();
+        let comm_handle = proc.spawn(CommActor::default());
 
         (
             client,
             rx,
             comm_handle,
             actor_mesh_id,
-            (client_handle, test_handle, test_ref),
+            (test_handle, test_ref),
         )
     }
 
     /// Send CommMeshConfig (single-rank mesh pointing at self).
-    fn send_config(client: &Instance<()>, comm_handle: &hyperactor::ActorHandle<CommActor>) {
+    fn send_config(client: &hyperactor::Client, comm_handle: &hyperactor::ActorHandle<CommActor>) {
         let comm_ref = comm_handle.bind::<CommActor>();
         let mut peers = HashMap::new();
         peers.insert(0, comm_ref);
@@ -782,7 +906,7 @@ mod tests {
     /// and verify both are delivered in order.
     async fn assert_buffered_and_replayed<M: hyperactor::Message>(
         proc_name: &str,
-        mut make_msg: impl FnMut(&Instance<()>, &crate::mesh_id::ActorMeshId, &str) -> M,
+        mut make_msg: impl FnMut(&hyperactor::Client, &crate::mesh_id::ActorMeshId, &str) -> M,
     ) where
         CommActor: hyperactor::Handler<M>,
     {
@@ -893,6 +1017,7 @@ mod tests {
 
     use hyperactor::ActorAddr;
     use hyperactor::ActorRef;
+    use hyperactor::Endpoint as _;
     use hyperactor::Index;
     use hyperactor::OncePortRef;
     use hyperactor::PortAddr;
@@ -900,10 +1025,17 @@ mod tests {
     use hyperactor::ProcAddr;
     use hyperactor::accum::Accumulator;
     use hyperactor::accum::ReducerSpec;
+    use hyperactor::channel::ChannelAddr;
     use hyperactor::context;
     use hyperactor::context::Mailbox;
+    use hyperactor::mailbox::DeliveryFailure;
+    use hyperactor::mailbox::MessageEnvelope;
     use hyperactor::mailbox::PortReceiver;
+    use hyperactor::mailbox::TransportFailure;
+    use hyperactor::mailbox::TransportFailureReason;
+    use hyperactor::mailbox::UndeliverableReason;
     use hyperactor::mailbox::open_port;
+    use hyperactor::port::Port;
     use hyperactor_config;
     use hyperactor_mesh_macros::sel;
     use maplit::btreemap;
@@ -919,9 +1051,131 @@ mod tests {
 
     use super::*;
     use crate::ActorMesh;
+    use crate::ProcMesh;
     use crate::host_mesh::HostMesh;
     use crate::test_utils::local_host_mesh;
     use crate::testing;
+
+    #[test]
+    fn annotate_multicast_failure_adds_attrs_to_root_failure() {
+        let proc_addr = ProcAddr::singleton(ChannelAddr::Local(1), "test");
+        let origin = proc_addr.actor_addr("origin");
+        let comm_actor = proc_addr.actor_addr("comm");
+        let dest = proc_addr.actor_addr("dest").port_addr(Port::from(42));
+        let return_port = origin.port_addr(Port::from(7));
+        let mut envelope =
+            MessageEnvelope::serialize(origin.clone(), dest.clone(), &(), Flattrs::new()).unwrap();
+        envelope.push_delivery_failure(DeliveryFailure::new(UndeliverableReason::Transport(
+            TransportFailure::new(dest, TransportFailureReason::NoRoute),
+        )));
+
+        annotate_multicast_failure(
+            &mut envelope,
+            &comm_actor,
+            "deliver_here",
+            &origin,
+            &return_port,
+        );
+
+        let root_failure = envelope
+            .root_delivery_failure()
+            .expect("expected root delivery failure");
+        assert_eq!(
+            root_failure.attrs.get(MULTICAST_FAILURE_PHASE).as_deref(),
+            Some("deliver_here")
+        );
+        assert_eq!(
+            root_failure.attrs.get(MULTICAST_FAILURE_COMM_ACTOR),
+            Some(comm_actor)
+        );
+        assert_eq!(
+            root_failure.attrs.get(MULTICAST_FAILURE_ORIGIN),
+            Some(origin)
+        );
+        assert_eq!(
+            root_failure.attrs.get(MULTICAST_FAILURE_RETURN_PORT),
+            Some(return_port.to_string())
+        );
+    }
+
+    #[test]
+    fn annotate_multicast_failure_records_forward_phase() {
+        let proc_addr = ProcAddr::singleton(ChannelAddr::Local(1), "test");
+        let origin = proc_addr.actor_addr("origin");
+        let comm_actor = proc_addr.actor_addr("comm");
+        let dest = proc_addr.actor_addr("dest").port_addr(Port::from(42));
+        let return_port = origin.port_addr(Port::from(7));
+        let mut envelope =
+            MessageEnvelope::serialize(origin.clone(), dest.clone(), &(), Flattrs::new()).unwrap();
+        envelope.push_delivery_failure(DeliveryFailure::new(UndeliverableReason::Transport(
+            TransportFailure::new(dest, TransportFailureReason::NoRoute),
+        )));
+
+        annotate_multicast_failure(&mut envelope, &comm_actor, "forward", &origin, &return_port);
+
+        let root_failure = envelope
+            .root_delivery_failure()
+            .expect("expected root delivery failure");
+        assert_eq!(
+            root_failure.attrs.get(MULTICAST_FAILURE_PHASE).as_deref(),
+            Some("forward")
+        );
+    }
+
+    #[test]
+    fn annotate_multicast_failure_copies_actor_mesh_id_attr() {
+        let proc_addr = ProcAddr::singleton(ChannelAddr::Local(1), "test");
+        let origin = proc_addr.actor_addr("origin");
+        let comm_actor = proc_addr.actor_addr("comm");
+        let dest = proc_addr.actor_addr("dest").port_addr(Port::from(42));
+        let return_port = origin.port_addr(Port::from(7));
+        let actor_mesh_id =
+            crate::mesh_id::ActorMeshId::instance(hyperactor::id::Label::new("mesh").unwrap());
+        let mut headers = Flattrs::new();
+        headers.set(CAST_ACTOR_MESH_ID, actor_mesh_id.clone());
+        let mut envelope =
+            MessageEnvelope::serialize(origin.clone(), dest.clone(), &(), headers).unwrap();
+        envelope.push_delivery_failure(DeliveryFailure::new(UndeliverableReason::Transport(
+            TransportFailure::new(dest, TransportFailureReason::NoRoute),
+        )));
+
+        annotate_multicast_failure(
+            &mut envelope,
+            &comm_actor,
+            "deliver_here",
+            &origin,
+            &return_port,
+        );
+
+        let root_failure = envelope
+            .root_delivery_failure()
+            .expect("expected root delivery failure");
+        assert_eq!(
+            root_failure.attrs.get(CAST_ACTOR_MESH_ID),
+            Some(actor_mesh_id)
+        );
+    }
+
+    #[test]
+    fn annotate_multicast_failure_noops_without_root_failure() {
+        let proc_addr = ProcAddr::singleton(ChannelAddr::Local(1), "test");
+        let origin = proc_addr.actor_addr("origin");
+        let comm_actor = proc_addr.actor_addr("comm");
+        let dest = proc_addr.actor_addr("dest").port_addr(Port::from(42));
+        let return_port = origin.port_addr(Port::from(7));
+        let mut envelope =
+            MessageEnvelope::serialize(origin.clone(), dest, &(), Flattrs::new()).unwrap();
+
+        annotate_multicast_failure(
+            &mut envelope,
+            &comm_actor,
+            "deliver_here",
+            &origin,
+            &return_port,
+        );
+
+        assert!(envelope.root_delivery_failure().is_none());
+    }
 
     // Helper to look up the rank for a given actor ID using the rank_lookup table.
     fn lookup_rank(actor_id: &ActorAddr, rank_lookup: &HashMap<ProcAddr, usize>) -> usize {
@@ -1745,5 +1999,167 @@ mod tests {
             assert_eq!(val, 42);
         }
         let _ = host_mesh.shutdown(instance).await;
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // Cast correctness matrix: SENDER_ACTOR_ID stamping invariant verified at
+    // the receiver across direct, V1 native p2p, V1 native tree, and V0 legacy
+    // paths. Invariant: SENDER_ACTOR_ID == session owner (the actor whose
+    // Sequencer assigned the SEQ_INFO for this session).
+
+    struct SenderCaptureSetup {
+        instance: &'static Instance<testing::TestRootClient>,
+        host_mesh: HostMesh,
+        proc_mesh: ProcMesh,
+        actor_mesh: ActorMesh<SenderCapturingActor>,
+        rx: hyperactor::mailbox::PortReceiver<CapturedSender>,
+    }
+
+    async fn setup_sender_capture_mesh(num_ranks: usize) -> SenderCaptureSetup {
+        let instance = crate::testing::instance();
+        let host_mesh = local_host_mesh(num_ranks).await;
+        let proc_mesh = host_mesh
+            .spawn(
+                instance,
+                "sender_capture",
+                extent!(gpu = num_ranks),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let (tx, rx) = hyperactor::mailbox::open_port(instance);
+        let params = SenderCapturingActorParams {
+            forward_port: tx.bind(),
+        };
+        let actor_name = crate::mesh_id::ActorMeshId::instance(
+            hyperactor::id::Label::new("sender_capture").unwrap(),
+        );
+        let actor_mesh: ActorMesh<SenderCapturingActor> = proc_mesh
+            .spawn_with_name(&instance, actor_name, &params, None, true)
+            .await
+            .unwrap();
+        SenderCaptureSetup {
+            instance,
+            host_mesh,
+            proc_mesh,
+            actor_mesh,
+            rx,
+        }
+    }
+
+    /// Direct send: SENDER_ACTOR_ID at the receiver equals the caller's
+    /// `actor_addr` (MailboxExt::post stamps via the caller's Sequencer).
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_direct_send_sender_actor_id() {
+        let mut setup = setup_sender_capture_mesh(1).await;
+
+        let actor_ref = setup.actor_mesh.values().next().unwrap();
+        actor_ref.post(setup.instance, SenderCaptureMsg());
+
+        let captured = setup.rx.recv().await.unwrap();
+        assert_eq!(
+            captured,
+            CapturedSender(Some(setup.instance.self_addr().clone())),
+        );
+
+        let _ = setup.host_mesh.shutdown(setup.instance).await;
+    }
+
+    /// V1 native p2p cast: SENDER_ACTOR_ID at the receiver equals the
+    /// caster's `actor_addr`. SEQ_INFO is assigned at the cast origin's
+    /// Sequencer; CommActor::deliver_to_dest stamps from message.sender()
+    /// (which is the origin) on the leaf.
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_v1_native_p2p_sender_actor_id() {
+        let config = hyperactor_config::global::lock();
+        let _g1 = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
+        let _g2 = config.override_key(
+            hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER,
+            true,
+        );
+        let _g3 = config.override_key(crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD, 1024);
+
+        let mut setup = setup_sender_capture_mesh(1).await;
+        setup
+            .actor_mesh
+            .cast(setup.instance, SenderCaptureMsg())
+            .unwrap();
+
+        let captured = setup.rx.recv().await.unwrap();
+        assert_eq!(
+            captured,
+            CapturedSender(Some(setup.instance.self_addr().clone())),
+        );
+
+        let _ = setup.host_mesh.shutdown(setup.instance).await;
+    }
+
+    /// V1 native tree cast: SENDER_ACTOR_ID at every receiver equals the
+    /// caster's `actor_addr`. Origin propagates through the comm-tree
+    /// because each leaf's deliver_to_dest stamps from message.sender()
+    /// when SEQ_INFO is present on headers.
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_v1_native_tree_sender_actor_id() {
+        let config = hyperactor_config::global::lock();
+        let _g1 = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
+        let _g2 = config.override_key(
+            hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER,
+            true,
+        );
+        let _g3 = config.override_key(crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD, 0);
+
+        let mut setup = setup_sender_capture_mesh(8).await;
+        setup
+            .actor_mesh
+            .cast(setup.instance, SenderCaptureMsg())
+            .unwrap();
+
+        let num_points = setup.proc_mesh.extent().points().count();
+        let expected = CapturedSender(Some(setup.instance.self_addr().clone()));
+        for _ in 0..num_points {
+            let captured = setup.rx.recv().await.unwrap();
+            assert_eq!(captured, expected);
+        }
+
+        let _ = setup.host_mesh.shutdown(setup.instance).await;
+    }
+
+    /// V0 legacy cast: SENDER_ACTOR_ID at the receiver names the local
+    /// CommActor (session owner), NOT the caster. V0 doesn't propagate
+    /// SEQ_INFO from origin; deliver_to_dest skips its stamp-if-present
+    /// branch; MailboxExt::post on cx assigns SEQ_INFO via the CommActor's
+    /// Sequencer and stamps with the CommActor's actor_addr.
+    ///
+    /// V0 invariant: when V0 is retired this test can be deleted with no
+    /// loss of coverage.
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_v0_legacy_sender_actor_id() {
+        let config = hyperactor_config::global::lock();
+        let _g1 = config.override_key(ENABLE_NATIVE_V1_CASTING, false);
+        let _g2 = config.override_key(
+            hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER,
+            false,
+        );
+
+        let mut setup = setup_sender_capture_mesh(1).await;
+        setup
+            .actor_mesh
+            .cast(setup.instance, SenderCaptureMsg())
+            .unwrap();
+
+        let captured = setup.rx.recv().await.unwrap();
+        let captured_addr = captured.0.as_ref().expect("sender was stamped");
+        assert_ne!(
+            captured_addr,
+            setup.instance.self_addr(),
+            "V0 cast is relay-owned, not origin-owned",
+        );
+        assert!(
+            captured_addr.label().unwrap().as_str().contains("comm"),
+            "session owner should be structurally a comm actor; got {captured_addr:?}",
+        );
+
+        let _ = setup.host_mesh.shutdown(setup.instance).await;
     }
 }
