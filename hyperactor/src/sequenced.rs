@@ -14,12 +14,17 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::collections::btree_map;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::TryLockError;
 
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TryRecvError;
 use uuid::Uuid;
 
 use crate::ActorAddr;
+use crate::ordering::OrderingSessionSnapshot;
+use crate::ordering::OrderingSnapshot;
 use crate::ordering::SeqInfo;
 
 const RING_BUFFER_LIMIT: usize = 32;
@@ -106,24 +111,107 @@ impl<M> Sequenced for DirectEnvelope<M> {
 /// messages.
 pub(crate) fn sequenced_unbounded<M: Sequenced>() -> (mpsc::UnboundedSender<M>, SequencedReceiver<M>)
 {
+    sequenced_unbounded_with_buffering(true)
+}
+
+/// Open an unbounded channel with explicitly configured sequencing.
+pub(crate) fn sequenced_unbounded_with_buffering<M: Sequenced>(
+    enable_buffering: bool,
+) -> (mpsc::UnboundedSender<M>, SequencedReceiver<M>) {
     let (tx, rx) = mpsc::unbounded_channel();
-    (tx, SequencedReceiver::new(rx))
+    (tx, SequencedReceiver::new(rx, enable_buffering))
+}
+
+/// Out-of-band snapshot handle for a receiver-local sequencing domain.
+#[derive(Debug)]
+pub(crate) struct SequencedSnapshot<M> {
+    enable_buffering: bool,
+    state: Arc<Mutex<SequencedState<M>>>,
+}
+
+impl<M> Clone for SequencedSnapshot<M> {
+    fn clone(&self) -> Self {
+        Self {
+            enable_buffering: self.enable_buffering,
+            state: self.state.clone(),
+        }
+    }
+}
+
+impl<M> SequencedSnapshot<M> {
+    /// Snapshot the currently buffered sequencing state.
+    pub(crate) fn snapshot(&self) -> OrderingSnapshot {
+        if !self.enable_buffering {
+            return OrderingSnapshot {
+                enabled: false,
+                sessions: Vec::new(),
+                skipped_session_count: 0,
+            };
+        }
+
+        let state = match self.state.try_lock() {
+            Ok(state) => state,
+            Err(TryLockError::WouldBlock) => {
+                return OrderingSnapshot {
+                    enabled: true,
+                    sessions: Vec::new(),
+                    skipped_session_count: 1,
+                };
+            }
+            Err(TryLockError::Poisoned(err)) => err.into_inner(),
+        };
+
+        let mut sessions: Vec<_> = state
+            .senders
+            .iter()
+            .map(|(session_id, sequencer)| {
+                let (buffered_count, oldest_buffered_seq, newest_buffered_seq) =
+                    sequencer.buffer.snapshot(sequencer.seq);
+                OrderingSessionSnapshot {
+                    session_id: *session_id,
+                    sender: sequencer.sender.clone(),
+                    last_released_seq: sequencer.seq.saturating_sub(1),
+                    expected_next_seq: sequencer.seq,
+                    buffered_count,
+                    oldest_buffered_seq,
+                    newest_buffered_seq,
+                }
+            })
+            .collect();
+        sessions.sort_by_key(|session| session.session_id);
+
+        OrderingSnapshot {
+            enabled: true,
+            sessions,
+            skipped_session_count: 0,
+        }
+    }
 }
 
 /// A receiver that owns all reorder state for one sequencing domain.
 #[derive(Debug)]
 pub(crate) struct SequencedReceiver<M: Sequenced> {
     rx: mpsc::UnboundedReceiver<M>,
-    senders: HashMap<Uuid, Sequencer<M::Message>>,
+    enable_buffering: bool,
+    state: Arc<Mutex<SequencedState<M::Message>>>,
     ready: VecDeque<M::Message>,
 }
 
 impl<M: Sequenced> SequencedReceiver<M> {
-    fn new(rx: mpsc::UnboundedReceiver<M>) -> Self {
+    fn new(rx: mpsc::UnboundedReceiver<M>, enable_buffering: bool) -> Self {
         Self {
             rx,
-            senders: HashMap::new(),
+            enable_buffering,
+            state: Arc::new(Mutex::new(SequencedState::default())),
             ready: VecDeque::new(),
+        }
+    }
+
+    /// Return a cloneable diagnostic handle for this receiver.
+    pub(crate) fn snapshot_handle(&self) -> SequencedSnapshot<M::Message> {
+        SequencedSnapshot {
+            enable_buffering: self.enable_buffering,
+            state: self.state.clone(),
         }
     }
 
@@ -156,12 +244,17 @@ impl<M: Sequenced> SequencedReceiver<M> {
     }
 
     fn admit(&mut self, item: M) -> Option<M::Message> {
+        if !self.enable_buffering {
+            return Some(item.into_message());
+        }
+
         match item.seq_info() {
             SeqInfo::Direct => Some(item.into_message()),
             SeqInfo::Session { session_id, seq } => {
                 // TODO: allow sequence numbers to start at 0
                 assert!(seq > 0, "sequence number must be nonzero");
-                let sequencer = self.senders.entry(session_id).or_default();
+                let mut state = self.state.lock().unwrap();
+                let sequencer = state.senders.entry(session_id).or_default();
                 if sequencer.sender.is_none()
                     && let Some(sender) = item.sender()
                 {
@@ -169,6 +262,19 @@ impl<M: Sequenced> SequencedReceiver<M> {
                 }
                 sequencer.admit(seq, item.into_message(), &mut self.ready)
             }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct SequencedState<M> {
+    senders: HashMap<Uuid, Sequencer<M>>,
+}
+
+impl<M> Default for SequencedState<M> {
+    fn default() -> Self {
+        Self {
+            senders: HashMap::new(),
         }
     }
 }
@@ -364,6 +470,34 @@ impl<M> Buffer<M> {
             self.head = 0;
         }
     }
+
+    fn snapshot(&self, next_seq: u64) -> (usize, Option<u64>, Option<u64>) {
+        let mut count = 0;
+        let mut oldest = None;
+        let mut newest = None;
+
+        for offset in 0..self.ring.len() {
+            let index = (self.head + offset) % self.ring.len();
+            if self.ring[index].is_some() {
+                let seq = next_seq + offset as u64;
+                count += 1;
+                oldest = Some(oldest.map_or(seq, |oldest: u64| oldest.min(seq)));
+                newest = Some(newest.map_or(seq, |newest: u64| newest.max(seq)));
+            }
+        }
+
+        if let Some(spillover) = &self.spillover {
+            count += spillover.len();
+            if let Some((&seq, _)) = spillover.first_key_value() {
+                oldest = Some(oldest.map_or(seq, |oldest| oldest.min(seq)));
+            }
+            if let Some((&seq, _)) = spillover.last_key_value() {
+                newest = Some(newest.map_or(seq, |newest| newest.max(seq)));
+            }
+        }
+
+        (count, oldest, newest)
+    }
 }
 
 #[cfg(test)]
@@ -372,6 +506,7 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
+    use crate::testing::ids::test_actor_id;
 
     fn session(seq: u64) -> SeqInfo {
         SeqInfo::Session {
@@ -391,6 +526,23 @@ mod tests {
         SequencedEnvelope::new(seq_info, None, message)
     }
 
+    fn envelope_from(
+        seq_info: SeqInfo,
+        sender: Option<ActorAddr>,
+        message: u64,
+    ) -> SequencedEnvelope<u64> {
+        SequencedEnvelope::new(seq_info, sender, message)
+    }
+
+    fn with_sequencer<T, R>(
+        rx: &SequencedReceiver<SequencedEnvelope<T>>,
+        session_id: u128,
+        f: impl FnOnce(&Sequencer<T>) -> R,
+    ) -> R {
+        let state = rx.state.lock().unwrap();
+        f(state.senders.get(&Uuid::from_u128(session_id)).unwrap())
+    }
+
     #[tokio::test]
     async fn delivers_in_order_messages() {
         let (tx, mut rx) = sequenced_unbounded();
@@ -401,10 +553,11 @@ mod tests {
         assert_eq!(rx.recv().await, Some(10));
         assert_eq!(rx.recv().await, Some(20));
 
-        let sequencer = rx.senders.get(&Uuid::from_u128(1)).unwrap();
-        assert!(sequencer.buffer.ring.is_empty());
-        assert_eq!(sequencer.buffer.ring.capacity(), 0);
-        assert!(sequencer.buffer.spillover.is_none());
+        with_sequencer(&rx, 1, |sequencer| {
+            assert!(sequencer.buffer.ring.is_empty());
+            assert_eq!(sequencer.buffer.ring.capacity(), 0);
+            assert!(sequencer.buffer.spillover.is_none());
+        });
     }
 
     #[test]
@@ -414,9 +567,10 @@ mod tests {
         tx.send(envelope(session(3), 30)).unwrap();
         assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
 
-        let sequencer = rx.senders.get(&Uuid::from_u128(1)).unwrap();
-        assert_eq!(sequencer.buffer.ring.len(), 3);
-        assert!(sequencer.buffer.spillover.is_none());
+        with_sequencer(&rx, 1, |sequencer| {
+            assert_eq!(sequencer.buffer.ring.len(), 3);
+            assert!(sequencer.buffer.spillover.is_none());
+        });
 
         tx.send(envelope(session(1), 10)).unwrap();
         tx.send(envelope(session(2), 20)).unwrap();
@@ -433,15 +587,16 @@ mod tests {
         tx.send(envelope(session(100), 1000)).unwrap();
         assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
 
-        let sequencer = rx.senders.get(&Uuid::from_u128(1)).unwrap();
-        assert_eq!(sequencer.buffer.ring.len(), RING_BUFFER_LIMIT);
-        assert!(
-            sequencer
-                .buffer
-                .spillover
-                .as_ref()
-                .is_some_and(|spillover| spillover.contains_key(&100))
-        );
+        with_sequencer(&rx, 1, |sequencer| {
+            assert_eq!(sequencer.buffer.ring.len(), RING_BUFFER_LIMIT);
+            assert!(
+                sequencer
+                    .buffer
+                    .spillover
+                    .as_ref()
+                    .is_some_and(|spillover| spillover.contains_key(&100))
+            );
+        });
     }
 
     #[test]
@@ -461,10 +616,11 @@ mod tests {
         }
         assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
 
-        let sequencer = rx.senders.get(&Uuid::from_u128(1)).unwrap();
-        assert!(sequencer.buffer.ring.is_empty());
-        assert_eq!(sequencer.buffer.ring.capacity(), 0);
-        assert!(sequencer.buffer.spillover.is_none());
+        with_sequencer(&rx, 1, |sequencer| {
+            assert!(sequencer.buffer.ring.is_empty());
+            assert_eq!(sequencer.buffer.ring.capacity(), 0);
+            assert!(sequencer.buffer.spillover.is_none());
+        });
     }
 
     #[test]
@@ -552,5 +708,78 @@ mod tests {
 
         assert_eq!(rx.try_recv().unwrap(), 10);
         assert_eq!(rx.try_recv().unwrap(), 20);
+    }
+
+    #[test]
+    fn snapshot_empty() {
+        let (_tx, rx) = sequenced_unbounded::<SequencedEnvelope<u64>>();
+        let snapshot = rx.snapshot_handle().snapshot();
+
+        assert!(snapshot.enabled);
+        assert!(snapshot.sessions.is_empty());
+        assert_eq!(snapshot.skipped_session_count, 0);
+        assert!(snapshot.is_complete());
+    }
+
+    #[test]
+    fn snapshot_out_of_order_includes_sender() {
+        let (tx, mut rx) = sequenced_unbounded();
+        let sender = test_actor_id("sender", "client");
+
+        tx.send(envelope_from(session(3), Some(sender.clone()), 30))
+            .unwrap();
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+
+        let snapshot = rx.snapshot_handle().snapshot();
+        assert_eq!(snapshot.sessions.len(), 1);
+        let session = &snapshot.sessions[0];
+        assert_eq!(session.sender, Some(sender));
+        assert_eq!(session.last_released_seq, 0);
+        assert_eq!(session.expected_next_seq, 1);
+        assert_eq!(session.buffered_count, 1);
+        assert_eq!(session.oldest_buffered_seq, Some(3));
+        assert_eq!(session.newest_buffered_seq, Some(3));
+    }
+
+    #[test]
+    fn snapshot_sorts_sessions() {
+        let (tx, mut rx) = sequenced_unbounded();
+        let session_lo = Uuid::from_u128(1);
+        let session_hi = Uuid::from_u128(2);
+
+        tx.send(envelope(
+            SeqInfo::Session {
+                session_id: session_hi,
+                seq: 2,
+            },
+            20,
+        ))
+        .unwrap();
+        tx.send(envelope(
+            SeqInfo::Session {
+                session_id: session_lo,
+                seq: 2,
+            },
+            10,
+        ))
+        .unwrap();
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+
+        let snapshot = rx.snapshot_handle().snapshot();
+        assert_eq!(snapshot.sessions.len(), 2);
+        assert_eq!(snapshot.sessions[0].session_id, session_lo);
+        assert_eq!(snapshot.sessions[1].session_id, session_hi);
+    }
+
+    #[test]
+    fn disabled_buffering_delivers_without_snapshot_state() {
+        let (tx, mut rx) = sequenced_unbounded_with_buffering(false);
+
+        tx.send(envelope(session(2), 20)).unwrap();
+        assert_eq!(rx.try_recv().unwrap(), 20);
+
+        let snapshot = rx.snapshot_handle().snapshot();
+        assert!(!snapshot.enabled);
+        assert!(snapshot.sessions.is_empty());
     }
 }

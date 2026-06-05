@@ -52,9 +52,9 @@
 //!   not yet dequeued by the actor loop. Accounting increments in
 //!   `HandlerPorts::get`'s enqueue closure *before* the reorder-buffer
 //!   decision, so this counter includes both in-order messages waiting
-//!   in `work_rx` AND out-of-order messages held in the
-//!   `OrderedSender` reorder buffer. (Reflected at the introspection
-//!   layer in IO-3 of the `introspect` module doc.)
+//!   in `work_rx` AND out-of-order messages held in the receiver-local
+//!   reorder buffer. (Reflected at the introspection layer in IO-3 of
+//!   the `introspect` module doc.)
 //! - **PD-5b:** Queue depth is incremented exactly once per accepted
 //!   message in the enqueue closure of `HandlerPorts::get`, before
 //!   the in-order / out-of-order branch.
@@ -365,13 +365,13 @@ fn account_cancel_enqueue(queue_depth: &AtomicU64, proc_stats: &ProcQueueStats, 
         hyperactor_telemetry::kv_pairs!("actor_id" => actor_id.to_owned()),
     );
 }
-use crate::ordering::OrderedSender;
-use crate::ordering::OrderedSenderError;
 use crate::ordering::SEQ_INFO;
 use crate::ordering::SeqInfo;
 use crate::ordering::Sequencer;
-use crate::ordering::ordered_channel;
 use crate::panic_handler;
+use crate::sequenced::SequencedEnvelope;
+use crate::sequenced::SequencedReceiver;
+use crate::sequenced::sequenced_unbounded_with_buffering;
 use crate::supervision::ActorSupervisionEvent;
 
 /// A proc instance is the runtime managing a single proc in Hyperactor.
@@ -504,7 +504,34 @@ pub struct ActorInstance<A: Actor> {
     /// Control signals for the actor.
     pub signal: mpsc::UnboundedReceiver<Signal>,
     /// Primary work queue for handler dispatch.
-    pub work: mpsc::UnboundedReceiver<WorkCell<A>>,
+    pub work: ActorWorkReceiver<A>,
+}
+
+/// Receiver for actor handler work.
+pub struct ActorWorkReceiver<A: Actor> {
+    inner: SequencedReceiver<SequencedEnvelope<WorkCell<A>>>,
+}
+
+impl<A: Actor> fmt::Debug for ActorWorkReceiver<A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ActorWorkReceiver").finish_non_exhaustive()
+    }
+}
+
+impl<A: Actor> ActorWorkReceiver<A> {
+    fn new(inner: SequencedReceiver<SequencedEnvelope<WorkCell<A>>>) -> Self {
+        Self { inner }
+    }
+
+    /// Receive the next deliverable handler work item.
+    pub async fn recv(&mut self) -> Option<WorkCell<A>> {
+        self.inner.recv().await
+    }
+
+    /// Try to receive the next deliverable handler work item without waiting.
+    pub fn try_recv(&mut self) -> Result<WorkCell<A>, mpsc::error::TryRecvError> {
+        self.inner.try_recv()
+    }
 }
 
 /// Builder for constructing a [`Proc`] with explicit identity and connectivity.
@@ -2123,7 +2150,7 @@ pub struct InstanceReceivers<A: Actor> {
         mpsc::UnboundedReceiver<ActorSupervisionEvent>,
     )>,
     /// Work queue for dispatching messages to actor handlers.
-    work: mpsc::UnboundedReceiver<WorkCell<A>>,
+    work: ActorWorkReceiver<A>,
     /// Introspect message receiver for the dedicated introspect task.
     introspect: PortReceiver<IntrospectMessage>,
 }
@@ -2138,15 +2165,16 @@ impl<A: Actor> Instance<A> {
     ) -> (Self, InstanceReceivers<A>) {
         // Set up messaging
         let mailbox = Mailbox::new(actor_id.clone());
-        let (work_tx, work_rx) = ordered_channel(
-            actor_id.to_string(),
-            hyperactor_config::global::get(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER),
-        );
+        let enable_buffering =
+            hyperactor_config::global::get(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER);
+        let (work_tx, work_rx) = sequenced_unbounded_with_buffering(enable_buffering);
+        let inbound_ordering_snapshot_handle = work_rx.snapshot_handle();
         let queue_depth = Arc::new(AtomicU64::new(0));
         let proc_stats = Arc::clone(&proc.state().queue_stats);
         let ports: Arc<HandlerPorts<A>> = Arc::new(HandlerPorts::new(
             mailbox.clone(),
             work_tx,
+            enable_buffering,
             Arc::clone(&queue_depth),
             proc_stats,
         ));
@@ -2181,14 +2209,13 @@ impl<A: Actor> Instance<A> {
 
         let instance_id = Uuid::now_v7();
 
-        // Type-erased snapshot callback: captures `Arc<HandlerPorts<A>>::clone()`
-        // (the typed Arc), which lets `InstanceCellState` invoke
-        // `OrderedSender::snapshot` from non-generic code. Only the typed
-        // ports are captured; nothing cyclic (no Instance, no InstanceCell).
-        let workq_ports = ports.clone();
+        // Type-erased snapshot callback: captures only the receiver-local
+        // sequencing snapshot handle. Nothing cyclic is captured.
         let inbound_ordering_snapshot: Option<
             Box<dyn Fn() -> crate::ordering::OrderingSnapshot + Send + Sync>,
-        > = Some(Box::new(move || workq_ports.workq.snapshot()));
+        > = Some(Box::new(move || {
+            inbound_ordering_snapshot_handle.snapshot()
+        }));
 
         let cell = InstanceCell::new(
             actor_id,
@@ -2217,7 +2244,7 @@ impl<A: Actor> Instance<A> {
             Self { inner },
             InstanceReceivers {
                 actor_loop: actor_loop_receivers,
-                work: work_rx,
+                work: ActorWorkReceiver::new(work_rx),
                 introspect: introspect_receiver,
             },
         )
@@ -2590,7 +2617,7 @@ impl<A: Actor> Instance<A> {
             .inner
             .ports
             .workq
-            .direct_send(work)
+            .send(SequencedEnvelope::new(SeqInfo::Direct, None, work))
             .map_err(anyhow::Error::from);
         if result.is_err() {
             account_cancel_enqueue(
@@ -2704,7 +2731,7 @@ impl<A: Actor> Instance<A> {
             mpsc::UnboundedReceiver<Signal>,
             mpsc::UnboundedReceiver<ActorSupervisionEvent>,
         ),
-        mut work_rx: mpsc::UnboundedReceiver<WorkCell<A>>,
+        mut work_rx: ActorWorkReceiver<A>,
     ) {
         let result = self
             .run_actor_tree(&mut actor, actor_loop_receivers, &mut work_rx)
@@ -2799,7 +2826,7 @@ impl<A: Actor> Instance<A> {
             mpsc::UnboundedReceiver<Signal>,
             mpsc::UnboundedReceiver<ActorSupervisionEvent>,
         ),
-        work_rx: &mut mpsc::UnboundedReceiver<WorkCell<A>>,
+        work_rx: &mut ActorWorkReceiver<A>,
     ) -> Result<String, ActorError> {
         // It is okay to catch all panics here, because we are in a tokio task,
         // and tokio will catch the panic anyway:
@@ -2935,7 +2962,7 @@ impl<A: Actor> Instance<A> {
             mpsc::UnboundedReceiver<Signal>,
             mpsc::UnboundedReceiver<ActorSupervisionEvent>,
         ),
-        work_rx: &mut mpsc::UnboundedReceiver<WorkCell<A>>,
+        work_rx: &mut ActorWorkReceiver<A>,
     ) -> Result<String, ActorError> {
         let (signal_receiver, supervision_event_receiver) = actor_loop_receivers;
 
@@ -3960,8 +3987,8 @@ impl InstanceCell {
 
     /// Out-of-band inbound ordering snapshot. Returns `None` when no
     /// snapshot callback was installed (see IO-1 in `introspect` module
-    /// doc). The callback uses `OrderedSender::snapshot` (`try_lock`,
-    /// non-blocking) and never perturbs ordering state.
+    /// doc). The callback uses the sequenced receiver's snapshot handle
+    /// (`try_lock`, non-blocking) and never perturbs ordering state.
     pub fn inbound_ordering_snapshot(&self) -> Option<crate::ordering::OrderingSnapshot> {
         self.inner.inbound_ordering_snapshot.as_ref().map(|f| f())
     }
@@ -4184,7 +4211,8 @@ pub struct HandlerPorts<A: Actor> {
     ports: DashMap<TypeId, Box<dyn Any + Send + Sync + 'static>>,
     bound: DashMap<Port, &'static str>,
     mailbox: Mailbox,
-    workq: OrderedSender<WorkCell<A>>,
+    workq: mpsc::UnboundedSender<SequencedEnvelope<WorkCell<A>>>,
+    enable_buffering: bool,
     /// Per-actor queue depth (PD-5). Shared with `InstanceCellState`.
     queue_depth: Arc<AtomicU64>,
     /// Proc-level queue-pressure stats (PD-6 through PD-9).
@@ -4194,7 +4222,8 @@ pub struct HandlerPorts<A: Actor> {
 impl<A: Actor> HandlerPorts<A> {
     fn new(
         mailbox: Mailbox,
-        workq: OrderedSender<WorkCell<A>>,
+        workq: mpsc::UnboundedSender<SequencedEnvelope<WorkCell<A>>>,
+        enable_buffering: bool,
         queue_depth: Arc<AtomicU64>,
         proc_stats: Arc<ProcQueueStats>,
     ) -> Self {
@@ -4203,6 +4232,7 @@ impl<A: Actor> HandlerPorts<A> {
             bound: DashMap::new(),
             mailbox,
             workq,
+            enable_buffering,
             queue_depth,
             proc_stats,
         }
@@ -4228,6 +4258,7 @@ impl<A: Actor> HandlerPorts<A> {
 
                 let type_info = TypeInfo::get_by_typeid(key);
                 let workq = self.workq.clone();
+                let enable_buffering = self.enable_buffering;
                 let actor_id = self.mailbox.actor_addr().to_string();
                 let enqueue_depth = Arc::clone(&self.queue_depth);
                 let enqueue_proc_stats = Arc::clone(&self.proc_stats);
@@ -4235,18 +4266,41 @@ impl<A: Actor> HandlerPorts<A> {
                 // closure runs. Therefore, the drain guarantee depends on this
                 // closure synchronously finishing all work that it admits into
                 // the actor work queue before it returns. That includes the
-                // ordered path: `OrderedSender::send` delivers the current item
-                // and synchronously flushes any consecutive buffered items that
-                // the current item unblocks. Messages already held in the
-                // reorder buffer but still waiting on a future sequence are not
-                // considered drainable accepted work; after draining begins,
-                // that missing future sequence is rejected.
+                // sequenced path: enqueue synchronously hands accepted work to
+                // the receiver's channel. Messages already held in the
+                // receiver-local reorder buffer but still waiting on a future
+                // sequence are not considered drainable accepted work; after
+                // draining begins, that missing future sequence is rejected.
                 let enqueue = move |headers: Flattrs, msg: M| {
                     // Extract values from headers BEFORE they're moved into
                     // WorkCell — Flattrs::get returns owned typed values, so
                     // these bindings don't borrow from `headers` and `headers`
                     // can be moved into WorkCell freely.
-                    let seq_info = headers.get(SEQ_INFO);
+                    let seq_info = if enable_buffering {
+                        match headers.get(SEQ_INFO) {
+                            Some(seq_info) => seq_info,
+                            None => {
+                                let error_msg = format!(
+                                    "in enqueue func for {}, buffering is enabled, but SEQ_INFO is not set for message type {}",
+                                    actor_id,
+                                    std::any::type_name::<M>(),
+                                );
+                                tracing::error!(error_msg);
+                                return Err(anyhow::anyhow!(error_msg));
+                            }
+                        }
+                    } else {
+                        SeqInfo::Direct
+                    };
+                    if !seq_info.is_valid() {
+                        let error_msg = format!(
+                            "in enqueue func for {}, got seq 0 for message type {}",
+                            actor_id,
+                            std::any::type_name::<M>(),
+                        );
+                        tracing::error!(error_msg);
+                        return Err(anyhow::anyhow!(error_msg));
+                    }
                     let sender = headers.get(crate::mailbox::headers::SENDER_ACTOR_ID);
 
                     let work = WorkCell::new(move |actor: &mut A, instance: &Instance<A>| {
@@ -4266,41 +4320,11 @@ impl<A: Actor> HandlerPorts<A> {
                     // failure, `account_cancel_enqueue` rolls back the
                     // counters so `queue_depth` does not drift.
                     account_enqueue(&enqueue_depth, &enqueue_proc_stats, &actor_id);
-                    let result = if workq.enable_buffering {
-                        match seq_info {
-                            Some(SeqInfo::Session { session_id, seq }) => {
-                                // TODO: return the message contained in the error instead of dropping them when converting
-                                // to anyhow::Error. In that way, the message can be picked up by mailbox and returned to sender.
-                                workq.send(session_id, seq, sender, work).map_err(|e| match e {
-                                    OrderedSenderError::InvalidZeroSeq(_) => {
-                                        let error_msg = format!(
-                                            "in enqueue func for {}, got seq 0 for message type {}",
-                                            actor_id,
-                                            std::any::type_name::<M>(),
-                                        );
-                                        tracing::error!(error_msg);
-                                        anyhow::anyhow!(error_msg)
-                                    }
-                                    OrderedSenderError::SendError(e) => anyhow::Error::from(e),
-                                    OrderedSenderError::FlushError(e) => e,
-                                })
-                            }
-                            Some(SeqInfo::Direct) => {
-                                workq.direct_send(work).map_err(anyhow::Error::from)
-                            }
-                            None => {
-                                let error_msg = format!(
-                                    "in enqueue func for {}, buffering is enabled, but SEQ_INFO is not set for message type {}",
-                                    actor_id,
-                                    std::any::type_name::<M>(),
-                                );
-                                tracing::error!(error_msg);
-                                Err(anyhow::anyhow!(error_msg))
-                            }
-                        }
-                    } else {
-                        workq.direct_send(work).map_err(anyhow::Error::from)
-                    };
+                    // TODO: return the message contained in the error instead of dropping them when converting
+                    // to anyhow::Error. In that way, the message can be picked up by mailbox and returned to sender.
+                    let result = workq
+                        .send(SequencedEnvelope::new(seq_info, sender, work))
+                        .map_err(anyhow::Error::from);
                     if result.is_err() {
                         account_cancel_enqueue(&enqueue_depth, &enqueue_proc_stats, &actor_id);
                     }
@@ -6854,10 +6878,9 @@ mod tests {
     // Test-only Named message + dedicated actor with explicit handler
     // export, so the integration test can bind the BufferTestMsg
     // handler port (`handle.bind()`) and drive ordered traffic through
-    // `OrderedSender`. Without the bind, `PortHandle::try_post` stamps
-    // `SeqInfo::Direct` and the enqueue closure takes the `direct_send`
-    // branch -- which never populates `OrderedSender::states`, leaving
-    // the snapshot empty.
+    // the sequenced receiver. Without the bind, `PortHandle::try_post`
+    // stamps `SeqInfo::Direct`, and the enqueue closure bypasses
+    // sequencing, leaving the snapshot empty.
     #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, typeuri::Named)]
     struct BufferTestMsg;
 
@@ -6925,20 +6948,33 @@ mod tests {
         let _ = client.sequencer().assign_seq(&handler_port);
 
         // Post three messages. These flow through MailboxExt::post ->
-        // HandlerPorts enqueue closure -> OrderedSender::send, where
-        // they buffer (out of order from seq 1's perspective).
+        // HandlerPorts enqueue closure -> SequencedReceiver, where they
+        // buffer (out of order from seq 1's perspective).
         for _ in 0..3 {
             handle.post(&client, BufferTestMsg);
         }
-        // Let the enqueues propagate to the buffer.
-        tokio::task::yield_now().await;
-
         // Direct accessor: cell.inbound_ordering_snapshot() invokes the
-        // type-erased callback installed at Instance::new.
+        // type-erased callback installed at Instance::new. Sequencing is
+        // receiver-local, so wait until the actor loop has polled the
+        // work receiver and populated the buffered session.
         let cell = proc.get_instance(&actor_id).expect("actor exists");
-        let snapshot = cell
-            .inbound_ordering_snapshot()
-            .expect("snapshot callback should be installed for live actors");
+        let snapshot = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let snapshot = cell
+                    .inbound_ordering_snapshot()
+                    .expect("snapshot callback should be installed for live actors");
+                if snapshot
+                    .sessions
+                    .first()
+                    .is_some_and(|session| session.buffered_count == 3)
+                {
+                    break snapshot;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("receiver-local sequencing state should be populated");
 
         assert!(snapshot.enabled, "buffering enabled by override");
         assert_eq!(snapshot.sessions.len(), 1, "one client session expected");

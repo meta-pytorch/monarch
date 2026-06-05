@@ -133,23 +133,23 @@
 //!     while the cell exists -- inherit that Some.
 //!   * `Some({enabled: false, ...})` -- ordered path exists but reorder
 //!     buffering is disabled; `sessions` is empty regardless of traffic.
-//!     Messages flow via `OrderedSender::direct_send`.
+//!     Messages bypass receiver-local sequencing.
 //!   * `Some({enabled: true, ...})` -- buffering active; `sessions`
 //!     is meaningful.
 //!
 //!   `None` is NOT equivalent to `Some({enabled: false, ...})`.
 //! - **IO-2 (inbound-ordering reflects publish-time state):** When
 //!   present, the snapshot is computed at `build_actor_attrs`
-//!   invocation time via `OrderedSender::snapshot`. `last_released_seq`
-//!   etc. are point-in-time. Sessions held by a concurrent `send` show
-//!   up in `skipped_session_count` (never silently omitted);
+//!   invocation time via the sequenced receiver's snapshot handle.
+//!   `last_released_seq` etc. are point-in-time. Sessions held by a
+//!   concurrent receive show up in `skipped_session_count` (never silently omitted);
 //!   `is_complete()` reports the all-clear.
 //! - **IO-3 (queue-depth and inbound-ordering are independent
 //!   diagnostics, no arithmetic contract):**
 //!   * `ACTOR_QUEUE_DEPTH` (per PD-5a/PD-5b in `proc.rs`): accepted
 //!     handler work not yet dequeued by the actor loop.
 //!   * `INBOUND_ORDERING.sessions[*].buffered_count`: messages held by
-//!     `OrderedSender` waiting for a seq gap to fill.
+//!     receiver-local sequencing waiting for a seq gap to fill.
 //!
 //!   These are two independent point-in-time diagnostics. No
 //!   arithmetic or ordering relationship between them is part of the
@@ -420,9 +420,9 @@ declare_attrs! {
     })
     pub attr ACTOR_QUEUE_DEPTH: u64 = 0;
 
-    /// Per-session reorder state from `OrderedSender::snapshot`.
+    /// Per-session reorder state from the sequenced receiver snapshot.
     /// `sessions[*].buffered_count` reports messages held by
-    /// `OrderedSender` waiting for a seq gap to fill. Independent
+    /// receiver-local sequencing waiting for a seq gap to fill. Independent
     /// diagnostic from `queue_depth`; no arithmetic contract -- see
     /// IO-3.
     ///
@@ -431,7 +431,7 @@ declare_attrs! {
     /// means the path exists but buffering is disabled. See IO-1.
     @meta(INTROSPECT = IntrospectAttr {
         name: "inbound_ordering".into(),
-        desc: "Per-session reorder-buffer state from OrderedSender. Independent diagnostic from queue_depth; no arithmetic contract -- see IO-3. Absence vs Some({enabled: false}) is meaningful -- see IO-1.".into(),
+        desc: "Per-session reorder-buffer state from receiver-local sequencing. Independent diagnostic from queue_depth; no arithmetic contract -- see IO-3. Absence vs Some({enabled: false}) is meaningful -- see IO-1.".into(),
     })
     pub attr INBOUND_ORDERING: crate::ordering::OrderingSnapshot;
 }
