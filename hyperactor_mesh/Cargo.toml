@@ -34,6 +34,7 @@ futures = { version = "0.3.31", features = ["async-await", "compat"] }
 hostname = "0.4.2"
 humantime = "2.1"
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
+hyperactor_cast = { version = "0.0.0", path = "../hyperactor_cast" }
 hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
 hyperactor_mesh_macros = { version = "0.0.0", path = "../hyperactor_mesh_macros" }
 hyperactor_telemetry = { version = "0.0.0", path = "../hyperactor_telemetry" }
