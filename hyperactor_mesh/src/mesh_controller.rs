@@ -1359,7 +1359,7 @@ impl Controlled for ProcMeshRef {
         // Send one StreamState per proc to its host agent.
         for proc_id in self.proc_ids() {
             let proc_resource_id = ResourceId::new(proc_id.uid().clone(), proc_id.label().cloned());
-            let host = crate::host_mesh::HostRef(proc_id.addr().clone());
+            let host = crate::host_mesh::HostRef::new(proc_id.addr().clone());
             host.mesh_agent().post(
                 cx,
                 resource::StreamState::<Self::StateInner> {
@@ -1377,7 +1377,7 @@ impl Controlled for ProcMeshRef {
         msg: resource::WaitRankStatus,
     ) -> anyhow::Result<()> {
         for proc_id in self.proc_ids() {
-            let host = crate::host_mesh::HostRef(proc_id.addr().clone());
+            let host = crate::host_mesh::HostRef::new(proc_id.addr().clone());
             host.mesh_agent().post(cx, msg.clone());
         }
         Ok(())
