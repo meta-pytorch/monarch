@@ -14,8 +14,6 @@
 
 pub mod manager_actor;
 
-use std::sync::Arc;
-
 use hyperactor::ActorRef;
 use manager_actor::TcpManagerActor;
 
@@ -26,7 +24,7 @@ use crate::local_memory::KeepaliveLocalMemory;
 #[derive(Debug)]
 pub struct TcpOp {
     pub op_type: RdmaOpType,
-    pub local_memory: Arc<KeepaliveLocalMemory>,
+    pub local_memory: KeepaliveLocalMemory,
     pub remote_tcp_manager: ActorRef<TcpManagerActor>,
     pub remote_buf_id: usize,
 }

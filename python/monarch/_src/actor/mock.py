@@ -327,7 +327,7 @@ def _create_simulated_tensor_engine(proc_mesh: "ProcMesh") -> "DeviceMesh":
     # Create simulator with the same dimensions as the real proc_mesh
     from monarch.simulator.interface import Simulator  # pyre-ignore[21, 16]
 
-    simulator = Simulator(  # pyre-ignore[16]
+    simulator = Simulator(
         hosts=hosts, gpus=gpus, trace_mode="stream_only", build_ir=True
     )
     return simulator.mesh

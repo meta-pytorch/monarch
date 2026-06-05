@@ -61,6 +61,7 @@ jobs:
         # Uses cargo nextest to run tests in separate processes, which better matches
         # internal buck test behavior.
         # The CI profile is configured in .config/nextest.toml
+        # It includes individual test timeouts and a timeout for the entire test run.
         # Exclude filter is for packages that don't build in Github Actions yet.
         # * monarch_messages: monarch/target/debug/deps/monarch_messages-...:
         #   /lib64/libm.so.6: version `GLIBC_2.29' not found
@@ -69,7 +70,7 @@ jobs:
         # failure (otherwise set -e would exit before any artifacts are
         # uploaded).
         rc=0
-        timeout 12m cargo nextest run --workspace --profile ci \
+        cargo nextest run --workspace --profile ci \
           -E "$(cat .config/nextest-filter.txt)" \
           --exclude monarch_messages \
           --exclude monarch_tensor_worker \

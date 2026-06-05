@@ -95,18 +95,12 @@ impl PdbActor {
         let instance = self.instance.clone();
         let actor_id = instance.blocking_lock().actor_addr().clone();
         signal_safe_block_on(py, async move {
-            let (instance, handle) = instance
-                .lock()
-                .await
-                .instance()
-                .child()
-                .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
-            let result = controller_actor_ref
+            let instance = instance.lock().await.instance().child();
+
+            controller_actor_ref
                 .debugger_message(&instance, actor_id, action)
                 .await
-                .map_err(|err| PyRuntimeError::new_err(err.to_string()));
-            let _ = handle.drain_and_stop("debugger cleanup");
-            result
+                .map_err(|err| PyRuntimeError::new_err(err.to_string()))
         })?
     }
 

@@ -109,8 +109,18 @@ const BUFFER_SIZE: usize = 8;
 // buffer is the single source of truth (e.g., `Arc<KeepaliveLocal-
 // Memory>` with a `Box<[u8]>` keepalive), and route the local
 // gradient/weight math through the `KeepaliveLocalMemory` API.
-struct NoKeepalive;
-impl Keepalive for NoKeepalive {}
+struct NoKeepalive {
+    addr: usize,
+    size: usize,
+}
+impl Keepalive for NoKeepalive {
+    fn addr(&self) -> usize {
+        self.addr
+    }
+    fn size(&self) -> usize {
+        self.size
+    }
+}
 
 // Parameter Server Actor
 #[derive(Debug)]
@@ -199,8 +209,7 @@ impl Handler<PsGetBuffers> for ParameterServerActor {
             let addr = self.weights_data.as_ptr() as usize;
             let size = self.weights_data.len();
             // See the module-level note on `NoKeepalive`.
-            let local_memory: Arc<KeepaliveLocalMemory> =
-                Arc::new(KeepaliveLocalMemory::new(addr, size, Arc::new(NoKeepalive)));
+            let local_memory = KeepaliveLocalMemory::new(Arc::new(NoKeepalive { addr, size }));
             let handle = self
                 .owner_ref
                 .downcast_handle(cx)
@@ -220,8 +229,7 @@ impl Handler<PsGetBuffers> for ParameterServerActor {
                 let addr = self.grad_buffer_data[rank].as_ptr() as usize;
                 let size = self.grad_buffer_data[rank].len();
                 // See the module-level note on `NoKeepalive`.
-                let local_memory: Arc<KeepaliveLocalMemory> =
-                    Arc::new(KeepaliveLocalMemory::new(addr, size, Arc::new(NoKeepalive)));
+                let local_memory = KeepaliveLocalMemory::new(Arc::new(NoKeepalive { addr, size }));
                 let handle = self
                     .owner_ref
                     .downcast_handle(cx)
@@ -392,11 +400,10 @@ impl Handler<WorkerStep> for WorkerActor {
             .as_ref()
             .expect("worker_actor should be initialized");
         // See the module-level note on `NoKeepalive`.
-        let local_memory: Arc<KeepaliveLocalMemory> = Arc::new(KeepaliveLocalMemory::new(
-            self.local_gradients.as_ptr() as usize,
-            self.local_gradients.len(),
-            Arc::new(NoKeepalive),
-        ));
+        let local_memory = KeepaliveLocalMemory::new(Arc::new(NoKeepalive {
+            addr: self.local_gradients.as_ptr() as usize,
+            size: self.local_gradients.len(),
+        }));
 
         ps_grad_handle.write_from_local(cx, local_memory, 5).await?;
 
@@ -427,11 +434,10 @@ impl Handler<WorkerUpdate> for WorkerActor {
             .as_ref()
             .expect("worker_actor should be initialized");
         // See the module-level note on `NoKeepalive`.
-        let local_memory: Arc<KeepaliveLocalMemory> = Arc::new(KeepaliveLocalMemory::new(
-            self.weights_data.as_ptr() as usize,
-            self.weights_data.len(),
-            Arc::new(NoKeepalive),
-        ));
+        let local_memory = KeepaliveLocalMemory::new(Arc::new(NoKeepalive {
+            addr: self.weights_data.as_ptr() as usize,
+            size: self.weights_data.len(),
+        }));
         ps_weights_handle
             .read_into_local(cx, local_memory, 5)
             .await?;

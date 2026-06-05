@@ -120,6 +120,13 @@ impl<'a> Lexer<'a> {
     pub(crate) fn new(input: &'a str) -> Self {
         Self { input, offset: 0 }
     }
+
+    /// Create a lexer positioned at `offset` within `input`. To bound
+    /// the scan, pass an `input` already truncated to the desired end;
+    /// the lexer emits no tokens past `input.len()`.
+    pub(crate) fn new_at(input: &'a str, offset: usize) -> Self {
+        Self { input, offset }
+    }
 }
 
 impl<'a> Iterator for Lexer<'a> {

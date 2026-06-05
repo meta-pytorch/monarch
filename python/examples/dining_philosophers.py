@@ -64,6 +64,7 @@ class Philosopher(Actor):
     """A philosopher that alternates between thinking and eating."""
 
     def __init__(self, size: int) -> None:
+        # pyrefly: ignore [bad-assignment, bad-override]
         self.size = size
         self.rank: int = 0
         self.left_status = ChopstickStatus.NONE
@@ -72,7 +73,9 @@ class Philosopher(Actor):
         self.meals_eaten: int = 0
 
     def _chopstick_indices(self) -> tuple[int, int]:
+        # pyrefly: ignore [unsupported-operation]
         left = self.rank % self.size
+        # pyrefly: ignore [unsupported-operation]
         right = (self.rank + 1) % self.size
         return left, right
 
@@ -221,6 +224,10 @@ async def async_main(
         print("\nShutting down...", flush=True)
         await waiter_proc.stop()
         await procs.stop()
+        # Tear down the host last: ProcessJob spawns a host subprocess
+        # (run_worker_loop_forever) that stopping the proc meshes alone leaves
+        # orphaned; shutdown() stops the host and every process on it.
+        await host.shutdown()
 
 
 def main() -> None:

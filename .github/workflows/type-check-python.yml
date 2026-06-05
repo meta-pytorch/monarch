@@ -1,0 +1,50 @@
+name: Type Check Python
+
+on:
+  workflow_call:
+    inputs:
+      artifact-name:
+        description: 'Wheel artifact name from build workflow'
+        required: true
+        type: string
+      python-version:
+        description: 'Python version to type-check with'
+        type: string
+        default: '3.10'
+      runner:
+        description: 'Linux runner to use for type checking (small by default; bump if pyright OOMs indexing torch)'
+        type: string
+        default: 'linux.large'
+
+concurrency:
+  group: type-check-python-${{ inputs.runner }}-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  type-check-python:
+    name: Type Check Python (pyright)
+    uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+    with:
+      timeout: 30
+      runner: ${{ inputs.runner }}
+      submodules: recursive
+      download-artifact: ${{ inputs.artifact-name }}
+      script: |
+        # Source common setup functions
+        source scripts/common-setup.sh
+
+        # Setup Python environment with the same dependencies as test jobs.
+        setup_test_environment "${{ inputs.python-version }}"
+
+        # Disable tensor engine for CPU wheel
+        export USE_TENSOR_ENGINE=0
+
+        # Install PyTorch nightly (CPU) so monarch imports resolve for pyright
+        pip install --pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cpu
+
+        # Install the built wheel from artifact
+        install_wheel_from_artifact
+
+        # Type-check the type_assert statements in test_python_actors;
+        # pyre currently does not check these assertions.
+        pyright python/tests/test_python_actors.py
