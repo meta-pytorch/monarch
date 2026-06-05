@@ -73,7 +73,6 @@ use crate::mesh_controller::Subscribe;
 use crate::mesh_controller::Unsubscribe;
 use crate::mesh_id::ActorMeshId;
 use crate::metrics;
-use crate::proc_agent::ActorState;
 use crate::proc_mesh::GET_ACTOR_STATE_MAX_IDLE;
 use crate::resource;
 use crate::supervision::MeshFailure;
@@ -780,30 +779,6 @@ impl<A: Referable> ActorMeshRef<A> {
             root_comm_actor.post_with_headers(cx, headers, cast_message);
         }
     }
-    /// Query the state of all actors in this mesh.
-    /// If keepalive is Some, use a message that indicates to the recipient
-    /// that the owner of the mesh is still alive, along with the expiry time
-    /// after which the actor should be considered orphaned. Else, use a normal
-    /// state query.
-    #[allow(clippy::result_large_err)]
-    pub async fn actor_states(
-        &self,
-        cx: &impl context::Actor,
-    ) -> crate::Result<ValueMesh<resource::State<ActorState>>> {
-        self.actor_states_with_keepalive(cx, None).await
-    }
-
-    #[allow(clippy::result_large_err)]
-    pub(crate) async fn actor_states_with_keepalive(
-        &self,
-        cx: &impl context::Actor,
-        keepalive: Option<std::time::SystemTime>,
-    ) -> crate::Result<ValueMesh<resource::State<ActorState>>> {
-        self.proc_mesh
-            .actor_states_with_keepalive(cx, self.id.clone(), keepalive)
-            .await
-    }
-
     pub(crate) fn new(
         id: ActorMeshId,
         proc_mesh: ProcMeshRef,
