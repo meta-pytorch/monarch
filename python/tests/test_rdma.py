@@ -43,19 +43,22 @@ def test_memoryview_addr_and_contiguity():
     and non-contiguous views are rejected."""
     import mmap
 
-    from monarch._src.rdma.rdma import _assert_1d_contiguous, _get_addr_and_size
+    from monarch._src.rdma.rdma import (
+        _assert_1d_contiguous,
+        _get_memoryview_addr_and_size,
+    )
 
     # bytearray-backed memoryview
     buf = bytearray(4096)
     mv = memoryview(buf)
-    addr, size = _get_addr_and_size(mv)
+    addr, size = _get_memoryview_addr_and_size(mv)
     assert size == 4096
     assert addr > 0
 
     # mmap-backed memoryview (small)
     mm = mmap.mmap(-1, 4096)
     mv = memoryview(mm)
-    addr, size = _get_addr_and_size(mv)
+    addr, size = _get_memoryview_addr_and_size(mv)
     assert size == 4096
     assert addr > 0
     del mv
@@ -64,7 +67,7 @@ def test_memoryview_addr_and_contiguity():
     # mmap-backed memoryview (large / potentially unfaulted pages)
     mm = mmap.mmap(-1, 1024 * 1024)
     mv = memoryview(mm)
-    addr, size = _get_addr_and_size(mv)
+    addr, size = _get_memoryview_addr_and_size(mv)
     assert size == 1024 * 1024
     assert addr > 0
     del mv
@@ -534,17 +537,13 @@ class ClientActor(Actor):
 
         # Chain multiple operations across different remote actors
         # Read from buffer A into local data_a
-        action.read_into(buffer_a, self.data_a.view(torch.uint8).flatten())
+        action.read_remote(self.data_a.view(torch.uint8).flatten(), buffer_a)
 
         # # Write data_a to buffer B (modified data goes from A -> B)
-        action.write_from(buffer_b, self.data_b.view(torch.uint8).flatten())
+        action.write_remote(buffer_b, self.data_b.view(torch.uint8).flatten())
 
         # Read from buffer C into local data_c
-        action.read_into(buffer_c, self.data_c.view(torch.uint8).flatten())
-
-        # Let's read from buffer A into local data_a again; this covers edge case
-        # but will result in duplicate work for now; which is fine for now.
-        action.read_into(buffer_a, self.data_a.view(torch.uint8).flatten())
+        action.read_remote(self.data_c.view(torch.uint8).flatten(), buffer_c)
         self.action = action
 
     @endpoint
@@ -564,10 +563,10 @@ class ClientActor(Actor):
 
         # Chain multiple operations across different remote actors
         # Read from buffer A into local data_a
-        action.read_into(buffer_a, self.data_a.view(torch.uint8).flatten())
+        action.read_remote(self.data_a.view(torch.uint8).flatten(), buffer_a)
 
         # # Write data_a to buffer B (modified data goes from A -> B) - Data race!
-        action.write_from(buffer_b, self.data_a.view(torch.uint8).flatten())
+        action.write_remote(buffer_b, self.data_a.view(torch.uint8).flatten())
 
     @endpoint
     async def perform_data_race_w_slices(
@@ -580,10 +579,14 @@ class ClientActor(Actor):
 
         # Chain multiple operations across different remote actors
         # Read from buffer A into local data_a
-        action.read_into(buffer_a, self.data_a.view(torch.uint8)[0 : 100 * 4].flatten())
-        action.write_from(buffer_a, self.data_a.view(torch.uint8)[150 * 4 :].flatten())
-        action.read_into(
-            buffer_a, self.data_a.view(torch.uint8)[75 * 4 : 175 * 4].flatten()
+        action.read_remote(
+            self.data_a.view(torch.uint8)[0 : 100 * 4].flatten(), buffer_a
+        )
+        action.write_remote(
+            buffer_a, self.data_a.view(torch.uint8)[150 * 4 :].flatten()
+        )
+        action.read_remote(
+            self.data_a.view(torch.uint8)[75 * 4 : 175 * 4].flatten(), buffer_a
         )
 
     @endpoint
@@ -600,17 +603,18 @@ class ClientActor(Actor):
         self, buffer_a: RDMABuffer, buffer_b: RDMABuffer, buffer_c: RDMABuffer
     ) -> None:
         """Perform batched operations using RDMAAction across multiple remote actors"""
-        assert self.size == 250, "Size must be 100 for this test"
+        assert self.size == 250, "Size must be 250 for this test"
         # Create RDMAAction instance
         action = RDMAAction()
 
-        # Chain multiple operations across different remote actors
-        # Read from buffer A into local data_a
-        action.read_into(buffer_a, self.data_a.view(torch.uint8)[0 : 100 * 4].flatten())
-        action.read_into(buffer_a, self.data_a.view(torch.uint8)[150 * 4 :].flatten())
-        action.read_into(
-            buffer_a, self.data_a.view(torch.uint8)[50 * 4 : 150 * 4].flatten()
+        # Two `read_remote`s into disjoint slices of `data_a`. Verifies
+        # that slicing works as a `read_remote` destination; overlapping
+        # slices are not allowed because two writes to the same local
+        # range is a data race.
+        action.read_remote(
+            self.data_a.view(torch.uint8)[0 : 100 * 4].flatten(), buffer_a
         )
+        action.read_remote(self.data_a.view(torch.uint8)[150 * 4 :].flatten(), buffer_a)
         # pyrefly: ignore [bad-assignment]
         self.action = action
 
@@ -843,11 +847,10 @@ async def test_rdma_action_slicing():
     sum_a_initial = await server_a.get_sum.call_one()
     await client.perform_ok_w_slices.call_one(buffer_a, buffer_b, buffer_c)
     await client.run_action.call_one()
-    # Verify that server A received local values
+    # Two disjoint reads of `buffer_a` each fill 100 floats of `data_a`,
+    # leaving the middle 50 untouched.
     operation_results = await client.get_local_data_sums.call_one()
-    assert (
-        operation_results["data_a_sum"] == sum_a_initial * 2.5
-    )  # multi-filled from 100 to 250
+    assert operation_results["data_a_sum"] == sum_a_initial * 2
 
 
 @rdma_backends

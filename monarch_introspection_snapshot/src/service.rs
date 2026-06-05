@@ -74,7 +74,7 @@
 //! - **SV-2 (single capture):** Each `capture` call performs exactly
 //!   one BFS traversal and one `drain_to_batches`.
 //! - **SV-3 (table-store publication):** When `table_store` is
-//!   `Some`, all 9 tables are ingested (delegates to PS-1..PS-7).
+//!   `Some`, all 11 tables are ingested (delegates to PS-1..PS-7).
 //!   Publication is not atomic — a failure partway through may leave
 //!   some tables ingested and others not.
 //! - **SV-4 (counts before drain):** [`NodeCounts`] is computed from
@@ -404,6 +404,8 @@ pub struct NodeCounts {
     pub proc_nodes: usize,
     pub actor_nodes: usize,
     pub actor_failures: usize,
+    pub actor_inbound_orderings: usize,
+    pub ordering_sessions: usize,
     pub resolution_errors: usize,
 }
 
@@ -418,6 +420,8 @@ impl NodeCounts {
             proc_nodes: data.proc_nodes.len(),
             actor_nodes: data.actor_nodes.len(),
             actor_failures: data.actor_failures.len(),
+            actor_inbound_orderings: data.actor_inbound_orderings.len(),
+            ordering_sessions: data.ordering_sessions.len(),
             resolution_errors: data.resolution_errors.len(),
         }
     }
@@ -537,11 +541,14 @@ mod tests {
                 properties: NodeProperties::Actor {
                     actor_status: "running".to_owned(),
                     actor_type: ACTOR_TYPE.to_owned(),
+                    instance_id: String::new(),
                     messages_processed: 42,
                     created_at: Some(now),
                     last_message_handler: Some("handle_msg".to_owned()),
                     total_processing_time_us: 5000,
+                    queue_depth: 0,
                     flight_recorder: None,
+                    inbound_ordering: None,
                     is_system: false,
                     failure_info: None,
                 },
@@ -600,13 +607,52 @@ mod tests {
                 node_id: "actor1".to_owned(),
                 actor_status: "running".to_owned(),
                 actor_type: "test".to_owned(),
+                instance_id: String::new(),
                 messages_processed: 0,
                 created_at: None,
                 last_message_handler: None,
                 total_processing_time_us: 0,
+                queue_depth: 0,
                 is_system: false,
             }],
             actor_failures: vec![],
+            // Populated: 1 inbound-ordering rollup + 2 session rows.
+            // Exercises NodeCounts::from_data for the new families.
+            actor_inbound_orderings: vec![ActorInboundOrderingRow {
+                snapshot_id: "nc1".to_owned(),
+                node_id: "actor1".to_owned(),
+                enabled: true,
+                snapshot_complete: true,
+                skipped_session_count: 0,
+                known_session_count: 2,
+                returned_buffered_session_count: 1,
+                returned_buffered_message_count: 5,
+                returned_max_buffered_count: 5,
+            }],
+            ordering_sessions: vec![
+                OrderingSessionRow {
+                    snapshot_id: "nc1".to_owned(),
+                    node_id: "actor1".to_owned(),
+                    session_id: "00000000-0000-0000-0000-000000000001".to_owned(),
+                    sender: None,
+                    last_released_seq: 0,
+                    expected_next_seq: 1,
+                    buffered_count: 5,
+                    oldest_buffered_seq: Some(2),
+                    newest_buffered_seq: Some(6),
+                },
+                OrderingSessionRow {
+                    snapshot_id: "nc1".to_owned(),
+                    node_id: "actor1".to_owned(),
+                    session_id: "00000000-0000-0000-0000-000000000002".to_owned(),
+                    sender: None,
+                    last_released_seq: 3,
+                    expected_next_seq: 4,
+                    buffered_count: 0,
+                    oldest_buffered_seq: None,
+                    newest_buffered_seq: None,
+                },
+            ],
             resolution_errors: vec![],
         };
 
@@ -621,6 +667,8 @@ mod tests {
                 proc_nodes: 0,
                 actor_nodes: 1,
                 actor_failures: 0,
+                actor_inbound_orderings: 1,
+                ordering_sessions: 2,
                 resolution_errors: 0,
             }
         );
@@ -641,6 +689,8 @@ mod tests {
             proc_nodes: vec![],
             actor_nodes: vec![],
             actor_failures: vec![],
+            actor_inbound_orderings: vec![],
+            ordering_sessions: vec![],
             resolution_errors: vec![],
         };
 
@@ -655,6 +705,8 @@ mod tests {
                 proc_nodes: 0,
                 actor_nodes: 0,
                 actor_failures: 0,
+                actor_inbound_orderings: 0,
+                ordering_sessions: 0,
                 resolution_errors: 0,
             }
         );
@@ -671,11 +723,15 @@ mod tests {
             proc_nodes: 3,
             actor_nodes: 4,
             actor_failures: 0,
+            actor_inbound_orderings: 0,
+            ordering_sessions: 0,
             resolution_errors: 0,
         };
         let json = serde_json::to_string(&counts).unwrap();
         assert!(json.contains("\"nodes\":10"));
         assert!(json.contains("\"actor_failures\":0"));
+        assert!(json.contains("\"actor_inbound_orderings\":0"));
+        assert!(json.contains("\"ordering_sessions\":0"));
     }
 
     // --- CaptureResult tests (SV-5) ---
@@ -694,6 +750,8 @@ mod tests {
                 proc_nodes: 1,
                 actor_nodes: 1,
                 actor_failures: 0,
+                actor_inbound_orderings: 0,
+                ordering_sessions: 0,
                 resolution_errors: 0,
             },
             capture_duration_ms: 42.5,
@@ -732,11 +790,14 @@ mod tests {
         assert_eq!(result.node_counts.proc_nodes, 1);
         assert_eq!(result.node_counts.actor_nodes, 1);
         assert_eq!(result.node_counts.actor_failures, 0);
+        // CV-8/CV-9 None case for the minimal fixture's actor.
+        assert_eq!(result.node_counts.actor_inbound_orderings, 0);
+        assert_eq!(result.node_counts.ordering_sessions, 0);
         assert_eq!(result.node_counts.resolution_errors, 0);
 
-        // Verify store is populated — all 9 tables registered.
+        // Verify store is populated — all 11 tables registered.
         let names = store.table_names().unwrap();
-        assert_eq!(names.len(), 9);
+        assert_eq!(names.len(), 11);
 
         // Verify data is queryable — snapshot row exists.
         let ctx = datafusion::prelude::SessionContext::new();
@@ -804,7 +865,7 @@ mod tests {
         let result = service.capture(resolve, Some(dir.path())).await.unwrap();
 
         // Table store populated.
-        assert_eq!(store.table_names().unwrap().len(), 9);
+        assert_eq!(store.table_names().unwrap().len(), 11);
 
         // Bundle written.
         let bundle_path = result.bundle_path.as_ref().unwrap();
@@ -854,7 +915,7 @@ mod tests {
         assert!(attempted, "PT-4: tick should attempt capture");
 
         // Store should be populated.
-        assert_eq!(store.table_names().unwrap().len(), 9);
+        assert_eq!(store.table_names().unwrap().len(), 11);
 
         // in_flight should be reset to false.
         assert!(!service.in_flight.load(Ordering::Acquire));
@@ -887,7 +948,7 @@ mod tests {
         let resolve = stub_resolver(payloads);
         let attempted = run_periodic_tick(&service, resolve).await;
         assert!(attempted, "PT-6: second tick should succeed");
-        assert_eq!(store.table_names().unwrap().len(), 9);
+        assert_eq!(store.table_names().unwrap().len(), 11);
     }
 
     // PT-7: run_periodic_tick always passes export_root = None.
@@ -901,7 +962,7 @@ mod tests {
         run_periodic_tick(&service, resolve).await;
 
         // Verify store was populated (live ingest happened).
-        assert_eq!(store.table_names().unwrap().len(), 9);
+        assert_eq!(store.table_names().unwrap().len(), 11);
 
         // PT-7 is structural: run_periodic_tick calls
         // service.capture(resolve, None). No bundle directory

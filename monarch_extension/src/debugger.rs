@@ -96,11 +96,11 @@ impl PdbActor {
         let actor_id = instance.blocking_lock().actor_addr().clone();
         signal_safe_block_on(py, async move {
             let instance = instance.lock().await.instance().child();
-            let result = controller_actor_ref
+
+            controller_actor_ref
                 .debugger_message(&instance, actor_id, action)
                 .await
-                .map_err(|err| PyRuntimeError::new_err(err.to_string()));
-            result
+                .map_err(|err| PyRuntimeError::new_err(err.to_string()))
         })?
     }
 

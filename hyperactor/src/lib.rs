@@ -52,6 +52,7 @@
 #![feature(box_patterns)]
 #![feature(btree_cursors)]
 #![feature(error_reporter)]
+#![feature(exact_size_is_empty)]
 #![feature(impl_trait_in_assoc_type)]
 #![feature(never_type)]
 #![feature(panic_update_hook)]
@@ -91,6 +92,7 @@ pub mod sync;
 /// Test utilities.
 pub mod testing;
 pub mod time;
+pub mod value_mesh;
 
 #[cfg(fbcode_build)]
 pub mod meta;
@@ -180,11 +182,7 @@ pub use mailbox::Message;
 pub use mailbox::OncePortHandle;
 pub use mailbox::PortHandle;
 pub use mailbox::RemoteMessage;
-pub use proc::AttachRequest;
-pub use proc::AttachRx;
-pub use proc::BootstrapAssignment;
 pub use proc::Context;
-pub use proc::Host2Client;
 pub use proc::Instance;
 pub use proc::InstanceCell;
 pub use proc::Proc;

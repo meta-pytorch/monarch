@@ -7,6 +7,7 @@
  */
 
 use futures::future::try_join_all;
+use hyperactor::Gateway;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::id::Label;
 use hyperactor_mesh::bootstrap::BootstrapCommand;
@@ -103,7 +104,7 @@ pub fn run_worker_loop_forever(_py: Python<'_>, address: &str) -> PyResult<PyPyt
     });
 
     PyPythonTask::new(async move {
-        let (_agent_handle, shutdown) = host(addr, command, None, true, listener)
+        let (_agent_handle, shutdown) = host(addr, command, None, true, listener, Gateway::new())
             .await
             .map_pyerr()?;
         shutdown.join().await;

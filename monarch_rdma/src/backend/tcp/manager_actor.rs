@@ -87,7 +87,7 @@ wirevalue::register_type!(TcpDataChunk);
 #[derive(Debug)]
 struct TransferState {
     /// Buffer backing this transfer, provided at construction.
-    local_memory: Arc<KeepaliveLocalMemory>,
+    local_memory: KeepaliveLocalMemory,
 
     /// Number of chunks received so far.
     chunks_received: usize,
@@ -103,7 +103,7 @@ struct TransferState {
 impl TransferState {
     fn new(
         total_chunks: usize,
-        local_memory: Arc<KeepaliveLocalMemory>,
+        local_memory: KeepaliveLocalMemory,
         done: OncePortRef<Result<(), String>>,
     ) -> Self {
         Self {
@@ -143,7 +143,7 @@ struct TransferError {
 /// a remote TcpManagerActor.
 #[derive(Debug)]
 struct RegisterTransferLocal {
-    local_memory: Arc<KeepaliveLocalMemory>,
+    local_memory: KeepaliveLocalMemory,
     total_chunks: usize,
     done: OncePortRef<Result<(), String>>,
     // The transfer ID
@@ -155,7 +155,7 @@ struct RegisterTransferLocal {
 #[derive(Debug)]
 struct ExecuteTransferLocal {
     transfer_id: usize,
-    local_memory: Arc<KeepaliveLocalMemory>,
+    local_memory: KeepaliveLocalMemory,
     chunk_size: usize,
     dest_addr: ChannelAddr,
 }
@@ -248,7 +248,7 @@ impl TcpManagerActor {
 
     fn register_transfer(
         &mut self,
-        local_memory: Arc<KeepaliveLocalMemory>,
+        local_memory: KeepaliveLocalMemory,
         total_chunks: usize,
         done: OncePortRef<Result<(), String>>,
     ) -> usize {
@@ -265,7 +265,7 @@ impl TcpManagerActor {
         &mut self,
         cx: &Context<Self>,
         transfer_id: usize,
-        local_memory: Arc<KeepaliveLocalMemory>,
+        local_memory: KeepaliveLocalMemory,
         chunk_size: usize,
         dest_addr: ChannelAddr,
     ) -> Result<()> {
@@ -970,7 +970,7 @@ mod tests {
         instance: hyperactor::Client,
         tcp_backend: TcpBackend,
         rdma_remote_buf: crate::RdmaRemoteBuffer,
-        local_memory: Arc<KeepaliveLocalMemory>,
+        local_memory: KeepaliveLocalMemory,
     }
 
     impl Drop for TcpTestProcEnv {
@@ -1050,14 +1050,9 @@ mod tests {
             instance: &hyperactor::Client,
             rdma_handle: &ActorHandle<RdmaManagerActor>,
             buffer_size: usize,
-        ) -> anyhow::Result<(Arc<KeepaliveLocalMemory>, crate::RdmaRemoteBuffer)> {
+        ) -> anyhow::Result<(KeepaliveLocalMemory, crate::RdmaRemoteBuffer)> {
             let cpu_buf = vec![0u8; buffer_size].into_boxed_slice();
-            let ptr = cpu_buf.as_ptr() as usize;
-            let local_memory: Arc<KeepaliveLocalMemory> = Arc::new(KeepaliveLocalMemory::new(
-                ptr,
-                buffer_size,
-                Arc::new(cpu_buf),
-            ));
+            let local_memory = KeepaliveLocalMemory::new(Arc::new(cpu_buf));
             let rdma_remote_buf = rdma_handle
                 .request_buffer(instance, local_memory.clone())
                 .await?;
@@ -1601,11 +1596,7 @@ mod tests {
             );
 
             let alloc = CudaAllocator::get().allocate(device, buffer_size, buffer_size);
-            let local_memory: Arc<KeepaliveLocalMemory> = Arc::new(KeepaliveLocalMemory::new(
-                alloc.ptr(),
-                buffer_size,
-                Arc::new(alloc),
-            ));
+            let local_memory = KeepaliveLocalMemory::new(Arc::new(alloc));
             let rdma_remote_buf = rdma_handle
                 .request_buffer(&instance, local_memory.clone())
                 .await?;

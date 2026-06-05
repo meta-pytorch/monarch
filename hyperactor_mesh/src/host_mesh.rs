@@ -47,6 +47,7 @@
 
 use hyperactor::ActorRef;
 use hyperactor::Endpoint as _;
+use hyperactor::Gateway;
 use hyperactor::Handler;
 use hyperactor::accum::StreamingReducerOpts;
 use hyperactor::channel::ChannelTransport;
@@ -160,8 +161,15 @@ impl HostRef {
     }
 
     /// The ProcAddr for the proc with name `name` on this host.
+    ///
+    /// Mirrors the convention of `Host::spawn`: a spawned child proc is
+    /// advertised at `Via(proc_uid, host_addr)` so the host's gateway
+    /// peels the outer hop via [`Gateway::attach_peer`] and forwards to
+    /// the child's serving address. Without the via prefix the host
+    /// would bounce the envelope as a self-loop.
     fn named_proc(&self, id: &ResourceId) -> ProcAddr {
-        id.proc_addr(self.0.clone())
+        let location = hyperactor::Location::from(self.0.clone()).with_via(id.uid().clone());
+        ProcAddr::new(id.proc_id(), location)
     }
 
     /// The service proc on this host.
@@ -460,7 +468,12 @@ impl HostMesh {
         let addr = hyperactor_config::global::get_cloned(DEFAULT_TRANSPORT).binding_addr();
 
         let manager = BootstrapProcManager::new(bootstrap_cmd)?;
-        let host = Host::new(manager, addr).await?;
+        // Use a dedicated gateway, not the process-wide global one. This
+        // host coexists with the global-context singleton host (see
+        // `global_context`), which owns the global gateway; sharing it
+        // would collide on the legacy `service`/`local` pseudo-singleton
+        // proc ids.
+        let host = Host::new_with_gateway(manager, addr, None, Gateway::new()).await?;
         let addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let host_mesh_agent = system_proc
@@ -524,7 +537,11 @@ impl HostMesh {
         let spawn: ProcManagerSpawnFn =
             Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None))));
         let manager = LocalProcManager::new(spawn);
-        let host = Host::new(manager, addr).await?;
+        // Each in-process host gets its own gateway, not the
+        // process-wide global one. Several hosts coexist in one process
+        // here, and the legacy `service`/`local` pseudo-singleton proc
+        // ids would collide if they all attached to the same gateway.
+        let host = Host::new_with_gateway(manager, addr, None, Gateway::new()).await?;
         let addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let host_mesh_agent = system_proc
@@ -2267,8 +2284,8 @@ mod tests {
         // itself the assertion. `TestRootClient::handle::<MeshFailure>`
         // panics on supervision events; if the request bounce had
         // escaped through `Undeliverable<MessageEnvelope>`, the
-        // root-client's default `handle_undeliverable_message` would
-        // bail with `UndeliverableMessageError::DeliveryFailure`,
+        // root-client's default delivery-failure handling would
+        // surface an `UndeliverableMessageError::DeliveryFailure`,
         // supervision would fire, and we wouldn't be here.
     }
 

@@ -99,10 +99,7 @@ if TYPE_CHECKING:
         QueuedMessage,
     )
     from monarch._rust_bindings.monarch_hyperactor.actor_mesh import ActorMeshProtocol
-    from monarch._rust_bindings.monarch_hyperactor.mailbox import (
-        PortHandle,
-        PortReceiverBase,
-    )
+    from monarch._rust_bindings.monarch_hyperactor.mailbox import PortReceiverBase
     from monarch._src.actor.proc_mesh import _ControllerController, DeviceMesh, ProcMesh
 
     def _assert_implements_endpoint(x: Endpoint[..., Any]) -> None: ...
@@ -252,6 +249,14 @@ class Instance(abc.ABC):
         """
         Abort the current actor. This will cause the actor to terminate
         with a failure, and a supervision error will propagate to its creator.
+        """
+        ...
+
+    @abstractmethod
+    def kill(self, reason: Optional[str] = None) -> None:
+        """
+        Terminate the current actor with a failure. A supervision error
+        propagates to its creator.
         """
         ...
 
@@ -1466,29 +1471,23 @@ class _Actor:
     async def _dispatch_loop(
         self,
         receiver: "Receiver[QueuedMessage]",
-        error_port: "PortHandle",
+        self_instance: "Instance",
     ) -> None:
         """
         Message loop for queue-dispatch mode. Called from Rust Actor::init.
 
         Args:
             receiver: Channel receiver for queued messages
-            error_port: Port to send errors to for actor supervision
+            self_instance: The actor's own Instance, used to kill self on
+                an unhandled exception.
         """
         while True:
             msg = await receiver.recv()
             try:
                 await self._handle_queued_message(msg)
             except BaseException as e:
-                state = pickle(
-                    e, allow_pending_pickles=False, allow_tensor_engine_references=False
-                )
-                error_msg = PythonMessage(
-                    # pyrefly: ignore [bad-argument-type, unexpected-keyword]
-                    PythonMessageKind.Exception(rank=None),
-                    state.buffer(),
-                )
-                error_port.send(msg.context.actor_instance, error_msg)
+                reason = "".join(TracebackException.from_exception(e).format())
+                self_instance.kill(reason)
                 raise
 
     async def _handle_queued_message(self, msg: "QueuedMessage") -> None:
