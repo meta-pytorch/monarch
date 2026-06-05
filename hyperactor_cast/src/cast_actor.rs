@@ -46,7 +46,6 @@ use ndslice::Region;
 use ndslice::Shape;
 use ndslice::view::BuildFromRegionIndexed;
 use ndslice::view::MapIntoExt;
-use ndslice::view::Ranked;
 use ndslice::view::View;
 use serde::Deserialize;
 use serde::Serialize;
@@ -889,6 +888,7 @@ mod tests {
     use ndslice::Slice;
     use ndslice::ViewExt;
     use ndslice::shape;
+    use ndslice::view::Ranked;
     use proptest::prelude::*;
     use timed_test::async_timed_test;
     use typeuri::Named;
