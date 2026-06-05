@@ -346,12 +346,13 @@ impl std::str::FromStr for OrderingSnapshot {
 }
 
 /// Key for sequence assignment.
-/// Handler ports share a sequence per actor; non-handler ports get individual sequences.
+/// Handler ports share a sequence per actor; ephemeral ports get individual
+/// sequences. Control ports are direct.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 enum SeqKey {
     /// Shared sequence for all handler ports of an actor
     Actor(ActorAddr),
-    /// Individual sequence for a specific non-handler port
+    /// Individual sequence for a specific ephemeral port.
     Port(PortAddr),
 }
 
@@ -424,12 +425,14 @@ impl Sequencer {
     /// Assign the next seq for a port, mutate the sequencer with the new seq,
     /// and return the new seq.
     ///
-    /// - Handler ports: share the same sequence scheme per actor (keyed by ActorAddr)
-    /// - Non-handler ports: get individual sequence schemes (keyed by PortAddr)
-    /// - Bypass-workq control ports: messages sent to these ports are delivered
-    ///   to their dedicated channels rather than the actor's work queue. As a
-    ///   result, they use the per-port counter instead.
+    /// - Handler ports: share the same sequence scheme per actor (keyed by ActorAddr).
+    /// - Ephemeral ports: get individual sequence schemes (keyed by PortAddr).
+    /// - Control ports: bypass receive-side reordering and use [`SeqInfo::Direct`].
     pub fn assign_seq(&self, port_id: &PortAddr) -> SeqInfo {
+        if port_id.port().is_control() {
+            return SeqInfo::Direct;
+        }
+
         let key = if port_id.is_handler_port() {
             SeqKey::Actor(port_id.actor_addr().clone())
         } else {
@@ -772,22 +775,19 @@ mod tests {
     }
 
     #[test]
-    fn control_port_uses_per_port_seq_counter() {
-        // Regression test for the seq-gap bug that caused pyspy 504s when
-        // ENABLE_DEST_ACTOR_REORDERING_BUFFER=true. A bypass-channel control port
-        // (IntrospectMessage) must use SeqKey::Port so it doesn't share a counter
-        // with workq-bound messages to the same actor.
+    fn control_port_uses_direct_seq_info() {
+        // Control messages bypass the actor work queue and therefore must not
+        // allocate session sequence numbers that a receive-side reorder buffer
+        // would interpret.
         let sequencer = Sequencer::new(Uuid::now_v7());
         let actor_ref: ActorAddr = test_actor_id("agent_0", "proc_agent");
 
         let introspect_port = actor_ref.port_addr(Port::control(ControlPort::Introspect));
         let regular_actor_port = actor_ref.port_addr(Port::handler::<TestMsg1>());
 
-        // Both should start at seq=1 because their counters are independent.
-        assert_eq!(get_seq(sequencer.assign_seq(&introspect_port)), 1);
+        assert_eq!(sequencer.assign_seq(&introspect_port), SeqInfo::Direct);
         assert_eq!(get_seq(sequencer.assign_seq(&regular_actor_port)), 1);
-        // And continue independently.
-        assert_eq!(get_seq(sequencer.assign_seq(&introspect_port)), 2);
+        assert_eq!(sequencer.assign_seq(&introspect_port), SeqInfo::Direct);
         assert_eq!(get_seq(sequencer.assign_seq(&regular_actor_port)), 2);
     }
 
