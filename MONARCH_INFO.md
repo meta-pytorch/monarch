@@ -86,18 +86,16 @@ Monarch uses a **dual build system**:
 For external/open-source development:
 
 ```bash
-# Build with tensor_engine (CUDA/GPU support) - default
-uv sync
+# Build with tensor_engine (CUDA/GPU support), stable cu132 torch
+uv sync --extra cu132 --extra build
 python setup.py bdist_wheel
 
-# Build without tensor_engine (CPU-only)
-USE_TENSOR_ENGINE=0 uv sync
+# Build without tensor_engine (no torch required)
+USE_TENSOR_ENGINE=0 uv sync --extra build
 USE_TENSOR_ENGINE=0 python setup.py bdist_wheel
 
-# Development installation
-pip install -e .
-# or
-uv sync
+# Development installation, stable cu132 torch
+uv sync --extra cu132
 ```
 
 **Environment Variables:**
@@ -108,11 +106,8 @@ uv sync
 - `ENABLE_MESSAGE_LOGGING` - Enable hyperactor message logging
 - `MONARCH_GPU_PLATFORM` - Select GPU platform: `cuda`, `rocm`, or `none` (CPU-only tensor engine). Leave unset to auto-detect; required when both CUDA and ROCm are installed
 
-**PyTorch Index Configuration:**
-The project uses PyTorch from specific indices (see `pyproject.toml`). Default is `pytorch-cu132`. To change:
-```bash
-uv sync --extra-index-url https://download.pytorch.org/whl/cu130
-```
+**PyTorch flavor extras** (declared in `pyproject.toml`):
+Pick exactly one via `uv sync --extra <flavor>`. Stable: `cpu`, `cu128`, `cu130`, `cu132`, `rocm71`, `rocm72`. Nightly (used by CI): `cpu-nightly`, `cu128-nightly`, `cu130-nightly`, `cu132-nightly`, `rocm71-nightly`, `rocm72-nightly`. The default GPU flavor is `cu132` (CUDA 13.2); `cu128` remains available for older toolchains. The extras are mutually exclusive — uv refuses to enable more than one at a time. Plain `uv sync` (no extra) installs everything except torch, suitable for `USE_TENSOR_ENGINE=0` builds.
 
 ### Meta Internal Build (Buck2)
 
@@ -138,11 +133,11 @@ The `check` script provides a unified workflow for linting, typechecking, and te
 **OSS (Outside Meta):**
 ```bash
 # Full build with GPU support (requires CUDA, torch, RDMA libraries)
-uv sync
+uv sync --extra cu132 --extra build
 python setup.py bdist_wheel
 
-# CPU-only build (no CUDA/RDMA required)
-USE_TENSOR_ENGINE=0 uv sync
+# CPU-only build (no CUDA/RDMA required, no torch needed)
+USE_TENSOR_ENGINE=0 uv sync --extra build
 USE_TENSOR_ENGINE=0 pip install -e .
 ```
 
@@ -162,8 +157,8 @@ buck2 build @fbcode//mode/dev-nosan fbcode//monarch/python/monarch:monarch_lib
 
 **Python Tests (OSS):**
 ```bash
-# Install test dependencies
-uv sync --extra test
+# Install torch + test dependencies (pick one torch flavor)
+uv sync --extra cu132 --extra test  # or --extra cpu / --extra rocm71 / etc.
 
 # Run all tests (skip Meta-internal only tests)
 uv run pytest python/tests/ -v -m "not oss_skip"
@@ -177,9 +172,11 @@ uv run pytest python/tests/ -v -m "not oss_skip" -n auto
 
 **Rust Tests (OSS):**
 ```bash
-# IMPORTANT: Activate Python environment first (Rust binaries link against Python)
-uv sync  # Creates and activates venv
-uv run cargo nextest run  # Run with nextest
+# IMPORTANT: Activate Python environment first (Rust binaries link against Python).
+# Pick a torch flavor — Rust extensions link against torch headers, so a
+# matching torch must be in the env even when running pure-Rust tests.
+uv sync --extra cu132  # or --extra cpu / --extra rocm71 / etc.
+uv run cargo nextest run
 
 # Or with standard cargo test
 cargo test
@@ -312,7 +309,7 @@ Default pytest timeout is 5 minutes (configured in `pyproject.toml`).
 ### OSS Contribution Workflow
 
 1. Make changes to Rust or Python code
-2. Build: `uv sync && python setup.py develop`
+2. Build: `uv sync --extra cu132 --extra build && python setup.py develop`
 3. Test: `uv run pytest python/tests/ -v -m "not oss_skip"`
 4. Run Rust tests: `uv run cargo nextest run`
 5. Format: `cargo fmt` (Rust), ensure `.flake8` compliance (Python)

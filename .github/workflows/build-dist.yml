@@ -7,10 +7,14 @@ on:
         description: 'JSON array of Python versions to build (e.g., ["3.10", "3.11", "3.12", "3.13"])'
         type: string
         default: '["3.10", "3.11", "3.12", "3.13"]'
-      torch-spec:
-        description: 'Torch installation specification'
+      extra:
+        description: 'pyproject.toml extra naming the torch flavor (e.g., cu132-nightly, cu132, rocm71-nightly)'
         type: string
-        default: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu132'
+        default: 'cu132-nightly'
+      torch-version:
+        description: 'Optional version pin for torch (e.g., 2.11.0). Empty = latest matching the extra-selected index.'
+        type: string
+        default: ''
       gpu-arch-type:
         description: 'GPU architecture type'
         type: string
@@ -64,12 +68,21 @@ jobs:
         source scripts/common-setup.sh
         setup_build_environment ${{ matrix.python-version }}
 
-        # Install torch before building the wheel
-        pip install ${{ inputs.torch-spec }}
-        pip install -r build-requirements.txt
-
         # Setup Tensor Engine dependencies
         setup_tensor_engine
+
+        # Install torch (matching inputs.extra) + build-time deps only. The uv
+        # build command below is the project build, so avoid an earlier
+        # isolated editable build that can stamp extensions against a different
+        # torch.
+        # The version pin, if provided, forces a specific torch release from the
+        # extra's index — used by tagged-release builds for ABI consistency.
+        if [ -n "${{ inputs.torch-version }}" ]; then
+          uv sync --inexact --no-install-project --extra ${{ inputs.extra }} --extra build \
+            --upgrade-package "torch==${{ inputs.torch-version }}"
+        else
+          uv sync --inexact --no-install-project --extra ${{ inputs.extra }} --extra build
+        fi
 
         # Install CUDA toolkit if not already present (ARM64 runners lack GPU/CUDA)
         if ! command -v nvcc &> /dev/null; then
@@ -95,7 +108,7 @@ jobs:
         else
           export MONARCH_VERSION=0.6.0.dev$(date +'%Y%m%d')
         fi
-        python setup.py bdist_wheel
+        uv build --wheel --no-build-isolation
 
         echo "=== sccache stats ==="
         sccache --show-stats || true
@@ -107,7 +120,6 @@ jobs:
         done
         ls -la dist/
 
-        # Verify the wheel can be installed and imported
-        install_python_test_dependencies
-        pip install dist/*.whl
+        # Verify the wheel can be installed and imported.
+        uv pip install dist/*.whl
         python -c "import monarch"

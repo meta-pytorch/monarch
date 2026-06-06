@@ -34,7 +34,7 @@ jobs:
         # Writes disabled_tests.txt (read by conftest.py).
         python3 scripts/fetch_disabled_tests.py
 
-        # Setup test environment
+        # Setup test environment (conda + uv + rsync)
         setup_test_environment
 
         # Setup Tensor Engine dependencies
@@ -47,9 +47,11 @@ jobs:
           setup_rocm_environment
         fi
 
-        # Install torch nightly before installing the wheel,
-        # so that we can test the wheel against the latest nightly
-        pip install ${{ matrix.torch-spec }}
+        # Install nightly torch (matching matrix.extra) + pytest stack, but do
+        # not install the project from the checkout here. This job validates
+        # the wheel artifact built by the wheel job, so Monarch's Rust
+        # extensions must come from install_wheel_from_artifact below.
+        uv sync --inexact --no-install-project --extra ${{ matrix.extra }} --extra test
 
         # Install the built wheel from artifact
         install_wheel_from_artifact

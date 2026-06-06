@@ -43,6 +43,35 @@ setup_conda_environment() {
     python -m pip install --upgrade pip
 }
 
+# Install uv and create a uv project environment from the active conda
+# interpreter.
+#
+# Conda owns the base interpreter and native packages, while uv owns Python
+# packages in `.venv`. UV_PYTHON_PREFERENCE=only-system +
+# UV_PYTHON_DOWNLOADS=never stop uv from downloading its own managed Python
+# interpreter.
+#
+# UV_PYTHON starts as the active conda interpreter so `uv venv` seeds `.venv`
+# from it. After activation, retarget UV_PYTHON to `.venv/bin/python` so later
+# `uv pip install` calls install into the project environment, not conda.
+#
+# Must be called after `setup_conda_environment` (or any other step that
+# activates a Python interpreter via $CONDA_PREFIX).
+setup_uv() {
+    : "${CONDA_PREFIX:?setup_uv requires an active conda env (CONDA_PREFIX unset)}"
+    local conda_python
+    conda_python=$(command -v python)
+    echo "Installing uv into conda env: ${CONDA_PREFIX}"
+    python -m pip install uv
+    export UV_PYTHON="${conda_python}"
+    export UV_PYTHON_PREFERENCE=only-system
+    export UV_PYTHON_DOWNLOADS=never
+    uv venv --allow-existing .venv
+    source .venv/bin/activate
+    export UV_PYTHON="$(command -v python)"
+    uv --version
+}
+
 # Install system-level dependencies
 install_system_dependencies() {
     echo "Installing system dependencies..."
@@ -51,9 +80,9 @@ install_system_dependencies() {
     dnf install clang-devel libunwind libunwind-devel protobuf-compiler -y
     # ninja is needed by monarch_cpp_static_libs to build rdma-core from source
     # (cmake's Makefile generator cannot build by output file path, but Ninja can).
-    # Try dnf first (package name varies by distro), fall back to pip if unavailable.
+    # Try dnf first (package name varies by distro), fall back to uv if unavailable.
     if ! command -v ninja &> /dev/null; then
-        dnf install -y ninja-build 2>/dev/null || dnf install -y ninja 2>/dev/null || pip install ninja || echo "Warning: ninja not available, rdma-core build may use make instead"
+        dnf install -y ninja-build 2>/dev/null || dnf install -y ninja 2>/dev/null || uv pip install ninja || echo "Warning: ninja not available, rdma-core build may use make instead"
     fi
 }
 
@@ -111,7 +140,7 @@ setup_sccache() {
     fi
 
     echo "Setting up sccache..."
-    pip install sccache
+    uv pip install sccache
 
     export RUSTC_WRAPPER=sccache
     export SCCACHE_BUCKET=ossci-compiler-cache
@@ -121,17 +150,19 @@ setup_sccache() {
     echo "sccache configured: bucket=${SCCACHE_BUCKET}, prefix=${SCCACHE_S3_KEY_PREFIX}"
 }
 
-# Install Python test dependencies
-install_python_test_dependencies() {
-    echo "Installing test dependencies..."
-    pip install -r python/tests/requirements.txt
+# Install non-Python system tools the Python test suite depends on.
+#
+# Python deps for tests come from `uv sync --extra test` (driven from
+# pyproject.toml); this function only installs what apt/dnf must provide.
+install_test_system_dependencies() {
+    echo "Installing test system dependencies..."
     dnf install -y rsync # required for code sync tests
 }
 
 # Install wheel from artifact directory
 install_wheel_from_artifact() {
     echo "Installing wheel from artifact..."
-    pip install "${RUNNER_ARTIFACT_DIR}"/*.whl
+    uv pip install "${RUNNER_ARTIFACT_DIR}"/*.whl
 }
 
 # Setup and install dependencies for Tensor Engine
@@ -144,23 +175,24 @@ setup_tensor_engine() {
     dnf install -y libibverbs rdma-core libmlx5 libibverbs-devel rdma-core-devel libefa libnl3-devel
 }
 
-# Install PyTorch with C++ development headers (libtorch) for Rust compilation
-# Usage: setup_pytorch_with_headers <gpu-arch-type> <gpu-arch-version> <torch-spec>
-setup_pytorch_with_headers() {
+# Download libtorch C++ headers + shared libs for Rust compilation.
+#
+# Usage: download_libtorch_headers <gpu-arch-type> <gpu-arch-version>
+#
+# Always pulls the nightly libtorch; the matching torch Python package should
+# be installed separately via `uv sync --extra <flavor>-nightly` so versions
+# line up at the ABI level.
+download_libtorch_headers() {
     local gpu_arch_type=${1:-"cuda"}
     local gpu_arch_version=${2:-"13.2"}
-    local torch_spec=${3:-"--pre torch --index-url https://download.pytorch.org/whl/nightly/cu132"}
 
-    echo "Setting up PyTorch with C++ headers (${gpu_arch_type} ${gpu_arch_version})..."
+    echo "Downloading libtorch C++ headers (${gpu_arch_type} ${gpu_arch_version})..."
 
-    # Construct libtorch URL based on GPU type
     local libtorch_variant
     local libtorch_filename
     if [[ "${gpu_arch_type}" == "rocm" ]]; then
-        # ROCm uses version with dots: "7.1" -> "rocm7.1"
         libtorch_variant="rocm${gpu_arch_version}"
     else
-        # CUDA uses version without dots: "13.2" -> "cu132"
         libtorch_variant="cu$(echo "${gpu_arch_version}" | tr -d '.')"
     fi
     # PyTorch nightlies unified on cxx11 ABI and dropped the -cxx11-abi- infix;
@@ -172,16 +204,10 @@ setup_pytorch_with_headers() {
     wget -q "${libtorch_url}"
     unzip -q "${libtorch_filename}"
 
-    # Set environment variables for libtorch
     export LIBTORCH_ROOT="$PWD/libtorch"
     export LD_LIBRARY_PATH="$LIBTORCH_ROOT/lib:${LD_LIBRARY_PATH:-}"
     export CMAKE_PREFIX_PATH="$LIBTORCH_ROOT:${CMAKE_PREFIX_PATH:-}"
 
-    # Install PyTorch Python package using provided torch-spec
-    echo "Installing PyTorch Python package with: ${torch_spec}"
-    pip install ${torch_spec}
-
-    # Verify installation
     echo "LibTorch C++ headers available at: $LIBTORCH_ROOT/include"
     if [[ -d "$LIBTORCH_ROOT/include/torch/csrc/api/include/torch" ]]; then
         echo "✓ PyTorch C++ API headers found"
@@ -211,18 +237,25 @@ setup_cuda_toolkit() {
         dnf config-manager --add-repo \
             https://developer.download.nvidia.com/compute/cuda/repos/rhel9/x86_64/cuda-rhel9.repo
     fi
-    dnf install -y cuda-toolkit-12-8
-    export CUDA_HOME=/usr/local/cuda-12.8
+    dnf install -y cuda-toolkit-13-2
+    export CUDA_HOME=/usr/local/cuda-13.2
     export PATH="$CUDA_HOME/bin:$PATH"
     export LD_LIBRARY_PATH="$CUDA_HOME/lib64:${LD_LIBRARY_PATH:-}"
 }
 
-# Common setup for build workflows (environment + system deps + rust)
+# Common setup for build workflows (environment + system deps + rust + uv).
+#
+# After this returns, the conda env is active, uv has created and activated
+# `.venv` from the conda interpreter, and rust + sccache are configured.
+# Workflows then run
+# `uv sync --inexact --no-install-project --extra <torch-flavor> --extra build`
+# to install torch + build-time Python deps before invoking the wheel build.
 setup_build_environment() {
     local python_version=${1:-3.10}
     setup_conda_environment "${python_version}"
     install_system_dependencies
     install_node
+    setup_uv
     setup_rust_toolchain
 }
 
@@ -272,11 +305,17 @@ setup_rocm_environment() {
     fi
 }
 
-# Common setup for test workflows (environment only)
+# Common setup for test workflows.
+#
+# After this returns, the conda env is active, uv has created and activated
+# `.venv` from the conda interpreter, and rsync (needed by code-sync tests) is
+# installed. Workflows then run `uv sync --inexact --extra <torch-flavor> --extra test`
+# to install torch + the pytest stack before running tests.
 setup_test_environment() {
     local python_version=${1:-3.10}
     setup_conda_environment "${python_version}"
-    install_python_test_dependencies
+    setup_uv
+    install_test_system_dependencies
 }
 
 # Run Monarch Python tests with crash recovery.
@@ -292,7 +331,7 @@ run_test_groups() {
   export LD_PRELOAD="${CONDA_LIBSTDCPP}${LD_PRELOAD:+:$LD_PRELOAD}"
   export RUST_BACKTRACE=1
   mkdir -p "$test_results_dir"
-  LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip" \
+  LC_ALL=C uv run --no-sync pytest python/tests/ -s -v -m "not oss_skip" \
       --ignore-glob="**/meta/**" \
       --crash-recovery \
       --max-crashes=10 \

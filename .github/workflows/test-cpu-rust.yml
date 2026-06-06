@@ -37,7 +37,7 @@ jobs:
         # Writes disabled_tests.txt and patches .config/nextest.toml with a filter.
         python3 scripts/fetch_disabled_tests.py
 
-        # Setup test environment
+        # Setup test environment (conda + uv + rsync)
         setup_test_environment
 
         # Install Rust
@@ -46,8 +46,8 @@ jobs:
         # Install System dependencies
         install_system_dependencies
 
-        # Install PyTorch (needed for ABI compatibility, no GPU required)
-        pip install --pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu132
+        # Install nightly cu132 torch (needed for ABI compatibility, no GPU required).
+        uv sync --inexact --extra cu132-nightly
 
         # Run CPU-safe Rust tests (no GPU hardware available)
         echo "=== Runner spec ==="

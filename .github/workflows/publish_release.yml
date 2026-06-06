@@ -36,7 +36,8 @@ jobs:
       # of auto-suffixing it from gpu-arch-type/version.
       runner: linux.c7i.2xlarge
       docker-image: 'pytorch/manylinux2_28-builder:cuda13.2'
-      torch-spec: 'torch==2.12.0 --extra-index-url https://download.pytorch.org/whl/cu132'
+      extra: cu132
+      torch-version: '2.12.0'
       gpu-arch-type: cpu
       gpu-arch-version: ''
       arch-label: cuda13.2
@@ -49,7 +50,8 @@ jobs:
       python-versions: '["3.10", "3.11", "3.12", "3.13"]'
       runner: linux.arm64.2xlarge
       docker-image: 'pytorch/manylinuxaarch64-builder:cuda13.2'
-      torch-spec: 'torch==2.12.0 --extra-index-url https://download.pytorch.org/whl/cu132'
+      extra: cu132
+      torch-version: '2.12.0'
       gpu-arch-type: cuda
       gpu-arch-version: '13.2'
       version: ${{ github.event.inputs.version }}
@@ -60,7 +62,8 @@ jobs:
     with:
       python-versions: '["3.10", "3.11", "3.12", "3.13"]'
       runner: macos-latest
-      torch-spec: 'torch==2.12.0 --extra-index-url https://download.pytorch.org/whl/cpu'
+      extra: cpu
+      torch-version: '2.12.0'
       version: ${{ github.event.inputs.version }}
 
   publish:

@@ -7,10 +7,14 @@ on:
         description: 'JSON array of Python versions to build (e.g., ["3.10", "3.11", "3.12", "3.13"])'
         type: string
         default: '["3.10", "3.11", "3.12", "3.13"]'
-      torch-spec:
-        description: 'Torch installation specification'
+      extra:
+        description: 'pyproject.toml extra naming the torch flavor (e.g., cpu-nightly, cpu)'
         type: string
-        default: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cpu'
+        default: 'cpu-nightly'
+      torch-version:
+        description: 'Optional version pin for torch (e.g., 2.12.0). Empty = latest matching the extra-selected index.'
+        type: string
+        default: ''
       runner:
         description: 'macOS runner to use'
         type: string
@@ -22,7 +26,7 @@ on:
       timeout:
         description: 'Job timeout in minutes'
         type: number
-        default: 60
+        default: 90
 
 jobs:
   build:
@@ -61,10 +65,22 @@ jobs:
           USE_TENSOR_ENGINE: "1"
         run: |
           set -eux
-          python -m pip install --upgrade pip
-          python -m pip install --upgrade "setuptools>=77" wheel
-          python -m pip install -r build-requirements.txt
-          python -m pip install ${{ inputs.torch-spec }}
+          source scripts/common-setup-macos.sh
+          setup_uv_macos
+          # Install torch + build-time deps only. The uv build command below is
+          # the project build, so avoid an earlier isolated editable build.
+          torch_extra="${{ inputs.extra }}"
+          if [ "$torch_extra" = "cpu-nightly" ] && [ "${{ matrix.python-version }}" = "3.11" ]; then
+            # PyTorch nightly CPU currently does not publish macOS cp311 wheels.
+            # Match pip's old extra-index fallback behavior for this one wheel.
+            torch_extra="cpu"
+          fi
+          if [ -n "${{ inputs.torch-version }}" ]; then
+            uv sync --inexact --no-install-project --extra "$torch_extra" --extra build \
+              --upgrade-package "torch==${{ inputs.torch-version }}"
+          else
+            uv sync --inexact --no-install-project --extra "$torch_extra" --extra build
+          fi
 
           if [ -n "${{ inputs.version }}" ]; then
             export MONARCH_VERSION="${{ inputs.version }}"
@@ -72,9 +88,9 @@ jobs:
             export MONARCH_VERSION=0.6.0.dev$(date +'%Y%m%d')
           fi
 
-          python setup.py bdist_wheel
+          uv build --wheel --no-build-isolation
           ls -la dist/
-          python -m pip install dist/*.whl
+          uv pip install dist/*.whl
           python -c "import monarch"
 
       - name: Upload wheel artifact

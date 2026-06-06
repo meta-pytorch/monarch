@@ -15,9 +15,29 @@ install_macos_base_dependencies() {
     python -m pip install --upgrade pip
 }
 
-install_macos_python_test_dependencies() {
-    python -m pip install -r python/tests/requirements.txt
-    python -m pip install --pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cpu
+# Install uv and create a uv project environment from the active setup-python
+# interpreter.
+#
+# macOS workflows use actions/setup-python rather than conda, so there is no
+# $CONDA_PREFIX. Use a real .venv backed by the setup-python interpreter;
+# UV_PYTHON_PREFERENCE=only-system + UV_PYTHON_DOWNLOADS=never stop uv from
+# downloading its own managed Python.
+#
+# UV_PYTHON starts as the setup-python interpreter so `uv venv` seeds `.venv`
+# from it. After activation, retarget UV_PYTHON to `.venv/bin/python` so later
+# `uv pip install` calls install into the project environment.
+setup_uv_macos() {
+    local setup_python
+    setup_python=$(command -v python)
+    echo "Installing uv against system python: ${setup_python}"
+    python -m pip install uv
+    export UV_PYTHON="${setup_python}"
+    export UV_PYTHON_PREFERENCE=only-system
+    export UV_PYTHON_DOWNLOADS=never
+    uv venv --allow-existing .venv
+    source .venv/bin/activate
+    export UV_PYTHON="$(command -v python)"
+    uv --version
 }
 
 install_macos_rust_test_dependencies() {
@@ -42,7 +62,7 @@ run_test_groups() {
         pkill -9 python || true
         pkill -9 pytest || true
         sleep 2
-        LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip" \
+        LC_ALL=C uv run --no-sync pytest python/tests/ -s -v -m "not oss_skip" \
             --ignore-glob="**/meta/**" \
             --dist=no \
             --group="$GROUP" \

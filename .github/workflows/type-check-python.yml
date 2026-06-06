@@ -39,8 +39,14 @@ jobs:
         # Disable tensor engine for CPU wheel
         export USE_TENSOR_ENGINE=0
 
-        # Install PyTorch nightly (CPU) so monarch imports resolve for pyright
-        pip install --pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cpu
+        # Install only the direct type-check tools here. This job runs on a
+        # smaller runner and validates the wheel artifact built by the wheel
+        # job, so avoid project sync/build-system deps; Monarch and its Rust
+        # extensions come from install_wheel_from_artifact below. pytest is
+        # still needed because the checked test file imports it.
+        uv pip install --prerelease allow \
+          --index https://download.pytorch.org/whl/nightly/cpu \
+          torch pyright pytest
 
         # Install the built wheel from artifact
         install_wheel_from_artifact
