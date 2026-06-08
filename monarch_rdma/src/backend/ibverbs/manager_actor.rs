@@ -48,7 +48,7 @@ use super::IbvBuffer;
 use super::IbvOp;
 use super::domain::IbvDomain;
 use super::primitives::IbvConfig;
-use super::primitives::IbvDevice;
+use super::primitives::IbvDeviceInfo;
 use super::primitives::IbvMemoryRegion;
 use super::primitives::IbvMemoryRegionView;
 use super::primitives::IbvQpInfo;
@@ -348,7 +348,7 @@ impl IbvManagerActor {
     fn get_or_create_device_domain(
         &mut self,
         device_name: &str,
-        rdma_device: &IbvDevice,
+        rdma_device: &IbvDeviceInfo,
     ) -> Result<Arc<IbvDomain>, anyhow::Error> {
         if let Some((domain, _)) = self.device_domains.get(device_name) {
             return Ok(Arc::clone(domain));
