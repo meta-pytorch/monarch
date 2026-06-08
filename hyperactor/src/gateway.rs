@@ -8,24 +8,16 @@
 
 //! Connectivity layer for Hyperactor procs.
 //!
-//! A proc by itself is an isolated actor runtime. It owns local actor
-//! lifecycle and mailboxes, but it communicates with other procs by
-//! attaching to a gateway. The gateway encapsulates the proc's connectivity
-//! layer: it gives attached procs an advertised location, accepts inbound
-//! traffic for that location, and forwards outbound traffic to destinations
-//! outside the proc.
+//! A proc owns actor lifecycle and mailboxes; a [`Gateway`] owns how that proc
+//! is reached. Attached procs derive advertised addresses from the gateway's
+//! default location, receive inbound traffic through the gateway, and send
+//! outbound traffic through its routing decision.
 //!
-//! This separation lets us compose different topologies without changing
-//! proc identity. A host can attach all of its procs to one gateway, so the
-//! gateway multiplexes ingress to those procs and routes egress on their
-//! behalf. A proc from a foreign host can also attach through another host's
-//! gateway, inheriting that host's advertised location while still retaining
-//! its own proc id. Gateways can also act as pure proxies when they do not
-//! own any local procs.
-//!
-//! From the channel/connectivity perspective, each location has one gateway.
-//! Operationally, a gateway is both a proc multiplexer for ingress and a
-//! router for egress.
+//! A gateway routes by first checking for a `Via(uid, ...)` source-route hop,
+//! then by trying local proc delivery, and finally by forwarding to its
+//! configured outbound sender. Use [`Gateway::serve`] or [`Gateway::bind`] plus
+//! [`Gateway::serve_bound`] to accept inbound traffic, and use
+//! [`Gateway::serve_via`] to attach this gateway to a remote duplex gateway.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -172,18 +164,12 @@ impl crate::mailbox::MailboxSender for AttachSender {
     }
 }
 
-/// A pre-bound duplex server ready to be handed to
-/// [`Gateway::serve_duplex_with_server`]. Used by callers (e.g. `Host`)
-/// that need to know the bound address before they start the accept
-/// loop.
-pub struct PreboundAcceptServer {
+struct PreboundAcceptServer {
     inner: channel::duplex::DuplexServer<MessageEnvelope, AttachWire>,
 }
 
 impl PreboundAcceptServer {
-    /// Bind a duplex server at `addr`, optionally reusing a
-    /// caller-provided `listener`.
-    pub fn duplex(
+    fn duplex(
         addr: ChannelAddr,
         listener: Option<std::net::TcpListener>,
     ) -> Result<Self, channel::ServerError> {
@@ -191,35 +177,34 @@ impl PreboundAcceptServer {
         Ok(Self { inner })
     }
 
-    /// The bound address.
-    pub fn addr(&self) -> &ChannelAddr {
+    fn addr(&self) -> &ChannelAddr {
         self.inner.addr()
     }
 }
 
-/// A host frontend bound by [`Gateway::bind_frontend`] and served by
-/// [`Gateway::serve_frontend`]. Duplex-capable transports yield a
+/// A server endpoint bound by [`Gateway::bind`] and served by
+/// [`Gateway::serve_bound`]. Duplex-capable transports yield a
 /// gateway-attach-capable accept loop; simplex transports yield a
 /// straight mailbox serve. Callers (e.g. `Host`) hold this opaquely
 /// between bind and serve and never inspect the transport themselves.
-pub enum GatewayFrontend {
-    /// A duplex accept loop endpoint.
+pub struct BoundServer {
+    inner: BoundServerKind,
+}
+
+enum BoundServerKind {
     Duplex(PreboundAcceptServer),
-    /// A simplex receiver for transports that cannot carry duplex.
     Simplex {
-        /// The bound frontend address.
         addr: ChannelAddr,
-        /// The receiver served straight into the gateway.
         rx: channel::ChannelRx<MessageEnvelope>,
     },
 }
 
-impl GatewayFrontend {
-    /// The bound frontend address.
+impl BoundServer {
+    /// The bound address.
     pub fn addr(&self) -> &ChannelAddr {
-        match self {
-            GatewayFrontend::Duplex(server) => server.addr(),
-            GatewayFrontend::Simplex { addr, .. } => addr,
+        match &self.inner {
+            BoundServerKind::Duplex(server) => server.addr(),
+            BoundServerKind::Simplex { addr, .. } => addr,
         }
     }
 }
@@ -255,6 +240,14 @@ pub struct Gateway {
     inner: Arc<GatewayState>,
 }
 
+enum ProcRoute {
+    Local(WeakProc),
+    Remote {
+        via_uid: Uid,
+        sender: BoxedMailboxSender,
+    },
+}
+
 /// Handle returned by [`Gateway::attach_proc`] that detaches the proc
 /// (removing its local-delivery registration) when dropped. This is the
 /// sole remover of the entry; it runs from `ProcState::drop`, so by the
@@ -286,12 +279,44 @@ impl Drop for AttachedProcGuard {
         let Some(state) = self.gateway.upgrade() else {
             return;
         };
-        let mut locals = state.locals.write().unwrap();
-        if locals
+        let mut procs = state.procs.write().unwrap();
+        if procs
             .get(&self.proc_id)
-            .is_some_and(|weak| weak.ptr_eq(&self.weak))
+            .is_some_and(|route| matches!(route, ProcRoute::Local(weak) if weak.ptr_eq(&self.weak)))
         {
-            locals.remove(&self.proc_id);
+            procs.remove(&self.proc_id);
+        }
+    }
+}
+
+/// Handle returned by [`Gateway::attach_proc_sender`] that removes the
+/// proc route when dropped.
+#[must_use = "dropping the ProcRouteGuard immediately removes the proc route"]
+pub struct ProcRouteGuard {
+    gateway: Weak<GatewayState>,
+    proc_id: ProcId,
+    via_uid: Uid,
+}
+
+impl fmt::Debug for ProcRouteGuard {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProcRouteGuard")
+            .field("proc_id", &self.proc_id)
+            .field("via_uid", &self.via_uid)
+            .finish()
+    }
+}
+
+impl Drop for ProcRouteGuard {
+    fn drop(&mut self) {
+        let Some(state) = self.gateway.upgrade() else {
+            return;
+        };
+        let mut procs = state.procs.write().unwrap();
+        if procs.get(&self.proc_id).is_some_and(
+            |route| matches!(route, ProcRoute::Remote { via_uid, .. } if via_uid == &self.via_uid),
+        ) {
+            procs.remove(&self.proc_id);
         }
     }
 }
@@ -330,6 +355,33 @@ pub struct PeerAttachError {
     pub uid: Uid,
 }
 
+/// Error returned by [`Gateway::attach_proc_sender`] when a proc route
+/// is already registered for the given proc id.
+#[derive(Debug, thiserror::Error)]
+#[error("gateway already has a proc route for id {proc_id}")]
+pub struct ProcRouteError {
+    /// The proc id that was already registered.
+    pub proc_id: ProcId,
+}
+
+/// Outbound routing state for a gateway, kept behind a single lock so
+/// the two fields stay mutually consistent across [`Gateway::serve_via`]
+/// swaps and restores.
+struct Routing {
+    /// The advertised location for newly bound refs. After
+    /// [`Gateway::serve_via`], this is replaced with the peer-supplied
+    /// `Via(self.uid, peer_default_location)` location, so any address
+    /// handed out by this gateway carries the via prefix and is
+    /// source-routable back through the duplex.
+    default_location: Location,
+
+    /// Sender used to forward messages whose destination is neither an
+    /// attached proc nor matched by [`peers`]. Swapped in by
+    /// [`Gateway::serve_via`] and restored when the resulting handle
+    /// is dropped or joined.
+    forwarder: BoxedMailboxSender,
+}
+
 struct GatewayState {
     /// A random, stable identifier for this gateway. It is just a
     /// routing key in peers' tables: peers route messages
@@ -341,25 +393,18 @@ struct GatewayState {
     /// The location to use when no server is active.
     fallback_location: Location,
 
-    /// newly bound refs. After [`Gateway::serve_via`], this is replaced
-    /// with the peer-supplied `Via(self.uid, peer_default_location)`
-    /// location, so any address handed out by this gateway carries the
-    /// via prefix and is source-routable back through the duplex.
-    default_location: RwLock<Location>,
+    /// Outbound routing state, held under one lock so the advertised
+    /// location and the forwarder transition together. [`Gateway::serve_via`]
+    /// swaps both in a single critical section and restores them likewise,
+    /// so concurrent readers never observe a half-swapped pair (a new
+    /// via-prefixed location with the old forwarder, or vice versa).
+    routing: RwLock<Routing>,
 
-    /// Sender used to forward messages whose destination is neither an
-    /// attached proc nor matched by [`peers`]. Swapped in by
-    /// [`Gateway::serve_via`] and restored when the resulting handle
-    /// is dropped or joined.
-    forwarder: RwLock<BoxedMailboxSender>,
-
-    /// Local delivery targets registered with this gateway, keyed by
-    /// id. Each value is a [`WeakProc`] so the gateway does not
-    /// extend the proc's lifetime; on hit, the gateway upgrades and
-    /// delivers directly to the muxer when the destination is a
-    /// local-delivery target. Internal: never exposed; populated
-    /// only by [`Gateway::attach_proc`], which is itself internal.
-    locals: RwLock<HashMap<ProcId, WeakProc>>,
+    /// Proc routes registered with this gateway, keyed by proc id.
+    /// Local routes hold weak proc references for in-process delivery;
+    /// remote routes hold senders for child procs spawned behind this
+    /// gateway.
+    procs: RwLock<HashMap<ProcId, ProcRoute>>,
 
     /// Locations currently served by this gateway. The last location
     /// is the default advertised location.
@@ -412,9 +457,11 @@ impl Gateway {
             inner: Arc::new(GatewayState {
                 uid: Uid::anonymous(),
                 fallback_location: default_location.clone(),
-                default_location: RwLock::new(default_location),
-                forwarder: RwLock::new(forwarder),
-                locals: RwLock::new(HashMap::new()),
+                routing: RwLock::new(Routing {
+                    default_location,
+                    forwarder,
+                }),
+                procs: RwLock::new(HashMap::new()),
                 active_servers: RwLock::new(Vec::new()),
                 peers: RwLock::new(HashMap::new()),
             }),
@@ -430,19 +477,19 @@ impl Gateway {
 
     /// The gateway's default advertised location.
     pub fn default_location(&self) -> Location {
-        self.inner.default_location.read().unwrap().clone()
+        self.inner.routing.read().unwrap().default_location.clone()
     }
 
     /// The outbound forwarder. Inbound traffic for destinations that
     /// don't match a bound proc, route, or via peer is handed off to
     /// this sender.
     pub fn forwarder(&self) -> BoxedMailboxSender {
-        self.inner.forwarder.read().unwrap().clone()
+        self.inner.routing.read().unwrap().forwarder.clone()
     }
 
     /// Set the gateway's default advertised location.
     pub fn set_default_location(&self, location: Location) {
-        *self.inner.default_location.write().unwrap() = location;
+        self.inner.routing.write().unwrap().default_location = location;
     }
 
     /// Attach a proc to this gateway, establishing the two-way
@@ -452,16 +499,18 @@ impl Gateway {
     ///
     /// The gateway delivers messages addressed to this id directly to
     /// the muxer when [`Proc::is_local_delivery_target`] holds;
-    /// otherwise it falls through to peers and the forwarder.
+    /// otherwise routing continues to the appropriate peer or
+    /// forwarder.
     ///
     /// Internal-only: only [`Proc`] construction calls this, and the
     /// resulting [`AttachedProcGuard`] is held inside the proc itself
     /// so the proc's lifetime drives detachment. The public Gateway
-    /// API exposes peer connectivity via [`Gateway::attach`] (an
+    /// API exposes gateway connectivity via [`Gateway::attach`] (an
     /// in-process bidirectional bind), [`Gateway::attach_peer`] (a
     /// sender-based via entry for a peer gateway uid), and
     /// [`Gateway::serve_via`] (a duplex-attach connection to a remote
-    /// gateway). None of those take a [`Proc`].
+    /// gateway). Hosts register spawned child procs with
+    /// [`Gateway::attach_proc_sender`].
     ///
     /// Panics if a live proc with the same id is already attached. A
     /// dead entry whose [`WeakProc`] has been dropped is replaced
@@ -469,26 +518,61 @@ impl Gateway {
     pub(crate) fn attach_proc(&self, proc: &Proc) -> AttachedProcGuard {
         let proc_id = proc.proc_id().clone();
         let weak = proc.downgrade();
-        let existing = self
-            .inner
-            .locals
-            .write()
-            .unwrap()
-            .insert(proc_id.clone(), weak.clone());
-        match existing {
+        let mut procs = self.inner.procs.write().unwrap();
+        match procs.get(&proc_id) {
             // No prior entry, or the prior entry was a dead handle
             // whose slot is now ours.
             None => {}
-            Some(weak) if weak.upgrade().is_none() => {}
+            Some(ProcRoute::Local(weak)) if weak.upgrade().is_none() => {}
             Some(_) => {
                 panic!("gateway already has a proc attached with id {}", proc_id)
             }
         }
+        procs.insert(proc_id.clone(), ProcRoute::Local(weak.clone()));
         AttachedProcGuard {
             gateway: Arc::downgrade(&self.inner),
             proc_id,
             weak,
         }
+    }
+
+    /// Register a spawned child proc that is reachable through
+    /// `sender`.
+    ///
+    /// Messages addressed to `proc_id` with an outermost
+    /// [`Location::Via`] hop carrying `via_uid` are forwarded through
+    /// `sender` after peeling the hop. The returned guard removes the
+    /// route on drop.
+    ///
+    /// Returns [`ProcRouteError`] if a live local proc or another
+    /// remote route is already registered under `proc_id`. A dead
+    /// local entry is replaced.
+    pub fn attach_proc_sender(
+        &self,
+        proc_id: ProcId,
+        via_uid: Uid,
+        sender: BoxedMailboxSender,
+    ) -> Result<ProcRouteGuard, ProcRouteError> {
+        let mut procs = self.inner.procs.write().unwrap();
+        match procs.get(&proc_id) {
+            None => {}
+            Some(ProcRoute::Local(weak)) if weak.upgrade().is_none() => {}
+            Some(_) => {
+                return Err(ProcRouteError { proc_id });
+            }
+        }
+        procs.insert(
+            proc_id.clone(),
+            ProcRoute::Remote {
+                via_uid: via_uid.clone(),
+                sender,
+            },
+        );
+        Ok(ProcRouteGuard {
+            gateway: Arc::downgrade(&self.inner),
+            proc_id,
+            via_uid,
+        })
     }
 
     /// Register a gateway peer that is reachable through `sender`.
@@ -497,12 +581,9 @@ impl Gateway {
     /// `sender` after peeling the hop. The returned guard removes the
     /// entry on drop.
     ///
-    /// Used both internally (by [`Gateway::attach`] and the duplex
-    /// accept loop in [`Gateway::serve_duplex`]) and externally (by hosts
-    /// that have spawned child procs reachable through a dial-based
-    /// sender). The host publishes the child's address with a
-    /// `Via(child_uid, ...)` prefix and registers the sender here
-    /// under the same `uid`.
+    /// Used by [`Gateway::attach`] and the duplex accept loop in
+    /// [`Gateway::serve_duplex`]. Use [`Gateway::attach_proc_sender`]
+    /// for a spawned child proc behind this gateway.
     ///
     /// Returns [`PeerAttachError`] if a peer with the same uid is
     /// already attached.
@@ -589,9 +670,9 @@ impl Gateway {
     /// [`PreboundAcceptServer`]. Use when the caller needs to know the
     /// bound address before starting the accept loop (e.g. to construct
     /// addresses that reference it).
-    pub fn serve_duplex_with_server(&self, server: PreboundAcceptServer) -> GatewayServeHandle {
-        let frontend_addr = server.addr().clone();
-        let location = Location::from(frontend_addr.clone());
+    fn serve_duplex_with_server(&self, server: PreboundAcceptServer) -> GatewayServeHandle {
+        let bound_addr = server.addr().clone();
+        let location = Location::from(bound_addr.clone());
         self.add_server(location.clone());
 
         // The accept loop and its per-connection tasks are driven by a
@@ -604,7 +685,7 @@ impl Gateway {
         let gateway = self.clone();
         let inner = server.inner;
         let join_handle = tokio::spawn(async move {
-            duplex_accept_loop(inner, frontend_addr, gateway, loop_token).await;
+            duplex_accept_loop(inner, bound_addr, gateway, loop_token).await;
             Ok::<(), MailboxServerError>(())
         });
         // The inner handle exists only so `join()`/`await` can await the
@@ -623,30 +704,29 @@ impl Gateway {
         }
     }
 
-    /// Bind this gateway's host frontend on `addr`, choosing a duplex
+    /// Bind this gateway's server endpoint on `addr`, choosing a duplex
     /// accept server or a simplex receiver based on the transport, and
     /// adopt the bound address as the gateway's advertised location.
     ///
-    /// Splitting bind from [`serve_frontend`] lets a caller construct
-    /// procs whose addresses derive from this gateway's (now
-    /// frontend-aware) default location *before* the accept loop runs.
-    /// This owns all the connectivity policy a host used to carry: the
-    /// transport choice and the location adoption live here, so callers
-    /// operate on the gateway without inspecting transports or
-    /// rewriting its location.
+    /// Splitting bind from [`serve_bound`] lets a caller construct procs
+    /// whose addresses derive from this gateway's (now bound-address-aware)
+    /// default location *before* the accept loop runs. This owns all the
+    /// connectivity policy a host used to carry: the transport choice and
+    /// the location adoption live here, so callers operate on the gateway
+    /// without inspecting transports or rewriting its location.
     ///
-    /// The frontend address is adopted only when no via session is
-    /// active. A via session's `default_location` is
-    /// `Via(self_uid, peer_addr)`; overwriting it with the bare
-    /// frontend address would drop the prefix and leave every proc on
-    /// this gateway advertised at an address the peer cannot reach.
-    pub fn bind_frontend(
+    /// The bound address is adopted only when no via session is active. A
+    /// via session's `default_location` is `Via(self_uid, peer_addr)`;
+    /// overwriting it with the bare bound address would drop the prefix and
+    /// leave every proc on this gateway advertised at an address the peer
+    /// cannot reach.
+    pub fn bind(
         &self,
         addr: ChannelAddr,
         listener: Option<std::net::TcpListener>,
-    ) -> Result<GatewayFrontend, ChannelError> {
-        let frontend = if addr.transport().supports_duplex() {
-            GatewayFrontend::Duplex(
+    ) -> Result<BoundServer, ChannelError> {
+        let bound = if addr.transport().supports_duplex() {
+            BoundServerKind::Duplex(
                 PreboundAcceptServer::duplex(addr, listener)
                     .map_err(|e| ChannelError::Other(anyhow::anyhow!("{e}")))?,
             )
@@ -654,21 +734,22 @@ impl Gateway {
             // Local transports can't carry the duplex protocol; bind a
             // simplex receiver directly.
             let (addr, rx) = channel::serve_with_listener(addr, listener)?;
-            GatewayFrontend::Simplex { addr, rx }
+            BoundServerKind::Simplex { addr, rx }
         };
+        let bound = BoundServer { inner: bound };
         if self.default_location().as_via().is_none() {
-            self.set_default_location(Location::from(frontend.addr().clone()));
+            self.set_default_location(Location::from(bound.addr().clone()));
         }
-        Ok(frontend)
+        Ok(bound)
     }
 
-    /// Serve a frontend previously bound by [`bind_frontend`]. Duplex
-    /// frontends run the gateway-attach accept loop; simplex frontends
-    /// run a straight mailbox serve.
-    pub fn serve_frontend(&self, frontend: GatewayFrontend) -> GatewayServeHandle {
-        match frontend {
-            GatewayFrontend::Duplex(server) => self.serve_duplex_with_server(server),
-            GatewayFrontend::Simplex { rx, .. } => {
+    /// Serve an endpoint previously bound by [`bind`]. Duplex endpoints
+    /// run the gateway-attach accept loop; simplex endpoints run a
+    /// straight mailbox serve.
+    pub fn serve_bound(&self, bound: BoundServer) -> GatewayServeHandle {
+        match bound.inner {
+            BoundServerKind::Duplex(server) => self.serve_duplex_with_server(server),
+            BoundServerKind::Simplex { rx, .. } => {
                 use crate::mailbox::MailboxServer as _;
                 let raw = self.clone().serve(rx);
                 GatewayServeHandle::from_simplex(self.clone(), raw)
@@ -712,14 +793,16 @@ impl Gateway {
             AttachWire::Envelope(_) => anyhow::bail!("expected attach ack as first message"),
         };
 
-        let previous_default_location = {
-            let mut default = self.inner.default_location.write().unwrap();
-            std::mem::replace(&mut *default, ack.location)
-        };
-
-        let previous_forwarder = {
-            let mut forwarder = self.inner.forwarder.write().unwrap();
-            std::mem::replace(&mut *forwarder, MailboxClient::new(duplex_tx).into_boxed())
+        // Swap both fields under one lock so no concurrent reader sees the
+        // new via-prefixed location paired with the old forwarder.
+        let (previous_default_location, previous_forwarder) = {
+            let mut routing = self.inner.routing.write().unwrap();
+            let prev_location = std::mem::replace(&mut routing.default_location, ack.location);
+            let prev_forwarder = std::mem::replace(
+                &mut routing.forwarder,
+                MailboxClient::new(duplex_tx).into_boxed(),
+            );
+            (prev_location, prev_forwarder)
         };
         let serve_handle = self.serve_rx(AttachRx(duplex_rx));
         Ok(GatewayServeHandle {
@@ -761,7 +844,7 @@ impl Gateway {
     fn add_server(&self, location: Location) {
         let mut active_servers = self.inner.active_servers.write().unwrap();
         active_servers.push(location.clone());
-        *self.inner.default_location.write().unwrap() = location;
+        self.inner.routing.write().unwrap().default_location = location;
     }
 
     fn remove_server(&self, location: &Location) {
@@ -773,7 +856,69 @@ impl Gateway {
             .last()
             .cloned()
             .unwrap_or_else(|| self.inner.fallback_location.clone());
-        *self.inner.default_location.write().unwrap() = default_location;
+        self.inner.routing.write().unwrap().default_location = default_location;
+    }
+
+    fn with_dest_location(envelope: MessageEnvelope, location: Location) -> MessageEnvelope {
+        let dest_id = envelope.dest().id().clone();
+        envelope.with_dest(PortAddr::new(dest_id, location))
+    }
+
+    fn post_local_proc_or_else(
+        &self,
+        envelope: MessageEnvelope,
+        return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+        on_miss: impl FnOnce(MessageEnvelope, PortHandle<Undeliverable<MessageEnvelope>>),
+    ) {
+        let dest_proc = envelope.dest().actor_addr().proc_addr();
+        let local = self
+            .inner
+            .procs
+            .read()
+            .unwrap()
+            .get(dest_proc.id())
+            .and_then(|route| match route {
+                ProcRoute::Local(weak) => weak.upgrade(),
+                ProcRoute::Remote { .. } => None,
+            });
+        if let Some(proc) = local
+            && proc.is_local_delivery_target(&dest_proc)
+        {
+            proc.muxer().post(envelope, return_handle);
+        } else {
+            on_miss(envelope, return_handle);
+        }
+    }
+
+    fn remote_proc_sender_for_via(
+        &self,
+        proc_id: &ProcId,
+        via_uid: &Uid,
+    ) -> Option<BoxedMailboxSender> {
+        self.inner
+            .procs
+            .read()
+            .unwrap()
+            .get(proc_id)
+            .and_then(|route| match route {
+                ProcRoute::Remote {
+                    via_uid: route_uid,
+                    sender,
+                } if route_uid == via_uid => Some(sender.clone()),
+                ProcRoute::Local(_) | ProcRoute::Remote { .. } => None,
+            })
+    }
+
+    fn return_no_route(
+        envelope: MessageEnvelope,
+        return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+    ) {
+        let target = envelope.dest().clone();
+        let failure = DeliveryFailure::new(UndeliverableReason::Transport(TransportFailure::new(
+            target,
+            TransportFailureReason::NoRoute,
+        )));
+        envelope.undeliverable(failure, return_handle);
     }
 
     /// Flush pending gateway traffic.
@@ -793,18 +938,21 @@ impl Gateway {
     /// flushed sender observes its usual sender-level flush semantics
     /// at the time it is flushed.
     pub(crate) async fn flush(&self) -> Result<(), anyhow::Error> {
-        // Flush attached procs and the forwarder. We intentionally do
-        // *not* iterate `peers` here: in-process gateway
-        // attaches install each peer in the other's peers, so a
-        // naive iteration recurses through the peer's `flush` and
-        // overflows the stack.
+        // Flush local procs and the forwarder. We intentionally do
+        // *not* iterate `peers` or remote proc routes here:
+        // in-process gateway attaches install each peer in the other's
+        // peers, so a naive iteration recurses through the peer's
+        // `flush` and overflows the stack.
         let local_procs: Vec<_> = self
             .inner
-            .locals
+            .procs
             .read()
             .unwrap()
             .values()
-            .filter_map(|weak| weak.upgrade())
+            .filter_map(|route| match route {
+                ProcRoute::Local(weak) => weak.upgrade(),
+                ProcRoute::Remote { .. } => None,
+            })
             .collect();
         // Bound concurrency by the proc count so every muxer flush is
         // still launched at once (best-effort, order-independent). Each
@@ -818,7 +966,7 @@ impl Gateway {
         .buffer_unordered(concurrency)
         .collect()
         .await;
-        let forwarder = self.inner.forwarder.read().unwrap().clone();
+        let forwarder = self.inner.routing.read().unwrap().forwarder.clone();
         let forwarder_result = forwarder.flush().await;
 
         // Best-effort: all flushes have run; surface the first error.
@@ -892,7 +1040,7 @@ impl GatewayServeHandle {
     /// [`GatewayServeHandle`] of kind `Serve` with no active-server
     /// bookkeeping. Used when the caller passes a pre-bound receiver
     /// to the gateway (e.g. a local-transport Host).
-    pub fn from_simplex(gateway: Gateway, handle: MailboxServerHandle) -> Self {
+    fn from_simplex(gateway: Gateway, handle: MailboxServerHandle) -> Self {
         Self {
             gateway,
             handle,
@@ -960,11 +1108,12 @@ impl GatewayServeHandle {
                 previous_default_location,
                 ..
             } => {
+                let mut routing = self.gateway.inner.routing.write().unwrap();
                 if let Some(prev) = previous_forwarder.take() {
-                    *self.gateway.inner.forwarder.write().unwrap() = prev;
+                    routing.forwarder = prev;
                 }
                 if let Some(prev) = previous_default_location.take() {
-                    *self.gateway.inner.default_location.write().unwrap() = prev;
+                    routing.default_location = prev;
                 }
             }
         }
@@ -989,11 +1138,12 @@ impl Drop for GatewayServeHandle {
             ..
         } = &mut self.kind
         {
+            let mut routing = self.gateway.inner.routing.write().unwrap();
             if let Some(prev) = previous_forwarder.take() {
-                *self.gateway.inner.forwarder.write().unwrap() = prev;
+                routing.forwarder = prev;
             }
             if let Some(prev) = previous_default_location.take() {
-                *self.gateway.inner.default_location.write().unwrap() = prev;
+                routing.default_location = prev;
             }
         }
     }
@@ -1009,7 +1159,7 @@ impl Drop for GatewayServeHandle {
 /// * regular [`MessageEnvelope`] — serve straight through.
 async fn duplex_accept_loop(
     mut duplex_server: channel::duplex::DuplexServer<MessageEnvelope, AttachWire>,
-    frontend_addr: ChannelAddr,
+    bound_addr: ChannelAddr,
     gateway: Gateway,
     cancel_token: CancellationToken,
 ) {
@@ -1023,7 +1173,7 @@ async fn duplex_accept_loop(
             Ok(pair) => pair,
             Err(e) => {
                 tracing::info!(
-                    frontend_addr = frontend_addr.to_string(),
+                    bound_addr = bound_addr.to_string(),
                     error = %e,
                     "duplex accept loop ended"
                 );
@@ -1193,26 +1343,32 @@ impl crate::mailbox::MailboxSender for Gateway {
         // three outcomes, decided by the destination's outermost
         // `Via(uid, ...)` hop (if any):
         //
-        //   * a *peer* hop (`uid` in `peers`): peel the hop and forward
-        //     to that peer;
+        //   * a spawned child proc hop (`proc_id` has a matching
+        //     remote proc route): peel the hop and forward to that
+        //     proc's sender;
+        //   * a *peer* hop (`uid` in `peers`): peel the hop and
+        //     forward to that peer;
         //   * *our own* hop (`uid == self.uid`), or a via-less local
-        //     destination: we are the leaf — deliver to the local proc;
+        //     destination: we are the leaf — consume any owned hop and
+        //     deliver locally;
         //   * anything else: not ours. Hand it to the forwarder, which
         //     is either a route onward (a dial router, or an attached
         //     duplex) or a terminal `UnroutableMailboxSender` that
         //     returns it as undeliverable.
         //
-        // The via hop is resolved before any per-proc lookup, so a
-        // foreign via is never silently delivered locally just because
-        // its inner proc id happens to match a local proc.
+        // A foreign via is never silently delivered locally just
+        // because its inner proc id happens to match a local proc.
         let dest_location = envelope.dest().location().clone();
         if let Ok((via_uid, inner_location)) = dest_location.pop_via() {
+            let dest_proc_id = envelope.dest().actor_addr().proc_addr().id().clone();
+            if let Some(sender) = self.remote_proc_sender_for_via(&dest_proc_id, &via_uid) {
+                let envelope = Gateway::with_dest_location(envelope, inner_location);
+                sender.post(envelope, return_handle);
+                return;
+            }
             if let Some(sender) = self.inner.peers.read().unwrap().get(&via_uid).cloned() {
-                // Peer hop: rewrite the destination to the inner
-                // location so the peer routes by it, then forward.
-                let dest_id = envelope.dest().id().clone();
-                let new_dest = PortAddr::new(dest_id, inner_location);
-                sender.post(envelope.with_dest(new_dest), return_handle);
+                let envelope = Gateway::with_dest_location(envelope, inner_location);
+                sender.post(envelope, return_handle);
                 return;
             }
             if via_uid != self.inner.uid {
@@ -1220,34 +1376,12 @@ impl crate::mailbox::MailboxSender for Gateway {
                 // waypoint, not the destination. Forward toward the
                 // default route, which itself returns the message as
                 // undeliverable if it is terminal.
-                let forwarder = self.inner.forwarder.read().unwrap().clone();
+                let forwarder = self.inner.routing.read().unwrap().forwarder.clone();
                 forwarder.post(envelope, return_handle);
                 return;
             }
-            // Our own hop: this gateway is the named leaf. Deliver to
-            // the local proc; if it is gone, the message is
-            // undeliverable — a hop addressed to us is never forwarded
-            // back out.
-            let dest_proc = envelope.dest().actor_addr().proc_addr();
-            let local = self
-                .inner
-                .locals
-                .read()
-                .unwrap()
-                .get(dest_proc.id())
-                .and_then(|weak| weak.upgrade());
-            match local {
-                Some(proc) if proc.is_local_delivery_target(&dest_proc) => {
-                    proc.muxer().post(envelope, return_handle);
-                }
-                _ => {
-                    let target = envelope.dest().clone();
-                    let failure = DeliveryFailure::new(UndeliverableReason::Transport(
-                        TransportFailure::new(target, TransportFailureReason::NoRoute),
-                    ));
-                    envelope.undeliverable(failure, return_handle);
-                }
-            }
+            let envelope = Gateway::with_dest_location(envelope, inner_location);
+            self.post_local_proc_or_else(envelope, return_handle, Gateway::return_no_route);
             return;
         }
 
@@ -1255,22 +1389,10 @@ impl crate::mailbox::MailboxSender for Gateway {
         // delivery target, otherwise hand to the forwarder (outbound
         // egress for plain remote addresses). A dead entry is left in
         // place — `AttachedProcGuard::drop` is the sole remover.
-        let dest_proc = envelope.dest().actor_addr().proc_addr();
-        let local = self
-            .inner
-            .locals
-            .read()
-            .unwrap()
-            .get(dest_proc.id())
-            .and_then(|weak| weak.upgrade());
-        if let Some(proc) = local
-            && proc.is_local_delivery_target(&dest_proc)
-        {
-            proc.muxer().post(envelope, return_handle);
-            return;
-        }
-        let forwarder = self.inner.forwarder.read().unwrap().clone();
-        forwarder.post(envelope, return_handle)
+        self.post_local_proc_or_else(envelope, return_handle, |envelope, return_handle| {
+            let forwarder = self.inner.routing.read().unwrap().forwarder.clone();
+            forwarder.post(envelope, return_handle)
+        });
     }
 
     async fn flush(&self) -> Result<(), anyhow::Error> {
@@ -1359,9 +1481,9 @@ mod tests {
                 .expect("self has no via entry for the peer gateway's uid");
 
             // Advertise each side's destinations through the peer's uid.
-            *self.inner.default_location.write().unwrap() =
+            self.inner.routing.write().unwrap().default_location =
                 Location::Via(self.inner.uid.clone(), Box::new(pre_peer_default.clone()));
-            *peer.inner.default_location.write().unwrap() =
+            peer.inner.routing.write().unwrap().default_location =
                 Location::Via(peer.inner.uid.clone(), Box::new(pre_self_default.clone()));
 
             AttachGuard {
@@ -1397,12 +1519,12 @@ mod tests {
             if let Some(state) = self.self_gateway.upgrade()
                 && let Some(loc) = self.prev_self_default.take()
             {
-                *state.default_location.write().unwrap() = loc;
+                state.routing.write().unwrap().default_location = loc;
             }
             if let Some(state) = self.peer_gateway.upgrade()
                 && let Some(loc) = self.prev_peer_default.take()
             {
-                *state.default_location.write().unwrap() = loc;
+                state.routing.write().unwrap().default_location = loc;
             }
             // via guards and serve handles drop themselves.
         }
@@ -1571,9 +1693,64 @@ mod tests {
         );
     }
 
+    /// A via hop naming this gateway is consumed before local
+    /// delivery, so the proc muxer sees the peeled destination.
+    #[tokio::test]
+    async fn test_gateway_self_via_peels_before_local_delivery() {
+        #[derive(Clone)]
+        struct CapturingSender(Arc<std::sync::Mutex<Option<PortAddr>>>);
+
+        #[async_trait]
+        impl MailboxSender for CapturingSender {
+            fn post_unchecked(
+                &self,
+                envelope: MessageEnvelope,
+                _return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+            ) {
+                *self.0.lock().unwrap() = Some(envelope.dest().clone());
+            }
+        }
+
+        let gateway = Gateway::isolated();
+        let proc = Proc::builder()
+            .proc_id(ProcId::instance(Label::strip("alpha")))
+            .shared_gateway(gateway.clone())
+            .build()
+            .unwrap();
+
+        let captured = Arc::new(std::sync::Mutex::new(None));
+        let actor_addr = proc.proc_addr().actor_addr("capture");
+        assert!(
+            proc.muxer()
+                .bind(actor_addr.id().clone(), CapturingSender(captured.clone()))
+        );
+
+        let inner_dest = actor_addr.port_addr(Port::from(7u64));
+        let via_dest = PortAddr::new(
+            inner_dest.id().clone(),
+            inner_dest
+                .location()
+                .clone()
+                .with_via(gateway.uid().clone()),
+        );
+        gateway.post(
+            MessageEnvelope::serialize(
+                test_actor_id("test", "sender"),
+                via_dest,
+                &7u64,
+                Flattrs::new(),
+            )
+            .unwrap(),
+            monitored_return_handle(),
+        );
+
+        assert_eq!(*captured.lock().unwrap(), Some(inner_dest));
+    }
+
     /// A via hop naming *this* gateway (the leaf) whose inner proc id is
     /// not a live local proc is undeliverable — a hop addressed to us is
-    /// never forwarded back out.
+    /// never forwarded back out. The returned envelope carries the
+    /// peeled destination because this gateway consumed the hop.
     #[tokio::test]
     async fn test_gateway_self_via_unknown_proc_is_undeliverable() {
         let gateway = Gateway::isolated();
@@ -1586,12 +1763,19 @@ mod tests {
 
         // Address an id with no live local proc, behind this gateway's
         // own uid (so we are the named leaf).
-        let dest = ProcAddr::new(
+        let peeled_dest = ProcAddr::new(
             ProcId::instance(Label::strip("stranger")),
-            Location::from(ChannelAddr::Local(4321)).with_via(gateway.uid().clone()),
+            Location::from(ChannelAddr::Local(4321)),
         )
         .actor_addr("ghost")
         .port_addr(Port::from(0u64));
+        let dest = PortAddr::new(
+            peeled_dest.id().clone(),
+            peeled_dest
+                .location()
+                .clone()
+                .with_via(gateway.uid().clone()),
+        );
         let envelope = MessageEnvelope::serialize(
             test_actor_id("test", "sender"),
             dest.clone(),
@@ -1610,7 +1794,7 @@ mod tests {
         else {
             panic!("expected returned envelope");
         };
-        assert_eq!(returned.dest(), &dest);
+        assert_eq!(returned.dest(), &peeled_dest);
         assert!(
             returned
                 .root_delivery_failure()
@@ -1763,7 +1947,7 @@ mod tests {
         );
 
         // Sanity: two procs registered, both live.
-        assert_eq!(gateway.inner.locals.read().unwrap().len(), 2);
+        assert_eq!(gateway.inner.procs.read().unwrap().len(), 2);
 
         gateway.flush().await.unwrap();
 
@@ -1848,11 +2032,14 @@ mod tests {
         assert_eq!(
             gateway
                 .inner
-                .locals
+                .procs
                 .read()
                 .unwrap()
                 .values()
-                .filter_map(WeakProc::upgrade)
+                .filter_map(|route| match route {
+                    ProcRoute::Local(weak) => weak.upgrade(),
+                    ProcRoute::Remote { .. } => None,
+                })
                 .count(),
             0,
             "no procs should still be live after attach_drop task completes",
@@ -1918,7 +2105,7 @@ mod tests {
     }
 
     /// Dropping the `Proc` drops its `AttachedProcGuard`, which
-    /// eagerly removes the entry from the gateway's locals map. A
+    /// eagerly removes the entry from the gateway's proc map. A
     /// subsequent attach with the same `ProcId` is therefore a fresh
     /// insert — no panic, no stale entry to replace.
     #[tokio::test]
@@ -1934,7 +2121,7 @@ mod tests {
         drop(first);
 
         // AttachedProcGuard::drop removed the entry from the map.
-        assert_eq!(gateway.inner.locals.read().unwrap().len(), 0);
+        assert_eq!(gateway.inner.procs.read().unwrap().len(), 0);
 
         // The slot is free, so registering a new proc with the same id
         // is a fresh insert — no panic.
@@ -1943,7 +2130,7 @@ mod tests {
             .shared_gateway(gateway.clone())
             .build()
             .unwrap();
-        assert_eq!(gateway.inner.locals.read().unwrap().len(), 1);
+        assert_eq!(gateway.inner.procs.read().unwrap().len(), 1);
 
         // Verify the new proc is reachable via the gateway.
         let client = second.client("client");
@@ -2149,9 +2336,8 @@ mod tests {
             "beta carries via prefix"
         );
 
-        // gw_a → alpha: gw_a's post sees outermost Via(gw_a.uid, ..),
-        // which is *not* in gw_a.peers (those entries are keyed by
-        // the peer's uid). Falls through to locals and delivers.
+        // gw_a → alpha: gw_a consumes its own outermost Via and
+        // delivers the peeled destination locally.
         let sender = test_actor_id("client", "sender");
         gw_a.post(
             MessageEnvelope::serialize(sender.clone(), alpha_dest.clone(), &11u64, Flattrs::new())

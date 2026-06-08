@@ -9,6 +9,7 @@
 import os
 import pathlib
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -24,6 +25,7 @@ import pytest
 from isolate_in_subprocess import isolate_in_subprocess
 from monarch._rust_bindings.monarch_hyperactor.shape import Point, Shape, Slice
 from monarch._src.actor.actor_mesh import _client_context, Actor, attach, context
+from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.host_mesh import HostMesh, this_host, this_proc
 from monarch._src.actor.pickle import flatten, unflatten
@@ -149,6 +151,60 @@ def test_shutdown_host_mesh() -> None:
         am = pm.spawn("actor", RankActor)
         am.get_rank.choose().get()
         hm.shutdown().get()
+
+
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+def test_alias_bootstrap() -> None:
+    """A worker started with an alias address (dial_to@bind_to) is reachable.
+
+    The alias format `tcp://PUBLIC:PORT@tcp://0.0.0.0:PORT` lets a worker
+    advertise a dialable address while binding to a wildcard interface. This
+    is required where binding directly to the advertised address is not
+    possible (e.g. behind NAT, where only `0.0.0.0` can be bound).
+    """
+    procs = []
+    workers = []
+    for _i in range(2):
+        # Reserve an ephemeral port, then release it so the worker can bind
+        # to it via the alias's bind_to address.
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+        sock.close()
+
+        env = {**os.environ}
+        if "FB_XAR_INVOKED_NAME" in os.environ:
+            env["PYTHONPATH"] = ":".join(sys.path)
+
+        # dial_to advertises a reachable address; bind_to listens on the
+        # wildcard interface.
+        addr = f"tcp://127.0.0.1:{port}@tcp://0.0.0.0:{port}"
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import sys; from monarch.actor import run_worker_loop_forever; "
+                f'run_worker_loop_forever(address={addr!r}, ca="trust_all_connections")',
+            ],
+            env=env,
+        )
+        procs.append(proc)
+        # Pass the full alias through attach_to_workers. The attach path must
+        # canonicalize this to dial_to before using it as host identity.
+        workers.append(addr)
+
+    try:
+        # pyrefly: ignore [bad-argument-type]
+        hosts = attach_to_workers(ca="trust_all_connections", workers=workers)
+        am = hosts.spawn_procs(per_host={"gpus": 1}).spawn("rank", RankActor)
+        ranks = sorted(v for _, v in am.get_rank.call().get().items())
+        assert ranks == [0, 1]
+        hosts.shutdown().get()
+    finally:
+        for proc in procs:
+            proc.kill()
+            proc.wait()
 
 
 @pytest.mark.timeout(60)

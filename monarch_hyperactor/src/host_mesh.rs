@@ -334,9 +334,11 @@ static HOST_SHUTDOWN_HANDLE: OnceLock<
 > = OnceLock::new();
 
 /// Handle for the via-mode duplex session opened by
-/// [`Gateway::serve_via`]. Process-lifetime: dropping it would tear
-/// down the cluster-inbound serve and outbound duplex mid-run.
-static VIA_SERVE_HANDLE: OnceLock<hyperactor::gateway::GatewayServeHandle> = OnceLock::new();
+/// [`Gateway::serve_via`]. Kept until shutdown so the cluster-inbound
+/// serve and outbound duplex stay alive for the host's lifetime.
+static VIA_SERVE_HANDLE: OnceLock<
+    tokio::sync::Mutex<Option<hyperactor::gateway::GatewayServeHandle>>,
+> = OnceLock::new();
 
 /// Bootstrap the client host and root client actor.
 ///
@@ -385,22 +387,32 @@ fn bootstrap_host(
         // post-bootstrap registration step.
         let gateway = Gateway::global().clone();
         if let Some(addr) = via_addr {
-            let serve_handle = gateway
-                .serve_via(addr)
-                .await
-                .map_err(|e| PyException::new_err(e.to_string()))?;
-            // Surface a duplicate init rather than swallowing it: if
-            // `.set` errors, the returned handle is dropped here,
-            // which tears down the via session we just established.
-            // Returning the error keeps the previously-installed
-            // global session intact and tells the caller they tried
-            // to bootstrap a second via.
-            if VIA_SERVE_HANDLE.set(serve_handle).is_err() {
+            let via_handle = VIA_SERVE_HANDLE.get_or_init(|| tokio::sync::Mutex::new(None));
+            if via_handle.lock().await.is_some() {
                 return Err(PyException::new_err(
                     "via serve handle is already initialized; \
                      bootstrap_host called more than once with a via address",
                 ));
             }
+
+            let mut serve_handle = Some(
+                gateway
+                    .serve_via(addr)
+                    .await
+                    .map_err(|e| PyException::new_err(e.to_string()))?,
+            );
+            let mut via_handle = via_handle.lock().await;
+            if via_handle.is_some() {
+                drop(via_handle);
+                let mut serve_handle = serve_handle.expect("serve_handle is still unstored");
+                serve_handle.stop("duplicate local host bootstrap");
+                let _ = serve_handle.join().await;
+                return Err(PyException::new_err(
+                    "via serve handle is already initialized; \
+                     bootstrap_host called more than once with a via address",
+                ));
+            }
+            *via_handle = serve_handle.take();
         }
 
         let (host_mesh_agent, shutdown_handle) = host(
@@ -595,6 +607,13 @@ fn shutdown_local_host_mesh() -> PyResult<PyPythonTask> {
             && let Some(handle) = lock.lock().await.take()
         {
             handle.join().await;
+        }
+
+        if let Some(lock) = VIA_SERVE_HANDLE.get()
+            && let Some(mut handle) = lock.lock().await.take()
+        {
+            handle.stop("local host shutdown");
+            let _ = handle.join().await;
         }
 
         Ok(())
