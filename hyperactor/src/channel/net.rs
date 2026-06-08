@@ -995,7 +995,14 @@ pub(crate) fn listen_with_prebound(
             Ok((NetListener::Quic(listener), bound_addr))
         }
         ChannelAddr::Alias { dial_to, bind_to } => {
-            let (listener, _bound_addr) = listen(*bind_to)?;
+            // Bind the socket on `bind_to` (e.g. a wildcard interface), but
+            // advertise `dial_to` as the canonical address. Callers refer to
+            // this server by its dial address; the listener merely needs to
+            // accept the connections that `dial_to` is routed to (e.g. via
+            // NAT). The alias is fully consumed here -- everything downstream,
+            // including the proc namespace derived from this address, uses
+            // `dial_to`, which is what remote peers independently construct.
+            let (listener, _bound_addr) = listen_with_prebound(*bind_to, prebound)?;
             Ok((listener, *dial_to))
         }
         other => Err(ServerError::Listen(
@@ -1003,13 +1010,6 @@ pub(crate) fn listen_with_prebound(
             std::io::Error::other(format!("unsupported transport: {}", other)),
         )),
     }
-}
-
-/// Bind a listener for the given channel address. Returns the listener
-/// and the canonical address callers should advertise (which encodes
-/// the transport — e.g. `ChannelAddr::Tls` for TLS).
-pub(crate) fn listen(addr: ChannelAddr) -> Result<(NetListener, ChannelAddr), ServerError> {
-    listen_with_prebound(addr, None)
 }
 
 /// Frames are the messages sent between clients and servers over sessions.

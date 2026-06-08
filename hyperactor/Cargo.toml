@@ -38,7 +38,7 @@ backoff = { version = "0.4.0", features = ["futures", "tokio"] }
 bincode = { version = "2", features = ["serde"] }
 bytes = { version = "1.11.1", features = ["serde"] }
 clap = { version = "4.6.0", features = ["derive", "env", "string", "unicode", "wrap_help"] }
-dashmap = { version = "6.1.0", features = ["rayon", "serde"] }
+dashmap = { version = "6.2.1", features = ["rayon", "serde"] }
 derivative = "2.2"
 dns-lookup = "1.0.8"
 enum-as-inner = "0.6.1"
@@ -59,7 +59,7 @@ opentelemetry = "0.31"
 paste = "1.0.14"
 quinn = "0.11.9"
 rand = "0.10.1"
-rustls = "0.23.37"
+rustls = { version = "0.23.37", features = ["ring"] }
 rustls-pemfile = "2.2.0"
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }

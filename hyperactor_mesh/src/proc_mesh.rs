@@ -51,6 +51,7 @@ use crate::ValueMesh;
 use crate::comm::CommMeshConfig;
 use crate::host_mesh::host_agent::ProcState;
 use crate::host_mesh::mesh_to_rankedvalues_with_default;
+use crate::mesh_controller::ActorMeshControlPlane;
 use crate::mesh_controller::ActorMeshController;
 use crate::mesh_id::ActorMeshId;
 use crate::mesh_id::ProcMeshId;
@@ -825,7 +826,7 @@ impl ProcMeshRef {
             // Spawn a unique mesh manager for each actor mesh, so the type of the
             // mesh can be preserved.
             let controller: ActorMeshController<A> = ActorMeshController::new(
-                mesh.deref().clone(),
+                ActorMeshControlPlane::new(mesh.deref().clone(), self.clone()),
                 supervision_display_name.clone(),
                 Some(cx.instance().port().bind()),
                 statuses,
