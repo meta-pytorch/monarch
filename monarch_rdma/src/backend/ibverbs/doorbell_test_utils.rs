@@ -680,11 +680,15 @@ impl DoorbellTestEnv {
         }
 
         let (ibv_actor_1, ibv_buffer_1) = rdma_handle_1
-            .resolve_ibv()
-            .ok_or_else(|| anyhow::anyhow!("ibverbs backend not found for buffer 1"))?;
+            .resolve_nic()
+            .expect("buffer 1 has a NIC backend")
+            .into_mlx()
+            .expect("buffer 1 is Mellanox");
         let (ibv_actor_2, ibv_buffer_2) = rdma_handle_2
-            .resolve_ibv()
-            .ok_or_else(|| anyhow::anyhow!("ibverbs backend not found for buffer 2"))?;
+            .resolve_nic()
+            .expect("buffer 2 has a NIC backend")
+            .into_mlx()
+            .expect("buffer 2 is Mellanox");
         let ibv_handle_1: ActorHandle<IbvManagerActor<MlxDevice>> = ibv_actor_1
             .downcast_handle(&instance_1)
             .ok_or_else(|| anyhow::anyhow!("ibv_actor_1 is not in proc_1"))?;

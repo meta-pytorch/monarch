@@ -9,8 +9,7 @@
 //! # RDMA Manager Actor
 //!
 //! Per-process actor that owns RDMA buffer registrations and delegates
-//! transport-specific work to backend actors ([`IbvManagerActor`] and
-//! [`TcpManagerActor`]).
+//! transport-specific work to a NIC backend and [`TcpManagerActor`].
 //!
 //! ## Responsibilities
 //!
@@ -18,12 +17,13 @@
 //!   and stores the [`KeepaliveLocalMemory`] for later retrieval.
 //! - Produces [`RdmaRemoteBuffer`] tokens that can be sent to remote peers so
 //!   they can address this buffer over RDMA.
-//! - Delegates MR registration, QP management, and data movement to the
-//!   ibverbs backend ([`IbvManagerActor`]) when available, or falls back to
-//!   the TCP backend ([`TcpManagerActor`]).
+//! - Delegates MR registration, QP management, and data movement to a NIC
+//!   backend when available, or falls back to the TCP backend
+//!   ([`TcpManagerActor`]).
 //! - Handles remote [`ReleaseBuffer`] requests to clean up registrations.
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use hyperactor::Actor;
@@ -38,20 +38,16 @@ use hyperactor::OncePortRef;
 use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
 use hyperactor::context;
-use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Flattrs;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
 use crate::backend::RdmaRemoteBackendContext;
-use crate::backend::ibverbs::manager_actor::IbvManagerActor;
-use crate::backend::ibverbs::manager_actor::IbvManagerLocalMessageClient;
-use crate::backend::ibverbs::manager_actor::IbvManagerMessageClient;
-use crate::backend::ibverbs::mlx_device::MlxDevice;
 use crate::backend::ibverbs::primitives::IbvConfig;
 use crate::backend::tcp::manager_actor::TcpManagerActor;
 use crate::local_memory::KeepaliveLocalMemory;
+use crate::nic::NicBackendHandle;
 use crate::rdma_components::RdmaRemoteBuffer;
 
 /// Helper function to get detailed error messages from RDMAXCEL error codes
@@ -84,6 +80,11 @@ pub enum RdmaManagerMessage {
         #[reply]
         reply: OncePortHandle<Option<KeepaliveLocalMemory>>,
     },
+    /// Return an in-process handle to the local NIC backend, if any.
+    GetNicBackendHandle {
+        #[reply]
+        reply: OncePortHandle<Option<NicBackendHandle>>,
+    },
 }
 
 /// Serializable release message for wire transport.
@@ -96,15 +97,6 @@ pub struct ReleaseBuffer {
 }
 wirevalue::register_type!(ReleaseBuffer);
 
-/// Serializable query for resolving the [`IbvManagerActor`] ref
-/// from a remote [`RdmaManagerActor`]. Only used in testing.
-#[derive(Handler, HandleClient, RefClient, Debug, Serialize, Deserialize, Named)]
-pub struct GetIbvActorRef {
-    #[reply]
-    pub reply: OncePortRef<Option<ActorRef<IbvManagerActor<MlxDevice>>>>,
-}
-wirevalue::register_type!(GetIbvActorRef);
-
 /// Serializable query for resolving the [`TcpManagerActor`] ref
 /// from a remote [`RdmaManagerActor`].
 #[derive(Handler, HandleClient, RefClient, Debug, Serialize, Deserialize, Named)]
@@ -115,38 +107,8 @@ pub struct GetTcpActorRef {
 wirevalue::register_type!(GetTcpActorRef);
 
 #[derive(Debug)]
-enum RdmaBackendActor<A: Actor> {
-    Uninit,
-    Created(A),
-    Spawned(ActorHandle<A>),
-}
-
-impl<A: Actor> RdmaBackendActor<A> {
-    fn spawn(&mut self, rdma_manager: &Instance<RdmaManagerActor>) -> anyhow::Result<()> {
-        let created = std::mem::replace(self, RdmaBackendActor::Uninit);
-        let actor = if let RdmaBackendActor::Created(actor) = created {
-            actor
-        } else {
-            panic!("rdma backend actor already spawned");
-        };
-        let handle = rdma_manager.spawn(actor);
-        *self = RdmaBackendActor::Spawned(handle);
-        Ok(())
-    }
-
-    fn handle(&self) -> &ActorHandle<A> {
-        if let RdmaBackendActor::Spawned(handle) = self {
-            handle
-        } else {
-            panic!("cannot get handle")
-        }
-    }
-}
-
-#[derive(Debug)]
 #[hyperactor::export(
     handlers = [
-        GetIbvActorRef,
         GetTcpActorRef,
         ReleaseBuffer,
     ],
@@ -155,8 +117,9 @@ impl<A: Actor> RdmaBackendActor<A> {
 pub struct RdmaManagerActor {
     next_remote_buf_id: usize,
     buffers: HashMap<usize, KeepaliveLocalMemory>,
-    ibverbs: Option<RdmaBackendActor<IbvManagerActor<MlxDevice>>>,
-    tcp: RdmaBackendActor<TcpManagerActor>,
+    params: Option<IbvConfig>,
+    nic: OnceLock<NicBackendHandle>,
+    tcp: OnceLock<ActorHandle<TcpManagerActor>>,
 }
 
 impl RdmaManagerActor {
@@ -181,40 +144,12 @@ impl RemoteSpawn for RdmaManagerActor {
     type Params = Option<IbvConfig>;
 
     async fn new(params: Self::Params, _environment: Flattrs) -> Result<Self, anyhow::Error> {
-        let ibv = if hyperactor_config::global::get(crate::config::RDMA_DISABLE_IBVERBS) {
-            if hyperactor_config::global::get(crate::config::RDMA_ALLOW_TCP_FALLBACK) {
-                tracing::info!("ibverbs disabled by configuration, using TCP transport");
-                None
-            } else {
-                anyhow::bail!(
-                    "ibverbs is disabled (rdma_disable_ibverbs=true) \
-                     but TCP fallback is also disabled"
-                );
-            }
-        } else {
-            match IbvManagerActor::<MlxDevice>::new(params).await {
-                Ok(actor) => Some(RdmaBackendActor::Created(actor)),
-                Err(e) => {
-                    if hyperactor_config::global::get(crate::config::RDMA_ALLOW_TCP_FALLBACK) {
-                        tracing::warn!(
-                            "ibverbs initialization failed, TCP fallback enabled: {}",
-                            e
-                        );
-                        None
-                    } else {
-                        return Err(e);
-                    }
-                }
-            }
-        };
-
-        let tcp = RdmaBackendActor::Created(TcpManagerActor::new());
-
         Ok(Self {
             next_remote_buf_id: 0,
             buffers: HashMap::new(),
-            ibverbs: ibv,
-            tcp,
+            params,
+            nic: OnceLock::new(),
+            tcp: OnceLock::new(),
         })
     }
 }
@@ -222,36 +157,35 @@ impl RemoteSpawn for RdmaManagerActor {
 #[async_trait]
 impl Actor for RdmaManagerActor {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
-        if let Some(ibv) = &mut self.ibverbs {
-            ibv.spawn(this)?;
+        // A detected NIC that fails to initialize is fatal unless TCP
+        // fallback is enabled, in which case we warn and fall back to TCP.
+        let mut nic_init_failure = None;
+        let nic = match NicBackendHandle::spawn(this, self.params.clone()).await {
+            Ok(nic) => nic,
+            Err(e) => {
+                nic_init_failure = Some(e);
+                None
+            }
+        };
+        if let Some(nic) = nic {
+            self.nic.set(nic).expect("nic set once");
+        } else if !hyperactor_config::global::get(crate::config::RDMA_ALLOW_TCP_FALLBACK) {
+            if let Some(e) = nic_init_failure {
+                anyhow::bail!(
+                    "RDMA NIC backend initialization failed and TCP fallback is disabled: {e}"
+                );
+            } else {
+                anyhow::bail!("no RDMA NIC backend available and TCP fallback is disabled")
+            }
+        } else if let Some(e) = nic_init_failure {
+            tracing::warn!(
+                "RDMA NIC backend initialization failed, but TCP fallback is enabled: {e}"
+            );
         }
-        self.tcp.spawn(this)?;
-        tracing::debug!("RdmaManagerActor initialized with lazy domain/QP creation");
+        self.tcp
+            .set(this.spawn(TcpManagerActor::new()))
+            .expect("tcp set once");
         Ok(())
-    }
-
-    async fn handle_supervision_event(
-        &mut self,
-        _cx: &Instance<Self>,
-        event: &ActorSupervisionEvent,
-    ) -> Result<bool, anyhow::Error> {
-        if !event.is_error() {
-            return Ok(true);
-        }
-        tracing::error!("rdmaManagerActor supervision event: {:?}", event);
-        tracing::error!("rdmaManagerActor error occurred, stop the worker process, exit code: 1");
-        std::process::exit(1);
-    }
-}
-
-#[async_trait]
-#[hyperactor::handle(GetIbvActorRef)]
-impl GetIbvActorRefHandler for RdmaManagerActor {
-    async fn get_ibv_actor_ref(
-        &mut self,
-        _cx: &Context<Self>,
-    ) -> Result<Option<ActorRef<IbvManagerActor<MlxDevice>>>, anyhow::Error> {
-        Ok(self.ibverbs.as_ref().map(|ibv| ibv.handle().bind()))
     }
 }
 
@@ -262,7 +196,7 @@ impl GetTcpActorRefHandler for RdmaManagerActor {
         &mut self,
         _cx: &Context<Self>,
     ) -> Result<ActorRef<TcpManagerActor>, anyhow::Error> {
-        Ok(self.tcp.handle().bind())
+        Ok(self.tcp.get().expect("tcp set in init").bind())
     }
 }
 
@@ -271,8 +205,8 @@ impl GetTcpActorRefHandler for RdmaManagerActor {
 impl ReleaseBufferHandler for RdmaManagerActor {
     async fn release_buffer(&mut self, cx: &Context<Self>, id: usize) -> Result<(), anyhow::Error> {
         self.buffers.remove(&id);
-        if let Some(ibv) = &self.ibverbs {
-            ibv.handle().release_buffer(cx, id).await?;
+        if let Some(nic) = self.nic.get() {
+            nic.release_buffer(cx, id).await?;
         }
         Ok(())
     }
@@ -291,22 +225,16 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         let size = local.size();
 
         let mut backends = Vec::new();
-
-        if let Some(ibv) = &self.ibverbs {
-            let ibv_buffer = ibv
-                .handle()
+        if let Some(nic) = self.nic.get() {
+            let ctx = nic
                 .register_remote_buffer(cx, remote_buf_id, local.clone())
-                .await?
-                .map_err(|e| anyhow::anyhow!(e))?;
-            backends.push(RdmaRemoteBackendContext::Ibverbs(
-                ibv.handle().bind(),
-                ibv_buffer,
-            ));
+                .await?;
+            backends.push(RdmaRemoteBackendContext::Nic(ctx));
         }
-
         self.buffers.insert(remote_buf_id, local);
-
-        backends.push(RdmaRemoteBackendContext::Tcp(self.tcp.handle().bind()));
+        backends.push(RdmaRemoteBackendContext::Tcp(
+            self.tcp.get().expect("tcp set in init").bind(),
+        ));
 
         Ok(RdmaRemoteBuffer {
             id: remote_buf_id,
@@ -322,5 +250,12 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         remote_buf_id: usize,
     ) -> Result<Option<KeepaliveLocalMemory>, anyhow::Error> {
         Ok(self.buffers.get(&remote_buf_id).cloned())
+    }
+
+    async fn get_nic_backend_handle(
+        &mut self,
+        _cx: &Context<Self>,
+    ) -> Result<Option<NicBackendHandle>, anyhow::Error> {
+        Ok(self.nic.get().cloned())
     }
 }
