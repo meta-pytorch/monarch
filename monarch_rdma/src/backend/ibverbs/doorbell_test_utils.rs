@@ -31,6 +31,7 @@ use hyperactor_config::Flattrs;
 use super::IbvBuffer;
 use super::manager_actor::IbvManagerActor;
 use super::manager_actor::IbvManagerMessageClient;
+use super::mlx_device::MlxDevice;
 use super::queue_pair::IbvQueuePair;
 use super::queue_pair::PollTarget;
 use crate::IbvConfig;
@@ -490,13 +491,13 @@ pub struct DoorbellTestEnv {
     pub client_2: hyperactor::Client,
     pub actor_1: ActorRef<RdmaManagerActor>,
     pub actor_2: ActorRef<RdmaManagerActor>,
-    pub ibv_actor_1: ActorRef<IbvManagerActor>,
-    pub ibv_actor_2: ActorRef<IbvManagerActor>,
+    pub ibv_actor_1: ActorRef<IbvManagerActor<MlxDevice>>,
+    pub ibv_actor_2: ActorRef<IbvManagerActor<MlxDevice>>,
     /// In-proc handles for the same actors as `ibv_actor_*`.
     /// Tests that need to call local-only messages such as
     /// `RawQueuePair` go through these.
-    pub ibv_handle_1: ActorHandle<IbvManagerActor>,
-    pub ibv_handle_2: ActorHandle<IbvManagerActor>,
+    pub ibv_handle_1: ActorHandle<IbvManagerActor<MlxDevice>>,
+    pub ibv_handle_2: ActorHandle<IbvManagerActor<MlxDevice>>,
     pub rdma_handle_1: RdmaRemoteBuffer,
     pub rdma_handle_2: RdmaRemoteBuffer,
     pub local_memory_1: KeepaliveLocalMemory,
@@ -684,14 +685,12 @@ impl DoorbellTestEnv {
         let (ibv_actor_2, ibv_buffer_2) = rdma_handle_2
             .resolve_ibv()
             .ok_or_else(|| anyhow::anyhow!("ibverbs backend not found for buffer 2"))?;
-        let ibv_handle_1: ActorHandle<IbvManagerActor> =
-            ibv_actor_1
-                .downcast_handle(&instance_1)
-                .ok_or_else(|| anyhow::anyhow!("ibv_actor_1 is not in proc_1"))?;
-        let ibv_handle_2: ActorHandle<IbvManagerActor> =
-            ibv_actor_2
-                .downcast_handle(&instance_2)
-                .ok_or_else(|| anyhow::anyhow!("ibv_actor_2 is not in proc_2"))?;
+        let ibv_handle_1: ActorHandle<IbvManagerActor<MlxDevice>> = ibv_actor_1
+            .downcast_handle(&instance_1)
+            .ok_or_else(|| anyhow::anyhow!("ibv_actor_1 is not in proc_1"))?;
+        let ibv_handle_2: ActorHandle<IbvManagerActor<MlxDevice>> = ibv_actor_2
+            .downcast_handle(&instance_2)
+            .ok_or_else(|| anyhow::anyhow!("ibv_actor_2 is not in proc_2"))?;
 
         // Fill buffer1 with test data
         if parsed_accel1.0 == "cuda" {

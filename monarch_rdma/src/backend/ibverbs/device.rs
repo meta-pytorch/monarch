@@ -40,7 +40,7 @@ use super::primitives::query_device_info;
 
 /// Per-backend driver for [`IbvDevice`]. Concrete impls register
 /// themselves via [`register_ibv_device_impl!`].
-pub(crate) trait IbvDeviceImpl: Named + Send + Sync + 'static {
+pub trait IbvDeviceImpl: Named + std::fmt::Debug + Send + Sync + 'static {
     /// Human-readable display name for the backend this impl
     /// drives (e.g., `"mellanox"`, `"efa"`). Surfaced in
     /// diagnostics; not used as a registry key.
@@ -132,7 +132,7 @@ impl IbvDeviceImplRegistration {
     /// Construct a registration. Visible to the rest of the crate
     /// so the [`register_ibv_device_impl!`] macro can call it from
     /// sibling call sites.
-    pub(crate) const fn new(
+    pub const fn new(
         typename: fn() -> &'static str,
         backend_name: fn() -> &'static str,
         is_instance: fn(Arc<IbvContext>) -> bool,
@@ -220,7 +220,8 @@ static DEVICE_NAMES_BY_IMPL: LazyLock<HashMap<&'static str, RegisteredBackend>> 
 /// clones are expected to outlive the owning [`IbvDevice`], but so
 /// the raw pointer can be passed around with a lifetime safeguard
 /// where borrow-checked references aren't practical.
-pub(crate) struct IbvContext(*mut rdmaxcel_sys::ibv_context);
+#[derive(Debug)]
+pub struct IbvContext(*mut rdmaxcel_sys::ibv_context);
 
 // SAFETY: libibverbs treats `ibv_context*` as thread-safe for the
 // operations we perform (allocation, polling, and the final close).
@@ -230,7 +231,7 @@ unsafe impl Sync for IbvContext {}
 impl IbvContext {
     /// Returns the raw `ibv_context*`. The pointer is valid for
     /// the lifetime of `&self`.
-    pub(crate) fn as_ptr(&self) -> *mut rdmaxcel_sys::ibv_context {
+    pub fn as_ptr(&self) -> *mut rdmaxcel_sys::ibv_context {
         self.0
     }
 }
@@ -269,6 +270,7 @@ impl Drop for IbvContext {
 /// before `context` so that, on drop, every `Arc<IbvDomain>` in
 /// the map releases its PD before the final `Arc<IbvContext>`
 /// reference closes the context.
+#[derive(Debug)]
 pub(crate) struct IbvDevice<I: IbvDeviceImpl> {
     domains: HashMap<String, Arc<IbvDomain>>,
     device_info: IbvDeviceInfo,
@@ -290,7 +292,7 @@ impl<I: IbvDeviceImpl> IbvDevice<I> {
     /// disappeared from the system between registration and open.
     /// Such a failure indicates a broken driver invariant rather
     /// than a runtime condition the caller can recover from.
-    pub(crate) fn open(name: &str, config: IbvConfig) -> Option<Self> {
+    pub fn open(name: &str, config: IbvConfig) -> Option<Self> {
         let device_info = DEVICE_NAMES_BY_IMPL
             .get(I::typename())
             .and_then(|entry| entry.devices.iter().find(|d| d.name() == name).cloned());
@@ -386,30 +388,46 @@ impl<I: IbvDeviceImpl> IbvDevice<I> {
     }
 
     /// Returns the `Arc<IbvContext>` for this device.
-    pub(crate) fn context(&self) -> Arc<IbvContext> {
+    pub fn context(&self) -> Arc<IbvContext> {
         Arc::clone(&self.context)
     }
 
     /// Returns the queried [`IbvDeviceInfo`] metadata for this
     /// device.
-    pub(crate) fn device_info(&self) -> &IbvDeviceInfo {
+    pub fn device_info(&self) -> &IbvDeviceInfo {
         &self.device_info
     }
 
     /// Returns the [`IbvConfig`] this device was opened with.
-    pub(crate) fn config(&self) -> &IbvConfig {
+    pub fn config(&self) -> &IbvConfig {
         &self.config
+    }
+
+    /// Returns the `Arc<IbvDomain>` registered under `name`, if
+    /// one has already been created. Read-only lookup; use
+    /// [`Self::get_or_create_domain`] to create on demand.
+    pub fn domain(&self, name: &str) -> Option<&Arc<IbvDomain>> {
+        self.domains.get(name)
     }
 
     /// Returns the `Arc<IbvDomain>` registered under `name`,
     /// creating (and caching) a new one via
     /// [`IbvDeviceImpl::create_domain`] on first access.
-    pub(crate) fn get_or_create_domain(&mut self, name: &str) -> anyhow::Result<Arc<IbvDomain>> {
+    pub fn get_or_create_domain(&mut self, name: &str) -> anyhow::Result<Arc<IbvDomain>> {
         if let Some(domain) = self.domains.get(name) {
             return Ok(Arc::clone(domain));
         }
         let domain = I::create_domain(Arc::clone(&self.context))?;
         self.domains.insert(name.to_string(), Arc::clone(&domain));
         Ok(domain)
+    }
+
+    /// Whether any device claimed by impl `I` is present on this
+    /// host. Reads the [`DEVICE_NAMES_BY_IMPL`] registry, built on
+    /// first access by a single walk of the ibverbs device list.
+    pub fn available() -> bool {
+        DEVICE_NAMES_BY_IMPL
+            .get(I::typename())
+            .is_some_and(|backend| !backend.devices.is_empty())
     }
 }

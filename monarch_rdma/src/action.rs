@@ -23,6 +23,7 @@ use crate::RdmaOpType;
 use crate::backend::RdmaBackend;
 use crate::backend::ibverbs::manager_actor::IbvBackend;
 use crate::backend::ibverbs::manager_actor::IbvManagerActor;
+use crate::backend::ibverbs::mlx_device::MlxDevice;
 use crate::backend::tcp::manager_actor::TcpBackend;
 use crate::backend::tcp::manager_actor::TcpManagerActor;
 use crate::local_memory::KeepaliveLocalMemory;
@@ -170,8 +171,9 @@ impl RdmaAction {
         // The ibv cell's inner `Option` distinguishes "lookup tried and
         // failed" (`Some(None)`) from "never tried" (cell unset), so the
         // lookup doesn't repeat when the local proc lacks ibverbs.
-        let ibv_cell: tokio::sync::OnceCell<Option<hyperactor::ActorHandle<IbvManagerActor>>> =
-            tokio::sync::OnceCell::new();
+        let ibv_cell: tokio::sync::OnceCell<
+            Option<hyperactor::ActorHandle<IbvManagerActor<MlxDevice>>>,
+        > = tokio::sync::OnceCell::new();
         // The tcp cell needs no such sentinel: the init closure either
         // caches a handle or bails.
         let tcp_cell: tokio::sync::OnceCell<hyperactor::ActorHandle<TcpManagerActor>> =

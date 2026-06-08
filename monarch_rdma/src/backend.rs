@@ -32,7 +32,7 @@ use crate::RdmaTransportLevel;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RdmaRemoteBackendContext {
     Ibverbs(
-        ActorRef<ibverbs::manager_actor::IbvManagerActor>,
+        ActorRef<ibverbs::manager_actor::IbvManagerActor<ibverbs::mlx_device::MlxDevice>>,
         ibverbs::IbvBuffer,
     ),
     Tcp(ActorRef<tcp::manager_actor::TcpManagerActor>),

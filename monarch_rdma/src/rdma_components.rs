@@ -57,6 +57,7 @@ use crate::ReleaseBufferClient;
 use crate::backend::RdmaRemoteBackendContext;
 use crate::backend::ibverbs::IbvBuffer;
 use crate::backend::ibverbs::manager_actor::IbvManagerActor;
+use crate::backend::ibverbs::mlx_device::MlxDevice;
 use crate::backend::tcp::manager_actor::TcpManagerActor;
 use crate::local_memory::KeepaliveLocalMemory;
 
@@ -119,7 +120,7 @@ impl RdmaRemoteBuffer {
     ///
     /// Returns `None` if the buffer has no ibverbs backend context
     /// (i.e., the remote side was created without ibverbs).
-    pub fn resolve_ibv(&self) -> Option<(ActorRef<IbvManagerActor>, IbvBuffer)> {
+    pub fn resolve_ibv(&self) -> Option<(ActorRef<IbvManagerActor<MlxDevice>>, IbvBuffer)> {
         self.backends.iter().find_map(|b| match b {
             RdmaRemoteBackendContext::Ibverbs(mgr, buf) => Some((mgr.clone(), buf.clone())),
             _ => None,
