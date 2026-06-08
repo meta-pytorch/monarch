@@ -14,9 +14,12 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
+pub(crate) mod device;
 pub mod device_selection;
 pub(crate) mod domain;
+pub(crate) mod efa_device;
 pub mod manager_actor;
+pub(crate) mod mlx_device;
 pub mod primitives;
 pub mod queue_pair;
 
