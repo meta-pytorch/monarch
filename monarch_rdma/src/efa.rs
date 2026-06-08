@@ -13,8 +13,6 @@
 
 use std::sync::OnceLock;
 
-use crate::backend::ibverbs::primitives::IbvConfig;
-
 /// Cached result of EFA device check.
 static EFA_DEVICE_CACHE: OnceLock<bool> = OnceLock::new();
 
@@ -54,20 +52,6 @@ fn is_efa_device_impl() -> bool {
         rdmaxcel_sys::ibv_free_device_list(device_list);
         found
     }
-}
-
-/// Applies EFA-specific defaults to an `IbvConfig`.
-///
-/// EFA devices have different capabilities than standard InfiniBand/RoCE devices:
-/// - GID index 0 (instead of 3)
-/// - Max 1 SGE per work request
-/// - No RDMA atomics support
-pub fn apply_efa_defaults(config: &mut IbvConfig) {
-    config.gid_index = 0;
-    config.max_send_sge = 1;
-    config.max_recv_sge = 1;
-    config.max_dest_rd_atomic = 0;
-    config.max_rd_atomic = 0;
 }
 
 /// Returns the MR access flags appropriate for EFA devices.
