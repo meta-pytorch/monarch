@@ -9,10 +9,15 @@
 """Tests for distributed telemetry with automatic callback registration."""
 
 import json
+import os
+import shutil
 import time
+import types
 import unittest.mock
+import uuid
 from typing import Any, cast
 
+import monarch._src.job.telemetry_actor as job_telemetry_actor
 import monarch.distributed_telemetry.actor as telemetry_actor
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
@@ -48,6 +53,98 @@ class SenderActor(Actor):
 def _telemetry_config(**kwargs: Any) -> TelemetryConfig:
     kwargs.setdefault("dashboard_port", 0)
     return TelemetryConfig(**kwargs)
+
+
+def _new_apply_id() -> str:
+    return f"test_{uuid.uuid4().hex}"
+
+
+def _remove_socket_dir(apply_id: str) -> None:
+    shutil.rmtree(
+        job_telemetry_actor.telemetry_socket_dir(apply_id), ignore_errors=True
+    )
+
+
+@pytest.mark.timeout(30)
+def test_telemetry_actor_starts_local_socket_collector() -> None:
+    apply_id = _new_apply_id()
+    _remove_socket_dir(apply_id)
+    try:
+        actor = job_telemetry_actor.TelemetryActor(apply_id, retention_secs=0)
+        with (
+            unittest.mock.patch.object(
+                job_telemetry_actor,
+                "current_rank",
+                return_value=types.SimpleNamespace(rank=0),
+            ),
+            unittest.mock.patch.object(
+                job_telemetry_actor,
+                "_start_socket_ingest",
+                return_value=True,
+            ) as start_ingest,
+        ):
+            assert actor._activate_impl()
+            assert actor._scanner is not None
+            # Second call is a no-op.
+            assert actor._activate_impl()
+
+        socket_dir = job_telemetry_actor.telemetry_socket_dir(apply_id)
+        socket_path = job_telemetry_actor.telemetry_socket_path(apply_id)
+        assert os.stat(socket_dir).st_mode & 0o777 == 0o700
+        start_ingest.assert_called_once()
+        assert start_ingest.call_args.args[1] == socket_path
+    finally:
+        _remove_socket_dir(apply_id)
+
+
+@pytest.mark.timeout(30)
+def test_telemetry_actor_skips_active_existing_collector() -> None:
+    apply_id = _new_apply_id()
+    _remove_socket_dir(apply_id)
+    try:
+        actor = job_telemetry_actor.TelemetryActor(apply_id, retention_secs=0)
+        with (
+            unittest.mock.patch.object(
+                job_telemetry_actor,
+                "current_rank",
+                return_value=types.SimpleNamespace(rank=0),
+            ),
+            unittest.mock.patch.object(
+                job_telemetry_actor,
+                "_start_socket_ingest",
+                return_value=False,
+            ),
+        ):
+            assert not actor._activate_impl()
+        assert actor._scanner is None
+        with pytest.raises(RuntimeError, match="not an active telemetry collector"):
+            actor._scanner_or_raise()
+    finally:
+        _remove_socket_dir(apply_id)
+
+
+@pytest.mark.timeout(30)
+def test_telemetry_actor_reports_activation_failure() -> None:
+    apply_id = _new_apply_id()
+    _remove_socket_dir(apply_id)
+    try:
+        actor = job_telemetry_actor.TelemetryActor(apply_id, retention_secs=0)
+        with (
+            unittest.mock.patch.object(
+                job_telemetry_actor,
+                "current_rank",
+                return_value=types.SimpleNamespace(rank=0),
+            ),
+            unittest.mock.patch.object(
+                job_telemetry_actor,
+                "_start_socket_ingest",
+                side_effect=RuntimeError("boom"),
+            ),
+        ):
+            assert not actor._activate_impl()
+        assert actor._scanner is None
+    finally:
+        _remove_socket_dir(apply_id)
 
 
 @pytest.fixture

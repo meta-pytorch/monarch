@@ -21,13 +21,8 @@ use hyperactor::Instance;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_mesh::actor_mesh::ActorMesh;
 use hyperactor_mesh::actor_mesh::ActorMeshRef;
-use hyperactor_mesh::sel;
 use monarch_types::py_global;
 use monarch_types::py_module_add_function;
-use ndslice::Region;
-use ndslice::Slice;
-use ndslice::selection::Selection;
-use ndslice::selection::structurally_equal;
 use ndslice::view::Ranked;
 use ndslice::view::RankedSliceable;
 use pyo3::IntoPyObjectExt;
@@ -67,6 +62,26 @@ py_global!(
     "Shared"
 );
 
+/// Closed actor-mesh selection surface used by public send APIs.
+///
+/// Public Python APIs expose only `"all"` and `"choose"`. Keep that
+/// invariant explicit here so arbitrary `ndslice::Selection` values stay out
+/// of the public mesh-casting surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AllOrChoose {
+    All,
+    Choose,
+}
+
+impl AllOrChoose {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Choose => "choose",
+        }
+    }
+}
+
 /// Trait defining the common interface for actor mesh, mesh ref and actor mesh implementations.
 /// This corresponds to the Python ActorMeshProtocol ABC.
 pub(crate) trait ActorMeshProtocol: Send + Sync {
@@ -74,7 +89,7 @@ pub(crate) trait ActorMeshProtocol: Send + Sync {
     fn cast(
         &self,
         message: PythonMessage,
-        selection: Selection,
+        selection: AllOrChoose,
         instance: &Instance<PythonActor>,
     ) -> PyResult<()>;
 
@@ -87,7 +102,7 @@ pub(crate) trait ActorMeshProtocol: Send + Sync {
     fn cast_with_headers(
         &self,
         message: PythonMessage,
-        selection: Selection,
+        selection: AllOrChoose,
         instance: &Instance<PythonActor>,
         _caller_headers: hyperactor_config::Flattrs,
     ) -> PyResult<()> {
@@ -101,7 +116,7 @@ pub(crate) trait ActorMeshProtocol: Send + Sync {
     fn cast_unresolved(
         &self,
         message: PendingMessage,
-        selection: Selection,
+        selection: AllOrChoose,
         instance: &Instance<PythonActor>,
     ) -> PyResult<()> {
         let message = get_tokio_runtime().block_on(message.resolve())?;
@@ -115,7 +130,7 @@ pub(crate) trait ActorMeshProtocol: Send + Sync {
     fn cast_unresolved_with_headers(
         &self,
         message: PendingMessage,
-        selection: Selection,
+        selection: AllOrChoose,
         instance: &Instance<PythonActor>,
         caller_headers: hyperactor_config::Flattrs,
     ) -> PyResult<()> {
@@ -178,10 +193,10 @@ impl PythonActorMesh {
     }
 }
 
-pub(crate) fn to_hy_sel(selection: &str) -> PyResult<Selection> {
+pub(crate) fn to_all_or_choose(selection: &str) -> PyResult<AllOrChoose> {
     match selection {
-        "choose" => Ok(sel!(?)),
-        "all" => Ok(sel!(*)),
+        "choose" => Ok(AllOrChoose::Choose),
+        "all" => Ok(AllOrChoose::All),
         _ => Err(PyErr::new::<PyValueError, _>(format!(
             "Invalid selection: {}",
             selection
@@ -199,7 +214,7 @@ impl PythonActorMesh {
         selection: &str,
         instance: &PyInstance,
     ) -> PyResult<()> {
-        let sel = to_hy_sel(selection)?;
+        let sel = to_all_or_choose(selection)?;
         self.inner.cast(message.clone(), sel, instance.deref())
     }
 
@@ -210,7 +225,7 @@ impl PythonActorMesh {
         selection: &str,
         instance: &PyInstance,
     ) -> PyResult<()> {
-        let sel = to_hy_sel(selection)?;
+        let sel = to_all_or_choose(selection)?;
         let message = message.take()?;
         self.inner.cast_unresolved(message, sel, instance)
     }
@@ -333,7 +348,7 @@ impl ActorMeshProtocol for AsyncActorMesh {
     fn cast(
         &self,
         _message: PythonMessage,
-        _selection: Selection,
+        _selection: AllOrChoose,
         _instance: &Instance<PythonActor>,
     ) -> PyResult<()> {
         panic!("not implemented")
@@ -342,7 +357,7 @@ impl ActorMeshProtocol for AsyncActorMesh {
     fn cast_unresolved(
         &self,
         message: PendingMessage,
-        selection: Selection,
+        selection: AllOrChoose,
         instance: &Instance<PythonActor>,
     ) -> PyResult<()> {
         self.cast_unresolved_with_headers(
@@ -356,7 +371,7 @@ impl ActorMeshProtocol for AsyncActorMesh {
     fn cast_unresolved_with_headers(
         &self,
         message: PendingMessage,
-        selection: Selection,
+        selection: AllOrChoose,
         instance: &Instance<PythonActor>,
         caller_headers: hyperactor_config::Flattrs,
     ) -> PyResult<()> {
@@ -566,7 +581,7 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
     fn cast(
         &self,
         message: PythonMessage,
-        selection: Selection,
+        selection: AllOrChoose,
         instance: &Instance<PythonActor>,
     ) -> PyResult<()> {
         <ActorMeshRef<PythonActor> as ActorMeshProtocol>::cast(
@@ -580,7 +595,7 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
     fn cast_with_headers(
         &self,
         message: PythonMessage,
-        selection: Selection,
+        selection: AllOrChoose,
         instance: &Instance<PythonActor>,
         caller_headers: hyperactor_config::Flattrs,
     ) -> PyResult<()> {
@@ -641,7 +656,7 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
     fn cast(
         &self,
         message: PythonMessage,
-        selection: Selection,
+        selection: AllOrChoose,
         instance: &Instance<PythonActor>,
     ) -> PyResult<()> {
         <Self as ActorMeshProtocol>::cast_with_headers(
@@ -656,44 +671,26 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
     fn cast_with_headers(
         &self,
         message: PythonMessage,
-        selection: Selection,
+        selection: AllOrChoose,
         instance: &Instance<PythonActor>,
         caller_headers: hyperactor_config::Flattrs,
     ) -> PyResult<()> {
-        if structurally_equal(&selection, &Selection::All(Box::new(Selection::True))) {
-            ActorMeshRef::<PythonActor>::cast_with_headers(
+        match selection {
+            AllOrChoose::All => ActorMeshRef::<PythonActor>::cast_with_headers(
                 self,
                 instance,
                 &caller_headers,
-                message.clone(),
+                message,
             )
-            .map_err(cast_error_to_py_error)?;
-        } else if structurally_equal(&selection, &Selection::Any(Box::new(Selection::True))) {
-            let region = Ranked::region(self);
-            let random_rank = fastrand::usize(0..region.num_ranks());
-            let offset = region
-                .slice()
-                .get(random_rank)
-                .map_err(anyhow::Error::from)?;
-            let singleton_region = Region::new(
-                Vec::new(),
-                Slice::new(offset, Vec::new(), Vec::new()).map_err(anyhow::Error::from)?,
-            );
-            ActorMeshRef::<PythonActor>::cast_with_headers(
-                &self.sliced(singleton_region),
+            .map_err(cast_error_to_py_error),
+            AllOrChoose::Choose => ActorMeshRef::<PythonActor>::cast_choose_with_headers(
+                self,
                 instance,
                 &caller_headers,
-                message.clone(),
+                message,
             )
-            .map_err(cast_error_to_py_error)?;
-        } else {
-            return Err(PyRuntimeError::new_err(format!(
-                "invalid selection: {:?}",
-                selection
-            )));
+            .map_err(cast_error_to_py_error),
         }
-
-        Ok(())
     }
 
     /// Stop the actor mesh asynchronously.
