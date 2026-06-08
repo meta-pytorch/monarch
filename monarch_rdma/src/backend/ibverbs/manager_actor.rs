@@ -2212,7 +2212,7 @@ mod tests {
             .find(|line| line.starts_with("op 1:"))
             .unwrap_or_else(|| panic!("expected op 1 line in error: {err}"));
         assert!(
-            op1.contains("Completion status not successful") && op1.contains(&rem_access),
+            op1.contains("completion failed") && op1.contains(&rem_access),
             "expected op 1 to fail with REM_ACCESS_ERR: {op1}",
         );
         let op2 = err
@@ -2220,7 +2220,7 @@ mod tests {
             .find(|line| line.starts_with("op 2:"))
             .unwrap_or_else(|| panic!("expected op 2 line in error: {err}"));
         assert!(
-            op2.contains("Completion status not successful") && op2.contains(&wr_flush),
+            op2.contains("completion failed") && op2.contains(&wr_flush),
             "expected op 2 to be flushed with WR_FLUSH_ERR: {op2}",
         );
 

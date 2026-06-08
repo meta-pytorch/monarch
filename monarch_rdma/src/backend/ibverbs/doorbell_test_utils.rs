@@ -289,6 +289,14 @@ impl Handler<CudaActorMessage> for CudaActor {
 /// Polls `qp` until every wr in `expected_wr_ids` has completed or
 /// `timeout_secs` elapses. Used by the doorbell tests that drive raw
 /// QPs (see [`super::doorbell_tests`]).
+///
+/// # Warning
+///
+/// Each [`IbvQueuePair::poll_completion`] call consumes one completion
+/// from the CQ, so `expected_wr_ids` must equal the set of all wr_ids
+/// whose completions have not yet been observed. A completion observed for
+/// a wr_id outside that set has already been taken off the CQ and cannot
+/// be re-observed, so this function panics rather than lose it.
 pub async fn wait_for_completion(
     qp: &mut IbvQueuePair,
     poll_target: PollTarget,
@@ -305,17 +313,23 @@ pub async fn wait_for_completion(
             return Ok(true);
         }
 
-        match qp.poll_completion(poll_target, &remaining) {
-            Ok(completions) => {
-                for (wr_id, wc_result) in completions {
-                    if let Err(e) = wc_result {
-                        return Err(anyhow::anyhow!("WR {} completion failed: {}", wr_id, e));
-                    }
-                    remaining.remove(&wr_id);
-                }
-                if remaining.is_empty() {
-                    return Ok(true);
-                }
+        match qp.poll_completion(poll_target) {
+            Ok(Some(Ok(wc))) => {
+                let wr_id = wc.wr_id();
+                assert!(
+                    remaining.remove(&wr_id),
+                    "completion observed for wr_id={wr_id} not in expected_wr_ids; the work completion would be discarded without being observed",
+                );
+            }
+            Ok(Some(Err(e))) => {
+                let wr_id = e.wr_id;
+                assert!(
+                    remaining.contains(&wr_id),
+                    "completion observed for wr_id={wr_id} not in expected_wr_ids; the work completion would be discarded without being observed",
+                );
+                return Err(anyhow::anyhow!("WR completion failed: {}", e));
+            }
+            Ok(None) => {
                 tokio::time::sleep(Duration::from_millis(1)).await;
             }
             Err(e) => {
