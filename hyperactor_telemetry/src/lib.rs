@@ -402,7 +402,7 @@ pub fn notify_actor_status_changed(event: ActorStatusEvent) {
 
 /// Event fired when a message is sent to an actor mesh.
 ///
-/// Emitted from `cast_with_selection` in `actor_mesh.rs`, which is the common
+/// Emitted from `cast_all_or_choose` in `actor_mesh.rs`, which is the common
 /// path for all Python send methods: `call`, `call_one`, `broadcast`, and `choose`.
 #[derive(Debug, Clone)]
 pub struct SentMessageEvent {

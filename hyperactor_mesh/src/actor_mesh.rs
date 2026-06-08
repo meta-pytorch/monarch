@@ -44,7 +44,6 @@ use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::declare_attrs;
-use hyperactor_mesh_macros::sel;
 use ndslice::Selection;
 use ndslice::ViewExt as _;
 use ndslice::view;
@@ -73,7 +72,6 @@ use crate::mesh_controller::Subscribe;
 use crate::mesh_controller::Unsubscribe;
 use crate::mesh_id::ActorMeshId;
 use crate::metrics;
-use crate::proc_agent::ActorState;
 use crate::proc_mesh::GET_ACTOR_STATE_MAX_IDLE;
 use crate::resource;
 use crate::supervision::MeshFailure;
@@ -471,7 +469,7 @@ impl<A: Referable> ActorMeshRef<A> {
         A: RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,
         M: Castable + RemoteMessage + Clone, // Clone is required until we are fully onto comm actor
     {
-        self.cast_with_selection(cx, sel!(*), message, &Flattrs::new())
+        self.cast_with_headers(cx, &Flattrs::new(), message)
     }
 
     /// Cast a message to all the actors in this mesh, merging
@@ -491,7 +489,66 @@ impl<A: Referable> ActorMeshRef<A> {
         A: RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,
         M: Castable + RemoteMessage + Clone,
     {
-        self.cast_with_selection(cx, sel!(*), message, caller_headers)
+        self.check_cached_failure(cx)?;
+        self.emit_sent_message_telemetry(cx, view::Ranked::region(self));
+
+        if let Some(root_comm_actor) = self.proc_mesh.root_comm_actor() {
+            if casting::v1_casting_enabled() {
+                self.cast_v1(cx, message, root_comm_actor, caller_headers);
+                Ok(())
+            } else {
+                self.cast_v0(
+                    cx,
+                    message,
+                    ndslice::selection::dsl::true_(),
+                    root_comm_actor,
+                    caller_headers,
+                )
+            }
+        } else {
+            for (point, actor) in self.iter() {
+                self.post_cast_direct(cx, point, &actor, message.clone(), caller_headers)?;
+            }
+            Ok(())
+        }
+    }
+
+    /// Cast a message to one randomly chosen actor in this mesh, merging
+    /// caller-supplied `caller_headers` into the outgoing envelope.
+    #[allow(clippy::result_large_err)]
+    pub fn cast_choose_with_headers<M>(
+        &self,
+        cx: &impl context::Actor,
+        caller_headers: &Flattrs,
+        message: M,
+    ) -> crate::Result<()>
+    where
+        A: RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,
+        M: Castable + RemoteMessage + Clone,
+    {
+        self.check_cached_failure(cx)?;
+        self.emit_sent_message_telemetry(
+            cx,
+            &Region::new(
+                Vec::new(),
+                ndslice::Slice::new(0, Vec::new(), Vec::new())
+                    .expect("zero-dimensional slice is valid"),
+            ),
+        );
+
+        if !casting::v1_casting_enabled()
+            && let Some(root_comm_actor) = self.proc_mesh.root_comm_actor()
+        {
+            self.cast_v0(
+                cx,
+                message,
+                ndslice::selection::dsl::any(ndslice::selection::dsl::true_()),
+                root_comm_actor,
+                caller_headers,
+            )
+        } else {
+            self.cast_choose_direct(cx, message, caller_headers)
+        }
     }
 
     /// Cast a message to the actors in this mesh according to the provided selection.
@@ -509,21 +566,21 @@ impl<A: Referable> ActorMeshRef<A> {
         A: RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,
         M: Castable + RemoteMessage + Clone, // Clone is required until we are fully onto comm actor
     {
-        self.cast_with_selection(cx, sel, message, &Flattrs::new())
+        self.check_cached_failure(cx)?;
+        self.emit_sent_message_telemetry(cx, view::Ranked::region(self));
+
+        let Some(root_comm_actor) = self.proc_mesh.root_comm_actor() else {
+            return Err(Error::CastingError(
+                self.id.clone(),
+                anyhow::anyhow!("tensor-engine selection casts require a root CommActor"),
+            ));
+        };
+
+        self.cast_v0(cx, message, sel, root_comm_actor, &Flattrs::new())
     }
 
     #[allow(clippy::result_large_err)]
-    fn cast_with_selection<M>(
-        &self,
-        cx: &impl context::Actor,
-        sel: Selection,
-        message: M,
-        caller_headers: &Flattrs,
-    ) -> crate::Result<()>
-    where
-        A: RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,
-        M: Castable + RemoteMessage + Clone, // Clone is required until we are fully onto comm actor
-    {
+    fn check_cached_failure(&self, cx: &impl context::Actor) -> crate::Result<()> {
         // First check if the mesh is already dead before sending out any messages
         // to a possibly undeliverable actor.
         if let Some(failure) = self.cached_failure(cx) {
@@ -535,66 +592,88 @@ impl<A: Referable> ActorMeshRef<A> {
             return Err(crate::Error::Supervision(Box::new(failure)));
         }
 
+        Ok(())
+    }
+
+    fn emit_sent_message_telemetry(&self, cx: &impl context::Actor, region: &Region) {
         hyperactor_telemetry::notify_sent_message(hyperactor_telemetry::SentMessageEvent {
             timestamp: std::time::SystemTime::now(),
             sender_actor_id: hyperactor_telemetry::hash_to_u64(cx.mailbox().actor_addr()),
             actor_mesh_id: hyperactor_telemetry::hash_to_u64(&self.id.to_string()),
-            view_json: serde_json::to_string(view::Ranked::region(self)).unwrap_or_default(),
+            view_json: serde_json::to_string(region).unwrap_or_default(),
             shape_json: {
-                let shape: ndslice::Shape = view::Ranked::region(self).into();
+                let shape: ndslice::Shape = region.into();
                 serde_json::to_string(&shape).unwrap_or_default()
             },
         });
+    }
 
-        // Now that we know these ranks are active, send out the actual messages.
-        if let Some(root_comm_actor) = self.proc_mesh.root_comm_actor() {
-            if casting::v1_casting_enabled() {
-                if Selection::is_equivalent_to_true(&sel) {
-                    self.cast_v1(cx, message, root_comm_actor, caller_headers);
-                    return Ok(());
-                }
-                // V1 does not support non-* selections yet; fall back to
-                // the iteration path below.
-            } else {
-                return self.cast_v0(cx, message, sel, root_comm_actor, caller_headers);
-            }
+    #[allow(clippy::result_large_err)]
+    fn cast_choose_direct<M>(
+        &self,
+        cx: &impl context::Actor,
+        message: M,
+        caller_headers: &Flattrs,
+    ) -> crate::Result<()>
+    where
+        A: RemoteHandles<M>,
+        M: Castable + RemoteMessage,
+    {
+        let region = view::Ranked::region(self);
+
+        let num_ranks = region.num_ranks();
+        if num_ranks == 0 {
+            return Ok(());
         }
 
-        let selected_ranks: std::collections::HashSet<usize> = sel
-            .eval(
-                &ndslice::selection::EvalOpts::lenient(),
-                view::Ranked::region(self).slice(),
+        let rank_index = rand::random::<u64>() as usize % num_ranks;
+
+        let point = region
+            .extent()
+            .point_of_rank(rank_index)
+            .map_err(|err| Error::CastingError(self.id.clone(), err.into()))?;
+
+        let actor = view::Ranked::get(self, point.rank()).ok_or_else(|| {
+            Error::CastingError(
+                self.id.clone(),
+                anyhow::anyhow!("missing actor for chosen rank {}", point.rank()),
             )
-            .map_err(|e| Error::CastingError(self.id.clone(), e.into()))?
-            .collect();
+        })?;
 
-        for (point, actor) in self.iter() {
-            if !selected_ranks.contains(&point.rank()) {
-                continue;
-            }
-            let create_rank = point.rank();
-            let mut headers = caller_headers.clone();
-            multicast::set_cast_info_on_headers(
-                &mut headers,
-                point,
-                cx.instance().self_addr().clone(),
-            );
+        self.post_cast_direct(cx, point, actor, message, caller_headers)
+    }
 
-            // Make sure that we re-bind ranks, as these may be used for
-            // bootstrapping comm actors.
-            let mut unbound = Unbound::try_from_message(message.clone())
-                .map_err(|e| Error::CastingError(self.id.clone(), e))?;
-            unbound
-                .visit_mut::<resource::Rank>(|resource::Rank(rank)| {
-                    *rank = Some(create_rank);
-                    Ok(())
-                })
-                .map_err(|e| Error::CastingError(self.id.clone(), e))?;
-            let rebound_message = unbound
-                .bind()
-                .map_err(|e| Error::CastingError(self.id.clone(), e))?;
-            actor.post_with_headers(cx, headers, rebound_message);
-        }
+    #[allow(clippy::result_large_err)]
+    fn post_cast_direct<M>(
+        &self,
+        cx: &impl context::Actor,
+        point: ndslice::Point,
+        actor: &ActorRef<A>,
+        message: M,
+        caller_headers: &Flattrs,
+    ) -> crate::Result<()>
+    where
+        A: RemoteHandles<M>,
+        M: Castable + RemoteMessage,
+    {
+        let create_rank = point.rank();
+        let mut headers = caller_headers.clone();
+        multicast::set_cast_info_on_headers(&mut headers, point, cx.instance().self_addr().clone());
+
+        // Make sure that we re-bind ranks, as these may be used for
+        // bootstrapping comm actors.
+        let mut unbound = Unbound::try_from_message(message)
+            .map_err(|e| Error::CastingError(self.id.clone(), e))?;
+        unbound
+            .visit_mut::<resource::Rank>(|resource::Rank(rank)| {
+                *rank = Some(create_rank);
+                Ok(())
+            })
+            .map_err(|e| Error::CastingError(self.id.clone(), e))?;
+        let rebound_message = unbound
+            .bind()
+            .map_err(|e| Error::CastingError(self.id.clone(), e))?;
+        actor.post_with_headers(cx, headers, rebound_message);
         Ok(())
     }
 
@@ -780,30 +859,6 @@ impl<A: Referable> ActorMeshRef<A> {
             root_comm_actor.post_with_headers(cx, headers, cast_message);
         }
     }
-    /// Query the state of all actors in this mesh.
-    /// If keepalive is Some, use a message that indicates to the recipient
-    /// that the owner of the mesh is still alive, along with the expiry time
-    /// after which the actor should be considered orphaned. Else, use a normal
-    /// state query.
-    #[allow(clippy::result_large_err)]
-    pub async fn actor_states(
-        &self,
-        cx: &impl context::Actor,
-    ) -> crate::Result<ValueMesh<resource::State<ActorState>>> {
-        self.actor_states_with_keepalive(cx, None).await
-    }
-
-    #[allow(clippy::result_large_err)]
-    pub(crate) async fn actor_states_with_keepalive(
-        &self,
-        cx: &impl context::Actor,
-        keepalive: Option<std::time::SystemTime>,
-    ) -> crate::Result<ValueMesh<resource::State<ActorState>>> {
-        self.proc_mesh
-            .actor_states_with_keepalive(cx, self.id.clone(), keepalive)
-            .await
-    }
-
     pub(crate) fn new(
         id: ActorMeshId,
         proc_mesh: ProcMeshRef,
@@ -1173,9 +1228,12 @@ mod tests {
     use hyperactor::id::Label;
     use hyperactor::mailbox;
     use ndslice::Extent;
+    use ndslice::Region;
+    use ndslice::Slice;
     use ndslice::ViewExt;
     use ndslice::extent;
     use ndslice::view::Ranked;
+    use ndslice::view::RankedSliceable;
     use timed_test::assert_no_process_leak;
     use timed_test::async_timed_test;
     use tokio::time::Duration;
@@ -1624,10 +1682,8 @@ mod tests {
     }
 
     #[async_timed_test(timeout_secs = 60)]
-    async fn test_cast_with_selection_v1_fallback() {
+    async fn test_sliced_actor_mesh_cast_v1_reaches_slice_members() {
         use hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER;
-        use hyperactor_mesh_macros::sel;
-        use ndslice::Selection;
 
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
@@ -1645,15 +1701,19 @@ mod tests {
             .spawn(instance, "test", Extent::unity(), None, None)
             .await
             .unwrap();
-        let actor_mesh: ActorMesh<testactor::TestActor> =
+        let root_actor_mesh: ActorMesh<testactor::TestActor> =
             proc_mesh.spawn(instance, "test", &()).await.unwrap();
 
-        // Cast with sel!(0:1) — should only reach host 0.
+        // Cast through a sliced mesh — `cast` still means all, but all is
+        // scoped to the immutable sliced rank space.
+        let actor_mesh = root_actor_mesh.sliced(Region::new(
+            vec!["rank".to_string()],
+            Slice::new(0, vec![1], vec![1]).unwrap(),
+        ));
         let (cast_info, mut cast_info_rx) = instance.mailbox().open_port();
         actor_mesh
-            .cast_for_tensor_engine_only_do_not_use(
+            .cast(
                 instance,
-                sel!(0:1),
                 testactor::GetCastInfo {
                     cast_info: cast_info.bind(),
                 },
@@ -1664,9 +1724,9 @@ mod tests {
         let received_ranks = HashSet::from([point.rank()]);
         assert_eq!(received_ranks, HashSet::from([0]));
 
-        // Also cast with sel!(*) — all ranks should be reached via V1.
+        // Also cast the root mesh — all ranks should be reached via V1.
         let (cast_info2, mut cast_info_rx2) = instance.mailbox().open_port();
-        actor_mesh
+        root_actor_mesh
             .cast(
                 instance,
                 testactor::GetCastInfo {

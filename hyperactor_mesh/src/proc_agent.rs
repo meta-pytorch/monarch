@@ -330,6 +330,12 @@ impl ProcAgent {
         proc: Proc,
         shutdown_tx: Option<tokio::sync::oneshot::Sender<i32>>,
     ) -> Result<ActorHandle<Self>, anyhow::Error> {
+        let cast_handle = proc.spawn_with_uid(
+            Uid::singleton(Label::strip("cast")),
+            hyperactor_cast::cast_actor::CastActor::default(),
+        )?;
+        cast_handle.bind::<hyperactor_cast::cast_actor::CastActor>();
+
         let orphan_timeout = hyperactor_config::global::get(MESH_ORPHAN_TIMEOUT);
         let agent = ProcAgent {
             proc: proc.clone(),
