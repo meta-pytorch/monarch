@@ -41,6 +41,7 @@ use hyperactor::ActorHandle;
 use hyperactor::ActorRef;
 use hyperactor::Endpoint as _;
 use hyperactor::Gateway;
+use hyperactor::Label;
 use hyperactor::ProcAddr;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
@@ -49,10 +50,10 @@ use hyperactor::channel::ChannelTransport;
 use hyperactor::channel::Rx;
 use hyperactor::channel::Tx;
 use hyperactor::context;
+use hyperactor::id::Uid;
 use hyperactor::mailbox::IntoBoxedMailboxSender;
 use hyperactor::mailbox::MailboxClient;
 use hyperactor::mailbox::MailboxServer;
-use hyperactor::mailbox::MailboxServerHandle;
 use hyperactor::proc::Proc;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
@@ -79,6 +80,7 @@ use crate::host::SingleTerminate;
 use crate::host::TerminateError;
 use crate::host::TerminateSummary;
 use crate::host::WaitError;
+use crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
 use crate::host_mesh::host_agent::HostAgent;
 use crate::host_mesh::host_agent::HostAgentMode;
 use crate::logging::OutputTarget;
@@ -221,7 +223,7 @@ pub async fn halt<R>() -> R {
 /// keeps its mailbox server (and Unix socket) alive so new clients can
 /// reconnect to the same address.
 pub struct HostShutdownHandle {
-    rx: tokio::sync::oneshot::Receiver<MailboxServerHandle>,
+    rx: tokio::sync::oneshot::Receiver<hyperactor::gateway::GatewayServeHandle>,
     exit_on_shutdown: bool,
 }
 
@@ -230,9 +232,12 @@ impl HostShutdownHandle {
     /// and optionally exit the process.
     pub async fn join(self) {
         match self.rx.await {
-            Ok(mailbox_handle) => {
-                mailbox_handle.stop("host shutting down");
-                let _ = mailbox_handle.await;
+            Ok(mut serve_handle) => {
+                // Stop signals the frontend server and unwinds its
+                // bookkeeping; join then awaits teardown so pending
+                // messages drain before we return.
+                serve_handle.stop("host shutdown: draining frontend mailbox server");
+                let _ = serve_handle.join().await;
             }
             Err(_) => {} // sender dropped without sending — nothing to drain
         }
@@ -246,10 +251,14 @@ impl HostShutdownHandle {
 ///
 /// The caller passes the [`Gateway`] in — typically [`Gateway::new`],
 /// but it may have been pre-configured (e.g., via
-/// [`Gateway::serve_via`] to connect to a remote gateway) before this
-/// call. The host attaches its `system_proc` and `local_proc` to the
-/// gateway during construction; if the gateway already has an active
-/// via duplex, those attaches propagate to the remote automatically.
+/// [`Gateway::serve_via`] or [`Gateway::attach`] to connect to
+/// another gateway) before this call. The host's `system_proc` and
+/// `local_proc` are registered with the gateway during construction
+/// — no special routing path; they share the gateway like any other
+/// local proc. If the gateway has a via prefix in its
+/// `default_location` at this point, every port bound on these
+/// procs inherits that prefix and is reachable from the attached
+/// peer through the via mechanism.
 ///
 /// Returns `(host_mesh_agent, shutdown_handle)`:
 ///
@@ -293,12 +302,13 @@ pub async fn host(
     // The ShutdownHost handler will call host.serve() inside
     // HostAgent::init (after this.bind::<Self>(), so the handler port is bound
     // before the frontend starts routing messages), then send the resulting
-    // MailboxServerHandle back here for draining.
-    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<MailboxServerHandle>();
+    // GatewayServeHandle back here for draining.
+    let (shutdown_tx, shutdown_rx) =
+        tokio::sync::oneshot::channel::<hyperactor::gateway::GatewayServeHandle>();
 
     let system_proc = host.system_proc().clone();
-    let host_mesh_agent = system_proc.spawn::<HostAgent>(
-        "host_agent",
+    let host_mesh_agent = system_proc.spawn_with_uid(
+        Uid::singleton(Label::new(HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
         HostAgent::new(HostAgentMode::Process {
             host,
             shutdown_tx: Some(shutdown_tx),
@@ -542,7 +552,7 @@ impl Bootstrap {
                     config,
                     exit_on_shutdown,
                     None,
-                    Gateway::new(),
+                    Gateway::global().clone(),
                 )
                 .await?;
                 shutdown.join().await;
@@ -2487,7 +2497,7 @@ mod tests {
         proc.clone().serve(proc_rx);
         let proc_ref: ProcAddr = test_proc_id("client_0");
         router.bind(proc_ref, proc_addr.clone());
-        let (client, _handle) = proc.client("client").unwrap();
+        let client = proc.client("client");
 
         let (tap_tx, mut tap_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         test_tap::install(tap_tx);
@@ -2501,8 +2511,7 @@ mod tests {
         // Spawn the log client and disable aggregation (immediate
         // print + tap push).
         let log_client_actor = LogClientActor::new((), Flattrs::default()).await.unwrap();
-        let log_client: ActorRef<LogClientActor> =
-            proc.spawn("log_client", log_client_actor).unwrap().bind();
+        let log_client: ActorRef<LogClientActor> = proc.spawn(log_client_actor).bind();
         log_client.set_aggregate(&client, None).await.unwrap();
 
         // Spawn the forwarder in this proc (it will serve
@@ -2510,10 +2519,7 @@ mod tests {
         let log_forwarder_actor = LogForwardActor::new(log_client.clone(), Flattrs::default())
             .await
             .unwrap();
-        let _log_forwarder: ActorRef<LogForwardActor> = proc
-            .spawn("log_forwarder", log_forwarder_actor)
-            .unwrap()
-            .bind();
+        let _log_forwarder: ActorRef<LogForwardActor> = proc.spawn(log_forwarder_actor).bind();
 
         // Dial the channel but don't post until we know the forwarder
         // is receiving.
@@ -3004,7 +3010,7 @@ mod tests {
     ///   so its messages route via the host.
     #[cfg(fbcode_build)]
     async fn make_proc_id_and_backend_addr(
-        instance: &hyperactor::Instance<()>,
+        instance: &hyperactor::Client,
         _tag: &str,
     ) -> (ProcAddr, ChannelAddr) {
         // Serve a Unix channel as the "backend_addr" and hook it into
@@ -3028,7 +3034,7 @@ mod tests {
         // Create a root direct-addressed proc + client instance.
         let root =
             hyperactor::Proc::direct(ChannelTransport::Unix.any(), "root".to_string()).unwrap();
-        let (instance, _handle) = root.client("client").unwrap();
+        let instance = root.client("client");
 
         let mgr = BootstrapProcManager::new(BootstrapCommand::test()).unwrap();
         let (proc_id, backend_addr) = make_proc_id_and_backend_addr(&instance, "t_term").await;
@@ -3095,7 +3101,7 @@ mod tests {
         // Root proc + client instance (so the child can dial back).
         let root =
             hyperactor::Proc::direct(ChannelTransport::Unix.any(), "root".to_string()).unwrap();
-        let (instance, _handle) = root.client("client").unwrap();
+        let instance = root.client("client");
 
         let mgr = BootstrapProcManager::new(BootstrapCommand::test()).unwrap();
 
@@ -3149,7 +3155,7 @@ mod tests {
         // Create a local instance just to call the local bootstrap actor.
         // We should find a way to avoid this for local handles.
         let temp_proc = Proc::isolated();
-        let (temp_instance, _) = temp_proc.client("temp").unwrap();
+        let temp_instance = temp_proc.client("temp");
 
         let handle = host(
             ChannelAddr::any(ChannelTransport::Unix),
@@ -3157,7 +3163,7 @@ mod tests {
             None,
             false,
             None,
-            Gateway::new(),
+            Gateway::global().clone(),
         )
         .await
         .unwrap();

@@ -104,19 +104,20 @@ async fn check_dining_endpoints(bin: &Path) {
             crate::admin::assert_admin_schema(s).await;
             crate::config::check(s).await;
             crate::tree::check(s).await;
+            crate::inbound_ordering::check(s).await;
         })
     })
     .await;
 }
 
-/// MIT-13, MIT-14, MIT-15, MIT-75, MIT-76: dining-based
+/// MIT-13, MIT-14, MIT-15, MIT-75, MIT-76, MIT-77: dining-based
 /// endpoint assertions — Rust binary.
 pub async fn run_dining_endpoints_rust() {
     let bin = harness::dining_philosophers_rust_binary();
     check_dining_endpoints(&bin).await;
 }
 
-/// MIT-13, MIT-14, MIT-15, MIT-75, MIT-76: dining-based
+/// MIT-13, MIT-14, MIT-15, MIT-75, MIT-76, MIT-77: dining-based
 /// endpoint assertions — Python binary.
 pub async fn run_dining_endpoints_python() {
     let bin = harness::dining_philosophers_python_binary();

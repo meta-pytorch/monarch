@@ -242,7 +242,7 @@ impl IbvConfig {
         };
 
         let device = super::device_selection::select_optimal_ibv_device(Some(normalized_target))
-            .unwrap_or_else(IbvDevice::default);
+            .unwrap_or_default();
 
         Self {
             device,
@@ -789,7 +789,7 @@ impl Drop for IbvMemoryRegion {
                 }
                 // SAFETY: `*mr` was returned by `ibv_reg_mr` /
                 // `ibv_reg_dmabuf_mr` at construction (see
-                // `register_mr_impl`) and is non-null per the
+                // `resolve_local_mr`) and is non-null per the
                 // null-check above. The intended sharing pattern
                 // is `Arc<IbvMemoryRegion>`, so `Drop` runs exactly
                 // once when the last clone goes away, meaning
@@ -809,7 +809,7 @@ impl Drop for IbvMemoryRegion {
             IbvMemoryRegion::Segments => {
                 // SAFETY: `IbvMemoryRegion::Segments` is the
                 // singleton owner of the mlx5dv scanner's globally
-                // registered segments. `register_mr_impl` lazily
+                // registered segments. `resolve_local_mr` lazily
                 // wraps it in `Arc::new(...)` at most once per
                 // manager (stored in `IbvManagerActor::segments_mr`)
                 // and clones it into every segment-backed view, so
@@ -1040,6 +1040,24 @@ impl IbvWc {
     pub fn is_valid(&self) -> bool {
         self.valid
     }
+
+    #[cfg(test)]
+    pub(super) fn for_test(wr_id: u64, valid: bool) -> Self {
+        Self {
+            wr_id,
+            len: 0,
+            valid,
+            error: None,
+            opcode: rdmaxcel_sys::ibv_wc_opcode::IBV_WC_RDMA_WRITE,
+            bytes: None,
+            qp_num: 0,
+            src_qp: 0,
+            pkey_index: 0,
+            slid: 0,
+            sl: 0,
+            dlid_path_bits: 0,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1106,19 +1124,19 @@ mod tests {
 
     #[test]
     fn test_port_display() {
-        if let Some(device) = IbvDevice::first_available() {
-            if !device.ports().is_empty() {
-                let port = &device.ports()[0];
-                let display_output = format!("{}", port);
-                assert!(
-                    display_output.contains(&port.state),
-                    "display should include port state"
-                );
-                assert!(
-                    display_output.contains(&port.link_layer),
-                    "display should include link layer"
-                );
-            }
+        if let Some(device) = IbvDevice::first_available()
+            && !device.ports().is_empty()
+        {
+            let port = &device.ports()[0];
+            let display_output = format!("{}", port);
+            assert!(
+                display_output.contains(&port.state),
+                "display should include port state"
+            );
+            assert!(
+                display_output.contains(&port.link_layer),
+                "display should include link layer"
+            );
         }
     }
 

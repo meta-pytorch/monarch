@@ -27,20 +27,21 @@ base64 = { version = "0.22.1", features = ["alloc"] }
 bincode = { version = "2", features = ["serde"] }
 bitmaps = "3.2.1"
 chrono = { version = "0.4.44", features = ["clock", "serde", "std"], default-features = false }
-dashmap = { version = "6.1.0", features = ["rayon", "serde"] }
+dashmap = { version = "6.2.1", features = ["rayon", "serde"] }
 enum-as-inner = "0.6.1"
 erased-serde = "0.4.10"
 futures = { version = "0.3.31", features = ["async-await", "compat"] }
 hostname = "0.4.2"
 humantime = "2.1"
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
+hyperactor_cast = { version = "0.0.0", path = "../hyperactor_cast" }
 hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
 hyperactor_mesh_macros = { version = "0.0.0", path = "../hyperactor_mesh_macros" }
 hyperactor_telemetry = { version = "0.0.0", path = "../hyperactor_telemetry" }
 libc = "0.2.186"
 ndslice = { version = "0.0.0", path = "../ndslice" }
 opentelemetry = "0.31"
-pin-project = "1.1.11"
+pin-project = "1.1.13"
 preempt_rwlock = { version = "0.0.0", path = "../preempt_rwlock" }
 rand = "0.10.1"
 reqwest = { version = "0.13.2", features = ["blocking", "charset", "cookies", "gzip", "http2", "json", "multipart", "rustls", "socks", "stream", "system-proxy"], default-features = false }
@@ -52,7 +53,7 @@ serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw
 strum = { version = "0.27.1", features = ["derive"] }
 tempfile = "3.27.0"
 thiserror = "2.0.18"
-tokio = { version = "1.52.1", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.52.3", features = ["full", "test-util", "tracing"] }
 tokio-rustls = { version = "0.26.4", features = ["logging", "ring", "tls12"], default-features = false }
 tokio-util = { version = "0.7.18", features = ["full"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
@@ -71,7 +72,6 @@ criterion = { version = "0.5.1", features = ["async_tokio", "csv_output"] }
 inventory = "0.3.24"
 jsonschema = "0.17.0"
 maplit = "1.0"
-proptest = "1.11.0"
 timed_test = { version = "0.0.0", path = "../timed_test" }
 
 [lints]

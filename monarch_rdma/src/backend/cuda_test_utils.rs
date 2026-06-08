@@ -205,7 +205,34 @@ impl CudaAllocation {
     }
 }
 
-impl Keepalive for CudaAllocation {}
+impl Keepalive for CudaAllocation {
+    fn addr(&self) -> usize {
+        self.ptr()
+    }
+
+    fn size(&self) -> usize {
+        self.size()
+    }
+}
+
+/// Keepalive for a sub-range of a [`CudaAllocation`]. Used by tests
+/// that register several non-overlapping buffers within one mapped
+/// CUDA region.
+struct CudaAllocationSlice {
+    alloc: CudaAllocation,
+    offset: usize,
+    size: usize,
+}
+
+impl Keepalive for CudaAllocationSlice {
+    fn addr(&self) -> usize {
+        self.alloc.ptr() + self.offset
+    }
+
+    fn size(&self) -> usize {
+        self.size
+    }
+}
 
 pub struct CudaAllocator {
     allocations: Mutex<HashMap<usize, Weak<CudaAllocationInner>>>,
@@ -571,11 +598,11 @@ impl SenderMessageHandler for SenderActor {
 
         let mut remotes = Vec::with_capacity(buffers.len());
         for &(offset, size) in &buffers {
-            let local: Arc<KeepaliveLocalMemory> = Arc::new(KeepaliveLocalMemory::new(
-                alloc.ptr() + offset,
+            let local = KeepaliveLocalMemory::new(Arc::new(CudaAllocationSlice {
+                alloc: alloc.clone(),
+                offset,
                 size,
-                Arc::new(alloc.clone()),
-            ));
+            }));
             // Pre-fill so reads return a known sequence; write_at
             // routes to the GPU path for CUDA-backed memory.
             let fill = vec![pattern; size];
@@ -661,12 +688,10 @@ impl ReceiverMessageHandler for ReceiverActor {
         // unwritten destination is distinguishable from a successful
         // read.
         let buf: Box<[u8]> = vec![!expected_pattern; size].into_boxed_slice();
-        let addr = buf.as_ptr() as usize;
-        let local: Arc<KeepaliveLocalMemory> =
-            Arc::new(KeepaliveLocalMemory::new(addr, size, Arc::new(buf)));
+        let local = KeepaliveLocalMemory::new(Arc::new(buf));
 
         let read_result = remote
-            .read_into_local(cx, Arc::clone(&local), timeout_secs)
+            .read_into_local(cx, local.clone(), timeout_secs)
             .await
             .map(|_| ())
             .map_err(|e| e.to_string());
@@ -700,9 +725,7 @@ impl ReceiverMessageHandler for ReceiverActor {
         timeout_secs: u64,
     ) -> Result<Result<(), String>, anyhow::Error> {
         let buf: Box<[u8]> = vec![pattern; size].into_boxed_slice();
-        let addr = buf.as_ptr() as usize;
-        let local: Arc<KeepaliveLocalMemory> =
-            Arc::new(KeepaliveLocalMemory::new(addr, size, Arc::new(buf)));
+        let local = KeepaliveLocalMemory::new(Arc::new(buf));
 
         let result = remote
             .write_from_local(cx, local, timeout_secs)

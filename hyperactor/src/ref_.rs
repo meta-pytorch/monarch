@@ -36,7 +36,7 @@ use crate::accum::StreamingReducerOpts;
 use crate::actor::Referable;
 use crate::context;
 use crate::context::MailboxExt;
-use crate::mailbox::LostMessage;
+use crate::mailbox::DeliveryFailureReport;
 use crate::mailbox::MailboxSenderError;
 use crate::mailbox::MailboxSenderErrorKind;
 use crate::mailbox::PortSink;
@@ -373,7 +373,7 @@ where
             Ok(serialized) => serialized,
             Err(err) => {
                 cx.instance()
-                    .report_lost_message(LostMessage::from_send_error::<M>(
+                    .report_delivery_failure(DeliveryFailureReport::from_send_error::<M>(
                         cx.mailbox().actor_addr().clone(),
                         self.endpoint_location(),
                         &err,
@@ -570,7 +570,7 @@ where
             Ok(serialized) => serialized,
             Err(err) => {
                 cx.instance()
-                    .report_lost_message(LostMessage::from_send_error::<M>(
+                    .report_delivery_failure(DeliveryFailureReport::from_send_error::<M>(
                         cx.mailbox().actor_addr().clone(),
                         self.endpoint_location(),
                         &err,

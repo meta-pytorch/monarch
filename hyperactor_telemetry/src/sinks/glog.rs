@@ -166,7 +166,6 @@ impl GlogSink {
                 level,
                 fields,
                 parent_span,
-                thread_id,
                 file,
                 line,
                 ..
@@ -179,11 +178,11 @@ impl GlogSink {
                     tracing::Level::TRACE => 'T',
                 };
 
-                // [prefix]LMMDD HH:MM:SS.ffffff thread_id file:line] message, key:value, key:value
+                // [prefix]LMMDD HH:MM:SS.ffffff file:line] message, key:value, key:value
                 write!(
                     &mut self.line_buffer,
-                    "{}{}{} {} ",
-                    prefix_str, level_char, timestamp_str, thread_id
+                    "{}{}{} ",
+                    prefix_str, level_char, timestamp_str
                 )?;
 
                 if let (Some(f), Some(l)) = (file, line) {
@@ -210,17 +209,9 @@ impl GlogSink {
                     write!(&mut self.line_buffer, "event")?;
                 }
 
-                let max_key_len = fields
-                    .iter()
-                    .filter(|(k, _)| *k != "message" && *k != crate::SUBJECT_KEY)
-                    .map(|(k, _)| k.len())
-                    .max()
-                    .unwrap_or(0);
-
                 for (k, v) in fields.iter() {
                     if *k != "message" && *k != crate::SUBJECT_KEY {
-                        let pad = max_key_len - k.len() + 1;
-                        write!(&mut self.line_buffer, "\n    {k}:{:pad$}", "")?;
+                        write!(&mut self.line_buffer, ", {k}: ")?;
                         match v {
                             FieldValue::Bool(b) => write!(&mut self.line_buffer, "{}", b)?,
                             FieldValue::I64(i) => write!(&mut self.line_buffer, "{}", i)?,

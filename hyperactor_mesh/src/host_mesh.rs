@@ -45,13 +45,14 @@
 
 #![allow(clippy::result_large_err)]
 
-use hyperactor::Actor;
 use hyperactor::ActorRef;
 use hyperactor::Endpoint as _;
+use hyperactor::Gateway;
 use hyperactor::Handler;
 use hyperactor::accum::StreamingReducerOpts;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::id::Label;
+use hyperactor::id::Uid;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::declare_attrs;
@@ -146,11 +147,21 @@ declare_attrs! {
 }
 
 /// A reference to a single host.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Named, Serialize, Deserialize)]
-pub struct HostRef(pub(crate) ChannelAddr);
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Named, Serialize)]
+pub struct HostRef(ChannelAddr);
 wirevalue::register_type!(HostRef);
 
 impl HostRef {
+    /// Create a host reference from a channel address.
+    ///
+    /// `ChannelAddr::Alias` is a socket setup convenience, not a host
+    /// identity. The host consumes the alias when serving and advertises the
+    /// `dial_to` address, so remote references must use that same address in
+    /// proc and actor identities.
+    pub(crate) fn new(addr: ChannelAddr) -> Self {
+        Self(addr.into_dial_addr())
+    }
+
     /// The host mesh agent associated with this host.
     pub(crate) fn mesh_agent(&self) -> ActorRef<HostAgent> {
         ActorRef::attest(
@@ -160,8 +171,15 @@ impl HostRef {
     }
 
     /// The ProcAddr for the proc with name `name` on this host.
+    ///
+    /// Mirrors the convention of `Host::spawn`: a spawned child proc is
+    /// advertised at `Via(proc_uid, host_addr)` so the host's gateway
+    /// peels the outer hop via [`Gateway::attach_proc_sender`] and
+    /// forwards to the child's serving address. Without the via prefix
+    /// the host would bounce the envelope as a self-loop.
     fn named_proc(&self, id: &ResourceId) -> ProcAddr {
-        id.proc_addr(self.0.clone())
+        let location = hyperactor::Location::from(self.0.clone()).with_via(id.uid().clone());
+        ProcAddr::new(id.proc_id(), location)
     }
 
     /// The service proc on this host.
@@ -227,12 +245,21 @@ impl HostRef {
     }
 }
 
+impl<'de> Deserialize<'de> for HostRef {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Ok(Self::new(ChannelAddr::deserialize(deserializer)?))
+    }
+}
+
 impl TryFrom<ActorRef<HostAgent>> for HostRef {
     type Error = crate::Error;
 
     fn try_from(value: ActorRef<HostAgent>) -> Result<Self, crate::Error> {
         let proc_id = value.actor_addr().proc_addr();
-        Ok(HostRef(proc_id.addr().clone()))
+        Ok(Self::new(proc_id.addr().clone()))
     }
 }
 
@@ -246,7 +273,7 @@ impl FromStr for HostRef {
     type Err = <ChannelAddr as FromStr>::Err;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(HostRef(ChannelAddr::from_str(s)?))
+        Ok(Self::new(ChannelAddr::from_str(s)?))
     }
 }
 
@@ -460,12 +487,17 @@ impl HostMesh {
         let addr = hyperactor_config::global::get_cloned(DEFAULT_TRANSPORT).binding_addr();
 
         let manager = BootstrapProcManager::new(bootstrap_cmd)?;
-        let host = Host::new(manager, addr).await?;
+        // Use a dedicated gateway, not the process-wide global one. This
+        // host coexists with the global-context singleton host (see
+        // `global_context`), which owns the global gateway; sharing it
+        // would collide on the legacy `service`/`local` pseudo-singleton
+        // proc ids.
+        let host = Host::new_with_gateway(manager, addr, None, Gateway::new()).await?;
         let addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let host_mesh_agent = system_proc
-            .spawn(
-                "host_agent",
+            .spawn_with_uid(
+                Uid::singleton(Label::new(host_agent::HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
                 HostAgent::new(HostAgentMode::Process {
                     host,
                     shutdown_tx: None,
@@ -474,7 +506,7 @@ impl HostMesh {
             .map_err(crate::Error::SingletonActorSpawnError)?;
         host_mesh_agent.bind::<HostAgent>();
 
-        let host = HostRef(addr);
+        let host = HostRef::new(addr);
         let host_mesh_ref = HostMeshRef::new(
             HostMeshId::instance(Label::new("local").unwrap()),
             extent!(hosts = 1).into(),
@@ -524,17 +556,21 @@ impl HostMesh {
         let spawn: ProcManagerSpawnFn =
             Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None))));
         let manager = LocalProcManager::new(spawn);
-        let host = Host::new(manager, addr).await?;
+        // Each in-process host gets its own gateway, not the
+        // process-wide global one. Several hosts coexist in one process
+        // here, and the legacy `service`/`local` pseudo-singleton proc
+        // ids would collide if they all attached to the same gateway.
+        let host = Host::new_with_gateway(manager, addr, None, Gateway::new()).await?;
         let addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let host_mesh_agent = system_proc
-            .spawn(
-                host_agent::HOST_MESH_AGENT_ACTOR_NAME,
+            .spawn_with_uid(
+                Uid::singleton(Label::new(host_agent::HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
                 HostAgent::new(HostAgentMode::Local(host)),
             )
             .map_err(crate::Error::SingletonActorSpawnError)?;
         host_mesh_agent.bind::<HostAgent>();
-        Ok(HostRef(addr))
+        Ok(HostRef::new(addr))
     }
 
     /// Create a new process-based host mesh. Each host is represented by a local process,
@@ -571,7 +607,7 @@ impl HostMesh {
             let mut cmd = command.new();
             bootstrap.to_env(&mut cmd);
             cmd.spawn()?;
-            hosts.push(HostRef(addr));
+            hosts.push(HostRef::new(addr));
         }
 
         let host_mesh_ref = HostMeshRef::new(
@@ -862,40 +898,29 @@ impl Drop for HostMeshShutdownGuard {
                                  relying on PDEATHSIG/manager Drop"
                             );
                         }
-                        Ok(proc) => match proc.client("drop") {
-                            Err(e) => {
-                                tracing::warn!(
-                                    error = %e,
-                                    "failed to create ephemeral instance for drop-cleanup; \
-                                     relying on PDEATHSIG/manager Drop"
-                                );
-                            }
-                            Ok((instance, _guard)) => {
-                                let mut attempted = 0usize;
-                                let mut ok = 0usize;
-                                let mut err = 0usize;
+                        Ok(proc) => {
+                            let client = proc.client("drop");
+                            let mut attempted = 0usize;
+                            let mut ok = 0usize;
+                            let mut err = 0usize;
 
-                                for host in hosts {
-                                    attempted += 1;
-                                    tracing::debug!(host = %host, "drop-cleanup: shutdown start");
-                                    match host.shutdown(&instance).await {
-                                        Ok(()) => {
-                                            ok += 1;
-                                            tracing::debug!(host = %host, "drop-cleanup: shutdown ok");
-                                        }
-                                        Err(e) => {
-                                            err += 1;
-                                            tracing::warn!(host = %host, error = %e, "drop-cleanup: shutdown failed");
-                                        }
+                            for host in hosts {
+                                attempted += 1;
+                                tracing::debug!(host = %host, "drop-cleanup: shutdown start");
+                                match host.shutdown(&client).await {
+                                    Ok(()) => {
+                                        ok += 1;
+                                        tracing::debug!(host = %host, "drop-cleanup: shutdown ok");
+                                    }
+                                    Err(e) => {
+                                        err += 1;
+                                        tracing::warn!(host = %host, error = %e, "drop-cleanup: shutdown failed");
                                     }
                                 }
-
-                                tracing::info!(
-                                    attempted, ok, err,
-                                    "hostmesh drop-cleanup summary"
-                                );
                             }
-                        },
+
+                            tracing::info!(attempted, ok, err, "hostmesh drop-cleanup summary");
+                        }
                     }
                 }
                 .instrument(span),
@@ -1015,7 +1040,7 @@ impl HostMeshRef {
         Self {
             id,
             region: extent!(hosts = hosts.len()).into(),
-            ranks: Arc::new(hosts.into_iter().map(HostRef).collect()),
+            ranks: Arc::new(hosts.into_iter().map(HostRef::new).collect()),
             bootstrap_command: None,
         }
     }
@@ -1434,12 +1459,7 @@ impl HostMeshRef {
             // hyperactor::proc AI-3: controller name must include mesh
             // identity for proc-wide ActorAddr uniqueness.
             let controller_name = format!("{}_{}", PROC_MESH_CONTROLLER_NAME, mesh.id());
-            let controller_handle =
-                controller
-                    .spawn_with_name(cx, &controller_name)
-                    .map_err(|e| {
-                        crate::Error::ControllerActorSpawnError(mesh.id().resource_id().clone(), e)
-                    })?;
+            let controller_handle = cx.spawn_with_label(&controller_name, controller);
             // Bind the actor's well-known ports (Signal, IntrospectMessage,
             // Undeliverable). Without this, the controller's mailbox has no
             // port entries and messages (including introspection queries)
@@ -1502,7 +1522,7 @@ impl HostMeshRef {
 
             // Note that we don't send 1 message per host agent, we send 1 message
             // per proc.
-            let host = HostRef(addr);
+            let host = HostRef::new(addr);
             host.mesh_agent().post(
                 cx,
                 resource::Stop {
@@ -1610,7 +1630,7 @@ impl HostMeshRef {
 
             // Note that we don't send 1 message per host agent, we send 1 message
             // per proc.
-            let host = HostRef(addr);
+            let host = HostRef::new(addr);
             let proc_resource_id = ResourceId::new(proc_id.uid().clone(), proc_id.label().cloned());
             proc_names.push(proc_resource_id.clone());
             let mut reply = tx.bind();
@@ -1808,8 +1828,8 @@ pub async fn spawn_admin(
     // Spawn the admin on the caller's local proc. Placement now
     // follows the caller context rather than mesh topology.
     let local_proc = cx.instance().proc();
-    let agent_handle = local_proc.spawn(
-        crate::mesh_admin::MESH_ADMIN_ACTOR_NAME,
+    let agent_handle = local_proc.spawn_with_uid(
+        Uid::singleton(Label::new(crate::mesh_admin::MESH_ADMIN_ACTOR_NAME).unwrap()),
         crate::mesh_admin::MeshAdminAgent::new(
             hosts,
             Some(root_client_id),
@@ -2272,7 +2292,7 @@ mod tests {
         let (failed_host, _failure) = &push_err.failures[0];
         assert_eq!(
             failed_host,
-            &HostRef(unreachable),
+            &HostRef::new(unreachable),
             "HM-4: failure entry must identify the unreachable host"
         );
         // Intentionally do NOT pin the `_failure` variant — the
@@ -2283,9 +2303,26 @@ mod tests {
         // itself the assertion. `TestRootClient::handle::<MeshFailure>`
         // panics on supervision events; if the request bounce had
         // escaped through `Undeliverable<MessageEnvelope>`, the
-        // root-client's default `handle_undeliverable_message` would
-        // bail with `UndeliverableMessageError::DeliveryFailure`,
+        // root-client's default delivery-failure handling would
+        // surface an `UndeliverableMessageError::DeliveryFailure`,
         // supervision would fire, and we wouldn't be here.
+    }
+
+    #[test]
+    fn test_host_refs_canonicalize_alias_to_dial_addr() {
+        let dial_to = ChannelAddr::from_zmq_url("tcp://127.0.0.1:26600").unwrap();
+        let alias = ChannelAddr::from_zmq_url("tcp://127.0.0.1:26600@tcp://0.0.0.0:26600").unwrap();
+
+        let mesh = HostMeshRef::from_hosts(
+            HostMeshId::singleton(Label::new("alias").unwrap()),
+            vec![alias],
+        );
+
+        assert_eq!(mesh.hosts(), &[HostRef::new(dial_to.clone())]);
+        assert_eq!(
+            mesh.hosts()[0].mesh_agent().actor_addr().proc_addr().addr(),
+            &dial_to
+        );
     }
 
     #[tokio::test]
@@ -2315,8 +2352,8 @@ mod tests {
         let addr_a: ChannelAddr = "tcp:127.0.0.1:2001".parse().unwrap();
         let addr_b: ChannelAddr = "tcp:127.0.0.1:2002".parse().unwrap();
 
-        let ref_a = HostRef(addr_a.clone()).mesh_agent();
-        let ref_b = HostRef(addr_b.clone()).mesh_agent();
+        let ref_a = HostRef::new(addr_a.clone()).mesh_agent();
+        let ref_b = HostRef::new(addr_b.clone()).mesh_agent();
 
         let mut set = HostSet::new();
         set.insert(addr_a.to_string(), ref_a.clone());
@@ -2384,7 +2421,7 @@ mod tests {
         );
 
         // Client host entry overlaps with addr_a.
-        let client_ref = HostRef(addr_a.clone()).mesh_agent();
+        let client_ref = HostRef::new(addr_a.clone()).mesh_agent();
         let client_entries = vec![("client_addr".to_string(), client_ref)];
 
         let result = aggregate_hosts(&[&mesh], Some(client_entries));

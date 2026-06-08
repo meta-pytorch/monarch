@@ -23,10 +23,6 @@ use std::ptr;
 use std::ptr::NonNull;
 
 use futures::Future;
-use hyperactor::accum::Accumulator;
-use hyperactor::accum::CommReducer;
-use hyperactor::accum::ReducerFactory;
-use hyperactor::accum::ReducerSpec;
 use ndslice::extent;
 use ndslice::view;
 use ndslice::view::Ranked;
@@ -35,10 +31,37 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
+use crate::accum::Accumulator;
+use crate::accum::CommReducer;
+use crate::accum::ReducerSpec;
+
+/// Run-length encoding helpers used by [`ValueMesh`] and [`ValueOverlay`].
 pub mod rle;
 mod value_overlay;
 pub use value_overlay::BuildError;
 pub use value_overlay::ValueOverlay;
+
+/// Errors that occur while constructing a [`ValueMesh`].
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ValueMeshError {
+    /// The number of supplied values did not match the region's rank count.
+    #[error("invalid value mesh: expected {expected} ranks, but contains {actual} ranks")]
+    InvalidRankCardinality {
+        /// Required number of rank values for the target region.
+        expected: usize,
+        /// Actual number of rank values provided by the caller.
+        actual: usize,
+    },
+}
+
+impl From<view::InvalidCardinality> for ValueMeshError {
+    fn from(value: view::InvalidCardinality) -> Self {
+        Self::InvalidRankCardinality {
+            expected: value.expected,
+            actual: value.actual,
+        }
+    }
+}
 
 /// A mesh of values, one per rank in `region`.
 ///
@@ -202,14 +225,13 @@ impl<T> ValueMesh<T> {
     /// rank in `region` has a corresponding `T`.
     ///
     /// # Errors
-    /// Returns [`Error::InvalidRankCardinality`] if `ranks.len() !=
+    /// Returns [`ValueMeshError::InvalidRankCardinality`] if `ranks.len() !=
     /// region.num_ranks()`.
-    /// ```
     #[allow(clippy::result_large_err)]
-    pub(crate) fn new(region: Region, ranks: Vec<T>) -> crate::Result<Self> {
+    pub fn new(region: Region, ranks: Vec<T>) -> std::result::Result<Self, ValueMeshError> {
         let (actual, expected) = (ranks.len(), region.num_ranks());
         if actual != expected {
-            return Err(crate::Error::InvalidRankCardinality { expected, actual });
+            return Err(ValueMeshError::InvalidRankCardinality { expected, actual });
         }
         Ok(Self {
             region,
@@ -283,7 +305,7 @@ impl<T: Eq + Hash> ValueMesh<T> {
         region: Region,
         default: T,
         mut ranges: Vec<(Range<usize>, T)>,
-    ) -> crate::Result<Self> {
+    ) -> std::result::Result<Self, ValueMeshError> {
         let n = region.num_ranks();
 
         if n == 0 {
@@ -299,13 +321,13 @@ impl<T: Eq + Hash> ValueMesh<T> {
         // Validate: non-empty, in-bounds; then sort.
         for (r, _) in &ranges {
             if r.is_empty() {
-                return Err(crate::Error::InvalidRankCardinality {
+                return Err(ValueMeshError::InvalidRankCardinality {
                     expected: n,
                     actual: 0,
                 }); // TODO: this surfaces the error but its not a great fit
             }
             if r.end > n {
-                return Err(crate::Error::InvalidRankCardinality {
+                return Err(ValueMeshError::InvalidRankCardinality {
                     expected: n,
                     actual: r.end,
                 });
@@ -319,7 +341,7 @@ impl<T: Eq + Hash> ValueMesh<T> {
             let (b, _) = &w[1];
             if a.end > b.start {
                 // Overlap
-                return Err(crate::Error::InvalidRankCardinality {
+                return Err(ValueMeshError::InvalidRankCardinality {
                     expected: n,
                     actual: b.start, // TODO: this surfaces the error but is a bad fit
                 });
@@ -415,7 +437,7 @@ impl<T: Eq + Hash> ValueMesh<T> {
     /// // Internally compressed to three runs: [1, 1], [2, 2], [3]
     /// ```
     #[allow(clippy::result_large_err)]
-    pub fn from_dense(region: Region, values: Vec<T>) -> crate::Result<Self> {
+    pub fn from_dense(region: Region, values: Vec<T>) -> std::result::Result<Self, ValueMeshError> {
         let mut vm = Self::new(region, values)?;
         vm.compress_adjacent_in_place();
         Ok(vm)
@@ -515,6 +537,28 @@ impl<T: 'static> view::Ranked for ValueMesh<T> {
     }
 }
 
+impl<T: 'static> ValueMesh<T> {
+    /// Look up the value at `base_rank` — the rank in the **base space**
+    /// of this mesh's region, not the linearized ordinal that
+    /// [`view::Ranked::get`] takes.
+    ///
+    /// For a full region the two coincide; for a sliced sub-region they
+    /// differ — e.g. a row slice over base ranks `{2, 3, 4, 5}` has
+    /// ordinals `{0, 1, 2, 3}`. This resolves `base_rank` through the
+    /// region's geometry (`point_of_base_rank` → ordinal) and then
+    /// indexes, so callers address by the stable base-space rank and
+    /// never touch the ordinal.
+    ///
+    /// Returns `None` if `base_rank` is not contained in this region.
+    pub fn get_by_base_rank(&self, base_rank: usize) -> Option<&T> {
+        if !self.region.slice().contains(base_rank) {
+            return None;
+        }
+        let ordinal = self.region.point_of_base_rank(base_rank).ok()?.rank();
+        self.get(ordinal)
+    }
+}
+
 impl<T: Clone + 'static> view::RankedSliceable for ValueMesh<T> {
     fn sliced(&self, region: Region) -> Self {
         debug_assert!(region.is_subset(self.region()), "sliced: not a subset");
@@ -534,7 +578,7 @@ impl<T: Clone + 'static> view::RankedSliceable for ValueMesh<T> {
 }
 
 impl<T> view::BuildFromRegion<T> for ValueMesh<T> {
-    type Error = crate::Error;
+    type Error = ValueMeshError;
 
     fn build_dense(region: Region, values: Vec<T>) -> Result<Self, Self::Error> {
         Self::new(region, values)
@@ -546,7 +590,7 @@ impl<T> view::BuildFromRegion<T> for ValueMesh<T> {
 }
 
 impl<T> view::BuildFromRegionIndexed<T> for ValueMesh<T> {
-    type Error = crate::Error;
+    type Error = ValueMeshError;
 
     fn build_indexed(
         region: Region,
@@ -702,7 +746,7 @@ impl<T> view::BuildFromRegionIndexed<T> for ValueMesh<T> {
         for (rank, value) in pairs {
             // Single bounds check up front.
             if rank >= guard.n_elems {
-                return Err(crate::Error::InvalidRankCardinality {
+                return Err(ValueMeshError::InvalidRankCardinality {
                     expected: guard.n_elems,
                     actual: rank + 1,
                 });
@@ -757,7 +801,7 @@ impl<T> view::BuildFromRegionIndexed<T> for ValueMesh<T> {
 
         if filled != n {
             // Missing ranks: actual = number of distinct ranks seen.
-            return Err(crate::Error::InvalidRankCardinality {
+            return Err(ValueMeshError::InvalidRankCardinality {
                 expected: n,
                 actual: filled,
             });
@@ -946,7 +990,7 @@ impl<T> ValueMesh<T> {
 ///   ValueMesh.
 ///
 /// The accumulator's state is a [`ValueMesh<T>`] and its updates are
-/// [`ValueOverlay<T>`] instances. On each update, the overlay’s
+/// [`ValueOverlay<T>`] instances. On each update, the overlay's
 /// normalized runs are merged into the mesh using
 /// [`ValueMesh::merge_from_overlay`] with right-wins semantics.
 ///
@@ -987,9 +1031,16 @@ where
 /// This reducer carries no state; it exists only to bind a concrete
 /// type parameter `T` to the [`CommReducer`] implementation below.
 /// Reduction is purely functional and uses right-wins merge semantics
-/// defined in [`merge_value_runs`].
+/// defined in [`rle::merge_value_runs`].
 #[derive(Named)]
-struct ValueOverlayReducer<T>(std::marker::PhantomData<T>);
+pub struct ValueOverlayReducer<T>(PhantomData<T>);
+
+impl<T> ValueOverlayReducer<T> {
+    /// Create a reducer for sparse [`ValueOverlay<T>`] updates.
+    pub fn new() -> Self {
+        Self(PhantomData)
+    }
+}
 
 /// Reducer for sparse overlay updates.
 ///
@@ -1008,22 +1059,11 @@ where
 
     // Last-writer-wins merge of two sparse overlays.
     fn reduce(&self, left: Self::Update, right: Self::Update) -> anyhow::Result<Self::Update> {
-        // 1) Merge runs with right precedence.
-        let merged = crate::value_mesh::rle::merge_value_runs(
+        let merged = rle::merge_value_runs(
             left.runs().cloned().collect(),
             right.runs().cloned().collect(),
         );
-        // 2) Re-normalize to an overlay (validates, coalesces).
         Ok(ValueOverlay::try_from_runs(merged)?)
-    }
-}
-
-// register for concrete types:
-
-hyperactor::internal_macro_support::inventory::submit! {
-    ReducerFactory {
-        typehash_f: <ValueOverlayReducer<crate::resource::Status> as Named>::typehash,
-        builder_f: |_| Ok(Box::new(ValueOverlayReducer::<crate::resource::Status>(PhantomData))),
     }
 }
 
@@ -1051,7 +1091,10 @@ mod tests {
     use ndslice::view::ViewExt;
     use proptest::prelude::*;
     use proptest::strategy::ValueTree;
+    use serde::Deserialize;
+    use serde::Serialize;
     use serde_json;
+    use typeuri::Named;
 
     use super::*;
 
@@ -1065,16 +1108,37 @@ mod tests {
     }
 
     #[test]
+    fn get_by_base_rank_resolves_through_region_geometry() {
+        // Full region: base rank == ordinal, so get_by_base_rank agrees
+        // with positional get; out-of-region base ranks return None.
+        let region: Region = extent!(row = 4, col = 2).into();
+        let mesh: ValueMesh<i32> =
+            ValueMesh::new(region.clone(), (0..8).map(|i| i * 10).collect()).unwrap();
+        assert_eq!(mesh.get_by_base_rank(0), Some(&0));
+        assert_eq!(mesh.get_by_base_rank(5), Some(&50));
+        assert_eq!(mesh.get_by_base_rank(8), None);
+
+        // Slice rows 1..3 -> base ranks {2, 3, 4, 5}, ordinals {0, 1, 2, 3};
+        // the sub-mesh carries values {20, 30, 40, 50}.
+        let sub = mesh.sliced(region.range("row", ndslice::Range(1, Some(3), 1)).unwrap());
+
+        // Addressed by BASE rank, which is the whole point:
+        assert_eq!(sub.get_by_base_rank(2), Some(&20)); // base 2 -> ordinal 0
+        assert_eq!(sub.get_by_base_rank(5), Some(&50)); // base 5 -> ordinal 3
+        assert_eq!(sub.get_by_base_rank(0), None); // below the slice
+        assert_eq!(sub.get_by_base_rank(6), None); // in the parent, not the slice
+
+        // Contrast: positional get still indexes by ordinal.
+        assert_eq!(sub.get(0), Some(&20)); // ordinal 0 == base rank 2
+    }
+
+    #[test]
     fn value_mesh_new_len_mismatch_is_error() {
         let region: Region = extent!(replica = 2, gpu = 3).into();
         let err = ValueMesh::new(region, vec![0_i32; 5]).unwrap_err();
-        match err {
-            crate::Error::InvalidRankCardinality { expected, actual } => {
-                assert_eq!(expected, 6);
-                assert_eq!(actual, 5);
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
+        let ValueMeshError::InvalidRankCardinality { expected, actual } = err;
+        assert_eq!(expected, 6);
+        assert_eq!(actual, 5);
     }
 
     #[test]
@@ -1128,26 +1192,18 @@ mod tests {
         let region: Region = extent!(x = 2, y = 3).into();
         let err = (0..5).collect_mesh::<ValueMesh<_>>(region).unwrap_err();
 
-        match err {
-            crate::Error::InvalidRankCardinality { expected, actual } => {
-                assert_eq!(expected, 6);
-                assert_eq!(actual, 5);
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
+        let ValueMeshError::InvalidRankCardinality { expected, actual } = err;
+        assert_eq!(expected, 6);
+        assert_eq!(actual, 5);
     }
 
     #[test]
     fn collect_mesh_len_too_long_is_error() {
         let region: Region = extent!(x = 2, y = 3).into();
         let err = (0..7).collect_mesh::<ValueMesh<_>>(region).unwrap_err();
-        match err {
-            crate::Error::InvalidRankCardinality { expected, actual } => {
-                assert_eq!(expected, 6);
-                assert_eq!(actual, 7);
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
+        let ValueMeshError::InvalidRankCardinality { expected, actual } = err;
+        assert_eq!(expected, 6);
+        assert_eq!(actual, 7);
     }
 
     #[test]
@@ -1180,13 +1236,9 @@ mod tests {
             .collect_exact_mesh::<ValueMesh<_>>(region)
             .unwrap_err();
 
-        match err {
-            crate::Error::InvalidRankCardinality { expected, actual } => {
-                assert_eq!(expected, 6);
-                assert_eq!(actual, 5);
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
+        let ValueMeshError::InvalidRankCardinality { expected, actual } = err;
+        assert_eq!(expected, 6);
+        assert_eq!(actual, 5);
     }
 
     #[test]
@@ -1196,13 +1248,9 @@ mod tests {
             .collect_exact_mesh::<ValueMesh<_>>(region)
             .unwrap_err();
 
-        match err {
-            crate::Error::InvalidRankCardinality { expected, actual } => {
-                assert_eq!(expected, 6);
-                assert_eq!(actual, 7);
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
+        let ValueMeshError::InvalidRankCardinality { expected, actual } = err;
+        assert_eq!(expected, 6);
+        assert_eq!(actual, 7);
     }
 
     #[test]
@@ -1244,13 +1292,9 @@ mod tests {
             .collect_indexed::<ValueMesh<_>>(region)
             .unwrap_err();
 
-        match err {
-            crate::Error::InvalidRankCardinality { expected, actual } => {
-                assert_eq!(expected, 4);
-                assert_eq!(actual, 3); // Distinct ranks seen.
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
+        let ValueMeshError::InvalidRankCardinality { expected, actual } = err;
+        assert_eq!(expected, 4);
+        assert_eq!(actual, 3); // Distinct ranks seen.
     }
 
     #[test]
@@ -1262,13 +1306,9 @@ mod tests {
             .collect_indexed::<ValueMesh<_>>(region)
             .unwrap_err();
 
-        match err {
-            crate::Error::InvalidRankCardinality { expected, actual } => {
-                assert_eq!(expected, 4);
-                assert_eq!(actual, 5); // offending index + 1
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
+        let ValueMeshError::InvalidRankCardinality { expected, actual } = err;
+        assert_eq!(expected, 4);
+        assert_eq!(actual, 5); // offending index + 1
     }
 
     #[test]
@@ -1289,7 +1329,7 @@ mod tests {
     fn build_value_mesh_indexed<T>(
         region: Region,
         pairs: impl IntoIterator<Item = (usize, T)>,
-    ) -> crate::Result<ValueMesh<T>> {
+    ) -> std::result::Result<ValueMesh<T>, ValueMeshError> {
         let n = region.num_ranks();
 
         // Buffer for exactly n slots; fill by rank.
@@ -1301,7 +1341,7 @@ mod tests {
                 // Out-of-bounds: report `expected` = n, `actual` =
                 // offending index + 1; i.e. number of ranks implied
                 // so far.
-                return Err(crate::Error::InvalidRankCardinality {
+                return Err(ValueMeshError::InvalidRankCardinality {
                     expected: n,
                     actual: rank + 1,
                 });
@@ -1314,7 +1354,7 @@ mod tests {
 
         if filled != n {
             // Missing ranks: actual = number of distinct ranks seen.
-            return Err(crate::Error::InvalidRankCardinality {
+            return Err(ValueMeshError::InvalidRankCardinality {
                 expected: n,
                 actual: filled,
             });

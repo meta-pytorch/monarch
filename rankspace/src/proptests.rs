@@ -1,0 +1,632 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+use std::collections::BTreeSet;
+use std::collections::HashSet;
+use std::num::NonZeroUsize;
+use std::ops::RangeInclusive;
+
+use proptest::prelude::*;
+
+use crate::Coord;
+use crate::Dim;
+use crate::DimRange;
+use crate::Extent;
+use crate::Rank;
+use crate::RankMask;
+use crate::RankRect;
+use crate::RankSpace;
+use crate::view::BaseView;
+use crate::view::CompactView;
+
+fn gen_extent(dims: RangeInclusive<usize>, max_size: usize) -> impl Strategy<Value = Extent> {
+    prop::collection::vec(1..=max_size, dims).prop_map(|sizes| {
+        Extent::new(
+            sizes
+                .into_iter()
+                .enumerate()
+                .map(|(index, size)| Dim::new(format!("d{index}"), size))
+                .collect(),
+        )
+        .expect("generated dimensions are valid")
+    })
+}
+
+fn gen_rect(dims: RangeInclusive<usize>, max_size: usize) -> impl Strategy<Value = RankRect> {
+    gen_extent(dims, max_size)
+        .prop_map(|extent| RankRect::new(extent).expect("generated extent is valid"))
+}
+
+fn gen_scaled_rect(
+    dims: RangeInclusive<usize>,
+    max_size: usize,
+    max_offset: usize,
+    max_stride_scale: usize,
+) -> impl Strategy<Value = RankRect> {
+    (
+        gen_extent(dims, max_size),
+        0..=max_offset,
+        1..=max_stride_scale,
+    )
+        .prop_map(|(extent, offset, stride_scale)| {
+            let strides = row_major_strides(extent.sizes())
+                .into_iter()
+                .map(|stride| stride * stride_scale)
+                .collect();
+            RankRect::affine(extent, Rank(offset), strides).expect("generated strides are valid")
+        })
+}
+
+fn gen_embeddable_rect_pair() -> impl Strategy<Value = (RankRect, RankRect)> {
+    gen_scaled_rect(0..=4, 4, 32, 4).prop_flat_map(|parent| {
+        let cardinality = parent.cardinality();
+        (0..cardinality).prop_flat_map(move |start| {
+            let parent = parent.clone();
+            (start + 1..=cardinality).prop_flat_map(move |end| {
+                let parent = parent.clone();
+                (1..=4usize).prop_map(move |step| {
+                    let local_len = (end - start).div_ceil(step);
+                    let local = RankRect::affine(
+                        Extent::new(vec![Dim::new("i", local_len)]).unwrap(),
+                        Rank(start),
+                        vec![step],
+                    )
+                    .unwrap();
+                    (parent.clone(), local)
+                })
+            })
+        })
+    })
+}
+
+fn gen_movable_rect_pattern() -> impl Strategy<Value = (RankRect, RankRect, RankRect)> {
+    gen_embeddable_rect_pair().prop_flat_map(|(parent, local)| {
+        (Just((parent, local)), 0..=32usize, 1..=4usize).prop_map(
+            |((parent, local), offset, stride_scale)| {
+                let target = scaled_like(&parent, offset, stride_scale);
+                (parent, local, target)
+            },
+        )
+    })
+}
+
+fn gen_sparse_space(
+    dims: RangeInclusive<usize>,
+    max_size: usize,
+) -> impl Strategy<Value = (RankSpace, BTreeSet<Rank>)> {
+    gen_rect(dims, max_size)
+        .prop_flat_map(|rect| {
+            let ranks = rect.iter_ranks().collect::<Vec<_>>();
+            let max_occlusions = ranks.len().min(16);
+            let rank_strategy = prop::sample::subsequence(ranks, 0..=max_occlusions);
+            (Just(rect), rank_strategy)
+        })
+        .prop_map(|(rect, occluded)| {
+            let occluded = occluded.into_iter().collect::<BTreeSet<_>>();
+            let space = RankSpace::dense(rect).without(RankMask::ranks(occluded.iter().copied()));
+            (space, occluded)
+        })
+}
+
+fn gen_sparse_scaled_space(
+    dims: RangeInclusive<usize>,
+    max_size: usize,
+) -> impl Strategy<Value = RankSpace> {
+    gen_scaled_rect(dims, max_size, 32, 4)
+        .prop_flat_map(|rect| {
+            let ranks = rect.iter_ranks().collect::<Vec<_>>();
+            let max_occlusions = ranks.len().min(16);
+            let rank_strategy = prop::sample::subsequence(ranks, 0..=max_occlusions);
+            (Just(rect), rank_strategy)
+        })
+        .prop_map(|(rect, occluded)| RankSpace::dense(rect).without(RankMask::ranks(occluded)))
+}
+
+fn gen_embeddable_space_pair() -> impl Strategy<Value = (RankSpace, RankSpace)> {
+    gen_embeddable_rect_pair()
+        .prop_flat_map(|(parent, local)| {
+            let parent_ranks = parent.iter_ranks().collect::<Vec<_>>();
+            let local_ranks = local.iter_ranks().collect::<Vec<_>>();
+            let max_parent_occlusions = parent_ranks.len().min(16);
+            let max_local_occlusions = local_ranks.len().min(16);
+            let parent_occlusion =
+                prop::sample::subsequence(parent_ranks, 0..=max_parent_occlusions);
+            let local_occlusion = prop::sample::subsequence(local_ranks, 0..=max_local_occlusions);
+            (Just((parent, local)), parent_occlusion, local_occlusion)
+        })
+        .prop_map(|((parent, local), parent_occlusion, local_occlusion)| {
+            (
+                RankSpace::dense(parent).without(RankMask::ranks(parent_occlusion)),
+                RankSpace::dense(local).without(RankMask::ranks(local_occlusion)),
+            )
+        })
+}
+
+fn gen_movable_space_pattern() -> impl Strategy<Value = (RankSpace, RankSpace, RankSpace)> {
+    gen_embeddable_space_pair().prop_flat_map(|(parent, local)| {
+        (Just((parent, local)), 0..=32usize, 1..=4usize).prop_map(
+            |((parent, local), offset, stride_scale)| {
+                let target = RankSpace::dense(scaled_like(parent.base(), offset, stride_scale));
+                (parent, local, target)
+            },
+        )
+    })
+}
+
+fn gen_selection(
+    max_dims: usize,
+    max_size: usize,
+    max_step: usize,
+) -> impl Strategy<Value = (RankRect, usize, usize, usize, usize)> {
+    gen_rect(1..=max_dims, max_size).prop_flat_map(move |rect| {
+        let dims = rect.extent().dims().to_vec();
+        let dim_count = dims.len();
+        (0..dim_count).prop_flat_map(move |dim_index| {
+            let rect = rect.clone();
+            let dim_size = dims[dim_index].size();
+            (0..dim_size).prop_flat_map(move |start| {
+                let rect = rect.clone();
+                (start + 1..=dim_size).prop_flat_map(move |end| {
+                    let rect = rect.clone();
+                    (1..=max_step).prop_map(move |step| (rect.clone(), dim_index, start, end, step))
+                })
+            })
+        })
+    })
+}
+
+fn coords_for(extent: &Extent) -> Vec<Vec<usize>> {
+    (0..extent.cardinality())
+        .map(|index| coord_at(index, extent.sizes()).expect("index is in bounds"))
+        .collect()
+}
+
+fn coord_at(index: usize, sizes: impl IntoIterator<Item = usize>) -> Option<Vec<usize>> {
+    let sizes = sizes.into_iter().collect::<Vec<_>>();
+    let cardinality = sizes.iter().product::<usize>();
+    if index >= cardinality {
+        return None;
+    }
+
+    let mut rest = index;
+    let mut coord = vec![0; sizes.len()];
+    for (axis, size) in sizes.iter().copied().enumerate().rev() {
+        coord[axis] = rest % size;
+        rest /= size;
+    }
+    Some(coord)
+}
+
+fn rank_set(rect: &RankRect) -> BTreeSet<Rank> {
+    rect.iter_ranks().collect()
+}
+
+fn visible_rank_set(space: &RankSpace) -> BTreeSet<Rank> {
+    space.iter_ranks().collect()
+}
+
+fn scaled_like(rect: &RankRect, offset: usize, stride_scale: usize) -> RankRect {
+    let strides = row_major_strides(rect.extent().sizes())
+        .into_iter()
+        .map(|stride| stride * stride_scale)
+        .collect();
+    RankRect::affine(rect.extent().clone(), Rank(offset), strides)
+        .expect("generated target parent is valid")
+}
+
+fn row_major_strides(sizes: impl IntoIterator<Item = usize>) -> Vec<usize> {
+    let sizes = sizes.into_iter().collect::<Vec<_>>();
+    let mut strides = vec![1; sizes.len()];
+    for index in (0..sizes.len().saturating_sub(1)).rev() {
+        strides[index] = strides[index + 1] * sizes[index + 1];
+    }
+    strides
+}
+
+proptest! {
+    #[test]
+    fn rank_rect_ranks_are_injective(rect in gen_rect(1..=4, 8)) {
+        let mut seen = HashSet::new();
+
+        for coord in coords_for(rect.extent()) {
+            let rank = rect.rank_of(&coord).expect("generated coordinate is valid");
+            prop_assert!(
+                seen.insert(rank),
+                "duplicate rank {:?} for coordinate {:?}",
+                rank,
+                coord
+            );
+        }
+    }
+
+    #[test]
+    fn rank_rect_row_major_ranks_are_monotonic(rect in gen_rect(1..=4, 8)) {
+        let mut last_rank = None;
+
+        for rank in rect.iter_ranks() {
+            if let Some(prev) = last_rank {
+                prop_assert!(
+                    prev < rank,
+                    "rank order is not monotonic: {:?} >= {:?}",
+                    prev,
+                    rank
+                );
+            }
+            last_rank = Some(rank);
+        }
+    }
+
+    #[test]
+    fn rank_rect_ranks_stay_in_dense_bounds(rect in gen_rect(1..=4, 8)) {
+        for rank in rect.iter_ranks() {
+            prop_assert!(
+                rank.get() < rect.cardinality(),
+                "rank {:?} is outside dense cardinality {}",
+                rank,
+                rect.cardinality()
+            );
+        }
+    }
+
+    #[test]
+    fn rank_rect_rank_to_coord_roundtrip(rect in gen_rect(0..=4, 8)) {
+        for rank in rect.iter_ranks() {
+            let coord = rect.coord_of(rank).expect("iterated rank is contained");
+            prop_assert_eq!(
+                rect.rank_of(coord.indices()),
+                Some(rank),
+                "rank/coordinate roundtrip failed for {:?}",
+                rank
+            );
+        }
+    }
+
+    #[test]
+    fn rank_rect_coord_to_rank_roundtrip(rect in gen_rect(0..=4, 8)) {
+        for coord in coords_for(rect.extent()) {
+            let rank = rect.rank_of(&coord).expect("generated coordinate is valid");
+            prop_assert_eq!(
+                rect.coord_of(rank),
+                Some(Coord::new(coord.clone())),
+                "coordinate/rank roundtrip failed for {:?}",
+                coord
+            );
+        }
+    }
+
+    #[test]
+    fn select_preserves_base_rank_embedding(
+        (rect, dim_index, start, end, step) in gen_selection(4, 8, 4)
+    ) {
+        let dim_name = rect.extent().dims()[dim_index].name().to_string();
+        let Ok(selected) = rect.select(
+            &dim_name,
+            DimRange::new(start, Some(end), NonZeroUsize::new(step).unwrap()),
+        ) else {
+            return Ok(());
+        };
+
+        for coord in coords_for(selected.extent()) {
+            let mut base_coord = coord.clone();
+            base_coord[dim_index] = start + coord[dim_index] * step;
+            prop_assert!(
+                base_coord[dim_index] < end,
+                "selected coordinate projects outside source range"
+            );
+            prop_assert_eq!(
+                selected.rank_of(&coord),
+                rect.rank_of(&base_coord),
+                "selected coordinate did not preserve base rank"
+            );
+        }
+    }
+
+    #[test]
+    fn fix_preserves_base_rank_embedding(rect in gen_rect(1..=4, 8)) {
+        for dim_index in 0..rect.extent().len() {
+            let dim = rect.extent().dims()[dim_index].clone();
+            for fixed_index in 0..dim.size() {
+                let fixed = rect
+                    .fix(dim.name(), fixed_index)
+                    .expect("generated fixed index is valid");
+
+                for coord in coords_for(fixed.extent()) {
+                    let mut base_coord = coord.clone();
+                    base_coord.insert(dim_index, fixed_index);
+                    prop_assert_eq!(
+                        fixed.rank_of(&coord),
+                        rect.rank_of(&base_coord),
+                        "fixed coordinate did not preserve base rank"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rank_rect_intersects_matches_materialized_sets(
+        left in gen_scaled_rect(0..=4, 4, 32, 4),
+        right in gen_scaled_rect(0..=4, 4, 32, 4),
+    ) {
+        let left_ranks = rank_set(&left);
+        let right_ranks = rank_set(&right);
+        let expected = left_ranks.iter().any(|rank| right_ranks.contains(rank));
+
+        prop_assert_eq!(left.intersects(&right), expected);
+        prop_assert_eq!(left.intersects(&right), right.intersects(&left));
+    }
+
+    #[test]
+    fn rank_rect_contains_rect_matches_materialized_sets(
+        outer in gen_scaled_rect(0..=4, 4, 32, 4),
+        inner in gen_scaled_rect(0..=4, 4, 32, 4),
+    ) {
+        let outer_ranks = rank_set(&outer);
+        let inner_ranks = rank_set(&inner);
+
+        prop_assert_eq!(outer.contains_rect(&inner), inner_ranks.is_subset(&outer_ranks));
+    }
+
+    #[test]
+    fn rank_rect_bounds_match_materialized_min_and_max(
+        rect in gen_scaled_rect(0..=4, 4, 32, 4),
+    ) {
+        let ranks = rank_set(&rect);
+        let min = *ranks.iter().next().expect("generated rectangles are non-empty");
+        let max = *ranks.iter().next_back().expect("generated rectangles are non-empty");
+        let bounds = rect.rank_bounds().expect("generated rectangles are non-empty");
+
+        prop_assert_eq!(bounds.start(), min);
+        prop_assert_eq!(bounds.end(), max.get().checked_add(1).map(Rank));
+        for rank in ranks {
+            prop_assert!(bounds.start() <= rank);
+            prop_assert!(bounds.end().is_none_or(|end| rank < end));
+        }
+    }
+
+    #[test]
+    fn rank_rect_embed_matches_materialized_parent_image(
+        (parent, local) in gen_embeddable_rect_pair(),
+    ) {
+        let embedded = parent.embed(&local).expect("generated local rect is embeddable");
+        let expected = local
+            .iter_ranks()
+            .map(|rank| parent.rank_at(rank.get()).expect("local rank is in parent"))
+            .collect::<BTreeSet<_>>();
+
+        prop_assert_eq!(rank_set(&embedded), expected);
+        prop_assert!(parent.contains_rect(&embedded));
+    }
+
+    #[test]
+    fn rank_rect_project_matches_materialized_parent_indices(
+        (parent, local) in gen_embeddable_rect_pair(),
+    ) {
+        let embedded = parent.embed(&local).expect("generated local rect is embeddable");
+        let projected = parent.project(&embedded).expect("embedded rect is projectable");
+        let expected = embedded
+            .iter_ranks()
+            .map(|rank| Rank(parent.local_index_of(rank).expect("embedded rank is in parent")))
+            .collect::<BTreeSet<_>>();
+
+        prop_assert_eq!(rank_set(&projected), expected);
+        prop_assert_eq!(parent.embed(&projected), Ok(embedded));
+    }
+
+    #[test]
+    fn rank_rect_project_embed_roundtrips(
+        (parent, local) in gen_embeddable_rect_pair(),
+    ) {
+        let embedded = parent.embed(&local).expect("generated local rect is embeddable");
+        let projected = parent.project(&embedded).expect("embedded rect is projectable");
+
+        prop_assert_eq!(rank_set(&projected), rank_set(&local));
+        prop_assert_eq!(parent.embed(&projected), Ok(embedded));
+    }
+
+    #[test]
+    fn rank_rect_projected_pattern_embeds_in_moved_parent(
+        (parent, local, target) in gen_movable_rect_pattern(),
+    ) {
+        let embedded = parent.embed(&local).expect("generated local rect is embeddable");
+        let pattern = parent.project(&embedded).expect("embedded rect is projectable");
+        let moved = target.embed(&pattern).expect("pattern fits target parent");
+        let expected = pattern
+            .iter_ranks()
+            .map(|rank| target.rank_at(rank.get()).expect("pattern rank is in target"))
+            .collect::<BTreeSet<_>>();
+
+        prop_assert_eq!(rank_set(&moved), expected);
+    }
+
+    #[test]
+    fn sparse_space_iterates_base_ranks_minus_occlusions(
+        (space, occluded) in gen_sparse_space(1..=4, 8)
+    ) {
+        let visible = space.iter_ranks().collect::<BTreeSet<_>>();
+        let expected = space
+            .base()
+            .iter_ranks()
+            .filter(|rank| !occluded.contains(rank))
+            .collect::<BTreeSet<_>>();
+
+        prop_assert_eq!(visible, expected);
+        for rank in space.base().iter_ranks() {
+            prop_assert_eq!(
+                space.contains_rank(rank),
+                !occluded.contains(&rank),
+                "sparse membership mismatch for {:?}",
+                rank
+            );
+        }
+    }
+
+    #[test]
+    fn sparse_space_rank_local_index_roundtrip(
+        (space, _) in gen_sparse_space(1..=4, 8)
+    ) {
+        for (index, rank) in space.iter_ranks().enumerate() {
+            prop_assert_eq!(space.rank_at(index), Some(rank));
+            prop_assert_eq!(space.local_index_of(rank), Some(index));
+        }
+        prop_assert_eq!(space.rank_at(space.cardinality()), None);
+    }
+
+    #[test]
+    fn dense_space_fast_path_matches_iteration(rect in gen_scaled_rect(1..=4, 8, 32, 4)) {
+        // Theorem: for every rect, an unoccluded `RankSpace::dense(rect)` is
+        // observationally equivalent to the general iteration path. Over the
+        // visible ranks in `iter_ranks()` order:
+        //   - `cardinality()` equals the number of visible ranks;
+        //   - `rank_at(i)` is the i-th visible rank, with `local_index_of` its
+        //     inverse (the index <-> rank round-trip holds);
+        //   - `rank_at(cardinality())` is `None` (one past the last index).
+        // I.e. the O(ndim) base-delegating shortcut returns exactly the O(N)
+        // iteration result.
+        let space = RankSpace::dense(rect);
+
+        prop_assert_eq!(space.cardinality(), space.iter_ranks().count());
+        for (index, rank) in space.iter_ranks().enumerate() {
+            prop_assert_eq!(space.rank_at(index), Some(rank));
+            prop_assert_eq!(space.local_index_of(rank), Some(index));
+        }
+        prop_assert_eq!(space.rank_at(space.cardinality()), None);
+    }
+
+    #[test]
+    fn base_and_compact_views_agree_on_visible_ranks(
+        (space, _) in gen_sparse_space(1..=4, 8)
+    ) {
+        let base_len = space
+            .base()
+            .iter_ranks()
+            .map(Rank::get)
+            .max()
+            .map_or(0, |rank| rank + 1);
+        let base_values = (0..base_len).collect::<Vec<_>>();
+        let compact_values = space
+            .iter_ranks()
+            .map(Rank::get)
+            .collect::<Vec<_>>();
+
+        let base = BaseView::new(space.clone(), base_values);
+        let compact = CompactView::new(space.clone(), compact_values)
+            .expect("compact values match visible cardinality");
+
+        for rank in space.iter_ranks() {
+            prop_assert_eq!(base.get_rank(rank), compact.get_rank(rank));
+        }
+    }
+
+    #[test]
+    fn rank_space_intersects_matches_materialized_sets(
+        (left, _) in gen_sparse_space(0..=4, 4),
+        (right, _) in gen_sparse_space(0..=4, 4),
+    ) {
+        let left_ranks = visible_rank_set(&left);
+        let right_ranks = visible_rank_set(&right);
+        let expected = left_ranks.iter().any(|rank| right_ranks.contains(rank));
+
+        prop_assert_eq!(left.intersects(&right), expected);
+        prop_assert_eq!(left.intersects(&right), right.intersects(&left));
+    }
+
+    #[test]
+    fn rank_space_contains_space_matches_materialized_sets(
+        (outer, _) in gen_sparse_space(0..=4, 4),
+        (inner, _) in gen_sparse_space(0..=4, 4),
+    ) {
+        let outer_ranks = visible_rank_set(&outer);
+        let inner_ranks = visible_rank_set(&inner);
+
+        prop_assert_eq!(outer.contains_space(&inner), inner_ranks.is_subset(&outer_ranks));
+    }
+
+    #[test]
+    fn rank_space_bounds_match_materialized_visible_min_and_max(
+        space in gen_sparse_scaled_space(0..=4, 4),
+    ) {
+        let ranks = visible_rank_set(&space);
+
+        if ranks.is_empty() {
+            prop_assert_eq!(space.rank_bounds(), None);
+        } else {
+            let min = *ranks.iter().next().unwrap();
+            let max = *ranks.iter().next_back().unwrap();
+            let bounds = space.rank_bounds().expect("visible ranks are non-empty");
+
+            prop_assert_eq!(bounds.start(), min);
+            prop_assert_eq!(bounds.end(), max.get().checked_add(1).map(Rank));
+            for rank in ranks {
+                prop_assert!(bounds.start() <= rank);
+                prop_assert!(bounds.end().is_none_or(|end| rank < end));
+            }
+        }
+    }
+
+    #[test]
+    fn rank_space_embed_matches_materialized_parent_image(
+        (parent, local) in gen_embeddable_space_pair(),
+    ) {
+        let embedded = parent.embed(&local).expect("generated local space is embeddable");
+        let expected = local
+            .iter_ranks()
+            .filter_map(|rank| parent.base().rank_at(rank.get()))
+            .filter(|rank| parent.contains_rank(*rank))
+            .collect::<BTreeSet<_>>();
+
+        prop_assert_eq!(visible_rank_set(&embedded), expected);
+    }
+
+    #[test]
+    fn rank_space_project_matches_materialized_parent_indices(
+        (parent, local) in gen_embeddable_space_pair(),
+    ) {
+        let embedded = parent.embed(&local).expect("generated local space is embeddable");
+        let projected = parent.project(&embedded).expect("embedded space is projectable");
+        let expected = local
+            .base()
+            .iter_ranks()
+            .filter(|rank| local.contains_rank(*rank))
+            .filter(|rank| {
+                parent
+                    .base()
+                    .rank_at(rank.get())
+                    .is_some_and(|base_rank| parent.contains_rank(base_rank))
+            })
+            .collect::<BTreeSet<_>>();
+
+        prop_assert_eq!(visible_rank_set(&projected), expected);
+    }
+
+    #[test]
+    fn rank_space_project_embed_roundtrips_visible_ranks(
+        (parent, local) in gen_embeddable_space_pair(),
+    ) {
+        let embedded = parent.embed(&local).expect("generated local space is embeddable");
+        let projected = parent.project(&embedded).expect("embedded space is projectable");
+        let reembedded = parent.embed(&projected).expect("projected space is embeddable");
+
+        prop_assert_eq!(visible_rank_set(&reembedded), visible_rank_set(&embedded));
+    }
+
+    #[test]
+    fn rank_space_projected_pattern_embeds_in_moved_parent(
+        (parent, local, target) in gen_movable_space_pattern(),
+    ) {
+        let embedded = parent.embed(&local).expect("generated local space is embeddable");
+        let pattern = parent.project(&embedded).expect("embedded space is projectable");
+        let moved = target.embed(&pattern).expect("pattern fits target parent");
+        let expected = pattern
+            .iter_ranks()
+            .filter_map(|rank| target.base().rank_at(rank.get()))
+            .collect::<BTreeSet<_>>();
+
+        prop_assert_eq!(visible_rank_set(&moved), expected);
+    }
+}

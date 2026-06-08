@@ -65,6 +65,7 @@ class HostMesh:
         ...
 
     def __reduce__(self) -> Any: ...
+    # pyrefly: ignore [bad-override]
     def __eq__(self, other: "HostMesh") -> bool: ...
     def shutdown(self, instance: Instance) -> PythonTask[None]:
         """
@@ -124,41 +125,18 @@ def bootstrap_host(
     via: str | None = None,
 ) -> PythonTask[tuple[HostMesh, ProcMesh, Instance]]:
     """
-    Bootstrap a host mesh in this process, returning ``(host mesh,
-    proc mesh, client instance)``.
+    Bootstrap a host mesh in this process, returning the host mesh,
+    proc mesh, and client instance.
 
     Arguments:
-        bootstrap_cmd: The bootstrap command to use to bootstrap the
-            host. ``None`` uses the current process's bootstrap command.
-        via: Optional ZMQ-style address of a remote host's duplex
-            server. When set, the local host's gateway is attached to
-            that remote gateway: outbound traffic to unknown
-            destinations is forwarded over the duplex, and inbound
-            traffic from the duplex is delivered into local procs. Use
-            this when this process cannot be reached directly by the
-            procs it talks to — typically a developer machine driving
-            a job whose hosts live inside a Kubernetes cluster.
-
-    Returns:
-        A tuple ``(HostMesh, ProcMesh, Instance)``:
-
-        * the local host mesh (this machine),
-        * the local ``ProcMesh`` on this host,
-        * the root client actor instance on the local proc mesh.
-
-    Reachability and identity (when ``via`` is set):
-        * ``this_host()`` always names the actual current host (this
-          machine), regardless of how its procs are served. ``via``
-          controls how procs are *reached*, not the host's identity.
-        * Outbound traffic to destinations the local gateway does not
-          know is forwarded through the duplex to the remote host;
-          inbound traffic from the duplex is routed to local procs by
-          the gateway.
-        * To drive procs on the *remote* (attach-target) host instead,
-          use a separate ``HostMesh`` (e.g., one returned by a job).
-
-    Shutdown is local-only: tearing down this client does not stop the
-    remote host.
+    - `bootstrap_cmd`: The bootstrap command to use to bootstrap the host.
+    - `via`: Optional ZMQ-style address of a remote host's duplex server.
+      When set, the local host's gateway is attached to that remote
+      gateway: outbound traffic to unknown destinations is forwarded over
+      the duplex, and inbound traffic from the duplex is delivered into
+      local procs. `this_host()` still names the current machine; `via`
+      only controls how this host's procs are reached. Supplied via the
+      `attach` entrypoint.
     """
     ...
 

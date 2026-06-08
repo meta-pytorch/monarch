@@ -19,7 +19,11 @@ use hyperactor_config::attrs::OPERATION_CONTEXT_HEADER;
 use hyperactor_config::attrs::declare_attrs;
 use hyperactor_config::global;
 
+use crate::ActorAddr;
+use crate::PortAddr;
 use crate::metrics::MESSAGE_LATENCY_MICROS;
+use crate::ordering::SeqInfo;
+use crate::ordering::is_bypass_workq_actor_port;
 
 declare_attrs! {
     /// Send timestamp for message latency tracking
@@ -30,6 +34,22 @@ declare_attrs! {
 
     /// Hashed ActorAddr of the message sender, injected in post_unchecked().
     pub attr SENDER_ACTOR_ID_HASH: u64;
+
+    /// Full ActorAddr of the session owner — the actor whose Sequencer
+    /// assigned this message's SEQ_INFO. Stamped at SEQ_INFO
+    /// assignment/install sites: MailboxExt::post, PortHandle::try_post,
+    /// and CommActor::deliver_to_dest (after V1 installs SEQ_INFO).
+    /// Paired with the SEQ_INFO value.
+    ///
+    /// Framework-owned: stamping sites OVERWRITE caller-supplied values
+    /// (do not trust callers to know who owns the session). This attr
+    /// must never be propagated by handlers via verbatim header
+    /// forwarding; the framework will overwrite stale forwards on the
+    /// next ordered send through a trusted site.
+    ///
+    /// Larger than SENDER_ACTOR_ID_HASH (~50-100 bytes vs 8); both kept
+    /// so the hash remains available for high-cardinality OTel labels.
+    pub attr SENDER_ACTOR_ID: ActorAddr;
 
     /// Telemetry message ID for correlating lifecycle events, injected in post_unchecked().
     pub attr TELEMETRY_MESSAGE_ID: u64;
@@ -78,6 +98,49 @@ pub fn set_rust_message_type<M>(headers: &mut Flattrs) {
     headers.set(RUST_MESSAGE_TYPE, type_name::<M>().to_string());
 }
 
+/// Stamp `SENDER_ACTOR_ID` into `headers` if the gate conditions are met.
+/// Framework-owned: overwrites existing values, never "sets if absent".
+///
+/// Gate: stamp when (early-session OR caller-set-stale) AND ordered handler
+/// traffic. `caller_set_stale` defends against handlers that forward inbound
+/// headers verbatim.
+///
+/// Callable from cross-crate sites (CommActor::deliver_to_dest in
+/// hyperactor_mesh), so visibility is `pub` with `#[doc(hidden)]` to keep
+/// it out of the public API surface.
+#[doc(hidden)]
+pub fn stamp_sender_actor_id(
+    headers: &mut Flattrs,
+    seq_info: &SeqInfo,
+    dest: &PortAddr,
+    owner: &ActorAddr,
+) {
+    if let SeqInfo::Session { seq, .. } = seq_info {
+        let early_session = *seq <= 4;
+        let caller_set_stale = headers.contains_key(SENDER_ACTOR_ID);
+        if (early_session || caller_set_stale)
+            && dest.is_handler_port()
+            && !is_bypass_workq_actor_port(dest.index())
+        {
+            headers.set(SENDER_ACTOR_ID, owner.clone());
+        }
+    }
+}
+
+/// Simpler stamping for paths where headers start fresh (no caller-supplied
+/// stale value to defend against). Used only within the hyperactor crate by
+/// PortHandle::try_post.
+pub(crate) fn stamp_sender_actor_id_fresh(
+    headers: &mut Flattrs,
+    seq: u64,
+    dest: &PortAddr,
+    owner: &ActorAddr,
+) {
+    if seq <= 4 && dest.is_handler_port() && !is_bypass_workq_actor_port(dest.index()) {
+        headers.set(SENDER_ACTOR_ID, owner.clone());
+    }
+}
+
 /// This function checks the configured sampling rate and, if the random sample passes,
 /// calculates the latency between the send timestamp and the current time, then records
 /// the latency metric with the associated actor ID.
@@ -103,4 +166,132 @@ pub fn log_message_latency_if_sampling(headers: &Flattrs, actor_id: String) {
     let now = std::time::SystemTime::now();
     let latency = now.duration_since(send_timestamp).unwrap_or_default();
     MESSAGE_LATENCY_MICROS.record(latency.as_micros() as f64, metric_pairs);
+}
+
+#[cfg(test)]
+mod tests {
+    use typeuri::Named;
+    use uuid::Uuid;
+
+    use super::*;
+    use crate::introspect::IntrospectMessage;
+    use crate::port::Port;
+    use crate::testing::ids::test_actor_id;
+
+    fn session(seq: u64) -> SeqInfo {
+        SeqInfo::Session {
+            session_id: Uuid::now_v7(),
+            seq,
+        }
+    }
+
+    fn handler_port(actor_name: &str) -> (ActorAddr, PortAddr) {
+        let addr: ActorAddr = test_actor_id(actor_name, "worker");
+        // Use a fabricated handler-port index (high bit set) by going through
+        // the existing IntrospectMessage::port() — it's a bypass port though,
+        // so for a NON-bypass handler port we'll use an explicit message
+        // type. Easier: spin up via Port::from of any u64 with the handler
+        // bit set. Since the test util test_actor_id already returns an
+        // ActorAddr, and the only requirement is that .is_handler_port() is
+        // true, we construct a PortAddr that points to a known handler port
+        // — for headers tests we can use IntrospectMessage::port() (a bypass
+        // handler port — gate should skip it) or a fabricated non-bypass
+        // handler. Use TestHandlerMsg below.
+        let port = addr.port_addr(Port::from(TestHandlerMsg::port()));
+        (addr, port)
+    }
+
+    fn non_handler_port(actor_name: &str) -> (ActorAddr, PortAddr) {
+        let addr: ActorAddr = test_actor_id(actor_name, "worker");
+        // Non-handler port: a plain Port::from(integer), without the handler
+        // bit. Per the ordering tests (test_sequencer_non_handler_ports_*),
+        // Port::from(N) for small N is a non-handler port.
+        let port = addr.port_addr(Port::from(1));
+        (addr, port)
+    }
+
+    fn bypass_port(actor_name: &str) -> (ActorAddr, PortAddr) {
+        let addr: ActorAddr = test_actor_id(actor_name, "worker");
+        let port = addr.port_addr(Port::from(IntrospectMessage::port()));
+        (addr, port)
+    }
+
+    // A test handler-port message type. Named with handler-port semantics
+    // so its port is a handler port distinct from bypass ports.
+    #[derive(typeuri::Named)]
+    struct TestHandlerMsg;
+
+    #[test]
+    fn test_stamp_helper_sets_sender_on_seq_1() {
+        let (owner, dest) = handler_port("test_0");
+        let mut headers = Flattrs::new();
+        stamp_sender_actor_id(&mut headers, &session(1), &dest, &owner);
+        assert_eq!(headers.get(SENDER_ACTOR_ID), Some(owner));
+    }
+
+    #[test]
+    fn test_stamp_helper_sets_sender_on_seq_4() {
+        let (owner, dest) = handler_port("test_0");
+        let mut headers = Flattrs::new();
+        stamp_sender_actor_id(&mut headers, &session(4), &dest, &owner);
+        assert_eq!(headers.get(SENDER_ACTOR_ID), Some(owner));
+    }
+
+    #[test]
+    fn test_stamp_helper_skips_seq_5_no_stale() {
+        let (owner, dest) = handler_port("test_0");
+        let mut headers = Flattrs::new();
+        stamp_sender_actor_id(&mut headers, &session(5), &dest, &owner);
+        assert_eq!(headers.get(SENDER_ACTOR_ID), None);
+    }
+
+    #[test]
+    fn test_stamp_helper_overwrites_stale_at_seq_5() {
+        let (owner, dest) = handler_port("test_0");
+        let fake_owner: ActorAddr = test_actor_id("fake_0", "imposter");
+        let mut headers = Flattrs::new();
+        headers.set(SENDER_ACTOR_ID, fake_owner.clone());
+        stamp_sender_actor_id(&mut headers, &session(5), &dest, &owner);
+        assert_eq!(headers.get(SENDER_ACTOR_ID), Some(owner));
+    }
+
+    #[test]
+    fn test_stamp_helper_skips_non_handler_port() {
+        let (owner, dest) = non_handler_port("test_0");
+        let mut headers = Flattrs::new();
+        stamp_sender_actor_id(&mut headers, &session(1), &dest, &owner);
+        assert_eq!(headers.get(SENDER_ACTOR_ID), None);
+    }
+
+    #[test]
+    fn test_stamp_helper_skips_bypass_port() {
+        let (owner, dest) = bypass_port("test_0");
+        let mut headers = Flattrs::new();
+        stamp_sender_actor_id(&mut headers, &session(1), &dest, &owner);
+        assert_eq!(headers.get(SENDER_ACTOR_ID), None);
+    }
+
+    #[test]
+    fn test_stamp_helper_skips_seq_info_direct() {
+        let (owner, dest) = handler_port("test_0");
+        let mut headers = Flattrs::new();
+        stamp_sender_actor_id(&mut headers, &SeqInfo::Direct, &dest, &owner);
+        assert_eq!(headers.get(SENDER_ACTOR_ID), None);
+    }
+
+    #[test]
+    fn test_stamp_fresh_helper_sets_on_seq_4() {
+        let (owner, dest) = handler_port("test_0");
+        let mut headers = Flattrs::new();
+        stamp_sender_actor_id_fresh(&mut headers, 4, &dest, &owner);
+        assert_eq!(headers.get(SENDER_ACTOR_ID), Some(owner));
+    }
+
+    #[test]
+    fn test_stamp_fresh_helper_skips_on_seq_5() {
+        let (owner, dest) = handler_port("test_0");
+        let mut headers = Flattrs::new();
+        stamp_sender_actor_id_fresh(&mut headers, 5, &dest, &owner);
+        assert_eq!(headers.get(SENDER_ACTOR_ID), None);
+    }
 }

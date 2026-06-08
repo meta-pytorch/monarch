@@ -76,13 +76,6 @@ declare_attrs! {
     ))
     pub attr SCUBA_LOG_ENTER_EXIT: bool = false;
 
-    /// Enable the unified tracing layer.
-    @meta(CONFIG = ConfigAttr::new(
-        Some("USE_UNIFIED_LAYER".to_string()),
-        Some("use_unified_layer".to_string()),
-    ))
-    pub attr USE_UNIFIED_LAYER: bool = true;
-
     // Suffix to append to log filenames for test isolation
     @meta(CONFIG = ConfigAttr::new(
         Some("MONARCH_LOG_SUFFIX".to_string()),

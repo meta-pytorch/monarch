@@ -41,6 +41,17 @@ jobs:
     with:
       artifact-name: monarch-cpu-${{ github.sha }}-py3.10
 
+  # Runs pyright as its own check so type errors surface as a separate
+  # signal. This job is intentionally omitted from status-check.needs so type
+  # failures never gate test results or merging.
+  type-check-python:
+    name: Type Check Python
+    if: ${{ !startsWith(github.ref, 'refs/tags/ciflow/rocm/') }}
+    needs: build-cpu
+    uses: ./.github/workflows/type-check-python.yml
+    with:
+      artifact-name: monarch-cpu-${{ github.sha }}-py3.10
+
   test-gpu-python:
     name: Test GPU Python
     needs: build-gpu

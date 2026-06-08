@@ -38,7 +38,6 @@ use hyperactor::ProcAddr;
 use hyperactor::RefClient;
 use hyperactor::RemoteEndpoint as _;
 use hyperactor::context;
-use hyperactor::mailbox::MailboxServerHandle;
 use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::Attrs;
 use serde::Deserialize;
@@ -89,7 +88,7 @@ pub enum HostAgentMode {
         /// If set, the ShutdownHost handler sends the frontend mailbox server
         /// handle back to the bootstrap loop via this channel once shutdown is
         /// complete, so the caller can drain it and exit.
-        shutdown_tx: Option<tokio::sync::oneshot::Sender<MailboxServerHandle>>,
+        shutdown_tx: Option<tokio::sync::oneshot::Sender<hyperactor::gateway::GatewayServeHandle>>,
     },
     Local(Host<LocalProcManager<ProcManagerSpawnFn>>),
 }
@@ -311,7 +310,7 @@ pub struct HostAgent {
     /// mailbox starts routing messages. Sent back to the bootstrap loop via
     /// `shutdown_tx` when the host shuts down so the caller can
     /// drain it.
-    mailbox_handle: Option<MailboxServerHandle>,
+    mailbox_handle: Option<hyperactor::gateway::GatewayServeHandle>,
 }
 
 impl HostAgent {
@@ -1091,7 +1090,7 @@ impl Handler<DrainHost> for HostAgent {
 
         let done_port = cx.port::<DrainComplete>();
 
-        cx.spawn_with_name(
+        cx.spawn_with_label(
             "drain_worker",
             DrainWorker {
                 host: Some(host),
@@ -1100,7 +1099,7 @@ impl Handler<DrainHost> for HostAgent {
                 ack: Some(msg.ack),
                 done_notify: done_port,
             },
-        )?;
+        );
 
         Ok(())
     }
@@ -1499,6 +1498,7 @@ mod tests {
     use hyperactor::Proc;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::id::Label;
+    use hyperactor::id::Uid;
 
     use super::*;
     use crate::bootstrap::ProcStatus;
@@ -1519,8 +1519,8 @@ mod tests {
         let host_addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let host_agent = system_proc
-            .spawn(
-                HOST_MESH_AGENT_ACTOR_NAME,
+            .spawn_with_uid(
+                Uid::singleton(Label::new(HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
                 HostAgent::new(HostAgentMode::Process {
                     host,
                     shutdown_tx: None,
@@ -1529,7 +1529,7 @@ mod tests {
             .unwrap();
 
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _client_handle) = client_proc.client("client").unwrap();
+        let client = client_proc.client("client");
 
         let id = ResourceId::instance(Label::new("proc1").unwrap());
 
@@ -1544,6 +1544,13 @@ mod tests {
             )
             .await
             .unwrap();
+        // The host advertises spawned procs with a
+        // `Via(proc_uid, Addr(host_addr))` location so its gateway can
+        // peel and forward to the child's serving address. Construct
+        // the expected proc_addr the same way.
+        let expected_location =
+            hyperactor::Location::from(host_addr.clone()).with_via(id.uid().clone());
+        let expected_proc_addr = ProcAddr::new(id.proc_id(), expected_location);
         assert_matches!(
             host_agent.get_state(&client, id.clone()).await.unwrap(),
             resource::State {
@@ -1561,8 +1568,9 @@ mod tests {
                 }),
                 ..
             } if id == resource_id
-              && proc_id == id.proc_addr(host_addr.clone())
-              && mesh_agent == ActorRef::attest(id.proc_addr(host_addr.clone()).actor_addr(crate::proc_agent::PROC_AGENT_ACTOR_NAME)) && bootstrap_command == Some(BootstrapCommand::test())
+              && proc_id == expected_proc_addr
+              && mesh_agent == ActorRef::attest(expected_proc_addr.actor_addr(crate::proc_agent::PROC_AGENT_ACTOR_NAME))
+              && bootstrap_command == Some(BootstrapCommand::test())
               && mesh_agent == proc_status_mesh_agent
         );
     }
@@ -1579,8 +1587,8 @@ mod tests {
 
         let system_proc = host.system_proc().clone();
         let host_agent = system_proc
-            .spawn(
-                HOST_MESH_AGENT_ACTOR_NAME,
+            .spawn_with_uid(
+                Uid::singleton(Label::new(HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
                 HostAgent::new(HostAgentMode::Process {
                     host,
                     shutdown_tx: None,
@@ -1589,7 +1597,7 @@ mod tests {
             .unwrap();
 
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _client_handle) = client_proc.client("client").unwrap();
+        let client = client_proc.client("client");
 
         let id = ResourceId::instance(Label::new("proc1").unwrap());
         host_agent
@@ -1629,8 +1637,8 @@ mod tests {
 
         let system_proc = host.system_proc().clone();
         let host_agent = system_proc
-            .spawn(
-                HOST_MESH_AGENT_ACTOR_NAME,
+            .spawn_with_uid(
+                Uid::singleton(Label::new(HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
                 HostAgent::new(HostAgentMode::Process {
                     host,
                     shutdown_tx: None,
@@ -1639,7 +1647,7 @@ mod tests {
             .unwrap();
 
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _client_handle) = client_proc.client("client").unwrap();
+        let client = client_proc.client("client");
 
         let id = ResourceId::instance(Label::new("proc1").unwrap());
         host_agent
@@ -1685,8 +1693,8 @@ mod tests {
 
         let system_proc = host.system_proc().clone();
         let host_agent = system_proc
-            .spawn(
-                HOST_MESH_AGENT_ACTOR_NAME,
+            .spawn_with_uid(
+                Uid::singleton(Label::new(HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
                 HostAgent::new(HostAgentMode::Process {
                     host,
                     shutdown_tx: None,
@@ -1695,7 +1703,7 @@ mod tests {
             .unwrap();
 
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _client_handle) = client_proc.client("client").unwrap();
+        let client = client_proc.client("client");
 
         let id = ResourceId::instance(Label::new("proc1").unwrap());
 
@@ -1733,8 +1741,8 @@ mod tests {
 
         let system_proc = host.system_proc().clone();
         let host_agent = system_proc
-            .spawn(
-                HOST_MESH_AGENT_ACTOR_NAME,
+            .spawn_with_uid(
+                Uid::singleton(Label::new(HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
                 HostAgent::new(HostAgentMode::Process {
                     host,
                     shutdown_tx: None,
@@ -1743,7 +1751,7 @@ mod tests {
             .unwrap();
 
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _client_handle) = client_proc.client("client").unwrap();
+        let client = client_proc.client("client");
 
         let mesh_a = HostMeshId::instance(Label::new("mesh-a").unwrap());
         let mesh_b = HostMeshId::instance(Label::new("mesh-b").unwrap());
@@ -1836,8 +1844,8 @@ mod tests {
 
         let system_proc = host.system_proc().clone();
         let host_agent = system_proc
-            .spawn(
-                HOST_MESH_AGENT_ACTOR_NAME,
+            .spawn_with_uid(
+                Uid::singleton(Label::new(HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
                 HostAgent::new(HostAgentMode::Process {
                     host,
                     shutdown_tx: None,
@@ -1846,7 +1854,7 @@ mod tests {
             .unwrap();
 
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _client_handle) = client_proc.client("client").unwrap();
+        let client = client_proc.client("client");
 
         let mesh_a = HostMeshId::instance(Label::new("mesh-a").unwrap());
         let mesh_b = HostMeshId::instance(Label::new("mesh-b").unwrap());
@@ -1914,8 +1922,8 @@ mod tests {
 
         let system_proc = host.system_proc().clone();
         let host_agent = system_proc
-            .spawn(
-                HOST_MESH_AGENT_ACTOR_NAME,
+            .spawn_with_uid(
+                Uid::singleton(Label::new(HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
                 HostAgent::new(HostAgentMode::Process {
                     host,
                     shutdown_tx: None,
@@ -1932,7 +1940,7 @@ mod tests {
 
         let client_proc =
             Proc::direct(ChannelTransport::Unix.any(), "qd_client".to_string()).unwrap();
-        let (client, _client_handle) = client_proc.client("client").unwrap();
+        let client = client_proc.client("client");
 
         // Spawn a proc so the host_agent processes at least one
         // CreateOrUpdate message, which goes through the work queue.

@@ -334,9 +334,11 @@ static HOST_SHUTDOWN_HANDLE: OnceLock<
 > = OnceLock::new();
 
 /// Handle for the via-mode duplex session opened by
-/// [`Gateway::serve_via`]. Process-lifetime: dropping it would tear
-/// down the cluster-inbound serve and outbound duplex mid-run.
-static VIA_SERVE_HANDLE: OnceLock<hyperactor::gateway::ServeViaHandle> = OnceLock::new();
+/// [`Gateway::serve_via`]. Kept until shutdown so the cluster-inbound
+/// serve and outbound duplex stay alive for the host's lifetime.
+static VIA_SERVE_HANDLE: OnceLock<
+    tokio::sync::Mutex<Option<hyperactor::gateway::GatewayServeHandle>>,
+> = OnceLock::new();
 
 /// Bootstrap the client host and root client actor.
 ///
@@ -357,8 +359,7 @@ static VIA_SERVE_HANDLE: OnceLock<hyperactor::gateway::ServeViaHandle> = OnceLoc
 /// local procs by the gateway's routing. The local host still owns
 /// its own frontend address; ``via`` only adds a forwarding path. The
 /// returned ``PyHostMesh`` / ``PyProcMesh`` / ``PyInstance`` all live
-/// on the local host's procs — there is no separate "attached client
-/// proc" in this design.
+/// on the local host's procs.
 ///
 /// This should be called only once, at process initialization.
 #[pyfunction]
@@ -379,18 +380,39 @@ fn bootstrap_host(
         .transpose()?;
 
     PyPythonTask::new(async move {
-        // Build the gateway up front so we can `serve_via` it before
-        // the host attaches its system/local procs. With via active
-        // first, the host's `Gateway::attach` calls during
-        // construction will auto-broadcast `RegisterProc` over the
-        // duplex — no separate post-bootstrap registration step.
-        let gateway = Gateway::new();
+        // Take the process-wide global gateway up front so we can
+        // `serve_via` it before the host registers its system/local
+        // procs. With via active first, every port bound on those procs
+        // inherits the via prefix automatically — no separate
+        // post-bootstrap registration step.
+        let gateway = Gateway::global().clone();
         if let Some(addr) = via_addr {
-            let serve_handle = gateway
-                .serve_via(addr)
-                .await
-                .map_err(|e| PyException::new_err(e.to_string()))?;
-            VIA_SERVE_HANDLE.set(serve_handle).ok();
+            let via_handle = VIA_SERVE_HANDLE.get_or_init(|| tokio::sync::Mutex::new(None));
+            if via_handle.lock().await.is_some() {
+                return Err(PyException::new_err(
+                    "via serve handle is already initialized; \
+                     bootstrap_host called more than once with a via address",
+                ));
+            }
+
+            let mut serve_handle = Some(
+                gateway
+                    .serve_via(addr)
+                    .await
+                    .map_err(|e| PyException::new_err(e.to_string()))?,
+            );
+            let mut via_handle = via_handle.lock().await;
+            if via_handle.is_some() {
+                drop(via_handle);
+                let mut serve_handle = serve_handle.expect("serve_handle is still unstored");
+                serve_handle.stop("duplicate local host bootstrap");
+                let _ = serve_handle.join().await;
+                return Err(PyException::new_err(
+                    "via serve handle is already initialized; \
+                     bootstrap_host called more than once with a via address",
+                ));
+            }
+            *via_handle = serve_handle.take();
         }
 
         let (host_mesh_agent, shutdown_handle) = host(
@@ -418,9 +440,7 @@ fn bootstrap_host(
 
         // We require a temporary instance to make a call to the host/proc agent.
         let temp_proc = Proc::isolated();
-        let (temp_instance, _) = temp_proc
-            .client("temp")
-            .map_err(|e| PyException::new_err(e.to_string()))?;
+        let temp_instance = temp_proc.client("temp");
 
         let local_proc_agent: hyperactor::ActorHandle<hyperactor_mesh::proc_agent::ProcAgent> =
             host_mesh_agent
@@ -557,9 +577,7 @@ fn shutdown_local_host_mesh() -> PyResult<PyPythonTask> {
     PyPythonTask::new(async move {
         // Create a temporary instance to send the shutdown message
         let temp_proc = hyperactor::Proc::isolated();
-        let (instance, _) = temp_proc
-            .client("shutdown_requester")
-            .map_err(|e| PyException::new_err(e.to_string()))?;
+        let instance = temp_proc.client("shutdown_requester");
 
         tracing::info!(
             "sending shutdown_host request to agent {}",
@@ -589,6 +607,13 @@ fn shutdown_local_host_mesh() -> PyResult<PyPythonTask> {
             && let Some(handle) = lock.lock().await.take()
         {
             handle.join().await;
+        }
+
+        if let Some(lock) = VIA_SERVE_HANDLE.get()
+            && let Some(mut handle) = lock.lock().await.take()
+        {
+            handle.stop("local host shutdown");
+            let _ = handle.join().await;
         }
 
         Ok(())

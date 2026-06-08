@@ -76,6 +76,7 @@ def _get_mast_host_mesh(
             "RUST_LOG": "info",
         },
         default_transport=ChannelTransport.MetaTlsWithIpV6,
+        use_case="example",
     )
     t3 = time.time()
     job.add_mesh("workers", num_hosts, host_type=host_type)
