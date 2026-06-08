@@ -498,9 +498,9 @@ pub trait Controlled: Clone + Debug + Send + Sync + 'static {
     async fn cleanup_stop(&self, cx: &impl context::Actor, reason: String) -> anyhow::Result<()>;
 }
 
-/// Generic controller for a mesh of resources. Currently instantiated as
-/// `ActorMeshController<A> = ResourceController<ActorMeshRef<A>>`. All
-/// shared behavior lives here; mesh-specific behavior is delegated through
+/// Generic controller for a mesh of resources. Actor meshes instantiate this
+/// as `ActorMeshController<A> = ResourceController<ActorMeshControlPlane<A>>`.
+/// All shared behavior lives here; mesh-specific behavior is delegated through
 /// the `Controlled` trait.
 ///
 /// `resource::mesh::Spec<()>` and `resource::mesh::State<()>` (instead of
@@ -536,8 +536,52 @@ pub struct ResourceController<T: Controlled> {
     monitor: Option<()>,
 }
 
+/// Controller-side state for an actor mesh.
+///
+/// `ActorMeshRef` is moving toward being a self-contained, serializable mesh
+/// descriptor. The controller is the one place that needs both the actor mesh
+/// and its backing proc mesh: it streams actor state through proc agents and
+/// stops actors through the proc mesh control plane.
+pub struct ActorMeshControlPlane<A: Referable> {
+    actor_mesh: ActorMeshRef<A>,
+    proc_mesh: ProcMeshRef,
+}
+
+impl<A: Referable> ActorMeshControlPlane<A> {
+    pub(crate) fn new(actor_mesh: ActorMeshRef<A>, proc_mesh: ProcMeshRef) -> Self {
+        Self {
+            actor_mesh,
+            proc_mesh,
+        }
+    }
+}
+
+impl<A: Referable> Clone for ActorMeshControlPlane<A> {
+    fn clone(&self) -> Self {
+        Self {
+            actor_mesh: self.actor_mesh.clone(),
+            proc_mesh: self.proc_mesh.clone(),
+        }
+    }
+}
+
+impl<A: Referable> Debug for ActorMeshControlPlane<A> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ActorMeshControlPlane")
+            .field("actor_mesh", &self.actor_mesh)
+            .field("proc_mesh", &self.proc_mesh)
+            .finish()
+    }
+}
+
+impl<A: Referable> Named for ActorMeshControlPlane<A> {
+    fn typename() -> &'static str {
+        wirevalue::intern_typename!(Self, "hyperactor_mesh::ActorMeshControlPlane<{}>", A)
+    }
+}
+
 /// Controller for an actor mesh.
-pub type ActorMeshController<A> = ResourceController<ActorMeshRef<A>>;
+pub type ActorMeshController<A> = ResourceController<ActorMeshControlPlane<A>>;
 
 impl<T: Controlled> ResourceController<T> {
     /// Create a new controller over the given mesh.
@@ -1007,7 +1051,7 @@ where
 
 /// `Controlled` implementation for an actor mesh.
 #[async_trait]
-impl<A: Referable> Controlled for ActorMeshRef<A> {
+impl<A: Referable> Controlled for ActorMeshControlPlane<A> {
     type StateInner = ActorState;
 
     fn stall_counter() -> &'static Counter<u64> {
@@ -1015,11 +1059,11 @@ impl<A: Referable> Controlled for ActorMeshRef<A> {
     }
 
     fn id(&self) -> &ResourceId {
-        ActorMeshRef::id(self).resource_id()
+        self.actor_mesh.id().resource_id()
     }
 
     fn region(&self) -> &ndslice::Region {
-        ndslice::view::Ranked::region(self)
+        ndslice::view::Ranked::region(&self.actor_mesh)
     }
 
     fn subscribe_to_stream(
@@ -1027,10 +1071,10 @@ impl<A: Referable> Controlled for ActorMeshRef<A> {
         cx: &impl context::Actor,
         subscriber: hyperactor::PortRef<resource::State<ActorState>>,
     ) -> anyhow::Result<()> {
-        self.proc_mesh().agent_mesh().cast(
+        self.proc_mesh.agent_mesh().cast(
             cx,
             resource::StreamState::<ActorState> {
-                id: ActorMeshRef::id(self).resource_id().clone(),
+                id: self.actor_mesh.id().resource_id().clone(),
                 subscriber,
             },
         )?;
@@ -1042,7 +1086,7 @@ impl<A: Referable> Controlled for ActorMeshRef<A> {
         cx: &impl context::Actor,
         msg: resource::WaitRankStatus,
     ) -> anyhow::Result<()> {
-        self.proc_mesh().agent_mesh().cast(cx, msg)?;
+        self.proc_mesh.agent_mesh().cast(cx, msg)?;
         Ok(())
     }
 
@@ -1056,7 +1100,7 @@ impl<A: Referable> Controlled for ActorMeshRef<A> {
 
         // Actor-specific: first check if the proc mesh is dead before
         // trying to query their agents.
-        let proc_states = self.proc_mesh().proc_states(cx, None).await;
+        let proc_states = self.proc_mesh.proc_states(cx, None).await;
         if let Err(e) = proc_states {
             send_state_change(
                 cx,
@@ -1094,7 +1138,11 @@ impl<A: Referable> Controlled for ActorMeshRef<A> {
                     ActorSupervisionEvent::new(
                         // Attribute this to the monitored actor, even if the underlying
                         // cause is a proc_failure. We propagate the cause explicitly.
-                        self.get(point.rank()).unwrap().actor_addr().clone(),
+                        self.actor_mesh
+                            .get(point.rank())
+                            .unwrap()
+                            .actor_addr()
+                            .clone(),
                         Some(display),
                         actor_status,
                         None,
@@ -1109,7 +1157,8 @@ impl<A: Referable> Controlled for ActorMeshRef<A> {
 
         // Query resource states with keepalive.
         let actor_states = self
-            .actor_states_with_keepalive(cx, compute_keepalive())
+            .proc_mesh
+            .actor_states_with_keepalive(cx, self.actor_mesh.id().clone(), compute_keepalive())
             .await;
         match actor_states {
             Err(e) => {
@@ -1203,7 +1252,8 @@ impl<A: Referable> Controlled for ActorMeshRef<A> {
         // assume the stop happened on all actors.
         let rank = 0usize;
         let event = ActorSupervisionEvent::new(
-            self.get(rank)
+            self.actor_mesh
+                .get(rank)
                 .expect("mesh must have at least one rank")
                 .actor_addr()
                 .clone(),
@@ -1235,8 +1285,8 @@ impl<A: Referable> Controlled for ActorMeshRef<A> {
 
         // Cannot use "ActorMesh::stop" as it tries to message the controller.
         let result = self
-            .proc_mesh()
-            .stop_actor_by_id(cx, ActorMeshRef::id(self).clone(), reason)
+            .proc_mesh
+            .stop_actor_by_id(cx, self.actor_mesh.id().clone(), reason)
             .await;
 
         match result {
@@ -1274,8 +1324,8 @@ impl<A: Referable> Controlled for ActorMeshRef<A> {
     }
 
     async fn cleanup_stop(&self, cx: &impl context::Actor, reason: String) -> anyhow::Result<()> {
-        self.proc_mesh()
-            .stop_actor_by_id(cx, ActorMeshRef::id(self).clone(), reason)
+        self.proc_mesh
+            .stop_actor_by_id(cx, self.actor_mesh.id().clone(), reason)
             .await?;
         Ok(())
     }
@@ -1309,7 +1359,7 @@ impl Controlled for ProcMeshRef {
         // Send one StreamState per proc to its host agent.
         for proc_id in self.proc_ids() {
             let proc_resource_id = ResourceId::new(proc_id.uid().clone(), proc_id.label().cloned());
-            let host = crate::host_mesh::HostRef(proc_id.addr().clone());
+            let host = crate::host_mesh::HostRef::new(proc_id.addr().clone());
             host.mesh_agent().post(
                 cx,
                 resource::StreamState::<Self::StateInner> {
@@ -1327,7 +1377,7 @@ impl Controlled for ProcMeshRef {
         msg: resource::WaitRankStatus,
     ) -> anyhow::Result<()> {
         for proc_id in self.proc_ids() {
-            let host = crate::host_mesh::HostRef(proc_id.addr().clone());
+            let host = crate::host_mesh::HostRef::new(proc_id.addr().clone());
             host.mesh_agent().post(cx, msg.clone());
         }
         Ok(())
