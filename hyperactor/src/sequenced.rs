@@ -90,6 +90,13 @@ pub(crate) struct DirectEnvelope<M> {
 
 impl<M> DirectEnvelope<M> {
     /// Create a direct envelope.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "direct envelopes are staged for follow-up control-port migrations"
+        )
+    )]
     pub(crate) fn new(message: M) -> Self {
         Self { message }
     }
@@ -414,9 +421,9 @@ impl<M> Buffer<M> {
 
         let mut new_ring = Vec::new();
         new_ring.resize_with(new_len, || None);
-        for offset in 0..self.ring.len() {
+        for (offset, slot) in new_ring.iter_mut().enumerate().take(self.ring.len()) {
             let old_index = (self.head + offset) % self.ring.len();
-            new_ring[offset] = self.ring[old_index].take();
+            *slot = self.ring[old_index].take();
         }
         self.ring = new_ring;
         self.head = 0;
@@ -454,7 +461,13 @@ impl<M> Buffer<M> {
                 break;
             }
 
-            let message = self.spillover.as_mut().unwrap().pop_first().unwrap().1;
+            let message = self
+                .spillover
+                .as_mut()
+                .expect("spillover should be present while first_key_value returned a sequence")
+                .pop_first()
+                .expect("spillover should be non-empty while first_key_value returned a sequence")
+                .1;
             self.insert_ring(next_seq, seq, message);
         }
 
