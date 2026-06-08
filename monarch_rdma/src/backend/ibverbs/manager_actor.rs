@@ -50,6 +50,7 @@ use super::IbvOp;
 use super::device::IbvDevice;
 use super::device::IbvDeviceImpl;
 use super::domain::IbvDomain;
+use super::efa_device::EfaDevice;
 use super::mlx_device::MlxDevice;
 use super::primitives::IbvConfig;
 use super::primitives::IbvMemoryRegion;
@@ -67,8 +68,8 @@ use crate::RdmaOp;
 use crate::RdmaTransportLevel;
 use crate::backend::RdmaBackend;
 use crate::local_memory::KeepaliveLocalMemory;
+use crate::nic::NicRemoteBackendContext;
 use crate::rdma_components::get_registered_cuda_segments;
-use crate::rdma_manager_actor::GetIbvActorRefClient;
 use crate::rdma_manager_actor::RdmaManagerActor;
 use crate::validate_execution_context;
 
@@ -91,6 +92,7 @@ pub(super) struct CreatePeerQueuePair<M: Referable> {
     pub(super) reply: OncePortRef<Result<IbvQpInfo, String>>,
 }
 wirevalue::register_type!(CreatePeerQueuePair<IbvManagerActor<MlxDevice>>);
+wirevalue::register_type!(CreatePeerQueuePair<IbvManagerActor<EfaDevice>>);
 
 /// Local-only message: submit a batch of RDMA ops for end-to-end
 /// execution. The manager iterates the batch, resolves each op's
@@ -289,26 +291,6 @@ impl<I: IbvDeviceImpl> Drop for IbvManagerActor<I> {
         // `buffer_registrations`, `segments_mr`, `devices`)
         // free their FFI resources through their elements' `Drop`s
         // when this struct is dropped.
-    }
-}
-
-// `local_handle` ties to `RdmaManagerActor::get_ibv_actor_ref`'s
-// concrete `ActorRef<IbvManagerActor<MlxDevice>>` return type, so it
-// only exists on the `MlxDevice` monomorphization for now.
-impl IbvManagerActor<MlxDevice> {
-    /// Construct an [`ActorHandle`] for the [`IbvManagerActor`] co-located
-    /// with the caller by querying the local [`RdmaManagerActor`].
-    pub async fn local_handle(
-        client: &(impl hyperactor::context::Actor + Send + Sync),
-    ) -> Result<ActorHandle<Self>, anyhow::Error> {
-        let rdma_handle = RdmaManagerActor::local_handle(client);
-        let ibv_ref: ActorRef<IbvManagerActor<MlxDevice>> = rdma_handle
-            .get_ibv_actor_ref(client)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("local RdmaManagerActor has no ibverbs backend"))?;
-        ibv_ref
-            .downcast_handle(client)
-            .ok_or_else(|| anyhow::anyhow!("IbvManagerActor is not in the local process"))
     }
 }
 
@@ -993,12 +975,37 @@ impl<I: IbvDeviceImpl> std::ops::Deref for IbvBackend<I> {
     }
 }
 
-// `submit` builds a `SubmitOps<MlxDevice>` (because `resolve_ibv`
-// returns an `ActorRef<IbvManagerActor<MlxDevice>>`), so the
-// `RdmaBackend` impl is locked to the `MlxDevice` monomorphization
-// for now.
+/// Extracts the `(manager ref, buffer)` for device impl `I` from a
+/// remote backend context, or `None` if the context targets a
+/// different backend.
+trait ResolveIbv<I: IbvDeviceImpl> {
+    fn resolve(&self) -> Option<(ActorRef<IbvManagerActor<I>>, IbvBuffer)>;
+}
+
+impl ResolveIbv<MlxDevice> for NicRemoteBackendContext {
+    fn resolve(&self) -> Option<(ActorRef<IbvManagerActor<MlxDevice>>, IbvBuffer)> {
+        match self {
+            NicRemoteBackendContext::Mlx(mgr, buf) => Some((mgr.clone(), buf.clone())),
+            _ => None,
+        }
+    }
+}
+
+impl ResolveIbv<EfaDevice> for NicRemoteBackendContext {
+    fn resolve(&self) -> Option<(ActorRef<IbvManagerActor<EfaDevice>>, IbvBuffer)> {
+        match self {
+            NicRemoteBackendContext::Efa(mgr, buf) => Some((mgr.clone(), buf.clone())),
+            _ => None,
+        }
+    }
+}
+
 #[async_trait]
-impl RdmaBackend for IbvBackend<MlxDevice> {
+impl<I> RdmaBackend for IbvBackend<I>
+where
+    I: IbvDeviceImpl,
+    NicRemoteBackendContext: ResolveIbv<I>,
+{
     type TransportInfo = ();
 
     /// Submit a batch of RDMA operations.
@@ -1021,9 +1028,13 @@ impl RdmaBackend for IbvBackend<MlxDevice> {
     ) -> Result<(), anyhow::Error> {
         let mut ibv_ops = Vec::with_capacity(ops.len());
         for op in ops {
-            let (remote_manager, remote_buffer) = op.remote.resolve_ibv().ok_or_else(|| {
-                anyhow::anyhow!("ibverbs backend not found for buffer: {:?}", op.remote)
-            })?;
+            let (remote_manager, remote_buffer) = op
+                .remote
+                .resolve_nic()
+                .and_then(|ctx| <NicRemoteBackendContext as ResolveIbv<I>>::resolve(&ctx))
+                .ok_or_else(|| {
+                    anyhow::anyhow!("no compatible NIC backend for buffer: {:?}", op.remote)
+                })?;
             ibv_ops.push(IbvOp {
                 op_type: op.op_type,
                 local_memory: op.local.clone(),
@@ -1140,17 +1151,12 @@ mod tests {
     use serde::Serialize;
     use typeuri::Named;
 
-    use super::super::mlx_device::MlxDevice;
-    use super::IbvBackend;
-    use super::IbvManagerActor;
-    use super::IbvManagerLocalMessageClient;
     use crate::IbvConfig;
     use crate::RdmaManagerActor;
     use crate::RdmaManagerMessageClient;
     use crate::RdmaOp;
     use crate::RdmaOpType;
     use crate::RdmaRemoteBuffer;
-    use crate::backend::RdmaBackend;
     use crate::backend::cuda_test_utils::CudaAllocation;
     use crate::backend::cuda_test_utils::CudaAllocator;
     use crate::backend::ibverbs::primitives::IbvQpType;
@@ -1342,9 +1348,11 @@ mod tests {
                     remote: op.remote_buf,
                 });
             }
-            let ibv_handle = IbvManagerActor::<MlxDevice>::local_handle(cx).await?;
-            let mut backend = IbvBackend(ibv_handle);
-            let result = backend
+            let nic = RdmaManagerActor::local_handle(cx)
+                .get_nic_backend_handle(cx)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("no NIC backend on this proc"))?;
+            let result = nic
                 .submit(cx, rdma_ops, Duration::from_secs(timeout_secs))
                 .await;
             Ok(result.map_err(|e| format!("{e}")))
@@ -1643,17 +1651,18 @@ mod tests {
     async fn test_register_remote_buffer_fills_mr_slot() -> Result<(), anyhow::Error> {
         require_rdma();
         let env = TestEnv::same_config(IbvConfig::targeting("cpu:0")).await?;
-        let ibv_handle = IbvManagerActor::<MlxDevice>::local_handle(&env.client).await?;
+        let nic = RdmaManagerActor::local_handle(&env.client)
+            .get_nic_backend_handle(&env.client)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("no NIC backend on this proc"))?;
         let buf: Box<[u8]> = vec![0u8; 1024].into_boxed_slice();
         let local = KeepaliveLocalMemory::new(Arc::new(buf));
         assert!(
             local.mr_slot().get().is_none(),
             "MR slot should be empty before registration",
         );
-        ibv_handle
-            .register_remote_buffer(&env.client, 0, local.clone())
-            .await?
-            .map_err(|e| anyhow::anyhow!(e))?;
+        nic.register_remote_buffer(&env.client, 0, local.clone())
+            .await?;
         assert!(
             local.mr_slot().get().is_some(),
             "register_remote_buffer should populate the MR slot",
@@ -2114,6 +2123,7 @@ mod tests {
     /// transferred).
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_partial_failure_batch() -> Result<(), anyhow::Error> {
+        use super::NicRemoteBackendContext;
         use crate::backend::RdmaRemoteBackendContext;
 
         require_rdma();
@@ -2142,7 +2152,10 @@ mod tests {
             .await?;
         let mut bogus_remote = real_remote.clone();
         for backend in bogus_remote.backends.iter_mut() {
-            if let RdmaRemoteBackendContext::Ibverbs(_, buf) = backend {
+            if let RdmaRemoteBackendContext::Nic(
+                NicRemoteBackendContext::Mlx(_, buf) | NicRemoteBackendContext::Efa(_, buf),
+            ) = backend
+            {
                 buf.rkey = 0xdead_beef;
                 buf.addr = 0xdead_0000;
             }
