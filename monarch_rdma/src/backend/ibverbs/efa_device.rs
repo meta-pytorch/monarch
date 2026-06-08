@@ -18,8 +18,8 @@ use super::primitives::IbvConfig;
 use crate::register_ibv_device_impl;
 
 /// AWS EFA (Elastic Fabric Adapter) backend.
-#[derive(Named)]
-pub(crate) struct EfaDevice;
+#[derive(Debug, Named)]
+pub struct EfaDevice;
 
 impl IbvDeviceImpl for EfaDevice {
     fn backend_name() -> &'static str {

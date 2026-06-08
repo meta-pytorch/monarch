@@ -48,6 +48,7 @@ use crate::backend::RdmaRemoteBackendContext;
 use crate::backend::ibverbs::manager_actor::IbvManagerActor;
 use crate::backend::ibverbs::manager_actor::IbvManagerLocalMessageClient;
 use crate::backend::ibverbs::manager_actor::IbvManagerMessageClient;
+use crate::backend::ibverbs::mlx_device::MlxDevice;
 use crate::backend::ibverbs::primitives::IbvConfig;
 use crate::backend::tcp::manager_actor::TcpManagerActor;
 use crate::local_memory::KeepaliveLocalMemory;
@@ -100,7 +101,7 @@ wirevalue::register_type!(ReleaseBuffer);
 #[derive(Handler, HandleClient, RefClient, Debug, Serialize, Deserialize, Named)]
 pub struct GetIbvActorRef {
     #[reply]
-    pub reply: OncePortRef<Option<ActorRef<IbvManagerActor>>>,
+    pub reply: OncePortRef<Option<ActorRef<IbvManagerActor<MlxDevice>>>>,
 }
 wirevalue::register_type!(GetIbvActorRef);
 
@@ -154,7 +155,7 @@ impl<A: Actor> RdmaBackendActor<A> {
 pub struct RdmaManagerActor {
     next_remote_buf_id: usize,
     buffers: HashMap<usize, KeepaliveLocalMemory>,
-    ibverbs: Option<RdmaBackendActor<IbvManagerActor>>,
+    ibverbs: Option<RdmaBackendActor<IbvManagerActor<MlxDevice>>>,
     tcp: RdmaBackendActor<TcpManagerActor>,
 }
 
@@ -191,7 +192,7 @@ impl RemoteSpawn for RdmaManagerActor {
                 );
             }
         } else {
-            match IbvManagerActor::new(params).await {
+            match IbvManagerActor::<MlxDevice>::new(params).await {
                 Ok(actor) => Some(RdmaBackendActor::Created(actor)),
                 Err(e) => {
                     if hyperactor_config::global::get(crate::config::RDMA_ALLOW_TCP_FALLBACK) {
@@ -249,7 +250,7 @@ impl GetIbvActorRefHandler for RdmaManagerActor {
     async fn get_ibv_actor_ref(
         &mut self,
         _cx: &Context<Self>,
-    ) -> Result<Option<ActorRef<IbvManagerActor>>, anyhow::Error> {
+    ) -> Result<Option<ActorRef<IbvManagerActor<MlxDevice>>>, anyhow::Error> {
         Ok(self.ibverbs.as_ref().map(|ibv| ibv.handle().bind()))
     }
 }

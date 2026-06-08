@@ -14,16 +14,17 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
-pub(crate) mod device;
+pub mod device;
 pub mod device_selection;
 pub(crate) mod domain;
-pub(crate) mod efa_device;
+pub mod efa_device;
 pub mod manager_actor;
-pub(crate) mod mlx_device;
+pub mod mlx_device;
 pub mod primitives;
 pub mod queue_pair;
 
 use manager_actor::IbvManagerActor;
+use mlx_device::MlxDevice;
 pub use queue_pair::IbvQueuePair;
 pub use queue_pair::PollTarget;
 
@@ -57,7 +58,7 @@ pub struct IbvBuffer {
 /// Generic over the manager actor type so unit tests can swap in a
 /// mock; production code uses the default `IbvOp<IbvManagerActor>`.
 #[derive(Debug, Named)]
-pub struct IbvOp<M: Referable = IbvManagerActor> {
+pub struct IbvOp<M: Referable = IbvManagerActor<MlxDevice>> {
     pub op_type: RdmaOpType,
     pub local_memory: KeepaliveLocalMemory,
     pub remote_buffer: IbvBuffer,

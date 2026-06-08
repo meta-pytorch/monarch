@@ -21,8 +21,8 @@ use crate::register_ibv_device_impl;
 const MELLANOX_VENDOR_ID: u32 = 0x02c9;
 
 /// Mellanox backend.
-#[derive(Named)]
-pub(crate) struct MlxDevice;
+#[derive(Debug, Named)]
+pub struct MlxDevice;
 
 impl IbvDeviceImpl for MlxDevice {
     fn backend_name() -> &'static str {
