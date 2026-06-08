@@ -812,7 +812,7 @@ impl<A: Referable> ActorMeshRef<A> {
                 let port_id = actor_ids
                     .get(rank)
                     .expect("mismatched actor_ids and dest_region")
-                    .port_addr(Port::from(dest_port));
+                    .port_addr(Port::handler_id(dest_port, None));
 
                 cx.instance().post(
                     port_id,
@@ -828,7 +828,7 @@ impl<A: Referable> ActorMeshRef<A> {
             let sequencer = cx.instance().sequencer();
             let seqs: ValueMesh<u64> = actor_ids.map_into(|actor_id| {
                 let hyperactor::ordering::SeqInfo::Session { seq, .. } = sequencer
-                    .assign_seq(&actor_id.port_addr(Port::from(<M as typeuri::Named>::port())))
+                    .assign_seq(&actor_id.port_addr(Port::handler::<IndexedErasedUnbound<M>>()))
                 else {
                     unreachable!("assign_seq always returns SeqInfo::Session")
                 };
