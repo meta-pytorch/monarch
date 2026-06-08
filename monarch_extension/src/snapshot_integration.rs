@@ -21,7 +21,7 @@ use monarch_introspection_snapshot::integration::register_snapshot_schemas;
 use monarch_introspection_snapshot::integration::start_periodic_snapshots;
 use pyo3::prelude::*;
 
-/// Pre-register the 9 snapshot table schemas in a `DatabaseScanner`.
+/// Pre-register the 11 snapshot table schemas in a `DatabaseScanner`.
 ///
 /// Must be called after `DatabaseScanner` creation and before
 /// `QueryEngine` construction, because table discovery is static.

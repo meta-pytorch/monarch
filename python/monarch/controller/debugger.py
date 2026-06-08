@@ -18,6 +18,7 @@ def write(msg: str) -> None:
 def read(requested_size: int) -> bytes:
     if not is_ipython():
         b = bytearray(requested_size)
+        # pyrefly: ignore [missing-attribute]
         bytes_read = sys.stdin.buffer.raw.readinto(b)
         return bytes(b[:bytes_read])
 

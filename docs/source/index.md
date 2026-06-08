@@ -31,14 +31,9 @@ Monarch code imperatively describes how to create processes and actors using a s
     # wait for all trainers to complete
     fut.get()
 
-> ⚠️ **Early Development Warning** Monarch is currently in an experimental
-> stage. You should expect bugs, incomplete features, and APIs that may change
-> in future versions. The project welcomes bugfixes, but to make sure things are
-> well coordinated you should discuss any significant change before starting the
-> work. It's recommended that you signal your intention to contribute in the
-> issue tracker, either by filing a new issue or by claiming an existing one.
-
-Note: Monarch is currently only supported on Linux systems
+Note: Monarch runs on Linux and macOS.
+  - The CPU-only tensor engine works on macOS and on Linux hosts without a GPU
+  - GPU features require Linux with a supported GPU toolchain
 
 ## Getting Started
 

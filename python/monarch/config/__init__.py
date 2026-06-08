@@ -87,8 +87,8 @@ if TYPE_CHECKING:
             rdma_allow_tcp_fallback: NotRequired[bool]
             rdma_disable_ibverbs: NotRequired[bool]
             rdma_max_chunk_size_mb: NotRequired[int]
-            client_attach_addr: NotRequired[str]
 
+        # pyrefly: ignore [invalid-annotation]
         ConfigureKwargsType = Unpack[ConfigureArgs]
     else:
         ConfigureKwargsType = object
@@ -185,24 +185,6 @@ def configure(**kwargs: "ConfigureKwargsType") -> None:
             rdma_max_chunk_size_mb: Maximum chunk size in megabytes for RDMA
                 transfers.
 
-        Client bootstrap:
-            client_attach_addr: ZMQ-style address of a remote host's
-                duplex server (e.g. ``"tcp://host:port"``,
-                ``"ipc:///tmp/sock"``). When set, on first ``context()``
-                the Python client's gateway is connected to the gateway
-                at that address: the client's outbound traffic is
-                forwarded over the duplex, and the remote gateway
-                registers routes back to the client's local procs so
-                return traffic flows over the same duplex.
-                ``this_host()`` continues to name the current machine;
-                attach controls how the host's procs are reached, not
-                the host's identity. Procs spawned on this host share a
-                single reachability story — they are all reached
-                through the attach host. Intended for running the
-                client outside a cluster while procs run inside it.
-                Empty string (the default) disables attach-mode
-                bootstrap.
-
         **kwargs: Reserved for future configuration keys exposed by Rust bindings.
     """
 
@@ -292,7 +274,6 @@ def configured(**overrides: "ConfigureKwargsType") -> Iterator[Dict[str, Any]]:
     finally:
         # Restore previous runtime
         clear_runtime_config()
-        # pyre-fixme[6]: Values are already from the config function.
         configure(**prev)
 
 
@@ -328,7 +309,7 @@ def parametrize_config(
     import inspect
     import itertools
 
-    import pytest  # pyre-ignore[21]: pytest is a test-only dependency
+    import pytest
 
     if not config_options:
         raise ValueError("parametrize_config requires at least one config option")
@@ -360,7 +341,6 @@ def parametrize_config(
             async def async_wrapper(
                 _config_overrides: Dict[str, Any], *args: Any, **kwargs: Any
             ) -> Any:
-                # pyre-fixme[6]: Values are checked inside the function.
                 with configured(**_config_overrides):
                     return await fn(*args, **kwargs)
 
@@ -372,7 +352,6 @@ def parametrize_config(
             def sync_wrapper(
                 _config_overrides: Dict[str, Any], *args: Any, **kwargs: Any
             ) -> Any:
-                # pyre-fixme[6]: Values are checked inside the function.
                 with configured(**_config_overrides):
                     return fn(*args, **kwargs)
 
@@ -421,7 +400,7 @@ def parametrize_config_pointwise(
     import functools
     import inspect
 
-    import pytest  # pyre-ignore[21]: pytest is a test-only dependency
+    import pytest
 
     if not config_options:
         raise ValueError(
@@ -457,7 +436,6 @@ def parametrize_config_pointwise(
             async def async_wrapper(
                 _config_overrides: Dict[str, Any], *args: Any, **kwargs: Any
             ) -> Any:
-                # pyre-fixme[6]: Values are checked inside the function.
                 with configured(**_config_overrides):
                     return await fn(*args, **kwargs)
 
@@ -469,7 +447,6 @@ def parametrize_config_pointwise(
             def sync_wrapper(
                 _config_overrides: Dict[str, Any], *args: Any, **kwargs: Any
             ) -> Any:
-                # pyre-fixme[6]: Values are checked inside the function.
                 with configured(**_config_overrides):
                     return fn(*args, **kwargs)
 

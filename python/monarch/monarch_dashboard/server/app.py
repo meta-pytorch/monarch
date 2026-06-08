@@ -11,20 +11,47 @@ initialises the database layer pointing at the fake data SQLite file,
 and serves the React frontend build as static files.
 """
 
+import atexit
 import logging
 import os
-import socket
 import ssl
 import threading
+from contextlib import ExitStack
+from importlib.resources import as_file
 
 from flask import Flask, send_from_directory
 from monarch.monarch_dashboard import _PKG
+from werkzeug.serving import make_server
 
 from . import db
 from .db import DBAdapter
 from .routes import api
 
 logger = logging.getLogger(__name__)
+
+
+def _frontend_build_dir() -> str:
+    """Resolve the bundled React build directory to a real filesystem path.
+
+    ``importlib.resources`` exposes packaged data as ``Traversable`` objects
+    whose backing store may be a zip archive (e.g. FastZIP PARs) rather than a
+    real directory; their ``str`` form is not a path that ``os.path`` or
+    Flask's ``static_folder`` can open, and a module ``__file__`` likewise
+    points inside the archive. ``as_file`` materialises the resource on the
+    filesystem -- a no-op when it already lives on disk, an extraction to a
+    temporary directory when it does not -- so the dashboard serves static
+    files correctly under every Buck packaging mode. The materialised copy is
+    retained for the process lifetime and removed at interpreter exit.
+
+    Returns an empty string when the frontend has not been built, in which case
+    the server degrades to API-only.
+    """
+    build = _PKG / "frontend" / "build"
+    if not build.is_dir():
+        return ""
+    stack = ExitStack()
+    atexit.register(stack.close)
+    return str(stack.enter_context(as_file(build)))
 
 
 def create_app(adapter: DBAdapter) -> Flask:
@@ -34,7 +61,7 @@ def create_app(adapter: DBAdapter) -> Flask:
         adapter: A DBAdapter instance for data access (e.g. SQLiteAdapter
             for local dev, QueryEngineAdapter for production).
     """
-    build_dir = str(_PKG / "frontend" / "build")
+    build_dir = _frontend_build_dir()
 
     app = Flask(
         __name__,
@@ -96,20 +123,6 @@ def start_dashboard(
     Raises:
         OSError: If the port is already in use.
     """
-    # Check port availability before starting the thread so failures
-    # are raised to the caller instead of silently killing the thread.
-    # Resolve host to the correct address family so IPv4 ("127.0.0.1"),
-    # IPv6 ("::"), and hostname forms all work.
-    family, _, _, _, sockaddr = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)[
-        0
-    ]
-    with socket.socket(family, socket.SOCK_STREAM) as s:
-        try:
-            s.bind(sockaddr)
-        except OSError:
-            logger.error("Dashboard failed to start: port %d is unavailable", port)
-            raise
-
     ssl_ctx: ssl.SSLContext | None = None
     tls_hostname: str | None = None
     try:
@@ -124,21 +137,33 @@ def start_dashboard(
     except ImportError:
         pass
 
-    if ssl_ctx is not None and tls_hostname is not None:
-        url = nest_dev_proxy_url(tls_hostname, port)
-        local_url = f"https://{tls_hostname}:{port}"
-    else:
-        url = f"http://localhost:{port}"
-        local_url = url
-
     app = create_app(adapter)
     # Suppress per-request werkzeug logs (they are noisy in production).
     logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
+    try:
+        server = make_server(
+            host,
+            port,
+            app,
+            threaded=True,
+            ssl_context=ssl_ctx,
+        )
+    except OSError:
+        logger.exception("dashboard failed to start on %s:%s", host, port)
+        raise
+
+    actual_port = server.server_port
+    if ssl_ctx is not None and tls_hostname is not None:
+        # pyrefly: ignore [unbound-name]
+        url = nest_dev_proxy_url(tls_hostname, actual_port)
+        local_url = f"https://{tls_hostname}:{actual_port}"
+    else:
+        url = f"http://localhost:{actual_port}"
+        local_url = url
+
     thread = threading.Thread(
-        target=lambda: app.run(
-            host=host, port=port, debug=False, use_reloader=False, ssl_context=ssl_ctx
-        ),
+        target=server.serve_forever,
         daemon=True,
         name="monarch-dashboard",
     )
@@ -148,7 +173,7 @@ def start_dashboard(
     return {
         "url": url,
         "local_url": local_url,
-        "port": port,
+        "port": actual_port,
         "pid": None,
         "handle": thread,
     }

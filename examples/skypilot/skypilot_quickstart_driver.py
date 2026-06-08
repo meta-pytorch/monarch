@@ -13,7 +13,7 @@ This script demonstrates running Monarch actors on cloud infrastructure
 provisioned by SkyPilot (Kubernetes or cloud VMs).
 
 Prerequisites:
-    pip install torchmonarch-nightly
+    pip install --pre torchmonarch
     pip install skypilot[kubernetes]  # or skypilot[aws], skypilot[gcp], etc.
     sky check  # Verify SkyPilot configuration
     sky show-gpus --infra kubernetes  # Verify GPUs available
@@ -54,7 +54,7 @@ try:
     from monarch.actor import Actor, context, endpoint, ProcMesh
 except ImportError as e:
     print(f"ERROR: Monarch is not properly installed: {e}")
-    print("Run: pip install torchmonarch-nightly")
+    print("Run: pip install --pre torchmonarch")
     sys.exit(1)
 
 # Import SkyPilotJob from the local package

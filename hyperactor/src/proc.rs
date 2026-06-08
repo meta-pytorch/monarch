@@ -8,9 +8,14 @@
 
 //! [`Proc`] is an addressable actor-runtime boundary.
 //!
-//! It owns actor lifecycle (spawn, run, terminate), routes messages
-//! to local actors, forwards messages for remote destinations, and
-//! hosts supervision state.
+//! It owns actor lifecycle (spawn, run, terminate), delivers messages
+//! to its local actors, and hosts supervision state. A proc is not a
+//! network endpoint by itself: it reaches—and is reached by—other procs
+//! through a [`Gateway`](crate::gateway::Gateway), its connectivity
+//! boundary (see [`Proc::gateway`]). Outbound messages for remote
+//! destinations flow through that gateway, which delivers locally,
+//! forwards to a known peer, or routes onward. A host attaches all of
+//! its procs to one shared gateway.
 //!
 //! It also stores bounded snapshots of terminated actors for
 //! post-mortem introspection.
@@ -48,10 +53,16 @@
 //!
 //! ## Queue depth accounting invariants (PD-5*)
 //!
-//! - **PD-5a:** Per-actor queue depth counts work items enqueued for
-//!   handler execution but not yet received from `work_rx`.
-//! - **PD-5b:** Queue depth is incremented exactly once on every
-//!   enqueue into the actor work queue (in `HandlerPorts::get`).
+//! - **PD-5a:** Per-actor queue depth counts accepted handler work
+//!   not yet dequeued by the actor loop. Accounting increments in
+//!   `HandlerPorts::get`'s enqueue closure *before* the reorder-buffer
+//!   decision, so this counter includes both in-order messages waiting
+//!   in `work_rx` AND out-of-order messages held in the
+//!   `OrderedSender` reorder buffer. (Reflected at the introspection
+//!   layer in IO-3 of the `introspect` module doc.)
+//! - **PD-5b:** Queue depth is incremented exactly once per accepted
+//!   message in the enqueue closure of `HandlerPorts::get`, before
+//!   the in-order / out-of-order branch.
 //! - **PD-5c:** Queue depth is decremented exactly once on every
 //!   dequeue from `work_rx` (in the actor `run` loop).
 //! - **PD-5d:** Queue depth is intended to be non-negative; tests
@@ -125,8 +136,6 @@ use hyperactor_telemetry::notify_actor_status_changed;
 use hyperactor_telemetry::notify_message;
 use hyperactor_telemetry::notify_message_status;
 use hyperactor_telemetry::recorder::Recording;
-use serde::Deserialize;
-use serde::Serialize;
 use tokio::sync::Notify;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
@@ -165,7 +174,8 @@ use crate::actor_local::ActorLocalStorage;
 use crate::channel;
 use crate::channel::ChannelAddr;
 use crate::channel::ChannelError;
-use crate::channel::ChannelTransport;
+use crate::client::Client;
+use crate::client::ClientActor;
 use crate::config;
 use crate::context;
 use crate::context::Mailbox as _;
@@ -177,24 +187,29 @@ use crate::id::Uid;
 use crate::introspect::IntrospectMessage;
 use crate::introspect::IntrospectResult;
 use crate::mailbox::BoxedMailboxSender;
-use crate::mailbox::DeliveryError;
+use crate::mailbox::DeliveryFailure;
 use crate::mailbox::DialMailboxRouter;
 use crate::mailbox::IntoBoxedMailboxSender as _;
 use crate::mailbox::Mailbox;
-use crate::mailbox::MailboxClient;
 use crate::mailbox::MailboxMuxer;
 use crate::mailbox::MailboxSender;
 use crate::mailbox::MessageEnvelope;
 use crate::mailbox::OncePortHandle;
 use crate::mailbox::OncePortReceiver;
-use crate::mailbox::PanickingMailboxSender;
 use crate::mailbox::PortHandle;
 use crate::mailbox::PortReceiver;
+use crate::mailbox::TransportFailure;
+use crate::mailbox::TransportFailureReason;
 use crate::mailbox::Undeliverable;
+use crate::mailbox::UndeliverableReason;
 use crate::metrics::ACTOR_MESSAGE_HANDLER_DURATION;
 use crate::metrics::ACTOR_MESSAGE_QUEUE_SIZE;
 use crate::metrics::ACTOR_MESSAGES_RECEIVED;
 use crate::subject::AsSubject as _;
+
+tokio::task_local! {
+    static CURRENT_TASK_PROC: Proc;
+}
 
 /// Legacy singleton proc name used for host-local client actors.
 ///
@@ -207,9 +222,6 @@ pub const LEGACY_LOCAL_PROC_NAME: &str = "local";
 /// This is not a true singleton: every host may have a `service` proc, so
 /// local delivery must compare both proc id and location for this id.
 pub const LEGACY_SERVICE_PROC_NAME: &str = "service";
-
-/// Label used for attach-control sigil envelopes.
-pub const ATTACH_SIGIL_LABEL: &str = "attach";
 
 /// Returns current epoch-millis from wall clock. Used by
 /// `ProcQueueStats` for timestamp recording. In tests, override
@@ -366,180 +378,6 @@ use crate::ordering::ordered_channel;
 use crate::panic_handler;
 use crate::supervision::ActorSupervisionEvent;
 
-/// Identity assignment sent by a host as the first message on a duplex
-/// attach connection. The child reads this to learn its [`ProcAddr`].
-#[derive(Debug, Clone, Serialize, Deserialize, typeuri::Named)]
-pub struct BootstrapAssignment {
-    /// The assigned proc identity.
-    pub proc_id: ProcAddr,
-}
-wirevalue::register_type!(BootstrapAssignment);
-
-/// Sentinel message sent by an attach client as its first
-/// [`MessageEnvelope`]. Hosts use this to distinguish attach requests
-/// from regular inbound [`MessageEnvelope`] connections, and to pick
-/// an attach mode:
-///
-/// * [`AttachRequest::Proc`] — proc attach. The host generates a fresh
-///   proc id and returns it via [`BootstrapAssignment`]; the connection
-///   registers that one proc on the host's gateway. Used by
-///   [`Proc::attach_to_host`].
-/// * [`AttachRequest::Gateway`] — gateway attach. The host registers
-///   each listed proc id on its gateway with this duplex as the
-///   outbound sender, so messages addressed to any of those procs flow
-///   back over the duplex. An empty `proc_ids` is valid — it means
-///   "connect the gateways, no initial procs to register"; later
-///   attaches propagate via [`RegisterProc`]. Used by
-///   [`crate::gateway::Gateway::serve_via`].
-#[derive(Debug, Clone, Serialize, Deserialize, typeuri::Named)]
-pub enum AttachRequest {
-    /// Legacy proc attach. The host assigns a fresh proc id.
-    Proc,
-    /// Gateway attach. The host registers each `proc_ids` entry as
-    /// reachable through this duplex.
-    Gateway {
-        /// Proc ids the attaching gateway already owns at handshake time.
-        proc_ids: Vec<ProcId>,
-    },
-}
-wirevalue::register_type!(AttachRequest);
-
-/// Control envelope sent by an attached gateway *after* the initial
-/// handshake to unregister a proc that has detached locally. The
-/// server side intercepts this envelope, drops the matching
-/// [`crate::gateway::AttachGuard`], and the route entry is removed
-/// from its gateway.
-#[derive(Debug, Clone, Serialize, Deserialize, typeuri::Named)]
-pub struct UnregisterProc {
-    /// Proc id to unregister on the receiving gateway.
-    pub proc_id: ProcId,
-}
-wirevalue::register_type!(UnregisterProc);
-
-/// Control envelope sent by an attached gateway *after* the initial
-/// handshake to register a newly-attached proc on the remote gateway.
-///
-/// The server side intercepts envelopes carrying this type before they
-/// reach the gateway's demux, calls `gateway.attach((proc_id,
-/// AttachSender))` for the supplied id, and keeps the resulting guard
-/// alive for the duplex session. Senders are placeholders in the
-/// envelope — same convention as [`AttachRequest`].
-#[derive(Debug, Clone, Serialize, Deserialize, typeuri::Named)]
-pub struct RegisterProc {
-    /// Proc id to register on the receiving gateway.
-    pub proc_id: ProcId,
-}
-wirevalue::register_type!(RegisterProc);
-
-/// Wire protocol for the host -> client direction on a duplex attach
-/// connection.
-#[derive(Debug, Serialize, Deserialize, typeuri::Named)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "wire-protocol enum; boxing Envelope ripples through all channel/networking construction and destructure sites and needs a wire-compatibility review — separate diff"
-)]
-pub enum Host2Client {
-    /// First message: identity assignment from the host.
-    Bootstrap(BootstrapAssignment),
-    /// Subsequent messages: routed envelopes.
-    Envelope(MessageEnvelope),
-}
-wirevalue::register_type!(Host2Client);
-
-/// [`Rx<MessageEnvelope>`](channel::Rx) adapter that unwraps
-/// [`Host2Client::Envelope`] from a duplex receiver.
-pub struct AttachRx(pub channel::duplex::DuplexRx<Host2Client>);
-
-#[async_trait]
-impl channel::Rx<MessageEnvelope> for AttachRx {
-    async fn recv(&mut self) -> Result<MessageEnvelope, ChannelError> {
-        match self.0.recv().await? {
-            Host2Client::Envelope(envelope) => Ok(envelope),
-            Host2Client::Bootstrap(_) => Err(ChannelError::Other(anyhow::anyhow!(
-                "unexpected bootstrap message after handshake"
-            ))),
-        }
-    }
-
-    fn addr(&self) -> ChannelAddr {
-        self.0.addr()
-    }
-
-    async fn join(self) {
-        self.0.join().await
-    }
-}
-
-/// Owned result of a successful [`attach_handshake`]: the assignment
-/// the host made for the attaching peer, the live duplex session, and
-/// both halves so the caller can wire them up.
-pub(crate) struct AttachHandshake {
-    pub(crate) assignment: BootstrapAssignment,
-    pub(crate) duplex_client: channel::duplex::DuplexClient<MessageEnvelope, Host2Client>,
-    pub(crate) duplex_tx: channel::duplex::DuplexTx<MessageEnvelope>,
-    pub(crate) duplex_rx: channel::duplex::DuplexRx<Host2Client>,
-}
-
-/// Serialize a control payload into a placeholder [`MessageEnvelope`]
-/// suitable for posting on a duplex client→host channel.
-///
-/// Sender/dest ids are placeholders the host consumes without routing;
-/// `return_undeliverable` is cleared so an envelope that ever escapes
-/// into the forwarder is dropped rather than bounced to the fake
-/// sender.
-pub(crate) fn build_sigil_envelope<T>(payload: &T) -> anyhow::Result<MessageEnvelope>
-where
-    T: serde::Serialize + typeuri::Named,
-{
-    let signal_actor_id = ActorAddr::root(
-        ProcAddr::singleton(
-            ChannelAddr::any(channel::ChannelTransport::Local),
-            ATTACH_SIGIL_LABEL,
-        ),
-        crate::id::Label::strip(ATTACH_SIGIL_LABEL),
-    );
-    let signal_port = signal_actor_id.port_addr(crate::port::Port::from(0u64));
-    let mut envelope =
-        MessageEnvelope::serialize(signal_actor_id, signal_port, payload, Default::default())?;
-    envelope.set_return_undeliverable(false);
-    Ok(envelope)
-}
-
-/// Dial a host's duplex server and run the attach handshake.
-///
-/// Sends an [`AttachRequest`] sentinel envelope, then waits for the
-/// host to reply with [`Host2Client::Bootstrap`]. The variant of
-/// `request` selects the attach mode — see [`AttachRequest`].
-pub(crate) async fn attach_handshake(
-    addr: ChannelAddr,
-    request: AttachRequest,
-) -> anyhow::Result<AttachHandshake> {
-    use crate::channel::Rx;
-    use crate::channel::Tx;
-
-    let mut duplex_client = channel::duplex::dial::<MessageEnvelope, Host2Client>(addr)?;
-    let duplex_tx = duplex_client.tx();
-    let mut duplex_rx = duplex_client
-        .take_rx()
-        .expect("dial returns a fresh DuplexClient with rx present");
-
-    duplex_tx.post(build_sigil_envelope(&request)?);
-
-    let assignment = match duplex_rx.recv().await? {
-        Host2Client::Bootstrap(a) => a,
-        Host2Client::Envelope(_) => {
-            anyhow::bail!("expected bootstrap assignment as first message")
-        }
-    };
-
-    Ok(AttachHandshake {
-        assignment,
-        duplex_client,
-        duplex_tx,
-        duplex_rx,
-    })
-}
-
 /// A proc instance is the runtime managing a single proc in Hyperactor.
 /// It is responsible for spawning actors in the proc, multiplexing messages
 /// to/within actors in the proc, and providing fallback routing to external
@@ -583,6 +421,9 @@ struct ProcState {
     /// All actor instances in this proc.
     instances: DashMap<ActorId, WeakInstanceCell>,
 
+    /// Root actor ids in this proc, tracked independently from uid shape.
+    root_actors: DashSet<ActorId>,
+
     /// Proc-level queue-pressure accounting (PD-6 through PD-9).
     /// Runtime-driven — updated from `account_enqueue` /
     /// `account_dequeue`, not from publish-time sampling.
@@ -609,14 +450,14 @@ struct ProcState {
     /// acks) during shutdown.
     mailbox_server_handle: std::sync::Mutex<Option<crate::mailbox::MailboxServerHandle>>,
 
-    /// Detach guard for this proc's registration with `gateway`. Held
-    /// here so that dropping the proc removes its entry from the
-    /// gateway's proc map without a separate explicit step. Wrapped in
-    /// a `OnceLock` because the guard is constructed *after* the
-    /// `ProcState` Arc exists (so we can pass `&proc` to
-    /// `gateway.attach`); it is set exactly once during construction
-    /// and never read by anyone outside of drop ordering.
-    _attach_guard: OnceLock<crate::gateway::AttachGuard>,
+    /// Detach guard for this proc's attachment to `gateway`. Held here
+    /// so that dropping the proc removes its entry from the gateway
+    /// without a separate explicit step. Wrapped in a `OnceLock`
+    /// because the guard is constructed *after* the `ProcState` Arc
+    /// exists (so we can pass `&proc` to `gateway.attach_proc`); it is
+    /// set exactly once during construction and never read by anyone
+    /// outside of drop ordering.
+    _attached_proc_guard: OnceLock<crate::gateway::AttachedProcGuard>,
 }
 
 struct TerminatedSnapshot {
@@ -639,6 +480,7 @@ impl Drop for ProcState {
 }
 
 impl ProcState {
+    /// The proc's effective advertised location.
     fn default_location(&self) -> Location {
         self.gateway.default_location()
     }
@@ -648,7 +490,7 @@ impl ProcState {
     }
 
     fn proc_addr(&self) -> ProcAddr {
-        self.gateway.proc_addr(&self.proc_id)
+        ProcAddr::new(self.proc_id.clone(), self.gateway.default_location())
     }
 }
 
@@ -664,7 +506,7 @@ pub struct ActorInstance<A: Actor> {
     /// Supervision events delivered to this actor.
     pub supervision: mpsc::UnboundedReceiver<ActorSupervisionEvent>,
     /// Control signals for the actor.
-    pub signal: PortReceiver<Signal>,
+    pub signal: mpsc::UnboundedReceiver<Signal>,
     /// Primary work queue for handler dispatch.
     pub work: mpsc::UnboundedReceiver<WorkCell<A>>,
 }
@@ -777,7 +619,7 @@ impl Builder<PrivateGateway> {
 
 impl Proc {
     fn from_parts_unchecked(proc_id: ProcId, gateway: Gateway) -> Self {
-        let proc_addr = gateway.proc_addr(&proc_id);
+        let proc_addr = ProcAddr::new(proc_id.clone(), gateway.default_location());
         tracing::info!(
             subject = %proc_addr.subject(),
             name = "ProcStatus",
@@ -792,22 +634,23 @@ impl Proc {
                 reserved_roots: DashSet::new(),
                 reserved_child_uids: DashSet::new(),
                 instances: DashMap::new(),
+                root_actors: DashSet::new(),
                 queue_stats: Arc::new(ProcQueueStats::new()),
                 terminated_snapshots: DashMap::new(),
                 supervision_coordinator_port: OnceLock::new(),
                 supervision_coordinator_actor_id: OnceLock::new(),
                 mailbox_server_handle: std::sync::Mutex::new(None),
-                _attach_guard: OnceLock::new(),
+                _attached_proc_guard: OnceLock::new(),
             }),
         };
-        // Attach now that the `Arc<ProcState>` exists; the returned
-        // guard's drop will remove the entry from the gateway's proc
-        // map when the last `Proc` referencing this state is dropped.
-        let guard = gateway.attach(&proc);
+        // Attach to the gateway now that the `Arc<ProcState>` exists;
+        // the returned guard's drop will remove the entry when the last
+        // `Proc` referencing this state is dropped.
+        let guard = gateway.attach_proc(&proc);
         proc.inner
-            ._attach_guard
+            ._attached_proc_guard
             .set(guard)
-            .expect("fresh ProcState's attach guard slot is empty");
+            .expect("fresh ProcState's attached-proc guard slot is empty");
         proc
     }
 
@@ -816,29 +659,39 @@ impl Proc {
         Self::from_parts_unchecked(proc_id, gateway)
     }
 
-    /// Create the legacy host-local client proc pseudo-singleton.
+    /// Create the legacy host-local client proc pseudo-singleton on
+    /// a fresh gateway whose forwarder is `forwarder`.
     pub fn legacy_local_pseudo_singleton(addr: ChannelAddr, forwarder: BoxedMailboxSender) -> Self {
-        Self::legacy_pseudo_singleton(addr, LEGACY_LOCAL_PROC_NAME, forwarder)
+        Self::legacy_local_pseudo_singleton_on_gateway(Gateway::configured(addr.into(), forwarder))
     }
 
-    /// Create the legacy host system proc pseudo-singleton.
+    /// Create the legacy host system proc pseudo-singleton on a
+    /// fresh gateway whose forwarder is `forwarder`.
     pub fn legacy_service_pseudo_singleton(
         addr: ChannelAddr,
         forwarder: BoxedMailboxSender,
     ) -> Self {
-        Self::legacy_pseudo_singleton(addr, LEGACY_SERVICE_PROC_NAME, forwarder)
+        Self::legacy_service_pseudo_singleton_on_gateway(Gateway::configured(
+            addr.into(),
+            forwarder,
+        ))
     }
 
-    fn legacy_pseudo_singleton(
-        addr: ChannelAddr,
-        name: &'static str,
-        forwarder: BoxedMailboxSender,
-    ) -> Self {
-        let proc_addr = ProcAddr::singleton(addr, name);
-        Self::from_parts_unchecked(
-            proc_addr.id().clone(),
-            Gateway::configured(proc_addr.location().clone(), forwarder),
-        )
+    /// Create the legacy host-local client proc pseudo-singleton on
+    /// the provided shared gateway.
+    pub fn legacy_local_pseudo_singleton_on_gateway(gateway: Gateway) -> Self {
+        Self::legacy_pseudo_singleton_on_gateway(LEGACY_LOCAL_PROC_NAME, gateway)
+    }
+
+    /// Create the legacy host system proc pseudo-singleton on the
+    /// provided shared gateway.
+    pub fn legacy_service_pseudo_singleton_on_gateway(gateway: Gateway) -> Self {
+        Self::legacy_pseudo_singleton_on_gateway(LEGACY_SERVICE_PROC_NAME, gateway)
+    }
+
+    fn legacy_pseudo_singleton_on_gateway(name: &'static str, gateway: Gateway) -> Self {
+        let proc_id = ProcId::singleton(Label::strip(name));
+        Self::from_parts_unchecked(proc_id, gateway)
     }
 
     /// Create a proc with an anonymous instance id on the default gateway.
@@ -902,43 +755,6 @@ impl Proc {
             .build()
             .expect("direct proc builder is valid");
         let handle = proc.gateway().serve_rx(rx);
-        *proc.inner.mailbox_server_handle.lock().unwrap() = Some(handle);
-        Ok(proc)
-    }
-
-    /// Connect to a host's duplex server and return a [`Proc`] whose
-    /// identity is assigned by the host. Outbound messages are forwarded
-    /// over the duplex channel; inbound messages are served into the
-    /// proc's muxer. Mirrors [`Proc::direct`] but the identity and
-    /// routing are managed by the remote host.
-    pub async fn attach_to_host(addr: ChannelAddr) -> Result<Self, anyhow::Error> {
-        let AttachHandshake {
-            assignment,
-            duplex_client,
-            duplex_tx,
-            duplex_rx,
-        } = attach_handshake(addr, AttachRequest::Proc).await?;
-        let proc = Self::builder()
-            .proc_id(assignment.proc_id.id().clone())
-            .shared_gateway(Gateway::configured(
-                assignment.proc_id.location().clone(),
-                MailboxClient::new(duplex_tx).into_boxed(),
-            ))
-            .build()
-            .expect("attached proc builder is valid");
-        // Wrap the inner mailbox server handle so that stopping/
-        // joining the outer handle also joins the dial-side
-        // `DuplexClient`.
-        let inner_handle = proc.gateway().serve_rx(AttachRx(duplex_rx));
-        let (stopped_tx, mut stopped_rx) = tokio::sync::watch::channel(false);
-        let wrapped_join = tokio::spawn(async move {
-            let _ = stopped_rx.wait_for(|stopped| *stopped).await;
-            inner_handle.stop("proc shutting down");
-            let _ = inner_handle.await;
-            duplex_client.join().await;
-            Ok(())
-        });
-        let handle = crate::mailbox::MailboxServerHandle::from_parts(wrapped_join, stopped_tx);
         *proc.inner.mailbox_server_handle.lock().unwrap() = Some(handle);
         Ok(proc)
     }
@@ -1036,6 +852,40 @@ impl Proc {
         self.state().gateway.clone()
     }
 
+    /// Return the process-global proc.
+    pub fn global() -> Self {
+        static GLOBAL_PROC: OnceLock<Proc> = OnceLock::new();
+        GLOBAL_PROC
+            .get_or_init(|| {
+                let label = global_proc_label();
+                Proc::instance(label.as_str())
+            })
+            .clone()
+    }
+
+    /// Return the proc for the current execution context.
+    ///
+    /// Actor callbacks run with their owning proc installed as the current
+    /// proc. Outside an actor callback, this returns the process-global proc.
+    pub fn current() -> Self {
+        CURRENT_TASK_PROC
+            .try_with(Clone::clone)
+            .unwrap_or_else(|_| Self::global())
+    }
+
+    async fn with_current<F>(&self, future: F) -> F::Output
+    where
+        F: Future,
+    {
+        CURRENT_TASK_PROC.scope(self.clone(), future).await
+    }
+
+    /// Shared sender used by the proc to forward messages to remote
+    /// destinations.
+    pub fn forwarder(&self) -> BoxedMailboxSender {
+        self.state().gateway.forwarder()
+    }
+
     /// The proc's mailbox muxer, which routes messages to actors
     /// registered on this proc.
     pub fn muxer(&self) -> &MailboxMuxer {
@@ -1047,16 +897,6 @@ impl Proc {
         self.inner.as_ref()
     }
 
-    /// A global runtime proc used by this crate.
-    pub(crate) fn runtime() -> &'static Proc {
-        static RUNTIME_PROC: OnceLock<Proc> = OnceLock::new();
-        RUNTIME_PROC.get_or_init(|| {
-            let addr = ChannelAddr::any(ChannelTransport::Local);
-            let proc_id = ProcAddr::instance(addr, "hyperactor_runtime");
-            Proc::configured(proc_id, BoxedMailboxSender::new(PanickingMailboxSender))
-        })
-    }
-
     /// Attach a mailbox to the proc with the provided root name.
     pub fn attach(&self, name: &str) -> Result<Mailbox, anyhow::Error> {
         let actor_id: ActorAddr = self.allocate_root_id(name)?;
@@ -1065,7 +905,7 @@ impl Proc {
 
     /// Attach a mailbox to the proc as a child actor.
     pub fn attach_child(&self, parent_id: &ActorAddr) -> Result<Mailbox, anyhow::Error> {
-        let actor_id: ActorAddr = self.allocate_child_id(parent_id)?;
+        let actor_id: ActorAddr = self.allocate_anonymous_child_id(parent_id);
         Ok(self.bind_mailbox(actor_id))
     }
 
@@ -1084,59 +924,68 @@ impl Proc {
     pub fn attach_actor<R, M>(
         &self,
         name: &str,
-    ) -> Result<(Instance<()>, ActorRef<R>, PortReceiver<M>), anyhow::Error>
+    ) -> Result<(Client, ActorRef<R>, PortReceiver<M>), anyhow::Error>
     where
         M: RemoteMessage,
         R: Referable + RemoteHandles<M>,
     {
-        let (instance, _handle) = self.client(name)?;
-        let (_handle, rx) = instance.bind_handler_port::<M>();
-        let actor_ref = ActorRef::attest(instance.self_addr().clone());
-        Ok((instance, actor_ref, rx))
+        let client = self.client(name);
+        let (_handle, rx) = client.bind_handler_port::<M>();
+        let actor_ref = ActorRef::attest(client.self_addr().clone());
+        Ok((client, actor_ref, rx))
     }
 
-    /// Spawn a named (root) actor on this proc. The name of the actor must be
-    /// unique.
-    pub fn spawn<A: Actor>(&self, name: &str, actor: A) -> Result<ActorHandle<A>, anyhow::Error> {
-        let actor_id: ActorAddr = self.allocate_root_id(name)?;
+    /// Spawn a root actor with a fresh uid labeled from the actor type.
+    pub fn spawn<A: Actor>(&self, actor: A) -> ActorHandle<A> {
+        let actor_id: ActorAddr = self.allocate_root_type::<A>();
+        self.spawn_inner(actor_id, actor, None)
+    }
+
+    /// Spawn a root actor with a fresh uid carrying a display label.
+    ///
+    /// The label is descriptive only and does not participate in actor
+    /// identity.
+    pub fn spawn_with_label<A: Actor>(&self, label: &str, actor: A) -> ActorHandle<A> {
+        let actor_id: ActorAddr = self.allocate_root_label(label);
         self.spawn_inner(actor_id, actor, None)
     }
 
     /// Spawn a root actor on this proc using an explicit uid.
     ///
-    /// The uid must be unique among root actors on this proc. Instance labels,
-    /// if present, are descriptive only and do not affect uniqueness.
+    /// This is the explicit identity API, and the only root spawn API that
+    /// permits singleton actor identity. The uid must be unique among root
+    /// actors on this proc. Instance labels, if present, are descriptive only
+    /// and do not affect uniqueness.
     pub fn spawn_with_uid<A: Actor>(
         &self,
-        uid: crate::id::Uid,
+        uid: Uid,
         actor: A,
     ) -> Result<ActorHandle<A>, anyhow::Error> {
         let actor_id: ActorAddr = self.allocate_root_uid(uid)?;
-        self.spawn_inner(actor_id, actor, None)
+        Ok(self.spawn_inner(actor_id, actor, None))
     }
 
     /// Common spawn logic for both root and child actors.
-    #[hyperactor::instrument(fields(subject = actor_id.subject().to_string()))]
     fn spawn_inner<A: Actor>(
         &self,
         actor_id: ActorAddr,
         actor: A,
         parent: Option<InstanceCell>,
-    ) -> Result<ActorHandle<A>, anyhow::Error> {
+    ) -> ActorHandle<A> {
         let (instance, receivers) = Instance::new(self.clone(), actor_id, false, parent);
-        Ok(instance.start(actor, receivers))
+        instance.start(actor, receivers)
     }
 
     /// Create a lightweight client instance (no actor loop, no
     /// introspect task).  This is safe to call outside a Tokio
     /// runtime — unlike [`actor_instance`], it never calls
     /// `tokio::spawn`.
-    pub fn client(&self, name: &str) -> Result<(Instance<()>, ActorHandle<()>), anyhow::Error> {
-        let actor_id: ActorAddr = self.allocate_root_id(name)?;
-        let (instance, _receivers) = Instance::new(self.clone(), actor_id, false, None);
-        let handle = ActorHandle::new(instance.inner.cell.clone(), instance.inner.ports.clone());
+    pub fn client(&self, label: &str) -> Client {
+        let actor_id = self.allocate_client_id(label);
+        let (instance, _receivers) =
+            Instance::<ClientActor>::new(self.clone(), actor_id, false, None);
         instance.change_status(ActorStatus::Client);
-        Ok((instance, handle))
+        Client::new(instance)
     }
 
     /// Create a lightweight client instance that handles
@@ -1198,21 +1047,12 @@ impl Proc {
     }
 
     /// Traverse all actor trees in this proc, starting from root actors.
-    ///
-    /// **Caution:** This holds DashMap shard read locks while doing
-    /// `Weak::upgrade()` and recursively walking the actor tree per
-    /// entry. Under rapid actor churn, this causes convoy starvation
-    /// with concurrent `insert`/`remove` operations. Prefer
-    /// `all_instance_keys()` with point lookups if you only need
-    /// actor IDs. Currently unused in production code.
     pub fn traverse<F>(&self, f: &mut F)
     where
         F: FnMut(&InstanceCell, usize),
     {
-        for entry in self.state().instances.iter() {
-            if entry.key().uid().is_singleton()
-                && let Some(cell) = entry.value().upgrade()
-            {
+        for entry in self.state().root_actors.iter() {
+            if let Some(cell) = self.get_instance_by_id(entry.key()) {
                 cell.traverse(f);
             }
         }
@@ -1247,24 +1087,12 @@ impl Proc {
     }
 
     /// Returns the ActorAddrs of all root actors in this proc.
-    ///
-    /// **Caution:** This iterates the full DashMap under shard read
-    /// locks. The per-entry work is lightweight (key filter + clone),
-    /// but under very rapid churn the iteration can still contend
-    /// with concurrent writes. Prefer `all_instance_keys()` with a
-    /// post-filter if this becomes a hot path. Currently unused in
-    /// production code.
     pub fn root_actor_ids(&self) -> Vec<ActorAddr> {
         self.state()
-            .instances
+            .root_actors
             .iter()
             .filter_map(|entry| {
-                entry
-                    .key()
-                    .uid()
-                    .is_singleton()
-                    .then(|| entry.value().upgrade())
-                    .flatten()
+                self.get_instance_by_id(entry.key())
                     .map(|cell| cell.actor_addr().clone())
             })
             .collect()
@@ -1328,11 +1156,8 @@ impl Proc {
     }
 
     /// Create a child instance. Called from `Instance`.
-    fn child_instance(
-        &self,
-        parent: InstanceCell,
-    ) -> Result<(Instance<()>, ActorHandle<()>), anyhow::Error> {
-        let actor_id = self.allocate_child_id(parent.actor_addr())?;
+    fn child_instance(&self, parent: InstanceCell) -> (Instance<()>, ActorHandle<()>) {
+        let actor_id = self.allocate_anonymous_child_id(parent.actor_addr());
         let _ = tracing::debug_span!(
             "child_actor_instance",
             subject = %actor_id.subject(),
@@ -1343,7 +1168,7 @@ impl Proc {
         // Receivers are intentionally dropped.
         let handle = ActorHandle::new(instance.inner.cell.clone(), instance.inner.ports.clone());
         instance.change_status(ActorStatus::Client);
-        Ok((instance, handle))
+        (instance, handle)
     }
 
     /// Spawn a child actor from the provided parent on this proc. The parent actor
@@ -1351,12 +1176,8 @@ impl Proc {
     ///
     /// When spawn_child returns, the child has an associated cell and is linked
     /// with its parent.
-    pub(crate) fn spawn_child<A: Actor>(
-        &self,
-        parent: InstanceCell,
-        actor: A,
-    ) -> Result<ActorHandle<A>, anyhow::Error> {
-        let actor_id = self.allocate_child_id(parent.actor_addr())?;
+    pub(crate) fn spawn_child<A: Actor>(&self, parent: InstanceCell, actor: A) -> ActorHandle<A> {
+        let actor_id = self.allocate_child_id::<A>(parent.actor_addr());
         self.spawn_inner(actor_id, actor, Some(parent))
     }
 
@@ -1364,11 +1185,11 @@ impl Proc {
     pub(crate) fn spawn_child_with_uid<A: Actor>(
         &self,
         parent: InstanceCell,
-        uid: crate::id::Uid,
+        uid: Uid,
         actor: A,
     ) -> Result<ActorHandle<A>, anyhow::Error> {
         let actor_id = self.ensure_child_uid(parent.actor_addr(), uid)?;
-        self.spawn_inner(actor_id, actor, Some(parent))
+        Ok(self.spawn_inner(actor_id, actor, Some(parent)))
     }
 
     /// Spawn a named child actor. Same as `spawn_child` but the child
@@ -1379,8 +1200,8 @@ impl Proc {
         parent: InstanceCell,
         name: &str,
         actor: A,
-    ) -> Result<ActorHandle<A>, anyhow::Error> {
-        let actor_id = self.allocate_named_child_id(parent.actor_addr(), name)?;
+    ) -> ActorHandle<A> {
+        let actor_id = self.allocate_named_child_id(parent.actor_addr(), name);
         self.spawn_inner(actor_id, actor, Some(parent))
     }
 
@@ -1468,10 +1289,9 @@ impl Proc {
         let mut statuses = HashMap::new();
         for actor_id in self
             .state()
-            .instances
+            .root_actors
             .iter()
-            .filter(|entry| entry.key().uid().is_singleton())
-            .filter_map(|entry| entry.value().upgrade())
+            .filter_map(|entry| self.get_instance_by_id(entry.key()))
             .filter(|cell| !matches!(*cell.status().borrow(), ActorStatus::Client))
             .map(|cell| cell.actor_addr().clone())
             .collect::<Vec<_>>()
@@ -1618,9 +1438,28 @@ impl Proc {
         self.reserve_root(Uid::singleton(Label::strip(name)))
     }
 
+    /// Create a root allocation with fresh identity and the actor type label.
+    fn allocate_root_type<A: Actor>(&self) -> ActorAddr {
+        self.root_addr(Uid::instance(default_actor_label::<A>()))
+    }
+
+    /// Create a root allocation with a display label and fresh identity.
+    fn allocate_root_label(&self, label: &str) -> ActorAddr {
+        self.root_addr(Uid::instance(Label::strip(label)))
+    }
+
     /// Create a root allocation in the proc from an explicit uid.
     fn allocate_root_uid(&self, uid: Uid) -> Result<ActorAddr, anyhow::Error> {
         self.reserve_root(uid)
+    }
+
+    fn allocate_client_id(&self, label: &str) -> ActorAddr {
+        let actor_id = if label.is_empty() {
+            ActorId::anonymous(self.proc_id().clone())
+        } else {
+            ActorId::instance(Label::strip(label), self.proc_id().clone())
+        };
+        ActorAddr::new(actor_id, self.default_location())
     }
 
     fn reserve_root(&self, uid: Uid) -> Result<ActorAddr, anyhow::Error> {
@@ -1631,21 +1470,34 @@ impl Proc {
         Ok(ActorAddr::new(actor_id, self.default_location()))
     }
 
+    fn root_addr(&self, uid: Uid) -> ActorAddr {
+        ActorAddr::new(
+            ActorId::new(uid, self.proc_id().clone(), None),
+            self.default_location(),
+        )
+    }
+
     /// Create a child allocation in the proc.
-    #[hyperactor::instrument]
-    pub(crate) fn allocate_child_id(
-        &self,
-        parent_id: &ActorAddr,
-    ) -> Result<ActorAddr, anyhow::Error> {
+    pub(crate) fn allocate_anonymous_child_id(&self, parent_id: &ActorAddr) -> ActorAddr {
         assert_eq!(parent_id.proc_id(), self.proc_id());
-        Ok(parent_id.anonymous_child())
+        ActorAddr::new(
+            ActorId::anonymous(self.proc_id().clone()),
+            self.default_location(),
+        )
+    }
+
+    /// Create a child allocation in the proc using the actor type label.
+    pub(crate) fn allocate_child_id<A: Actor>(&self, parent_id: &ActorAddr) -> ActorAddr {
+        assert_eq!(parent_id.proc_id(), self.proc_id());
+        let actor_id = ActorId::instance(default_actor_label::<A>(), self.proc_id().clone());
+        ActorAddr::new(actor_id, self.default_location())
     }
 
     /// Ensure that the requested child uid is available in this proc.
     fn ensure_child_uid(
         &self,
         parent_id: &ActorAddr,
-        uid: crate::id::Uid,
+        uid: Uid,
     ) -> Result<ActorAddr, anyhow::Error> {
         assert_eq!(parent_id.proc_id(), self.proc_id());
         let actor_id = ActorId::new(uid.clone(), self.proc_id().clone(), None);
@@ -1657,15 +1509,11 @@ impl Proc {
     }
 
     /// Allocate an actor ID with a custom name on this proc.
-    pub(crate) fn allocate_named_child_id(
-        &self,
-        parent_id: &ActorAddr,
-        name: &str,
-    ) -> Result<ActorAddr, anyhow::Error> {
+    pub(crate) fn allocate_named_child_id(&self, parent_id: &ActorAddr, name: &str) -> ActorAddr {
         assert_eq!(parent_id.proc_id(), self.proc_id());
         let proc_id = self.proc_id().clone();
         let actor_id = crate::id::ActorId::instance(crate::id::Label::strip(name), proc_id);
-        Ok(ActorAddr::new(actor_id, self.default_location()))
+        ActorAddr::new(actor_id, self.default_location())
     }
 
     /// Downgrade to a weak reference that doesn't prevent the proc from being dropped.
@@ -1717,6 +1565,26 @@ fn requires_location_for_local_delivery_identity(proc_id: &ProcId) -> bool {
     is_legacy_pseudo_singleton_proc_id(proc_id)
 }
 
+fn default_actor_label<A>() -> Label {
+    let type_name = std::any::type_name::<A>();
+    let type_name = type_name
+        .split_once('<')
+        .map_or(type_name, |(base, _)| base);
+    Label::strip(type_name.rsplit("::").next().unwrap_or(type_name))
+}
+
+fn global_proc_label() -> Label {
+    let hostname = hostname::get().expect("hostname should be available");
+    global_proc_label_from(&hostname.to_string_lossy(), std::process::id())
+}
+
+fn global_proc_label_from(hostname: &str, pid: u32) -> Label {
+    let short_hostname = hostname
+        .split_once('.')
+        .map_or(hostname, |(short, _)| short);
+    Label::strip(&format!("{}-{}", short_hostname, pid))
+}
+
 fn assert_not_legacy_pseudo_singleton_proc_id(proc_id: &ProcId) {
     if is_legacy_pseudo_singleton_proc_id(proc_id) {
         panic!(
@@ -1755,9 +1623,9 @@ impl MailboxSender for Proc {
         // Route through the gateway as a [`MailboxSender`] (not its
         // raw forwarder) so peers sharing the same gateway —
         // typically a host's `service_proc` / `local_proc` and any
-        // procs attached via `gateway.attach((proc_id, sender))` —
-        // are reached by an in-gateway lookup rather than bouncing
-        // out through the forwarder.
+        // child procs attached via `gateway.attach_proc_sender(...)`
+        // — are reached by an in-gateway lookup rather than
+        // bouncing out through the forwarder.
         self.state().gateway.post(envelope, return_handle);
     }
 
@@ -1779,6 +1647,11 @@ impl WeakProc {
     pub fn upgrade(&self) -> Option<Proc> {
         self.0.upgrade().map(|inner| Proc { inner })
     }
+
+    /// Whether two weak handles refer to the same underlying proc.
+    pub(crate) fn ptr_eq(&self, other: &WeakProc) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
 }
 
 #[async_trait]
@@ -1790,10 +1663,15 @@ impl MailboxSender for WeakProc {
     ) {
         match self.upgrade() {
             Some(proc) => proc.post(envelope, return_handle),
-            None => envelope.undeliverable(
-                DeliveryError::BrokenLink("fail to upgrade WeakProc".to_string()),
-                return_handle,
-            ),
+            None => {
+                let target = envelope.dest().clone();
+                let failure =
+                    DeliveryFailure::new(UndeliverableReason::Transport(TransportFailure::new(
+                        target,
+                        TransportFailureReason::LinkUnavailable("proc is gone".to_string()),
+                    )));
+                envelope.undeliverable(failure, return_handle)
+            }
         }
     }
 
@@ -2245,7 +2123,7 @@ pub struct InstanceReceivers<A: Actor> {
     /// Signal and supervision receivers for the actor loop. `None`
     /// for detached/client instances that don't run an actor loop.
     actor_loop: Option<(
-        PortReceiver<Signal>,
+        mpsc::UnboundedReceiver<Signal>,
         mpsc::UnboundedReceiver<ActorSupervisionEvent>,
     )>,
     /// Work queue for dispatching messages to actor handlers.
@@ -2286,11 +2164,11 @@ impl<A: Actor> Instance<A> {
         let actor_loop_ports = if detached {
             None
         } else {
-            let (signal_port, signal_receiver) = mailbox.open_port::<Signal>();
+            let (signal_tx, signal_receiver) = mpsc::unbounded_channel::<Signal>();
             let (supervision_tx, supervision_receiver) =
                 mpsc::unbounded_channel::<ActorSupervisionEvent>();
             Some((
-                (signal_port, supervision_tx),
+                (signal_tx, supervision_tx),
                 (signal_receiver, supervision_receiver),
             ))
         };
@@ -2306,8 +2184,20 @@ impl<A: Actor> Instance<A> {
         let (introspect_port, introspect_receiver) = mailbox.open_port::<IntrospectMessage>();
         introspect_port.bind_handler_port();
 
+        let instance_id = Uuid::now_v7();
+
+        // Type-erased snapshot callback: captures `Arc<HandlerPorts<A>>::clone()`
+        // (the typed Arc), which lets `InstanceCellState` invoke
+        // `OrderedSender::snapshot` from non-generic code. Only the typed
+        // ports are captured; nothing cyclic (no Instance, no InstanceCell).
+        let workq_ports = ports.clone();
+        let inbound_ordering_snapshot: Option<
+            Box<dyn Fn() -> crate::ordering::OrderingSnapshot + Send + Sync>,
+        > = Some(Box::new(move || workq_ports.workq.snapshot()));
+
         let cell = InstanceCell::new(
             actor_id,
+            instance_id,
             actor_type,
             proc.clone(),
             actor_loop,
@@ -2315,8 +2205,8 @@ impl<A: Actor> Instance<A> {
             parent,
             ports.clone(),
             queue_depth,
+            inbound_ordering_snapshot,
         );
-        let instance_id = Uuid::now_v7();
         let inner = Arc::new(InstanceState {
             proc,
             cell,
@@ -2409,14 +2299,14 @@ impl<A: Actor> Instance<A> {
         self.inner.self_addr()
     }
 
-    /// Report a message that could not be delivered and could not be returned.
-    pub(crate) fn report_lost_message(&self, lost: crate::mailbox::LostMessage) {
-        static REPORT_LOST_WARNED_MAILBOXES: OnceLock<DashSet<ActorAddr>> = OnceLock::new();
+    /// Report a delivery failure whose original payload is unavailable.
+    pub(crate) fn report_delivery_failure(&self, report: crate::mailbox::DeliveryFailureReport) {
+        static REPORT_WARNED_MAILBOXES: OnceLock<DashSet<ActorAddr>> = OnceLock::new();
 
         let mailbox = &self.inner.mailbox;
         let return_handle = mailbox.bound_return_handle().unwrap_or_else(|| {
             let actor_id = mailbox.actor_addr();
-            if REPORT_LOST_WARNED_MAILBOXES
+            if REPORT_WARNED_MAILBOXES
                 .get_or_init(DashSet::new)
                 .insert(actor_id.clone())
             {
@@ -2424,22 +2314,22 @@ impl<A: Actor> Instance<A> {
                 tracing::warn!(
                     actor_id = ?actor_id,
                     backtrace = ?bt,
-                    "actor attempted to report a lost message without binding Undeliverable<MessageEnvelope>"
+                    "actor attempted to report delivery failure without binding Undeliverable<MessageEnvelope>"
                 );
             }
             crate::mailbox::monitored_return_handle()
         });
 
         if let Err(error) =
-            return_handle.try_send(self, crate::mailbox::Undeliverable::lost(lost.clone()))
+            return_handle.try_post(self, crate::mailbox::Undeliverable::report(report.clone()))
         {
             tracing::error!(
-                sender = %lost.sender,
-                dest = %lost.dest,
-                message_type = lost.message_type.as_deref().unwrap_or("unknown"),
-                error = %lost.error,
+                sender = %report.sender,
+                dest = %report.dest,
+                message_type = report.message_type.as_deref().unwrap_or("unknown"),
+                error = %report.error_msg().unwrap_or_default(),
                 return_error = %error,
-                "lost message could not be reported"
+                "delivery failure report could not be returned"
             );
         }
     }
@@ -2598,6 +2488,16 @@ impl<A: Actor> Instance<A> {
         self.inner.mailbox.drain();
     }
 
+    pub(crate) fn status(&self) -> watch::Receiver<ActorStatus> {
+        self.inner.status_tx.subscribe()
+    }
+
+    pub(crate) fn close_client(&self, reason: &str) {
+        let status = ActorStatus::Stopped(reason.to_string());
+        self.inner.mailbox.close(status.clone());
+        self.change_status(status);
+    }
+
     /// Request immediate actor exit with the provided stop reason.
     pub fn exit(&self, reason: &str) -> Result<(), ActorError> {
         self.inner
@@ -2638,10 +2538,10 @@ impl<A: Actor> Instance<A> {
         self.inner.mailbox.open_once_port()
     }
 
-    /// Return this actor's runtime signal port.
+    /// Return this actor's runtime signal sender.
     #[doc(hidden)]
-    pub fn signal_port(&self) -> PortHandle<Signal> {
-        self.inner.cell.signal_port()
+    pub fn signal_sender(&self) -> mpsc::UnboundedSender<Signal> {
+        self.inner.cell.signal_sender()
     }
 
     /// Get the per-instance local storage.
@@ -2712,11 +2612,9 @@ impl<A: Actor> Instance<A> {
     /// (e.g. from background tokio tasks).
     // TODO: replace with a proper mechanism for sending to port
     // handles without an actor context.
-    pub fn self_client() -> &'static Instance<()> {
-        static CLIENT: OnceLock<(Instance<()>, ActorHandle<()>)> = OnceLock::new();
-        &CLIENT
-            .get_or_init(|| Proc::runtime().client("self_message_client").unwrap())
-            .0
+    pub fn self_client() -> &'static Client {
+        static CLIENT: OnceLock<Client> = OnceLock::new();
+        CLIENT.get_or_init(|| Proc::global().client("self_message_client"))
     }
 
     /// Post `message` to `dest` after `delay`.
@@ -2732,30 +2630,33 @@ impl<A: Actor> Instance<A> {
     {
         let dest_location = dest.endpoint_location();
         if matches!(*self.inner.status_tx.borrow(), ActorStatus::Client) {
-            self.report_lost_message(crate::mailbox::LostMessage {
-                sender: self.mailbox().actor_addr().clone(),
-                dest: dest_location,
-                message_type: Some(std::any::type_name::<M>().to_string()),
-                error: "delayed posts require an actor runtime".to_string(),
-            });
+            self.report_delivery_failure(
+                crate::mailbox::DeliveryFailureReport::link_unavailable::<M>(
+                    self.mailbox().actor_addr().clone(),
+                    dest_location,
+                    "delayed posts require an actor runtime",
+                ),
+            );
             return;
         }
         let Ok(_guard) = self.inner.delayed_posts.ingress.try_enter() else {
-            self.report_lost_message(crate::mailbox::LostMessage {
-                sender: self.mailbox().actor_addr().clone(),
-                dest: dest_location,
-                message_type: Some(std::any::type_name::<M>().to_string()),
-                error: "actor runtime is stopping".to_string(),
-            });
+            self.report_delivery_failure(
+                crate::mailbox::DeliveryFailureReport::link_unavailable::<M>(
+                    self.mailbox().actor_addr().clone(),
+                    dest_location,
+                    "actor runtime is stopping",
+                ),
+            );
             return;
         };
         if self.is_stopping() || self.is_terminal() {
-            self.report_lost_message(crate::mailbox::LostMessage {
-                sender: self.mailbox().actor_addr().clone(),
-                dest: dest_location,
-                message_type: Some(std::any::type_name::<M>().to_string()),
-                error: "actor runtime is stopping".to_string(),
-            });
+            self.report_delivery_failure(
+                crate::mailbox::DeliveryFailureReport::link_unavailable::<M>(
+                    self.mailbox().actor_addr().clone(),
+                    dest_location,
+                    "actor runtime is stopping",
+                ),
+            );
             return;
         }
 
@@ -2805,7 +2706,7 @@ impl<A: Actor> Instance<A> {
         mut self,
         mut actor: A,
         actor_loop_receivers: (
-            PortReceiver<Signal>,
+            mpsc::UnboundedReceiver<Signal>,
             mpsc::UnboundedReceiver<ActorSupervisionEvent>,
         ),
         mut work_rx: mpsc::UnboundedReceiver<WorkCell<A>>,
@@ -2900,7 +2801,7 @@ impl<A: Actor> Instance<A> {
         &mut self,
         actor: &mut A,
         mut actor_loop_receivers: (
-            PortReceiver<Signal>,
+            mpsc::UnboundedReceiver<Signal>,
             mpsc::UnboundedReceiver<ActorSupervisionEvent>,
         ),
         work_rx: &mut mpsc::UnboundedReceiver<WorkCell<A>>,
@@ -2959,10 +2860,19 @@ impl<A: Actor> Instance<A> {
         let (mut signal_receiver, _) = actor_loop_receivers;
         while self.inner.cell.child_count() > 0 {
             match tokio::time::timeout(Duration::from_millis(500), signal_receiver.recv()).await {
-                Ok(signal) => {
-                    if let Signal::ChildStopped(uid) = signal? {
-                        assert!(self.inner.cell.get_child(&uid).is_none());
-                    }
+                Ok(Some(Signal::ChildStopped(uid))) => {
+                    assert!(self.inner.cell.get_child(&uid).is_none());
+                }
+                // Drain only tracks child termination; other signals are
+                // intentionally swallowed here.
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    // Signal channel closed: no further ChildStopped will
+                    // arrive, so we can no longer track child termination.
+                    // Drop remaining links and exit the drain loop, mirroring
+                    // the timeout branch below.
+                    self.inner.cell.unlink_all();
+                    break;
                 }
                 Err(_) => {
                     tracing::warn!(
@@ -2983,8 +2893,13 @@ impl<A: Actor> Instance<A> {
         // the GIL.
         let cleanup_result = if !did_panic {
             let cleanup_timeout = hyperactor_config::global::get(config::CLEANUP_TIMEOUT);
-            match tokio::time::timeout(cleanup_timeout, actor.cleanup(self, result.as_ref().err()))
-                .await
+            match tokio::time::timeout(
+                cleanup_timeout,
+                self.inner
+                    .proc
+                    .with_current(actor.cleanup(self, result.as_ref().err())),
+            )
+            .await
             {
                 Ok(Ok(x)) => Ok(x),
                 Ok(Err(e)) => Err(ActorError::new(
@@ -3022,7 +2937,7 @@ impl<A: Actor> Instance<A> {
         &mut self,
         actor: &mut A,
         actor_loop_receivers: &mut (
-            PortReceiver<Signal>,
+            mpsc::UnboundedReceiver<Signal>,
             mpsc::UnboundedReceiver<ActorSupervisionEvent>,
         ),
         work_rx: &mut mpsc::UnboundedReceiver<WorkCell<A>>,
@@ -3030,8 +2945,9 @@ impl<A: Actor> Instance<A> {
         let (signal_receiver, supervision_event_receiver) = actor_loop_receivers;
 
         self.change_status(ActorStatus::Initializing);
-        actor
-            .init(self)
+        self.inner
+            .proc
+            .with_current(actor.init(self))
             .await
             .map_err(|err| ActorError::new(self.self_addr(), ActorErrorKind::init(err)))?;
         let actor_id_str = self.self_addr().to_string();
@@ -3044,20 +2960,24 @@ impl<A: Actor> Instance<A> {
             tokio::select! {
                 biased;
                 signal = signal_receiver.recv() => {
-                    let signal = signal.map_err(ActorError::from);
+                    let signal = signal.ok_or_else(|| {
+                        ActorError::new(self.self_addr(), ActorErrorKind::SignalChannelClosed)
+                    })?;
                     tracing::debug!("received signal {signal:?}");
-                    match signal? {
+                    match signal {
                         Signal::Stop(reason) => {
                             self.change_status(ActorStatus::Stopping);
-                            actor
-                                .handle_stop(self, StopMode::Stop, &reason)
+                            self.inner
+                                .proc
+                                .with_current(actor.handle_stop(self, StopMode::Stop, &reason))
                                 .await
                                 .map_err(|err| ActorError::new(self.self_addr(), ActorErrorKind::processing(err)))?;
                         },
                         Signal::DrainAndStop(reason) => {
                             self.change_status(ActorStatus::Stopping);
-                            actor
-                                .handle_stop(self, StopMode::DrainAndStop, &reason)
+                            self.inner
+                                .proc
+                                .with_current(actor.handle_stop(self, StopMode::DrainAndStop, &reason))
                                 .await
                                 .map_err(|err| ActorError::new(self.self_addr(), ActorErrorKind::processing(err)))?;
                         },
@@ -3128,8 +3048,10 @@ impl<A: Actor> Instance<A> {
         supervision_event: ActorSupervisionEvent,
     ) -> Result<(), ActorError> {
         // Handle the supervision event with the current actor.
-        match actor
-            .handle_supervision_event(self, &supervision_event)
+        match self
+            .inner
+            .proc
+            .with_current(actor.handle_supervision_event(self, &supervision_event))
             .await
         {
             Ok(true) => {
@@ -3240,8 +3162,10 @@ impl<A: Actor> Instance<A> {
         // &Instance<A>.
         let start = Instant::now();
         let subject_str = self.self_addr().subject().to_string();
-        let result = actor
-            .handle(&context, message)
+        let result = self
+            .inner
+            .proc
+            .with_current(actor.handle(&context, message))
             .instrument(self.inner.cell.inner.recording.span(&subject_str))
             .await;
         let elapsed_us = start.elapsed().as_micros() as u64;
@@ -3263,26 +3187,43 @@ impl<A: Actor> Instance<A> {
         result
     }
 
-    /// Spawn on child on this instance.
-    pub fn spawn<C: Actor>(&self, actor: C) -> anyhow::Result<ActorHandle<C>> {
+    /// Spawn a child actor with a fresh uid labeled from the actor type.
+    pub fn spawn<C: Actor>(&self, actor: C) -> ActorHandle<C> {
         self.inner.proc.spawn_child(self.inner.cell.clone(), actor)
     }
 
     /// Spawn a named child actor on this instance. The child gets a
     /// descriptive name in its ActorId instead of inheriting this
     /// instance's name. Supervision linkage is preserved.
-    pub fn spawn_with_name<C: Actor>(
-        &self,
-        name: &str,
-        actor: C,
-    ) -> anyhow::Result<ActorHandle<C>> {
+    pub fn spawn_with_name<C: Actor>(&self, name: &str, actor: C) -> ActorHandle<C> {
         self.inner
             .proc
             .spawn_named_child(self.inner.cell.clone(), name, actor)
     }
 
+    /// Spawn a child actor with a fresh uid carrying a display label.
+    ///
+    /// The label is descriptive only and does not participate in actor
+    /// identity. Supervision linkage to this instance is preserved.
+    pub fn spawn_with_label<C: Actor>(&self, label: &str, actor: C) -> ActorHandle<C> {
+        self.inner
+            .proc
+            .spawn_named_child(self.inner.cell.clone(), label, actor)
+    }
+
+    /// Spawn a child actor on this instance using an explicit uid.
+    ///
+    /// This is the explicit identity API, and the only child spawn API that
+    /// permits singleton actor identity. Instance labels, if present, are
+    /// descriptive only and do not affect uniqueness.
+    pub fn spawn_with_uid<C: Actor>(&self, uid: Uid, actor: C) -> anyhow::Result<ActorHandle<C>> {
+        self.inner
+            .proc
+            .spawn_child_with_uid(self.inner.cell.clone(), uid, actor)
+    }
+
     /// Create a new direct child instance.
-    pub fn child(&self) -> anyhow::Result<(Instance<()>, ActorHandle<()>)> {
+    pub fn child(&self) -> (Instance<()>, ActorHandle<()>) {
         self.inner.proc.child_instance(self.inner.cell.clone())
     }
 
@@ -3367,6 +3308,22 @@ impl<A: Actor> Instance<A> {
         &self.inner.sequencer
     }
 
+    /// Reserve (consume) the next `count` ordering sequence numbers for
+    /// the given destination without posting any messages. Subsequent
+    /// normal sends to this destination pick up at `last_reserved + 1`,
+    /// creating a deterministic gap from the receiver's perspective.
+    ///
+    /// Test/demo only. Production code should not call this; misuse will
+    /// produce stalled receivers. Marked `#[doc(hidden)]`; review
+    /// discipline is the misuse defense.
+    #[doc(hidden)]
+    pub fn debug_skip_next_ordering_seq(&self, dest: &PortAddr, count: u64) {
+        let sequencer = self.sequencer();
+        for _ in 0..count {
+            let _ = sequencer.assign_seq(dest);
+        }
+    }
+
     /// Return this instance's ID.
     pub fn instance_id(&self) -> Uuid {
         self.inner.id
@@ -3381,6 +3338,23 @@ impl<A: Actor> Instance<A> {
             return None;
         };
         Some(ActorHandle::new(parent_cell, ports))
+    }
+}
+
+impl Instance<ClientActor> {
+    pub(crate) fn child_client(&self) -> Client {
+        let actor_id = self
+            .inner
+            .proc
+            .allocate_anonymous_child_id(self.inner.cell.actor_addr());
+        let (instance, _receivers) = Instance::new(
+            self.inner.proc.clone(),
+            actor_id,
+            false,
+            Some(self.inner.cell.clone()),
+        );
+        instance.change_status(ActorStatus::Client);
+        Client::new(instance)
     }
 }
 
@@ -3420,6 +3394,10 @@ impl<A: Actor> context::Actor for Context<'_, A> {
     fn instance(&self) -> &Instance<A> {
         self
     }
+
+    fn headers(&self) -> &Flattrs {
+        Context::headers(self)
+    }
 }
 
 impl<A: Actor> context::Actor for &Instance<A> {
@@ -3433,6 +3411,10 @@ impl<A: Actor> context::Actor for &Context<'_, A> {
     type A = A;
     fn instance(&self) -> &Instance<A> {
         self
+    }
+
+    fn headers(&self) -> &Flattrs {
+        Context::headers(self)
     }
 }
 
@@ -3537,15 +3519,20 @@ struct InstanceCellState {
     /// The actor's id.
     actor_id: ActorAddr,
 
+    /// The actor instance's `Uuid::now_v7()` identity. Stable for the
+    /// lifetime of this instance; surfaced via `InstanceCell::instance_id`
+    /// and the `INSTANCE_ID` introspection attr.
+    instance_id: Uuid,
+
     /// Actor info contains the actor's type information.
     actor_type: ActorType,
 
     /// The proc in which the actor is running.
     proc: Proc,
 
-    /// Control port handles to the actor loop, if one is running.
+    /// Control plane message senders to the actor loop, if one is running.
     actor_loop: Option<(
-        PortHandle<Signal>,
+        mpsc::UnboundedSender<Signal>,
         mpsc::UnboundedSender<ActorSupervisionEvent>,
     )>,
 
@@ -3623,6 +3610,23 @@ struct InstanceCellState {
     /// A type-erased reference to HandlerPorts<A>, which allows us to
     /// recover an ActorHandle<A> by downcasting.
     ports: Arc<dyn Any + Send + Sync>,
+
+    /// Type-erased snapshot callback for inbound ordering state.
+    /// Captured at `Instance::new` from the typed `Arc<HandlerPorts<A>>`
+    /// (where `A` is in scope), erased to `dyn Fn() -> OrderingSnapshot`
+    /// so non-generic code in `InstanceCellState` can invoke it.
+    ///
+    /// Hygiene: the closure captures ONLY `Arc<HandlerPorts<A>>::clone()`
+    /// — never `Instance<A>` or `InstanceCell` — to avoid cyclic refs
+    /// back to the cell that holds this callback. Body is a single
+    /// `workq.snapshot()` call; bounded work, `try_lock`-based, never
+    /// blocks. See IO-1/IO-2 in `introspect` module doc.
+    ///
+    /// `None` only for hand-built fixtures or future code paths that
+    /// construct an `InstanceCellState` without going through
+    /// `Instance::new`; production live actors always install Some.
+    inbound_ordering_snapshot:
+        Option<Box<dyn Fn() -> crate::ordering::OrderingSnapshot + Send + Sync>>,
 }
 
 impl InstanceCellState {
@@ -3692,23 +3696,30 @@ fn select_eviction_candidates(
 impl InstanceCell {
     /// Creates a new instance cell with the provided internal state. If a parent
     /// is provided, it is linked to this cell.
+    #[allow(clippy::too_many_arguments)]
     fn new(
         actor_id: ActorAddr,
+        instance_id: Uuid,
         actor_type: ActorType,
         proc: Proc,
         actor_loop: Option<(
-            PortHandle<Signal>,
+            mpsc::UnboundedSender<Signal>,
             mpsc::UnboundedSender<ActorSupervisionEvent>,
         )>,
         status: watch::Receiver<ActorStatus>,
         parent: Option<InstanceCell>,
         ports: Arc<dyn Any + Send + Sync>,
         queue_depth: Arc<AtomicU64>,
+        inbound_ordering_snapshot: Option<
+            Box<dyn Fn() -> crate::ordering::OrderingSnapshot + Send + Sync>,
+        >,
     ) -> Self {
+        let is_root = parent.is_none();
         let _ais = actor_id.to_string();
         let cell = Self {
             inner: Arc::new(InstanceCellState {
                 actor_id: actor_id.clone(),
+                instance_id,
                 actor_type,
                 proc: proc.clone(),
                 actor_loop,
@@ -3728,12 +3739,16 @@ impl InstanceCell {
                 supervision_event: std::sync::Mutex::new(None),
                 is_system: AtomicBool::new(false),
                 ports,
+                inbound_ordering_snapshot,
             }),
         };
         cell.maybe_link_parent();
         proc.inner
             .instances
             .insert(actor_id.id().clone(), cell.downgrade());
+        if is_root {
+            proc.inner.root_actors.insert(actor_id.id().clone());
+        }
         cell
     }
 
@@ -3773,24 +3788,20 @@ impl InstanceCell {
         self.inner.supervision_event.lock().unwrap().clone()
     }
 
-    fn signal_port(&self) -> PortHandle<Signal> {
+    fn signal_sender(&self) -> mpsc::UnboundedSender<Signal> {
         self.inner
             .actor_loop
             .as_ref()
-            .map(|(signal_port, _)| signal_port.clone())
-            .unwrap_or_else(|| panic!("{} has no runtime signal port", self.actor_addr()))
+            .map(|(signal_tx, _)| signal_tx.clone())
+            .unwrap_or_else(|| panic!("{} has no runtime signal sender", self.actor_addr()))
     }
 
     /// Send a signal to the actor.
     pub fn signal(&self, signal: Signal) -> Result<(), ActorError> {
-        if let Some((signal_port, _)) = &self.inner.actor_loop {
-            // A global signal client is used to send signals to the actor.
-            static CLIENT: OnceLock<(Instance<()>, ActorHandle<()>)> = OnceLock::new();
-            let client = &CLIENT
-                .get_or_init(|| Proc::runtime().client("global_signal_client").unwrap())
-                .0;
-            signal_port.post(&client, signal);
-            Ok(())
+        if let Some((signal_tx, _)) = &self.inner.actor_loop {
+            signal_tx.send(signal).map_err(|_| {
+                ActorError::new(self.actor_addr(), ActorErrorKind::SignalChannelClosed)
+            })
         } else {
             tracing::warn!(
                 "{}: attempted to send signal {} to detached actor",
@@ -3946,6 +3957,20 @@ impl InstanceCell {
         self.inner.queue_depth.load(Ordering::Relaxed)
     }
 
+    /// Stable per-instance identifier (`Uuid::now_v7`) assigned at
+    /// `Instance::new` and threaded through to the cell at construction.
+    pub fn instance_id(&self) -> Uuid {
+        self.inner.instance_id
+    }
+
+    /// Out-of-band inbound ordering snapshot. Returns `None` when no
+    /// snapshot callback was installed (see IO-1 in `introspect` module
+    /// doc). The callback uses `OrderedSender::snapshot` (`try_lock`,
+    /// non-blocking) and never perturbs ordering state.
+    pub fn inbound_ordering_snapshot(&self) -> Option<crate::ordering::OrderingSnapshot> {
+        self.inner.inbound_ordering_snapshot.as_ref().map(|f| f())
+    }
+
     /// Get parent instance cell, if it exists.
     pub fn parent(&self) -> Option<InstanceCell> {
         self.inner.parent.upgrade()
@@ -4059,12 +4084,6 @@ impl InstanceCell {
     /// We should find some (better) way to consolidate the two.
     pub(crate) fn bind<A: Actor, R: Binds<A>>(&self, ports: &HandlerPorts<A>) -> ActorRef<R> {
         <R as Binds<A>>::bind(ports);
-        // Signal: registered directly in Instance::new() and handled
-        // by the actor loop's select!. The port remains unbound
-        // because runtime signals are sent through InstanceCell's
-        // stored PortHandle, not as externally addressable actor
-        // messages.
-        //
         // Undeliverable: dispatched through the work queue to the
         // actor's Handler<Undeliverable<MessageEnvelope>>.
         //
@@ -4133,6 +4152,7 @@ impl Drop for InstanceCellState {
         {
             tracing::error!("instance {} was dropped but not in proc", self.actor_id);
         }
+        self.proc.inner.root_actors.remove(self.actor_id.id());
     }
 }
 
@@ -4227,7 +4247,12 @@ impl<A: Actor> HandlerPorts<A> {
                 // considered drainable accepted work; after draining begins,
                 // that missing future sequence is rejected.
                 let enqueue = move |headers: Flattrs, msg: M| {
+                    // Extract values from headers BEFORE they're moved into
+                    // WorkCell — Flattrs::get returns owned typed values, so
+                    // these bindings don't borrow from `headers` and `headers`
+                    // can be moved into WorkCell freely.
                     let seq_info = headers.get(SEQ_INFO);
+                    let sender = headers.get(crate::mailbox::headers::SENDER_ACTOR_ID);
 
                     let work = WorkCell::new(move |actor: &mut A, instance: &Instance<A>| {
                         Box::pin(async move {
@@ -4251,7 +4276,7 @@ impl<A: Actor> HandlerPorts<A> {
                             Some(SeqInfo::Session { session_id, seq }) => {
                                 // TODO: return the message contained in the error instead of dropping them when converting
                                 // to anyhow::Error. In that way, the message can be picked up by mailbox and returned to sender.
-                                workq.send(session_id, seq, work).map_err(|e| match e {
+                                workq.send(session_id, seq, sender, work).map_err(|e| match e {
                                     OrderedSenderError::InvalidZeroSeq(_) => {
                                         let error_msg = format!(
                                             "in enqueue func for {}, got seq 0 for message type {}",
@@ -4343,6 +4368,9 @@ mod tests {
     use crate::Handler;
     use crate::OncePortRef;
     use crate::PortRef;
+    use crate::channel::ChannelTransport;
+    use crate::mailbox::MailboxClient;
+    use crate::mailbox::PanickingMailboxSender;
     use crate::port::Port;
     use crate::testing::proc_supervison::ProcSupervisionCoordinator;
     use crate::testing::process_assertion::assert_termination;
@@ -4352,6 +4380,11 @@ mod tests {
     struct TestActor;
 
     impl Actor for TestActor {}
+
+    #[derive(Debug)]
+    struct ChildLabelActor;
+
+    impl Actor for ChildLabelActor {}
 
     #[derive(Debug)]
     struct DelayedSelfActor {
@@ -4464,6 +4497,156 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_default_actor_label_uses_label_compatible_type_basename() {
+        assert_eq!(default_actor_label::<TestActor>().as_str(), "testactor");
+        assert_eq!(
+            default_actor_label::<std::collections::HashMap<String, u64>>().as_str(),
+            "hashmap"
+        );
+        assert_eq!(default_actor_label::<()>().as_str(), "nil");
+    }
+
+    #[test]
+    fn test_global_proc_label_uses_short_hostname_and_pid() {
+        assert_eq!(
+            global_proc_label_from("devvm34959.nha0.facebook.com", 123555).as_str(),
+            "devvm34959-123555"
+        );
+        assert_eq!(
+            global_proc_label_from("DevVM34959.nha0.facebook.com", 7).as_str(),
+            "devvm34959-7"
+        );
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_spawn_uses_actor_type_label_for_root_actor() {
+        let proc = Proc::isolated();
+        let handle = proc.spawn(TestActor);
+
+        assert_eq!(
+            handle.actor_addr().label().map(Label::as_str),
+            Some("testactor")
+        );
+        assert!(matches!(
+            handle.actor_addr().uid(),
+            Uid::Instance(_, Some(label)) if label.as_str() == "testactor"
+        ));
+
+        handle.drain_and_stop("test").unwrap();
+        handle.await;
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_spawn_uses_actor_type_label_for_child_actor() {
+        let proc = Proc::isolated();
+        let parent = proc.spawn(TestActor);
+        let child = proc.spawn_child(parent.cell().clone(), ChildLabelActor);
+
+        assert!(!child.actor_addr().is_root());
+        assert_eq!(
+            child.actor_addr().label().map(Label::as_str),
+            Some("childlabelactor")
+        );
+        assert!(matches!(
+            child.actor_addr().uid(),
+            Uid::Instance(_, Some(label)) if label.as_str() == "childlabelactor"
+        ));
+
+        child.drain_and_stop("test").unwrap();
+        parent.drain_and_stop("test").unwrap();
+        child.await;
+        parent.await;
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_root_tracking_does_not_depend_on_singleton_uids() {
+        let proc = Proc::isolated();
+        let parent = proc.spawn(TestActor);
+        let child = proc.spawn_child(parent.cell().clone(), TestActor);
+
+        assert!(parent.actor_addr().uid().is_instance());
+        let roots = proc.root_actor_ids();
+        assert!(
+            roots
+                .iter()
+                .any(|root| root.id() == parent.actor_addr().id())
+        );
+        assert!(
+            !roots
+                .iter()
+                .any(|root| root.id() == child.actor_addr().id())
+        );
+
+        let mut traversed = Vec::new();
+        proc.traverse(&mut |cell, _depth| {
+            traversed.push(cell.actor_addr().id().clone());
+        });
+        assert!(traversed.contains(parent.actor_addr().id()));
+        assert!(traversed.contains(child.actor_addr().id()));
+
+        child.drain_and_stop("test").unwrap();
+        parent.drain_and_stop("test").unwrap();
+        child.await;
+        parent.await;
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_client_spawn_api_labels_and_explicit_uid() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+
+        let spawned = client.spawn(TestActor);
+        assert_eq!(
+            spawned.actor_addr().label().map(Label::as_str),
+            Some("testactor")
+        );
+
+        let labeled = client.spawn_with_label("custom", TestActor);
+        assert_eq!(
+            labeled.actor_addr().label().map(Label::as_str),
+            Some("custom")
+        );
+
+        let uid = Uid::instance(Label::new("explicit").unwrap());
+        let explicit = client.spawn_with_uid(uid.clone(), TestActor).unwrap();
+        assert_eq!(explicit.actor_addr().uid(), &uid);
+
+        let child = client.child();
+        assert!(!child.self_addr().is_root());
+        assert!(matches!(child.self_addr().uid(), Uid::Instance(_, None)));
+        assert_eq!(child.self_addr().label(), None);
+        let child_spawned = child.spawn(TestActor);
+        assert_eq!(
+            child_spawned.actor_addr().label().map(Label::as_str),
+            Some("testactor")
+        );
+
+        spawned.drain_and_stop("test").unwrap();
+        labeled.drain_and_stop("test").unwrap();
+        explicit.drain_and_stop("test").unwrap();
+        child_spawned.drain_and_stop("test").unwrap();
+        spawned.await;
+        labeled.await;
+        explicit.await;
+        child_spawned.await;
+    }
+
+    #[test]
+    fn test_current_proc_uses_stable_global_proc_outside_actor_context() {
+        let first = Proc::current();
+        let second = Proc::current();
+
+        assert_eq!(first.proc_id(), second.proc_id());
+        assert_eq!(
+            ProcAddr::new(
+                first.proc_id().clone(),
+                Gateway::current().default_location()
+            ),
+            first.proc_addr()
+        );
+    }
+
     #[async_trait]
     #[crate::handle(TestActorMessage)]
     impl TestActorMessageHandler for TestActor {
@@ -4523,18 +4706,81 @@ mod tests {
             cx: &crate::Context<Self>,
             reply: oneshot::Sender<ActorHandle<TestActor>>,
         ) -> Result<(), anyhow::Error> {
-            let handle = TestActor.spawn(cx)?;
+            let handle = cx.spawn(TestActor);
             reply.send(handle).unwrap();
             Ok(())
         }
     }
 
-    #[tokio::test]
-    async fn test_client_instance_can_bind_signal_port() {
-        let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+    #[derive(Debug)]
+    struct CurrentProcActor;
 
-        let (_signal_port, _signal_rx) = client.bind_handler_port::<Signal>();
+    impl Actor for CurrentProcActor {}
+
+    #[derive(Handler, Debug)]
+    enum CurrentProcMessage {
+        Check(oneshot::Sender<CurrentProcSnapshot>),
+    }
+
+    #[derive(Debug)]
+    struct CurrentProcSnapshot {
+        current_proc_id: ProcId,
+        current_gateway_proc_addr: ProcAddr,
+        spawned_handle: ActorHandle<TestActor>,
+        client_proc_id: ProcId,
+    }
+
+    #[async_trait]
+    #[crate::handle(CurrentProcMessage)]
+    impl CurrentProcMessageHandler for CurrentProcActor {
+        async fn check(
+            &mut self,
+            _cx: &crate::Context<Self>,
+            reply: oneshot::Sender<CurrentProcSnapshot>,
+        ) -> Result<(), anyhow::Error> {
+            let current = Proc::current();
+            let spawned_handle = crate::spawn(TestActor);
+            let client = crate::client("current_client");
+            reply
+                .send(CurrentProcSnapshot {
+                    current_proc_id: current.proc_id().clone(),
+                    current_gateway_proc_addr: ProcAddr::new(
+                        current.proc_id().clone(),
+                        Gateway::current().default_location(),
+                    ),
+                    spawned_handle,
+                    client_proc_id: client.self_addr().proc_id().clone(),
+                })
+                .unwrap();
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_current_proc_tracks_actor_context() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let actor = proc.spawn(CurrentProcActor);
+        let (tx, rx) = oneshot::channel();
+
+        crate::Endpoint::post(&actor, &client, CurrentProcMessage::Check(tx));
+        let snapshot = rx.await.unwrap();
+
+        assert_eq!(&snapshot.current_proc_id, proc.proc_id());
+        assert_eq!(snapshot.current_gateway_proc_addr, proc.proc_addr());
+        assert_eq!(
+            snapshot.spawned_handle.actor_addr().proc_id(),
+            proc.proc_id()
+        );
+        assert_eq!(&snapshot.client_proc_id, proc.proc_id());
+
+        snapshot
+            .spawned_handle
+            .drain_and_stop("test complete")
+            .unwrap();
+        snapshot.spawned_handle.await;
+        actor.drain_and_stop("test complete").unwrap();
+        actor.await;
     }
 
     #[expect(
@@ -4545,8 +4791,8 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_actor() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
-        let handle = proc.spawn("test", TestActor).unwrap();
+        let client = proc.client("client");
+        let handle = proc.spawn(TestActor);
 
         // Check on the join handle.
         assert!(logs_contain(
@@ -4593,9 +4839,9 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_proc_actors_messaging() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
-        let first = proc.spawn::<TestActor>("first", TestActor).unwrap();
-        let second = proc.spawn::<TestActor>("second", TestActor).unwrap();
+        let client = proc.client("client");
+        let first = proc.spawn_with_label::<TestActor>("first", TestActor);
+        let second = proc.spawn_with_label::<TestActor>("second", TestActor);
         let (tx, rx) = oneshot::channel::<()>();
         let reply_message = TestActorMessage::Reply(tx);
         first.post(
@@ -4699,6 +4945,74 @@ mod tests {
         assert_eq!(forwarded.load(Ordering::SeqCst), 1);
     }
 
+    /// `Instance::post` (-> `MailboxExt::post`) must stamp `SENDER_ACTOR_ID`
+    /// alongside the `SEQ_INFO` it assigns when the destination is a handler
+    /// port. Verified by forwarding to a different `ProcId` and capturing the
+    /// outbound envelope.
+    #[tokio::test]
+    async fn test_mailbox_ext_post_stamps_sender_actor_id() {
+        use typeuri::Named;
+
+        use crate::mailbox::headers::SENDER_ACTOR_ID;
+
+        #[derive(typeuri::Named)]
+        struct DestHandlerMsg;
+
+        #[derive(Clone, Default)]
+        struct CapturingSender(Arc<Mutex<Vec<MessageEnvelope>>>);
+
+        #[async_trait]
+        impl MailboxSender for CapturingSender {
+            fn post_unchecked(
+                &self,
+                envelope: MessageEnvelope,
+                _return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+            ) {
+                self.0.lock().unwrap().push(envelope);
+            }
+        }
+
+        let proc_addr = ProcAddr::instance(ChannelAddr::Local(1), "stamping_test");
+        let captured: Arc<Mutex<Vec<MessageEnvelope>>> = Arc::new(Mutex::new(Vec::new()));
+        let proc = Proc::configured(
+            proc_addr,
+            BoxedMailboxSender::new(CapturingSender(captured.clone())),
+        );
+
+        let client = proc.client("client");
+        let client_addr = client.mailbox().actor_addr().clone();
+
+        // Distinct ProcId so the envelope routes through the configured
+        // forwarder (CapturingSender), where we can inspect the headers.
+        let remote_dest = ProcAddr::instance(ChannelAddr::Local(2), "remote")
+            .actor_addr("worker")
+            .port_addr(Port::from(DestHandlerMsg::port()));
+
+        // UFCS to select MailboxExt::post over Endpoint::post (also in
+        // scope at module level via `use ... as _`). Client implements
+        // `context::Actor` so the MailboxExt blanket impl applies.
+        <Client as context::MailboxExt>::post(
+            &client,
+            remote_dest,
+            Flattrs::new(),
+            wirevalue::Any::serialize(&1u64).unwrap(),
+            false,
+            context::SeqInfoPolicy::AssignNew,
+        );
+
+        let captured = captured.lock().unwrap();
+        assert_eq!(
+            captured.len(),
+            1,
+            "exactly one envelope should be forwarded"
+        );
+        assert_eq!(
+            captured[0].headers().get(SENDER_ACTOR_ID),
+            Some(client_addr),
+            "MailboxExt::post must stamp SENDER_ACTOR_ID with the client's actor_addr"
+        );
+    }
+
     #[test]
     fn test_local_delivery_service_and_local_compare_full_proc_addr() {
         for name in [LEGACY_SERVICE_PROC_NAME, LEGACY_LOCAL_PROC_NAME] {
@@ -4777,7 +5091,7 @@ mod tests {
         use crate::testing::ids::test_actor_id;
 
         let proc = Proc::isolated();
-        let (instance, _) = proc.client("worker").unwrap();
+        let instance = proc.client("worker");
         let (port, mut receiver) = instance.bind_handler_port::<u64>();
 
         let PortLocation::Bound(default_dest) = port.location() else {
@@ -4804,12 +5118,12 @@ mod tests {
     fn test_default_location_changes_new_bindings_not_lookup() {
         let proc = Proc::isolated();
         let gateway = proc.gateway();
-        let (_instance, handle) = proc.client("worker").unwrap();
+        let client = proc.client("worker");
 
-        let first_ref: ActorRef<()> = handle.bind();
+        let first_ref: ActorRef<()> = client.bind();
         let new_location = ChannelAddr::Local(9876).into();
         gateway.set_default_location(new_location);
-        let second_ref: ActorRef<()> = handle.bind();
+        let second_ref: ActorRef<()> = client.bind();
 
         assert_eq!(first_ref.actor_addr().id(), second_ref.actor_addr().id());
         assert_ne!(
@@ -4818,8 +5132,92 @@ mod tests {
         );
         assert_eq!(second_ref.actor_addr().location(), &proc.default_location());
         assert_eq!(proc.default_location(), gateway.default_location());
-        assert_eq!(proc.proc_addr(), gateway.proc_addr(proc.proc_id()));
+        assert_eq!(
+            proc.proc_addr(),
+            ProcAddr::new(proc.proc_id().clone(), gateway.default_location())
+        );
         assert!(proc.get_instance(second_ref.actor_addr()).is_some());
+    }
+
+    /// Concurrent `set_default_location` and `handle.bind()` must not
+    /// corrupt the bindings. Every bound ref carries one of the racing
+    /// locations, and every bound ref is still resolvable via
+    /// `get_instance` (which keys on identity, not location).
+    #[async_timed_test(timeout_secs = 10)]
+    async fn test_default_location_concurrent_with_bind() {
+        let proc = Proc::isolated();
+        let gateway = proc.gateway();
+        let handle = proc.client("worker");
+
+        let loc_a: Location = ChannelAddr::Local(40001).into();
+        let loc_b: Location = ChannelAddr::Local(40002).into();
+
+        // Pre-set to loc_a so binds never observe the initial default
+        // location. Without this, a bind that runs before the setter's
+        // first write could see the initial location and fail the
+        // "one of two locations" assertion.
+        gateway.set_default_location(loc_a.clone());
+
+        let barrier = std::sync::Arc::new(Barrier::new(2));
+
+        let setter = {
+            let gateway = gateway.clone();
+            let loc_a = loc_a.clone();
+            let loc_b = loc_b.clone();
+            let barrier = barrier.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                for i in 0..100 {
+                    let loc = if i % 2 == 0 {
+                        loc_a.clone()
+                    } else {
+                        loc_b.clone()
+                    };
+                    gateway.set_default_location(loc);
+                    tokio::task::yield_now().await;
+                }
+            })
+        };
+
+        let binder = {
+            // Clone `handle` into the binder so the outer `handle` stays
+            // alive after the spawned task finishes. Without this, the
+            // only strong reference to the client's instance drops when
+            // the binder task ends and the `proc.get_instance(...)` checks
+            // below return None.
+            let handle = handle.clone();
+            let barrier = barrier.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                let mut refs = Vec::with_capacity(100);
+                for _ in 0..100 {
+                    refs.push(handle.bind::<()>());
+                    tokio::task::yield_now().await;
+                }
+                refs
+            })
+        };
+
+        setter.await.unwrap();
+        let refs = binder.await.unwrap();
+
+        // Every ref carries one of the two racing locations.
+        for r in &refs {
+            let loc = r.actor_addr().location();
+            assert!(
+                loc == &loc_a || loc == &loc_b,
+                "ref location {loc:?} is neither {loc_a:?} nor {loc_b:?}",
+            );
+        }
+
+        // Every ref is still resolvable via get_instance (identity-based).
+        for r in &refs {
+            assert!(
+                proc.get_instance(r.actor_addr()).is_some(),
+                "ref {:?} no longer resolves",
+                r.actor_addr(),
+            );
+        }
     }
 
     #[test]
@@ -4844,8 +5242,14 @@ mod tests {
 
         assert_eq!(first.default_location(), gateway.default_location());
         assert_eq!(second.default_location(), gateway.default_location());
-        assert_eq!(first.proc_addr(), gateway.proc_addr(first.proc_id()));
-        assert_eq!(second.proc_addr(), gateway.proc_addr(second.proc_id()));
+        assert_eq!(
+            first.proc_addr(),
+            ProcAddr::new(first.proc_id().clone(), gateway.default_location())
+        );
+        assert_eq!(
+            second.proc_addr(),
+            ProcAddr::new(second.proc_id().clone(), gateway.default_location())
+        );
     }
 
     #[test]
@@ -4872,7 +5276,7 @@ mod tests {
         let proc = Proc::isolated();
         let gateway = proc.gateway();
         let initial_location = proc.default_location();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (port, mut receiver) = client.bind_handler_port::<u64>();
         let PortLocation::Bound(default_dest) = port.location() else {
             panic!("handler port must be bound");
@@ -4904,25 +5308,32 @@ mod tests {
             assert_eq!(received, value);
         }
 
-        let server = Gateway::serve(&gateway, ChannelAddr::any(ChannelTransport::Local)).unwrap();
+        let mut server =
+            Gateway::serve(&gateway, ChannelAddr::any(ChannelTransport::Local)).unwrap();
 
         assert_eq!(proc.default_location(), initial_location);
         assert_eq!(proc.default_location(), gateway.default_location());
-        assert_eq!(proc.proc_addr(), gateway.proc_addr(proc.proc_id()));
+        assert_eq!(
+            proc.proc_addr(),
+            ProcAddr::new(proc.proc_id().clone(), gateway.default_location())
+        );
         send_to_location(initial_location.clone(), &default_dest, 1, &mut receiver).await;
 
-        let next_server =
+        let mut next_server =
             Gateway::serve(&gateway, ChannelAddr::any(ChannelTransport::Local)).unwrap();
         let next_location = proc.default_location();
 
         assert_ne!(proc.default_location(), initial_location);
         assert_eq!(proc.default_location(), gateway.default_location());
-        assert_eq!(proc.proc_addr(), gateway.proc_addr(proc.proc_id()));
+        assert_eq!(
+            proc.proc_addr(),
+            ProcAddr::new(proc.proc_id().clone(), gateway.default_location())
+        );
         send_to_location(next_location.clone(), &default_dest, 2, &mut receiver).await;
         send_to_location(initial_location.clone(), &default_dest, 3, &mut receiver).await;
 
         next_server.stop("test complete");
-        next_server.await.unwrap().unwrap();
+        next_server.join().await.unwrap();
 
         assert_eq!(proc.default_location(), initial_location);
         assert_eq!(proc.default_location(), gateway.default_location());
@@ -4930,7 +5341,7 @@ mod tests {
         send_to_location(initial_location.clone(), &default_dest, 4, &mut receiver).await;
 
         server.stop("test complete");
-        server.await.unwrap().unwrap();
+        server.join().await.unwrap();
 
         assert_eq!(proc.default_location(), initial_location);
         assert_eq!(proc.default_location(), gateway.default_location());
@@ -4945,7 +5356,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(proc.proc_addr(), proc.gateway().proc_addr(proc.proc_id()));
+        assert_eq!(
+            proc.proc_addr(),
+            ProcAddr::new(proc.proc_id().clone(), proc.gateway().default_location())
+        );
 
         proc.join_mailbox_server().await;
     }
@@ -4955,7 +5369,7 @@ mod tests {
         use crate::testing::ids::test_actor_id;
 
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (return_handle, mut undeliverable_rx) =
             client.open_port::<Undeliverable<MessageEnvelope>>();
         let remote_proc = ProcAddr::instance(ChannelAddr::Local(1234), "remote");
@@ -4972,14 +5386,14 @@ mod tests {
             return_handle,
         );
 
-        let Undeliverable::Message(envelope) = undeliverable_rx.recv().await.unwrap() else {
+        let Undeliverable::Returned(envelope) = undeliverable_rx.recv().await.unwrap() else {
             panic!("expected returned message");
         };
         assert_eq!(envelope.dest(), &remote_dest);
     }
 
     #[tokio::test]
-    async fn test_gateway_attach_remote_proc_routes_via_sender() {
+    async fn test_gateway_attach_proc_sender_routes_through_sender() {
         use tokio::sync::mpsc::UnboundedSender;
         use tokio::sync::mpsc::unbounded_channel;
 
@@ -4989,10 +5403,10 @@ mod tests {
         use crate::testing::ids::test_actor_id;
 
         #[derive(Clone)]
-        struct RecordingSender(UnboundedSender<MessageEnvelope>);
+        struct MpscSender(UnboundedSender<MessageEnvelope>);
 
         #[async_trait]
-        impl crate::mailbox::MailboxSender for RecordingSender {
+        impl crate::mailbox::MailboxSender for MpscSender {
             fn post_unchecked(
                 &self,
                 envelope: MessageEnvelope,
@@ -5005,12 +5419,24 @@ mod tests {
         let proc = Proc::isolated();
         let gateway = proc.gateway();
 
-        let remote_proc = ProcAddr::instance(ChannelAddr::Local(1234), "remote");
+        // Advertise the remote proc with a `Via(remote_uid, ...)`
+        // prefix, mirroring the host-spawn convention so the proc
+        // route matches the outermost via hop.
+        let remote_uid = Uid::Instance(0xabc123, Some(Label::strip("remote")));
+        let remote_inner_addr = ChannelAddr::Local(1234);
+        let remote_location =
+            Location::from(remote_inner_addr.clone()).with_via(remote_uid.clone());
+        let remote_proc = ProcAddr::new(ProcId::new(remote_uid.clone(), None), remote_location);
         let remote_dest = remote_proc.actor_addr("worker").port_addr(Port::from(0));
 
         let (tx, mut rx) = unbounded_channel::<MessageEnvelope>();
-        let attach_guard =
-            gateway.attach((remote_proc.id().clone(), RecordingSender(tx).into_boxed()));
+        let route_guard = gateway
+            .attach_proc_sender(
+                remote_proc.id().clone(),
+                remote_uid.clone(),
+                MpscSender(tx).into_boxed(),
+            )
+            .unwrap();
 
         gateway.post(
             MessageEnvelope::serialize(
@@ -5025,13 +5451,20 @@ mod tests {
 
         let routed = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
-            .expect("attach did not route envelope before timeout")
+            .expect("attach_proc_sender did not route envelope before timeout")
             .expect("recording sender closed unexpectedly");
-        assert_eq!(routed.dest(), &remote_dest);
+        // The outer via is peeled before forwarding: dest id is
+        // preserved, but the location is rewritten to the inner.
+        assert_eq!(routed.dest().id(), remote_dest.id());
+        assert_eq!(routed.dest().location().addr(), &remote_inner_addr);
+        assert!(
+            routed.dest().location().as_via().is_none(),
+            "outer via hop must be peeled before forwarding"
+        );
 
-        drop(attach_guard);
+        drop(route_guard);
 
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (return_handle, mut undeliverable_rx) =
             client.open_port::<Undeliverable<MessageEnvelope>>();
         gateway.post(
@@ -5044,7 +5477,9 @@ mod tests {
             .unwrap(),
             return_handle,
         );
-        let Undeliverable(envelope) = undeliverable_rx.recv().await.unwrap();
+        let Undeliverable::Returned(envelope) = undeliverable_rx.recv().await.unwrap() else {
+            panic!("expected Undeliverable::Returned variant");
+        };
         assert_eq!(envelope.dest(), &remote_dest);
     }
 
@@ -5074,13 +5509,11 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_actor_lookup() {
         let proc = Proc::isolated();
-        let (client, _handle) = proc.client("client").unwrap();
+        let client = proc.client("client");
 
-        let target_actor = proc.spawn::<TestActor>("target", TestActor).unwrap();
+        let target_actor = proc.spawn(TestActor);
         let target_actor_ref = target_actor.bind();
-        let lookup_actor = proc
-            .spawn::<LookupTestActor>("lookup", LookupTestActor)
-            .unwrap();
+        let lookup_actor = proc.spawn(LookupTestActor);
 
         assert!(
             lookup_actor
@@ -5144,9 +5577,9 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_child() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
 
-        let first = proc.spawn::<TestActor>("first", TestActor).unwrap();
+        let first = proc.spawn_with_label::<TestActor>("first", TestActor);
         let second = TestActor::spawn_child(&client, &first).await;
         let third = TestActor::spawn_child(&client, &second).await;
 
@@ -5213,9 +5646,9 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_child_lifecycle() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
 
-        let root = proc.spawn::<TestActor>("root", TestActor).unwrap();
+        let root = proc.spawn_with_label::<TestActor>("root", TestActor);
         let root_1 = TestActor::spawn_child(&client, &root).await;
         let root_2 = TestActor::spawn_child(&client, &root).await;
         let root_2_1 = TestActor::spawn_child(&client, &root_2).await;
@@ -5227,7 +5660,7 @@ mod tests {
             assert!(
                 actor
                     .port::<TestActorMessage>()
-                    .try_send(&client, TestActorMessage::Noop())
+                    .try_post(&client, TestActorMessage::Noop())
                     .is_err()
             );
             assert_matches!(actor.await, ActorStatus::Stopped(reason) if reason == "parent stopping");
@@ -5276,15 +5709,10 @@ mod tests {
         let proc = Proc::isolated();
         let stop_started = Arc::new(tokio::sync::Notify::new());
         let release_stop = Arc::new(tokio::sync::Notify::new());
-        let handle = proc
-            .spawn(
-                "deferred_stop",
-                DeferredStopActor {
-                    stop_started: Arc::clone(&stop_started),
-                    release_stop: Arc::clone(&release_stop),
-                },
-            )
-            .unwrap();
+        let handle = proc.spawn(DeferredStopActor {
+            stop_started: Arc::clone(&stop_started),
+            release_stop: Arc::clone(&release_stop),
+        });
 
         let mut status = handle.status();
         handle.stop("test").unwrap();
@@ -5301,25 +5729,20 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_drain_and_stop_closes_handler_ingress() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let stop_started = Arc::new(tokio::sync::Notify::new());
         let release_stop = Arc::new(tokio::sync::Notify::new());
-        let handle = proc
-            .spawn(
-                "deferred_drain_stop",
-                DeferredStopActor {
-                    stop_started: Arc::clone(&stop_started),
-                    release_stop: Arc::clone(&release_stop),
-                },
-            )
-            .unwrap();
+        let handle = proc.spawn(DeferredStopActor {
+            stop_started: Arc::clone(&stop_started),
+            release_stop: Arc::clone(&release_stop),
+        });
 
         handle.drain_and_stop("test").unwrap();
         stop_started.notified().await;
 
         // Drain closes runtime-dispatched handler ingress, so new
         // sends to the actor's handler port are rejected.
-        let err = handle.port::<()>().try_send(&client, ()).unwrap_err();
+        let err = handle.port::<()>().try_post(&client, ()).unwrap_err();
         assert_matches!(err.kind(), crate::mailbox::MailboxSenderErrorKind::Closed);
 
         release_stop.notify_one();
@@ -5329,12 +5752,12 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_parent_failure() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         // Need to set a supervison coordinator for this Proc because there will
         // be actor failure(s) in this test which trigger supervision.
         let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
-        let root = proc.spawn::<TestActor>("root", TestActor).unwrap();
+        let root = proc.spawn_with_label::<TestActor>("root", TestActor);
         let root_1 = TestActor::spawn_child(&client, &root).await;
         let root_2 = TestActor::spawn_child(&client, &root).await;
         let root_2_1 = TestActor::spawn_child(&client, &root_2).await;
@@ -5398,8 +5821,8 @@ mod tests {
         let proc = Proc::isolated();
         let state = Arc::new(AtomicUsize::new(0));
         let actor = TestActor(state.clone());
-        let handle = proc.spawn::<TestActor>("test", actor).unwrap();
-        let (client, _) = proc.client("client").unwrap();
+        let handle = proc.spawn(actor);
+        let client = proc.client("client");
         let (tx, rx) = client.open_once_port();
         handle.post(&client, tx);
         let usize_handle = rx.recv().await.unwrap();
@@ -5414,21 +5837,16 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_post_after_self_message() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (ready, ready_rx) = client.open_once_port();
         let (fired, fired_rx) = client.open_once_port();
         let delay = Duration::from_millis(50);
         let start = tokio::time::Instant::now();
-        let handle = proc
-            .spawn(
-                "test",
-                DelayedSelfActor {
-                    ready: Some(ready.bind()),
-                    fired: Some(fired.bind()),
-                    delay,
-                },
-            )
-            .unwrap();
+        let handle = proc.spawn(DelayedSelfActor {
+            ready: Some(ready.bind()),
+            fired: Some(fired.bind()),
+            delay,
+        });
 
         ready_rx.recv().await.unwrap();
         fired_rx.recv().await.unwrap();
@@ -5441,19 +5859,14 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_post_after_port_ref() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (reply, mut reply_rx) = client.open_port();
         let delay = Duration::from_millis(50);
         let start = tokio::time::Instant::now();
-        let handle = proc
-            .spawn(
-                "test",
-                DelayedPortActor {
-                    reply: Some(reply.bind()),
-                    delay,
-                },
-            )
-            .unwrap();
+        let handle = proc.spawn(DelayedPortActor {
+            reply: Some(reply.bind()),
+            delay,
+        });
 
         assert_eq!(reply_rx.recv().await.unwrap(), 123);
         assert!(start.elapsed() >= delay);
@@ -5464,19 +5877,14 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_post_after_discards_pending_messages_on_shutdown() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (ready, ready_rx) = client.open_once_port();
         let (fired, fired_rx) = client.open_once_port();
-        let handle = proc
-            .spawn(
-                "test",
-                DelayedSelfActor {
-                    ready: Some(ready.bind()),
-                    fired: Some(fired.bind()),
-                    delay: Duration::from_secs(60),
-                },
-            )
-            .unwrap();
+        let handle = proc.spawn(DelayedSelfActor {
+            ready: Some(ready.bind()),
+            fired: Some(fired.bind()),
+            delay: Duration::from_secs(60),
+        });
 
         ready_rx.recv().await.unwrap();
         handle.drain_and_stop("test").unwrap();
@@ -5496,8 +5904,8 @@ mod tests {
         // be actor failure(s) in this test which trigger supervision.
         let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
-        let (client, _handle) = proc.client("client").unwrap();
-        let actor_handle = proc.spawn("test", TestActor).unwrap();
+        let client = proc.client("client");
+        let actor_handle = proc.spawn(TestActor);
         actor_handle
             .panic(&client, "some random failure".to_string())
             .await
@@ -5577,7 +5985,7 @@ mod tests {
         };
 
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (mut reported_event, _coordinator) =
             ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
@@ -5589,34 +5997,25 @@ mod tests {
         let root_2_state = Arc::new(AtomicBool::new(false));
         let root_2_1_state = Arc::new(AtomicBool::new(false));
 
-        let root = proc
-            .spawn::<TestActor>("root", make_actor(&root_state, false))
-            .unwrap();
-        let root_1 = proc
-            .spawn_child::<TestActor>(
-                root.cell().clone(),
-                TestActor {
-                    handled: root_1_state.clone(),
-                    notify: root_1_notify.clone(),
-                    should_handle: true, // children's event stops here
-                },
-            )
-            .unwrap();
+        let root = proc.spawn_with_label::<TestActor>("root", make_actor(&root_state, false));
+        let root_1 = proc.spawn_child::<TestActor>(
+            root.cell().clone(),
+            TestActor {
+                handled: root_1_state.clone(),
+                notify: root_1_notify.clone(),
+                should_handle: true, // children's event stops here
+            },
+        );
         let root_1_1 = proc
-            .spawn_child::<TestActor>(root_1.cell().clone(), make_actor(&root_1_1_state, false))
-            .unwrap();
-        let root_1_1_1 = proc
-            .spawn_child::<TestActor>(
-                root_1_1.cell().clone(),
-                make_actor(&root_1_1_1_state, false),
-            )
-            .unwrap();
-        let root_2 = proc
-            .spawn_child::<TestActor>(root.cell().clone(), make_actor(&root_2_state, false))
-            .unwrap();
+            .spawn_child::<TestActor>(root_1.cell().clone(), make_actor(&root_1_1_state, false));
+        let root_1_1_1 = proc.spawn_child::<TestActor>(
+            root_1_1.cell().clone(),
+            make_actor(&root_1_1_1_state, false),
+        );
+        let root_2 =
+            proc.spawn_child::<TestActor>(root.cell().clone(), make_actor(&root_2_state, false));
         let root_2_1 = proc
-            .spawn_child::<TestActor>(root_2.cell().clone(), make_actor(&root_2_1_state, false))
-            .unwrap();
+            .spawn_child::<TestActor>(root_2.cell().clone(), make_actor(&root_2_1_state, false));
 
         // fail `root_1_1_1`, the supervision msg should be propagated to
         // `root_1` because `root_1` has set `true` to `handle_supervision_event`.
@@ -5666,12 +6065,13 @@ mod tests {
 
         let proc = Proc::isolated();
 
-        let (instance, handle) = proc.client("my_test_actor").unwrap();
+        let client = proc.client("my_test_actor");
+        let status = client.status();
 
-        let child_actor = TestActor.spawn(&instance).unwrap();
+        let child_actor = client.spawn(TestActor);
 
-        let (port, mut receiver) = instance.open_port();
-        child_actor.post(&instance, ("hello".to_string(), port.bind()));
+        let (port, mut receiver) = client.open_port();
+        child_actor.post(&client, ("hello".to_string(), port.bind()));
 
         let message = receiver.recv().await.unwrap();
         assert_eq!(message, "hello");
@@ -5679,10 +6079,9 @@ mod tests {
         child_actor.drain_and_stop("test").unwrap();
         child_actor.await;
 
-        assert_eq!(*handle.status().borrow(), ActorStatus::Client);
-        drop(instance);
-        assert_matches!(*handle.status().borrow(), ActorStatus::Stopped(_));
-        handle.await;
+        assert_eq!(*status.borrow(), ActorStatus::Client);
+        drop(client);
+        assert_matches!(*status.borrow(), ActorStatus::Stopped(_));
     }
 
     // Tokio's I/O driver is not fork-safe on macOS, and this test intentionally
@@ -5700,8 +6099,8 @@ mod tests {
             // Intentionally not setting a proc supervison coordinator. This
             // should cause the process to terminate.
             // ProcSupervisionCoordinator::set(&proc).await.unwrap();
-            let root = proc.spawn("root", TestActor).unwrap();
-            let (client, _handle) = proc.client("client").unwrap();
+            let root = proc.spawn_with_label("root", TestActor);
+            let client = proc.client("client");
             root.fail(&client, anyhow::anyhow!("some random failure"))
                 .await
                 .unwrap();
@@ -5800,8 +6199,8 @@ mod tests {
 
         trace_and_block(async {
             let proc = Proc::isolated();
-            let (client, _) = proc.client("client").unwrap();
-            let handle = LoggingActor.spawn_detached().unwrap();
+            let client = proc.client("client");
+            let handle = hyperactor::spawn(LoggingActor).into_guard();
             handle.post(&client, "hello world".to_string());
             handle.post(&client, "hello world again".to_string());
             handle.post(&client, 123u64);
@@ -5834,8 +6233,8 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_mailbox_closed_with_owner_stopped_reason() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
-        let actor_handle = proc.spawn("test", TestActor).unwrap();
+        let client = proc.client("client");
+        let actor_handle = proc.spawn(TestActor);
 
         // Clone the handle before awaiting since await consumes the handle
         let handle_for_send = actor_handle.clone();
@@ -5847,7 +6246,7 @@ mod tests {
         // Try to send a message to the stopped actor
         let result = handle_for_send
             .port::<TestActorMessage>()
-            .try_send(&client, TestActorMessage::Noop());
+            .try_post(&client, TestActorMessage::Noop());
 
         assert!(result.is_err(), "send should fail when actor is stopped");
         let err = result.unwrap_err();
@@ -5864,12 +6263,12 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_mailbox_closed_with_owner_failed_reason() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         // Need to set a supervison coordinator for this Proc because there will
         // be actor failure(s) in this test which trigger supervision.
         let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
-        let actor_handle = proc.spawn("test", TestActor).unwrap();
+        let actor_handle = proc.spawn(TestActor);
 
         // Clone the handle before awaiting since await consumes the handle
         let handle_for_send = actor_handle.clone();
@@ -5884,7 +6283,7 @@ mod tests {
         // Try to send a message to the failed actor
         let result = handle_for_send
             .port::<TestActorMessage>()
-            .try_send(&client, TestActorMessage::Noop());
+            .try_post(&client, TestActorMessage::Noop());
 
         assert!(result.is_err(), "send should fail when actor has failed");
         let err = result.unwrap_err();
@@ -5933,9 +6332,9 @@ mod tests {
     #[async_timed_test(timeout_secs = 60)]
     async fn test_terminated_snapshot_stored_on_stop() {
         let proc = Proc::isolated();
-        let (_client, _client_handle) = proc.client("client").unwrap();
+        let _client = proc.client("client");
 
-        let handle = proc.spawn::<TestActor>("actor", TestActor).unwrap();
+        let handle = proc.spawn(TestActor);
         let actor_id = handle.actor_addr().clone();
 
         // Actor is live — no terminated snapshot yet.
@@ -5950,7 +6349,7 @@ mod tests {
         // it to observe the terminal status and store the snapshot.
         let snapshot = wait_for_terminated_snapshot(&proc, &actor_id).await;
         let attrs: hyperactor_config::Attrs =
-            serde_json::from_str(&snapshot.attrs).expect("attrs must be valid JSON");
+            serde_json::from_str(&snapshot.attrs).expect("snapshot attrs must be valid");
         let status = attrs
             .get(crate::introspect::STATUS)
             .expect("must have status");
@@ -5977,11 +6376,11 @@ mod tests {
     #[async_timed_test(timeout_secs = 60)]
     async fn test_terminated_snapshot_stored_on_failure() {
         let proc = Proc::isolated();
-        let (client, _client_handle) = proc.client("client").unwrap();
+        let client = proc.client("client");
         // Supervision coordinator required for actor failure handling.
         ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
-        let handle = proc.spawn::<TestActor>("fail_actor", TestActor).unwrap();
+        let handle = proc.spawn(TestActor);
         let actor_id = handle.actor_addr().clone();
 
         // Trigger a failure.
@@ -5990,7 +6389,7 @@ mod tests {
 
         let snapshot = wait_for_terminated_snapshot(&proc, &actor_id).await;
         let attrs: hyperactor_config::Attrs =
-            serde_json::from_str(&snapshot.attrs).expect("attrs must be valid JSON");
+            serde_json::from_str(&snapshot.attrs).expect("snapshot attrs must be valid");
         let status = attrs
             .get(crate::introspect::STATUS)
             .expect("must have status");
@@ -6005,19 +6404,19 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_supervision_event_stored_on_failure() {
         let proc = Proc::isolated();
-        let (client, _client_handle) = proc.client("client").unwrap();
+        let client = proc.client("client");
         ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
-        let handle = proc.spawn::<TestActor>("fail_actor", TestActor).unwrap();
+        let handle = proc.spawn(TestActor);
         let actor_id = handle.actor_addr().clone();
         let cell = handle.cell().clone();
 
         handle.post(&client, TestActorMessage::Fail(anyhow::anyhow!("boom")));
         handle.await;
 
-        let event = cell.supervision_event();
-        assert!(event.is_some(), "failed actor must have supervision_event");
-        let event = event.unwrap();
+        let event = cell
+            .supervision_event()
+            .expect("failed actor must have supervision_event");
         assert_eq!(event.actor_id, actor_id);
         assert!(event.actor_status.is_failed());
         // Originated here, not propagated.
@@ -6028,9 +6427,9 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_supervision_event_on_clean_stop() {
         let proc = Proc::isolated();
-        let (_client, _client_handle) = proc.client("client").unwrap();
+        let _client = proc.client("client");
 
-        let handle = proc.spawn::<TestActor>("stop_actor", TestActor).unwrap();
+        let handle = proc.spawn(TestActor);
         let cell = handle.cell().clone();
 
         handle.drain_and_stop("test").unwrap();
@@ -6038,7 +6437,7 @@ mod tests {
 
         let event = cell
             .supervision_event()
-            .expect("cleanly stopped actor must have a supervision_event");
+            .expect("clean stop must store supervision event");
         assert!(
             matches!(event.actor_status, ActorStatus::Stopped(_)),
             "expected Stopped status, got {:?}",
@@ -6050,11 +6449,11 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_supervision_coordinator_receives_clean_stop() {
         let proc = Proc::isolated();
-        let (_client, _client_handle) = proc.client("client").unwrap();
+        let _client = proc.client("client");
         let (mut reported_event, _coordinator_handle) =
             ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
-        let handle = proc.spawn::<TestActor>("stop_actor", TestActor).unwrap();
+        let handle = proc.spawn(TestActor);
         let actor_id = handle.actor_addr().clone();
 
         handle.drain_and_stop("test").unwrap();
@@ -6073,16 +6472,14 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_coordinator_shuts_down_last_during_destroy() {
         let mut proc = Proc::isolated();
-        let (_client, _client_handle) = proc.client("client").unwrap();
+        let _client = proc.client("client");
         let (mut reported_event, _coordinator_handle) =
             ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
         // Spawn several actors that will all stop during destroy_and_wait.
         let mut actor_ids = Vec::new();
         for i in 0..3 {
-            let handle = proc
-                .spawn::<TestActor>(&format!("actor_{i}"), TestActor)
-                .unwrap();
+            let handle = proc.spawn_with_label::<TestActor>(&format!("actor_{i}"), TestActor);
             actor_ids.push(handle.actor_addr().clone());
         }
 
@@ -6114,10 +6511,10 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_supervision_event_on_propagated_failure() {
         let proc = Proc::isolated();
-        let (client, _client_handle) = proc.client("client").unwrap();
+        let client = proc.client("client");
         ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
-        let parent = proc.spawn::<TestActor>("parent", TestActor).unwrap();
+        let parent = proc.spawn_with_label::<TestActor>("parent", TestActor);
         let parent_cell = parent.cell().clone();
         // Spawn child under parent.
         let (tx, rx) = oneshot::channel();
@@ -6154,9 +6551,9 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_resolve_actor_ref_none_for_terminal_actor() {
         let proc = Proc::isolated();
-        let (_client, _client_handle) = proc.client("client").unwrap();
+        let _client = proc.client("client");
 
-        let handle = proc.spawn::<TestActor>("target", TestActor).unwrap();
+        let handle = proc.spawn(TestActor);
         let actor_ref: ActorRef<TestActor> = handle.bind();
 
         // Actor is live — resolve should succeed.
@@ -6180,10 +6577,10 @@ mod tests {
     #[async_timed_test(timeout_secs = 60)]
     async fn test_terminated_snapshot_has_failure_info() {
         let proc = Proc::isolated();
-        let (client, _client_handle) = proc.client("client").unwrap();
+        let client = proc.client("client");
         ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
-        let handle = proc.spawn::<TestActor>("fail_actor", TestActor).unwrap();
+        let handle = proc.spawn(TestActor);
         let actor_id = handle.actor_addr().clone();
 
         handle.post(&client, TestActorMessage::Fail(anyhow::anyhow!("kaboom")));
@@ -6191,7 +6588,7 @@ mod tests {
 
         let snapshot = wait_for_terminated_snapshot(&proc, &actor_id).await;
         let attrs: hyperactor_config::Attrs =
-            serde_json::from_str(&snapshot.attrs).expect("attrs must be valid JSON");
+            serde_json::from_str(&snapshot.attrs).expect("snapshot attrs must be valid");
         let status = attrs
             .get(crate::introspect::STATUS)
             .expect("must have status");
@@ -6222,10 +6619,10 @@ mod tests {
     #[async_timed_test(timeout_secs = 60)]
     async fn test_propagated_failure_info() {
         let proc = Proc::isolated();
-        let (client, _client_handle) = proc.client("client").unwrap();
+        let client = proc.client("client");
         ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
-        let parent = proc.spawn::<TestActor>("parent", TestActor).unwrap();
+        let parent = proc.spawn_with_label::<TestActor>("parent", TestActor);
         let parent_id = parent.actor_addr().clone();
 
         let (tx, rx) = oneshot::channel();
@@ -6241,7 +6638,7 @@ mod tests {
 
         let snapshot = wait_for_terminated_snapshot(&proc, &parent_id).await;
         let attrs: hyperactor_config::Attrs =
-            serde_json::from_str(&snapshot.attrs).expect("attrs must be valid JSON");
+            serde_json::from_str(&snapshot.attrs).expect("snapshot attrs must be valid");
         let root_cause = attrs
             .get(crate::introspect::FAILURE_ROOT_CAUSE_ACTOR)
             .expect("propagated failure must have root_cause_actor");
@@ -6256,10 +6653,8 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_with_name_creates_descriptive_name() {
         let proc = Proc::isolated();
-        let root = proc.spawn::<TestActor>("root", TestActor).unwrap();
-        let handle = proc
-            .spawn_named_child(root.cell().clone(), "my_controller", TestActor)
-            .unwrap();
+        let root = proc.spawn_with_label::<TestActor>("root", TestActor);
+        let handle = proc.spawn_named_child(root.cell().clone(), "my_controller", TestActor);
         assert_eq!(
             handle.actor_addr().label().unwrap().as_str(),
             "my_controller"
@@ -6271,13 +6666,9 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_with_name_increments_index() {
         let proc = Proc::isolated();
-        let root = proc.spawn::<TestActor>("root", TestActor).unwrap();
-        let first = proc
-            .spawn_named_child(root.cell().clone(), "my_controller", TestActor)
-            .unwrap();
-        let second = proc
-            .spawn_named_child(root.cell().clone(), "my_controller", TestActor)
-            .unwrap();
+        let root = proc.spawn_with_label::<TestActor>("root", TestActor);
+        let first = proc.spawn_named_child(root.cell().clone(), "my_controller", TestActor);
+        let second = proc.spawn_named_child(root.cell().clone(), "my_controller", TestActor);
         assert_ne!(first.actor_addr().uid(), second.actor_addr().uid());
     }
 
@@ -6286,12 +6677,10 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_with_name_preserves_supervision() {
         let proc = Proc::isolated();
-        let root = proc.spawn::<TestActor>("root", TestActor).unwrap();
-        let child = proc
-            .spawn_named_child(root.cell().clone(), "supervised_child", TestActor)
-            .unwrap();
+        let root = proc.spawn_with_label::<TestActor>("root", TestActor);
+        let child = proc.spawn_named_child(root.cell().clone(), "supervised_child", TestActor);
         let child_cell = child.cell();
-        let parent = child_cell.parent().expect("named child must have a parent");
+        let parent = child_cell.parent().expect("child must have parent");
         assert_eq!(parent.actor_addr(), root.actor_addr());
     }
 
@@ -6299,8 +6688,8 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_unchanged() {
         let proc = Proc::isolated();
-        let root = proc.spawn::<TestActor>("root", TestActor).unwrap();
-        let child = proc.spawn_child(root.cell().clone(), TestActor).unwrap();
+        let root = proc.spawn_with_label::<TestActor>("root", TestActor);
+        let child = proc.spawn_child(root.cell().clone(), TestActor);
         assert!(!child.actor_addr().is_root());
     }
 
@@ -6308,13 +6697,9 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_with_name_different_names_different_pids() {
         let proc = Proc::isolated();
-        let root = proc.spawn::<TestActor>("root", TestActor).unwrap();
-        let a = proc
-            .spawn_named_child(root.cell().clone(), "controller_a", TestActor)
-            .unwrap();
-        let b = proc
-            .spawn_named_child(root.cell().clone(), "controller_b", TestActor)
-            .unwrap();
+        let root = proc.spawn_with_label::<TestActor>("root", TestActor);
+        let a = proc.spawn_named_child(root.cell().clone(), "controller_a", TestActor);
+        let b = proc.spawn_named_child(root.cell().clone(), "controller_b", TestActor);
         assert_ne!(a.actor_addr().uid(), b.actor_addr().uid());
         assert_eq!(a.actor_addr().label().unwrap().as_str(), "controller_a");
         assert_eq!(b.actor_addr().label().unwrap().as_str(), "controller_b");
@@ -6324,14 +6709,10 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_with_name_no_child_overwrite() {
         let proc = Proc::isolated();
-        let root = proc.spawn::<TestActor>("root", TestActor).unwrap();
-        let _a = proc
-            .spawn_named_child(root.cell().clone(), "ctrl", TestActor)
-            .unwrap();
-        let _b = proc
-            .spawn_named_child(root.cell().clone(), "ctrl", TestActor)
-            .unwrap();
-        let _c = proc.spawn_child(root.cell().clone(), TestActor).unwrap();
+        let root = proc.spawn_with_label::<TestActor>("root", TestActor);
+        let _a = proc.spawn_named_child(root.cell().clone(), "ctrl", TestActor);
+        let _b = proc.spawn_named_child(root.cell().clone(), "ctrl", TestActor);
+        let _c = proc.spawn_child(root.cell().clone(), TestActor);
         assert_eq!(root.cell().child_count(), 3);
     }
 
@@ -6339,30 +6720,25 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_with_name_does_not_pollute_roots() {
         let proc = Proc::isolated();
-        let root = proc.spawn::<TestActor>("root", TestActor).unwrap();
-        let _child = proc
-            .spawn_named_child(root.cell().clone(), "foo", TestActor)
-            .unwrap();
+        let root = proc.spawn_with_label::<TestActor>("root", TestActor);
+        let _child = proc.spawn_named_child(root.cell().clone(), "foo", TestActor);
         // "foo" was used as a named child name but should NOT
         // prevent spawning a root actor with that name.
-        let result = proc.spawn::<TestActor>("foo", TestActor);
-        assert!(result.is_ok(), "named child should not pollute roots");
+        let _root = proc.spawn_with_label::<TestActor>("foo", TestActor);
     }
 
     /// Exercises AI-3 (see module doc).
     #[async_timed_test(timeout_secs = 30)]
     async fn test_ai3_controller_actor_ids_unique_across_parents_same_proc() {
         let proc = Proc::isolated();
-        let parent_a = proc.spawn::<TestActor>("parent_a", TestActor).unwrap();
-        let parent_b = proc.spawn::<TestActor>("parent_b", TestActor).unwrap();
+        let parent_a = proc.spawn_with_label::<TestActor>("parent_a", TestActor);
+        let parent_b = proc.spawn_with_label::<TestActor>("parent_b", TestActor);
 
         // Simulate the correct pattern: include mesh identity in name.
-        let ctrl_a = proc
-            .spawn_named_child(parent_a.cell().clone(), "controller_mesh_a", TestActor)
-            .unwrap();
-        let ctrl_b = proc
-            .spawn_named_child(parent_b.cell().clone(), "controller_mesh_b", TestActor)
-            .unwrap();
+        let ctrl_a =
+            proc.spawn_named_child(parent_a.cell().clone(), "controller_mesh_a", TestActor);
+        let ctrl_b =
+            proc.spawn_named_child(parent_b.cell().clone(), "controller_mesh_b", TestActor);
 
         assert_ne!(
             ctrl_a.actor_addr(),
@@ -6375,15 +6751,13 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_ai3_no_controller_overwrite_in_parent_or_proc_maps() {
         let proc = Proc::isolated();
-        let parent_a = proc.spawn::<TestActor>("parent_a", TestActor).unwrap();
-        let parent_b = proc.spawn::<TestActor>("parent_b", TestActor).unwrap();
+        let parent_a = proc.spawn_with_label::<TestActor>("parent_a", TestActor);
+        let parent_b = proc.spawn_with_label::<TestActor>("parent_b", TestActor);
 
-        let ctrl_a = proc
-            .spawn_named_child(parent_a.cell().clone(), "controller_mesh_a", TestActor)
-            .unwrap();
-        let ctrl_b = proc
-            .spawn_named_child(parent_b.cell().clone(), "controller_mesh_b", TestActor)
-            .unwrap();
+        let ctrl_a =
+            proc.spawn_named_child(parent_a.cell().clone(), "controller_mesh_a", TestActor);
+        let ctrl_b =
+            proc.spawn_named_child(parent_b.cell().clone(), "controller_mesh_b", TestActor);
 
         // Both must be independently resolvable via the proc's instances.
         assert!(
@@ -6403,9 +6777,9 @@ mod tests {
     #[async_timed_test(timeout_secs = 60)]
     async fn test_stopped_snapshot_has_no_failure_info() {
         let proc = Proc::isolated();
-        let (_client, _client_handle) = proc.client("client").unwrap();
+        let _client = proc.client("client");
 
-        let handle = proc.spawn::<TestActor>("stop_actor", TestActor).unwrap();
+        let handle = proc.spawn(TestActor);
         let actor_id = handle.actor_addr().clone();
 
         handle.drain_and_stop("test").unwrap();
@@ -6413,7 +6787,7 @@ mod tests {
 
         let snapshot = wait_for_terminated_snapshot(&proc, &actor_id).await;
         let attrs: hyperactor_config::Attrs =
-            serde_json::from_str(&snapshot.attrs).expect("attrs must be valid JSON");
+            serde_json::from_str(&snapshot.attrs).expect("snapshot attrs must be valid");
         let status = attrs
             .get(crate::introspect::STATUS)
             .expect("must have status");
@@ -6439,13 +6813,13 @@ mod tests {
     #[async_timed_test(timeout_secs = 10)]
     async fn test_queue_depth_increment_decrement() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
-        let handle = proc.spawn("qd_test", TestActor).unwrap();
+        let client = proc.client("client");
+        let handle = proc.spawn_with_label("qd_test", TestActor);
         let actor_ref: crate::ActorRef<TestActor> = handle.bind();
         let actor_id = actor_ref.actor_addr().clone();
 
         // Before any message: queue depth should be 0.
-        let cell = proc.get_instance(&actor_id).expect("actor exists");
+        let cell = proc.get_instance(&actor_id).expect("actor must exist");
         assert_eq!(cell.queue_depth(), 0, "initial queue depth should be 0");
 
         // Send a message that blocks until we signal it. This lets
@@ -6488,17 +6862,141 @@ mod tests {
         );
     }
 
+    // Test-only Named message + dedicated actor with explicit handler
+    // export, so the integration test can bind the BufferTestMsg
+    // handler port (`handle.bind()`) and drive ordered traffic through
+    // `OrderedSender`. Without the bind, `PortHandle::try_post` stamps
+    // `SeqInfo::Direct` and the enqueue closure takes the `direct_send`
+    // branch -- which never populates `OrderedSender::states`, leaving
+    // the snapshot empty.
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, typeuri::Named)]
+    struct BufferTestMsg;
+
+    #[derive(Debug, Default)]
+    #[hyperactor::export(handlers = [BufferTestMsg])]
+    struct BufferTestActor;
+
+    #[async_trait]
+    impl Actor for BufferTestActor {}
+
+    #[async_trait]
+    impl Handler<BufferTestMsg> for BufferTestActor {
+        async fn handle(
+            &mut self,
+            _cx: &crate::Context<Self>,
+            _msg: BufferTestMsg,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Exercises IO-1 ("active" branch: snapshot is `Some({enabled:
+    /// true, ...})`), IO-2 (publish-time state via `try_lock` populates
+    /// the session's buffered fields), and IO-3 (asserts `queue_depth`
+    /// is a propagated `u64` but makes NO arithmetic claim relating it
+    /// to `buffered_count`). End-to-end wiring proof: `Instance::new`
+    /// installs the snapshot callback, `InstanceCell::inbound_ordering_snapshot()`
+    /// invokes it, the resulting snapshot includes the buffered session
+    /// with its sender, `expected_next_seq`, and `buffered_count`, AND
+    /// `build_actor_attrs` (via `live_actor_payload`) publishes
+    /// `INBOUND_ORDERING` so it round-trips through `ActorAttrsView`.
+    /// The attrs-publish assertion catches accidental removal of the
+    /// `attrs.set(INBOUND_ORDERING, snapshot)` call site. Drives a
+    /// deterministic gap via `debug_skip_next_ordering_seq` so the test
+    /// is not timing-sensitive.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_inbound_ordering_snapshot_callback_publishes_session() {
+        use typeuri::Named;
+
+        // Pin reorder buffering ON regardless of any global config
+        // overrides set by other tests in the same binary. Without this
+        // guard the snapshot would observe `enabled = false` and the
+        // assertions below would fail when tests run in interleaved
+        // order.
+        let config = hyperactor_config::global::lock();
+        let _g = config.override_key(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let handle = proc.spawn_with_label("a", BufferTestActor);
+        let actor_id = handle.actor_addr().clone();
+
+        // Bind the handler ports so `handle.post` uses `SeqInfo::Session`
+        // (not `SeqInfo::Direct`). This is the equivalent of asking
+        // for a typed actor reference; for our purposes we only need
+        // the side effect of binding handler ports.
+        let _actor_ref: crate::ActorRef<BufferTestActor> = handle.bind();
+
+        // Reserve seq 1 on the actor's BufferTestMsg handler port so
+        // subsequent client posts get seqs 2..=N which then buffer
+        // (waiting for seq 1, which will never arrive).
+        let handler_port = actor_id.port_addr(Port::from(BufferTestMsg::port()));
+        // Reserve one seq directly on the client's sequencer. Equivalent
+        // to `Instance::debug_skip_next_ordering_seq(dest, 1)`, but
+        // inlined here so the test does not depend on a Client-side
+        // convenience method.
+        let _ = client.sequencer().assign_seq(&handler_port);
+
+        // Post three messages. These flow through MailboxExt::post ->
+        // HandlerPorts enqueue closure -> OrderedSender::send, where
+        // they buffer (out of order from seq 1's perspective).
+        for _ in 0..3 {
+            handle.post(&client, BufferTestMsg);
+        }
+        // Let the enqueues propagate to the buffer.
+        tokio::task::yield_now().await;
+
+        // Direct accessor: cell.inbound_ordering_snapshot() invokes the
+        // type-erased callback installed at Instance::new.
+        let cell = proc.get_instance(&actor_id).expect("actor exists");
+        let snapshot = cell
+            .inbound_ordering_snapshot()
+            .expect("snapshot callback should be installed for live actors");
+
+        assert!(snapshot.enabled, "buffering enabled by override");
+        assert_eq!(snapshot.sessions.len(), 1, "one client session expected");
+        let session = &snapshot.sessions[0];
+        assert_eq!(session.expected_next_seq, 1);
+        assert_eq!(session.buffered_count, 3);
+        assert_eq!(session.oldest_buffered_seq, Some(2));
+        assert_eq!(session.newest_buffered_seq, Some(4));
+        assert_eq!(
+            session.sender.as_ref(),
+            Some(client.mailbox().actor_addr()),
+            "session owner should be the posting client",
+        );
+
+        // Attrs-publish wiring: build_actor_attrs (via live_actor_payload)
+        // must call attrs.set(INBOUND_ORDERING, snapshot). Round-trip
+        // through ActorAttrsView and assert the same session.
+        let payload = crate::introspect::live_actor_payload(&cell);
+        let attrs: hyperactor_config::Attrs =
+            serde_json::from_str(&payload.attrs).expect("payload.attrs is well-formed JSON");
+        let view = crate::introspect::ActorAttrsView::from_attrs(&attrs)
+            .expect("attrs decode through ActorAttrsView");
+        let view_snapshot = view
+            .inbound_ordering
+            .as_ref()
+            .expect("INBOUND_ORDERING attr should be set by build_actor_attrs");
+        assert_eq!(view_snapshot, &snapshot);
+
+        // queue_depth scalar is propagated (no arithmetic relation to
+        // buffered_count asserted; IO-3 in introspect module doc).
+        let _: u64 = cell.queue_depth();
+        let _: u64 = view.queue_depth;
+    }
+
     // PD-4/PD-5: proc-level queue pressure aggregation reports
     // non-zero under induced load. Queue depth is an instantaneous
     // snapshot of currently queued work, not backlog history.
     #[async_timed_test(timeout_secs = 10)]
     async fn test_proc_queue_depth_aggregation_under_pressure() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
 
         // Spawn two actors.
-        let h1 = proc.spawn("a1", TestActor).unwrap();
-        let h2 = proc.spawn("a2", TestActor).unwrap();
+        let h1 = proc.spawn_with_label("a1", TestActor);
+        let h2 = proc.spawn_with_label("a2", TestActor);
 
         // Block both actors with a Wait message.
         let (reply1, rx1) = oneshot::channel();
@@ -6584,8 +7082,8 @@ mod tests {
     #[async_timed_test(timeout_secs = 10)]
     async fn test_retained_queue_stats_burst_then_drain() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
-        let h = proc.spawn("ret_test", TestActor).unwrap();
+        let client = proc.client("client");
+        let h = proc.spawn_with_label("ret_test", TestActor);
 
         // Block the actor.
         let (ready_tx, ready_rx) = oneshot::channel();

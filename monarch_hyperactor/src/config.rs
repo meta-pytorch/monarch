@@ -218,23 +218,6 @@ declare_attrs! {
         Some("actor_queue_dispatch".to_string()),
     ))
     pub attr ACTOR_QUEUE_DISPATCH: bool = false;
-
-    /// ZMQ-style address of a remote host's duplex server to attach the
-    /// Python client's gateway to. When non-empty, the client bootstrap
-    /// path connects the client's local gateway to the gateway at this
-    /// address: the client's outbound traffic is forwarded over the
-    /// duplex, and the remote gateway registers routes back to the
-    /// client's local procs so return traffic flows over the same
-    /// duplex. This is intended for cases (e.g., the client running
-    /// outside a Kubernetes cluster) where the client cannot be reached
-    /// directly by the procs in the mesh, so a single in-mesh host
-    /// serves as the client's mailbox. An empty string disables
-    /// attach-mode bootstrap.
-    @meta(CONFIG = ConfigAttr::new(
-        Some("MONARCH_CLIENT_ATTACH_ADDR".to_string()),
-        Some("client_attach_addr".to_string()),
-    ))
-    pub attr CLIENT_ATTACH_ADDR: String = String::new();
 }
 
 /// Python API for configuration management

@@ -172,11 +172,11 @@ async fn test_snapshot_sql_queries() -> Result<()> {
     let ctx = SessionContext::new();
     register_all(&table_store, &ctx).await?;
 
-    // PS-1: all nine tables registered.
+    // PS-1: all eleven tables registered.
     assert_eq!(
         table_store.table_names()?.len(),
-        9,
-        "PS-1: all nine tables should be registered"
+        11,
+        "PS-1: all eleven tables should be registered"
     );
 
     // PS-5: exactly one snapshot row.
@@ -354,6 +354,78 @@ async fn test_snapshot_sql_queries() -> Result<()> {
     assert_eq!(col_i64(&d, "depth", 2), 2);
     assert_eq!(col_str(&d, "node_kind", 3), "root");
     assert_eq!(col_i64(&d, "depth", 3), 3);
+
+    // Query E: IO-7 (live actors carry an `actor_inbound_orderings`
+    // row), IO-4 (snapshot_complete iff skipped == 0), and IO-5
+    // (known_session_count == returned + skipped). Joins
+    // `actor_inbound_orderings` to `ordering_sessions` via the shared
+    // `(snapshot_id, node_id)` key and groups to count returned
+    // sessions, so we can cross-validate the rollup against the
+    // per-session detail in one go.
+    let e = query_batch(
+        &ctx,
+        r#"
+        SELECT io.node_id,
+               io.enabled,
+               io.snapshot_complete,
+               io.skipped_session_count,
+               io.known_session_count,
+               COUNT(s.session_id) AS returned_sessions
+        FROM actor_inbound_orderings io
+        LEFT JOIN ordering_sessions s
+          ON s.snapshot_id = io.snapshot_id
+         AND s.node_id = io.node_id
+        WHERE io.snapshot_id = 'test_snap'
+        GROUP BY io.node_id, io.enabled, io.snapshot_complete,
+                 io.skipped_session_count, io.known_session_count
+    "#,
+    )
+    .await?;
+    assert!(
+        e.num_rows() >= 1,
+        "Query E (IO-7): at least one live actor must surface in actor_inbound_orderings",
+    );
+    for row in 0..e.num_rows() {
+        let snapshot_complete = col_bool(&e, "snapshot_complete", row);
+        let skipped = col_i64(&e, "skipped_session_count", row);
+        let known = col_i64(&e, "known_session_count", row);
+        let returned = col_i64(&e, "returned_sessions", row);
+        assert_eq!(
+            snapshot_complete,
+            skipped == 0,
+            "IO-4: snapshot_complete must equal (skipped_session_count == 0) for {}",
+            col_str(&e, "node_id", row),
+        );
+        assert_eq!(
+            known,
+            returned + skipped,
+            "IO-5: known_session_count must equal returned + skipped for {}",
+            col_str(&e, "node_id", row),
+        );
+    }
+
+    // Query F: every `actor_inbound_orderings` row must FK to a live
+    // `actor_nodes` row in the same snapshot. The presence of a NULL
+    // `actor_type` in this LEFT JOIN indicates an orphan rollup row.
+    let f = query_batch(
+        &ctx,
+        r#"
+        SELECT io.node_id, a.actor_type
+        FROM actor_inbound_orderings io
+        LEFT JOIN actor_nodes a
+          ON a.snapshot_id = io.snapshot_id
+         AND a.node_id = io.node_id
+        WHERE io.snapshot_id = 'test_snap'
+    "#,
+    )
+    .await?;
+    for row in 0..f.num_rows() {
+        assert!(
+            !is_null(&f, "actor_type", row),
+            "Query F: actor_inbound_orderings row for {} has no matching actor_nodes row",
+            col_str(&f, "node_id", row),
+        );
+    }
 
     // Cleanup: shutdown the mesh.
     let mut host_mesh = host_mesh;

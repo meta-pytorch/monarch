@@ -4,13 +4,12 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# @lint-ignore-every LICENSELINT — monarch is OSS, BSD-style header is correct
 # pyre-unsafe
 
-import asyncio
 import os
 import pathlib
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -18,26 +17,15 @@ import tempfile
 import textwrap
 import threading
 import time
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set
 from unittest.mock import patch
 
 import cloudpickle
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
-from monarch._rust_bindings.monarch_hyperactor.actor import (
-    PythonMessage,
-    PythonMessageKind,
-)
-from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer
-from monarch._rust_bindings.monarch_hyperactor.mailbox import (
-    PortId,
-    PortRef,
-    UndeliverableMessageEnvelope,
-)
-from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 from monarch._rust_bindings.monarch_hyperactor.shape import Point, Shape, Slice
-from monarch._src.actor.actor_mesh import _client_context, Actor, context
+from monarch._src.actor.actor_mesh import _client_context, Actor, attach, context
+from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.host_mesh import HostMesh, this_host, this_proc
 from monarch._src.actor.pickle import flatten, unflatten
@@ -163,6 +151,60 @@ def test_shutdown_host_mesh() -> None:
         am = pm.spawn("actor", RankActor)
         am.get_rank.choose().get()
         hm.shutdown().get()
+
+
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+def test_alias_bootstrap() -> None:
+    """A worker started with an alias address (dial_to@bind_to) is reachable.
+
+    The alias format `tcp://PUBLIC:PORT@tcp://0.0.0.0:PORT` lets a worker
+    advertise a dialable address while binding to a wildcard interface. This
+    is required where binding directly to the advertised address is not
+    possible (e.g. behind NAT, where only `0.0.0.0` can be bound).
+    """
+    procs = []
+    workers = []
+    for _i in range(2):
+        # Reserve an ephemeral port, then release it so the worker can bind
+        # to it via the alias's bind_to address.
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+        sock.close()
+
+        env = {**os.environ}
+        if "FB_XAR_INVOKED_NAME" in os.environ:
+            env["PYTHONPATH"] = ":".join(sys.path)
+
+        # dial_to advertises a reachable address; bind_to listens on the
+        # wildcard interface.
+        addr = f"tcp://127.0.0.1:{port}@tcp://0.0.0.0:{port}"
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import sys; from monarch.actor import run_worker_loop_forever; "
+                f'run_worker_loop_forever(address={addr!r}, ca="trust_all_connections")',
+            ],
+            env=env,
+        )
+        procs.append(proc)
+        # Pass the full alias through attach_to_workers. The attach path must
+        # canonicalize this to dial_to before using it as host identity.
+        workers.append(addr)
+
+    try:
+        # pyrefly: ignore [bad-argument-type]
+        hosts = attach_to_workers(ca="trust_all_connections", workers=workers)
+        am = hosts.spawn_procs(per_host={"gpus": 1}).spawn("rank", RankActor)
+        ranks = sorted(v for _, v in am.get_rank.call().get().items())
+        assert ranks == [0, 1]
+        hosts.shutdown().get()
+    finally:
+        for proc in procs:
+            proc.kill()
+            proc.wait()
 
 
 @pytest.mark.timeout(60)
@@ -390,10 +432,8 @@ def test_spawn_procs_proc_bind_length_mismatch() -> None:
 def test_spawn_procs_with_numactl_bind() -> None:
     numa_node0 = pathlib.Path("/sys/devices/system/node/node0")
     if not numa_node0.exists():
-        # pyre-fixme[29]: skip is a function
         pytest.skip("NUMA node0 not available")
     if shutil.which("numactl") is None:
-        # pyre-fixme[29]: skip is a function
         pytest.skip("numactl binary not found")
 
     node0_cpus = _parse_cpu_list((numa_node0 / "cpulist").read_text())
@@ -419,11 +459,9 @@ def test_spawn_procs_with_numactl_bind() -> None:
 @pytest.mark.timeout(120)
 def test_spawn_procs_with_taskset_bind() -> None:
     if not hasattr(os, "sched_getaffinity"):
-        # pyre-fixme[29]: skip is a function
         pytest.skip("os.sched_getaffinity not available on this platform")
     available = sorted(os.sched_getaffinity(0))
     if len(available) < 2:
-        # pyre-fixme[29]: skip is a function
         pytest.skip("fewer than 2 CPUs available")
 
     cpu_a = available[0]
@@ -563,10 +601,9 @@ class DuplexProcessJob(ProcessJob):
     """ProcessJob that also exposes a duplex socket on the first host.
 
     The duplex address is available via ``duplex_addr`` after calling
-    ``state()``.  Set ``client_attach_addr`` to this value (via
-    ``configured(client_attach_addr=...)``) before the first
-    ``context()`` call so the client bootstraps by attaching to the
-    worker.
+    ``state()``.  Pass this value to ``attach(...)`` before the
+    first ``context()`` call so the client bootstraps by attaching to
+    the worker.
     """
 
     def __init__(
@@ -643,57 +680,12 @@ class EchoActor(Actor):
         return msg
 
 
-class UndeliverableReceiver(Actor):
-    def __init__(self):
-        self._messages: asyncio.Queue = asyncio.Queue()
-
-    @endpoint
-    async def receive(self, sender: str, dest: str, error_msg: str) -> None:
-        await self._messages.put((sender, dest, error_msg))
-
-    @endpoint
-    async def get_message(self) -> Tuple[str, str, str]:
-        return await self._messages.get()
-
-
-class UndeliverableSender(Actor):
-    """Sends a message to a bogus address, triggering an undeliverable bounce."""
-
-    def __init__(self, receiver: UndeliverableReceiver):
-        self._receiver = receiver
-
-    @endpoint
-    def send_to_bogus(self) -> None:
-        actor_instance = context().actor_instance
-        port_id = PortId(
-            actor_id=ActorAddr(addr="local:0", proc_name="bogus", actor_name="bogus"),
-            port=1234,
-        )
-        port_ref = PortRef(port_id)
-        buf = Buffer()
-        buf.write(b"undeliverable_payload")
-        port_ref.send(
-            actor_instance._as_rust(),
-            PythonMessage(PythonMessageKind.Result(None), buf.freeze()),
-        )
-
-    def _handle_undeliverable_message(
-        self, message: UndeliverableMessageEnvelope
-    ) -> bool:
-        PythonTask.spawn_blocking(
-            self._receiver.receive.call_one(
-                str(message.sender()), str(message.dest()), message.error_msg()
-            ).get
-        )
-        return True
-
-
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
 async def test_client_attach_addr() -> None:
-    """Verify ``configured(client_attach_addr=...)`` causes the client
-    to bootstrap by attaching to the worker, and that subsequent mesh
-    operations route exclusively over the duplex channel.
+    """Verify ``attach(...)`` causes the client to bootstrap by
+    attaching to the worker, and that subsequent mesh operations route
+    exclusively over the duplex channel.
 
     After bootstrapping and spawning procs we remove the worker's frontend
     socket from the filesystem.  Any subsequent client-side messaging that
@@ -702,65 +694,72 @@ async def test_client_attach_addr() -> None:
     over the duplex channel.
     """
     job = DuplexProcessJob()
+    # Start the worker (so its duplex address exists) and attach the
+    # client to it BEFORE anything bootstraps the client context —
+    # `scoped_state(job)` connects via `attach_to_workers`, which would
+    # otherwise bootstrap the client unattached.
+    job.apply()
+    attach(job.duplex_addr)
     with scoped_state(job, cached_path=None) as state:
-        with configured(client_attach_addr=job.duplex_addr):
-            context()
+        context()
 
-            # Remove the worker's frontend socket.  The client should
-            # never need to dial the frontend — all communication
-            # flows through the duplex channel.  If anything on the
-            # client side accidentally tries to connect to the
-            # frontend, it will fail.
-            frontend = job.frontend_socket_path
-            assert os.path.exists(frontend)
-            os.remove(frontend)
-            assert not os.path.exists(frontend)
+        # Remove the worker's frontend socket.  The client should
+        # never need to dial the frontend — all communication
+        # flows through the duplex channel.  If anything on the
+        # client side accidentally tries to connect to the
+        # frontend, it will fail.
+        frontend = job.frontend_socket_path
+        assert os.path.exists(frontend)
+        os.remove(frontend)
+        assert not os.path.exists(frontend)
 
-            # (a) Spawn HostMesh, ProcMesh, and ActorMesh.
-            hm = state.hosts
-            assert hm is not None
+        # (a) Spawn HostMesh, ProcMesh, and ActorMesh.
+        hm = state.hosts
+        assert hm is not None
 
-            pm = hm.spawn_procs(per_host={"workers": 2})
-            assert pm is not None
+        pm = hm.spawn_procs(per_host={"workers": 2})
+        assert pm is not None
 
-            am = pm.spawn("echo", EchoActor)
+        am = pm.spawn("echo", EchoActor)
 
-            # (b) Send messages to the actor mesh.
-            results = am.echo.call("hello").get()
+        # (b) Send messages to the actor mesh.
+        results = am.echo.call("hello").get()
 
-            # (c) Get replies back.
-            for val in results.values():
-                assert val == "hello"
+        # (c) Get replies back.
+        for val in results.values():
+            assert val == "hello"
 
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
 def test_client_attach_addr_this_host_and_this_proc() -> None:
-    """After bootstrapping with ``client_attach_addr`` set,
-    ``this_host()`` returns the host-local mesh on this machine (not
-    the attached host) and ``this_proc()`` returns the local client
-    proc whose gateway is now connected to the remote gateway. The
-    local client procs remain on this machine; the remote gateway
-    holds routes back to them through the via duplex.
-    ``this_host()`` keeps its ``"on this machine"`` meaning so that
-    ``this_host().spawn_procs()`` always spawns local procs; to drive
-    procs on the attached host, use the separate ``HostMesh`` returned
-    by the job."""
+    """After bootstrapping with ``attach(...)``, ``this_host()``
+    returns the host-local mesh on this machine (not the attached host)
+    and ``this_proc()`` returns the local client proc whose gateway is
+    now connected to the remote gateway. The local client procs remain
+    on this machine; the remote gateway holds routes back to them
+    through the via duplex. ``this_host()`` keeps its ``"on this
+    machine"`` meaning so that ``this_host().spawn_procs()`` always
+    spawns local procs; to drive procs on the attached host, use the
+    separate ``HostMesh`` returned by the job."""
     job = DuplexProcessJob()
+    # Attach the client to the worker before any client bootstrap (see
+    # test_client_attach_addr).
+    job.apply()
+    attach(job.duplex_addr)
     with scoped_state(job, cached_path=None):
-        with configured(client_attach_addr=job.duplex_addr):
-            context()
+        context()
 
-            proc = this_proc()
-            assert proc is not None
-            host = this_host()
-            assert host is not None
-            assert host is proc.host_mesh
+        proc = this_proc()
+        assert proc is not None
+        host = this_host()
+        assert host is not None
+        assert host is proc.host_mesh
 
-            # Verify the meshes are usable by spawning an actor.
-            am = proc.spawn("echo2", EchoActor)
-            result = am.echo.call_one("ping").get()
-            assert result == "ping"
+        # Verify the meshes are usable by spawning an actor.
+        am = proc.spawn("echo2", EchoActor)
+        result = am.echo.call_one("ping").get()
+        assert result == "ping"
 
 
 class RelayActor(Actor):
@@ -782,21 +781,24 @@ def test_client_attach_addr_this_host_spawns_locally() -> None:
     client (forward) and from procs running on the attached host
     (reverse), demonstrating that addresses route both ways."""
     job = DuplexProcessJob()
+    # Attach the client to the worker before any client bootstrap (see
+    # test_client_attach_addr).
+    job.apply()
+    attach(job.duplex_addr)
     with scoped_state(job, cached_path=None) as state:
-        with configured(client_attach_addr=job.duplex_addr):
-            context()
+        context()
 
-            # this_host() spawns procs on this machine, not on the
-            # attached host.
-            local_pm = this_host().spawn_procs(per_host={"local": 1})
-            local_echo = local_pm.spawn("local_echo", EchoActor)
+        # this_host() spawns procs on this machine, not on the
+        # attached host.
+        local_pm = this_host().spawn_procs(per_host={"local": 1})
+        local_echo = local_pm.spawn("local_echo", EchoActor)
 
-            # client -> local procs reachable.
-            assert local_echo.echo.call_one("from-client").get() == "from-client"
+        # client -> local procs reachable.
+        assert local_echo.echo.call_one("from-client").get() == "from-client"
 
-            # remote -> local procs reachable: a relay actor on the
-            # attached job's host calls back into the local actor
-            # mesh.
-            remote_pm = state.hosts.spawn_procs(per_host={"remote": 1})
-            relay = remote_pm.spawn("relay", RelayActor, local_echo)
-            assert relay.relay.call_one("through-remote").get() == "through-remote"
+        # remote -> local procs reachable: a relay actor on the
+        # attached job's host calls back into the local actor
+        # mesh.
+        remote_pm = state.hosts.spawn_procs(per_host={"remote": 1})
+        relay = remote_pm.spawn("relay", RelayActor, local_echo)
+        assert relay.relay.call_one("through-remote").get() == "through-remote"

@@ -85,7 +85,7 @@ use monarch_rdma::IbvConfig;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
 use monarch_rdma::RdmaRemoteBuffer;
-use monarch_rdma::backend::ibverbs::manager_actor::IbvManagerLocalMessageClient;
+use monarch_rdma::backend::ibverbs::manager_actor::RawQueuePair;
 use monarch_rdma::cu_check;
 use monarch_rdma::local_memory::Keepalive;
 use monarch_rdma::local_memory::KeepaliveLocalMemory;
@@ -157,8 +157,18 @@ pub fn ping_pong(
 // keepalive (or equivalent) and arrange for the buffer to be released
 // while the CUDA context is still live, e.g., via an explicit
 // shutdown handler on the actor.
-struct NoKeepalive;
-impl Keepalive for NoKeepalive {}
+struct NoKeepalive {
+    addr: usize,
+    size: usize,
+}
+impl Keepalive for NoKeepalive {
+    fn addr(&self) -> usize {
+        self.addr
+    }
+    fn size(&self) -> usize {
+        self.size
+    }
+}
 
 // Constants for default values
 const DEFAULT_BUFFER_SIZE_MB: usize = 32; // `must be multiple of 2MB
@@ -451,8 +461,7 @@ impl Handler<InitializeBuffer> for CudaRdmaActor {
             let addr = self.cu_ptr;
             let size = self.cpu_buffer.len();
             // See the module-level note on `NoKeepalive`.
-            let local_memory: Arc<KeepaliveLocalMemory> =
-                Arc::new(KeepaliveLocalMemory::new(addr, size, Arc::new(NoKeepalive)));
+            let local_memory = KeepaliveLocalMemory::new(Arc::new(NoKeepalive { addr, size }));
             let handle = self
                 .rdma_manager
                 .downcast_handle(cx)
@@ -536,23 +545,27 @@ impl Handler<PerformPingPong> for CudaRdmaActor {
         let (reply_handle, reply_rx) = cx
             .mailbox()
             .open_once_port::<Result<monarch_rdma::backend::ibverbs::queue_pair::IbvQueuePair, String>>();
-        local_ibv_manager_handle
-            .request_queue_pair(
-                cx,
-                remote_ibv_manager.clone(),
-                local_ibv.device_name.clone(),
-                remote_ibv.device_name.clone(),
-                reply_handle,
-            )
-            .await?;
+        local_ibv_manager_handle.try_post(
+            cx,
+            RawQueuePair {
+                peer: remote_ibv_manager.clone(),
+                self_device: local_ibv.device_name.clone(),
+                peer_device: remote_ibv.device_name.clone(),
+                reply: reply_handle,
+            },
+        )?;
         let qp = reply_rx
             .recv()
             .await
-            .map_err(|e| anyhow::anyhow!("request_queue_pair reply channel closed: {e}"))?
+            .map_err(|e| anyhow::anyhow!("RawQueuePair reply channel closed: {e}"))?
             .map_err(|e| anyhow::anyhow!(e))?;
 
+        // SAFETY: `qp` is borrowed for the rest of this block; the
+        // pointer returned by `as_ptr` is used to fill `params` before
+        // we release the borrow, so the QP's `Drop` cannot run while
+        // any of these reads are in flight.
         unsafe {
-            let ibv_qp = qp.qp as *mut rdmaxcel_sys::ibv_qp;
+            let ibv_qp = qp.as_ptr() as *mut rdmaxcel_sys::ibv_qp;
             let dv_qp = qp.dv_qp as *mut rdmaxcel_sys::mlx5dv_qp;
             let dv_send_cq = qp.dv_send_cq as *mut rdmaxcel_sys::mlx5dv_cq;
             let dv_recv_cq = qp.dv_recv_cq as *mut rdmaxcel_sys::mlx5dv_cq;

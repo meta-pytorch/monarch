@@ -97,6 +97,27 @@ pub enum ChannelError {
     Timeout(std::time::Duration),
 }
 
+/// Structured context for a send error.
+#[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
+pub enum SendErrorReason {
+    /// The serialized frame exceeded the configured channel frame limit.
+    #[error(
+        "rejecting oversize frame: len={len} > max={max}. \
+        ack will not arrive before timeout; increase CODEC_MAX_FRAME_LENGTH to allow."
+    )]
+    OversizedFrame {
+        /// The serialized frame length.
+        len: usize,
+
+        /// The configured frame limit.
+        max: usize,
+    },
+
+    /// Other human-readable context.
+    #[error("{0}")]
+    Other(String),
+}
+
 /// An error that occurred during send. Returns the message that failed to send.
 #[derive(thiserror::Error, Debug)]
 #[error("{error} for reason {reason:?}")]
@@ -107,12 +128,51 @@ pub struct SendError<M: RemoteMessage> {
     /// Message that couldn't be sent
     pub message: M,
     /// Reason that message couldn't be sent, if any.
-    pub reason: Option<String>,
+    pub reason: Option<SendErrorReason>,
 }
 
 impl<M: RemoteMessage> From<SendError<M>> for ChannelError {
     fn from(error: SendError<M>) -> Self {
         error.error
+    }
+}
+
+/// Reason a [`TxStatus`] transitioned to `Closed`. Callers should branch on
+/// the typed variants for cases they care about (e.g. cache-eviction logic in
+/// `DialMailboxRouter` keys on `SequenceMismatch`); everything else falls
+/// into `Other` and is for display/logging only.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CloseReason {
+    /// The peer rejected our session because our sequence number did not
+    /// match what the peer's dispatcher expected — the K8s "out-of-sequence
+    /// message, expected seq 0, got N" case where the peer GC'd the
+    /// `SessionId` while we still hold an `Outbox.next_seq` past 0.
+    /// Re-dialing produces a fresh session that the peer accepts.
+    SequenceMismatch(String),
+    /// The peer rejected a frame whose length exceeded
+    /// `config::CODEC_MAX_FRAME_LENGTH`. Re-dialing will not help — the
+    /// message itself is the problem.
+    OversizedFrame {
+        /// Actual frame length in bytes.
+        size: usize,
+        /// `CODEC_MAX_FRAME_LENGTH` at the time of rejection.
+        max: usize,
+    },
+    /// Any close reason the transport hasn't classified further. The string
+    /// is for display/logging only — do not parse it. If a caller needs to
+    /// branch on a sub-case, lift it into its own variant on this enum.
+    Other(String),
+}
+
+impl fmt::Display for CloseReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SequenceMismatch(s) => write!(f, "stale session: {}", s),
+            Self::OversizedFrame { size, max } => {
+                write!(f, "oversized frame: len={size} > max={max}")
+            }
+            Self::Other(s) => f.write_str(s),
+        }
     }
 }
 
@@ -122,7 +182,7 @@ pub enum TxStatus {
     /// The tx is good.
     Active,
     /// The tx cannot be used for message delivery.
-    Closed(Arc<str>),
+    Closed(CloseReason),
 }
 
 /// The transmit end of an M-typed channel.
@@ -262,9 +322,9 @@ impl<M: RemoteMessage> MpscRx<M> {
 
 impl<M: RemoteMessage> Drop for MpscRx<M> {
     fn drop(&mut self) {
-        let _ = self
-            .status_sender
-            .send(TxStatus::Closed("receiver dropped".into()));
+        let _ = self.status_sender.send(TxStatus::Closed(CloseReason::Other(
+            "receiver dropped".into(),
+        )));
     }
 }
 
@@ -361,6 +421,20 @@ impl TlsAddr {
     }
 }
 
+impl FromStr for TlsAddr {
+    type Err = anyhow::Error;
+
+    fn from_str(addr: &str) -> Result<Self, Self::Err> {
+        let (hostname, port_str) = addr
+            .rsplit_once(':')
+            .ok_or_else(|| anyhow::anyhow!("invalid TLS address: {}", addr))?;
+        let port = port_str
+            .parse()
+            .map_err(|_| anyhow::anyhow!("invalid TLS address port: {}", port_str))?;
+        Ok(Self::new(hostname, port))
+    }
+}
+
 impl fmt::Display for TlsAddr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}:{}", self.hostname, self.port)
@@ -388,6 +462,12 @@ pub enum ChannelTransport {
     /// Transport over a TCP connection with configurable TLS support
     Tls,
 
+    /// Transport over a QUIC connection with configurable TLS support.
+    Quic,
+
+    /// Transport over a QUIC connection with TLS support within Meta.
+    MetaQuic(TlsMode),
+
     /// Local transports uses an in-process registry and mpsc channels.
     Local,
 
@@ -401,6 +481,8 @@ impl fmt::Display for ChannelTransport {
             Self::Tcp(mode) => write!(f, "tcp({:?})", mode),
             Self::MetaTls(mode) => write!(f, "metatls({:?})", mode),
             Self::Tls => write!(f, "tls"),
+            Self::Quic => write!(f, "quic"),
+            Self::MetaQuic(mode) => write!(f, "metaquic({:?})", mode),
             Self::Local => write!(f, "local"),
             Self::Unix => write!(f, "unix"),
         }
@@ -422,10 +504,16 @@ impl FromStr for ChannelTransport {
             "local" => Ok(ChannelTransport::Local),
             "unix" => Ok(ChannelTransport::Unix),
             "tls" => Ok(ChannelTransport::Tls),
+            "quic" => Ok(ChannelTransport::Quic),
             s if s.starts_with("metatls(") && s.ends_with(")") => {
                 let inner = &s["metatls(".len()..s.len() - 1];
                 let mode = inner.parse()?;
                 Ok(ChannelTransport::MetaTls(mode))
+            }
+            s if s.starts_with("metaquic(") && s.ends_with(")") => {
+                let inner = &s["metaquic(".len()..s.len() - 1];
+                let mode = inner.parse()?;
+                Ok(ChannelTransport::MetaQuic(mode))
             }
             unknown => Err(anyhow::anyhow!("unknown channel transport: {}", unknown)),
         }
@@ -457,6 +545,8 @@ impl ChannelTransport {
             ChannelTransport::Tcp(_) => true,
             ChannelTransport::MetaTls(_) => true,
             ChannelTransport::Tls => true,
+            ChannelTransport::Quic => true,
+            ChannelTransport::MetaQuic(_) => true,
             ChannelTransport::Local => false,
             ChannelTransport::Unix => false,
         }
@@ -471,6 +561,9 @@ impl ChannelTransport {
             ChannelTransport::Tcp(_) => true,
             ChannelTransport::MetaTls(_) => true,
             ChannelTransport::Tls => true,
+            // Quic actually supports duplex byte streams, but they are not yet tested.
+            ChannelTransport::Quic => false,
+            ChannelTransport::MetaQuic(_) => false,
             ChannelTransport::Unix => true,
             ChannelTransport::Local => false,
         }
@@ -576,6 +669,7 @@ pub type Port = u16;
 ///
 /// - `tcp:127.0.0.1:1234` - localhost port 1234 over TCP
 /// - `tcp:192.168.0.1:1111` - 192.168.0.1 port 1111 over TCP
+/// - `quic:example.com:1234` - example.com port 1234 over QUIC
 /// - `local:123` - the (in-process) local port 123
 /// - `unix:/some/path` - the Unix socket at `/some/path`
 ///
@@ -616,6 +710,14 @@ pub enum ChannelAddr {
     /// Uses TlsAddr with hostname and port.
     Tls(TlsAddr),
 
+    /// An address to establish QUIC channels with configurable TLS support.
+    /// Uses TlsAddr with hostname and port.
+    Quic(TlsAddr),
+
+    /// An address to establish QUIC channels with TLS support within Meta.
+    /// Uses TlsAddr with hostname and port.
+    MetaQuic(TlsAddr),
+
     /// Local addresses are registered in-process and given an integral
     /// index.
     Local(u64),
@@ -638,6 +740,12 @@ pub enum ChannelAddr {
     /// address, yet the server is bound to a private IP address or simply
     /// INADDR_ANY. Traffic to the public IP address is mapped to the private
     /// IP address through network address translation (NAT).
+    ///
+    /// `Alias` is serve-side syntax. [`serve`] consumes it by binding to
+    /// `bind_to` and advertising `dial_to`; identity-bearing values such as
+    /// proc addresses, actor addresses, host references, and routing keys
+    /// should store only `dial_to`. Dial helpers canonicalize aliases the same
+    /// way.
     Alias {
         /// The address to which the client should dial to.
         dial_to: Box<ChannelAddr>,
@@ -717,6 +825,18 @@ impl ChannelAddr {
                 };
                 Self::MetaTls(TlsAddr::new(host_address, 0))
             }
+            ChannelTransport::MetaQuic(mode) => {
+                let host_address = match mode {
+                    TlsMode::Hostname => hostname::get()
+                        .ok()
+                        .and_then(|hostname| hostname.to_str().map(|s| s.to_string()))
+                        .unwrap_or("unknown_host".to_string()),
+                    TlsMode::IpV6 => {
+                        get_host_ipv6_address().expect("failed to retrieve ipv6 address")
+                    }
+                };
+                Self::MetaQuic(TlsAddr::new(host_address, 0))
+            }
             ChannelTransport::Local => Self::Local(0),
             ChannelTransport::Tls => {
                 let host_address = hostname::get()
@@ -724,6 +844,13 @@ impl ChannelAddr {
                     .and_then(|hostname| hostname.to_str().map(|s| s.to_string()))
                     .unwrap_or("localhost".to_string());
                 Self::Tls(TlsAddr::new(host_address, 0))
+            }
+            ChannelTransport::Quic => {
+                let host_address = hostname::get()
+                    .ok()
+                    .and_then(|hostname| hostname.to_str().map(|s| s.to_string()))
+                    .unwrap_or("localhost".to_string());
+                Self::Quic(TlsAddr::new(host_address, 0))
             }
             // This works because the file will be deleted but we know we have a unique file by this point.
             ChannelTransport::Unix => Self::Unix(net::unix::SocketAddr::from_str("").unwrap()),
@@ -746,6 +873,12 @@ impl ChannelAddr {
                 Err(_) => ChannelTransport::MetaTls(TlsMode::Hostname),
             },
             Self::Tls(_) => ChannelTransport::Tls,
+            Self::Quic(_) => ChannelTransport::Quic,
+            Self::MetaQuic(addr) => match addr.hostname.parse::<IpAddr>() {
+                Ok(IpAddr::V6(_)) => ChannelTransport::MetaQuic(TlsMode::IpV6),
+                Ok(IpAddr::V4(_)) => ChannelTransport::MetaQuic(TlsMode::Hostname),
+                Err(_) => ChannelTransport::MetaQuic(TlsMode::Hostname),
+            },
             Self::Local(_) => ChannelTransport::Local,
             Self::Unix(_) => ChannelTransport::Unix,
             // bind_to's transport is what is actually used in communication.
@@ -771,6 +904,8 @@ impl fmt::Display for ChannelAddr {
             Self::Tcp(addr) => write!(f, "tcp:{}", addr),
             Self::MetaTls(addr) => write!(f, "metatls:{}", addr),
             Self::Tls(addr) => write!(f, "tls:{}", addr),
+            Self::Quic(addr) => write!(f, "quic:{}", addr),
+            Self::MetaQuic(addr) => write!(f, "metaquic:{}", addr),
             Self::Local(index) => write!(f, "local:{}", index),
             Self::Unix(addr) => write!(f, "unix:{}", addr),
             Self::Alias { dial_to, bind_to } => {
@@ -795,6 +930,8 @@ impl FromStr for ChannelAddr {
                 .map_err(anyhow::Error::from),
             Some(("metatls", rest)) => net::meta::parse(rest).map_err(|e| e.into()),
             Some(("tls", rest)) => net::tls::parse(rest).map_err(|e| e.into()),
+            Some(("quic", rest)) => TlsAddr::from_str(rest).map(Self::Quic),
+            Some(("metaquic", rest)) => TlsAddr::from_str(rest).map(Self::MetaQuic),
             Some(("unix", rest)) => Ok(Self::Unix(net::unix::SocketAddr::from_str(rest)?)),
             Some(("alias", _)) => Err(anyhow::anyhow!(
                 "detect possible alias address, but we currently do not support \
@@ -825,14 +962,33 @@ pub(crate) fn normalize_host(host: &str) -> String {
 }
 
 impl ChannelAddr {
+    /// Return the canonical address that remote peers should dial.
+    ///
+    /// For regular addresses this is the address itself. For aliases, this
+    /// recursively consumes the alias and returns its `dial_to` address. Use
+    /// this before storing an address in identity-bearing state; aliases are
+    /// intended as input to [`serve`].
+    pub fn into_dial_addr(self) -> Self {
+        match self {
+            Self::Alias { dial_to, .. } => (*dial_to).into_dial_addr(),
+            addr => addr,
+        }
+    }
+
     /// Parse ZMQ-style URL format: scheme://address
     /// Supports:
     /// - tcp://hostname:port or tcp://*:port (wildcard binding)
     /// - inproc://endpoint-name (equivalent to local)
     /// - ipc://path (equivalent to unix)
     /// - metatls://hostname:port or metatls://*:port
+    /// - quic://hostname:port or quic://*:port
+    /// - metaquic://hostname:port or metaquic://*:port
     /// - Alias format: dial_to_url@bind_to_url (e.g., tcp://host:port@tcp://host:port)
     ///   Note: Alias format is currently only supported for TCP addresses
+    ///
+    /// Alias format is meant for serving. Callers that will dial or store the
+    /// result as an identity should canonicalize it with
+    /// [`ChannelAddr::into_dial_addr`].
     pub fn from_zmq_url(address: &str) -> Result<Self, anyhow::Error> {
         let (addr, _listener) = Self::from_zmq_url_with_listener(address)?;
         Ok(addr)
@@ -910,7 +1066,7 @@ impl ChannelAddr {
                 Ok((Self::Local(port), None))
             }
             "ipc" => Ok((Self::Unix(net::unix::SocketAddr::from_str(address)?), None)),
-            "metatls" | "tls" => {
+            "metatls" | "tls" | "quic" | "metaquic" => {
                 let (host, port, listener) = Self::parse_host_port_or_fd(address)?;
                 let hostname = if host == "*" {
                     std::net::Ipv6Addr::UNSPECIFIED.to_string()
@@ -919,6 +1075,8 @@ impl ChannelAddr {
                 };
                 let addr = match scheme {
                     "metatls" => Self::MetaTls(TlsAddr::new(hostname, port)),
+                    "metaquic" => Self::MetaQuic(TlsAddr::new(hostname, port)),
+                    "quic" => Self::Quic(TlsAddr::new(hostname, port)),
                     _ => Self::Tls(TlsAddr::new(hostname, port)),
                 };
                 Ok((addr, listener))
@@ -963,6 +1121,8 @@ impl ChannelAddr {
             Self::Tcp(addr) => format!("tcp://{}", addr),
             Self::MetaTls(addr) => format!("metatls://{}:{}", addr.hostname, addr.port),
             Self::Tls(addr) => format!("tls://{}:{}", addr.hostname, addr.port),
+            Self::Quic(addr) => format!("quic://{}:{}", addr.hostname, addr.port),
+            Self::MetaQuic(addr) => format!("metaquic://{}:{}", addr.hostname, addr.port),
             Self::Local(index) => format!("inproc://{}", index),
             Self::Unix(addr) => format!("ipc://{}", addr),
             Self::Alias { dial_to, bind_to } => {
@@ -1090,74 +1250,110 @@ impl<M: RemoteMessage> Rx<M> for ChannelRx<M> {
 #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ChannelError`.
 #[track_caller]
 pub fn dial<M: RemoteMessage>(addr: ChannelAddr) -> Result<ChannelTx<M>, ChannelError> {
+    let addr = addr.into_dial_addr();
     tracing::debug!(name = "dial", caller = %Location::caller(), %addr, "dialing channel {}", addr);
     let inner = match addr {
         ChannelAddr::Local(port) => ChannelTxKind::Local(local::dial(port)?),
         ChannelAddr::Tcp(_)
         | ChannelAddr::Unix(_)
         | ChannelAddr::Tls(_)
-        | ChannelAddr::MetaTls(_) => {
+        | ChannelAddr::MetaTls(_)
+        | ChannelAddr::Quic(_)
+        | ChannelAddr::MetaQuic(_) => {
             ChannelTxKind::Net(net::spawn(net::link(addr, net::SessionId::random(), 0)?))
         }
-        ChannelAddr::Alias { dial_to, .. } => dial(*dial_to)?.inner,
+        ChannelAddr::Alias { .. } => unreachable!("aliases are canonicalized before dialing"),
     };
     Ok(ChannelTx { inner })
 }
 
-/// Experimental: dial with out-of-order delivery and N parallel streams.
-///
-/// Opens N TCP connections sharing a single `SessionId` (distinct
-/// `stream_id` in `1..=num_streams` so the server routes them through
-/// the multi-stream receive path). Frames are load-balanced across
-/// streams via a shared MPMC work queue — idle writers pull next.
-/// API may change.
-///
-/// # Semantics (how this differs from [`dial`])
-///
-/// Multi-stream trades several of [`dial`]'s delivery guarantees for
-/// aggregate bandwidth. Use [`dial`] when any of these matter:
-///
-/// - **Ordering.** Messages are delivered to the receiver in *arrival
-///   order across streams*, not send order. Two messages posted back
-///   to back on the sender may reach the receiver out of order when
-///   they're carried on different TCP streams. [`dial`] is strictly
-///   in-order.
-///
-/// - **Retransmission on reconnect.** If a writer's TCP connection
-///   drops after the bytes of a message have been written but before
-///   the peer acks, that message is **not retransmitted** on the new
-///   connection. It may be silently lost. [`dial`] re-sends all
-///   unacked messages on reconnect.
-///
-/// - **Delivery timeouts.** No delivery timeout is enforced. On
-///   sustained peer outage, writers reconnect indefinitely (backoff
-///   capped at 5s); senders block in `send().await` with no bound.
-///   [`dial`] fails unacked sends after
-///   `MESSAGE_DELIVERY_TIMEOUT`.
-///
-/// - **`Tx::send` return semantics.** On session shutdown, messages
-///   still in the unacked buffer have their `return_channel` dropped.
-///   Per the [`Tx::send`] contract, this makes `send().await` return
-///   `Ok(())` for messages that may never have been delivered — i.e.
-///   a "success" return does not actually confirm delivery here.
-///   [`dial`] delivers a structured `SendError` instead.
-///
-/// # Ack semantics
-///
-/// Receivers ack a cumulative watermark: the highest `N` such that
-/// all of `0..=N` have been observed across all streams. Acks may
-/// stall behind a single missing seq on a slow stream.
-pub fn exp_dial_unordered<M: RemoteMessage>(
-    addr: ChannelAddr,
-    num_streams: usize,
-) -> Result<ChannelTx<M>, ChannelError> {
-    assert!(num_streams > 0);
-    let session_id = net::SessionId::random();
-    let links: Vec<net::NetLink> = (1..=num_streams)
-        .map(|i| net::link(addr.clone(), session_id, i as u8))
-        .collect::<Result<_, _>>()?;
-    let inner = ChannelTxKind::Net(net::spawn_unordered(links));
-    Ok(ChannelTx { inner })
+/// Channels that may deliver messages out of send order.
+pub mod unordered {
+    use super::*;
+
+    /// Dial with out-of-order delivery and N parallel streams.
+    ///
+    /// Opens N links sharing a single `SessionId` (distinct
+    /// `stream_id` in `1..=num_streams` so the server routes them
+    /// through the multi-stream receive path). Frames are
+    /// load-balanced across streams via a shared MPMC work queue —
+    /// idle writers pull next.
+    ///
+    /// # Semantics (how this differs from [`super::dial`])
+    ///
+    /// Multi-stream trades several of [`super::dial`]'s delivery
+    /// guarantees for aggregate bandwidth. Use [`super::dial`] when
+    /// any of these matter:
+    ///
+    /// - **Ordering.** Messages are delivered to the receiver in
+    ///   *arrival order across streams*, not send order. Two messages
+    ///   posted back to back on the sender may reach the receiver out
+    ///   of order when they're carried on different streams.
+    ///   [`super::dial`] is strictly in-order.
+    ///
+    /// - **Retransmission on reconnect.** If a writer's connection
+    ///   drops after the bytes of a message have been written but
+    ///   before the peer acks, that message is **not retransmitted**
+    ///   on the new connection. It may be silently lost.
+    ///   [`super::dial`] re-sends all unacked messages on reconnect.
+    ///
+    /// - **Delivery timeouts.** No delivery timeout is enforced. On
+    ///   sustained peer outage, writers reconnect indefinitely
+    ///   (backoff capped at 5s); senders block in `send().await` with
+    ///   no bound. [`super::dial`] fails unacked sends after
+    ///   `MESSAGE_DELIVERY_TIMEOUT`.
+    ///
+    /// - **`Tx::send` return semantics.** On session shutdown,
+    ///   messages still in the unacked buffer have their
+    ///   `return_channel` dropped. Per the [`Tx::send`] contract,
+    ///   this makes `send().await` return `Ok(())` for messages that
+    ///   may never have been delivered — i.e. a "success" return does
+    ///   not actually confirm delivery here. [`super::dial`] delivers
+    ///   a structured `SendError` instead.
+    ///
+    /// # Ack semantics
+    ///
+    /// Receivers ack a cumulative watermark: the highest `N` such
+    /// that all of `0..=N` have been observed across all streams.
+    /// Acks may stall behind a single missing seq on a slow stream.
+    #[track_caller]
+    pub fn dial<M: RemoteMessage>(
+        addr: ChannelAddr,
+        num_streams: usize,
+    ) -> Result<ChannelTx<M>, ChannelError> {
+        assert!(num_streams > 0);
+        let addr = addr.into_dial_addr();
+        let session_id = net::SessionId::random();
+        let links: Vec<net::NetLink> = (1..=num_streams)
+            .map(|i| net::link(addr.clone(), session_id, i as u8))
+            .collect::<Result<_, _>>()?;
+        let inner = ChannelTxKind::Net(net::spawn_unordered(links));
+        Ok(ChannelTx { inner })
+    }
+
+    /// Serve a receiver that accepts unordered senders.
+    ///
+    /// The network server already routes multi-stream sessions by
+    /// `SessionId`, so unordered serving uses the same listener as the
+    /// ordered channel API.
+    #[track_caller]
+    pub fn serve<M: RemoteMessage>(
+        addr: ChannelAddr,
+    ) -> Result<(ChannelAddr, ChannelRx<M>), ChannelError> {
+        super::serve(addr)
+    }
+
+    /// Serve with an optional pre-opened listener.
+    ///
+    /// Pre-opened listeners are only supported for TCP-based transports,
+    /// matching [`super::serve_with_listener`].
+    #[track_caller]
+    pub fn serve_with_listener<M: RemoteMessage>(
+        addr: ChannelAddr,
+        listener: Option<std::net::TcpListener>,
+    ) -> Result<(ChannelAddr, ChannelRx<M>), ChannelError> {
+        super::serve_with_listener(addr, listener)
+    }
 }
 
 /// Serve on the provided channel address. The server is turned down
@@ -1201,7 +1397,15 @@ fn serve_inner<M: RemoteMessage>(
             let (addr, rx) = net::server::serve::<M>(addr, listener)?;
             Ok((addr, ChannelRxKind::Net(rx)))
         }
-        ChannelAddr::Tcp(_) | ChannelAddr::Tls(_) | ChannelAddr::MetaTls(_) => {
+        ChannelAddr::Tcp(_)
+        | ChannelAddr::Tls(_)
+        | ChannelAddr::MetaTls(_)
+        | ChannelAddr::Quic(_)
+        | ChannelAddr::MetaQuic(_)
+        // The `Alias` variant binds on its `bind_to` address but advertises
+        // `dial_to`; `listen_with_prebound` resolves this, so it routes through
+        // the same net serve path as the other TCP-based transports.
+        | ChannelAddr::Alias { .. } => {
             let (addr, rx) = net::server::serve::<M>(addr, listener)?;
             Ok((addr, ChannelRxKind::Net(rx)))
         }
@@ -1217,14 +1421,6 @@ fn serve_inner<M: RemoteMessage>(
             ChannelAddr::Local(a),
             ChannelRxKind::Local(local::bind::<M>(a)?),
         )),
-        ChannelAddr::Alias { dial_to, bind_to } => {
-            let (bound_addr, rx) = serve_inner::<M>(*bind_to, listener)?;
-            let alias_addr = ChannelAddr::Alias {
-                dial_to,
-                bind_to: Box::new(bound_addr),
-            };
-            Ok((alias_addr, rx))
-        }
     }
 }
 
@@ -1287,6 +1483,14 @@ mod tests {
                     IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
                     8080,
                 )),
+            ),
+            (
+                "quic<DELIM>example.com:443",
+                ChannelAddr::Quic(TlsAddr::new("example.com", 443)),
+            ),
+            (
+                "metaquic<DELIM>example.com:443",
+                ChannelAddr::MetaQuic(TlsAddr::new("example.com", 443)),
             ),
             #[cfg(target_os = "linux")]
             ("local<DELIM>123", ChannelAddr::Local(123)),
@@ -1364,6 +1568,30 @@ mod tests {
         assert_eq!(
             ChannelAddr::from_zmq_url("metatls://192.168.1.1:443").unwrap(),
             ChannelAddr::MetaTls(TlsAddr::new("192.168.1.1", 443))
+        );
+
+        // Test quic with hostname
+        assert_eq!(
+            ChannelAddr::from_zmq_url("quic://example.com:443").unwrap(),
+            ChannelAddr::Quic(TlsAddr::new("example.com", 443))
+        );
+
+        // Test quic wildcard binding
+        assert_eq!(
+            ChannelAddr::from_zmq_url("quic://*:8443").unwrap(),
+            ChannelAddr::Quic(TlsAddr::new("::", 8443))
+        );
+
+        // Test metaquic with hostname
+        assert_eq!(
+            ChannelAddr::from_zmq_url("metaquic://example.com:443").unwrap(),
+            ChannelAddr::MetaQuic(TlsAddr::new("example.com", 443))
+        );
+
+        // Test metaquic wildcard binding
+        assert_eq!(
+            ChannelAddr::from_zmq_url("metaquic://*:8443").unwrap(),
+            ChannelAddr::MetaQuic(TlsAddr::new("::", 8443))
         );
 
         // Test metatls with wildcard (should use IPv6 unspecified address)
@@ -1649,6 +1877,42 @@ mod tests {
             tx.post(123);
             assert_eq!(rx.recv().await.unwrap(), 123);
         }
+    }
+
+    #[tokio::test]
+    // TODO: OSS: called `Result::unwrap()` on an `Err` value: Server(Listen(Tcp([::1]:0), Os { code: 99, kind: AddrNotAvailable, message: "Cannot assign requested address" }))
+    #[cfg_attr(not(fbcode_build), ignore)]
+    async fn test_serve_alias_advertises_dial_to() {
+        // Reserve an ephemeral port, then release it so the alias can bind to
+        // it via `bind_to`.
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+
+        // `dial_to` advertises a reachable loopback address; `bind_to` listens
+        // on the wildcard interface (the case that matters where the dial
+        // address cannot be bound directly, e.g. behind NAT).
+        let alias =
+            ChannelAddr::from_zmq_url(&format!("tcp://127.0.0.1:{port}@tcp://0.0.0.0:{port}"))
+                .unwrap();
+        assert_matches!(alias, ChannelAddr::Alias { .. });
+
+        let (listen_addr, mut rx) = crate::channel::serve::<i32>(alias).unwrap();
+
+        // Serving an alias consumes it: the advertised address is the plain
+        // `dial_to`. Remote peers independently construct this same `Tcp`
+        // address from the dial string, so the proc namespace derived from it
+        // must match. If serving left the address an `Alias`, that match would
+        // fail and messages would not route to the server.
+        assert_eq!(
+            listen_addr,
+            ChannelAddr::Tcp(format!("127.0.0.1:{port}").parse().unwrap()),
+            "serving an alias must advertise dial_to, not the alias itself"
+        );
+
+        let tx = crate::channel::dial(listen_addr).unwrap();
+        tx.post(123);
+        assert_eq!(rx.recv().await.unwrap(), 123);
     }
 
     #[tokio::test]

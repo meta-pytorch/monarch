@@ -243,10 +243,15 @@ impl<'a> Parser<'a> {
         Span::new(self.peek().span.start, self.input.len())
     }
 
-    pub(crate) fn take_rest(&mut self) -> &'a str {
-        let rest = self.rest();
-        self.lookahead = Token::eof(self.input.len());
-        rest
+    /// Restrict the remaining input to `[current, end)`, synthesizing
+    /// an EOF at `end`. The current position is preserved. Used to
+    /// parse a prefix with the combinator when its tail (e.g. a sniffed
+    /// ZMQ URL) is handled outside the token grammar.
+    pub(crate) fn truncate(&mut self, end: usize) {
+        let start = self.peek().span.start;
+        self.input = &self.input[..end];
+        self.lexer = Lexer::new_at(self.input, start);
+        self.lookahead = self.lexer.next().unwrap_or_else(|| Token::eof(end));
     }
 }
 

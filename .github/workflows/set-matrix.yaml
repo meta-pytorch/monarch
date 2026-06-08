@@ -12,7 +12,12 @@ on:
         description: 'Override default CUDA runner label'
         required: false
         type: string
-        default: linux.g5.4xlarge.nvidia.gpu
+        # Matches what pytorch core uses for CUDA GPU smoke tests
+        # (caffe2/.github/workflows/generated-linux-binary-manywheel-nightly.yml).
+        # PR CI builds and tests at CUDA 13.0 because pytorch's own PR/trunk
+        # GPU jobs do the same (test-h100.yml runs on cuda13.0); release
+        # wheels ship cu132 from build-dist.yml on a CPU runner.
+        default: linux.g4dn.4xlarge.nvidia.gpu
     outputs:
       test-matrix:
         description: Test matrix (py3.10 only)
@@ -38,36 +43,39 @@ jobs:
         run: |
           set -euox pipefail
 
+          # PR CI is pinned to CUDA 13.0 (cu130) to match pytorch core: their
+          # PR/trunk GPU jobs (e.g. test-h100.yml) run cuda13.0, and the
+          # g4dn fleet's host driver currently fails nvidia-container-cli's
+          # check against cuda13.2 containers. Release/nightly wheels still
+          # ship cu132 via wheels.yml / publish_release.yml on a CPU runner.
+
           # Define test matrices (py3.10 only)
-          CUDA='{"name": "cuda", "runner": "${{ inputs.runner-cuda }}", "gpu-arch-type": "cuda", "gpu-arch-version": "12.8", "docker-image": "pytorch/manylinux2_28-builder:cuda12.8", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu128"}'
+          CUDA='{"name": "cuda", "runner": "${{ inputs.runner-cuda }}", "gpu-arch-type": "cuda", "gpu-arch-version": "13.0", "docker-image": "pytorch/manylinux2_28-builder:cuda13.0", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu130"}'
           ROCM_71='{"name": "rocm7.1", "runner": "${{ inputs.runner-rocm }}", "gpu-arch-type": "rocm", "gpu-arch-version": "7.1", "docker-image": "pytorch/manylinux2_28-builder:rocm7.1", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm7.1/"}'
           ROCM_72='{"name": "rocm7.2", "runner": "${{ inputs.runner-rocm }}", "gpu-arch-type": "rocm", "gpu-arch-version": "7.2", "docker-image": "pytorch/manylinux2_28-builder:rocm7.2", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm7.2/"}'
 
           # Define build matrices (includes python-version)
-          CUDA_PY310='{"name": "cuda", "python-version": "3.10", "docker-image": "pytorch/manylinux2_28-builder:cuda12.8", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu128"}'
-          CUDA_PY312='{"name": "cuda", "python-version": "3.12", "docker-image": "pytorch/manylinux2_28-builder:cuda12.8", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu128"}'
+          CUDA_PY310='{"name": "cuda", "python-version": "3.10", "docker-image": "pytorch/manylinux2_28-builder:cuda13.0", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu130"}'
+          CUDA_PY312='{"name": "cuda", "python-version": "3.12", "docker-image": "pytorch/manylinux2_28-builder:cuda13.0", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu130"}'
           ROCM_71_PY310='{"name": "rocm7.1", "python-version": "3.10", "docker-image": "pytorch/manylinux2_28-builder:rocm7.1", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm7.1/"}'
           ROCM_72_PY310='{"name": "rocm7.2", "python-version": "3.10", "docker-image": "pytorch/manylinux2_28-builder:rocm7.2", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm7.2/"}'
 
           # Build matrix:
-          # - ROCm tag: ROCm only (CUDA already built in PR run)
-          # - Push/schedule: CUDA + ROCm
-          # - PR (with or without ciflow/rocm label): CUDA only
-          #   ROCm builds are skipped on PRs so CUDA tests don't wait for them;
-          #   ROCm build failures are caught on push to main.
+          # - ROCm tag: ROCm only (manual opt-in; CUDA already built in PR run)
+          # - Otherwise (PR/push/schedule): CUDA only
+          # ROCm is disabled in normal CI while it is broken. Push a
+          # ciflow/rocm tag to build and test ROCm manually. See
+          # https://github.com/meta-pytorch/monarch/issues/4145 for re-enabling.
           if [[ "$IS_ROCM_TAG" == "true" ]]; then
             BUILD_MATRIX="[$ROCM_71_PY310, $ROCM_72_PY310]"
-          elif [[ "$IS_PUSH" == "true" || "$IS_SCHEDULE" == "true" ]]; then
-            BUILD_MATRIX="[$CUDA_PY310, $CUDA_PY312, $ROCM_71_PY310, $ROCM_72_PY310]"
           else
             BUILD_MATRIX="[$CUDA_PY310, $CUDA_PY312]"
           fi
 
-          # Test matrix: ROCm tested only on push/schedule/tag
+          # Test matrix: ROCm tested only on a manual ciflow/rocm tag; CUDA
+          # otherwise. ROCm is disabled in normal CI while it is broken.
           if [[ "$IS_ROCM_TAG" == "true" ]]; then
             TEST_MATRIX="[$ROCM_71, $ROCM_72]"
-          elif [[ "$IS_PUSH" == "true" || "$IS_SCHEDULE" == "true" ]]; then
-            TEST_MATRIX="[$CUDA, $ROCM_71, $ROCM_72]"
           else
             TEST_MATRIX="[$CUDA]"
           fi

@@ -64,6 +64,7 @@ class StorageAliases:
                     # on the origin stream. This does not happen automatically because
                     # borrows are not tracked as tensor aliases, but are instead treated
                     # as a kind of optimized copy or move.
+                    # pyrefly: ignore [bad-argument-type]
                     tensor.mesh.client.new_node(borrowed_from.aliases, (tensor,))
                 tensor.mesh._send(messages.BorrowLastUse(borrow._id))
 

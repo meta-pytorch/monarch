@@ -1162,8 +1162,7 @@ class TestStateOutOfCluster(unittest.TestCase):
         ]
 
     @patch("monarch._src.job.kubernetes.attach_to_workers")
-    @patch("monarch._src.job.kubernetes.context")
-    @patch("monarch._src.job.kubernetes.configure")
+    @patch("monarch._src.job.kubernetes.attach")
     @patch("monarch._src.job.kubernetes.KubernetesJob._port_forward_to_pod")
     @patch("monarch._src.job.kubernetes.watch.Watch")
     @patch("monarch._src.job.kubernetes.client.CoreV1Api")
@@ -1174,9 +1173,8 @@ class TestStateOutOfCluster(unittest.TestCase):
         mock_core_api: MagicMock,
         mock_watch_cls: MagicMock,
         mock_port_forward: MagicMock,
-        mock_configure: MagicMock,
-        mock_context: MagicMock,
         mock_attach: MagicMock,
+        mock_attach_to_workers: MagicMock,
     ) -> None:
         """hello_mesh flow: attach-only meshes auto port-forward to the first pod."""
         job = self._make_job()
@@ -1201,14 +1199,10 @@ class TestStateOutOfCluster(unittest.TestCase):
         mock_port_forward.assert_called_once()
         forwarded_pod = mock_port_forward.call_args[0][0]
         self.assertEqual(forwarded_pod.name, "mesh1-0")
-        mock_configure.assert_called_once_with(
-            client_attach_addr="tcp://127.0.0.1:45678"
-        )
-        mock_context.assert_called_once_with()
+        mock_attach.assert_called_once_with("tcp://127.0.0.1:45678")
 
     @patch("monarch._src.job.kubernetes.attach_to_workers")
-    @patch("monarch._src.job.kubernetes.context")
-    @patch("monarch._src.job.kubernetes.configure")
+    @patch("monarch._src.job.kubernetes.attach")
     @patch("monarch._src.job.kubernetes.KubernetesJob._port_forward_to_pod")
     @patch("monarch._src.job.kubernetes.watch.Watch")
     @patch("monarch._src.job.kubernetes.client.CoreV1Api")
@@ -1219,9 +1213,8 @@ class TestStateOutOfCluster(unittest.TestCase):
         mock_core_api: MagicMock,
         mock_watch_cls: MagicMock,
         mock_port_forward: MagicMock,
-        mock_configure: MagicMock,
-        mock_context: MagicMock,
         mock_attach: MagicMock,
+        mock_attach_to_workers: MagicMock,
     ) -> None:
         """hello_provision flow: provisioned meshes auto port-forward."""
         job = self._make_job()
@@ -1247,14 +1240,11 @@ class TestStateOutOfCluster(unittest.TestCase):
         mock_port_forward.assert_called_once()
         forwarded_pod = mock_port_forward.call_args[0][0]
         self.assertEqual(forwarded_pod.name, "mesh1-0")
-        mock_configure.assert_called_once_with(
-            client_attach_addr="tcp://127.0.0.1:55555"
-        )
-        mock_context.assert_called_once_with()
+        mock_attach.assert_called_once_with("tcp://127.0.0.1:55555")
 
     @patch("monarch._src.job.kubernetes.attach_to_workers")
-    @patch("monarch._src.job.kubernetes.context")
-    @patch("monarch._src.job.kubernetes.configure")
+    @patch("monarch._src.job.kubernetes.attach")
+    @patch("monarch._src.job.kubernetes.KubernetesJob._port_forward_to_pod")
     @patch("monarch._src.job.kubernetes.watch.Watch")
     @patch("monarch._src.job.kubernetes.client.CoreV1Api")
     @patch("monarch._src.job.kubernetes.config.load_kube_config")
@@ -1263,9 +1253,9 @@ class TestStateOutOfCluster(unittest.TestCase):
         mock_load_config: MagicMock,
         mock_core_api: MagicMock,
         mock_watch_cls: MagicMock,
-        mock_configure: MagicMock,
-        mock_context: MagicMock,
+        mock_port_forward: MagicMock,
         mock_attach: MagicMock,
+        mock_attach_to_workers: MagicMock,
     ) -> None:
         """When --attach-to is provided, no automatic port-forward should happen."""
         job = self._make_job(attach_to="tcp://127.0.0.1:34000")
@@ -1281,10 +1271,8 @@ class TestStateOutOfCluster(unittest.TestCase):
 
         job._state()
 
-        mock_configure.assert_called_once_with(
-            client_attach_addr="tcp://127.0.0.1:34000"
-        )
-        mock_context.assert_called_once_with()
+        mock_port_forward.assert_not_called()
+        mock_attach.assert_called_once_with("tcp://127.0.0.1:34000")
 
 
 if __name__ == "__main__":

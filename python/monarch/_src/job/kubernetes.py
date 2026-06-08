@@ -28,7 +28,7 @@ from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.config import configure
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.job.job import JobState, JobTrait
-from monarch.actor import context
+from monarch.actor import attach
 
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -53,9 +53,8 @@ _WORKER_BOOTSTRAP_SCRIPT: str = textwrap.dedent("""\
     from monarch.actor import run_worker_loop_forever
     port = os.environ.get("MONARCH_PORT", "26600")
     hostname = socket.getfqdn()
-    address = f"tcp://{hostname}:{port}"
-    bind_address = f"tcp://0.0.0.0:{port}"
-    run_worker_loop_forever(address=address, bind_address=bind_address, ca="trust_all_connections")
+    address = f"tcp://{hostname}:{port}@tcp://0.0.0.0:{port}"
+    run_worker_loop_forever(address=address, ca="trust_all_connections")
 """)
 
 
@@ -700,16 +699,8 @@ class KubernetesJob(JobTrait):
                 )
 
         if attach_to is not None:
-            # Set the client_attach_addr config before the first
-            # `context()` call. _init_client_context reads it and calls
-            # `bootstrap_host(via=attach_addr)` so the client's gateway
-            # is connected to the remote gateway during bootstrap.
             logger.info("Attaching client gateway via duplex address: %s", attach_to)
-            configure(client_attach_addr=attach_to)
-            # Force client context bootstrap now (before attach_to_workers
-            # below would otherwise trigger it) so the via connection is
-            # in place before we start attaching workers.
-            context()
+            attach(attach_to)
 
         for mesh_name, pods in all_mesh_pods.items():
             # Create worker addresses using discovered IPs and ports

@@ -1553,12 +1553,15 @@ fn pyspy_proc_ref_actor_node_with_parent() {
         properties: NodeProperties::Actor {
             actor_status: "running".into(),
             actor_type: "TestActor".into(),
+            instance_id: String::new(),
             messages_processed: 0,
             created_at: Some(SystemTime::UNIX_EPOCH),
             last_message_handler: None,
             total_processing_time_us: 0,
+            queue_depth: 0,
             flight_recorder: None,
             is_system: false,
+            inbound_ordering: None,
             failure_info: None,
         },
         children: vec![],
@@ -2510,4 +2513,128 @@ fn refresh_policy_transitions_with_job_lifecycle() {
         refresh_policy_for_job(&app.active_job),
         RefreshPolicy::Baseline,
     );
+}
+
+// TUI-22: help glossary content + modal key semantics.
+
+#[test]
+fn help_content_root_non_empty() {
+    let props = NodeProperties::Root {
+        num_hosts: 0,
+        started_at: SystemTime::UNIX_EPOCH,
+        started_by: String::new(),
+        system_children: vec![],
+    };
+    let (kind, entries) = crate::render::detail_pane::help_content(&props);
+    assert_eq!(kind, "root");
+    assert!(!entries.is_empty());
+}
+
+#[test]
+fn help_content_proc_queue_depth_semantics() {
+    let props = NodeProperties::Proc {
+        proc_name: String::new(),
+        num_actors: 0,
+        system_children: vec![],
+        stopped_children: vec![],
+        stopped_retention_cap: 0,
+        is_poisoned: false,
+        failed_actor_count: 0,
+        debug: hyperactor_mesh::introspect::ProcDebugStats::default(),
+    };
+    let (_, entries) = crate::render::detail_pane::help_content(&props);
+    assert!(
+        entries.iter().any(|e| e.field == "queue depth"
+            && e.meaning.contains("not yet dequeued")
+            && e.meaning.contains("total")),
+        "proc help must explain queue depth (total across actors)",
+    );
+}
+
+#[test]
+fn help_content_actor_buffered_independence() {
+    let props = NodeProperties::Actor {
+        actor_status: String::new(),
+        actor_type: String::new(),
+        instance_id: String::new(),
+        messages_processed: 0,
+        created_at: None,
+        last_message_handler: None,
+        total_processing_time_us: 0,
+        queue_depth: 0,
+        flight_recorder: None,
+        is_system: false,
+        inbound_ordering: None,
+        failure_info: None,
+    };
+    let (_, entries) = crate::render::detail_pane::help_content(&props);
+    let buffered = entries
+        .iter()
+        .find(|e| e.field == "buffered")
+        .expect("actor help must include a 'buffered' entry");
+    assert!(
+        buffered.note.is_some_and(|n| n.contains("independent")),
+        "buffered entry must note its independence from queue depth",
+    );
+}
+
+#[test]
+fn show_help_set_by_question_mark() {
+    let mut app = App::new(
+        "http://localhost:8080".to_string(),
+        reqwest::Client::new(),
+        ThemeName::Nord,
+        LangName::En,
+        test_policy(),
+    );
+    assert!(!app.show_help);
+    let _ = app.on_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+    assert!(app.show_help);
+}
+
+#[test]
+fn show_help_cleared_by_any_key() {
+    let mut app = App::new(
+        "http://localhost:8080".to_string(),
+        reqwest::Client::new(),
+        ThemeName::Nord,
+        LangName::En,
+        test_policy(),
+    );
+    app.show_help = true;
+    let _ = app.on_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+    assert!(!app.show_help, "any key dismisses help");
+    assert!(!app.should_quit, "q dismisses help rather than quitting");
+}
+
+#[test]
+fn show_help_ctrl_c_still_quits() {
+    let mut app = App::new(
+        "http://localhost:8080".to_string(),
+        reqwest::Client::new(),
+        ThemeName::Nord,
+        LangName::En,
+        test_policy(),
+    );
+    app.show_help = true;
+    let result = app.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+    assert!(matches!(result, KeyResult::None));
+    assert!(app.should_quit, "Ctrl-C requests quit even from help");
+    // show_help intentionally not asserted cleared — irrelevant once quitting.
+}
+
+#[test]
+fn footer_idle_contains_help_hint() {
+    assert!(
+        crate::theme::Labels::en()
+            .footer_help_text
+            .contains("?: help")
+    );
+}
+
+#[test]
+fn footer_zh_idle_contains_help_hint() {
+    let zh = crate::theme::Labels::zh();
+    assert!(zh.footer_help_text.contains("帮助"));
+    assert!(zh.footer_help_text.contains("?"));
 }

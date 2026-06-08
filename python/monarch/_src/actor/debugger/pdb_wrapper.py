@@ -162,9 +162,7 @@ class WriteWrapper:
         function = None
         lineno = None
         if self.session.curframe is not None:
-            # pyre-ignore
             function = f"{inspect.getmodulename(self.session.curframe.f_code.co_filename)}.{self.session.curframe.f_code.co_name}"
-            # pyre-ignore
             lineno = self.session.curframe.f_lineno
         with _debug_controller_request_ctx():
             self.session.controller.debugger_write.call_one(

@@ -188,6 +188,32 @@ declare_attrs! {
     ))
     pub attr CHANNEL_NET_RX_BUFFER_FULL_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 
+    /// Kernel TCP keepalive idle period: the gap from last activity
+    /// until the kernel sends its first probe on connections created
+    /// by hyperactor's channel layer. On a healthy idle connection
+    /// this is also the probe cadence (each ACK resets the timer).
+    /// Total peer-death detection time is `idle + probe_budget` where
+    /// `probe_budget = TCP_KEEPALIVE_INTERVAL * TCP_KEEPALIVE_RETRIES`
+    /// (private constants in `channel::net`, currently 15s). Larger
+    /// values reduce keepalive ACK traffic at the cost of slower
+    /// peer-death detection.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_CHANNEL_TCP_KEEPALIVE_IDLE".to_string()),
+        Some("channel_tcp_keepalive_idle".to_string()),
+    ))
+    pub attr CHANNEL_TCP_KEEPALIVE_IDLE: Duration = Duration::from_secs(60);
+
+    /// Maximum time `Link::next()` spends retrying a failed connect
+    /// before giving up. Pairs with TCP keepalive: keepalive surfaces
+    /// peer death as an I/O error, then the connect-retry loop quits
+    /// after this bound and the outer NetTx loop terminates the link
+    /// with `TxStatus::Closed`.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_CHANNEL_RECONNECT_TIMEOUT".to_string()),
+        Some("channel_reconnect_timeout".to_string()),
+    ))
+    pub attr CHANNEL_RECONNECT_TIMEOUT: Duration = Duration::from_secs(60);
+
     /// Sampling rate for logging message latency
     /// Set to 0.01 for 1% sampling, 0.1 for 10% sampling, 0.90 for 90% sampling, etc.
     @meta(CONFIG = ConfigAttr::new(

@@ -36,6 +36,9 @@ pub enum PyChannelTransport {
     MetaTlsWithHostname,
     MetaTlsWithIpV6,
     Tls,
+    Quic,
+    MetaQuicWithHostname,
+    MetaQuicWithIpV6,
     Local,
     Unix,
     // Sim(/*transport:*/ ChannelTransport), TODO kiuk@ add support
@@ -55,6 +58,9 @@ impl PyChannelTransport {
             PyChannelTransport::MetaTlsWithHostname => "MetaTlsWithHostname",
             PyChannelTransport::MetaTlsWithIpV6 => "MetaTlsWithIpV6",
             PyChannelTransport::Tls => "Tls",
+            PyChannelTransport::Quic => "Quic",
+            PyChannelTransport::MetaQuicWithHostname => "MetaQuicWithHostname",
+            PyChannelTransport::MetaQuicWithIpV6 => "MetaQuicWithIpV6",
             PyChannelTransport::Local => "Local",
             PyChannelTransport::Unix => "Unix",
         };
@@ -78,6 +84,11 @@ impl TryFrom<ChannelTransport> for PyChannelTransport {
             }
             ChannelTransport::MetaTls(TlsMode::IpV6) => Ok(PyChannelTransport::MetaTlsWithIpV6),
             ChannelTransport::Tls => Ok(PyChannelTransport::Tls),
+            ChannelTransport::Quic => Ok(PyChannelTransport::Quic),
+            ChannelTransport::MetaQuic(TlsMode::Hostname) => {
+                Ok(PyChannelTransport::MetaQuicWithHostname)
+            }
+            ChannelTransport::MetaQuic(TlsMode::IpV6) => Ok(PyChannelTransport::MetaQuicWithIpV6),
             ChannelTransport::Local => Ok(PyChannelTransport::Local),
             ChannelTransport::Unix => Ok(PyChannelTransport::Unix),
         }
@@ -193,9 +204,10 @@ impl PyChannelAddr {
     pub fn get_port(&self) -> PyResult<u16> {
         match &self.inner {
             ChannelAddr::Tcp(socket_addr) => Ok(socket_addr.port()),
-            ChannelAddr::MetaTls(TlsAddr { port, .. }) | ChannelAddr::Tls(TlsAddr { port, .. }) => {
-                Ok(*port)
-            }
+            ChannelAddr::MetaTls(TlsAddr { port, .. })
+            | ChannelAddr::Tls(TlsAddr { port, .. })
+            | ChannelAddr::Quic(TlsAddr { port, .. })
+            | ChannelAddr::MetaQuic(TlsAddr { port, .. }) => Ok(*port),
             ChannelAddr::Unix(_) | ChannelAddr::Local(_) => Ok(0),
             _ => Err(PyRuntimeError::new_err(format!(
                 "unsupported transport: `{:?}` for channel address: `{}`",
@@ -218,6 +230,11 @@ impl PyChannelAddr {
                 TlsMode::IpV6 => Ok(PyChannelTransport::MetaTlsWithIpV6),
             },
             ChannelTransport::Tls => Ok(PyChannelTransport::Tls),
+            ChannelTransport::Quic => Ok(PyChannelTransport::Quic),
+            ChannelTransport::MetaQuic(mode) => match mode {
+                TlsMode::Hostname => Ok(PyChannelTransport::MetaQuicWithHostname),
+                TlsMode::IpV6 => Ok(PyChannelTransport::MetaQuicWithIpV6),
+            },
             ChannelTransport::Local => Ok(PyChannelTransport::Local),
             ChannelTransport::Unix => Ok(PyChannelTransport::Unix),
         }
@@ -232,6 +249,11 @@ impl From<PyChannelTransport> for ChannelTransport {
             PyChannelTransport::MetaTlsWithHostname => ChannelTransport::MetaTls(TlsMode::Hostname),
             PyChannelTransport::MetaTlsWithIpV6 => ChannelTransport::MetaTls(TlsMode::IpV6),
             PyChannelTransport::Tls => ChannelTransport::Tls,
+            PyChannelTransport::Quic => ChannelTransport::Quic,
+            PyChannelTransport::MetaQuicWithHostname => {
+                ChannelTransport::MetaQuic(TlsMode::Hostname)
+            }
+            PyChannelTransport::MetaQuicWithIpV6 => ChannelTransport::MetaQuic(TlsMode::IpV6),
             PyChannelTransport::Local => ChannelTransport::Local,
             PyChannelTransport::Unix => ChannelTransport::Unix,
         }
@@ -261,6 +283,9 @@ mod tests {
             PyChannelTransport::MetaTlsWithHostname,
             PyChannelTransport::MetaTlsWithIpV6,
             PyChannelTransport::Tls,
+            PyChannelTransport::Quic,
+            PyChannelTransport::MetaQuicWithHostname,
+            PyChannelTransport::MetaQuicWithIpV6,
             PyChannelTransport::Local,
         ] {
             let address = PyChannelAddr::any(transport)?;
@@ -274,6 +299,14 @@ mod tests {
         assert_eq!(PyChannelAddr::parse("tcp![::]:26600")?.get_port()?, 26600);
         assert_eq!(
             PyChannelAddr::parse("metatls!devgpu1.pci.facebook.com:26600")?.get_port()?,
+            26600
+        );
+        assert_eq!(
+            PyChannelAddr::parse("quic!devgpu1.pci.facebook.com:26600")?.get_port()?,
+            26600
+        );
+        assert_eq!(
+            PyChannelAddr::parse("metaquic!devgpu1.pci.facebook.com:26600")?.get_port()?,
             26600
         );
         assert_eq!(PyChannelAddr::parse("local!12345")?.get_port()?, 0);
@@ -303,6 +336,18 @@ mod tests {
             // IpV4 will fallback to hostname
             PyChannelAddr::parse("metatls!127.0.0.1:26600")?.get_transport()?,
             PyChannelTransport::MetaTlsWithHostname
+        );
+        assert_eq!(
+            PyChannelAddr::parse("quic!devgpu001.pci.facebook.com:26600")?.get_transport()?,
+            PyChannelTransport::Quic
+        );
+        assert_eq!(
+            PyChannelAddr::parse("metaquic!devgpu001.pci.facebook.com:26600")?.get_transport()?,
+            PyChannelTransport::MetaQuicWithHostname
+        );
+        assert_eq!(
+            PyChannelAddr::parse("metaquic!::1:26600")?.get_transport()?,
+            PyChannelTransport::MetaQuicWithIpV6
         );
         assert_eq!(
             PyChannelAddr::parse("local!12345")?.get_transport()?,
