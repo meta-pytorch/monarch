@@ -846,7 +846,7 @@ mod tests {
     use hyperactor::actor::Signal;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::mailbox;
-    use hyperactor::proc::WorkCell;
+    use hyperactor::proc::ActorWorkReceiver;
     use hyperactor::supervision::ActorSupervisionEvent;
     use hyperactor_mesh::host_mesh::HostMesh;
     use hyperactor_mesh::mesh_controller::GetSubscriberCount;
@@ -866,7 +866,7 @@ mod tests {
     struct TestClient {
         signal_rx: mpsc::UnboundedReceiver<Signal>,
         supervision_rx: mpsc::UnboundedReceiver<ActorSupervisionEvent>,
-        work_rx: mpsc::UnboundedReceiver<WorkCell<Self>>,
+        work_rx: ActorWorkReceiver<Self>,
     }
 
     impl Actor for TestClient {}
