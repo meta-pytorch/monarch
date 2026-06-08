@@ -43,8 +43,6 @@ use hyperactor::value_mesh::ValueMesh;
 use hyperactor_config::Flattrs;
 use ndslice::Point;
 use ndslice::Region;
-use ndslice::Shape;
-use ndslice::view::BuildFromRegionIndexed;
 use ndslice::view::MapIntoExt;
 use ndslice::view::View;
 use serde::Deserialize;
@@ -110,17 +108,16 @@ impl CastDomainId {
     /// Materialize this domain id over concrete members and return an
     /// addressable domain handle.
     ///
-    /// `members` maps domain rank to member actor address. `shape` describes
-    /// the logical root shape of the domain; tiling and communication are
+    /// `members` maps domain rank to member actor address. `region` describes
+    /// the logical root region of the domain; tiling and communication are
     /// derived internally.
     pub fn materialize(
         self,
         cx: &impl context::Actor,
         members: HashMap<usize, ActorAddr>,
-        shape: Shape,
+        region: Region,
         tiling_policy: TilingPolicy,
     ) -> anyhow::Result<CastDomainRef> {
-        let region = Region::from(shape);
         anyhow::ensure!(
             members.len() == region.num_ranks()
                 && region
@@ -135,7 +132,19 @@ impl CastDomainId {
             .get(&root_rank)
             .expect("members coverage was checked above")
             .clone();
-        let member_mesh = Arc::new(ValueMesh::build_indexed(region.clone(), members)?);
+        let member_mesh = Arc::new(ValueMesh::new(
+            region.clone(),
+            region
+                .slice()
+                .iter()
+                .map(|rank| {
+                    members
+                        .get(&rank)
+                        .expect("members coverage was checked above")
+                        .clone()
+                })
+                .collect(),
+        )?);
 
         let domain_ref = CastDomainRef::from_entry_point(
             self.clone(),
@@ -563,6 +572,10 @@ impl Handler<CreateCastDomain> for CastActor {
             tiling_policy,
             tile,
         } = message;
+        if self.installed_hops.contains_key(&cast_domain_id) {
+            return Ok(());
+        }
+
         let mut next_hops = Vec::new();
 
         for next_tile in next_tiles(tiling_policy, &tile) {
@@ -890,6 +903,8 @@ mod tests {
     use ndslice::Slice;
     use ndslice::ViewExt;
     use ndslice::shape;
+    use ndslice::view::BuildFromRegionIndexed;
+    use ndslice::view::Ranked;
     use proptest::prelude::*;
     use timed_test::async_timed_test;
     use typeuri::Named;
@@ -1309,12 +1324,12 @@ mod tests {
             }
         }
 
-        fn root_domain(&self, shape: Shape) -> CastDomainRef {
+        fn root_domain(&self, region: Region) -> CastDomainRef {
             CastDomainId::new()
                 .materialize(
                     &self.client,
                     self.domain_members(),
-                    shape,
+                    region,
                     TilingPolicy::BlockPartitioning,
                 )
                 .unwrap()
@@ -1326,9 +1341,9 @@ mod tests {
                 .collect()
         }
 
-        fn root_domain_with_policy(&self, shape: Shape, policy: TilingPolicy) -> CastDomainRef {
+        fn root_domain_with_policy(&self, region: Region, policy: TilingPolicy) -> CastDomainRef {
             CastDomainId::new()
-                .materialize(&self.client, self.member_ids.clone(), shape, policy)
+                .materialize(&self.client, self.member_ids.clone(), region, policy)
                 .unwrap()
         }
 
@@ -1455,7 +1470,7 @@ mod tests {
         clear_captured_domains();
 
         let test_mesh = CastTestMesh::new(8);
-        let root_domain = test_mesh.root_domain(shape!(a = 2, b = 2, c = 2));
+        let root_domain = test_mesh.root_domain(shape!(a = 2, b = 2, c = 2).into());
         let snapshots = test_mesh
             .wait_for_domain_snapshots(root_domain.domain_id(), 8)
             .await;
@@ -1549,7 +1564,7 @@ mod tests {
         let n = 8;
         let mut test_mesh = CastTestMesh::new(n);
         test_mesh.spawn_delivery_receivers();
-        let root_domain = test_mesh.root_domain(shape!(a = 2, b = 2, c = 2));
+        let root_domain = test_mesh.root_domain(shape!(a = 2, b = 2, c = 2).into());
 
         let expected_payloads = vec![
             "hello-0".to_string(),
@@ -1626,7 +1641,7 @@ mod tests {
         let n = 2;
         let mut test_mesh = CastTestMesh::new(n);
         test_mesh.spawn_delivery_receivers();
-        let root_domain = test_mesh.root_domain(shape!(rank = 2));
+        let root_domain = test_mesh.root_domain(shape!(rank = 2).into());
 
         let mut headers = Flattrs::new();
         headers.set(
@@ -1734,7 +1749,7 @@ mod tests {
         clear_captured_domains();
 
         let test_mesh = CastTestMesh::new(8);
-        let root_domain = test_mesh.root_domain(shape!(a = 2, b = 2, c = 2));
+        let root_domain = test_mesh.root_domain(shape!(a = 2, b = 2, c = 2).into());
         let domain_id = root_domain.domain_id().clone();
         test_mesh.wait_for_domain_snapshots(&domain_id, 8).await;
 
@@ -1754,7 +1769,7 @@ mod tests {
         let n = 8;
         let mut test_mesh = CastTestMesh::new(n);
         test_mesh.spawn_split_port_receivers();
-        let root_cast_domain = test_mesh.root_domain(shape!(a = 2, b = 2, c = 2));
+        let root_cast_domain = test_mesh.root_domain(shape!(a = 2, b = 2, c = 2).into());
 
         for (case_name, range, expected_procs) in [
             (
@@ -1798,7 +1813,7 @@ mod tests {
         let n = 4;
         let mut test_mesh = CastTestMesh::new(n);
         test_mesh.spawn_delivery_receivers();
-        let root = test_mesh.root_domain(shape!(rank = 4));
+        let root = test_mesh.root_domain(shape!(rank = 4).into());
 
         let rank_0_to_2 = root
             .materialize_slice(
@@ -2130,7 +2145,7 @@ mod tests {
         let n = 8;
         let mut test_mesh = CastTestMesh::new(n);
         test_mesh.spawn_split_port_receivers();
-        let root_domain = test_mesh.root_domain(shape!(a = 2, b = 2, c = 2));
+        let root_domain = test_mesh.root_domain(shape!(a = 2, b = 2, c = 2).into());
 
         let (reply_handle, reply_rx) = context::Mailbox::mailbox(&test_mesh.client)
             .open_reduce_port(TestReplyCountsAccumulator);
@@ -2199,7 +2214,7 @@ mod tests {
 
         let test_mesh = CastTestMesh::new(8);
         let root_domain = test_mesh.root_domain_with_policy(
-            shape!(a = 8),
+            shape!(a = 8).into(),
             TilingPolicy::BoundedFanout {
                 fanout: NonZeroUsize::new(2).unwrap(),
             },
@@ -2264,7 +2279,8 @@ mod tests {
         clear_captured_domains();
 
         let test_mesh = CastTestMesh::new(8);
-        let root_domain = test_mesh.root_domain_with_policy(shape!(a = 8), TilingPolicy::Bisection);
+        let root_domain =
+            test_mesh.root_domain_with_policy(shape!(a = 8).into(), TilingPolicy::Bisection);
         let snapshots = test_mesh
             .wait_for_domain_snapshots(root_domain.domain_id(), 8)
             .await;

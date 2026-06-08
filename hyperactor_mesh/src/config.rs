@@ -160,9 +160,8 @@ declare_attrs! {
     ///
     /// When attaching to pre-existing workers (simple bootstrap), the
     /// client pushes its propagatable config to each host agent and
-    /// waits for confirmation. If the barrier does not complete within
-    /// this duration, a warning is logged and attach continues without
-    /// blocking — config push is best-effort.
+    /// waits for confirmation. If the barrier does not complete
+    /// within this duration, attach fails closed.
     @meta(CONFIG = ConfigAttr::new(
         Some("HYPERACTOR_MESH_ATTACH_CONFIG_TIMEOUT".to_string()),
         Some("mesh_attach_config_timeout".to_string()),

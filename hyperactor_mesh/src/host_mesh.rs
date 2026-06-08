@@ -147,11 +147,21 @@ declare_attrs! {
 }
 
 /// A reference to a single host.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Named, Serialize, Deserialize)]
-pub struct HostRef(pub(crate) ChannelAddr);
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Named, Serialize)]
+pub struct HostRef(ChannelAddr);
 wirevalue::register_type!(HostRef);
 
 impl HostRef {
+    /// Create a host reference from a channel address.
+    ///
+    /// `ChannelAddr::Alias` is a socket setup convenience, not a host
+    /// identity. The host consumes the alias when serving and advertises the
+    /// `dial_to` address, so remote references must use that same address in
+    /// proc and actor identities.
+    pub(crate) fn new(addr: ChannelAddr) -> Self {
+        Self(addr.into_dial_addr())
+    }
+
     /// The host mesh agent associated with this host.
     pub(crate) fn mesh_agent(&self) -> ActorRef<HostAgent> {
         ActorRef::attest(
@@ -235,12 +245,21 @@ impl HostRef {
     }
 }
 
+impl<'de> Deserialize<'de> for HostRef {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Ok(Self::new(ChannelAddr::deserialize(deserializer)?))
+    }
+}
+
 impl TryFrom<ActorRef<HostAgent>> for HostRef {
     type Error = crate::Error;
 
     fn try_from(value: ActorRef<HostAgent>) -> Result<Self, crate::Error> {
         let proc_id = value.actor_addr().proc_addr();
-        Ok(HostRef(proc_id.addr().clone()))
+        Ok(Self::new(proc_id.addr().clone()))
     }
 }
 
@@ -254,7 +273,7 @@ impl FromStr for HostRef {
     type Err = <ChannelAddr as FromStr>::Err;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(HostRef(ChannelAddr::from_str(s)?))
+        Ok(Self::new(ChannelAddr::from_str(s)?))
     }
 }
 
@@ -487,7 +506,7 @@ impl HostMesh {
             .map_err(crate::Error::SingletonActorSpawnError)?;
         host_mesh_agent.bind::<HostAgent>();
 
-        let host = HostRef(addr);
+        let host = HostRef::new(addr);
         let host_mesh_ref = HostMeshRef::new(
             HostMeshId::instance(Label::new("local").unwrap()),
             extent!(hosts = 1).into(),
@@ -551,7 +570,7 @@ impl HostMesh {
             )
             .map_err(crate::Error::SingletonActorSpawnError)?;
         host_mesh_agent.bind::<HostAgent>();
-        Ok(HostRef(addr))
+        Ok(HostRef::new(addr))
     }
 
     /// Create a new process-based host mesh. Each host is represented by a local process,
@@ -588,7 +607,7 @@ impl HostMesh {
             let mut cmd = command.new();
             bootstrap.to_env(&mut cmd);
             cmd.spawn()?;
-            hosts.push(HostRef(addr));
+            hosts.push(HostRef::new(addr));
         }
 
         let host_mesh_ref = HostMeshRef::new(
@@ -1021,7 +1040,7 @@ impl HostMeshRef {
         Self {
             id,
             region: extent!(hosts = hosts.len()).into(),
-            ranks: Arc::new(hosts.into_iter().map(HostRef).collect()),
+            ranks: Arc::new(hosts.into_iter().map(HostRef::new).collect()),
             bootstrap_command: None,
         }
     }
@@ -1503,7 +1522,7 @@ impl HostMeshRef {
 
             // Note that we don't send 1 message per host agent, we send 1 message
             // per proc.
-            let host = HostRef(addr);
+            let host = HostRef::new(addr);
             host.mesh_agent().post(
                 cx,
                 resource::Stop {
@@ -1611,7 +1630,7 @@ impl HostMeshRef {
 
             // Note that we don't send 1 message per host agent, we send 1 message
             // per proc.
-            let host = HostRef(addr);
+            let host = HostRef::new(addr);
             let proc_resource_id = ResourceId::new(proc_id.uid().clone(), proc_id.label().cloned());
             proc_names.push(proc_resource_id.clone());
             let mut reply = tx.bind();
@@ -2273,7 +2292,7 @@ mod tests {
         let (failed_host, _failure) = &push_err.failures[0];
         assert_eq!(
             failed_host,
-            &HostRef(unreachable),
+            &HostRef::new(unreachable),
             "HM-4: failure entry must identify the unreachable host"
         );
         // Intentionally do NOT pin the `_failure` variant — the
@@ -2287,6 +2306,23 @@ mod tests {
         // root-client's default delivery-failure handling would
         // surface an `UndeliverableMessageError::DeliveryFailure`,
         // supervision would fire, and we wouldn't be here.
+    }
+
+    #[test]
+    fn test_host_refs_canonicalize_alias_to_dial_addr() {
+        let dial_to = ChannelAddr::from_zmq_url("tcp://127.0.0.1:26600").unwrap();
+        let alias = ChannelAddr::from_zmq_url("tcp://127.0.0.1:26600@tcp://0.0.0.0:26600").unwrap();
+
+        let mesh = HostMeshRef::from_hosts(
+            HostMeshId::singleton(Label::new("alias").unwrap()),
+            vec![alias],
+        );
+
+        assert_eq!(mesh.hosts(), &[HostRef::new(dial_to.clone())]);
+        assert_eq!(
+            mesh.hosts()[0].mesh_agent().actor_addr().proc_addr().addr(),
+            &dial_to
+        );
     }
 
     #[tokio::test]
@@ -2316,8 +2352,8 @@ mod tests {
         let addr_a: ChannelAddr = "tcp:127.0.0.1:2001".parse().unwrap();
         let addr_b: ChannelAddr = "tcp:127.0.0.1:2002".parse().unwrap();
 
-        let ref_a = HostRef(addr_a.clone()).mesh_agent();
-        let ref_b = HostRef(addr_b.clone()).mesh_agent();
+        let ref_a = HostRef::new(addr_a.clone()).mesh_agent();
+        let ref_b = HostRef::new(addr_b.clone()).mesh_agent();
 
         let mut set = HostSet::new();
         set.insert(addr_a.to_string(), ref_a.clone());
@@ -2385,7 +2421,7 @@ mod tests {
         );
 
         // Client host entry overlaps with addr_a.
-        let client_ref = HostRef(addr_a.clone()).mesh_agent();
+        let client_ref = HostRef::new(addr_a.clone()).mesh_agent();
         let client_entries = vec![("client_addr".to_string(), client_ref)];
 
         let result = aggregate_hosts(&[&mesh], Some(client_entries));
