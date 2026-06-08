@@ -28,7 +28,26 @@ use datafusion::arrow::record_batch::RecordBatch;
 pub use entity_batch_sink::EntityBatchSink;
 use hyperactor::Bind;
 use hyperactor::Unbind;
+use monarch_record_batch::RecordBatchBuffer;
+use monarch_telemetry_schema::entity_tables::ACTOR_STATUS_EVENTS;
+use monarch_telemetry_schema::entity_tables::ACTORS;
+use monarch_telemetry_schema::entity_tables::ActorBuffer;
+use monarch_telemetry_schema::entity_tables::ActorStatusEventBuffer;
+use monarch_telemetry_schema::entity_tables::MESHES;
+use monarch_telemetry_schema::entity_tables::MESSAGE_STATUS_EVENTS;
+use monarch_telemetry_schema::entity_tables::MESSAGES;
+use monarch_telemetry_schema::entity_tables::MeshBuffer;
+use monarch_telemetry_schema::entity_tables::MessageBuffer;
+use monarch_telemetry_schema::entity_tables::MessageStatusEventBuffer;
+use monarch_telemetry_schema::entity_tables::SENT_MESSAGES;
+use monarch_telemetry_schema::entity_tables::SentMessageBuffer;
 pub use monarch_telemetry_schema::serialize_batch;
+use monarch_telemetry_schema::trace_tables::EVENTS;
+use monarch_telemetry_schema::trace_tables::EventBuffer;
+use monarch_telemetry_schema::trace_tables::SPAN_EVENTS;
+use monarch_telemetry_schema::trace_tables::SPANS;
+use monarch_telemetry_schema::trace_tables::SpanBuffer;
+use monarch_telemetry_schema::trace_tables::SpanEventBuffer;
 use pyo3::prelude::*;
 pub use pyspy_table::PySpyDump;
 pub use pyspy_table::PySpyFrame;
@@ -115,10 +134,49 @@ fn _start_socket_ingest(scanner: PyRef<'_, DatabaseScanner>, socket_path: &str) 
         .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))
 }
 
+/// Register trace and entity schemas with a database scanner.
+#[pyfunction]
+fn _register_trace_entity_schemas(scanner: PyRef<'_, DatabaseScanner>) -> PyResult<()> {
+    register_table_schema::<SpanBuffer>(&scanner, SPANS)?;
+    register_table_schema::<SpanEventBuffer>(&scanner, SPAN_EVENTS)?;
+    register_table_schema::<EventBuffer>(&scanner, EVENTS)?;
+    register_table_schema::<ActorBuffer>(&scanner, ACTORS)?;
+    register_table_schema::<MeshBuffer>(&scanner, MESHES)?;
+    register_table_schema::<ActorStatusEventBuffer>(&scanner, ACTOR_STATUS_EVENTS)?;
+    register_table_schema::<SentMessageBuffer>(&scanner, SENT_MESSAGES)?;
+    register_table_schema::<MessageBuffer>(&scanner, MESSAGES)?;
+    register_table_schema::<MessageStatusEventBuffer>(&scanner, MESSAGE_STATUS_EVENTS)?;
+    Ok(())
+}
+
+fn register_table_schema<B>(scanner: &DatabaseScanner, table_name: &str) -> PyResult<()>
+where
+    B: RecordBatchBuffer + Default,
+{
+    scanner
+        .register_table(
+            table_name,
+            B::default()
+                .drain_to_record_batch()
+                .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))?
+                .schema(),
+        )
+        .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))
+}
+
+/// Activate the process-global Unix socket telemetry sink.
+#[pyfunction]
+fn _set_unix_socket_sink_path(socket_path: &str) -> PyResult<()> {
+    hyperactor_telemetry::set_unix_socket_sink_path(socket_path)
+        .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))
+}
+
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(enable_record_batch_tracing, module)?)?;
     module.add_function(wrap_pyfunction!(get_record_batch_flush_count, module)?)?;
     module.add_function(wrap_pyfunction!(reset_record_batch_flush_count, module)?)?;
     module.add_function(wrap_pyfunction!(_start_socket_ingest, module)?)?;
+    module.add_function(wrap_pyfunction!(_register_trace_entity_schemas, module)?)?;
+    module.add_function(wrap_pyfunction!(_set_unix_socket_sink_path, module)?)?;
     Ok(())
 }
