@@ -73,6 +73,7 @@ use std::time::Duration;
 
 use hyperactor::ActorAddr;
 use hyperactor::ProcAddr;
+use hyperactor::RemoteEndpoint as _;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::context;
 use ndslice::Extent;
@@ -109,7 +110,6 @@ use crate::mesh_id::ResourceId;
 use crate::proc_agent::ProcAgent;
 use crate::proc_mesh::ProcMeshRef;
 use crate::resource;
-use crate::resource::CreateOrUpdateClient;
 use crate::resource::GetRankStatus;
 use crate::resource::GetRankStatusClient;
 use crate::resource::RankedValues;
@@ -1313,20 +1313,23 @@ impl HostMeshRef {
                     proc_bind: bind,
                     host_mesh_id: Some(self.id.clone()),
                 };
-                host.mesh_agent()
-                    .create_or_update(
-                        cx,
-                        proc_name.clone(),
-                        resource::Rank::new(create_rank),
-                        proc_spec,
-                    )
-                    .await
-                    .map_err(|e| {
-                        crate::Error::HostMeshAgentConfigurationError(
-                            host.mesh_agent().actor_addr().clone(),
-                            format!("failed while creating proc: {}", e),
-                        )
-                    })?;
+                let create_point = extent
+                    .point_of_rank(create_rank)
+                    .expect("rank in combined extent");
+                let mut create_headers = hyperactor_config::Flattrs::new();
+                crate::comm::multicast::set_cast_info_on_headers(
+                    &mut create_headers,
+                    create_point,
+                    cx.instance().self_addr().clone(),
+                );
+                host.mesh_agent().post_with_headers(
+                    cx,
+                    create_headers,
+                    resource::CreateOrUpdate {
+                        id: proc_name.clone(),
+                        spec: proc_spec,
+                    },
+                );
                 let mut reply_port = port.bind();
                 // If this proc dies or some other issue renders the reply undeliverable,
                 // the reply does not need to be returned to the sender.

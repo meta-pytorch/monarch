@@ -3462,6 +3462,7 @@ mod tests {
         use std::time::Duration;
 
         use hyperactor::Proc;
+        use hyperactor::RemoteEndpoint as _;
         use hyperactor::channel::ChannelTransport;
         use hyperactor::id::Label;
 
@@ -3472,7 +3473,6 @@ mod tests {
         use crate::proc_agent::ProcAgent;
         use crate::resource;
         use crate::resource::ProcSpec;
-        use crate::resource::Rank;
 
         // Stand up a local in-process Host with a HostAgent.
         let spawn: ProcManagerSpawnFn =
@@ -3516,11 +3516,21 @@ mod tests {
 
         // Spawn a user proc via CreateOrUpdate<ProcSpec>.
         let user_proc_name = ResourceId::instance(Label::new("user-proc").unwrap());
-        host_agent_ref.post(
+        let create_point = ndslice::Extent::new(vec!["rank".to_string()], vec![1])
+            .expect("valid extent")
+            .point_of_rank(0)
+            .expect("valid rank");
+        let mut create_headers = hyperactor_config::Flattrs::new();
+        crate::comm::multicast::set_cast_info_on_headers(
+            &mut create_headers,
+            create_point,
+            client.self_addr().clone(),
+        );
+        host_agent_ref.post_with_headers(
             &client,
+            create_headers,
             resource::CreateOrUpdate {
                 id: user_proc_name.clone(),
-                rank: Rank::new(0),
                 spec: ProcSpec::default(),
             },
         );

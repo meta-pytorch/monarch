@@ -12,7 +12,6 @@ use crate::comm::multicast::CastEnvelope;
 use crate::comm::multicast::CastMessageV1;
 use crate::comm::multicast::ForwardMessageV1;
 use crate::mesh_id::ActorMeshId;
-use crate::resource;
 pub mod multicast;
 
 use std::cmp::Ordering;
@@ -48,7 +47,6 @@ use hyperactor_config::ConfigAttr;
 use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::declare_attrs;
 use hyperactor_mesh_macros::sel;
-use ndslice::Point;
 use ndslice::Selection;
 use ndslice::View;
 use ndslice::selection::routing::RoutingFrame;
@@ -369,9 +367,6 @@ impl CommActor {
         config: &CommMeshConfig,
     ) -> anyhow::Result<()> {
         let cast_point = message.cast_point(config)?;
-        // Replace ranks with self ranks.
-        replace_with_self_ranks(&cast_point, message.data_mut())?;
-
         set_cast_info_on_headers(&mut headers, cast_point, message.sender().clone());
 
         // Bind dest ONCE so we can pass to both the stamp helper and the
@@ -456,13 +451,6 @@ fn split_ports(
             Ok(())
         },
     )
-}
-
-fn replace_with_self_ranks(cast_point: &Point, data: &mut ErasedUnbound) -> anyhow::Result<()> {
-    data.visit_mut::<resource::Rank>(|resource::Rank(rank)| {
-        *rank = Some(cast_point.rank());
-        Ok(())
-    })
 }
 
 #[async_trait]

@@ -728,7 +728,6 @@ impl ProcMeshRef {
             cx,
             resource::CreateOrUpdate::<proc_agent::ActorSpec> {
                 id: actor_mesh_id.resource_id().clone(),
-                rank: Default::default(),
                 spec: proc_agent::ActorSpec {
                     actor_type: actor_type.clone(),
                     params_data: serialized_params.clone(),

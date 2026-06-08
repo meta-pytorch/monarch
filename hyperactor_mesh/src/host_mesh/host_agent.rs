@@ -679,12 +679,14 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
                 return Ok(());
             }
         };
+        let rank = resource::create_rank_from_headers(cx.headers())
+            .expect("CreateOrUpdate<ProcSpec> must carry CAST_POINT");
         let created = match host {
             HostAgentMode::Process { host, .. } => {
                 host.spawn(
                     create_or_update.id.to_string(),
                     BootstrapProcConfig {
-                        create_rank: create_or_update.rank.unwrap(),
+                        create_rank: rank,
                         client_config_override: create_or_update
                             .spec
                             .client_config_override
@@ -697,8 +699,6 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
             }
             HostAgentMode::Local(host) => host.spawn(create_or_update.id.to_string(), ()).await,
         };
-
-        let rank = create_or_update.rank.unwrap();
 
         if let Err(e) = &created {
             tracing::error!("failed to spawn proc {}: {}", create_or_update.id, e);
@@ -1503,9 +1503,32 @@ mod tests {
     use super::*;
     use crate::bootstrap::ProcStatus;
     use crate::mesh_id::ResourceId;
-    use crate::resource::CreateOrUpdateClient;
     use crate::resource::GetStateClient;
     use crate::resource::WaitRankStatusClient;
+
+    fn point_of_rank(rank: usize) -> ndslice::Point {
+        ndslice::Extent::new(vec!["rank".to_string()], vec![rank + 1])
+            .expect("valid extent")
+            .point_of_rank(rank)
+            .expect("valid rank")
+    }
+
+    fn create_proc(
+        host_agent: &ActorHandle<HostAgent>,
+        client: &hyperactor::Client,
+        id: ResourceId,
+        rank: usize,
+        spec: ProcSpec,
+    ) {
+        let mut headers = Flattrs::new();
+        crate::comm::multicast::set_cast_info_on_headers(
+            &mut headers,
+            point_of_rank(rank),
+            client.self_addr().clone(),
+        );
+        let host_agent_ref: ActorRef<HostAgent> = host_agent.bind();
+        host_agent_ref.post_with_headers(client, headers, resource::CreateOrUpdate { id, spec });
+    }
 
     #[tokio::test]
     async fn test_basic() {
@@ -1535,15 +1558,7 @@ mod tests {
 
         // First, create the proc, then query its state:
 
-        host_agent
-            .create_or_update(
-                &client,
-                id.clone(),
-                resource::Rank::new(0),
-                ProcSpec::default(),
-            )
-            .await
-            .unwrap();
+        create_proc(&host_agent, &client, id.clone(), 0, ProcSpec::default());
         // The host advertises spawned procs with a
         // `Via(proc_uid, Addr(host_addr))` location so its gateway can
         // peel and forward to the child's serving address. Construct
@@ -1600,15 +1615,7 @@ mod tests {
         let client = client_proc.client("client");
 
         let id = ResourceId::instance(Label::new("proc1").unwrap());
-        host_agent
-            .create_or_update(
-                &client,
-                id.clone(),
-                resource::Rank::new(0),
-                ProcSpec::default(),
-            )
-            .await
-            .unwrap();
+        create_proc(&host_agent, &client, id.clone(), 0, ProcSpec::default());
 
         // Proc is Running; wait for Running should reply immediately.
         let (port, mut rx) = client.open_port::<crate::StatusOverlay>();
@@ -1650,15 +1657,7 @@ mod tests {
         let client = client_proc.client("client");
 
         let id = ResourceId::instance(Label::new("proc1").unwrap());
-        host_agent
-            .create_or_update(
-                &client,
-                id.clone(),
-                resource::Rank::new(0),
-                ProcSpec::default(),
-            )
-            .await
-            .unwrap();
+        create_proc(&host_agent, &client, id.clone(), 0, ProcSpec::default());
 
         // Wait for Stopped — should not reply yet.
         let (port, mut rx) = client.open_port::<crate::StatusOverlay>();
@@ -1716,10 +1715,7 @@ mod tests {
 
         // Now create the proc — the stashed waiter should get its
         // sentinel rank fixed and be flushed once the proc is Running.
-        host_agent
-            .create_or_update(&client, id, resource::Rank::new(0), ProcSpec::default())
-            .await
-            .unwrap();
+        create_proc(&host_agent, &client, id, 0, ProcSpec::default());
 
         let overlay = tokio::time::timeout(Duration::from_secs(10), rx.recv())
             .await
@@ -1763,20 +1759,14 @@ mod tests {
             host_mesh_id: Some(mesh_a.clone()),
             ..Default::default()
         };
-        host_agent
-            .create_or_update(&client, proc_a_id.clone(), resource::Rank::new(0), spec_a)
-            .await
-            .unwrap();
+        create_proc(&host_agent, &client, proc_a_id.clone(), 0, spec_a);
 
         // Create proc_b belonging to mesh_b.
         let spec_b = ProcSpec {
             host_mesh_id: Some(mesh_b.clone()),
             ..Default::default()
         };
-        host_agent
-            .create_or_update(&client, proc_b_id.clone(), resource::Rank::new(1), spec_b)
-            .await
-            .unwrap();
+        create_proc(&host_agent, &client, proc_b_id.clone(), 1, spec_b);
 
         // Both should be Running.
         assert_matches!(
@@ -1865,19 +1855,13 @@ mod tests {
             host_mesh_id: Some(mesh_a),
             ..Default::default()
         };
-        host_agent
-            .create_or_update(&client, proc_a_id.clone(), resource::Rank::new(0), spec_a)
-            .await
-            .unwrap();
+        create_proc(&host_agent, &client, proc_a_id.clone(), 0, spec_a);
 
         let spec_b = ProcSpec {
             host_mesh_id: Some(mesh_b),
             ..Default::default()
         };
-        host_agent
-            .create_or_update(&client, proc_b_id.clone(), resource::Rank::new(1), spec_b)
-            .await
-            .unwrap();
+        create_proc(&host_agent, &client, proc_b_id.clone(), 1, spec_b);
 
         // Drain all (no filter).
         host_agent
@@ -1945,15 +1929,7 @@ mod tests {
         // Spawn a proc so the host_agent processes at least one
         // CreateOrUpdate message, which goes through the work queue.
         let name = ResourceId::instance(Label::new("qd_test_proc").unwrap());
-        host_agent
-            .create_or_update(
-                &client,
-                name.clone(),
-                resource::Rank::new(0),
-                ProcSpec::default(),
-            )
-            .await
-            .unwrap();
+        create_proc(&host_agent, &client, name.clone(), 0, ProcSpec::default());
 
         // The host_agent has now processed messages on the service
         // proc. Query the service proc's introspection.

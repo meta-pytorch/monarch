@@ -908,7 +908,8 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcAgent {
             // There is no update.
             return Ok(());
         }
-        let create_rank = create_or_update.rank.unwrap();
+        let create_rank = resource::create_rank_from_headers(cx.headers())
+            .expect("cast CreateOrUpdate<ActorSpec> must carry CAST_POINT");
         // If any actor on this proc has error supervision events,
         // we disallow spawning new actors on it, as this proc may be in an
         // invalid state.
@@ -1277,6 +1278,30 @@ mod tests {
     struct ExtraActor;
     impl hyperactor::Actor for ExtraActor {}
     hyperactor::register_spawnable!(ExtraActor);
+
+    fn point_of_rank(rank: usize) -> ndslice::Point {
+        ndslice::Extent::new(vec!["rank".to_string()], vec![rank + 1])
+            .expect("valid extent")
+            .point_of_rank(rank)
+            .expect("valid rank")
+    }
+
+    fn create_actor(
+        agent_ref: &ActorRef<ProcAgent>,
+        client: &hyperactor::Client,
+        id: ResourceId,
+        rank: usize,
+        spec: ActorSpec,
+    ) {
+        let mut headers = Flattrs::new();
+        crate::comm::multicast::set_cast_info_on_headers(
+            &mut headers,
+            point_of_rank(rank),
+            client.self_addr().clone(),
+        );
+        agent_ref.post_with_headers(client, headers, resource::CreateOrUpdate { id, spec });
+    }
+
     // Verifies that QueryChild(Addr::Proc) on a ProcAgent returns
     // a live IntrospectResult whose children reflect actors spawned
     // directly on the proc — i.e. via proc.spawn_with_label(), which bypasses the
@@ -1514,7 +1539,6 @@ mod tests {
         use hyperactor::actor::ActorStatus;
         use hyperactor::channel::ChannelTransport;
 
-        use crate::resource::CreateOrUpdateClient;
         use crate::resource::GetStateClient;
         use crate::resource::StopClient;
         use crate::resource::StreamStateClient;
@@ -1539,18 +1563,16 @@ mod tests {
         let actor_name = ResourceId::singleton(hyperactor::id::Label::new("test-actor").unwrap());
 
         // 1. Spawn an actor via CreateOrUpdate.
-        agent_ref
-            .create_or_update(
-                &client,
-                actor_name.clone(),
-                resource::Rank::new(0),
-                ActorSpec {
-                    actor_type: actor_type.clone(),
-                    params_data: actor_params.clone(),
-                },
-            )
-            .await
-            .unwrap();
+        create_actor(
+            &agent_ref,
+            &client,
+            actor_name.clone(),
+            0,
+            ActorSpec {
+                actor_type: actor_type.clone(),
+                params_data: actor_params.clone(),
+            },
+        );
 
         // 2. Subscribe to state updates.
         let (sub_port, mut sub_rx) = client.open_port::<resource::State<ActorState>>();
@@ -1580,18 +1602,16 @@ mod tests {
         // 6. Test implicit unsubscription via undeliverable.
         let actor_name_2 =
             ResourceId::singleton(hyperactor::id::Label::new("test-actor-2").unwrap());
-        agent_ref
-            .create_or_update(
-                &client,
-                actor_name_2.clone(),
-                resource::Rank::new(1),
-                ActorSpec {
-                    actor_type: actor_type.clone(),
-                    params_data: actor_params.clone(),
-                },
-            )
-            .await
-            .unwrap();
+        create_actor(
+            &agent_ref,
+            &client,
+            actor_name_2.clone(),
+            1,
+            ActorSpec {
+                actor_type: actor_type.clone(),
+                params_data: actor_params.clone(),
+            },
+        );
 
         let (sub_port_2, mut sub_rx_2) = client.open_port::<resource::State<ActorState>>();
         agent_ref

@@ -37,7 +37,6 @@ use hyperactor::mailbox::PortReceiver;
 use hyperactor::message::Castable;
 use hyperactor::message::ErasedUnbound;
 use hyperactor::message::IndexedErasedUnbound;
-use hyperactor::message::Unbound;
 use hyperactor::port::Port;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::CONFIG;
@@ -656,24 +655,13 @@ impl<A: Referable> ActorMeshRef<A> {
         A: RemoteHandles<M>,
         M: Castable + RemoteMessage,
     {
-        let create_rank = point.rank();
         let mut headers = caller_headers.clone();
         multicast::set_cast_info_on_headers(&mut headers, point, cx.instance().self_addr().clone());
 
-        // Make sure that we re-bind ranks, as these may be used for
-        // bootstrapping comm actors.
-        let mut unbound = Unbound::try_from_message(message)
-            .map_err(|e| Error::CastingError(self.id.clone(), e))?;
-        unbound
-            .visit_mut::<resource::Rank>(|resource::Rank(rank)| {
-                *rank = Some(create_rank);
-                Ok(())
-            })
-            .map_err(|e| Error::CastingError(self.id.clone(), e))?;
-        let rebound_message = unbound
-            .bind()
-            .map_err(|e| Error::CastingError(self.id.clone(), e))?;
-        actor.post_with_headers(cx, headers, rebound_message);
+        // Rank is delivery context. Receivers that need it resolve it from
+        // `CAST_POINT` instead of requiring the transport to mutate the payload
+        // before delivery.
+        actor.post_with_headers(cx, headers, message);
         Ok(())
     }
 
@@ -793,18 +781,11 @@ impl<A: Referable> ActorMeshRef<A> {
             .expect("port splitting should not fail");
 
             for rank in 0..num_ranks {
-                let mut rank_data = data.clone();
+                let rank_data = data.clone();
 
                 let cast_point = region
                     .point_of_base_rank(rank)
                     .expect("rank should be valid in region");
-
-                rank_data
-                    .visit_mut::<resource::Rank>(|resource::Rank(r)| {
-                        *r = Some(cast_point.rank());
-                        Ok(())
-                    })
-                    .expect("rank replacement should not fail");
 
                 let mut rank_headers = headers.clone();
                 multicast::set_cast_info_on_headers(&mut rank_headers, cast_point, sender.clone());

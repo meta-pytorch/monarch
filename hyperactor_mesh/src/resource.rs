@@ -35,6 +35,7 @@ use hyperactor::mailbox::PortReceiver;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::Unbind;
+use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::Attrs;
 use ndslice::Region;
 use ndslice::ViewExt;
@@ -156,37 +157,10 @@ impl From<crate::host::LocalProcStatus> for Status {
     }
 }
 
-/// Data type used to communicate ranks.
-/// Implements [`Bind`] and [`Unbind`]; the comm actor replaces
-/// instances with the delivered rank.
-#[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Eq, Default)]
-pub struct Rank(pub Option<usize>);
-wirevalue::register_type!(Rank);
-
-impl Rank {
-    /// Create a new rank with the provided value.
-    pub fn new(rank: usize) -> Self {
-        Self(Some(rank))
-    }
-
-    /// Unwrap the rank; panics if not set.
-    pub fn unwrap(&self) -> usize {
-        self.0.unwrap()
-    }
-}
-
-impl Unbind for Rank {
-    fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        bindings.push_back(self)
-    }
-}
-
-impl Bind for Rank {
-    fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        let bound = bindings.try_pop_front::<Rank>()?;
-        self.0 = bound.0;
-        Ok(())
-    }
+pub(crate) fn create_rank_from_headers(headers: &Flattrs) -> Option<usize> {
+    headers
+        .get(crate::comm::multicast::CAST_POINT)
+        .map(|point| point.rank())
 }
 
 /// Get the status of a resource across the mesh.
@@ -340,9 +314,6 @@ impl<S: Serialize> fmt::Display for State<S> {
 pub struct CreateOrUpdate<S> {
     /// The resource identifier.
     pub id: ResourceId,
-    /// The rank of the resource, when available.
-    #[binding(include)]
-    pub rank: Rank,
     /// The specification of the resource.
     pub spec: S,
 }
