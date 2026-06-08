@@ -11,6 +11,7 @@ cxx = "1.0.119"
 serde = { version = "1.0.185", features = ["derive", "rc"] }
 
 [build-dependencies]
-bindgen = "0.70.1"
+# Keep in sync with rdmaxcel-sys and the internal Buck build's bindgen.
+bindgen = "0.72"
 build_utils = { path = "../build_utils" }
 cc = "1.0"

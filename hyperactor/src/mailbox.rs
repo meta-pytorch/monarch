@@ -3597,6 +3597,7 @@ impl DialMailboxRouter {
     /// cache to ensure fresh routing on next use.
     pub fn bind(&self, dest: impl Into<Addr>, addr: ChannelAddr) {
         let dest = dest.into();
+        let addr = addr.into_dial_addr();
         if let Ok(mut w) = self.address_book.write() {
             if let Some(old_addr) = w.insert(dest.clone(), addr.clone())
                 && old_addr != addr
@@ -3643,9 +3644,9 @@ impl DialMailboxRouter {
         if let Some((key, addr)) = found
             && key.is_prefix_of(&reference)
         {
-            Some(addr.clone())
+            Some(addr.clone().into_dial_addr())
         } else {
-            let addr = actor_ref.addr().clone();
+            let addr = actor_ref.addr().clone().into_dial_addr();
             if self.direct_addressed_remote_only {
                 addr.transport().is_remote().then_some(addr)
             } else {
@@ -4700,6 +4701,24 @@ mod tests {
                 .unwrap(),
             fallback,
         );
+    }
+
+    #[test]
+    fn test_dial_mailbox_router_canonicalizes_alias_addresses() {
+        let router = DialMailboxRouter::new();
+        let dial_to = ChannelAddr::from_zmq_url("tcp://127.0.0.1:9000").unwrap();
+        let alias = ChannelAddr::from_zmq_url("tcp://127.0.0.1:9000@tcp://0.0.0.0:9000").unwrap();
+
+        router.bind(test_proc_ref("world_alias"), alias.clone());
+        assert_eq!(
+            router
+                .lookup_addr(&test_actor_id("world_alias", "actor"))
+                .unwrap(),
+            dial_to
+        );
+
+        let direct_actor_ref = ProcAddr::singleton(alias, "direct_alias").actor_addr("actor");
+        assert_eq!(router.lookup_addr(&direct_actor_ref).unwrap(), dial_to);
     }
 
     #[tokio::test]

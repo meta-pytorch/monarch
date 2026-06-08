@@ -18,7 +18,6 @@ pub mod device_selection;
 pub(crate) mod domain;
 pub mod manager_actor;
 pub mod primitives;
-mod processor_actor;
 pub mod queue_pair;
 
 use manager_actor::IbvManagerActor;

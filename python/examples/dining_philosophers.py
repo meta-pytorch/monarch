@@ -224,6 +224,10 @@ async def async_main(
         print("\nShutting down...", flush=True)
         await waiter_proc.stop()
         await procs.stop()
+        # Tear down the host last: ProcessJob spawns a host subprocess
+        # (run_worker_loop_forever) that stopping the proc meshes alone leaves
+        # orphaned; shutdown() stops the host and every process on it.
+        await host.shutdown()
 
 
 def main() -> None:

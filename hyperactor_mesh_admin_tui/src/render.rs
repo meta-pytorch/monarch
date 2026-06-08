@@ -15,6 +15,7 @@
 // - error
 // - lang_name
 // - refresh_interval_label
+// - show_help
 // - show_stopped
 // - show_system
 // - theme

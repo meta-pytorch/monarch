@@ -10,7 +10,7 @@ import logging
 import sys
 import threading
 import warnings
-from collections import OrderedDict
+import weakref
 from typing import Any, cast, Dict, Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -22,7 +22,6 @@ from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.future import Future
 from monarch._src.actor.proc_mesh import get_or_spawn_controller, ProcMesh
 from pyre_extensions import none_throws
-from typing_extensions import Self
 
 _NATIVE_RDMA_IMPORT_ERROR: Optional[ImportError] = None
 
@@ -185,23 +184,41 @@ def _is_torch_tensor(obj: object) -> bool:
 
 # Cache of weak handles to local memory regions, keyed by
 # `(backing_id, addr, size)`. `backing_id` is `id(t.untyped_storage())`
-# for tensors and `id(mv)` for memoryviews — i.e. the id of the
-# stable underlying allocation rather than the id of any per-call
-# tensor view; transient views like `tensor.view(...).flatten()` thus
-# share a cache entry with the original tensor. `addr` and `size`
-# further disambiguate different slices of the same backing.
+# for tensors and `id(mv)` for memoryviews — the id of the stable
+# backing object, not of any per-call view. Transient tensor views like
+# `tensor.view(...).flatten()` share their storage's id and so reuse one
+# entry; distinct memoryviews over the same buffer keep separate entries
+# (their ids differ). `addr` and `size` further disambiguate slices of
+# one backing.
 #
-# The cached `_WeakLocalMemoryHandle` does NOT pin the backing, so
-# the cache cannot prolong an allocation's lifetime; when the backing
-# is garbage-collected, `weak.upgrade()` returns `None` on the next
-# lookup and we register fresh.
-_LOCAL_MEMORY_CACHE_CAPACITY = 1024
-_local_memory_cache: "OrderedDict[Tuple[int, int, int], _WeakLocalMemoryHandle]" = (
-    OrderedDict()
-)
-# Serializes the multi-step get/move_to_end/del/setitem/popitem sequence in
-# `_make_local_memory_handle`; the GIL only makes the individual ops atomic.
+# The cached `_WeakLocalMemoryHandle` does NOT pin the backing, so the
+# cache cannot prolong an allocation's lifetime. Eviction is driven by
+# a `weakref` to the backing — a tensor's `untyped_storage()` or the
+# memoryview itself — whose callback drops the entry once the backing
+# is garbage-collected.
+_local_memory_cache: "Dict[Tuple[int, int, int], _WeakLocalMemoryHandle]" = {}
+# Eviction weakrefs, keyed identically. Holding the weakref alive is
+# what lets its callback fire; the callback removes the entry only when
+# its own weakref is still the registered one, so a stale callback
+# cannot evict a fresh registration whose backing reused a freed id.
+_local_memory_cache_refs: "Dict[Tuple[int, int, int], weakref.ref]" = {}
+# Serializes the get/upgrade/insert and eviction sequences; the GIL
+# only makes the individual dict ops atomic.
 _local_memory_cache_lock = threading.Lock()
+
+
+def _evict_local_memory(key: Tuple[int, int, int], ref: "weakref.ref") -> None:
+    """Drop the cache entry for ``key`` when its backing is collected.
+
+    Guards against id reuse: a newer registration whose backing reused a
+    freed object's id installs a fresh weakref under the same key, so
+    this fires only when the registered weakref is still the one that
+    scheduled the callback.
+    """
+    with _local_memory_cache_lock:
+        if _local_memory_cache_refs.get(key) is ref:
+            del _local_memory_cache_refs[key]
+            _local_memory_cache.pop(key, None)
 
 
 def _make_local_memory_handle(
@@ -209,35 +226,37 @@ def _make_local_memory_handle(
 ) -> _LocalMemoryHandle:
     _assert_1d_contiguous(data)
     if isinstance(data, memoryview):
-        backing_id = id(data)
         addr, size = _get_memoryview_addr_and_size(data)
+        backing = data
     elif _is_torch_tensor(data):
-        backing_id = id(data.untyped_storage())  # type: ignore[union-attr]
         addr, size = _get_tensor_addr_and_size(data)
+        backing = data.untyped_storage()  # type: ignore[union-attr]
     else:
         raise RuntimeError(
             "Trying to make a local memory handle for an unsupported type. "
             "Expected memoryview or torch.Tensor. Got: {}".format(type(data))
         )
-    key = (backing_id, addr, size)
+    key = (id(backing), addr, size)
     with _local_memory_cache_lock:
         weak = _local_memory_cache.get(key)
         if weak is not None:
             cached = weak.upgrade()
             if cached is not None:
-                _local_memory_cache.move_to_end(key)
                 return cached
-            del _local_memory_cache[key]
+            # The backing is gone but its eviction callback has not run
+            # yet; drop the stale entry now.
+            _local_memory_cache.pop(key, None)
+            _local_memory_cache_refs.pop(key, None)
     if isinstance(data, memoryview):
         strong = _make_local_memory_handle_from_memoryview(data)
     else:
         strong = _make_local_memory_handle_from_tensor(data)
     weak = strong.downgrade()
     if weak is not None:
+        ref = weakref.ref(backing, lambda _r, _k=key: _evict_local_memory(_k, _r))
         with _local_memory_cache_lock:
             _local_memory_cache[key] = weak
-            while len(_local_memory_cache) > _LOCAL_MEMORY_CACHE_CAPACITY:
-                _local_memory_cache.popitem(last=False)
+            _local_memory_cache_refs[key] = ref
     return strong
 
 
@@ -484,21 +503,21 @@ class RDMAAction:
         self._inner: _RdmaAction = _RdmaAction()
 
     # pyrefly: ignore [not-a-type]
-    def read_remote(self, dst: "LocalMemory", src: RDMABuffer) -> Self:
+    def read_remote(self, dst: "LocalMemory", src: RDMABuffer) -> "RDMAAction":
         """Queue a read from RDMA buffer ``src`` into local memory ``dst``."""
         handle = _make_local_memory_handle(dst)
         self._inner.add_read_into_local(remote=src._buffer, local=handle)
         return self
 
     # pyrefly: ignore [not-a-type]
-    def write_remote(self, dst: RDMABuffer, src: "LocalMemory") -> Self:
+    def write_remote(self, dst: RDMABuffer, src: "LocalMemory") -> "RDMAAction":
         """Queue a write from local memory ``src`` into RDMA buffer ``dst``."""
         handle = _make_local_memory_handle(src)
         self._inner.add_write_from_local(remote=dst._buffer, local=handle)
         return self
 
     # pyrefly: ignore [not-a-type]
-    def fetch_add(self, src: RDMABuffer, dst: "LocalMemory", add: int) -> Self:
+    def fetch_add(self, src: RDMABuffer, dst: "LocalMemory", add: int) -> "RDMAAction":
         raise NotImplementedError("Not yet supported")
 
     def compare_and_swap(
@@ -508,7 +527,7 @@ class RDMAAction:
         compare: int,
         swap: int,
         # pyrefly: ignore [not-a-type]
-    ) -> Self:
+    ) -> "RDMAAction":
         raise NotImplementedError("Not yet supported")
 
     def submit(self, *, timeout: int = 60) -> Future[None]:

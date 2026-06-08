@@ -46,12 +46,18 @@ use crate::theme::Labels;
 
 /// Render the contextual details pane (right side).
 ///
-/// If a `NodePayload` for the current selection is available in
-/// `app.detail`, dispatches to `render_node_detail` to show a
-/// type-specific view (root/host/proc/actor). Otherwise, shows either
-/// the last fetch error (`app.detail_error`) or a neutral "select a
-/// node" placeholder message.
+/// Precedence: the help glossary (`app.show_help`, TUI-22) takes priority,
+/// then the active `app.overlay` (py-spy / config / diagnostics), then node
+/// detail. For node detail, if a `NodePayload` for the current selection is
+/// available in `app.detail`, dispatches to `render_node_detail` to show a
+/// type-specific view (root/host/proc/actor); otherwise shows either the
+/// last fetch error (`app.detail_error`) or a neutral "select a node"
+/// placeholder message.
 pub(crate) fn render_detail_pane(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
+    if app.show_help {
+        render_help_overlay(frame, area, app.detail.as_ref(), &app.theme.scheme);
+        return;
+    }
     if let Some(overlay) = &app.overlay {
         render_overlay(frame, area, overlay, &app.theme.scheme);
         return;
@@ -78,6 +84,175 @@ pub(crate) fn render_detail_pane(frame: &mut ratatui::Frame<'_>, area: Rect, app
             frame.render_widget(p, area);
         }
     }
+}
+
+/// A single field-help entry: a field name, its one-line meaning, and an
+/// optional subdued note line for caveats.
+pub(crate) struct HelpEntry {
+    pub(crate) field: &'static str,
+    pub(crate) meaning: &'static str,
+    pub(crate) note: Option<&'static str>,
+}
+
+const fn help(field: &'static str, meaning: &'static str) -> HelpEntry {
+    HelpEntry {
+        field,
+        meaning,
+        note: None,
+    }
+}
+
+const fn noted(field: &'static str, meaning: &'static str, note: &'static str) -> HelpEntry {
+    HelpEntry {
+        field,
+        meaning,
+        note: Some(note),
+    }
+}
+
+// First-pass glossary is intentionally English-only. Move into localized
+// help topics if/when the feature is promoted.
+//
+// This is a glossary of the non-obvious fields, not exhaustive row coverage:
+// one entry per confusing rendered row, at that row's granularity. Field
+// names are canonical English, independent of the localized `Labels`.
+pub(crate) fn help_content(props: &NodeProperties) -> (&'static str, &'static [HelpEntry]) {
+    // Entries live in `const` items so the returned slices are `'static`
+    // (a `&[..]` temporary built in a match arm is not promoted and would
+    // not outlive the function).
+    const ROOT: &[HelpEntry] = &[
+        help("hosts", "number of host processes in the mesh"),
+        help("started by", "identity that launched this root"),
+        help("uptime", "time since this root was started"),
+    ];
+    const HOST: &[HelpEntry] = &[
+        help("address", "network address of this host process"),
+        help("procs", "number of worker processes on this host"),
+        help("rss", "resident set size: physical RAM used by the process"),
+        help("vm size", "virtual address space reserved by the process"),
+    ];
+    const PROC: &[HelpEntry] = &[
+        help("actors", "live actors running in this process"),
+        help("rss", "resident set size: physical RAM used by the process"),
+        help("vm size", "virtual address space reserved by the process"),
+        noted(
+            "queue depth",
+            "accepted handler work not yet dequeued (total across actors; max = largest single actor)",
+            "max is a point-in-time snapshot, not a historical high-water mark",
+        ),
+        help(
+            "peak depth",
+            "maximum proc-wide queue total observed since startup",
+        ),
+        help(
+            "last busy",
+            "time since proc queue total was last observed non-zero",
+        ),
+        help(
+            "poisoned",
+            "proc has failed and should no longer be treated as healthy",
+        ),
+    ];
+    const ACTOR: &[HelpEntry] = &[
+        help(
+            "status",
+            "current actor lifecycle state: ok / degraded / failed",
+        ),
+        help("instance", "stable UUID for this actor instance"),
+        noted(
+            "queue depth",
+            "accepted handler work not yet dequeued by this actor",
+            "includes out-of-order work held by the reorder buffer",
+        ),
+        help("msgs processed", "messages handled since actor start"),
+        help(
+            "processing time",
+            "cumulative time spent in message handlers",
+        ),
+        help("last handler", "most recent handler method invoked"),
+        help("children", "actors spawned by this actor"),
+        help(
+            "ordering enabled",
+            "whether inbound sequence tracking is active",
+        ),
+        help(
+            "sessions stalled",
+            "sender sessions waiting on a missing next sequence",
+        ),
+        noted(
+            "buffered",
+            "out-of-order frames held by inbound ordering",
+            "independent diagnostic; do not compare arithmetically with queue depth",
+        ),
+    ];
+    const ERROR: &[HelpEntry] = &[
+        help("code", "error code returned when resolving this node"),
+        help("message", "error detail"),
+    ];
+    match props {
+        NodeProperties::Root { .. } => ("root", ROOT),
+        NodeProperties::Host { .. } => ("host", HOST),
+        NodeProperties::Proc { .. } => ("proc", PROC),
+        NodeProperties::Actor { .. } => ("actor", ACTOR),
+        NodeProperties::Error { .. } => ("error", ERROR),
+    }
+}
+
+/// Render the static help glossary overlay (TUI-22) into the detail pane.
+///
+/// Read-only: lists field meanings for the selected node kind, with the
+/// kind shown in the block title (e.g. " ? actor help "). Non-scrollable;
+/// content is kept short enough to fit common pane heights.
+fn render_help_overlay(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    payload: Option<&NodePayload>,
+    scheme: &ColorScheme,
+) {
+    // Title carries the node kind for context, e.g. " ? actor help ".
+    let (title, lines): (String, Vec<Line<'static>>) = match payload {
+        None => (
+            " ? help ".to_string(),
+            vec![
+                Line::from(Span::styled(
+                    "Select a node to view field help",
+                    scheme.info,
+                )),
+                Line::raw(""),
+                Line::from(Span::styled("press any key to dismiss", scheme.info)),
+            ],
+        ),
+        Some(p) => {
+            let (kind, entries) = help_content(&p.properties);
+            let mut lines = Vec::new();
+            for e in entries {
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{:<22}", e.field), scheme.detail_label),
+                    Span::raw(e.meaning),
+                ]));
+                if let Some(n) = e.note {
+                    lines.push(Line::from(vec![
+                        Span::raw(format!("{:<22}", "")),
+                        Span::styled(n, scheme.info),
+                    ]));
+                }
+            }
+            lines.push(Line::raw(""));
+            lines.push(Line::from(Span::styled(
+                "press any key to dismiss",
+                scheme.info,
+            )));
+            (format!(" ? {kind} help "), lines)
+        }
+    };
+
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(scheme.border);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
 /// Render the details view for a resolved node.

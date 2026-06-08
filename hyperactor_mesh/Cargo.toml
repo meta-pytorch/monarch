@@ -27,13 +27,14 @@ base64 = { version = "0.22.1", features = ["alloc"] }
 bincode = { version = "2", features = ["serde"] }
 bitmaps = "3.2.1"
 chrono = { version = "0.4.44", features = ["clock", "serde", "std"], default-features = false }
-dashmap = { version = "6.1.0", features = ["rayon", "serde"] }
+dashmap = { version = "6.2.1", features = ["rayon", "serde"] }
 enum-as-inner = "0.6.1"
 erased-serde = "0.4.10"
 futures = { version = "0.3.31", features = ["async-await", "compat"] }
 hostname = "0.4.2"
 humantime = "2.1"
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
+hyperactor_cast = { version = "0.0.0", path = "../hyperactor_cast" }
 hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
 hyperactor_mesh_macros = { version = "0.0.0", path = "../hyperactor_mesh_macros" }
 hyperactor_telemetry = { version = "0.0.0", path = "../hyperactor_telemetry" }
