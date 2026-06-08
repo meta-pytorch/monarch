@@ -138,7 +138,7 @@ pub fn attach_to_workers(
                 .into_iter()
                 .map(|result| {
                     let url_str: String = result.bind(py).extract()?;
-                    ChannelAddr::from_zmq_url(&url_str)
+                    Ok(ChannelAddr::from_zmq_url(&url_str)?.into_dial_addr())
                 })
                 .collect()
         })

@@ -740,6 +740,12 @@ pub enum ChannelAddr {
     /// address, yet the server is bound to a private IP address or simply
     /// INADDR_ANY. Traffic to the public IP address is mapped to the private
     /// IP address through network address translation (NAT).
+    ///
+    /// `Alias` is serve-side syntax. [`serve`] consumes it by binding to
+    /// `bind_to` and advertising `dial_to`; identity-bearing values such as
+    /// proc addresses, actor addresses, host references, and routing keys
+    /// should store only `dial_to`. Dial helpers canonicalize aliases the same
+    /// way.
     Alias {
         /// The address to which the client should dial to.
         dial_to: Box<ChannelAddr>,
@@ -956,6 +962,19 @@ pub(crate) fn normalize_host(host: &str) -> String {
 }
 
 impl ChannelAddr {
+    /// Return the canonical address that remote peers should dial.
+    ///
+    /// For regular addresses this is the address itself. For aliases, this
+    /// recursively consumes the alias and returns its `dial_to` address. Use
+    /// this before storing an address in identity-bearing state; aliases are
+    /// intended as input to [`serve`].
+    pub fn into_dial_addr(self) -> Self {
+        match self {
+            Self::Alias { dial_to, .. } => (*dial_to).into_dial_addr(),
+            addr => addr,
+        }
+    }
+
     /// Parse ZMQ-style URL format: scheme://address
     /// Supports:
     /// - tcp://hostname:port or tcp://*:port (wildcard binding)
@@ -966,6 +985,10 @@ impl ChannelAddr {
     /// - metaquic://hostname:port or metaquic://*:port
     /// - Alias format: dial_to_url@bind_to_url (e.g., tcp://host:port@tcp://host:port)
     ///   Note: Alias format is currently only supported for TCP addresses
+    ///
+    /// Alias format is meant for serving. Callers that will dial or store the
+    /// result as an identity should canonicalize it with
+    /// [`ChannelAddr::into_dial_addr`].
     pub fn from_zmq_url(address: &str) -> Result<Self, anyhow::Error> {
         let (addr, _listener) = Self::from_zmq_url_with_listener(address)?;
         Ok(addr)
@@ -1227,6 +1250,7 @@ impl<M: RemoteMessage> Rx<M> for ChannelRx<M> {
 #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ChannelError`.
 #[track_caller]
 pub fn dial<M: RemoteMessage>(addr: ChannelAddr) -> Result<ChannelTx<M>, ChannelError> {
+    let addr = addr.into_dial_addr();
     tracing::debug!(name = "dial", caller = %Location::caller(), %addr, "dialing channel {}", addr);
     let inner = match addr {
         ChannelAddr::Local(port) => ChannelTxKind::Local(local::dial(port)?),
@@ -1238,7 +1262,7 @@ pub fn dial<M: RemoteMessage>(addr: ChannelAddr) -> Result<ChannelTx<M>, Channel
         | ChannelAddr::MetaQuic(_) => {
             ChannelTxKind::Net(net::spawn(net::link(addr, net::SessionId::random(), 0)?))
         }
-        ChannelAddr::Alias { dial_to, .. } => dial(*dial_to)?.inner,
+        ChannelAddr::Alias { .. } => unreachable!("aliases are canonicalized before dialing"),
     };
     Ok(ChannelTx { inner })
 }
@@ -1298,6 +1322,7 @@ pub mod unordered {
         num_streams: usize,
     ) -> Result<ChannelTx<M>, ChannelError> {
         assert!(num_streams > 0);
+        let addr = addr.into_dial_addr();
         let session_id = net::SessionId::random();
         let links: Vec<net::NetLink> = (1..=num_streams)
             .map(|i| net::link(addr.clone(), session_id, i as u8))
@@ -1376,7 +1401,11 @@ fn serve_inner<M: RemoteMessage>(
         | ChannelAddr::Tls(_)
         | ChannelAddr::MetaTls(_)
         | ChannelAddr::Quic(_)
-        | ChannelAddr::MetaQuic(_) => {
+        | ChannelAddr::MetaQuic(_)
+        // The `Alias` variant binds on its `bind_to` address but advertises
+        // `dial_to`; `listen_with_prebound` resolves this, so it routes through
+        // the same net serve path as the other TCP-based transports.
+        | ChannelAddr::Alias { .. } => {
             let (addr, rx) = net::server::serve::<M>(addr, listener)?;
             Ok((addr, ChannelRxKind::Net(rx)))
         }
@@ -1392,14 +1421,6 @@ fn serve_inner<M: RemoteMessage>(
             ChannelAddr::Local(a),
             ChannelRxKind::Local(local::bind::<M>(a)?),
         )),
-        ChannelAddr::Alias { dial_to, bind_to } => {
-            let (bound_addr, rx) = serve_inner::<M>(*bind_to, listener)?;
-            let alias_addr = ChannelAddr::Alias {
-                dial_to,
-                bind_to: Box::new(bound_addr),
-            };
-            Ok((alias_addr, rx))
-        }
     }
 }
 
@@ -1856,6 +1877,42 @@ mod tests {
             tx.post(123);
             assert_eq!(rx.recv().await.unwrap(), 123);
         }
+    }
+
+    #[tokio::test]
+    // TODO: OSS: called `Result::unwrap()` on an `Err` value: Server(Listen(Tcp([::1]:0), Os { code: 99, kind: AddrNotAvailable, message: "Cannot assign requested address" }))
+    #[cfg_attr(not(fbcode_build), ignore)]
+    async fn test_serve_alias_advertises_dial_to() {
+        // Reserve an ephemeral port, then release it so the alias can bind to
+        // it via `bind_to`.
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+
+        // `dial_to` advertises a reachable loopback address; `bind_to` listens
+        // on the wildcard interface (the case that matters where the dial
+        // address cannot be bound directly, e.g. behind NAT).
+        let alias =
+            ChannelAddr::from_zmq_url(&format!("tcp://127.0.0.1:{port}@tcp://0.0.0.0:{port}"))
+                .unwrap();
+        assert_matches!(alias, ChannelAddr::Alias { .. });
+
+        let (listen_addr, mut rx) = crate::channel::serve::<i32>(alias).unwrap();
+
+        // Serving an alias consumes it: the advertised address is the plain
+        // `dial_to`. Remote peers independently construct this same `Tcp`
+        // address from the dial string, so the proc namespace derived from it
+        // must match. If serving left the address an `Alias`, that match would
+        // fail and messages would not route to the server.
+        assert_eq!(
+            listen_addr,
+            ChannelAddr::Tcp(format!("127.0.0.1:{port}").parse().unwrap()),
+            "serving an alias must advertise dial_to, not the alias itself"
+        );
+
+        let tx = crate::channel::dial(listen_addr).unwrap();
+        tx.post(123);
+        assert_eq!(rx.recv().await.unwrap(), 123);
     }
 
     #[tokio::test]
