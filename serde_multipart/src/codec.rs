@@ -109,3 +109,53 @@ where
         T::from_part(part).map_err(<bincode::Error as serde::de::Error>::custom)
     }
 }
+
+/// Implement [`PartCodec`], [`serde::Serialize`], and [`serde::Deserialize`].
+#[macro_export]
+macro_rules! part_codec {
+    (
+        impl $(<$($impl_generics:tt)*>)? $ty:ty
+        {
+            type Repr = $repr:ty;
+
+            fn to_repr(&$this:ident) -> $to_result:ty $to_body:block
+
+            fn from_repr($repr_arg:ident: Self::Repr) -> $from_result:ty $from_body:block
+        }
+    ) => {
+        impl $(<$($impl_generics)*>)? $crate::PartCodec for $ty
+        where
+            $ty: typeuri::Named,
+        {
+            type Repr = $repr;
+
+            fn to_repr(&$this) -> $to_result $to_body
+
+            fn from_repr($repr_arg: Self::Repr) -> $from_result $from_body
+        }
+
+        impl $(<$($impl_generics)*>)? serde::Serialize for $ty
+        where
+            $ty: $crate::PartCodec,
+        {
+            fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+            where
+                S: serde::Serializer,
+            {
+                $crate::serialize_part_codec(self, serializer)
+            }
+        }
+
+        impl<'de $(, $($impl_generics)*)?> serde::Deserialize<'de> for $ty
+        where
+            $ty: $crate::PartCodec,
+        {
+            fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                $crate::deserialize_part_codec(deserializer)
+            }
+        }
+    };
+}
