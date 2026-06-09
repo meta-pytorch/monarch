@@ -3156,7 +3156,7 @@ impl<A: Actor> Instance<A> {
                 .get(crate::mailbox::headers::SENDER_ACTOR_ID_HASH)
                 .unwrap_or(0);
             let to_actor_id = hash_to_u64(self.self_addr().id());
-            let port_id = headers.get(crate::mailbox::headers::TELEMETRY_PORT_ID);
+            let port_index = headers.get(crate::mailbox::headers::TELEMETRY_PORT_INDEX);
 
             notify_message(hyperactor_telemetry::MessageEvent {
                 timestamp: now,
@@ -3164,7 +3164,7 @@ impl<A: Actor> Instance<A> {
                 from_actor_id,
                 to_actor_id,
                 endpoint,
-                port_id,
+                port_index,
             });
 
             notify_message_status(hyperactor_telemetry::MessageStatusEvent {

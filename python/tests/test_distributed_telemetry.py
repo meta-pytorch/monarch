@@ -941,7 +941,7 @@ def test_messages_table(cleanup_callbacks) -> None:
             "from_actor_id",
             "to_actor_id",
             "endpoint",
-            "port_id",
+            "port_index",
         ], f"Unexpected columns: {column_names}"
 
         # Verify rows exist
@@ -962,6 +962,20 @@ def test_messages_table(cleanup_callbacks) -> None:
         assert joined_count == 10, (
             f"Expected 10 messages received by msg_test_worker, got {joined_count}"
         )
+
+        ports_by_actor = engine.query(
+            "SELECT m.to_actor_id, COUNT(*) AS message_count, "
+            "COUNT(DISTINCT m.port_index) AS port_count "
+            "FROM messages m "
+            "JOIN actors a ON m.to_actor_id = a.id "
+            "JOIN meshes mesh ON a.mesh_id = mesh.id "
+            "WHERE mesh.given_name = 'msg_test_worker' "
+            "AND m.endpoint = 'ping' AND m.port_index IS NOT NULL "
+            "GROUP BY m.to_actor_id"
+        ).to_pydict()
+        assert len(ports_by_actor["to_actor_id"]) == 2, ports_by_actor
+        assert ports_by_actor["message_count"] == [5, 5], ports_by_actor
+        assert ports_by_actor["port_count"] == [1, 1], ports_by_actor
 
 
 @pytest.mark.timeout(120)

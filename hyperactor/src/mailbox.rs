@@ -2192,7 +2192,7 @@ impl MailboxSender for Mailbox {
                 hash_to_u64(sender.id()),
             );
         }
-        headers.set(crate::mailbox::headers::TELEMETRY_PORT_ID, dest.index());
+        headers.set(crate::mailbox::headers::TELEMETRY_PORT_INDEX, dest.index());
 
         match port_sender.send_serialized(headers, data) {
             Ok(disposition) => {
