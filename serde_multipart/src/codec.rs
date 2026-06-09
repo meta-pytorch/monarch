@@ -114,7 +114,7 @@ where
 #[macro_export]
 macro_rules! part_codec {
     (
-        impl $(<$($impl_generics:tt)*>)? $ty:ty
+        impl <$($impl_generics:ident),+> $ty:ty
         {
             type Repr = $repr:ty;
 
@@ -123,7 +123,60 @@ macro_rules! part_codec {
             fn from_repr($repr_arg:ident: Self::Repr) -> $from_result:ty $from_body:block
         }
     ) => {
-        impl $(<$($impl_generics)*>)? $crate::PartCodec for $ty
+        $crate::part_codec! {
+            @expand
+            [<$($impl_generics),+>]
+            [<'de, $($impl_generics),+>]
+            [$ty]
+            [$repr]
+            [$this]
+            [$to_result]
+            $to_body
+            [$repr_arg]
+            [$from_result]
+            $from_body
+        }
+    };
+
+    (
+        impl $ty:ty
+        {
+            type Repr = $repr:ty;
+
+            fn to_repr(&$this:ident) -> $to_result:ty $to_body:block
+
+            fn from_repr($repr_arg:ident: Self::Repr) -> $from_result:ty $from_body:block
+        }
+    ) => {
+        $crate::part_codec! {
+            @expand
+            []
+            [<'de>]
+            [$ty]
+            [$repr]
+            [$this]
+            [$to_result]
+            $to_body
+            [$repr_arg]
+            [$from_result]
+            $from_body
+        }
+    };
+
+    (
+        @expand
+        [$($impl_generics:tt)*]
+        [$($de_impl_generics:tt)*]
+        [$ty:ty]
+        [$repr:ty]
+        [$this:ident]
+        [$to_result:ty]
+        $to_body:block
+        [$repr_arg:ident]
+        [$from_result:ty]
+        $from_body:block
+    ) => {
+        impl $($impl_generics)* $crate::PartCodec for $ty
         where
             $ty: typeuri::Named,
         {
@@ -134,7 +187,7 @@ macro_rules! part_codec {
             fn from_repr($repr_arg: Self::Repr) -> $from_result $from_body
         }
 
-        impl $(<$($impl_generics)*>)? serde::Serialize for $ty
+        impl $($impl_generics)* serde::Serialize for $ty
         where
             $ty: $crate::PartCodec,
         {
@@ -146,7 +199,7 @@ macro_rules! part_codec {
             }
         }
 
-        impl<'de $(, $($impl_generics)*)?> serde::Deserialize<'de> for $ty
+        impl $($de_impl_generics)* serde::Deserialize<'de> for $ty
         where
             $ty: $crate::PartCodec,
         {
