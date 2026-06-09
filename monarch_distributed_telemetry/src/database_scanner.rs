@@ -659,7 +659,7 @@ impl DatabaseScanner {
 
     /// Create an entity batch sink that pushes batches to this scanner's tables.
     ///
-    /// The sink can be registered with hyperactor_telemetry::register_entity_sink()
+    /// The sink can be registered with `hyperactor_telemetry::register_entity_sink`
     /// to receive `TraceEvent::Entity` events and store them as queryable tables.
     pub fn create_entity_batch_sink(&self, batch_size: usize) -> EntityBatchSink {
         let table_data = self.table_data.clone();
