@@ -2293,7 +2293,7 @@ impl<A: Actor> Instance<A> {
                 caller = %PanicLocation::caller(),
                 change_reason,
             );
-            let actor_id = hash_to_u64(self.self_addr());
+            let actor_id = hash_to_u64(self.self_addr().id());
             notify_actor_status_changed(ActorStatusEvent {
                 id: generate_actor_status_event_id(actor_id),
                 timestamp: std::time::SystemTime::now(),
@@ -3155,7 +3155,7 @@ impl<A: Actor> Instance<A> {
             let from_actor_id = headers
                 .get(crate::mailbox::headers::SENDER_ACTOR_ID_HASH)
                 .unwrap_or(0);
-            let to_actor_id = hash_to_u64(self.self_addr());
+            let to_actor_id = hash_to_u64(self.self_addr().id());
             let port_id = headers.get(crate::mailbox::headers::TELEMETRY_PORT_ID);
 
             notify_message(hyperactor_telemetry::MessageEvent {

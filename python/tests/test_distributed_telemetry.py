@@ -668,6 +668,17 @@ def test_actor_status_events_table() -> None:
             f"Expected at least one actor status event, got {event_count}"
         )
 
+        joined = engine.query(
+            "SELECT ase.id FROM actor_status_events ase "
+            "INNER JOIN actors a ON ase.actor_id = a.id "
+            "WHERE a.display_name LIKE '%status_test_worker%'"
+        )
+        joined_count = len(joined.to_pydict().get("id", []))
+        assert joined_count > 0, (
+            "Expected actor_status_events.actor_id to join actors.id for "
+            f"status_test_worker, got {joined_count} joined rows"
+        )
+
         # Verify new_status values are valid ActorStatus arm names
         valid_statuses = {
             "Unknown",
@@ -795,7 +806,7 @@ def test_sent_messages_table(
     All send paths (call, call_one, broadcast, choose) go through
     cast_with_selection in actor_mesh.rs, which calls notify_sent_message
     with a SentMessageEvent containing:
-      - sender_actor_id: hash of the sending actor's ActorAddr
+      - sender_actor_id: hash of the sending actor's ActorId
       - actor_mesh_id: hash of the target actor mesh name
       - view_json: serialized ndslice::Region of the current view
       - shape_json: serialized ndslice::Shape (converted from the Region)

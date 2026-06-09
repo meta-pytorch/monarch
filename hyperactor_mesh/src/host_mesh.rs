@@ -432,7 +432,7 @@ impl HostMesh {
         for (rank, host) in self.current_ref.hosts().iter().enumerate() {
             let actor = host.mesh_agent();
             hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
-                id: hyperactor_telemetry::hash_to_u64(&actor.actor_addr()),
+                id: hyperactor_telemetry::hash_to_u64(actor.actor_addr().id()),
                 timestamp: now,
                 mesh_id: mesh_id_hash,
                 rank: rank as u64,

@@ -206,14 +206,14 @@ impl ProcMesh {
             // These are skipped in Proc::spawn_inner. mesh_id directly points to proc mesh.
             let now = std::time::SystemTime::now();
             for rank in current_ref.ranks.iter() {
-                let actor_id = rank.agent.actor_addr();
+                let actor_addr = rank.agent.actor_addr();
 
                 hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
-                    id: hyperactor_telemetry::hash_to_u64(&actor_id),
+                    id: hyperactor_telemetry::hash_to_u64(actor_addr.id()),
                     timestamp: now,
                     mesh_id: mesh_id_hash,
                     rank: rank.create_rank as u64,
-                    full_name: actor_id.to_string(),
+                    full_name: actor_addr.to_string(),
                     display_name: None,
                 });
             }
@@ -884,13 +884,13 @@ impl ProcMeshRef {
                     let point = self.region().extent().point_of_rank(rank).unwrap();
                     crate::actor_display_name(sdn, &point)
                 });
-                let actor_id = proc_ref.actor_addr(&actor_mesh_id);
+                let actor_addr = proc_ref.actor_addr(&actor_mesh_id);
                 hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
-                    id: hyperactor_telemetry::hash_to_u64(&actor_id),
+                    id: hyperactor_telemetry::hash_to_u64(actor_addr.id()),
                     timestamp: now,
                     mesh_id: mesh_id_hash,
                     rank: rank as u64,
-                    full_name: actor_id.to_string(),
+                    full_name: actor_addr.to_string(),
                     display_name,
                 });
             }
