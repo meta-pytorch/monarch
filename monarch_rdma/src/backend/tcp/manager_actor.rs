@@ -434,7 +434,7 @@ impl Actor for TcpManagerActor {
                     };
 
                     let mut write_offset = chunk.offset;
-                    let fragments = chunk.data.into_inner();
+                    let fragments = chunk.data.into_fragments();
                     let write_err = fragments.iter().find_map(|fragment| {
                         // SAFETY: the caller is responsible for ensuring that no other
                         // component reads or writes the target byte range concurrently.
