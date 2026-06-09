@@ -8,40 +8,46 @@
 
 use std::ops::Deref;
 
+use bincode::Options;
 use bytes::Bytes;
 use bytes::BytesMut;
 use bytes::buf::Reader as BufReader;
 use bytes::buf::Writer as BufWriter;
 use serde::Deserialize;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
+use typeuri::Named;
 
 use crate::UnsafeBufCellRef;
 use crate::de;
 use crate::ser;
 
-/// Part represents a single part of a multipart message. Its type is simple:
-/// it is just a newtype of the byte buffer [`Bytes`], which permits zero copy
-/// shared ownership of the underlying buffers. Part itself provides a customized
-/// serialization implementation that is specialized for the multipart codecs in
-/// this crate, skipping copying the bytes whenever possible.
+/// Part represents a single part of a multipart message.
+///
+/// A part is backed by byte fragments, which permit zero-copy shared ownership
+/// of the underlying buffers. It may also carry a typehash for framework-owned,
+/// bincode-serialized values.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
-pub struct Part(pub(crate) Vec<Bytes>);
+pub struct Part {
+    typehash: Option<u64>,
+    fragments: Vec<Bytes>,
+}
 
 impl Part {
-    /// Consumes the part, returning its underlying byte buffers.
-    pub fn into_inner(self) -> Vec<Bytes> {
-        self.0
+    /// Consumes the part, returning its underlying byte fragments.
+    pub fn into_fragments(self) -> Vec<Bytes> {
+        self.fragments
     }
 
     /// Consumes the part, concatenating fragments if necessary into a single byte buffer.
     pub fn into_bytes(self) -> Bytes {
-        match self.0.len() {
+        match self.fragments.len() {
             0 => Bytes::new(),
-            1 => self.0.into_iter().next().unwrap(),
+            1 => self.fragments.into_iter().next().unwrap(),
             _ => {
-                let total_len: usize = self.0.iter().map(|p| p.len()).sum();
+                let total_len: usize = self.fragments.iter().map(|p| p.len()).sum();
                 let mut result = BytesMut::with_capacity(total_len);
-                for fragment in self.0 {
+                for fragment in self.fragments {
                     result.extend_from_slice(&fragment);
                 }
                 result.freeze()
@@ -51,13 +57,13 @@ impl Part {
 
     /// Get bytes as a reference, concatenating fragments if necessary.
     pub fn to_bytes(&self) -> Bytes {
-        match self.0.len() {
+        match self.fragments.len() {
             0 => Bytes::new(),
-            1 => self.0.first().unwrap().clone(),
+            1 => self.fragments.first().unwrap().clone(),
             _ => {
-                let total_len: usize = self.0.iter().map(|p| p.len()).sum();
+                let total_len: usize = self.fragments.iter().map(|p| p.len()).sum();
                 let mut result = BytesMut::with_capacity(total_len);
-                for fragment in &self.0 {
+                for fragment in &self.fragments {
                     result.extend_from_slice(fragment);
                 }
                 result.freeze()
@@ -67,27 +73,84 @@ impl Part {
 
     /// Returns the total length in bytes.
     pub fn len(&self) -> usize {
-        self.0.iter().map(|b| b.len()).sum()
+        self.fragments
+            .iter()
+            .try_fold(0usize, |len, fragment| len.checked_add(fragment.len()))
+            .expect("part length exceeds usize")
     }
 
     /// Returns the number of fragments
     pub fn num_fragments(&self) -> usize {
-        self.0.len()
+        self.fragments.len()
     }
 
     /// Returns whether the part is empty.
     pub fn is_empty(&self) -> bool {
-        self.0.iter().all(|b| b.is_empty())
+        self.fragments.iter().all(|b| b.is_empty())
     }
 
+    /// Returns the typehash carried by this part, if any.
+    pub fn typehash(&self) -> Option<u64> {
+        self.typehash
+    }
+
+    /// Returns whether this part contains a serialized `T`-typed value.
+    pub fn is<T: Named>(&self) -> bool {
+        self.typehash == Some(T::typehash())
+    }
+
+    /// Serialize a value into a typed part.
+    pub fn serialize<T: Serialize + Named>(value: &T) -> crate::Result<Self> {
+        Ok(Self {
+            typehash: Some(T::typehash()),
+            fragments: vec![Bytes::from(crate::options().serialize(value)?)],
+        })
+    }
+
+    /// Deserialize this part into the provided type `T`.
+    pub fn deserialized<T: DeserializeOwned + Named>(&self) -> crate::Result<T> {
+        if !self.is::<T>() {
+            return Err(crate::Error::TypeMismatch {
+                expected: T::typename(),
+                actual: self
+                    .typehash
+                    .map_or_else(|| "unknown".to_string(), |typehash| typehash.to_string()),
+            });
+        }
+        self.deserialized_unchecked()
+    }
+
+    /// Deserialize this part without checking its typehash.
+    pub fn deserialized_unchecked<T: DeserializeOwned>(&self) -> crate::Result<T> {
+        Ok(crate::options().deserialize(&self.to_bytes())?)
+    }
+
+    /// Returns a part from byte fragments.
     pub fn from_fragments(fragments: Vec<Bytes>) -> Self {
-        Self(fragments)
+        Self {
+            typehash: None,
+            fragments,
+        }
+    }
+
+    /// Returns a part from an optional typehash and byte fragments.
+    pub(crate) fn from_typehash_and_fragments(
+        typehash: Option<u64>,
+        fragments: Vec<Bytes>,
+    ) -> Self {
+        Self {
+            typehash,
+            fragments,
+        }
     }
 }
 
 impl<T: Into<Bytes>> From<T> for Part {
     fn from(bytes: T) -> Self {
-        Self(vec![bytes.into()])
+        Self {
+            typehash: None,
+            fragments: vec![bytes.into()],
+        }
     }
 }
 
@@ -95,7 +158,7 @@ impl Deref for Part {
     type Target = Vec<Bytes>;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.fragments
     }
 }
 
@@ -121,8 +184,7 @@ pub trait PartSerializer<S: serde::Serializer> {
 /// into the serialization buffer.
 impl<S: serde::Serializer> PartSerializer<S> for Part {
     default fn serialize(this: &Part, s: S) -> Result<S::Ok, S::Error> {
-        // Normal serializer: concatenate into contiguous byte chunk (requires copy).
-        this.to_bytes().serialize(s)
+        (&this.typehash, &this.fragments).serialize(s)
     }
 }
 
@@ -156,7 +218,11 @@ trait PartDeserializer<'de, S: serde::Deserializer<'de>>: Sized {
 /// into the value directly.
 impl<'de, D: serde::Deserializer<'de>> PartDeserializer<'de, D> for Part {
     default fn deserialize(deserializer: D) -> Result<Self, D::Error> {
-        Ok(Part(vec![Bytes::deserialize(deserializer)?]))
+        let (typehash, fragments) = <(Option<u64>, Vec<Bytes>)>::deserialize(deserializer)?;
+        Ok(Self {
+            typehash,
+            fragments,
+        })
     }
 }
 
@@ -166,7 +232,7 @@ pub(crate) type BincodeDeserializer =
     de::bincode::Deserializer<bincode::de::read::IoReader<BufReader<Bytes>>, BincodeOptionsType>;
 
 /// Specialized implementation for our multipart deserializer.
-impl<'de, 'a> PartDeserializer<'de, &'a mut BincodeDeserializer> for Part {
+impl<'a> PartDeserializer<'_, &'a mut BincodeDeserializer> for Part {
     fn deserialize(deserializer: &'a mut BincodeDeserializer) -> Result<Self, bincode::Error> {
         deserializer.deserialize_part()
     }
