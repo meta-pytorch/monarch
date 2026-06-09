@@ -607,7 +607,14 @@ impl Gateway {
         &self,
         rx: impl channel::Rx<MessageEnvelope> + Send + 'static,
     ) -> MailboxServerHandle {
-        WeakGateway::new(self).serve(rx)
+        WeakGateway::new(self, false).serve(rx)
+    }
+
+    pub(crate) fn serve_rx_after_peeled_via(
+        &self,
+        rx: impl channel::Rx<MessageEnvelope> + Send + 'static,
+    ) -> MailboxServerHandle {
+        WeakGateway::new(self, true).serve(rx)
     }
 
     /// Serve this gateway on the provided channel address.
@@ -804,7 +811,7 @@ impl Gateway {
             );
             (prev_location, prev_forwarder)
         };
-        let serve_handle = self.serve_rx(AttachRx(duplex_rx));
+        let serve_handle = self.serve_rx_after_peeled_via(AttachRx(duplex_rx));
         Ok(GatewayServeHandle {
             gateway: self.clone(),
             handle: serve_handle,
@@ -844,7 +851,10 @@ impl Gateway {
     fn add_server(&self, location: Location) {
         let mut active_servers = self.inner.active_servers.write().unwrap();
         active_servers.push(location.clone());
-        self.inner.routing.write().unwrap().default_location = location;
+        let mut routing = self.inner.routing.write().unwrap();
+        if routing.default_location.as_via().is_none() {
+            routing.default_location = location;
+        }
     }
 
     fn remove_server(&self, location: &Location) {
@@ -856,7 +866,33 @@ impl Gateway {
             .last()
             .cloned()
             .unwrap_or_else(|| self.inner.fallback_location.clone());
-        self.inner.routing.write().unwrap().default_location = default_location;
+        let mut routing = self.inner.routing.write().unwrap();
+        if routing.default_location.as_via().is_none() {
+            routing.default_location = default_location;
+        }
+    }
+
+    fn restore_after_via(
+        &self,
+        previous_forwarder: &mut Option<BoxedMailboxSender>,
+        previous_default_location: &mut Option<Location>,
+    ) {
+        let default_location = previous_default_location.take().map(|previous| {
+            self.inner
+                .active_servers
+                .read()
+                .unwrap()
+                .last()
+                .cloned()
+                .unwrap_or(previous)
+        });
+        let mut routing = self.inner.routing.write().unwrap();
+        if let Some(prev) = previous_forwarder.take() {
+            routing.forwarder = prev;
+        }
+        if let Some(default_location) = default_location {
+            routing.default_location = default_location;
+        }
     }
 
     fn with_dest_location(envelope: MessageEnvelope, location: Location) -> MessageEnvelope {
@@ -868,6 +904,7 @@ impl Gateway {
         &self,
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+        allow_peeled_via_delivery: bool,
         on_miss: impl FnOnce(MessageEnvelope, PortHandle<Undeliverable<MessageEnvelope>>),
     ) {
         let dest_proc = envelope.dest().actor_addr().proc_addr();
@@ -881,8 +918,15 @@ impl Gateway {
                 ProcRoute::Local(weak) => weak.upgrade(),
                 ProcRoute::Remote { .. } => None,
             });
+        let is_local = local.as_ref().is_some_and(|proc| {
+            if allow_peeled_via_delivery {
+                proc.is_local_delivery_target_after_peeled_via(&dest_proc)
+            } else {
+                proc.is_local_delivery_target(&dest_proc)
+            }
+        });
         if let Some(proc) = local
-            && proc.is_local_delivery_target(&dest_proc)
+            && is_local
         {
             proc.muxer().post(envelope, return_handle);
         } else {
@@ -1107,15 +1151,9 @@ impl GatewayServeHandle {
                 previous_forwarder,
                 previous_default_location,
                 ..
-            } => {
-                let mut routing = self.gateway.inner.routing.write().unwrap();
-                if let Some(prev) = previous_forwarder.take() {
-                    routing.forwarder = prev;
-                }
-                if let Some(prev) = previous_default_location.take() {
-                    routing.default_location = prev;
-                }
-            }
+            } => self
+                .gateway
+                .restore_after_via(previous_forwarder, previous_default_location),
         }
     }
 }
@@ -1138,13 +1176,8 @@ impl Drop for GatewayServeHandle {
             ..
         } = &mut self.kind
         {
-            let mut routing = self.gateway.inner.routing.write().unwrap();
-            if let Some(prev) = previous_forwarder.take() {
-                routing.forwarder = prev;
-            }
-            if let Some(prev) = previous_default_location.take() {
-                routing.default_location = prev;
-            }
+            self.gateway
+                .restore_after_via(previous_forwarder, previous_default_location);
         }
     }
 }
@@ -1219,7 +1252,7 @@ async fn duplex_accept_loop(
                 location: via_location,
             }));
 
-            let mut handle = gateway.serve_rx(duplex_rx);
+            let mut handle = gateway.serve_rx_after_peeled_via(duplex_rx);
             let conn_token = cancel_token.clone();
             tasks.spawn(async move {
                 tokio::select! {
@@ -1291,15 +1324,21 @@ impl<R: channel::Rx<MessageEnvelope> + Send> channel::Rx<MessageEnvelope> for Pr
 }
 
 #[derive(Clone, Debug)]
-struct WeakGateway(Weak<GatewayState>);
+struct WeakGateway {
+    inner: Weak<GatewayState>,
+    allow_peeled_via_delivery: bool,
+}
 
 impl WeakGateway {
-    fn new(gateway: &Gateway) -> Self {
-        Self(Arc::downgrade(&gateway.inner))
+    fn new(gateway: &Gateway, allow_peeled_via_delivery: bool) -> Self {
+        Self {
+            inner: Arc::downgrade(&gateway.inner),
+            allow_peeled_via_delivery,
+        }
     }
 
     fn upgrade(&self) -> Option<Gateway> {
-        self.0.upgrade().map(|inner| Gateway { inner })
+        self.inner.upgrade().map(|inner| Gateway { inner })
     }
 }
 
@@ -1311,7 +1350,13 @@ impl crate::mailbox::MailboxSender for WeakGateway {
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
         match self.upgrade() {
-            Some(gateway) => gateway.post(envelope, return_handle),
+            Some(gateway) => {
+                gateway.post_unchecked_with_options(
+                    envelope,
+                    return_handle,
+                    self.allow_peeled_via_delivery,
+                );
+            }
             None => {
                 let target = envelope.dest().clone();
                 let failure =
@@ -1338,6 +1383,21 @@ impl crate::mailbox::MailboxSender for Gateway {
         &self,
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+    ) {
+        self.post_unchecked_with_options(envelope, return_handle, false);
+    }
+
+    async fn flush(&self) -> Result<(), anyhow::Error> {
+        Gateway::flush(self).await
+    }
+}
+
+impl Gateway {
+    fn post_unchecked_with_options(
+        &self,
+        envelope: MessageEnvelope,
+        return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+        allow_peeled_via_delivery: bool,
     ) {
         // A message that reaches a gateway resolves to exactly one of
         // three outcomes, decided by the destination's outermost
@@ -1381,7 +1441,7 @@ impl crate::mailbox::MailboxSender for Gateway {
                 return;
             }
             let envelope = Gateway::with_dest_location(envelope, inner_location);
-            self.post_local_proc_or_else(envelope, return_handle, Gateway::return_no_route);
+            self.post_local_proc_or_else(envelope, return_handle, true, Gateway::return_no_route);
             return;
         }
 
@@ -1389,14 +1449,15 @@ impl crate::mailbox::MailboxSender for Gateway {
         // delivery target, otherwise hand to the forwarder (outbound
         // egress for plain remote addresses). A dead entry is left in
         // place — `AttachedProcGuard::drop` is the sole remover.
-        self.post_local_proc_or_else(envelope, return_handle, |envelope, return_handle| {
-            let forwarder = self.inner.routing.read().unwrap().forwarder.clone();
-            forwarder.post(envelope, return_handle)
-        });
-    }
-
-    async fn flush(&self) -> Result<(), anyhow::Error> {
-        Gateway::flush(self).await
+        self.post_local_proc_or_else(
+            envelope,
+            return_handle,
+            allow_peeled_via_delivery,
+            |envelope, return_handle| {
+                let forwarder = self.inner.routing.read().unwrap().forwarder.clone();
+                forwarder.post(envelope, return_handle)
+            },
+        );
     }
 }
 
@@ -2057,7 +2118,7 @@ mod tests {
     #[tokio::test]
     async fn test_weak_gateway_bounces_broken_link_after_drop() {
         let gateway = Gateway::isolated();
-        let weak = WeakGateway::new(&gateway);
+        let weak = WeakGateway::new(&gateway, false);
         drop(gateway);
 
         // Scratch proc just to host the return port.
@@ -2263,6 +2324,171 @@ mod tests {
 
         // Clean up the accept loop.
         accept_handle.stop("test cleanup");
+    }
+
+    #[tokio::test]
+    async fn test_gateway_serve_bound_preserves_via_default_location() {
+        let server_gw = Gateway::new();
+        let mut accept_handle = server_gw
+            .serve_duplex(ChannelAddr::any(ChannelTransport::Unix))
+            .unwrap();
+        let server_addr = server_gw.default_location().addr().clone();
+        let _server_proc = Proc::legacy_service_pseudo_singleton_on_gateway(server_gw.clone());
+
+        let client_gw = Gateway::new();
+        let pre_default = client_gw.default_location();
+        let mut serve_via = client_gw.serve_via(server_addr).await.unwrap();
+        let via_default = client_gw.default_location();
+        assert!(via_default.as_via().is_some());
+
+        let bound = client_gw
+            .bind(ChannelAddr::any(ChannelTransport::Unix), None)
+            .unwrap();
+        assert_eq!(client_gw.default_location(), via_default);
+
+        let mut frontend = client_gw.serve_bound(bound);
+        assert_eq!(client_gw.default_location(), via_default);
+
+        frontend.stop("test cleanup");
+        frontend.join().await.unwrap();
+        assert_eq!(client_gw.default_location(), via_default);
+
+        serve_via.stop("test cleanup");
+        serve_via.join().await.unwrap();
+        assert_eq!(client_gw.default_location(), pre_default);
+
+        accept_handle.stop("test cleanup");
+        accept_handle.join().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_gateway_serve_via_delivers_peeled_legacy_local_proc_destination() {
+        let server_gw = Gateway::new();
+        let mut accept_handle = server_gw
+            .serve_duplex(ChannelAddr::any(ChannelTransport::Unix))
+            .unwrap();
+        let server_addr = server_gw.default_location().addr().clone();
+
+        let client_gw = Gateway::new();
+        let mut serve_via = client_gw.serve_via(server_addr).await.unwrap();
+        let client_proc = Proc::legacy_local_pseudo_singleton_on_gateway(client_gw.clone());
+        let client = client_proc.client("recv");
+        let (port, mut rx) = client.bind_handler_port::<u64>();
+        let PortLocation::Bound(via_dest) = port.location() else {
+            panic!("client port must be bound");
+        };
+
+        server_gw.post(
+            MessageEnvelope::serialize(
+                test_actor_id("server", "sender"),
+                via_dest,
+                &7u64,
+                Flattrs::new(),
+            )
+            .unwrap(),
+            monitored_return_handle(),
+        );
+
+        let received = time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("rx timed out")
+            .expect("rx closed");
+        assert_eq!(received, 7);
+
+        serve_via.stop("test cleanup");
+        serve_via.join().await.unwrap();
+        accept_handle.stop("test cleanup");
+        accept_handle.join().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_gateway_serve_via_does_not_shadow_peer_legacy_proc() {
+        let server_gw = Gateway::new();
+        let mut accept_handle = server_gw
+            .serve_duplex(ChannelAddr::any(ChannelTransport::Unix))
+            .unwrap();
+        let server_addr = server_gw.default_location().addr().clone();
+
+        let client_gw = Gateway::new();
+        let mut serve_via = client_gw.serve_via(server_addr).await.unwrap();
+        let client_proc = Proc::legacy_service_pseudo_singleton_on_gateway(client_gw.clone());
+        let client = client_proc.client("recv");
+        let (port, mut rx) = client.bind_handler_port::<u64>();
+        let PortLocation::Bound(via_dest) = port.location() else {
+            panic!("client port must be bound");
+        };
+        let (_, peeled_location) = via_dest
+            .location()
+            .as_via()
+            .expect("client port must advertise via location");
+        let peer_dest = PortAddr::new(via_dest.id().clone(), peeled_location.as_ref().clone());
+
+        client_gw.post(
+            MessageEnvelope::serialize(
+                test_actor_id("client", "sender"),
+                peer_dest,
+                &7u64,
+                Flattrs::new(),
+            )
+            .unwrap(),
+            monitored_return_handle(),
+        );
+
+        time::timeout(Duration::from_millis(200), rx.recv())
+            .await
+            .expect_err("vialess peer location must not deliver to the attached client proc");
+
+        serve_via.stop("test cleanup");
+        serve_via.join().await.unwrap();
+        accept_handle.stop("test cleanup");
+        accept_handle.join().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_gateway_serve_via_relay_delivers_to_client_legacy_local_proc() {
+        let relay_gw = Gateway::new();
+        let mut accept_handle = relay_gw
+            .serve_duplex(ChannelAddr::any(ChannelTransport::Unix))
+            .unwrap();
+        let relay_addr = relay_gw.default_location().addr().clone();
+
+        let client_gw = Gateway::new();
+        let mut serve_via = client_gw.serve_via(relay_addr.clone()).await.unwrap();
+        let client_proc = Proc::legacy_local_pseudo_singleton_on_gateway(client_gw.clone());
+        let client = client_proc.client("recv");
+        let (port, mut rx) = client.bind_handler_port::<u64>();
+        let PortLocation::Bound(via_dest) = port.location() else {
+            panic!("client port must be bound");
+        };
+
+        // A third gateway with no direct peer relationship to the
+        // client can still reach client-local refs by dialing the
+        // relay's raw address while preserving the via envelope. The
+        // relay peels `Via(client_uid, relay_addr)` and forwards over
+        // the attached duplex; the client then receives the peeled
+        // legacy `local@relay_addr` destination.
+        let relay_dialer = DialMailboxRouter::new();
+        relay_dialer.post(
+            MessageEnvelope::serialize(
+                test_actor_id("third_party", "sender"),
+                via_dest,
+                &7u64,
+                Flattrs::new(),
+            )
+            .unwrap(),
+            monitored_return_handle(),
+        );
+
+        let received = time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("rx timed out")
+            .expect("rx closed");
+        assert_eq!(received, 7);
+
+        serve_via.stop("test cleanup");
+        serve_via.join().await.unwrap();
+        accept_handle.stop("test cleanup");
+        accept_handle.join().await.unwrap();
     }
 
     /// `Gateway::attach(&Gateway)` is purely via-based:

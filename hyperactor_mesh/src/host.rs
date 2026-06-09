@@ -288,13 +288,20 @@ impl<M: ProcManager> Host<M> {
             return Err(HostError::ProcExists(name));
         }
 
-        // Advertise the child with a `Via(child_uid, Addr(frontend_addr))`
+        // Advertise the child with a `Via(child_uid, host_location)`
         // location so peers source-route through this host: the outer
         // hop matches the via-sender entry installed below, and gets
-        // peeled to deliver to the child's gateway.
+        // peeled to deliver to the child's gateway. For an attached
+        // out-of-cluster host, the gateway default already carries the
+        // route through the remote host; preserving that via prefix keeps
+        // child procs from leaking the client's raw local bind address.
         let resource_id = ResourceId::from_name(&name);
         let proc_uid = resource_id.uid().clone();
-        let location = Location::from(self.frontend_addr.clone()).with_via(proc_uid.clone());
+        let host_location = match self.gateway.default_location() {
+            location @ Location::Via(_, _) => location,
+            Location::Addr(_) => Location::from(self.frontend_addr.clone()),
+        };
+        let location = host_location.with_via(proc_uid.clone());
         let proc_id = resource_id.proc_addr(location);
         let handle = self
             .manager
@@ -1453,7 +1460,9 @@ mod tests {
 
     use hyperactor::Addr;
     use hyperactor::Endpoint as _;
+    use hyperactor::Label;
     use hyperactor::OncePortRef;
+    use hyperactor::Uid;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::channel::Tx;
     use hyperactor::channel::TxStatus;
@@ -2090,5 +2099,35 @@ mod tests {
             .expect("timed out waiting for reply")
             .expect("recv failed");
         assert_eq!(received, *echo_ref.actor_addr());
+    }
+
+    #[tokio::test]
+    async fn test_spawn_preserves_attached_gateway_via_location() {
+        let proc_manager = LocalProcManager::new(|proc: Proc| async move {
+            Ok(proc.spawn_with_label::<()>("host_agent", ()))
+        });
+        let gateway = Gateway::new();
+        let attached_host_addr: ChannelAddr = "tcp:10.0.159.108:26600".parse().unwrap();
+        let attached_uid = Uid::instance(Label::strip("attached"));
+        let attached_location = Location::from(attached_host_addr).with_via(attached_uid);
+        gateway.set_default_location(attached_location.clone());
+
+        let mut host = Host::new_with_gateway(
+            proc_manager,
+            ChannelAddr::any(ChannelTransport::Unix),
+            None,
+            gateway,
+        )
+        .await
+        .unwrap();
+
+        let (proc_id, _agent) = host.spawn("proc1".to_string(), ()).await.unwrap();
+        let (proc_uid, host_location) = proc_id
+            .location()
+            .as_via()
+            .expect("spawned proc must carry child via");
+
+        assert_eq!(proc_uid, proc_id.id().uid());
+        assert_eq!(host_location.as_ref(), &attached_location);
     }
 }

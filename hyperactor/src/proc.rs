@@ -1544,12 +1544,27 @@ impl Proc {
     }
 
     pub(crate) fn is_local_delivery_target(&self, dest_proc: &ProcAddr) -> bool {
+        self.is_local_delivery_target_with_options(dest_proc, false)
+    }
+
+    pub(crate) fn is_local_delivery_target_after_peeled_via(&self, dest_proc: &ProcAddr) -> bool {
+        self.is_local_delivery_target_with_options(dest_proc, true)
+    }
+
+    fn is_local_delivery_target_with_options(
+        &self,
+        dest_proc: &ProcAddr,
+        allow_peeled_via_location: bool,
+    ) -> bool {
         let local_proc_id = self.proc_id();
         if requires_location_for_local_delivery_identity(dest_proc.id()) {
-            // TODO: check all bound addresses for this proc, not only
-            // the current default advertised location.
+            let default_location = self.default_location();
+            let peeled_via_location_matches = allow_peeled_via_location
+                && default_location
+                    .as_via()
+                    .is_some_and(|(_, inner)| dest_proc.location() == inner.as_ref());
             return dest_proc.id() == local_proc_id
-                && dest_proc.location() == &self.default_location();
+                && (dest_proc.location() == &default_location || peeled_via_location_matches);
         }
 
         dest_proc.id() == local_proc_id
