@@ -408,7 +408,7 @@ impl HostMesh {
     /// Emit a telemetry event for this host mesh creation.
     fn notify_created(&self) {
         let name_str = self.id.to_string();
-        let mesh_id_hash = hyperactor_telemetry::hash_to_u64(&name_str);
+        let mesh_id_hash = hyperactor_telemetry::hash_to_u64(&self.id);
 
         hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
             id: mesh_id_hash,

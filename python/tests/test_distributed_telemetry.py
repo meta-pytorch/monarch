@@ -807,7 +807,7 @@ def test_sent_messages_table(
     cast_with_selection in actor_mesh.rs, which calls notify_sent_message
     with a SentMessageEvent containing:
       - sender_actor_id: hash of the sending actor's ActorId
-      - actor_mesh_id: hash of the target actor mesh name
+      - actor_mesh_id: hash of the target (ProcMeshId, ActorMeshId)
       - view_json: serialized ndslice::Region of the current view
       - shape_json: serialized ndslice::Shape (converted from the Region)
     """
@@ -858,6 +858,25 @@ def test_sent_messages_table(
         joined_count = len(joined.to_pydict().get("id", []))
         assert joined_count == 42, (
             f"Expected 42 sent_messages via {send_path}, got {joined_count}"
+        )
+
+        actor_joined = engine.query(
+            "SELECT COUNT(DISTINCT sm.id) AS message_count, "
+            "COUNT(DISTINCT a.id) AS actor_count "
+            "FROM sent_messages sm "
+            "JOIN actors a ON sm.actor_mesh_id = a.mesh_id "
+            "JOIN meshes m ON a.mesh_id = m.id "
+            f"WHERE m.given_name = '{mesh_name}'"
+        )
+        actor_joined_dict = actor_joined.to_pydict()
+        joined_message_count = actor_joined_dict["message_count"][0]
+        joined_actor_count = actor_joined_dict["actor_count"][0]
+        assert joined_message_count == 42, (
+            "Expected sent_messages.actor_mesh_id to join actors.mesh_id for "
+            f"{send_path}, got {joined_message_count} messages"
+        )
+        assert joined_actor_count == 2, (
+            f"Expected 2 target actors for {send_path}, got {joined_actor_count}"
         )
 
         # Verify view_json (ndslice Region) and shape_json (ndslice Shape).
