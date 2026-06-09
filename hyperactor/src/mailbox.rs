@@ -2181,7 +2181,7 @@ impl MailboxSender for Mailbox {
             return_undeliverable,
         } = metadata;
 
-        let to_actor_id = hash_to_u64(&dest);
+        let to_actor_id = hash_to_u64(dest.actor_addr().id());
         let message_id = hyperactor_telemetry::generate_message_id(to_actor_id);
         headers.set(crate::mailbox::headers::TELEMETRY_MESSAGE_ID, message_id);
         // Only set sender hash if not already present (cast path
@@ -2189,7 +2189,7 @@ impl MailboxSender for Mailbox {
         if !headers.contains_key(crate::mailbox::headers::SENDER_ACTOR_ID_HASH) {
             headers.set(
                 crate::mailbox::headers::SENDER_ACTOR_ID_HASH,
-                hash_to_u64(&sender),
+                hash_to_u64(sender.id()),
             );
         }
         headers.set(crate::mailbox::headers::TELEMETRY_PORT_ID, dest.index());

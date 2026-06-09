@@ -111,6 +111,7 @@ use crate::config::ENABLE_RECORDER_TRACING;
 use crate::config::ENABLE_SQLITE_TRACING;
 use crate::config::MONARCH_LOG_SUFFIX;
 use crate::recorder::Recorder;
+
 /// Hash any hashable value to a u64 using DefaultHasher.
 pub fn hash_to_u64(value: &impl Hash) -> u64 {
     let mut hasher = DefaultHasher::new();
@@ -335,11 +336,11 @@ pub fn end_user_span(id: u64) {
 /// Event data for actor creation.
 #[derive(Debug, Clone)]
 pub struct ActorEvent {
-    /// Unique identifier for this actor (hashed from ActorAddr)
+    /// Unique identifier for this actor, hashed from ActorId.
     pub id: u64,
     /// Timestamp when the actor was created
     pub timestamp: SystemTime,
-    /// ID of the mesh this actor belongs to (hashed from actor_name)
+    /// ID of the mesh this actor belongs to, matching `MeshEvent.id`.
     pub mesh_id: u64,
     /// Rank index into the mesh shape
     pub rank: u64,
@@ -407,7 +408,7 @@ pub fn notify_actor_status_changed(event: ActorStatusEvent) {
 #[derive(Debug, Clone)]
 pub struct SentMessageEvent {
     pub timestamp: SystemTime,
-    /// Hash of the sending actor's [`ActorAddr`].
+    /// Hash of the sending actor's ActorId.
     pub sender_actor_id: u64,
     /// Hash of the target actor mesh's name.
     pub actor_mesh_id: u64,
@@ -432,9 +433,9 @@ pub struct MessageEvent {
     pub timestamp: SystemTime,
     /// Unique identifier for this received message.
     pub id: u64,
-    /// Hash of sender's ActorAddr.
+    /// Hash of sender's ActorId.
     pub from_actor_id: u64,
-    /// Hash of receiver's ActorAddr.
+    /// Hash of receiver's ActorId.
     pub to_actor_id: u64,
     /// Endpoint name if this message targets a specific actor endpoint
     pub endpoint: Option<String>,

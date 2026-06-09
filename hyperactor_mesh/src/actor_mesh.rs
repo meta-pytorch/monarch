@@ -598,7 +598,7 @@ impl<A: Referable> ActorMeshRef<A> {
     fn emit_sent_message_telemetry(&self, cx: &impl context::Actor, region: &Region) {
         hyperactor_telemetry::notify_sent_message(hyperactor_telemetry::SentMessageEvent {
             timestamp: std::time::SystemTime::now(),
-            sender_actor_id: hyperactor_telemetry::hash_to_u64(cx.mailbox().actor_addr()),
+            sender_actor_id: hyperactor_telemetry::hash_to_u64(cx.mailbox().actor_addr().id()),
             actor_mesh_id: hyperactor_telemetry::hash_to_u64(&self.id.to_string()),
             view_json: serde_json::to_string(region).unwrap_or_default(),
             shape_json: {

@@ -428,13 +428,13 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
                 parent_view_json: None,
             });
 
-            let host_agent_id = host_mesh_agent.actor_addr();
+            let host_agent_addr = host_mesh_agent.actor_addr();
             hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
-                id: hyperactor_telemetry::hash_to_u64(host_agent_id),
+                id: hyperactor_telemetry::hash_to_u64(host_agent_addr.id()),
                 timestamp: now,
                 mesh_id: host_mesh_id,
                 rank: 0,
-                full_name: host_agent_id.to_string(),
+                full_name: host_agent_addr.to_string(),
                 display_name: None,
             });
 
@@ -456,13 +456,13 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
                 parent_view_json: None,
             });
 
-            let proc_agent_id = local_proc_agent.actor_addr();
+            let proc_agent_addr = local_proc_agent.actor_addr();
             hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
-                id: hyperactor_telemetry::hash_to_u64(proc_agent_id),
+                id: hyperactor_telemetry::hash_to_u64(proc_agent_addr.id()),
                 timestamp: now,
                 mesh_id: proc_mesh_id,
                 rank: 0,
-                full_name: proc_agent_id.to_string(),
+                full_name: proc_agent_addr.to_string(),
                 display_name: None,
             });
 
@@ -480,7 +480,7 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
             });
 
             hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
-                id: hyperactor_telemetry::hash_to_u64(instance.self_addr()),
+                id: hyperactor_telemetry::hash_to_u64(instance.self_addr().id()),
                 timestamp: now,
                 mesh_id: client_mesh_id,
                 rank: 0,
