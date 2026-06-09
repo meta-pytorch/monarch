@@ -549,6 +549,38 @@ mod tests {
         let bincode_serialized = bincode::serialize(&part).unwrap();
         let bincode_deserialized: Part = bincode::deserialize(&bincode_serialized).unwrap();
         assert_eq!(part, bincode_deserialized);
+        assert_eq!(
+            bincode_deserialized.deserialized::<TypedPayload>().unwrap(),
+            value
+        );
+    }
+
+    #[test]
+    fn test_raw_part_envelope_deserializes_payload() {
+        #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+        struct Envelope {
+            header: String,
+            payload: Part,
+        }
+
+        let payload = TypedPayload {
+            label: "payload".to_string(),
+            value: 7,
+        };
+        let envelope = Envelope {
+            header: "header".to_string(),
+            payload: Part::serialize(&payload).unwrap(),
+        };
+
+        let message = serialize_bincode(&envelope).unwrap();
+        assert_eq!(message.num_parts(), 1);
+
+        let deserialized: Envelope = deserialize_bincode(message).unwrap();
+        assert_eq!(deserialized.header, envelope.header);
+        assert_eq!(
+            deserialized.payload.deserialized::<TypedPayload>().unwrap(),
+            payload
+        );
     }
 
     #[test]
