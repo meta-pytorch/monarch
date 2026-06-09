@@ -12,6 +12,8 @@ use serde::de::DeserializeOwned;
 use typeuri::Named;
 
 use crate::Part;
+use crate::part::BincodeDeserializer;
+use crate::part::BincodeSerializer;
 
 /// Converts a framework type to and from a typed multipart part.
 pub trait PartCodec: Sized + Named {
@@ -70,6 +72,19 @@ where
     }
 }
 
+impl<'a, T> PartCodecSerializer<&'a mut BincodeSerializer> for T
+where
+    T: PartCodec,
+{
+    fn serialize(this: &Self, serializer: &'a mut BincodeSerializer) -> Result<(), bincode::Error> {
+        let part = this
+            .to_part()
+            .map_err(<bincode::Error as serde::ser::Error>::custom)?;
+        serializer.serialize_part(&part);
+        Ok(())
+    }
+}
+
 trait PartCodecDeserializer<'de, D: serde::Deserializer<'de>>: Sized {
     fn deserialize(deserializer: D) -> Result<Self, D::Error>;
 }
@@ -82,5 +97,15 @@ where
     default fn deserialize(deserializer: D) -> Result<Self, D::Error> {
         let repr = T::Repr::deserialize(deserializer)?;
         T::from_repr(repr).map_err(serde::de::Error::custom)
+    }
+}
+
+impl<'a, T> PartCodecDeserializer<'_, &'a mut BincodeDeserializer> for T
+where
+    T: PartCodec,
+{
+    fn deserialize(deserializer: &'a mut BincodeDeserializer) -> Result<Self, bincode::Error> {
+        let part = deserializer.deserialize_part()?;
+        T::from_part(part).map_err(<bincode::Error as serde::de::Error>::custom)
     }
 }
