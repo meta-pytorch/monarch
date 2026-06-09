@@ -28,6 +28,7 @@ from monarch._src.actor.host_mesh import _spawn_admin
 from monarch._src.actor.sync_state import fake_sync_state
 from monarch._src.job.job_sidecar import stop_job_sidecar
 from monarch._src.job.mount_config import Mounts
+from monarch._src.job.telemetry_config import TelemetryConfig
 
 # note: the jobs api is intended as a library so it should
 # only be importing _public_ monarch API functions.
@@ -295,38 +296,6 @@ class BashActor(Actor):
             sel.close()
             proc.wait()
         output_port.send(f"{my_rank}:rc:{proc.returncode}")
-
-
-@dataclass
-class TelemetryConfig:
-    """Configuration for automatic telemetry startup.
-
-    When passed to a job constructor, telemetry (and optionally a dashboard)
-    is started automatically when ``state()`` is called.
-
-    Args:
-        batch_size: Number of rows to buffer before flushing to a RecordBatch.
-        retention_secs: Retention window in seconds for message tables.
-            0 disables retention.
-        include_dashboard: Whether to start the monarch dashboard web server.
-        dashboard_port: Preferred port for the dashboard.
-        snapshot_interval_secs: Interval in seconds between periodic mesh
-            introspection snapshots. Snapshots capture the mesh topology
-            into the telemetry query surface. 0 disables periodic capture
-            (default). When ``include_dashboard`` is True and this is 0,
-            it is automatically set to 30s because the dashboard requires
-            snapshot data for system actor filtering.
-    """
-
-    batch_size: int = 1000
-    retention_secs: int = 600
-    include_dashboard: bool = False
-    dashboard_port: int = 8265
-    snapshot_interval_secs: float = 0  # 0 = disabled
-
-    def __post_init__(self) -> None:
-        if self.include_dashboard and self.snapshot_interval_secs <= 0:
-            self.snapshot_interval_secs = 30.0
 
 
 @dataclass

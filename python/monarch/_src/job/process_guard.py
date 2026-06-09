@@ -55,6 +55,7 @@ class ProcessGuard:
         lock_path: str,
         config_key: object,
         subprocess_args: "list[str]",
+        env: "dict[str, str] | None" = None,
     ) -> "ProcessGuard":
         """Ensure a background process is running with the given config.
 
@@ -73,9 +74,11 @@ class ProcessGuard:
             if acquired:
                 socket_path = tempfile.mktemp(suffix=".sock", prefix="monarch_")
                 _write_record(fd, _LockRecord(new_key_bytes, 0, socket_path))
+                proc_env = None if env is None else {**os.environ, **env}
 
                 proc = subprocess.Popen(
                     [*subprocess_args, socket_path, str(fd)],
+                    env=proc_env,
                     pass_fds=(fd,),
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
@@ -99,7 +102,7 @@ class ProcessGuard:
                 # Config differs — shut down old process and retry.
                 if rec is not None:
                     cls(rec.socket_path, rec.pid).shutdown()
-                return cls.create(lock_path, config_key, subprocess_args)
+                return cls.create(lock_path, config_key, subprocess_args, env=env)
 
         finally:
             if fd != -1:
