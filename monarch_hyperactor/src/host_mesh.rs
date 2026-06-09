@@ -30,12 +30,15 @@ use hyperactor_mesh::host_mesh::host_agent::GetLocalProcClient;
 use hyperactor_mesh::host_mesh::host_agent::HostAgent;
 use hyperactor_mesh::host_mesh::host_agent::ShutdownHost;
 use hyperactor_mesh::mesh_admin::MeshAdminMessageClient;
+use hyperactor_mesh::mesh_id::ActorMeshId;
 use hyperactor_mesh::mesh_id::HostMeshId;
 use hyperactor_mesh::mesh_id::ProcMeshId;
 use hyperactor_mesh::proc_agent::GetProcClient;
 use hyperactor_mesh::proc_mesh::ProcRef;
+use hyperactor_mesh::proc_mesh::telemetry_actor_mesh_id;
 use hyperactor_mesh::shared_cell::SharedCell;
 use hyperactor_mesh::transport::default_bind_spec;
+use hyperactor_telemetry::hash_to_u64;
 use ndslice::View;
 use ndslice::view::RankedSliceable;
 use pyo3::IntoPyObjectExt;
@@ -411,7 +414,7 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
             let now = std::time::SystemTime::now();
 
             let host_name_str = host_mesh.id().to_string();
-            let host_mesh_id = hyperactor_telemetry::hash_to_u64(&host_name_str);
+            let host_mesh_id = hash_to_u64(host_mesh.id());
             hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
                 id: host_mesh_id,
                 timestamp: now,
@@ -439,7 +442,7 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
             });
 
             let proc_id_str = proc_mesh.id().to_string();
-            let proc_mesh_id = hyperactor_telemetry::hash_to_u64(&proc_id_str);
+            let proc_mesh_id = hash_to_u64(proc_mesh.id());
             hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
                 id: proc_mesh_id,
                 timestamp: now,
@@ -466,8 +469,9 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
                 display_name: None,
             });
 
+            let client_mesh_actor_id = ActorMeshId::singleton(Label::new("client").unwrap());
             let client_mesh_name = format!("{}/client", proc_mesh.id());
-            let client_mesh_id = hyperactor_telemetry::hash_to_u64(&client_mesh_name);
+            let client_mesh_id = telemetry_actor_mesh_id(proc_mesh.id(), &client_mesh_actor_id);
             hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
                 id: client_mesh_id,
                 timestamp: now,

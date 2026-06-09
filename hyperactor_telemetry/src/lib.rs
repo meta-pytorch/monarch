@@ -410,7 +410,7 @@ pub struct SentMessageEvent {
     pub timestamp: SystemTime,
     /// Hash of the sending actor's ActorId.
     pub sender_actor_id: u64,
-    /// Hash of the target actor mesh's name.
+    /// Hash of the target actor mesh's `(ProcMeshId, ActorMeshId)`.
     pub actor_mesh_id: u64,
     /// The view (slice) of the actor mesh that was targeted, serialized from
     /// [`ndslice::Region`]. For full-mesh sends (call, broadcast) this covers

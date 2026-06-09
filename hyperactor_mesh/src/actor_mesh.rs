@@ -73,6 +73,7 @@ use crate::mesh_controller::Unsubscribe;
 use crate::mesh_id::ActorMeshId;
 use crate::metrics;
 use crate::proc_mesh::GET_ACTOR_STATE_MAX_IDLE;
+use crate::proc_mesh::telemetry_actor_mesh_id;
 use crate::resource;
 use crate::supervision::MeshFailure;
 use crate::supervision::Unhealthy;
@@ -599,7 +600,7 @@ impl<A: Referable> ActorMeshRef<A> {
         hyperactor_telemetry::notify_sent_message(hyperactor_telemetry::SentMessageEvent {
             timestamp: std::time::SystemTime::now(),
             sender_actor_id: hyperactor_telemetry::hash_to_u64(cx.mailbox().actor_addr().id()),
-            actor_mesh_id: hyperactor_telemetry::hash_to_u64(&self.id.to_string()),
+            actor_mesh_id: telemetry_actor_mesh_id(self.proc_mesh.id(), &self.id),
             view_json: serde_json::to_string(region).unwrap_or_default(),
             shape_json: {
                 let shape: ndslice::Shape = region.into();
