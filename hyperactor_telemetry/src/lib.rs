@@ -439,8 +439,8 @@ pub struct MessageEvent {
     pub to_actor_id: u64,
     /// Endpoint name if this message targets a specific actor endpoint
     pub endpoint: Option<String>,
-    /// Destination port ID
-    pub port_id: Option<u64>,
+    /// Destination port index, scoped by `to_actor_id`.
+    pub port_index: Option<u64>,
 }
 
 /// Notify telemetry that a message was received.
