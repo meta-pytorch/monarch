@@ -7,6 +7,7 @@
 # pyre-strict
 
 import unittest
+from tempfile import NamedTemporaryFile
 from unittest.mock import MagicMock, patch
 
 from kubernetes import config as k8s_config
@@ -559,6 +560,51 @@ class TestBuildWorkerPodTemplate(unittest.TestCase):
         expected = {"cpu": "4", "memory": "8Gi", "nvidia.com/gpu": "2"}
         self.assertEqual(container.resources.requests, expected)
         self.assertEqual(container.resources.limits, expected)
+
+
+class KubeConfigTest(unittest.TestCase):
+    """Tests for KubeConfig loading."""
+
+    @patch("monarch._src.job.kubernetes.client.Configuration.set_default")
+    @patch("monarch._src.job.kubernetes.client.Configuration.get_default_copy")
+    @patch("monarch._src.job.kubernetes.config.load_kube_config")
+    def test_local_load_preserves_proxy_url(
+        self,
+        mock_load_kube_config: MagicMock,
+        mock_get_default_copy: MagicMock,
+        mock_set_default: MagicMock,
+    ) -> None:
+        with NamedTemporaryFile("w") as kubeconfig:
+            kubeconfig.write(
+                """
+apiVersion: v1
+kind: Config
+current-context: test-context
+clusters:
+  - name: test-cluster
+    cluster:
+      server: https://example.invalid
+      proxy-url: http://fwdproxy:8080
+contexts:
+  - name: test-context
+    context:
+      cluster: test-cluster
+      user: test-user
+users:
+  - name: test-user
+    user:
+      token: test-token
+"""
+            )
+            kubeconfig.flush()
+            configuration = MagicMock()
+            mock_get_default_copy.return_value = configuration
+
+            KubeConfig.from_path(kubeconfig.name).load()
+
+        mock_load_kube_config.assert_called_once_with(config_file=kubeconfig.name)
+        self.assertEqual(configuration.proxy, "http://fwdproxy:8080")
+        mock_set_default.assert_called_once_with(configuration)
 
 
 class TestIsPodWorkerReady(unittest.TestCase):

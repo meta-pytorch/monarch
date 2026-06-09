@@ -38,6 +38,9 @@ kubectl cp hello_kubernetes_job.py monarch-tests/hello-controller:/tmp/hello_kub
 # Run with --provision to create MonarchMesh CRDs from Python
 kubectl exec -it hello-controller -n monarch-tests -- python /tmp/hello_kubernetes_job.py --provision
 
+# Optionally exercise a small RDMABuffer transfer over TCP fallback
+kubectl exec -it hello-controller -n monarch-tests -- python /tmp/hello_kubernetes_job.py --provision --rdma-smoke
+
 # (Optional) Run with Kueue for gang scheduling (mesh level)
 kubectl exec -it hello-controller -n monarch-tests -- python /tmp/hello_kubernetes_job.py --provision --kueue user-queue
 ```
@@ -200,6 +203,8 @@ Or, for provisioning mode, use:
 ```bash
 uv run --no-build-isolation hello_kubernetes_job.py --out-of-cluster --provision
 ```
+
+To include a small `RDMABuffer` transfer between the two meshes over TCP fallback, add `--rdma-smoke`.
 
 The `--out-of-cluster` flag tells `KubernetesJob` to attach the client's mailbox
 to the host. The `--attach-to` flag tells it which host to attach to. In provisioning

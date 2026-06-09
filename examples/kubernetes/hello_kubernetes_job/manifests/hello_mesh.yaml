@@ -113,12 +113,11 @@ spec:
             port = os.environ.get("MONARCH_PORT", "26600")
             # Use FQDN for cross-pod DNS resolution
             hostname = socket.getfqdn()
-            address = f"tcp://{hostname}:{port}"
-            bind_address = f"tcp://0.0.0.0:{port}"
+            address = f"tcp://{hostname}:{port}@tcp://0.0.0.0:{port}"
             logger.info(f"--- Starting Monarch Worker ---")
             logger.info(f"Identity: {hostname}")
-            logger.info(f"Listening on: {address} (bind: {bind_address})")
-            run_worker_loop_forever(address=address, bind_address=bind_address, ca="trust_all_connections")
+            logger.info(f"Listening on: {address}")
+            run_worker_loop_forever(address=address, ca="trust_all_connections")
 ---
 apiVersion: monarch.pytorch.org/v1alpha1
 kind: MonarchMesh
@@ -154,12 +153,11 @@ spec:
             port = os.environ.get("MONARCH_PORT", "26600")
             # Use FQDN for cross-pod DNS resolution
             hostname = socket.getfqdn()
-            address = f"tcp://{hostname}:{port}"
-            bind_address = f"tcp://0.0.0.0:{port}"
+            address = f"tcp://{hostname}:{port}@tcp://0.0.0.0:{port}"
             logger.info(f"--- Starting Monarch Worker ---")
             logger.info(f"Identity: {hostname}")
-            logger.info(f"Listening on: {address} (bind: {bind_address})")
-            run_worker_loop_forever(address=address, bind_address=bind_address, ca="trust_all_connections")
+            logger.info(f"Listening on: {address}")
+            run_worker_loop_forever(address=address, ca="trust_all_connections")
 ---
 # Controller pod for running the hello_kubernetes_job script
 apiVersion: v1

@@ -14,11 +14,12 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
-from typing import Any, Dict, List, NotRequired, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 try:
     from kubernetes import client, config, watch
     from kubernetes.client.rest import ApiException
+    from kubernetes.config.kube_config import KubeConfigMerger
 except ImportError:
     raise RuntimeError(
         "please install kubernetes to use KubernetesJob. `pip install kubernetes`"
@@ -89,7 +90,7 @@ class KubeConfig:
     Use this to specify a kubeconfig file for out-of-cluster usage of
     KubernetesJob::
 
-        KubeConfig(kubeconfig="/path/to/kubeconfig")
+        KubeConfig.from_path("/path/to/kubeconfig")
 
     If both local and remote are none, in-cluster configuration is used.
     """
@@ -116,10 +117,15 @@ class KubeConfig:
         if self.local is not None:
             try:
                 config.load_kube_config(config_file=str(self.local))
+                proxy_url = _get_kubeconfig_proxy_url(self.local)
             except config.ConfigException as e:
                 raise RuntimeError(
                     f"Failed to load kubeconfig file '{self.local}'"
                 ) from e
+            if proxy_url is not None:
+                configuration = client.Configuration.get_default_copy()
+                configuration.proxy = proxy_url
+                client.Configuration.set_default(configuration)
         elif self.remote is not None:
             client.Configuration.set_default(self.remote)
         else:
@@ -130,6 +136,21 @@ class KubeConfig:
                     "Failed to load in-cluster Kubernetes config. "
                     "KubernetesJob must run inside a Kubernetes cluster."
                 ) from e
+
+
+def _get_kubeconfig_proxy_url(path: Path) -> str | None:
+    merged_config: Any = KubeConfigMerger(str(path)).config
+    if merged_config is None:
+        return None
+
+    context = merged_config["contexts"].get_with_name(merged_config["current-context"])[
+        "context"
+    ]
+    cluster = merged_config["clusters"].get_with_name(context["cluster"])["cluster"]
+    proxy_url = cluster.safe_get("proxy-url")
+    if proxy_url is not None and not isinstance(proxy_url, str):
+        raise config.ConfigException("kubeconfig proxy-url must be a string")
+    return proxy_url
 
 
 @dataclasses.dataclass(frozen=True)
@@ -146,8 +167,9 @@ class _MeshConfig(TypedDict):
     pod_rank_label: str
     provisioned: bool
     port: int
-    labels: NotRequired[Dict[str, str]]
-    pod_spec: NotRequired[client.V1PodSpec]
+    labels: NotRequired[dict[str, str]]
+    annotations: NotRequired[dict[str, str]]
+    pod_template: NotRequired[client.V1PodTemplateSpec]
 
 
 class KubernetesJob(JobTrait):
@@ -196,8 +218,8 @@ class KubernetesJob(JobTrait):
         self._timeout = timeout
         self._kubeconfig: KubeConfig = kubeconfig or KubeConfig()
         self._attach_to = attach_to
-        self._meshes: Dict[str, _MeshConfig] = {}
-        self._port_forward_processes: List[subprocess.Popen[str]] = []
+        self._meshes: dict[str, _MeshConfig] = {}
+        self._port_forward_processes: list[subprocess.Popen[str]] = []
         super().__init__()
 
     # TODO: Consider adding monarch-rank label instead of relying on StatefulSet index by default if using MonarchMesh CRD.
@@ -335,7 +357,7 @@ class KubernetesJob(JobTrait):
             pod_template_dict = api_client.sanitize_for_serialization(
                 mesh_config["pod_template"]
             )
-            metadata: Dict[str, Any] = {
+            metadata: dict[str, Any] = {
                 "name": mesh_name,
                 "namespace": self._namespace,
             }
@@ -344,7 +366,7 @@ class KubernetesJob(JobTrait):
             if "annotations" in mesh_config:
                 metadata["annotations"] = mesh_config["annotations"]
 
-            body: Dict[str, Any] = {
+            body: dict[str, Any] = {
                 "apiVersion": f"{_MONARCHMESH_GROUP}/{_MONARCHMESH_VERSION}",
                 "kind": "MonarchMesh",
                 "metadata": metadata,
@@ -474,7 +496,7 @@ class KubernetesJob(JobTrait):
         num_replicas: int,
         pod_rank_label: str,
         timeout: int | None = None,
-    ) -> List[_MonarchMeshPod]:
+    ) -> list[_MonarchMeshPod]:
         """
         Wait for all required pod ranks to be ready matching the label selector.
 
@@ -492,7 +514,7 @@ class KubernetesJob(JobTrait):
         Raises:
             RuntimeError: If timeout reached, missing ranks, or watch error
         """
-        ready_pods_by_rank: Dict[int, _MonarchMeshPod] = {}
+        ready_pods_by_rank: dict[int, _MonarchMeshPod] = {}
 
         # Load Kubernetes configuration
         self._kubeconfig.load()
@@ -673,7 +695,7 @@ class KubernetesJob(JobTrait):
 
         # Discover all mesh pods first so we can set up port-forwarding
         # before attaching to any workers.
-        all_mesh_pods: Dict[str, List[_MonarchMeshPod]] = {}
+        all_mesh_pods: dict[str, list[_MonarchMeshPod]] = {}
         for mesh_name, mesh_config in self._meshes.items():
             # Wait for pods to be ready and discover their ports
             pods = self._wait_for_ready_pods(

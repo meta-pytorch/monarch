@@ -8,13 +8,39 @@ import argparse
 import socket
 
 from monarch.actor import Actor, endpoint
+from monarch.config import configure
 from monarch.job.kubernetes import ImageSpec, KubeConfig, KubernetesJob
+from monarch.rdma import RDMABuffer
+
+
+RDMA_PAYLOAD = b"hello from tcp rdma"
 
 
 class SimpleActor(Actor):
     @endpoint
     def run(self, x):
         return x()
+
+
+class RDMASourceActor(Actor):
+    def __init__(self) -> None:
+        self.data = bytearray(RDMA_PAYLOAD)
+        self.buffer = None
+
+    @endpoint
+    def get_buffer(self) -> RDMABuffer:
+        self.buffer = RDMABuffer(memoryview(self.data))
+        return self.buffer
+
+
+class RDMASinkActor(Actor):
+    def __init__(self) -> None:
+        self.data = bytearray(len(RDMA_PAYLOAD))
+
+    @endpoint
+    async def read_buffer(self, buffer: RDMABuffer) -> bytes:
+        await buffer.read_into(memoryview(self.data))
+        return bytes(self.data)
 
 
 def greet_from_mesh(mesh_name: str, mesh_procs):
@@ -24,6 +50,18 @@ def greet_from_mesh(mesh_name: str, mesh_procs):
         lambda: f"hello from {socket.gethostname()}"
     ).get()
     print(f"From MonarchMesh {mesh_name}: {message}")
+
+
+def rdma_smoke(procs1, procs2):
+    """Read an RDMABuffer from mesh1 into mesh2 using TCP fallback."""
+    source = procs1.spawn("rdma_source", RDMASourceActor).slice(hosts=0)
+    sink = procs2.spawn("rdma_sink", RDMASinkActor).slice(hosts=0)
+
+    buffer = source.get_buffer.call_one().get()
+    result = sink.read_buffer.call_one(buffer).get()
+    if result != RDMA_PAYLOAD:
+        raise RuntimeError(f"RDMA payload mismatch: {result!r}")
+    print(f"RDMABuffer TCP fallback smoke: {result.decode()}")
 
 
 def main():
@@ -68,6 +106,11 @@ def main():
         default=None,
         help="Monarch address for out-of-cluster access (e.g. tcp://127.0.0.1:26600). "
         "Requires kubectl port-forward to be running. Cannot be used in combination with --provision. ",
+    )
+    parser.add_argument(
+        "--rdma-smoke",
+        action="store_true",
+        help="Run a small RDMABuffer transfer between mesh1 and mesh2 using TCP fallback.",
     )
     args = parser.parse_args()
     if args.provision and args.attach_to:
@@ -123,6 +166,9 @@ def main():
         job.add_mesh("mesh1", 2)
         job.add_mesh("mesh2", 2)
 
+    if args.rdma_smoke:
+        configure(rdma_disable_ibverbs=True, rdma_allow_tcp_fallback=True)
+
     state = job.state(cached_path=None)
 
     procs1 = state.mesh1.spawn_procs()
@@ -130,6 +176,9 @@ def main():
 
     procs2 = state.mesh2.spawn_procs()
     greet_from_mesh("mesh2", procs2)
+
+    if args.rdma_smoke:
+        rdma_smoke(procs1, procs2)
 
     procs1.stop().get()
     procs2.stop().get()
