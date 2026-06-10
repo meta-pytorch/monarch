@@ -31,7 +31,7 @@ use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Signal;
 use hyperactor::channel::ChannelTransport;
-use hyperactor::proc::WorkCell;
+use hyperactor::proc::ActorWorkReceiver;
 use hyperactor::supervision::ActorSupervisionEvent;
 #[cfg(fbcode_build)]
 use tokio::process::Command;
@@ -187,7 +187,7 @@ fn process_name(pid: u32) -> Option<String> {
 pub struct TestRootClient {
     signal_rx: mpsc::UnboundedReceiver<Signal>,
     supervision_rx: mpsc::UnboundedReceiver<ActorSupervisionEvent>,
-    work_rx: mpsc::UnboundedReceiver<WorkCell<Self>>,
+    work_rx: ActorWorkReceiver<Self>,
 }
 
 impl Actor for TestRootClient {}

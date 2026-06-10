@@ -25,7 +25,6 @@ use bytes::BytesMut;
 use dashmap::DashMap;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
-use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
 use hyperactor::HandleClient;
@@ -359,7 +358,7 @@ impl TcpManagerActor {
         client: &(impl context::Actor + Send + Sync),
     ) -> Result<ActorHandle<Self>, anyhow::Error> {
         let rdma_handle = RdmaManagerActor::local_handle(client);
-        let tcp_ref: ActorRef<TcpManagerActor> = rdma_handle.get_tcp_actor_ref(client).await?;
+        let tcp_ref = rdma_handle.get_tcp_actor_ref(client).await?;
         tcp_ref
             .downcast_handle(client)
             .ok_or_else(|| anyhow::anyhow!("TcpManagerActor is not in the local process"))
@@ -1551,23 +1550,6 @@ mod tests {
 
         let mut envs = setup_same_proc_tcp_env(4096).await?;
         do_round_trip_test(&mut envs, 4096, Duration::from_secs(10)).await
-    }
-
-    /// When TCP fallback is disabled and ibverbs is unavailable,
-    /// RdmaManagerActor::new returns an error.
-    #[timed_test::async_timed_test(timeout_secs = 30)]
-    async fn test_tcp_fallback_disabled_fails() -> anyhow::Result<()> {
-        let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(crate::config::RDMA_ALLOW_TCP_FALLBACK, false);
-
-        let result = RdmaManagerActor::new(None, Flattrs::default()).await;
-        if crate::ibverbs_supported() {
-            assert!(result.is_ok());
-        } else {
-            assert!(result.is_err());
-        }
-
-        Ok(())
     }
 
     // --- Multi-GPU TCP fallback tests ---

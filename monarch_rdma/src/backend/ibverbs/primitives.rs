@@ -17,7 +17,7 @@
 //! - `IbvConfig`: Represents ibverbs specific configurations, holding parameters required to establish and
 //!   manage an RDMA connection, including settings for the RDMA device, queue pair attributes, and other
 //!   connection-specific parameters.
-//! - `IbvDevice`: Represents an RDMA device, i.e. 'mlx5_0'. Contains information about the device, such as:
+//! - `IbvDeviceInfo`: Represents an RDMA device, i.e. 'mlx5_0'. Contains information about the device, such as:
 //!   its name, vendor ID, vendor part ID, hardware version, firmware version, node GUID, and capabilities.
 //! - `IbvPort`: Represents information about the port of an RDMA device, including state, physical state,
 //!   LID (Local Identifier), and GID (Global Identifier) information.
@@ -36,6 +36,8 @@ use serde::Serialize;
 use typeuri::Named;
 
 use super::domain::IbvDomain;
+use crate::backend::ibverbs::device::IbvDeviceImpl;
+use crate::backend::ibverbs::efa_device::EfaDevice;
 
 #[derive(
     Default,
@@ -132,7 +134,7 @@ pub fn resolve_qp_type(qp_type: IbvQpType) -> u32 {
 #[derive(Debug, Named, Clone, Serialize, Deserialize)]
 pub struct IbvConfig {
     /// `device` - The RDMA device to use for the connection.
-    pub device: IbvDevice,
+    pub device: IbvDeviceInfo,
     /// `cq_entries` - The number of completion queue entries.
     pub cq_entries: i32,
     /// `port_num` - The physical port number on the device.
@@ -185,7 +187,7 @@ wirevalue::register_type!(IbvConfig);
 impl Default for IbvConfig {
     fn default() -> Self {
         let mut config = Self {
-            device: IbvDevice::default(),
+            device: IbvDeviceInfo::default(),
             cq_entries: 1024,
             port_num: 1,
             gid_index: 3,
@@ -208,7 +210,7 @@ impl Default for IbvConfig {
             max_sge_override: 0,
         };
         if crate::efa::is_efa_device() {
-            crate::efa::apply_efa_defaults(&mut config);
+            EfaDevice::apply_config_defaults(&mut config);
         }
         config
     }
@@ -295,7 +297,7 @@ impl std::fmt::Display for IbvConfig {
 /// }
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IbvDevice {
+pub struct IbvDeviceInfo {
     /// `name` - The name of the RDMA device (e.g., "mlx5_0").
     pub name: String,
     /// `vendor_id` - The vendor ID of the device.
@@ -324,14 +326,14 @@ pub struct IbvDevice {
     max_sge: i32,
 }
 
-impl IbvDevice {
+impl IbvDeviceInfo {
     /// Returns the name of the RDMA device.
     pub fn name(&self) -> &String {
         &self.name
     }
 
     /// Returns the first available RDMA device, if any.
-    pub fn first_available() -> Option<IbvDevice> {
+    pub fn first_available() -> Option<IbvDeviceInfo> {
         let devices = get_all_devices();
         if devices.is_empty() {
             None
@@ -401,7 +403,7 @@ impl IbvDevice {
     }
 }
 
-impl Default for IbvDevice {
+impl Default for IbvDeviceInfo {
     fn default() -> Self {
         // Try to get a smart default using device selection logic (defaults to cpu:0)
         if let Some(device) = super::device_selection::select_optimal_ibv_device(Some("cpu:0")) {
@@ -440,7 +442,7 @@ pub struct IbvPort {
     gid_tbl_len: i32,
 }
 
-impl fmt::Display for IbvDevice {
+impl fmt::Display for IbvDeviceInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "{}", self.name)?;
         writeln!(f, "\tNumber of ports: {}", self.ports.len())?;
@@ -578,107 +580,134 @@ pub fn format_gid(gid: &[u8; 16]) -> String {
 ///
 /// # Returns
 ///
-/// A vector of `IbvDevice` structures, each representing an RDMA device in the system.
+/// A vector of `IbvDeviceInfo` structures, each representing an RDMA device in the system.
 /// Returns an empty vector if no devices are found or if there was an error querying
 /// the devices.
-pub fn get_all_devices() -> Vec<IbvDevice> {
+pub fn get_all_devices() -> Vec<IbvDeviceInfo> {
     let mut devices = Vec::new();
-
-    // SAFETY: We are calling several C functions from libibverbs.
-    unsafe {
-        let mut num_devices = 0;
-        let device_list = rdmaxcel_sys::ibv_get_device_list(&mut num_devices);
-        if device_list.is_null() || num_devices == 0 {
-            return devices;
-        }
-
-        for i in 0..num_devices {
-            let device = *device_list.add(i as usize);
-            if device.is_null() {
-                continue;
-            }
-
-            let context = rdmaxcel_sys::ibv_open_device(device);
-            if context.is_null() {
-                continue;
-            }
-
-            let device_name = CStr::from_ptr(rdmaxcel_sys::ibv_get_device_name(device))
-                .to_string_lossy()
-                .into_owned();
-
-            let mut device_attr = rdmaxcel_sys::ibv_device_attr::default();
-            if rdmaxcel_sys::ibv_query_device(context, &mut device_attr) != 0 {
-                rdmaxcel_sys::ibv_close_device(context);
-                continue;
-            }
-
-            let fw_ver = CStr::from_ptr(device_attr.fw_ver.as_ptr())
-                .to_string_lossy()
-                .into_owned();
-
-            let mut rdma_device = IbvDevice {
-                name: device_name,
-                vendor_id: device_attr.vendor_id,
-                vendor_part_id: device_attr.vendor_part_id,
-                hw_ver: device_attr.hw_ver,
-                fw_ver,
-                node_guid: device_attr.node_guid,
-                ports: Vec::new(),
-                max_qp: device_attr.max_qp,
-                max_cq: device_attr.max_cq,
-                max_mr: device_attr.max_mr,
-                max_pd: device_attr.max_pd,
-                max_qp_wr: device_attr.max_qp_wr,
-                max_sge: device_attr.max_sge,
-            };
-
-            for port_num in 1..=device_attr.phys_port_cnt {
-                let mut port_attr = rdmaxcel_sys::ibv_port_attr::default();
-                if rdmaxcel_sys::ibv_query_port(
-                    context,
-                    port_num,
-                    &mut port_attr as *mut rdmaxcel_sys::ibv_port_attr as *mut _,
-                ) != 0
-                {
-                    continue;
-                }
-                let state = get_port_state_str(port_attr.state);
-                let physical_state = get_port_phy_state_str(port_attr.phys_state);
-
-                let link_layer = get_link_layer_str(port_attr.link_layer);
-
-                let mut gid = rdmaxcel_sys::ibv_gid::default();
-                let gid_str = if rdmaxcel_sys::ibv_query_gid(context, port_num, 0, &mut gid) == 0 {
-                    format_gid(&gid.raw)
-                } else {
-                    "N/A".to_string()
-                };
-
-                let rdma_port = IbvPort {
-                    port_num,
-                    state,
-                    physical_state,
-                    base_lid: port_attr.lid,
-                    lmc: port_attr.lmc,
-                    sm_lid: port_attr.sm_lid,
-                    capability_mask: port_attr.port_cap_flags,
-                    link_layer,
-                    gid: gid_str,
-                    gid_tbl_len: port_attr.gid_tbl_len,
-                };
-
-                rdma_device.ports.push(rdma_port);
-            }
-
-            devices.push(rdma_device);
-            rdmaxcel_sys::ibv_close_device(context);
-        }
-
-        rdmaxcel_sys::ibv_free_device_list(device_list);
+    let mut num_devices = 0;
+    // SAFETY: `ibv_get_device_list` populates `num_devices` and
+    // returns either null or a pointer to `num_devices` entries;
+    // we free it before returning.
+    let device_list = unsafe { rdmaxcel_sys::ibv_get_device_list(&mut num_devices) };
+    if device_list.is_null() {
+        return devices;
     }
-
+    for i in 0..num_devices {
+        // SAFETY: `device_list` is non-null with `num_devices`
+        // valid entries (checked above).
+        let device = unsafe { *device_list.add(i as usize) };
+        if device.is_null() {
+            continue;
+        }
+        // SAFETY: `device` is non-null per the check above.
+        let context = unsafe { rdmaxcel_sys::ibv_open_device(device) };
+        if context.is_null() {
+            continue;
+        }
+        // SAFETY: `device` and `context` are non-null and
+        // `context` was returned by `ibv_open_device(device)`.
+        if let Some(info) = unsafe { query_device_info(device, context) } {
+            devices.push(info);
+        }
+        // SAFETY: `context` was returned by `ibv_open_device`
+        // above and has not been closed elsewhere.
+        unsafe { rdmaxcel_sys::ibv_close_device(context) };
+    }
+    // SAFETY: `device_list` was returned by
+    // `ibv_get_device_list` above and has not been freed.
+    unsafe { rdmaxcel_sys::ibv_free_device_list(device_list) };
     devices
+}
+
+/// Builds an [`IbvDeviceInfo`] from an already-open
+/// `ibv_context`. Returns `None` if `ibv_query_device` fails.
+///
+/// # Safety
+///
+/// `device` and `context` must both be non-null and valid for
+/// the duration of the call; `context` must be the result of
+/// `ibv_open_device(device)`.
+pub(super) unsafe fn query_device_info(
+    device: *mut rdmaxcel_sys::ibv_device,
+    context: *mut rdmaxcel_sys::ibv_context,
+) -> Option<IbvDeviceInfo> {
+    // SAFETY: `device` is non-null per the caller's contract;
+    // `ibv_get_device_name` returns a null-terminated C string
+    // owned by the device list.
+    let device_name = unsafe { CStr::from_ptr(rdmaxcel_sys::ibv_get_device_name(device)) }
+        .to_string_lossy()
+        .into_owned();
+    let mut device_attr = rdmaxcel_sys::ibv_device_attr::default();
+    // SAFETY: `context` is a non-null context per the caller's
+    // contract; `&mut device_attr` is a writable, properly
+    // aligned `ibv_device_attr`.
+    if unsafe { rdmaxcel_sys::ibv_query_device(context, &mut device_attr) } != 0 {
+        return None;
+    }
+    // SAFETY: `device_attr.fw_ver` is a null-terminated C buffer
+    // populated by `ibv_query_device`.
+    let fw_ver = unsafe { CStr::from_ptr(device_attr.fw_ver.as_ptr()) }
+        .to_string_lossy()
+        .into_owned();
+    let mut info = IbvDeviceInfo {
+        name: device_name,
+        vendor_id: device_attr.vendor_id,
+        vendor_part_id: device_attr.vendor_part_id,
+        hw_ver: device_attr.hw_ver,
+        fw_ver,
+        node_guid: device_attr.node_guid,
+        ports: Vec::new(),
+        max_qp: device_attr.max_qp,
+        max_cq: device_attr.max_cq,
+        max_mr: device_attr.max_mr,
+        max_pd: device_attr.max_pd,
+        max_qp_wr: device_attr.max_qp_wr,
+        max_sge: device_attr.max_sge,
+    };
+    for port_num in 1..=device_attr.phys_port_cnt {
+        let mut port_attr = rdmaxcel_sys::ibv_port_attr::default();
+        // SAFETY: `context` is a valid context; `port_attr` is
+        // a writable, properly aligned `ibv_port_attr`.
+        if unsafe {
+            rdmaxcel_sys::ibv_query_port(
+                context,
+                port_num,
+                &mut port_attr as *mut rdmaxcel_sys::ibv_port_attr as *mut _,
+            )
+        } != 0
+        {
+            continue;
+        }
+        let state = get_port_state_str(port_attr.state);
+        let physical_state = get_port_phy_state_str(port_attr.phys_state);
+        let link_layer = get_link_layer_str(port_attr.link_layer);
+        let mut gid = rdmaxcel_sys::ibv_gid::default();
+        // SAFETY: `context` is a valid context; `&mut gid` is a
+        // writable, properly aligned `ibv_gid`.
+        let gid_str = if unsafe { rdmaxcel_sys::ibv_query_gid(context, port_num, 0, &mut gid) } == 0
+        {
+            // SAFETY: `gid.raw` is a union field that is
+            // always initialized; `ibv_query_gid` filled it.
+            let raw = unsafe { gid.raw };
+            format_gid(&raw)
+        } else {
+            "N/A".to_string()
+        };
+        info.ports.push(IbvPort {
+            port_num,
+            state,
+            physical_state,
+            base_lid: port_attr.lid,
+            lmc: port_attr.lmc,
+            sm_lid: port_attr.sm_lid,
+            capability_mask: port_attr.port_cap_flags,
+            link_layer,
+            gid: gid_str,
+            gid_tbl_len: port_attr.gid_tbl_len,
+        });
+    }
+    Some(info)
 }
 
 /// Cached result of mlx5dv support check.
@@ -1109,7 +1138,7 @@ mod tests {
 
     #[test]
     fn test_device_display() {
-        if let Some(device) = IbvDevice::first_available() {
+        if let Some(device) = IbvDeviceInfo::first_available() {
             let display_output = format!("{}", device);
             assert!(
                 display_output.contains(&device.name),
@@ -1124,7 +1153,7 @@ mod tests {
 
     #[test]
     fn test_port_display() {
-        if let Some(device) = IbvDevice::first_available()
+        if let Some(device) = IbvDeviceInfo::first_available()
             && !device.ports().is_empty()
         {
             let port = &device.ports()[0];
