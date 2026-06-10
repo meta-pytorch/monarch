@@ -6,16 +6,16 @@
 
 # pyre-unsafe
 
-"""Entry point for the background mount process.
+"""Entry point for the background job sidecar process.
 
-Launched by :func:`~monarch._src.job.mount_config.Mounts.ensure_open`.
+Launched by :func:`~monarch._src.job.job_sidecar.create_job_sidecar`.
 Receives the socket path and lock fd as arguments. Binds the socket
-immediately to signal readiness, then serves refresh/shutdown requests.
-The first ``refresh`` initialises the mounts; subsequent ones refresh them.
+immediately to signal readiness, then serves job-scoped refresh/shutdown
+requests.
 
 Usage::
 
-    python -m monarch._src.job._mount_worker <socket_path> <lock_fd>
+    python -m monarch._src.job._job_sidecar_worker <socket_path> <lock_fd>
 """
 
 import sys
@@ -25,9 +25,9 @@ def main() -> None:
     socket_path = sys.argv[1]
     int(sys.argv[2])  # keep fd open to hold the flock for the process lifetime
 
-    from monarch._src.job.mount_config import _run_mount_process
+    from monarch._src.job.job_sidecar import _run_job_sidecar
 
-    _run_mount_process(socket_path)
+    _run_job_sidecar(socket_path)
 
 
 if __name__ == "__main__":
