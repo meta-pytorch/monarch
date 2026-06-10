@@ -1326,8 +1326,10 @@ class UndeliverableMessageSenderWithOverride(UndeliverableMessageSender):
 
 
 @pytest.mark.timeout(10)
+# Pinned to direct dispatch; this test assumes concurrent dispatch and isn't
+# compatible with the queue-based path.
+@parametrize_config(actor_queue_dispatch={False})
 @isolate_in_subprocess
-# Not compatible with queue dispatch, as it assumes concurrent dispatch
 async def test_undeliverable_message_with_override() -> None:
     pm = this_host().spawn_procs(per_host={"gpus": 1})
     receiver = pm.spawn("undeliverable_receiver", UndeliverableMessageReceiver)

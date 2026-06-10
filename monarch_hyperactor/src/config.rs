@@ -217,7 +217,7 @@ declare_attrs! {
         Some("MONARCH_ACTOR_QUEUE_DISPATCH".to_string()),
         Some("actor_queue_dispatch".to_string()),
     ))
-    pub attr ACTOR_QUEUE_DISPATCH: bool = false;
+    pub attr ACTOR_QUEUE_DISPATCH: bool = true;
 }
 
 /// Python API for configuration management

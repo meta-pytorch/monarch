@@ -10,6 +10,7 @@ use std::error::Error;
 use std::fmt::Debug;
 use std::future::pending;
 use std::ops::Deref;
+use std::sync::Once;
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
@@ -584,6 +585,14 @@ impl PythonActor {
         mesh_base_name: Option<String>,
     ) -> Result<Self, anyhow::Error> {
         let use_queue_dispatch = hyperactor_config::global::get(ACTOR_QUEUE_DISPATCH);
+        if !use_queue_dispatch {
+            static WARNED: Once = Once::new();
+            WARNED.call_once(|| {
+                tracing::warn!(
+                    "actor_queue_dispatch=false is deprecated and direct dispatch will be removed in a future release"
+                );
+            });
+        }
 
         Ok(monarch_with_gil_blocking(
             |py| -> Result<Self, SerializablePyErr> {
