@@ -22,6 +22,7 @@ pub mod config;
 pub mod device_selection;
 pub mod efa;
 pub mod local_memory;
+pub mod nic;
 mod rdma_components;
 mod rdma_manager_actor;
 
