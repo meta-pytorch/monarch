@@ -29,7 +29,8 @@ use serde::Serialize;
 use typeuri::Named;
 
 use crate::KeepaliveLink;
-use crate::LinkOptions;
+use crate::Spawn;
+use crate::SupervisionOptions;
 use crate::Supervisor;
 use crate::Token;
 use crate::TokenOptions;
@@ -107,7 +108,7 @@ impl Handler<token::Joined<ActorRef<WorkerLike>>> for Parent {
         cx.spawn(Supervisor::new(
             message.peer,
             KeepaliveLink::new(Duration::from_millis(100), Duration::from_millis(300)),
-            LinkOptions::default(),
+            SupervisionOptions::default(),
         ));
         Ok(())
     }
@@ -212,17 +213,21 @@ struct WorkerRoot {
     child_stopped: PortHandle<String>,
     worker_out: PortHandle<ActorRef<WorkerLike>>,
     child_action: Option<ChildAction>,
-    worker: Option<hyperactor::ActorHandle<Worker<SupervisedChild>>>,
+    worker: Option<hyperactor::ActorHandle<Worker>>,
 }
 
 #[async_trait]
 impl Actor for WorkerRoot {
     async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
-        let worker = this.spawn(Worker::new(SupervisedChild {
-            ready: self.child_ready.clone(),
-            stopped: self.child_stopped.clone(),
-            action: self.child_action.take(),
-        }));
+        let worker = this.spawn(Worker::new());
+        worker.post(
+            this,
+            Spawn::new(SupervisedChild {
+                ready: self.child_ready.clone(),
+                stopped: self.child_stopped.clone(),
+                action: self.child_action.take(),
+            }),
+        );
         self.worker_out.post(this, worker.bind::<WorkerLike>());
         self.worker = Some(worker);
         Ok(())
@@ -358,20 +363,20 @@ where
 //         ├── receives Joined<ActorRef<WorkerLike>>
 //         ├── rendezvous token actor
 //         └── Supervisor
-//             ├── sends Link to Worker
-//             ├── receives WorkerSupervisor events
+//             ├── sends Supervise to Worker
+//             ├── receives SupervisorEvent events
 //             └── KeepaliveSupervisor
 //
 // worker proc
 // └── WorkerRoot
-//     └── Worker<SupervisedChild>
+//     └── Worker
 //         ├── SupervisedChild
 //         └── KeepaliveWorker
 //
 // supervision relation after token join:
 //
 //     Parent
-//       └── Supervisor  ~~ remote supervision session ~~>  Worker<SupervisedChild>
+//       └── Supervisor  ~~ remote supervision session ~~>  Worker
 //                                                          └── SupervisedChild
 //
 // keepalive link after token join:
@@ -428,7 +433,7 @@ async fn test_token_join_worker_kill_notifies_parent() -> anyhow::Result<()> {
     let event = recv(&mut harness.parent_events_rx).await?;
     assert!(matches!(event.actor_status, ActorStatus::Failed(_)));
     assert!(
-        event.to_string().contains("supervision link failed"),
+        event.to_string().contains("supervision liveness failed"),
         "parent event should describe the failed supervision link"
     );
     harness.stop().await?;
