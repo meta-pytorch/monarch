@@ -7,12 +7,17 @@
 # pyre-unsafe
 
 import os
+import pickle
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
+from dataclasses import dataclass
 from typing import cast, Dict, Optional, Sequence
 from unittest.mock import MagicMock, patch
 
+import monarch._src.job.job_sidecar as js
 import pytest
 
 # Import directly from _src since job module isn't properly exposed
@@ -25,7 +30,63 @@ from monarch._src.job.job import (
     MeshAdminConfig,
     TelemetryConfig,
 )
+from monarch._src.job.mount_config import Mounts
+from monarch._src.job.process_guard import _Shutdown, _wait_for_socket
 from monarch.actor import HostMesh
+
+
+def _append_line(path: str, line: str) -> None:
+    with open(path, "a") as f:
+        f.write(line + "\n")
+
+
+@dataclass
+class _RecordingJob:
+    name: str
+
+
+@dataclass
+class _RecordingMountHandle:
+    name: str
+    log_path: str
+
+    def refresh(self) -> None:
+        _append_line(self.log_path, f"refresh:{self.name}")
+
+    def close(self) -> None:
+        _append_line(self.log_path, f"close:{self.name}")
+
+
+@dataclass
+class _RecordingMounts:
+    name: str
+    log_path: str
+
+    def open(self, job: _RecordingJob) -> _RecordingMountHandle:
+        _append_line(self.log_path, f"open:{self.name}:{job.name}")
+        return _RecordingMountHandle(self.name, self.log_path)
+
+
+def _send_sidecar_request(socket_path: str, message: object) -> object:
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        client.connect(socket_path)
+        # @lint-ignore PYTHONPICKLEISBAD
+        client.sendall(pickle.dumps(message))
+        # @lint-ignore PYTHONPICKLEISBAD
+        return pickle.load(client.makefile("rb"))
+    finally:
+        client.close()
+
+
+def _send_sidecar_shutdown(socket_path: str) -> None:
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        client.connect(socket_path)
+        # @lint-ignore PYTHONPICKLEISBAD
+        client.sendall(pickle.dumps(_Shutdown()))
+    finally:
+        client.close()
 
 
 class MockJobTrait(JobTrait):
@@ -89,6 +150,108 @@ class MockJobTrait(JobTrait):
     def _kill(self):
         """Mock implementation that tracks the kill call."""
         self.kill_called = True
+
+
+def test_create_job_sidecar_uses_job_sidecar_worker():
+    """The sidecar launcher should use the renamed job sidecar worker."""
+    with patch("monarch._src.job.process_guard.ProcessGuard.create") as create:
+        js.create_job_sidecar("apply_id")
+
+    lock_path, config_key, command = create.call_args.args
+    assert lock_path == js.job_sidecar_lock_path("apply_id")
+    assert config_key == "apply_id"
+    assert command == [
+        sys.executable,
+        "-m",
+        "monarch._src.job._job_sidecar_worker",
+    ]
+
+
+def test_mounts_ensure_open_clears_existing_sidecar_when_empty():
+    """Empty mount config should clear stale mount state on an existing sidecar."""
+    guard = MagicMock()
+    with patch(
+        "monarch._src.job.mount_config.find_job_sidecar", return_value=guard
+    ) as find_sidecar:
+        Mounts().ensure_open("apply_id", {})
+
+    find_sidecar.assert_called_once_with("apply_id")
+    request = guard.send.call_args.args[0]
+    assert isinstance(request, js.ClearMountsRequest)
+    guard.send.return_value.get.assert_called_once_with()
+
+
+def test_mounts_ensure_open_does_not_create_sidecar_when_empty():
+    """Empty mount config should not start a sidecar just to clear no state."""
+    with (
+        patch(
+            "monarch._src.job.mount_config.find_job_sidecar", return_value=None
+        ) as find_sidecar,
+        patch("monarch._src.job.mount_config.create_job_sidecar") as create_sidecar,
+    ):
+        Mounts().ensure_open("apply_id", {})
+
+    find_sidecar.assert_called_once_with("apply_id")
+    create_sidecar.assert_not_called()
+
+
+def test_run_job_sidecar_manages_mount_lifecycle():
+    """Mount requests open once, refresh unchanged config, replace drift, and
+    clear stale state."""
+    with tempfile.TemporaryDirectory(prefix="monarch_sidecar_", dir="/tmp") as tempdir:
+        socket_path = os.path.join(tempdir, "cmd.sock")
+        log_path = os.path.join(tempdir, "events.log")
+        thread = threading.Thread(
+            target=js._run_job_sidecar,
+            args=(socket_path,),
+            daemon=True,
+        )
+
+        with patch("signal.signal"):
+            thread.start()
+            _wait_for_socket(socket_path, timeout=10.0)
+
+        try:
+            job = _RecordingJob("job")
+            assert (
+                _send_sidecar_request(
+                    socket_path,
+                    js.MountsRequest(_RecordingMounts("one", log_path), job),
+                )
+                == "ok"
+            )
+            assert (
+                _send_sidecar_request(
+                    socket_path,
+                    js.MountsRequest(_RecordingMounts("one", log_path), job),
+                )
+                == "ok"
+            )
+            assert (
+                _send_sidecar_request(
+                    socket_path,
+                    js.MountsRequest(_RecordingMounts("two", log_path), job),
+                )
+                == "ok"
+            )
+            assert _send_sidecar_request(socket_path, js.ClearMountsRequest()) == "ok"
+            assert _send_sidecar_request(socket_path, js.ClearMountsRequest()) == "ok"
+        finally:
+            try:
+                _send_sidecar_shutdown(socket_path)
+            except OSError:
+                pass
+            thread.join(timeout=10.0)
+
+        assert not thread.is_alive(), "job sidecar did not exit on shutdown"
+        with open(log_path) as f:
+            assert f.read().splitlines() == [
+                "open:one:job",
+                "refresh:one",
+                "close:one",
+                "open:two:job",
+                "close:two",
+            ]
 
 
 def test_apply():
@@ -302,14 +465,17 @@ def test_kill():
     """Test the kill method."""
     job = MockJobTrait()
     job.apply()
+    apply_id = job.apply_id
+    assert apply_id is not None
     # Kill shouldn't have been called yet
     assert not job.kill_called
 
-    # Call kill
-    job.kill()
+    with patch("monarch._src.job.job.stop_job_sidecar") as stop_sidecar:
+        job.kill()
 
     # kill_called should now be True
     assert job.kill_called
+    stop_sidecar.assert_called_once_with(apply_id)
 
 
 def test_state_query_engine_none_without_telemetry():

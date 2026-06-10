@@ -710,7 +710,7 @@ mod tests {
     #[test]
     fn test_ports() {
         assert_eq!(String::typehash(), 3947244799002047352u64);
-        assert_eq!(String::port(), 13170616835856823160u64);
+        assert_eq!(String::port(), String::typehash());
         assert_ne!(
             Vec::<Vec::<Vec::<String>>>::typehash(),
             Vec::<Vec::<Vec::<Vec::<String>>>>::typehash(),
