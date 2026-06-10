@@ -497,7 +497,10 @@ class JobTrait(ABC):
         return job_state
 
     def enable_telemetry(
-        self, config: "Optional[TelemetryConfig]" = None, **kwargs
+        self,
+        config: "Optional[TelemetryConfig]" = None,
+        **kwargs,
+        # pyrefly: ignore [not-a-type]
     ) -> Self:
         """Configure automatic telemetry startup on the next :meth:`state` call.
 
@@ -512,7 +515,10 @@ class JobTrait(ABC):
         return self
 
     def enable_admin(
-        self, config: "Optional[MeshAdminConfig]" = None, **kwargs
+        self,
+        config: "Optional[MeshAdminConfig]" = None,
+        **kwargs,
+        # pyrefly: ignore [not-a-type]
     ) -> Self:
         """Configure automatic mesh admin agent startup on the next :meth:`state` call.
 
@@ -1030,6 +1036,7 @@ def exec_command(
                         print(stdout, end="")
                     if stderr:
                         print(stderr, end="", file=sys.stderr)
+            # pyrefly: ignore [bad-return]
             return max_rc
         finally:
             await procs.stop()
