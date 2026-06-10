@@ -117,7 +117,9 @@ impl PyMailbox {
     }
 
     pub(super) fn post(&self, dest: &PyActorAddr, message: &PythonMessage) -> PyResult<()> {
-        let port_id = dest.inner.port_addr(PythonMessage::port().into());
+        let port_id = dest
+            .inner
+            .port_addr(hyperactor::Port::handler::<PythonMessage>());
         let message = wirevalue::Any::serialize(message).map_err(|err| {
             PyRuntimeError::new_err(format!(
                 "failed to serialize message ({:?}) to Any: {}",

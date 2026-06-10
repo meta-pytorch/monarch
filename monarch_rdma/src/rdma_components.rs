@@ -55,10 +55,9 @@ use crate::RdmaAction;
 use crate::RdmaManagerActor;
 use crate::ReleaseBufferClient;
 use crate::backend::RdmaRemoteBackendContext;
-use crate::backend::ibverbs::IbvBuffer;
-use crate::backend::ibverbs::manager_actor::IbvManagerActor;
 use crate::backend::tcp::manager_actor::TcpManagerActor;
 use crate::local_memory::KeepaliveLocalMemory;
+use crate::nic::NicRemoteBackendContext;
 
 /// Lightweight handle representing a registered RDMA buffer.
 ///
@@ -108,20 +107,10 @@ impl RdmaRemoteBuffer {
         Ok(())
     }
 
-    /// Whether this buffer has an ibverbs backend context.
-    pub(crate) fn has_ibverbs_backend(&self) -> bool {
-        self.backends
-            .iter()
-            .any(|b| matches!(b, RdmaRemoteBackendContext::Ibverbs(..)))
-    }
-
-    /// Extract the ibverbs backend context for this buffer.
-    ///
-    /// Returns `None` if the buffer has no ibverbs backend context
-    /// (i.e., the remote side was created without ibverbs).
-    pub fn resolve_ibv(&self) -> Option<(ActorRef<IbvManagerActor>, IbvBuffer)> {
+    /// NIC backend context for this buffer, if any.
+    pub fn resolve_nic(&self) -> Option<NicRemoteBackendContext> {
         self.backends.iter().find_map(|b| match b {
-            RdmaRemoteBackendContext::Ibverbs(mgr, buf) => Some((mgr.clone(), buf.clone())),
+            RdmaRemoteBackendContext::Nic(ctx) => Some(ctx.clone()),
             _ => None,
         })
     }
