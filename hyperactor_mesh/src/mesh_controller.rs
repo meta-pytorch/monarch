@@ -397,30 +397,28 @@ fn proc_status_to_actor_status(proc_status: Option<ProcStatus>) -> ActorStatus {
     }
 }
 
-fn format_system_time(time: SystemTime) -> String {
-    let datetime: chrono::DateTime<chrono::Local> = time.into();
-    datetime.to_rfc3339()
-}
-
 /// Log a warning and bump `counter` if the supervision loop is running late.
 ///
 /// "Late" means the current wall-clock time exceeds `expected_time` by more
 /// than one full poll interval, i.e. 2x the expected period.
 fn check_stall(expected_time: SystemTime, actor_id: &hyperactor::ActorId, counter: &Counter<u64>) {
-    if SystemTime::now()
-        <= expected_time + hyperactor_config::global::get(SUPERVISION_POLL_FREQUENCY)
-    {
+    let now = SystemTime::now();
+    let poll_frequency = hyperactor_config::global::get(SUPERVISION_POLL_FREQUENCY);
+    let Ok(mut stalled_by) = now.duration_since(expected_time + poll_frequency) else {
         return;
-    }
-    let expected_time = format_system_time(expected_time);
+    };
+    // Add back before using, as the addition is only used to avoid logging unless it's
+    // stalled by at least one cycle.
+    stalled_by += poll_frequency;
     counter.add(
         1,
-        kv_pairs!("actor_id" => actor_id.to_string(), "expected_time" => expected_time.clone()),
+        // hyperactor_telemetry::Value only supports i64, not u64.
+        kv_pairs!("actor_id" => actor_id.to_string(), "stalled_by_seconds" => stalled_by.as_secs() as i64),
     );
     tracing::warn!(
         %actor_id,
-        "Handler<CheckState> is stalled, expected at {}",
-        expected_time,
+        "Handler<CheckState> is stalled by {}",
+        humantime::format_duration(stalled_by),
     );
 }
 
@@ -1939,6 +1937,41 @@ mod tests {
             matches!(status, ActorStatus::Failed(_)),
             "expected Failed, got {:?}",
             status
+        );
+    }
+
+    /// Force the supervision loop to look stalled by handing `check_stall` an
+    /// `expected_time` several poll intervals in the past, then assert it both
+    /// logs the warning and records the stall duration. This is the cheapest
+    /// way to eyeball the warning the controller emits in production without
+    /// standing up a real mesh.
+    #[tracing_test::traced_test]
+    #[test]
+    fn test_check_stall_logs_when_late() {
+        use std::time::SystemTime;
+
+        use hyperactor::id::ActorId;
+        use hyperactor::id::ProcId;
+
+        let poll = hyperactor_config::global::get(super::SUPERVISION_POLL_FREQUENCY);
+        // Pretend the CheckState handler was due five poll intervals ago.
+        let expected_time = SystemTime::now() - poll * 5;
+
+        let proc = ProcId::instance(Label::new("stall_demo").unwrap());
+        let actor_id = ActorId::singleton(Label::new("controller").unwrap(), proc);
+
+        super::check_stall(
+            expected_time,
+            &actor_id,
+            &super::ACTOR_MESH_CONTROLLER_SUPERVISION_STALLS,
+        );
+
+        // The reported lateness is `now - expected_time` (~5 poll intervals),
+        // which humantime renders at full precision (e.g. "50s 343us 134ns").
+        // Assert only on the stable prefix so the test stays deterministic.
+        assert!(
+            logs_contain("Handler<CheckState> is stalled by"),
+            "expected a stall warning to be logged"
         );
     }
 }
