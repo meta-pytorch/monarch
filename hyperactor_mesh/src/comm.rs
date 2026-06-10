@@ -380,7 +380,10 @@ impl CommActor {
             .self_addr()
             .proc_addr()
             .actor_addr_uid(message.dest_port().actor_uid().clone())
-            .port_addr(hyperactor::port::Port::from(message.dest_port().port()));
+            .port_addr(hyperactor::Port::handler_id(
+                message.dest_port().port(),
+                None,
+            ));
 
         // Stamp SENDER_ACTOR_ID when headers already carry SEQ_INFO (V1
         // path). V0 path leaves SEQ_INFO absent here; MailboxExt::post will
