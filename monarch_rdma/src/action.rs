@@ -18,14 +18,15 @@ use std::time::Duration;
 
 use hyperactor::context;
 
+use crate::RdmaManagerActor;
+use crate::RdmaManagerMessageClient;
 use crate::RdmaOp;
 use crate::RdmaOpType;
 use crate::backend::RdmaBackend;
-use crate::backend::ibverbs::manager_actor::IbvBackend;
-use crate::backend::ibverbs::manager_actor::IbvManagerActor;
 use crate::backend::tcp::manager_actor::TcpBackend;
 use crate::backend::tcp::manager_actor::TcpManagerActor;
 use crate::local_memory::KeepaliveLocalMemory;
+use crate::nic::NicBackendHandle;
 use crate::rdma_components::RdmaRemoteBuffer;
 
 /// A batch of RDMA operations submitted as a single unit.
@@ -154,7 +155,7 @@ impl RdmaAction {
     }
 
     /// Submit all queued ops. Ops are grouped by their local backend
-    /// (ibverbs or TCP); each group is submitted in parallel. Safe to
+    /// (NIC or TCP); each group is submitted in parallel. Safe to
     /// call more than once on the same action — the queued ops and
     /// overlap claims are left intact.
     ///
@@ -167,17 +168,17 @@ impl RdmaAction {
         client: &(impl context::Actor + Send + Sync),
         timeout: Duration,
     ) -> Result<(), anyhow::Error> {
-        // The ibv cell's inner `Option` distinguishes "lookup tried and
+        // The nic cell's inner `Option` distinguishes "lookup tried and
         // failed" (`Some(None)`) from "never tried" (cell unset), so the
-        // lookup doesn't repeat when the local proc lacks ibverbs.
-        let ibv_cell: tokio::sync::OnceCell<Option<hyperactor::ActorHandle<IbvManagerActor>>> =
+        // lookup doesn't repeat when the local proc lacks a NIC.
+        let nic_cell: tokio::sync::OnceCell<Option<NicBackendHandle>> =
             tokio::sync::OnceCell::new();
         // The tcp cell needs no such sentinel: the init closure either
         // caches a handle or bails.
         let tcp_cell: tokio::sync::OnceCell<hyperactor::ActorHandle<TcpManagerActor>> =
             tokio::sync::OnceCell::new();
 
-        let mut ibv_ops: Vec<RdmaOp> = Vec::new();
+        let mut nic_ops: Vec<RdmaOp> = Vec::new();
         let mut tcp_ops: Vec<RdmaOp> = Vec::new();
 
         for entry in &self.entries {
@@ -186,38 +187,47 @@ impl RdmaAction {
                 local: entry.local.clone(),
                 remote: entry.remote.clone(),
             };
-            if entry.remote.has_ibverbs_backend() {
-                let ibv = ibv_cell
-                    .get_or_init(|| async { IbvManagerActor::local_handle(client).await.ok() })
+            // Route over the NIC only when the remote advertises a NIC
+            // backend and the local proc runs a compatible one.
+            if let Some(backend_ctx) = entry.remote.resolve_nic() {
+                let nic = nic_cell
+                    .get_or_init(|| async {
+                        RdmaManagerActor::local_handle(client)
+                            .get_nic_backend_handle(client)
+                            .await
+                            .ok()
+                            .flatten()
+                    })
                     .await;
-                if ibv.is_some() {
-                    ibv_ops.push(op);
+                if nic
+                    .as_ref()
+                    .is_some_and(|h| backend_ctx.is_compatible_with(h))
+                {
+                    nic_ops.push(op);
                     continue;
                 }
             }
-            // Either the remote lacks an ibverbs backend, or the local
-            // proc has no `IbvManagerActor`. Fall back to TCP — refusing
-            // if fallback is disabled by configuration.
+            // Fall back to TCP — refusing if fallback is disabled.
             tcp_cell
                 .get_or_try_init(|| async {
                     if !hyperactor_config::global::get(crate::config::RDMA_ALLOW_TCP_FALLBACK) {
                         anyhow::bail!(
-                            "no usable ibverbs backend, and TCP fallback is disabled; \
+                            "no usable NIC backend, and TCP fallback is disabled; \
                              enable it with monarch.configure(rdma_allow_tcp_fallback=True)"
                         );
                     }
-                    tracing::warn!("falling back to TCP transport (no usable ibverbs backend)");
+                    tracing::warn!("falling back to TCP transport (no usable NIC backend)");
                     TcpManagerActor::local_handle(client).await
                 })
                 .await?;
             tcp_ops.push(op);
         }
 
-        let ibv_fut = async {
-            match ibv_cell.into_inner().flatten() {
-                Some(h) => IbvBackend(h).submit(client, ibv_ops, timeout).await,
+        let nic_fut = async {
+            match nic_cell.into_inner().flatten() {
+                Some(h) => h.submit(client, nic_ops, timeout).await,
                 None => {
-                    assert!(ibv_ops.is_empty());
+                    assert!(nic_ops.is_empty());
                     Ok(())
                 }
             }
@@ -231,8 +241,8 @@ impl RdmaAction {
                 }
             }
         };
-        let (ibv_res, tcp_res) = tokio::join!(ibv_fut, tcp_fut);
-        ibv_res?;
+        let (nic_res, tcp_res) = tokio::join!(nic_fut, tcp_fut);
+        nic_res?;
         tcp_res?;
         Ok(())
     }

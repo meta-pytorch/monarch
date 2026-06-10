@@ -259,6 +259,16 @@ async def test_rdma_buffer_drop():
             """Drop an RDMABuffer"""
             # pyrefly: ignore [missing-attribute]
             await self.buffer.drop()
+            # Dropping the buffer means that the RDMA manager no longer
+            # forcibly keeps the allocation alive, but as long as the original
+            # tensor is still alive, the memory registration remains valid.
+            # So operations on the buffer would technically continue to succeed
+            # until the original tensor is deleted.
+            del self.data
+
+            import gc
+
+            gc.collect()
 
     class ConsumerActor(Actor):
         def __init__(self):
