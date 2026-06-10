@@ -478,6 +478,27 @@ proptest! {
     }
 
     #[test]
+    fn dense_space_fast_path_matches_iteration(rect in gen_scaled_rect(1..=4, 8, 32, 4)) {
+        // Theorem: for every rect, an unoccluded `RankSpace::dense(rect)` is
+        // observationally equivalent to the general iteration path. Over the
+        // visible ranks in `iter_ranks()` order:
+        //   - `cardinality()` equals the number of visible ranks;
+        //   - `rank_at(i)` is the i-th visible rank, with `local_index_of` its
+        //     inverse (the index <-> rank round-trip holds);
+        //   - `rank_at(cardinality())` is `None` (one past the last index).
+        // I.e. the O(ndim) base-delegating shortcut returns exactly the O(N)
+        // iteration result.
+        let space = RankSpace::dense(rect);
+
+        prop_assert_eq!(space.cardinality(), space.iter_ranks().count());
+        for (index, rank) in space.iter_ranks().enumerate() {
+            prop_assert_eq!(space.rank_at(index), Some(rank));
+            prop_assert_eq!(space.local_index_of(rank), Some(index));
+        }
+        prop_assert_eq!(space.rank_at(space.cardinality()), None);
+    }
+
+    #[test]
     fn base_and_compact_views_agree_on_visible_ranks(
         (space, _) in gen_sparse_space(1..=4, 8)
     ) {

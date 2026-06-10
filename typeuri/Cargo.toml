@@ -12,5 +12,5 @@ license = "BSD-3-Clause"
 [dependencies]
 bytes = { version = "1.11.1", features = ["serde"] }
 cityhasher = "0.1.0"
-dashmap = { version = "6.1.0", features = ["rayon", "serde"] }
+dashmap = { version = "6.2.1", features = ["rayon", "serde"] }
 typeuri_macros = { version = "0.0.0", path = "../typeuri_macros" }

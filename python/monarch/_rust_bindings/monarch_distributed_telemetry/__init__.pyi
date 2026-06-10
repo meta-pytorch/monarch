@@ -26,3 +26,13 @@ def _start_socket_ingest(
 ) -> bool:
     """Start Unix-socket ingest for a database scanner."""
     ...
+
+def _register_trace_entity_schemas(
+    scanner: database_scanner.DatabaseScanner,
+) -> None:
+    """Register trace and entity schemas for a database scanner."""
+    ...
+
+def _set_unix_socket_sink_path(socket_path: str) -> None:
+    """Activate the process-global Unix socket sink."""
+    ...

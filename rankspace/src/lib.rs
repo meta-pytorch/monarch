@@ -1365,6 +1365,20 @@ impl RankMask {
             RankMask::Union(masks) => masks.iter().all(|mask| self.contains_mask(mask)),
         }
     }
+
+    /// Returns true if the mask contains no ranks.
+    ///
+    /// Unlike `matches!(self, RankMask::Empty)`, this also reports the
+    /// semantically-empty non-`Empty` forms: a zero-cardinality `Rect`, an
+    /// empty `Ranks` set, or a `Union` whose children are all empty.
+    pub fn is_empty(&self) -> bool {
+        match self {
+            RankMask::Empty => true,
+            RankMask::Rect(rect) => rect.is_empty(),
+            RankMask::Ranks(ranks) => ranks.is_empty(),
+            RankMask::Union(masks) => masks.iter().all(|mask| mask.is_empty()),
+        }
+    }
 }
 
 /// A possibly sparse rank space: a dense base rectangle minus occluded ranks.
@@ -1406,6 +1420,12 @@ impl RankSpace {
 
     /// Returns the number of visible ranks.
     pub fn cardinality(&self) -> usize {
+        // With no occlusion every base rank is visible, so the visible count is
+        // just the base rectangle's cardinality (O(ndim)) — no O(N) `iter_ranks`
+        // walk needed.
+        if self.occlusion.is_empty() {
+            return self.base.cardinality();
+        }
         self.iter_ranks().count()
     }
 
@@ -1590,6 +1610,12 @@ impl RankSpace {
     /// `self.rank_at(index) == Some(rank)`, then
     /// `self.local_index_of(rank) == Some(index)`.
     pub fn rank_at(&self, local_index: usize) -> Option<Rank> {
+        // With no occlusion the visible order is the base rectangle's row-major
+        // order, so `base.rank_at` (O(ndim)) returns the same rank as walking
+        // `iter_ranks`.
+        if self.occlusion.is_empty() {
+            return self.base.rank_at(local_index);
+        }
         self.iter_ranks().nth(local_index)
     }
 
@@ -1601,6 +1627,13 @@ impl RankSpace {
     /// `self.local_index_of(rank) == Some(index)`, then
     /// `self.rank_at(index) == Some(rank)`.
     pub fn local_index_of(&self, rank: Rank) -> Option<usize> {
+        // With no occlusion the visible order is the base rectangle's row-major
+        // order, so `base.local_index_of` (O(ndim)) gives the same index; it
+        // already returns None for ranks outside the rect, so the `contains_rank`
+        // guard below isn't needed on this path.
+        if self.occlusion.is_empty() {
+            return self.base.local_index_of(rank);
+        }
         if !self.contains_rank(rank) {
             return None;
         }
@@ -1888,6 +1921,37 @@ mod tests {
 
     fn host_gpu_rect() -> RankRect {
         rankrect!(host = 2, gpu = 4)
+    }
+
+    #[test]
+    fn rank_mask_is_empty_reports_semantic_emptiness() {
+        // Canonical empty.
+        assert!(RankMask::Empty.is_empty());
+
+        // Non-canonical empties, built as raw variants (not the smart ctors)
+        // so the cases survive any future constructor normalization.
+        assert!(RankMask::Rect(rankrect!(x = 0)).is_empty());
+        assert!(RankMask::Ranks(BTreeSet::new()).is_empty());
+        assert!(RankMask::Union(vec![]).is_empty());
+        assert!(RankMask::Union(vec![RankMask::Empty, RankMask::Empty]).is_empty());
+        assert!(
+            RankMask::Union(vec![
+                RankMask::Rect(rankrect!(x = 0)),
+                RankMask::Ranks(BTreeSet::new()),
+            ])
+            .is_empty()
+        );
+
+        // Non-empty masks.
+        assert!(!RankMask::Rect(rankrect!(x = 2)).is_empty());
+        assert!(!RankMask::Ranks([Rank(1)].into_iter().collect()).is_empty());
+        assert!(
+            !RankMask::Union(vec![
+                RankMask::Empty,
+                RankMask::Ranks([Rank(1)].into_iter().collect()),
+            ])
+            .is_empty()
+        );
     }
 
     #[test]

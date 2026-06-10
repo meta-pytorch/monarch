@@ -22,6 +22,7 @@ use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Label;
 use hyperactor::PortRef;
+use hyperactor::RemoteEndpoint as _;
 use hyperactor::Uid;
 use hyperactor::UnboundPort;
 use hyperactor::UnboundPortKind;
@@ -42,10 +43,7 @@ use hyperactor::value_mesh::ValueMesh;
 use hyperactor_config::Flattrs;
 use ndslice::Point;
 use ndslice::Region;
-use ndslice::Shape;
-use ndslice::view::BuildFromRegionIndexed;
 use ndslice::view::MapIntoExt;
-use ndslice::view::Ranked;
 use ndslice::view::View;
 use serde::Deserialize;
 use serde::Serialize;
@@ -110,17 +108,16 @@ impl CastDomainId {
     /// Materialize this domain id over concrete members and return an
     /// addressable domain handle.
     ///
-    /// `members` maps domain rank to member actor address. `shape` describes
-    /// the logical root shape of the domain; tiling and communication are
+    /// `members` maps domain rank to member actor address. `region` describes
+    /// the logical root region of the domain; tiling and communication are
     /// derived internally.
     pub fn materialize(
         self,
         cx: &impl context::Actor,
         members: HashMap<usize, ActorAddr>,
-        shape: Shape,
+        region: Region,
         tiling_policy: TilingPolicy,
     ) -> anyhow::Result<CastDomainRef> {
-        let region = Region::from(shape);
         anyhow::ensure!(
             members.len() == region.num_ranks()
                 && region
@@ -135,7 +132,19 @@ impl CastDomainId {
             .get(&root_rank)
             .expect("members coverage was checked above")
             .clone();
-        let member_mesh = Arc::new(ValueMesh::build_indexed(region.clone(), members)?);
+        let member_mesh = Arc::new(ValueMesh::new(
+            region.clone(),
+            region
+                .slice()
+                .iter()
+                .map(|rank| {
+                    members
+                        .get(&rank)
+                        .expect("members coverage was checked above")
+                        .clone()
+                })
+                .collect(),
+        )?);
 
         let domain_ref = CastDomainRef::from_entry_point(
             self.clone(),
@@ -263,24 +272,26 @@ impl CastDomainRef {
     pub fn cast<M: hyperactor::message::Unbind + Serialize + Named>(
         &self,
         cx: &impl context::Actor,
-        mut headers: Flattrs,
+        headers: Flattrs,
         message: M,
     ) -> anyhow::Result<()> {
         let data = ErasedUnbound::try_from_message(message)?;
         let sender = cx.mailbox().actor_addr().clone();
-        headers.set(CAST_ORIGINATING_SENDER, sender);
         let dest_port = <IndexedErasedUnbound<M>>::port();
         let (session_id, seqs) = self.seqs_for_cast(cx, dest_port)?;
 
-        self.entry_point.post(
+        let cast_headers = headers.clone();
+        self.entry_point.port().post_with_headers(
             cx,
+            headers,
             CastMessage {
                 cast_domain_id: self.id.clone(),
+                sender,
                 session_id,
                 seqs,
                 #[cfg(test)]
                 lineage: Vec::new(),
-                headers,
+                headers: cast_headers,
                 dest_port,
                 data,
             },
@@ -320,7 +331,7 @@ impl CastDomainRef {
     ) -> Result<(Uuid, ValueMesh<u64>)> {
         let sequencer = cx.instance().sequencer();
         let seqs = self.members.as_ref().map_into(|member| {
-            let port = member.port_addr(Port::from(dest_port));
+            let port = member.port_addr(Port::handler_id(dest_port, None));
             let SeqInfo::Session { session_id: _, seq } = sequencer.assign_seq(&port) else {
                 unreachable!("assign_seq always returns SeqInfo::Session");
             };
@@ -470,24 +481,18 @@ impl CastActor {
 
         // 1. Case delivery failure at a "forwarding" step.
         if let Ok(message) = message_envelope.deserialized::<CastMessage>() {
-            let Some(sender) = message.headers.get(CAST_ORIGINATING_SENDER) else {
-                anyhow::bail!(
-                    "undeliverable CastMessage missing {}",
-                    CAST_ORIGINATING_SENDER.name()
-                );
-            };
-            let return_port = PortRef::attest_handler_port(&sender);
+            let return_port = PortRef::attest_handler_port(&message.sender);
             annotate_cast_failure(
                 &mut message_envelope,
                 cx.self_addr(),
                 "forward",
-                &sender,
+                &message.sender,
                 return_port.port_addr(),
             );
 
             // Needed so that the receiver of the undeliverable message can easily find the
             // original sender of the cast message.
-            message_envelope.set_header(CAST_ORIGINATING_SENDER, sender.clone());
+            message_envelope.set_header(CAST_ORIGINATING_SENDER, message.sender.clone());
 
             return_port.post(cx, Undeliverable::Returned(message_envelope.clone()));
             return Ok(());
@@ -567,6 +572,10 @@ impl Handler<CreateCastDomain> for CastActor {
             tiling_policy,
             tile,
         } = message;
+        if self.installed_hops.contains_key(&cast_domain_id) {
+            return Ok(());
+        }
+
         let mut next_hops = Vec::new();
 
         for next_tile in next_tiles(tiling_policy, &tile) {
@@ -715,6 +724,8 @@ impl ForwardLineage {
 struct CastMessage {
     /// The domain to cast into.
     cast_domain_id: CastDomainId,
+    /// Actor that initiated the cast.
+    sender: ActorAddr,
     /// Sender-side sequencer session for this cast.
     session_id: Uuid,
     /// Per-domain-rank sequence numbers allocated by the sender before routing.
@@ -770,13 +781,12 @@ impl Handler<CastMessage> for CastActor {
                 })?;
             let mut headers = message.headers.clone();
             headers.set(CAST_POINT, domain.point_in_domain.clone());
-            headers.set(
-                SEQ_INFO,
-                SeqInfo::Session {
-                    session_id: message.session_id,
-                    seq,
-                },
-            );
+            headers.set(CAST_ORIGINATING_SENDER, message.sender.clone());
+            let seq_info = SeqInfo::Session {
+                session_id: message.session_id,
+                seq,
+            };
+            headers.set(SEQ_INFO, seq_info.clone());
 
             #[cfg(not(test))]
             let _ = &local_lineage;
@@ -784,20 +794,28 @@ impl Handler<CastMessage> for CastActor {
             #[cfg(test)]
             headers.set(CAST_LINEAGE, local_lineage.ranks());
 
-            cx.post_with_external_seq_info(
-                domain.local_actor.port_addr(Port::from(message.dest_port)),
-                headers,
-                wirevalue::Any::serialize(&data)?,
+            let dest = domain
+                .local_actor
+                .port_addr(Port::handler_id(message.dest_port, None));
+            hyperactor::mailbox::headers::stamp_sender_actor_id(
+                &mut headers,
+                &seq_info,
+                &dest,
+                &message.sender,
             );
+            cx.post_with_external_seq_info(dest, headers, wirevalue::Any::serialize(&data)?);
         }
 
         for next_hop in &domain.next_hops {
             #[cfg(not(test))]
             let _ = &local_lineage;
-            next_hop.post(
+            let forward_headers = message.headers.clone();
+            next_hop.port().post_with_headers(
                 cx,
+                forward_headers,
                 CastMessage {
                     cast_domain_id: message.cast_domain_id.clone(),
+                    sender: message.sender.clone(),
                     session_id: message.session_id,
                     seqs: message.seqs.clone(),
                     #[cfg(test)]
@@ -885,6 +903,8 @@ mod tests {
     use ndslice::Slice;
     use ndslice::ViewExt;
     use ndslice::shape;
+    use ndslice::view::BuildFromRegionIndexed;
+    use ndslice::view::Ranked;
     use proptest::prelude::*;
     use timed_test::async_timed_test;
     use typeuri::Named;
@@ -1304,12 +1324,12 @@ mod tests {
             }
         }
 
-        fn root_domain(&self, shape: Shape) -> CastDomainRef {
+        fn root_domain(&self, region: Region) -> CastDomainRef {
             CastDomainId::new()
                 .materialize(
                     &self.client,
                     self.domain_members(),
-                    shape,
+                    region,
                     TilingPolicy::BlockPartitioning,
                 )
                 .unwrap()
@@ -1321,9 +1341,9 @@ mod tests {
                 .collect()
         }
 
-        fn root_domain_with_policy(&self, shape: Shape, policy: TilingPolicy) -> CastDomainRef {
+        fn root_domain_with_policy(&self, region: Region, policy: TilingPolicy) -> CastDomainRef {
             CastDomainId::new()
-                .materialize(&self.client, self.member_ids.clone(), shape, policy)
+                .materialize(&self.client, self.member_ids.clone(), region, policy)
                 .unwrap()
         }
 
@@ -1450,7 +1470,7 @@ mod tests {
         clear_captured_domains();
 
         let test_mesh = CastTestMesh::new(8);
-        let root_domain = test_mesh.root_domain(shape!(a = 2, b = 2, c = 2));
+        let root_domain = test_mesh.root_domain(shape!(a = 2, b = 2, c = 2).into());
         let snapshots = test_mesh
             .wait_for_domain_snapshots(root_domain.domain_id(), 8)
             .await;
@@ -1544,7 +1564,7 @@ mod tests {
         let n = 8;
         let mut test_mesh = CastTestMesh::new(n);
         test_mesh.spawn_delivery_receivers();
-        let root_domain = test_mesh.root_domain(shape!(a = 2, b = 2, c = 2));
+        let root_domain = test_mesh.root_domain(shape!(a = 2, b = 2, c = 2).into());
 
         let expected_payloads = vec![
             "hello-0".to_string(),
@@ -1621,7 +1641,7 @@ mod tests {
         let n = 2;
         let mut test_mesh = CastTestMesh::new(n);
         test_mesh.spawn_delivery_receivers();
-        let root_domain = test_mesh.root_domain(shape!(rank = 2));
+        let root_domain = test_mesh.root_domain(shape!(rank = 2).into());
 
         let mut headers = Flattrs::new();
         headers.set(
@@ -1700,18 +1720,16 @@ mod tests {
         .await
         .unwrap();
 
-        let mut headers = Flattrs::new();
-        headers.set(CAST_ORIGINATING_SENDER, client.self_addr().clone());
-
         let err = Handler::<CastMessage>::handle(
             &mut cast_actor,
             &cx,
             CastMessage {
                 cast_domain_id,
+                sender: client.self_addr().clone(),
                 session_id: client.sequencer().session_id(),
                 seqs: ValueMesh::new(Region::from(Shape::unity()), vec![1]).unwrap(),
                 lineage: Vec::new(),
-                headers,
+                headers: Flattrs::new(),
                 dest_port: <IndexedErasedUnbound<TestDelivery>>::port(),
                 data: ErasedUnbound::try_from_message(TestDelivery {
                     payload: "hello".to_string(),
@@ -1731,7 +1749,7 @@ mod tests {
         clear_captured_domains();
 
         let test_mesh = CastTestMesh::new(8);
-        let root_domain = test_mesh.root_domain(shape!(a = 2, b = 2, c = 2));
+        let root_domain = test_mesh.root_domain(shape!(a = 2, b = 2, c = 2).into());
         let domain_id = root_domain.domain_id().clone();
         test_mesh.wait_for_domain_snapshots(&domain_id, 8).await;
 
@@ -1751,7 +1769,7 @@ mod tests {
         let n = 8;
         let mut test_mesh = CastTestMesh::new(n);
         test_mesh.spawn_split_port_receivers();
-        let root_cast_domain = test_mesh.root_domain(shape!(a = 2, b = 2, c = 2));
+        let root_cast_domain = test_mesh.root_domain(shape!(a = 2, b = 2, c = 2).into());
 
         for (case_name, range, expected_procs) in [
             (
@@ -1795,7 +1813,7 @@ mod tests {
         let n = 4;
         let mut test_mesh = CastTestMesh::new(n);
         test_mesh.spawn_delivery_receivers();
-        let root = test_mesh.root_domain(shape!(rank = 4));
+        let root = test_mesh.root_domain(shape!(rank = 4).into());
 
         let rank_0_to_2 = root
             .materialize_slice(
@@ -2127,7 +2145,7 @@ mod tests {
         let n = 8;
         let mut test_mesh = CastTestMesh::new(n);
         test_mesh.spawn_split_port_receivers();
-        let root_domain = test_mesh.root_domain(shape!(a = 2, b = 2, c = 2));
+        let root_domain = test_mesh.root_domain(shape!(a = 2, b = 2, c = 2).into());
 
         let (reply_handle, reply_rx) = context::Mailbox::mailbox(&test_mesh.client)
             .open_reduce_port(TestReplyCountsAccumulator);
@@ -2196,7 +2214,7 @@ mod tests {
 
         let test_mesh = CastTestMesh::new(8);
         let root_domain = test_mesh.root_domain_with_policy(
-            shape!(a = 8),
+            shape!(a = 8).into(),
             TilingPolicy::BoundedFanout {
                 fanout: NonZeroUsize::new(2).unwrap(),
             },
@@ -2261,7 +2279,8 @@ mod tests {
         clear_captured_domains();
 
         let test_mesh = CastTestMesh::new(8);
-        let root_domain = test_mesh.root_domain_with_policy(shape!(a = 8), TilingPolicy::Bisection);
+        let root_domain =
+            test_mesh.root_domain_with_policy(shape!(a = 8).into(), TilingPolicy::Bisection);
         let snapshots = test_mesh
             .wait_for_domain_snapshots(root_domain.domain_id(), 8)
             .await;
