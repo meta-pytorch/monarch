@@ -22,7 +22,7 @@ digest = { version = "0.10", features = ["rand_core"] }
 filetime = "0.2.29"
 futures = { version = "0.3.31", features = ["async-await", "compat"] }
 globset = { version = "0.4.13", features = ["serde1"] }
-ignore = "0.4"
+ignore = "0.4.26"
 itertools = "0.14.0"
 memmap2 = "0.9.10"
 rattler_conda_types = "0.28.3"

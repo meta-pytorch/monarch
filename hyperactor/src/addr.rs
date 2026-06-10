@@ -28,6 +28,8 @@
 //! controller<2MuAHeDjLCEd>@tcp://[::1]:2345
 //! controller<2MuAHeDjLCEd>.local@inproc://0
 //! <2MuAHeDjLCEd>.<NRjEZGYjYibf>:42@tcp://[::1]:2345
+//! <2MuAHeDjLCEd>.<NRjEZGYjYibf>:handler<NRjEZGYjYibf>@tcp://[::1]:2345
+//! <2MuAHeDjLCEd>.<NRjEZGYjYibf>!introspect@tcp://[::1]:2345
 //! ```
 
 use std::fmt;
@@ -47,6 +49,7 @@ use crate::id::PortId;
 use crate::id::ProcId;
 use crate::id::Uid;
 use crate::parse;
+use crate::port::ControlPort;
 use crate::port::Port;
 
 /// A network location.
@@ -486,9 +489,24 @@ impl PortAddr {
         self.id.port().is_handler()
     }
 
+    /// Whether this is the provided control port.
+    pub(crate) fn is_control_port_kind(&self, port: ControlPort) -> bool {
+        self.id.port() == Port::control(port)
+    }
+
+    /// The port.
+    pub fn port(&self) -> Port {
+        self.id.port()
+    }
+
     /// The port index.
     pub fn index(&self) -> u64 {
         self.id.port().as_u64()
+    }
+
+    /// The ephemeral port index.
+    pub fn ephemeral_index(&self) -> Option<u64> {
+        self.id.port().ephemeral_index()
     }
 
     /// Reconstruct the parent ActorAddr (with location preserved).
