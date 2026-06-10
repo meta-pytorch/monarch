@@ -819,7 +819,17 @@ wirevalue::register_type!(ProcSpec);
 
 #[cfg(test)]
 mod tests {
+    use hyperactor::port::Port;
+
     use super::*;
+
+    #[test]
+    fn handler_ports_are_distinct_for_resource_messages() {
+        assert_ne!(
+            Port::handler::<CreateOrUpdate<ProcSpec>>(),
+            Port::handler::<Stop>(),
+        );
+    }
 
     #[test]
     fn test_ranked_values_merge() {

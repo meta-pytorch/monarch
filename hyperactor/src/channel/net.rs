@@ -71,6 +71,7 @@ use crate::RemoteMessage;
 
 pub mod duplex;
 mod framed;
+pub(crate) mod quic;
 pub(super) mod server;
 pub(super) mod session;
 pub use server::ServerHandle;
@@ -748,6 +749,7 @@ pub(crate) enum NetLink {
     Tcp(tcp::TcpLink),
     Unix(unix::UnixLink),
     Tls(tls::TlsLink),
+    Quic(quic::QuicLink),
 }
 
 /// Create a link for the given channel address with the given
@@ -769,6 +771,18 @@ pub(crate) fn link(
         ChannelAddr::MetaTls(meta_addr) => {
             Ok(NetLink::Tls(meta::link(meta_addr, session_id, stream_id)?))
         }
+        ChannelAddr::Quic(quic_addr) => Ok(NetLink::Quic(quic::link(
+            quic_addr,
+            quic::QuicAddrType::Quic,
+            session_id,
+            stream_id,
+        )?)),
+        ChannelAddr::MetaQuic(meta_addr) => Ok(NetLink::Quic(quic::link(
+            meta_addr,
+            quic::QuicAddrType::MetaQuic,
+            session_id,
+            stream_id,
+        )?)),
         other => Err(ClientError::Connect(
             other,
             std::io::Error::other("unsupported transport"),
@@ -786,6 +800,7 @@ impl Link for NetLink {
             Self::Tcp(l) => l.dest(),
             Self::Unix(l) => l.dest(),
             Self::Tls(l) => l.dest(),
+            Self::Quic(l) => l.dest(),
         }
     }
 
@@ -794,6 +809,7 @@ impl Link for NetLink {
             Self::Tcp(l) => l.link_id(),
             Self::Unix(l) => l.link_id(),
             Self::Tls(l) => l.link_id(),
+            Self::Quic(l) => l.link_id(),
         }
     }
 
@@ -802,6 +818,7 @@ impl Link for NetLink {
             Self::Tcp(l) => Ok(Box::new(l.next().await?)),
             Self::Unix(l) => Ok(Box::new(l.next().await?)),
             Self::Tls(l) => Ok(Box::new(l.next().await?)),
+            Self::Quic(l) => Ok(Box::new(l.next().await?)),
         }
     }
 }
@@ -827,6 +844,7 @@ pub(crate) trait Listener: Send + Unpin + 'static {
 pub(crate) enum NetListener {
     Tcp(tcp::TcpSocketListener),
     Unix(unix::UnixSocketListener),
+    Quic(quic::QuicSocketListener),
 }
 
 #[async_trait]
@@ -840,6 +858,10 @@ impl Listener for NetListener {
                 Ok((Box::new(stream), addr))
             }
             Self::Unix(l) => {
+                let (stream, addr) = l.accept().await?;
+                Ok((Box::new(stream), addr))
+            }
+            Self::Quic(l) => {
                 let (stream, addr) = l.accept().await?;
                 Ok((Box::new(stream), addr))
             }
@@ -953,8 +975,34 @@ pub(crate) fn listen_with_prebound(
                 make_channel_addr(&hostname, local_addr.port()),
             ))
         }
+        addr @ (ChannelAddr::Quic(_) | ChannelAddr::MetaQuic(_)) => {
+            if prebound.is_some() {
+                return Err(ServerError::Listen(
+                    addr,
+                    std::io::Error::other("pre-opened listener not supported for QUIC transport"),
+                ));
+            }
+            let addr_type = match addr {
+                ChannelAddr::Quic(_) => quic::QuicAddrType::Quic,
+                ChannelAddr::MetaQuic(_) => quic::QuicAddrType::MetaQuic,
+                _ => unreachable!(),
+            };
+            let tls_addr = match addr {
+                ChannelAddr::Quic(a) | ChannelAddr::MetaQuic(a) => a,
+                _ => unreachable!(),
+            };
+            let (listener, bound_addr) = quic::listen(tls_addr, addr_type)?;
+            Ok((NetListener::Quic(listener), bound_addr))
+        }
         ChannelAddr::Alias { dial_to, bind_to } => {
-            let (listener, _bound_addr) = listen(*bind_to)?;
+            // Bind the socket on `bind_to` (e.g. a wildcard interface), but
+            // advertise `dial_to` as the canonical address. Callers refer to
+            // this server by its dial address; the listener merely needs to
+            // accept the connections that `dial_to` is routed to (e.g. via
+            // NAT). The alias is fully consumed here -- everything downstream,
+            // including the proc namespace derived from this address, uses
+            // `dial_to`, which is what remote peers independently construct.
+            let (listener, _bound_addr) = listen_with_prebound(*bind_to, prebound)?;
             Ok((listener, *dial_to))
         }
         other => Err(ServerError::Listen(
@@ -962,13 +1010,6 @@ pub(crate) fn listen_with_prebound(
             std::io::Error::other(format!("unsupported transport: {}", other)),
         )),
     }
-}
-
-/// Bind a listener for the given channel address. Returns the listener
-/// and the canonical address callers should advertise (which encodes
-/// the transport — e.g. `ChannelAddr::Tls` for TLS).
-pub(crate) fn listen(addr: ChannelAddr) -> Result<(NetListener, ChannelAddr), ServerError> {
-    listen_with_prebound(addr, None)
 }
 
 /// Frames are the messages sent between clients and servers over sessions.
@@ -1118,6 +1159,8 @@ pub(super) fn is_net_addr(addr: &ChannelAddr) -> bool {
         ChannelTransport::Tcp(_) => true,
         ChannelTransport::MetaTls(_) => true,
         ChannelTransport::Tls => true,
+        ChannelTransport::Quic => true,
+        ChannelTransport::MetaQuic(_) => true,
         ChannelTransport::Unix => true,
         _ => false,
     }
@@ -1594,8 +1637,9 @@ pub(crate) mod meta {
 
     /// Creates a TLS acceptor by looking for necessary certs and keys in a Meta server environment.
     pub(crate) fn tls_acceptor(enforce_client_tls: bool) -> Result<TlsAcceptor> {
-        let bundle = get_server_pem_bundle();
-        tls::tls_acceptor_from_bundle(&bundle, enforce_client_tls)
+        Ok(TlsAcceptor::from(Arc::new(server_config(
+            enforce_client_tls,
+        )?)))
     }
 
     /// Try to create a TLS connector for Meta environments.
@@ -1610,30 +1654,24 @@ pub(crate) mod meta {
     /// Creates a TLS connector by looking for necessary certs and keys in a Meta server environment.
     /// Supports optional client authentication (unlike the tls module which always requires it).
     fn tls_connector() -> Result<TlsConnector> {
-        // Ensure ring is installed as the process-level crypto provider.
-        // No-op when already installed (e.g. under Buck with native-tls).
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        Ok(TlsConnector::from(Arc::new(client_config()?)))
+    }
 
-        let ca_path = std::env::var_os(THRIFT_TLS_SRV_CA_PATH_ENV)
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(DEFAULT_SRV_CA_PATH));
-        let ca_pem = Pem::File(ca_path);
-        let root_store = tls::build_root_store(&ca_pem)?;
+    pub(super) fn server_config(enforce_client_tls: bool) -> Result<rustls::ServerConfig> {
+        let bundle = get_server_pem_bundle();
+        tls::server_config_from_bundle(&bundle, enforce_client_tls)
+    }
 
-        // If client certs are available, use mutual TLS; otherwise, no client auth
-        let config = rustls::ClientConfig::builder().with_root_certificates(Arc::new(root_store));
-
-        let config = if let Some(bundle) = get_client_pem_bundle() {
-            let certs = tls::load_certs(&bundle.cert)?;
-            let key = tls::load_key(&bundle.key)?;
-            config
-                .with_client_auth_cert(certs, key)
-                .map_err(|e| anyhow::anyhow!("load client certs: {}", e))?
+    pub(super) fn client_config() -> Result<rustls::ClientConfig> {
+        Ok(if let Some(bundle) = get_client_pem_bundle() {
+            tls::client_config_from_bundle(&bundle)?
         } else {
-            config.with_no_client_auth()
-        };
-
-        Ok(TlsConnector::from(Arc::new(config)))
+            let ca_path = std::env::var_os(THRIFT_TLS_SRV_CA_PATH_ENV)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(DEFAULT_SRV_CA_PATH));
+            let ca_pem = Pem::File(ca_path);
+            tls::client_config_from_ca(&ca_pem)?
+        })
     }
 
     /// Create a MetaTLS link to the given address.
@@ -1669,7 +1707,9 @@ pub(crate) mod tls {
 
     use anyhow::Context;
     use anyhow::Result;
+    use rustls::ClientConfig;
     use rustls::RootCertStore;
+    use rustls::ServerConfig;
     use rustls::pki_types::CertificateDer;
     use rustls::pki_types::PrivateKeyDer;
     use rustls::pki_types::ServerName;
@@ -1741,7 +1781,7 @@ pub(crate) mod tls {
     }
 
     /// Get the PEM bundle from configuration.
-    fn get_pem_bundle() -> PemBundle {
+    pub(super) fn get_pem_bundle() -> PemBundle {
         PemBundle {
             ca: hyperactor_config::global::get_cloned(TLS_CA),
             cert: hyperactor_config::global::get_cloned(TLS_CERT),
@@ -1749,21 +1789,25 @@ pub(crate) mod tls {
         }
     }
 
-    /// Creates a TLS acceptor using certificates from the provided PEM bundle.
-    /// If `enforce_client_tls` is true, requires client certificates for mutual TLS.
-    pub(super) fn tls_acceptor_from_bundle(
-        bundle: &PemBundle,
-        enforce_client_tls: bool,
-    ) -> Result<TlsAcceptor> {
+    fn install_default_crypto_provider() {
         // Ensure ring is installed as the process-level crypto provider.
         // No-op when already installed (e.g. under Buck with native-tls).
         let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+
+    /// Creates a Rustls server config using certificates from the provided PEM bundle.
+    /// If `enforce_client_tls` is true, requires client certificates for mutual TLS.
+    pub(super) fn server_config_from_bundle(
+        bundle: &PemBundle,
+        enforce_client_tls: bool,
+    ) -> Result<ServerConfig> {
+        install_default_crypto_provider();
 
         let certs = load_certs(&bundle.cert).context("load TLS certificate")?;
         let key = load_key(&bundle.key).context("load TLS key")?;
         let root_store = build_root_store(&bundle.ca).context("build root cert store")?;
 
-        let config = rustls::ServerConfig::builder();
+        let config = ServerConfig::builder();
         let config = if enforce_client_tls {
             // Build server config with mutual TLS (require client certs)
             let client_verifier =
@@ -1776,6 +1820,16 @@ pub(crate) mod tls {
         }
         .with_single_cert(certs, key)?;
 
+        Ok(config)
+    }
+
+    /// Creates a TLS acceptor using certificates from the provided PEM bundle.
+    /// If `enforce_client_tls` is true, requires client certificates for mutual TLS.
+    pub(super) fn tls_acceptor_from_bundle(
+        bundle: &PemBundle,
+        enforce_client_tls: bool,
+    ) -> Result<TlsAcceptor> {
+        let config = server_config_from_bundle(bundle, enforce_client_tls)?;
         Ok(TlsAcceptor::from(Arc::new(config)))
     }
 
@@ -1784,21 +1838,35 @@ pub(crate) mod tls {
         tls_acceptor_from_bundle(&get_pem_bundle(), true)
     }
 
-    /// Creates a TLS connector using certificates from the provided PEM bundle.
-    pub(super) fn tls_connector_from_bundle(bundle: &PemBundle) -> Result<TlsConnector> {
-        // Ensure ring is installed as the process-level crypto provider.
-        // No-op when already installed (e.g. under Buck with native-tls).
-        let _ = rustls::crypto::ring::default_provider().install_default();
+    /// Creates a Rustls client config using only CA roots.
+    pub(super) fn client_config_from_ca(ca_pem: &Pem) -> Result<ClientConfig> {
+        install_default_crypto_provider();
+
+        let root_store = build_root_store(ca_pem).context("build root cert store")?;
+        Ok(ClientConfig::builder()
+            .with_root_certificates(Arc::new(root_store))
+            .with_no_client_auth())
+    }
+
+    /// Creates a Rustls client config using certificates from the provided PEM bundle.
+    pub(super) fn client_config_from_bundle(bundle: &PemBundle) -> Result<ClientConfig> {
+        install_default_crypto_provider();
 
         let certs = load_certs(&bundle.cert).context("load TLS certificate")?;
         let key = load_key(&bundle.key).context("load TLS key")?;
         let root_store = build_root_store(&bundle.ca).context("build root cert store")?;
 
-        let config = rustls::ClientConfig::builder()
+        let config = ClientConfig::builder()
             .with_root_certificates(Arc::new(root_store))
             .with_client_auth_cert(certs, key)
             .context("configure client auth")?;
 
+        Ok(config)
+    }
+
+    /// Creates a TLS connector using certificates from the provided PEM bundle.
+    pub(super) fn tls_connector_from_bundle(bundle: &PemBundle) -> Result<TlsConnector> {
+        let config = client_config_from_bundle(bundle)?;
         Ok(TlsConnector::from(Arc::new(config)))
     }
 
@@ -1945,7 +2013,11 @@ pub(crate) mod tls {
 
         use super::*;
         use crate::channel::Rx;
+        use crate::channel::Tx;
+        use crate::channel::dial;
         use crate::channel::net::server;
+        use crate::channel::serve;
+        use crate::channel::unordered;
         use crate::config::Pem;
         use crate::config::TLS_CA;
         use crate::config::TLS_CERT;
@@ -2067,6 +2139,56 @@ u19txmtkiMEH+aNmekk=
             // Receive the message
             let received = rx.recv().await.expect("failed to receive");
             assert_eq!(received, 42u64);
+        }
+
+        #[async_timed_test(timeout_secs = 30)]
+        async fn test_quic_basic() {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+
+            let config = hyperactor_config::global::lock();
+            let _guard_cert =
+                config.override_key(TLS_CERT, Pem::Value(TEST_SERVER_CERT.as_bytes().to_vec()));
+            let _guard_key =
+                config.override_key(TLS_KEY, Pem::Value(TEST_SERVER_KEY.as_bytes().to_vec()));
+            let _guard_ca =
+                config.override_key(TLS_CA, Pem::Value(TEST_CA_CERT.as_bytes().to_vec()));
+
+            let (addr, mut rx) =
+                serve::<u64>(ChannelAddr::Quic(TlsAddr::new("localhost", 0))).unwrap();
+            let tx = dial::<u64>(addr).unwrap();
+
+            tx.post(42u64);
+
+            let received = rx.recv().await.expect("failed to receive");
+            assert_eq!(received, 42u64);
+        }
+
+        #[async_timed_test(timeout_secs = 30)]
+        async fn test_quic_unordered_basic() {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+
+            let config = hyperactor_config::global::lock();
+            let _guard_cert =
+                config.override_key(TLS_CERT, Pem::Value(TEST_SERVER_CERT.as_bytes().to_vec()));
+            let _guard_key =
+                config.override_key(TLS_KEY, Pem::Value(TEST_SERVER_KEY.as_bytes().to_vec()));
+            let _guard_ca =
+                config.override_key(TLS_CA, Pem::Value(TEST_CA_CERT.as_bytes().to_vec()));
+
+            let (addr, mut rx) =
+                unordered::serve::<u64>(ChannelAddr::Quic(TlsAddr::new("localhost", 0))).unwrap();
+            let tx = unordered::dial::<u64>(addr, 2).unwrap();
+
+            for i in 0..8 {
+                tx.post(i);
+            }
+
+            let mut received = Vec::new();
+            for _ in 0..8 {
+                received.push(rx.recv().await.expect("failed to receive"));
+            }
+            received.sort();
+            assert_eq!(received, (0..8).collect::<Vec<_>>());
         }
 
         #[async_timed_test(timeout_secs = 30)]
@@ -2270,6 +2392,9 @@ pub fn try_tls_connector() -> Option<tokio_rustls::TlsConnector> {
     let oss_bundle = oss_pem_bundle();
     if let Ok(connector) = tls::tls_connector_from_bundle(&oss_bundle) {
         return Some(connector);
+    }
+    if let Ok(config) = tls::client_config_from_ca(&oss_bundle.ca) {
+        return Some(tokio_rustls::TlsConnector::from(Arc::new(config)));
     }
     tracing::debug!("OSS TLS connector failed, trying Meta paths");
 

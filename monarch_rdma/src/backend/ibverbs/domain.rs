@@ -16,7 +16,7 @@ use std::ffi::CStr;
 use std::io::Error;
 use std::result::Result;
 
-use super::primitives::IbvDevice;
+use super::primitives::IbvDeviceInfo;
 
 /// Manages RDMA resources including context and protection domain.
 ///
@@ -83,7 +83,7 @@ impl IbvDomain {
     ///
     /// Returns errors if no RDMA devices are found, the specified device cannot be found,
     /// device context creation fails, or protection domain allocation fails.
-    pub fn new(device: IbvDevice) -> Result<Self, anyhow::Error> {
+    pub fn new(device: IbvDeviceInfo) -> Result<Self, anyhow::Error> {
         tracing::debug!("creating IbvDomain for device {}", device.name());
         unsafe {
             let device_name = device.name();
