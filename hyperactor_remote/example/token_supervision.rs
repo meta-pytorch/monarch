@@ -23,6 +23,7 @@ use hyperactor::ActorAddr;
 use hyperactor::ActorHandle;
 use hyperactor::ActorRef;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Proc;
@@ -32,7 +33,8 @@ use hyperactor::channel::ChannelTransport;
 use hyperactor::channel::TcpMode;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_remote::KeepaliveLink;
-use hyperactor_remote::LinkOptions;
+use hyperactor_remote::Spawn;
+use hyperactor_remote::SupervisionOptions;
 use hyperactor_remote::Supervisor;
 use hyperactor_remote::Token;
 use hyperactor_remote::TokenOptions;
@@ -120,7 +122,7 @@ impl Handler<token::Joined<ActorRef<WorkerLike>>> for Parent {
         let supervisor = cx.spawn(Supervisor::new(
             message.peer,
             KeepaliveLink::new(self.keepalive_interval, self.keepalive_timeout),
-            LinkOptions::default(),
+            SupervisionOptions::default(),
         ));
         self.supervisor = Some(supervisor);
         if let Some(path) = &self.ready_file {
@@ -212,9 +214,13 @@ async fn run_joiner(args: JoinerArgs) -> anyhow::Result<()> {
         "token_supervision_joiner".to_string(),
     )?;
     let joiner = proc.client("joiner");
-    let worker = proc.spawn(Worker::new(DemoChild {
-        stopped_file: args.stopped_file,
-    }));
+    let worker = proc.spawn(Worker::new());
+    worker.post(
+        &joiner,
+        Spawn::new(DemoChild {
+            stopped_file: args.stopped_file,
+        }),
+    );
     let (result_port, mut result_rx) = joiner.open_port::<token::JoinResult<ActorAddr>>();
 
     token.join(&joiner, worker.bind::<WorkerLike>(), result_port.bind())?;
