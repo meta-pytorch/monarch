@@ -7,16 +7,16 @@
 # pyre-strict
 
 """
-Poll ci_signals_result until all oss_ci signals for a Phabricator diff version resolve.
+Poll GitHub Actions check runs until OSS CI for a Phabricator diff version resolves.
 
 Auth uses the current user on devservers and the read-only diff reader bot in
 Sandcastle. This avoids depending on jf being installed on Sandcastle workers.
 
-Two implementation notes:
+Implementation notes:
   1. The version FBID must be looked up from phabricator_versions; jf diff-properties
      returns the latest (post-landing) FBID which may differ from the CI version.
-  2. ci_signals_result silently returns 0 results when the FBID is a GraphQL variable;
-     the FBID must be inlined into the query string.
+  2. The Phabricator CI signal mirror can lag or omit OSS GitHub checks. The
+     source of truth here is the linked GitHub PR's check runs.
 
 Exits 0 if all OSS CI signals pass, 1 if any fail, 2 on timeout/infra error.
 
@@ -41,19 +41,31 @@ from libfb.py.interngraph.graphql.graphql_query import GraphQLClient
 
 LOG: logging.Logger = logging.getLogger(__name__)
 
-OSS_SIGNAL_PREFIX = "meta-pytorch/monarch: "
-REQUIRED_WORKFLOW_PREFIXES = (
-    "meta-pytorch/monarch: CI /",
-    "meta-pytorch/monarch: CI (macOS) /",
-    "meta-pytorch/monarch: Docs /",
-)
 MAX_WAIT_SECS = 5400  # 90 min — stay under the 2-hour Sandcastle wall-clock kill
 INITIAL_BACKOFF_SECS = 30
 MAX_BACKOFF_SECS = 300
 
-_PASS_STATUSES = {"GOOD", "PASSED", "SKIPPED"}
-_FAIL_STATUSES = {"FAILED", "ERROR"}
-_WARN_STATUSES = {"WARNING", "WARNED"}
+REQUIRED_CHECK_RUN_PREFIXES = (
+    "Build CPU /",
+    "Build Documentation /",
+    "Build GPU /",
+    "Test CPU Python /",
+    "Test CPU Rust /",
+    "Test GPU Python /",
+    "Test GPU Rust /",
+    "Type Check Python /",
+)
+IGNORED_CHECK_RUN_NAMES = {
+    "Build CPU (macOS)",
+    "Status Check",
+    "Test CPU Python (macOS)",
+    "Test CPU Rust (macOS)",
+    "deploy",
+}
+IGNORED_CHECK_RUN_PREFIXES = ("Build Docker image /",)
+
+_PASS_CONCLUSIONS = {"NEUTRAL", "SKIPPED", "SUCCESS"}
+_FAIL_CONCLUSIONS = {"ACTION_REQUIRED", "CANCELLED", "FAILURE", "TIMED_OUT"}
 
 # Matches PhabricatorAuthStrategyFactory.diff_reader_bot().
 _DIFF_READER_BOT_FBID = 89002005288303
@@ -129,27 +141,112 @@ def _get_version_fbid(diff_num: int, version_num: int) -> str:
     )
 
 
-def _get_oss_ci_signals(version_fbid: str) -> list[dict[str, Any]]:
-    """Return all GitHub Actions signals for the Monarch OSS repository.
-
-    The FBID must be inlined — GraphQL variables cause ci_signals_result to
-    silently return 0 results (JF GraphQL bug).
-    """
-    version_fbid = str(int(version_fbid))
+def _get_github_prs(diff_num: int) -> list[dict[str, Any]]:
     query = (
-        '{ ci_signals_result(query_key:{type:PHABRICATOR_VERSION_FBID,value:"%s"})'
-        "{ signals(first:1000,filters:{}) { nodes { name status } } } }" % version_fbid
+        "query GetGitHubPRChecks($diffNumber: String!) { "
+        "phabricator_diff(number: $diffNumber) { "
+        "opensource_github_pull_requests(first: 10) { nodes { "
+        "number github_url head_sha synced_at_timestamp "
+        "phabricator_version_links(first: 50) { nodes { "
+        "creation_time head_sha phabricator_version { id number } "
+        "} } "
+        "test_check_runs(include_internal: false) { "
+        "name status conclusion app_name sha updated_at_timestamp details_url "
+        "} "
+        "} } "
+        "} "
+        "}"
     )
-    data = _graphql(query, timeout_seconds=90)
-    nodes = data.get("ci_signals_result", {}).get("signals", {}).get("nodes", [])
-    return [n for n in nodes if n["name"].startswith(OSS_SIGNAL_PREFIX)]
+    data = _graphql(query, {"diffNumber": str(diff_num)}, timeout_seconds=90)
+    return (
+        data.get("phabricator_diff", {})
+        .get("opensource_github_pull_requests", {})
+        .get("nodes", [])
+    )
 
 
-def _missing_required_workflows(signals: list[dict[str, Any]]) -> list[str]:
+def _version_links(pr: dict[str, Any]) -> list[dict[str, Any]]:
+    return pr.get("phabricator_version_links", {}).get("nodes", [])
+
+
+def _latest_version_link(
+    prs: list[dict[str, Any]],
+    version_fbid: str,
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    matches = []
+    for pr in prs:
+        for link in _version_links(pr):
+            version = link.get("phabricator_version")
+            if version is not None and str(version.get("id")) == version_fbid:
+                matches.append((pr, link))
+
+    if not matches:
+        return None
+
+    return max(matches, key=lambda match: int(match[1]["creation_time"]))
+
+
+def _matching_check_runs(
+    pr: dict[str, Any],
+    head_sha: str,
+) -> list[dict[str, Any]]:
     return [
-        prefix
-        for prefix in REQUIRED_WORKFLOW_PREFIXES
-        if not any(s["name"].startswith(prefix) for s in signals)
+        check_run
+        for check_run in pr.get("test_check_runs", [])
+        if check_run.get("app_name") == "GitHub Actions"
+        and check_run.get("sha") == head_sha
+    ]
+
+
+def _is_ignored_check_run(check_run: dict[str, Any]) -> bool:
+    name = check_run["name"]
+    return (
+        name in IGNORED_CHECK_RUN_NAMES
+        or " / set-matrix / " in name
+        or any(name.startswith(prefix) for prefix in IGNORED_CHECK_RUN_PREFIXES)
+    )
+
+
+def _real_check_runs(check_runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        check_run for check_run in check_runs if not _is_ignored_check_run(check_run)
+    ]
+
+
+def _missing_required_check_runs(check_runs: list[dict[str, Any]]) -> list[str]:
+    real_check_runs = _real_check_runs(check_runs)
+    return [
+        required_prefix
+        for required_prefix in REQUIRED_CHECK_RUN_PREFIXES
+        if not any(
+            check_run["name"].startswith(required_prefix)
+            for check_run in real_check_runs
+        )
+    ]
+
+
+def _pending_check_runs(check_runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        check_run
+        for check_run in check_runs
+        if check_run.get("status") != "COMPLETED"
+        or check_run.get("conclusion") not in (_PASS_CONCLUSIONS | _FAIL_CONCLUSIONS)
+    ]
+
+
+def _failed_check_runs(check_runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        check_run
+        for check_run in check_runs
+        if check_run.get("conclusion") in _FAIL_CONCLUSIONS
+    ]
+
+
+def _passed_check_runs(check_runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        check_run
+        for check_run in check_runs
+        if check_run.get("conclusion") in _PASS_CONCLUSIONS
     ]
 
 
@@ -196,46 +293,69 @@ def main() -> None:
             sys.exit(2)
 
         try:
-            signals = _get_oss_ci_signals(version_fbid)
+            prs = _get_github_prs(diff_num)
         except Exception as e:
             LOG.warning("[%ss] query error: %s", elapsed, e)
             time.sleep(backoff)
             backoff = min(backoff * 2, MAX_BACKOFF_SECS)
             continue
 
-        if not signals:
-            LOG.info("[%ss] no OSS CI signals yet", elapsed)
+        match = _latest_version_link(prs, version_fbid)
+        if match is None:
+            LOG.info(
+                "[%ss] no linked GitHub PR for version FBID %s yet",
+                elapsed,
+                version_fbid,
+            )
             time.sleep(backoff)
             backoff = min(backoff * 2, MAX_BACKOFF_SECS)
             continue
 
-        missing_workflows = _missing_required_workflows(signals)
-        pending = [
-            s
-            for s in signals
-            if s["status"] not in (_PASS_STATUSES | _FAIL_STATUSES | _WARN_STATUSES)
-        ]
-        failed = [s for s in signals if s["status"] in _FAIL_STATUSES]
-        passed = [s for s in signals if s["status"] in _PASS_STATUSES | _WARN_STATUSES]
+        pr, link = match
+        head_sha = link["head_sha"]
+        check_runs = _matching_check_runs(pr, head_sha)
+        if not check_runs:
+            LOG.info(
+                "[%ss] no GitHub Actions check runs yet for PR %s at %s",
+                elapsed,
+                pr["number"],
+                head_sha,
+            )
+            time.sleep(backoff)
+            backoff = min(backoff * 2, MAX_BACKOFF_SECS)
+            continue
+
+        real_check_runs = _real_check_runs(check_runs)
+        missing_required = _missing_required_check_runs(check_runs)
+        pending = _pending_check_runs(real_check_runs)
+        failed = _failed_check_runs(real_check_runs)
+        passed = _passed_check_runs(real_check_runs)
 
         LOG.info(
-            "[%ss] OSS CI: %s passed, %s failed, %s pending, %s workflows not visible yet",
+            "[%ss] OSS CI for PR %s at %s: %s passed, %s failed, %s pending, %s required checks not visible yet",
             elapsed,
+            pr["number"],
+            head_sha,
             len(passed),
             len(failed),
             len(pending),
-            len(missing_workflows),
+            len(missing_required),
         )
-        for s in failed:
-            LOG.error("failed signal: %s", s["name"])
-        for workflow in missing_workflows:
-            LOG.info("waiting for workflow: %s", workflow)
+        for check_run in failed:
+            LOG.error("failed check run: %s", check_run["name"])
+        for check_run in pending[:20]:
+            LOG.info("pending check run: %s", check_run["name"])
+        for check_run in missing_required:
+            LOG.info("waiting for required check run: %s", check_run)
 
-        if not pending and not missing_workflows:
+        if not pending and not missing_required:
             if failed:
-                LOG.error("GitHub CI failed: %s signal(s) failed", len(failed))
+                LOG.error("GitHub CI failed: %s check run(s) failed", len(failed))
                 sys.exit(1)
-            LOG.info("GitHub CI passed: all %s OSS CI signal(s) resolved", len(signals))
+            LOG.info(
+                "GitHub CI passed: all %s real check run(s) resolved",
+                len(real_check_runs),
+            )
             sys.exit(0)
 
         time.sleep(backoff)
