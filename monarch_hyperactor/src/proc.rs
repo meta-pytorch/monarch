@@ -354,7 +354,7 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
         );
         actor_id
             .inner
-            .port_addr(message.port().into())
+            .port_addr(hyperactor::Port::handler_id(message.port(), None))
             .send(&self.instance, message.inner.clone());
         Ok(())
     }
