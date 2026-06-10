@@ -4349,7 +4349,7 @@ impl<A: Actor> HandlerPorts<A> {
         let port = Port::handler::<M>();
         match self.bound.entry(port.clone()) {
             Entry::Vacant(entry) => {
-                self.get::<M>().bind_handler_port();
+                let _ = self.get::<M>().bind();
                 entry.insert(M::typename());
             }
             Entry::Occupied(entry) => {

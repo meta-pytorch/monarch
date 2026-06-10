@@ -740,27 +740,15 @@ where
 
         // Subscribe to streaming state updates from the underlying agents so
         // the controller receives state changes in real time, complementing
-        // the existing polling loop. Avoid binding the handle here: the
-        // controller's exported ports are bound when the mesh installs the
-        // ActorRef after spawn. Binding the same handle twice panics.
+        // the existing polling loop. Must happen before starting the monitor
+        // so that the first CheckState does not race the initial StreamState
+        // cast.
         //
-        // This must happen before starting the monitor so that the first
-        // CheckState does not race the initial StreamState cast.
-        //
-        // TODO(SF, 2026-03-32, T261106175): follow up in hyperactor on bind
-        // semantics here. `cx.port()` plus later actor-ref export currently
-        // hits `bind()` -> `bind_handler_port()` on the same handle, and
-        // `bind_handler_port()` still panics on an already-bound handle. This
-        // workaround uses `attest_handler_port(...)` to avoid the eager
-        // bind, but the longer-term fix is to clarify whether that bind
-        // path should be idempotent and eliminate the need for attestation
-        // here.
-        let subscriber =
-            hyperactor::PortRef::<resource::State<T::StateInner>>::attest_handler_port(
-                &this.self_addr().clone(),
-            )
-            .unsplit();
-        self.mesh.subscribe_to_stream(this, subscriber)?;
+        // Bind the handler port before handing the `PortRef` to the agent.
+        // The later external bind races against `init`, but both calls bind
+        // the same well-known handler port and are idempotent.
+        self.mesh
+            .subscribe_to_stream(this, this.port().bind().unsplit())?;
 
         // Start the monitor task.
         self.monitor = Some(());
