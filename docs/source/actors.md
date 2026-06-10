@@ -197,6 +197,7 @@ class FileWriter(Actor):
 - Each owned actor's `__cleanup__` has already run
 - Owned actor meshes and proc meshes are no longer usable from this method
 - For shutdown work that needs an owned mesh, expose a dedicated endpoint and call it before `stop()`
+- For `@concurrent_actor` actors, in-flight endpoint tasks have completed before shutdown finishes; if `__cleanup__` is defined, they complete before it begins
 
 **What to Clean Up Here:**
 - Open files and network connections
@@ -243,6 +244,35 @@ class Calculator(Actor):
     @endpoint
     def get_history(self) -> list:
         return self.history
+```
+
+By default, one actor processes one endpoint message at a time. To schedule
+each async endpoint body as an `asyncio` task and let later messages start
+while that task is still running, decorate the actor class with
+`@concurrent_actor`:
+
+```python
+from monarch.actor import Actor, Port, concurrent_actor, endpoint
+
+@concurrent_actor
+class Fetcher(Actor):
+    @endpoint
+    async def fetch(self, url: str) -> bytes:
+        return await fetch_bytes(url)
+```
+
+The decorator also composes with `explicit_response_port=True`, which is useful
+for endpoints that send a response and then keep running. In that case, the
+same response port is forwarded to the endpoint body, and the endpoint remains
+responsible for sending its own response:
+
+```python
+@concurrent_actor
+class Watcher(Actor):
+    @endpoint(explicit_response_port=True)
+    async def watch(self, port: Port[str]) -> None:
+        port.send("started")
+        await self.watch_forever()
 ```
 
 ### Messaging Adverbs
