@@ -26,6 +26,7 @@ from monarch._rust_bindings.monarch_hyperactor.host_mesh import PyMeshAdminRef
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.actor.host_mesh import _spawn_admin
 from monarch._src.actor.sync_state import fake_sync_state
+from monarch._src.job.job_sidecar import stop_job_sidecar
 from monarch._src.job.mount_config import Mounts
 
 # note: the jobs api is intended as a library so it should
@@ -670,7 +671,7 @@ class JobTrait(ABC):
         apply_id = self.apply_id
         running = self._running
         if apply_id is not None and running is not None:
-            self._mounts.ensure_open(running)
+            self._mounts.ensure_open(apply_id, raw._hosts)
         hosts = {}
         for mesh_name, mesh in raw._hosts.items():
             exe = self._python_executables.get(mesh_name, self._default_python_exe)
@@ -743,8 +744,9 @@ class JobTrait(ABC):
         return pickle.dumps(self)
 
     def kill(self):
-        if self._apply_id is not None:
-            self._mounts.ensure_stopped(self._apply_id)
+        apply_id = self.apply_id
+        if apply_id is not None:
+            stop_job_sidecar(apply_id)
         running = self._running
         if running is not None:
             running._kill()

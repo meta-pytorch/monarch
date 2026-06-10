@@ -56,14 +56,51 @@ use super::primitives::IbvWc;
 use super::primitives::resolve_qp_type;
 use crate::RdmaOpType;
 
-/// A structured error from [`IbvQueuePair::poll_completion`].
-///
-/// Carries the `ibv_wc_status` and vendor error code (when available) so
-/// callers can match on specific completion statuses without string parsing.
+/// A per-work-request completion failure: a work request completed with
+/// a non-success `ibv_wc_status`. Carries the `wr_id`, status, and vendor
+/// error code so callers can correlate the failure to the request and
+/// match on the status without string parsing. The QP may or may not be
+/// in error state.
+#[derive(Debug)]
+pub struct WorkRequestError {
+    pub wr_id: u64,
+    pub status: rdmaxcel_sys::ibv_wc_status::Type,
+    pub vendor_err: u32,
+    message: String,
+}
+
+impl std::fmt::Display for WorkRequestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for WorkRequestError {}
+
+impl WorkRequestError {
+    /// Returns `true` when the completion status is `IBV_WC_WR_FLUSH_ERR`,
+    /// which typically indicates a secondary failure after the QP entered
+    /// error state due to a different work request's failure.
+    pub fn is_wr_flush_err(&self) -> bool {
+        self.status == rdmaxcel_sys::ibv_wc_status::IBV_WC_WR_FLUSH_ERR
+    }
+
+    #[cfg(test)]
+    pub(super) fn for_test(wr_id: u64, message: &str) -> Self {
+        Self {
+            wr_id,
+            status: rdmaxcel_sys::ibv_wc_status::IBV_WC_GENERAL_ERR,
+            vendor_err: 0,
+            message: message.to_string(),
+        }
+    }
+}
+
+/// A CQ-level poll failure from [`IbvQueuePair::poll_completion`]:
+/// `ibv_poll_cq` itself failed and the completion queue is no longer
+/// usable. The owning QP should be treated as poisoned.
 #[derive(Debug)]
 pub struct PollCompletionError {
-    pub status: Option<rdmaxcel_sys::ibv_wc_status::Type>,
-    pub vendor_err: Option<u32>,
     message: String,
 }
 
@@ -76,19 +113,10 @@ impl std::fmt::Display for PollCompletionError {
 impl std::error::Error for PollCompletionError {}
 
 impl PollCompletionError {
-    /// Returns `true` when the completion status is `IBV_WC_WR_FLUSH_ERR`,
-    /// which typically indicates a secondary failure after the QP entered
-    /// error state due to a different work request's failure.
-    pub fn is_wr_flush_err(&self) -> bool {
-        self.status == Some(rdmaxcel_sys::ibv_wc_status::IBV_WC_WR_FLUSH_ERR)
-    }
-
     #[cfg(test)]
     pub(super) fn for_test(message: &str) -> Self {
         Self {
             message: message.to_string(),
-            status: None,
-            vendor_err: None,
         }
     }
 }
@@ -994,143 +1022,66 @@ impl IbvQueuePair {
         }
     }
 
-    /// Polls for work completions for each of `expected_wr_ids`.
+    /// Polls `target`'s completion queue for a single work completion.
+    ///
+    /// This is a thin wrapper over one `ibv_poll_cq` call. It does no
+    /// per-WR bookkeeping: the caller owns matching each completion back
+    /// to the work request it posted (by [`IbvWc::wr_id`]) and must keep
+    /// polling until the queue drains so that no completion is lost.
     ///
     /// # Returns
     ///
-    /// * Outer `Ok` — the CQ poll itself succeeded. Each element is
-    ///   `(wr_id, Ok(IbvWc))` for a completed WR or `(wr_id,
-    ///   Err(PollCompletionError))` for a WR whose completion landed
-    ///   with a non-success status (per-WR failure; the QP may or may
-    ///   not be in error state). wr_ids that have no completion yet
-    ///   are omitted.
-    /// * Outer `Err` — the CQ itself is unusable (`ibv_poll_cq`
-    ///   returned a negative value, i.e. `RDMAXCEL_CQ_POLL_FAILED`,
-    ///   or some other non-classifiable rdmaxcel return code). The
-    ///   QP should be treated as poisoned.
+    /// * `Ok(None)` — the CQ is currently empty.
+    /// * `Ok(Some(Ok(wc)))` — a completion landed with success status.
+    /// * `Ok(Some(Err(_)))` — a completion landed with a non-success
+    ///   status; the [`WorkRequestError`] names the failed request.
+    /// * `Err(_)` — `ibv_poll_cq` itself failed; the QP should be treated
+    ///   as poisoned.
     pub fn poll_completion(
         &mut self,
         target: PollTarget,
-        expected_wr_ids: &HashSet<u64>,
-    ) -> Result<Vec<(u64, Result<IbvWc, PollCompletionError>)>, PollCompletionError> {
-        if expected_wr_ids.is_empty() {
-            return Ok(Vec::new());
-        }
-
+    ) -> Result<Option<Result<IbvWc, WorkRequestError>>, PollCompletionError> {
         unsafe {
-            let qp = self.qp as *mut rdmaxcel_sys::rdmaxcel_qp;
-            let qp_num = (*(*qp).ibv_qp).qp_num;
-
-            let (cq, cache, cq_type) = match target {
-                PollTarget::Send => (
-                    self.send_cq as *mut rdmaxcel_sys::ibv_cq,
-                    rdmaxcel_sys::rdmaxcel_qp_get_send_cache(qp),
-                    "send",
-                ),
-                PollTarget::Recv => (
-                    self.recv_cq as *mut rdmaxcel_sys::ibv_cq,
-                    rdmaxcel_sys::rdmaxcel_qp_get_recv_cache(qp),
-                    "recv",
-                ),
+            let (cq, cq_type) = match target {
+                PollTarget::Send => (self.send_cq as *mut rdmaxcel_sys::ibv_cq, "send"),
+                PollTarget::Recv => (self.recv_cq as *mut rdmaxcel_sys::ibv_cq, "recv"),
             };
+            let context = self.context as *mut rdmaxcel_sys::ibv_context;
+            let poll_cq = (*context)
+                .ops
+                .poll_cq
+                .expect("poll_cq verb missing from ibv_context ops");
 
-            let mut results = Vec::new();
+            let mut wc = std::mem::MaybeUninit::<rdmaxcel_sys::ibv_wc>::zeroed().assume_init();
+            let ret = poll_cq(cq, 1, &mut wc);
 
-            for &expected_wr_id in expected_wr_ids {
-                let mut poll_ctx = rdmaxcel_sys::poll_context_t {
-                    expected_wr_id,
-                    expected_qp_num: qp_num,
-                    cache,
-                    cq,
-                };
-
-                let mut wc = std::mem::MaybeUninit::<rdmaxcel_sys::ibv_wc>::zeroed().assume_init();
-                let ret = rdmaxcel_sys::poll_cq_with_cache(&mut poll_ctx, &mut wc);
-
-                match ret {
-                    1 => {
-                        if !wc.is_valid()
-                            && let Some((status, vendor_err)) = wc.error()
-                        {
-                            results.push((
-                                expected_wr_id,
-                                Err(PollCompletionError {
-                                    status: Some(status),
-                                    vendor_err: Some(vendor_err),
-                                    message: format!(
-                                        "{} completion failed for wr_id={}: status={:?}, vendor_err={}",
-                                        cq_type, expected_wr_id, status, vendor_err,
-                                    ),
-                                }),
-                            ));
-                        } else {
-                            results.push((expected_wr_id, Ok(IbvWc::from(wc))));
-                        }
-                    }
-                    0 => {
-                        // Not found yet
-                    }
-                    // RDMAXCEL_COMPLETION_FAILED: per-WR completion landed
-                    // with a non-success status. Surface as an inner Err
-                    // so the caller can report the failure for this op
-                    // without poisoning the QP.
-                    -17 => {
-                        let error_msg =
-                            std::ffi::CStr::from_ptr(rdmaxcel_sys::rdmaxcel_error_string(ret))
-                                .to_str()
-                                .unwrap_or("Unknown error");
-                        let (status, vendor_err) =
-                            wc.error().map_or((None, None), |(s, v)| (Some(s), Some(v)));
-                        let message = match (status, vendor_err) {
-                            (Some(s), Some(v)) => format!(
-                                "{} wr_id={} completed with non-success status: {} [status={:?}, vendor_err={}, qp_num={}, byte_len={}]",
-                                cq_type,
-                                expected_wr_id,
-                                error_msg,
-                                s,
-                                v,
-                                wc.qp_num,
-                                wc.len(),
-                            ),
-                            _ => format!(
-                                "{} wr_id={} completed with non-success status: {} [qp_num={}, byte_len={}]",
-                                cq_type,
-                                expected_wr_id,
-                                error_msg,
-                                wc.qp_num,
-                                wc.len(),
-                            ),
-                        };
-                        results.push((
-                            expected_wr_id,
-                            Err(PollCompletionError {
-                                status,
-                                vendor_err,
-                                message,
-                            }),
-                        ));
-                    }
-                    // RDMAXCEL_CQ_POLL_FAILED (-16) and any other
-                    // non-classifiable rdmaxcel return code: fatal at
-                    // the CQ level; the QP is no longer pollable.
-                    _ => {
-                        let error_msg =
-                            std::ffi::CStr::from_ptr(rdmaxcel_sys::rdmaxcel_error_string(ret))
-                                .to_str()
-                                .unwrap_or("Unknown error");
-                        return Err(PollCompletionError {
-                            status: None,
-                            vendor_err: None,
-                            message: format!(
-                                "{} CQ poll failed (ret={}) while looking up wr_id={}: {}",
-                                cq_type, ret, expected_wr_id, error_msg,
-                            ),
-                        });
-                    }
-                }
+            if ret < 0 {
+                return Err(PollCompletionError {
+                    message: format!("{} CQ poll failed (ibv_poll_cq returned {})", cq_type, ret),
+                });
+            }
+            if ret == 0 {
+                return Ok(None);
             }
 
-            Ok(results)
+            // ret >= 1: a single entry was requested, so `wc` holds one
+            // completion. `error()` is `Some` exactly when the status is
+            // not `IBV_WC_SUCCESS`.
+            if let Some((status, vendor_err)) = wc.error() {
+                return Ok(Some(Err(WorkRequestError {
+                    wr_id: wc.wr_id(),
+                    status,
+                    vendor_err,
+                    message: format!(
+                        "{} completion failed for wr_id={}: status={:?}, vendor_err={}",
+                        cq_type,
+                        wc.wr_id(),
+                        status,
+                        vendor_err,
+                    ),
+                })));
+            }
+            Ok(Some(Ok(IbvWc::from(wc))))
         }
     }
 }
@@ -1177,14 +1128,13 @@ pub(super) trait QueuePair: std::fmt::Debug + Send + Sync + 'static {
     /// wr_id per chunk.
     fn get(&mut self, lhandle: IbvBuffer, rhandle: IbvBuffer) -> Result<Vec<u64>, anyhow::Error>;
 
-    /// Poll for completions of every wr_id in `expected_wr_ids`. See
+    /// Poll for the next available work completion. See
     /// [`IbvQueuePair::poll_completion`] for the outer/inner `Result`
     /// semantics.
     fn poll_completion(
         &mut self,
         target: PollTarget,
-        expected_wr_ids: &HashSet<u64>,
-    ) -> Result<Vec<(u64, Result<IbvWc, PollCompletionError>)>, PollCompletionError>;
+    ) -> Result<Option<Result<IbvWc, WorkRequestError>>, PollCompletionError>;
 }
 
 impl QueuePair for IbvQueuePair {
@@ -1203,9 +1153,8 @@ impl QueuePair for IbvQueuePair {
     fn poll_completion(
         &mut self,
         target: PollTarget,
-        expected_wr_ids: &HashSet<u64>,
-    ) -> Result<Vec<(u64, Result<IbvWc, PollCompletionError>)>, PollCompletionError> {
-        IbvQueuePair::poll_completion(self, target, expected_wr_ids)
+    ) -> Result<Option<Result<IbvWc, WorkRequestError>>, PollCompletionError> {
+        IbvQueuePair::poll_completion(self, target)
     }
 }
 
@@ -1382,10 +1331,6 @@ pub(super) struct QueuePairActor<M: Manager, Qp: QueuePair> {
     posted: HashMap<u64, PostedOpEntry>,
     /// wr_id → local op-id.
     wr_to_op: HashMap<u64, u64>,
-    /// Mirrors `wr_to_op.keys()` exactly, maintained incrementally
-    /// so each tick can hand it straight to `poll_completion`
-    /// without rebuilding.
-    to_poll: HashSet<u64>,
     next_op_id: u64,
     in_flight_reads: u32,
     in_flight_writes: u32,
@@ -1418,7 +1363,6 @@ impl<M: Manager, Qp: QueuePair> QueuePairActor<M, Qp> {
             queue: VecDeque::new(),
             posted: HashMap::new(),
             wr_to_op: HashMap::new(),
-            to_poll: HashSet::new(),
             next_op_id: 0,
             in_flight_reads: 0,
             in_flight_writes: 0,
@@ -1536,7 +1480,6 @@ impl<M: Manager, Qp: QueuePair> QueuePairActor<M, Qp> {
         let mut pending_wrs = HashSet::with_capacity(wr_ids.len());
         for id in &wr_ids {
             self.wr_to_op.insert(*id, op_id);
-            self.to_poll.insert(*id);
             pending_wrs.insert(*id);
         }
         if is_read {
@@ -1572,49 +1515,60 @@ impl<M: Manager, Qp: QueuePair> QueuePairActor<M, Qp> {
             }
         }
 
-        // 2. Poll for completions.
+        // 2. Drain the send CQ. Each completion identifies its WR by
+        //    `wr_id`; we correlate it back to its op and, once every WR
+        //    for an op has reported, emit the op's reply. Polling only
+        //    while WRs are outstanding keeps the loop from spinning on an
+        //    empty queue, and draining to `None` ensures no completion is
+        //    left behind.
         let mut progressed = false;
-        if !self.to_poll.is_empty() {
-            let completions = self
+        while !self.wr_to_op.is_empty() {
+            let completion = self
                 .qp
-                .poll_completion(PollTarget::Send, &self.to_poll)
+                .poll_completion(PollTarget::Send)
                 .map_err(|e| anyhow::anyhow!("CQ poll failed for qp_key={:?}: {e}", self.qp_key))?;
-            progressed = !completions.is_empty();
-            for (wr_id, wc_result) in completions {
-                self.to_poll.remove(&wr_id);
-                let op_id = self
-                    .wr_to_op
-                    .remove(&wr_id)
-                    .expect("completed wr_id missing from wr_to_op");
-                let entry = self
-                    .posted
-                    .get_mut(&op_id)
-                    .expect("op_id missing from posted");
-                entry.pending_wrs.remove(&wr_id);
-                if entry.is_read {
-                    self.in_flight_reads -= 1;
-                } else {
-                    self.in_flight_writes -= 1;
-                }
-                if let Err(per_wr) = wc_result
-                    && entry.first_error.is_none()
-                {
-                    entry.first_error = Some(per_wr.to_string());
-                }
-                if entry.pending_wrs.is_empty() {
-                    let entry = self.posted.remove(&op_id).expect("just verified");
-                    let result = match entry.first_error {
-                        Some(err) => Err(err),
-                        None => Ok(()),
-                    };
-                    entry.reply.try_post(
-                        cx,
-                        OpResult {
-                            op_idx: entry.op_idx,
-                            result,
-                        },
-                    )?;
-                }
+            let Some(wc_result) = completion else {
+                break;
+            };
+            progressed = true;
+
+            let (wr_id, wr_error) = match wc_result {
+                Ok(wc) => (wc.wr_id(), None),
+                Err(per_wr) => (per_wr.wr_id, Some(per_wr.to_string())),
+            };
+
+            let op_id = self
+                .wr_to_op
+                .remove(&wr_id)
+                .expect("completed wr_id missing from wr_to_op");
+            let entry = self
+                .posted
+                .get_mut(&op_id)
+                .expect("op_id missing from posted");
+            entry.pending_wrs.remove(&wr_id);
+            if entry.is_read {
+                self.in_flight_reads -= 1;
+            } else {
+                self.in_flight_writes -= 1;
+            }
+            if let Some(err) = wr_error
+                && entry.first_error.is_none()
+            {
+                entry.first_error = Some(err);
+            }
+            if entry.pending_wrs.is_empty() {
+                let entry = self.posted.remove(&op_id).expect("just verified");
+                let result = match entry.first_error {
+                    Some(err) => Err(err),
+                    None => Ok(()),
+                };
+                entry.reply.try_post(
+                    cx,
+                    OpResult {
+                        op_idx: entry.op_idx,
+                        result,
+                    },
+                )?;
             }
         }
         if progressed {
@@ -1948,11 +1902,10 @@ mod tests {
         /// Every `put`/`get` call is forwarded here in order, so the
         /// test body can `await` rather than poll.
         posted_tx: tokio::sync::mpsc::UnboundedSender<PostedOp>,
-        /// FIFO of completions the next `poll_completion` will hand
-        /// back (after filtering by `expected_wr_ids`). Each entry
-        /// is either `Ok(IbvWc)` (success) or `Err(...)` (per-WR
-        /// completion failure).
-        pending_completions: VecDeque<(u64, std::result::Result<IbvWc, PollCompletionError>)>,
+        /// FIFO of completions the next `poll_completion` calls hand
+        /// back, one per call. Each entry is either `Ok(IbvWc)`
+        /// (success) or `Err(...)` (per-WR completion failure).
+        pending_completions: VecDeque<std::result::Result<IbvWc, WorkRequestError>>,
         /// One-shot CQ-level error; cleared after the next poll consumes it.
         poll_error: Option<PollCompletionError>,
         /// One-shot error for the next `put` or `get` call.
@@ -1997,14 +1950,14 @@ mod tests {
             self.inner.lock().unwrap().connect_calls.clone()
         }
 
-        /// Queue a successful WC for `wr_id`. The next poll whose
-        /// `expected_wr_ids` contains `wr_id` returns it.
+        /// Queue a successful WC for `wr_id`. A subsequent
+        /// `poll_completion` call returns it in FIFO order.
         fn queue_completion(&self, wr_id: u64) {
             self.inner
                 .lock()
                 .unwrap()
                 .pending_completions
-                .push_back((wr_id, Ok(IbvWc::for_test(wr_id, true))));
+                .push_back(Ok(IbvWc::for_test(wr_id, true)));
         }
 
         /// Queue a per-WR completion failure for `wr_id` — the actor
@@ -2015,7 +1968,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .pending_completions
-                .push_back((wr_id, Err(PollCompletionError::for_test(message))));
+                .push_back(Err(WorkRequestError::for_test(wr_id, message)));
         }
 
         /// Queue a CQ-level poll error (one-shot). The next poll
@@ -2081,26 +2034,15 @@ mod tests {
         fn poll_completion(
             &mut self,
             _target: PollTarget,
-            expected_wr_ids: &HashSet<u64>,
         ) -> std::result::Result<
-            Vec<(u64, std::result::Result<IbvWc, PollCompletionError>)>,
+            Option<std::result::Result<IbvWc, WorkRequestError>>,
             PollCompletionError,
         > {
             let mut inner = self.inner.lock().unwrap();
             if let Some(err) = inner.poll_error.take() {
                 return Err(err);
             }
-            let mut matched = Vec::new();
-            let mut remaining = VecDeque::new();
-            while let Some((wr_id, wc)) = inner.pending_completions.pop_front() {
-                if expected_wr_ids.contains(&wr_id) {
-                    matched.push((wr_id, wc));
-                } else {
-                    remaining.push_back((wr_id, wc));
-                }
-            }
-            inner.pending_completions = remaining;
-            Ok(matched)
+            Ok(inner.pending_completions.pop_front())
         }
     }
 

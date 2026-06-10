@@ -11,7 +11,7 @@
 
 use std::sync::OnceLock;
 
-use super::primitives::IbvDevice;
+use super::primitives::IbvDeviceInfo;
 use super::primitives::get_all_devices;
 use crate::device_selection::PCIDevice;
 use crate::device_selection::get_all_rdma_devices;
@@ -24,7 +24,7 @@ use crate::device_selection::parse_pci_topology;
 /// Step 2: Get PCI address from compute device
 /// Step 3: Get PCI address for all RDMA NIC devices
 /// Step 4: Calculate PCI distances and return closest RDMA NIC device
-pub fn select_optimal_ibv_device(device_hint: Option<&str>) -> Option<IbvDevice> {
+pub fn select_optimal_ibv_device(device_hint: Option<&str>) -> Option<IbvDeviceInfo> {
     let device_hint = device_hint?;
 
     let (prefix, postfix) = parse_device_string(device_hint)?;
@@ -44,7 +44,7 @@ pub fn select_optimal_ibv_device(device_hint: Option<&str>) -> Option<IbvDevice>
             };
             let rdma_devices = get_all_rdma_devices();
             if rdma_devices.is_empty() {
-                return IbvDevice::first_available();
+                return IbvDeviceInfo::first_available();
             }
             let pci_devices = parse_pci_topology().ok()?;
             let source_device = pci_devices.get(&source_pci_addr)?;
@@ -68,7 +68,7 @@ pub fn select_optimal_ibv_device(device_hint: Option<&str>) -> Option<IbvDevice>
             }
 
             // Fallback
-            IbvDevice::first_available()
+            IbvDeviceInfo::first_available()
         }
         _ => {
             // Direct device name lookup for backward compatibility
@@ -85,8 +85,8 @@ pub fn select_optimal_ibv_device(device_hint: Option<&str>) -> Option<IbvDevice>
 ///
 /// Computed at most once per process on the first RDMA operation involving
 /// CUDA memory. CPU-only workloads pay no initialization cost.
-pub fn get_cuda_device_to_ibv_device() -> &'static Vec<Option<IbvDevice>> {
-    static CUDA_DEVICE_TO_IBV: OnceLock<Vec<Option<IbvDevice>>> = OnceLock::new();
+pub fn get_cuda_device_to_ibv_device() -> &'static Vec<Option<IbvDeviceInfo>> {
+    static CUDA_DEVICE_TO_IBV: OnceLock<Vec<Option<IbvDeviceInfo>>> = OnceLock::new();
     CUDA_DEVICE_TO_IBV.get_or_init(|| {
         let count = unsafe {
             let mut c: i32 = 0;
@@ -103,7 +103,7 @@ pub fn get_cuda_device_to_ibv_device() -> &'static Vec<Option<IbvDevice>> {
 ///
 /// Applies auto-detection for default devices, but otherwise
 /// returns the device as-is.
-pub fn resolve_ibv_device(device: &IbvDevice) -> Option<IbvDevice> {
+pub fn resolve_ibv_device(device: &IbvDeviceInfo) -> Option<IbvDeviceInfo> {
     let device_name = device.name();
 
     if device_name.starts_with("mlx") {

@@ -24,6 +24,7 @@ use serde::Serialize;
 
 use crate::RdmaOp;
 use crate::RdmaTransportLevel;
+use crate::nic::NicRemoteBackendContext;
 
 /// Backend-specific context for a remote buffer.
 ///
@@ -31,10 +32,7 @@ use crate::RdmaTransportLevel;
 /// using that backend on a particular buffer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RdmaRemoteBackendContext {
-    Ibverbs(
-        ActorRef<ibverbs::manager_actor::IbvManagerActor>,
-        ibverbs::IbvBuffer,
-    ),
+    Nic(NicRemoteBackendContext),
     Tcp(ActorRef<tcp::manager_actor::TcpManagerActor>),
 }
 
