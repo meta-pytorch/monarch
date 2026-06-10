@@ -146,10 +146,10 @@ impl PyInstance {
     /// observable without any extra plumbing.
     #[pyo3(name = "_debug_skip_next_ordering_seq")]
     fn debug_skip_next_ordering_seq(&self, receiver: &PyActorAddr, count: u64) {
-        use typeuri::Named;
-
         use crate::actor::PythonMessage;
-        let port_addr = receiver.inner.port_addr(PythonMessage::port().into());
+        let port_addr = receiver
+            .inner
+            .port_addr(hyperactor::Port::handler::<PythonMessage>());
         self.inner.debug_skip_next_ordering_seq(&port_addr, count);
     }
 }

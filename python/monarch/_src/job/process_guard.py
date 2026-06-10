@@ -162,7 +162,7 @@ def _wait_for_socket(socket_path: str, pid: int = 0, timeout: float = 60.0) -> N
                 os.kill(pid, 0)
             except ProcessLookupError:
                 raise RuntimeError(
-                    f"Mount process (pid {pid}) exited before the socket "
+                    f"Guarded process (pid {pid}) exited before the socket "
                     f"{socket_path!r} became ready."
                 )
         try:

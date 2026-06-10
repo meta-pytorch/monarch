@@ -2378,7 +2378,11 @@ mod tests {
         let handle = proc.spawn(actor);
 
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_addr().clone()).post(
+        PortRef::<IntrospectMessage>::attest_control_port(
+            handle.actor_addr(),
+            crate::ControlPort::Introspect,
+        )
+        .post(
             &client,
             IntrospectMessage::Query {
                 view: IntrospectView::Actor,
@@ -2551,7 +2555,11 @@ mod tests {
 
         let child_ref = crate::Addr::Actor(test_proc_id("nonexistent").actor_addr("child"));
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        PortRef::<IntrospectMessage>::attest_handler_port(handle.actor_addr()).post(
+        PortRef::<IntrospectMessage>::attest_control_port(
+            handle.actor_addr(),
+            crate::ControlPort::Introspect,
+        )
+        .post(
             &client,
             IntrospectMessage::QueryChild {
                 child_ref,
@@ -2597,7 +2605,11 @@ mod tests {
             .unwrap();
 
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_addr().clone()).post(
+        PortRef::<IntrospectMessage>::attest_control_port(
+            handle.actor_addr(),
+            crate::ControlPort::Introspect,
+        )
+        .post(
             &client,
             IntrospectMessage::Query {
                 view: IntrospectView::Actor,
@@ -2634,7 +2646,11 @@ mod tests {
 
         // Query the child — supervisor should be the parent.
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        PortRef::<IntrospectMessage>::attest_handler_port(&child_handle.actor_addr().clone()).post(
+        PortRef::<IntrospectMessage>::attest_control_port(
+            child_handle.actor_addr(),
+            crate::ControlPort::Introspect,
+        )
+        .post(
             &client,
             IntrospectMessage::Query {
                 view: IntrospectView::Actor,
@@ -2661,14 +2677,17 @@ mod tests {
 
         // Query the parent — children should include the child.
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        PortRef::<IntrospectMessage>::attest_handler_port(&parent_handle.actor_addr().clone())
-            .post(
-                &client,
-                IntrospectMessage::Query {
-                    view: IntrospectView::Actor,
-                    reply: reply_port.bind(),
-                },
-            );
+        PortRef::<IntrospectMessage>::attest_control_port(
+            parent_handle.actor_addr(),
+            crate::ControlPort::Introspect,
+        )
+        .post(
+            &client,
+            IntrospectMessage::Query {
+                view: IntrospectView::Actor,
+                reply: reply_port.bind(),
+            },
+        );
         let parent_payload = reply_rx.recv().await.unwrap();
 
         assert!(parent_payload.parent.is_none());
@@ -2706,7 +2725,11 @@ mod tests {
             .unwrap();
 
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_addr().clone()).post(
+        PortRef::<IntrospectMessage>::attest_control_port(
+            handle.actor_addr(),
+            crate::ControlPort::Introspect,
+        )
+        .post(
             &client,
             IntrospectMessage::Query {
                 view: IntrospectView::Actor,
@@ -2739,7 +2762,11 @@ mod tests {
         let _ = rx.recv().await.unwrap();
 
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_addr().clone()).post(
+        PortRef::<IntrospectMessage>::attest_control_port(
+            handle.actor_addr(),
+            crate::ControlPort::Introspect,
+        )
+        .post(
             &client,
             IntrospectMessage::Query {
                 view: IntrospectView::Actor,
@@ -2776,7 +2803,11 @@ mod tests {
 
         // First introspect query.
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_addr().clone()).post(
+        PortRef::<IntrospectMessage>::attest_control_port(
+            handle.actor_addr(),
+            crate::ControlPort::Introspect,
+        )
+        .post(
             &client,
             IntrospectMessage::Query {
                 view: IntrospectView::Actor,
@@ -2787,7 +2818,11 @@ mod tests {
 
         // Second introspect query.
         let (reply_port2, reply_rx2) = client.open_once_port::<IntrospectResult>();
-        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_addr().clone()).post(
+        PortRef::<IntrospectMessage>::attest_control_port(
+            handle.actor_addr(),
+            crate::ControlPort::Introspect,
+        )
+        .post(
             &client,
             IntrospectMessage::Query {
                 view: IntrospectView::Actor,
@@ -2956,7 +2991,11 @@ mod tests {
 
         // Send introspect query via the dedicated introspect port.
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_addr().clone()).post(
+        PortRef::<IntrospectMessage>::attest_control_port(
+            handle.actor_addr(),
+            crate::ControlPort::Introspect,
+        )
+        .post(
             &client,
             IntrospectMessage::Query {
                 view: IntrospectView::Actor,
@@ -2999,7 +3038,11 @@ mod tests {
 
         // First introspect query.
         let (reply_port1, reply_rx1) = client.open_once_port::<IntrospectResult>();
-        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_addr().clone()).post(
+        PortRef::<IntrospectMessage>::attest_control_port(
+            handle.actor_addr(),
+            crate::ControlPort::Introspect,
+        )
+        .post(
             &client,
             IntrospectMessage::Query {
                 view: IntrospectView::Actor,
@@ -3010,7 +3053,11 @@ mod tests {
 
         // Second introspect query.
         let (reply_port2, reply_rx2) = client.open_once_port::<IntrospectResult>();
-        crate::PortRef::<IntrospectMessage>::attest_handler_port(handle.actor_addr()).post(
+        crate::PortRef::<IntrospectMessage>::attest_control_port(
+            handle.actor_addr(),
+            crate::ControlPort::Introspect,
+        )
+        .post(
             &client,
             IntrospectMessage::Query {
                 view: IntrospectView::Actor,
@@ -3045,7 +3092,11 @@ mod tests {
         let actor_id: crate::ActorAddr = handle.actor_addr().clone();
 
         let (reply_port, reply_rx) = bridge.open_once_port::<IntrospectResult>();
-        PortRef::<IntrospectMessage>::attest_handler_port(&actor_id).post(
+        PortRef::<IntrospectMessage>::attest_control_port(
+            &actor_id,
+            crate::ControlPort::Introspect,
+        )
+        .post(
             &bridge,
             IntrospectMessage::Query {
                 view: IntrospectView::Actor,
@@ -3085,7 +3136,11 @@ mod tests {
         let mailbox_id: crate::ActorAddr = mailbox.self_addr().clone();
 
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        PortRef::<IntrospectMessage>::attest_handler_port(&mailbox_id).post(
+        PortRef::<IntrospectMessage>::attest_control_port(
+            &mailbox_id,
+            crate::ControlPort::Introspect,
+        )
+        .post(
             &client,
             IntrospectMessage::Query {
                 view: IntrospectView::Actor,
