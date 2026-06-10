@@ -393,6 +393,7 @@ wirevalue::register_type!(StopAll);
 
 /// Retrieve the current state of the resource.
 #[derive(Debug, Serialize, Deserialize, Named, Handler, HandleClient, RefClient)]
+#[serde(bound(serialize = "S: Named", deserialize = "S: Named"))]
 pub struct GetState<S> {
     /// The resource identifier.
     pub id: ResourceId,
@@ -439,6 +440,7 @@ where
 /// Same as GetState, but additionally tells the receiver that the owner is still alive.
 /// If the receiver does not receive this message for a while, it might assume the owner is dead.
 #[derive(Debug, Serialize, Deserialize, Named, Handler, HandleClient, RefClient)]
+#[serde(bound(serialize = "S: Named", deserialize = "S: Named"))]
 pub struct KeepaliveGetState<S> {
     /// The time at which the actor should be considered expired if no further
     /// keepalive is received.
@@ -485,6 +487,7 @@ where
 /// The subscriber port will receive `State<S>` whenever the resource's
 /// state changes. The current state is sent immediately upon subscription.
 #[derive(Debug, Serialize, Deserialize, Named, Handler, HandleClient, RefClient)]
+#[serde(bound(serialize = "S: Named", deserialize = "S: Named"))]
 pub struct StreamState<S> {
     /// The resource identifier.
     pub id: ResourceId,
