@@ -746,7 +746,7 @@ pub async fn run() -> Result<(), anyhow::Error> {
     let expected_data_values = expected_buffer[0..start].to_vec().into_boxed_slice();
 
     // Get all available RDMA devices
-    let devices = monarch_rdma::get_all_devices();
+    let devices = monarch_rdma::backend::ibverbs::device::list_all_devices();
     // Configure RDMA for the two actors
     // For H100 machines, we use different devices for better performance
     let device_1_ibv_config: IbvConfig;

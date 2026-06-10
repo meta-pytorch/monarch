@@ -1713,13 +1713,13 @@ mod tests {
     use hyperactor::proc::Proc;
 
     use super::*;
+    use crate::backend::ibverbs::device::list_all_devices;
     use crate::backend::ibverbs::domain::IbvDomain;
     use crate::backend::ibverbs::primitives::IbvConfig;
-    use crate::backend::ibverbs::primitives::get_all_devices;
 
     #[test]
     fn test_create_connection() {
-        if get_all_devices().is_empty() {
+        if list_all_devices().is_empty() {
             println!("Skipping test: RDMA devices not available");
             return;
         }
@@ -1738,7 +1738,7 @@ mod tests {
 
     #[test]
     fn test_loopback_connection() {
-        if get_all_devices().is_empty() {
+        if list_all_devices().is_empty() {
             println!("Skipping test: RDMA devices not available");
             return;
         }

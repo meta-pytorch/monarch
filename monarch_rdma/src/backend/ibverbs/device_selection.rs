@@ -11,8 +11,8 @@
 
 use std::sync::OnceLock;
 
+use super::device::list_all_devices;
 use super::primitives::IbvDeviceInfo;
-use super::primitives::get_all_devices;
 use crate::device_selection::PCIDevice;
 use crate::device_selection::get_all_rdma_devices;
 use crate::device_selection::get_cuda_pci_address;
@@ -31,7 +31,7 @@ pub fn select_optimal_ibv_device(device_hint: Option<&str>) -> Option<IbvDeviceI
 
     match prefix.as_str() {
         "nic" => {
-            let all_rdma_devices = get_all_devices();
+            let all_rdma_devices = list_all_devices();
             all_rdma_devices
                 .into_iter()
                 .find(|dev| dev.name() == &postfix)
@@ -56,13 +56,13 @@ pub fn select_optimal_ibv_device(device_hint: Option<&str>) -> Option<IbvDeviceI
                 .filter_map(|(_, addr)| pci_devices.get(addr).cloned())
                 .collect();
 
-            if let Some(closest_idx) = source_device.find_closest(&rdma_pci_devices) {
-                if let Some(optimal_name) = rdma_names.get(closest_idx) {
-                    let all_rdma_devices = get_all_devices();
-                    for device in all_rdma_devices {
-                        if *device.name() == *optimal_name {
-                            return Some(device);
-                        }
+            if let Some(closest_idx) = source_device.find_closest(&rdma_pci_devices)
+                && let Some(optimal_name) = rdma_names.get(closest_idx)
+            {
+                let all_rdma_devices = list_all_devices();
+                for device in all_rdma_devices {
+                    if *device.name() == *optimal_name {
+                        return Some(device);
                     }
                 }
             }
@@ -72,7 +72,7 @@ pub fn select_optimal_ibv_device(device_hint: Option<&str>) -> Option<IbvDeviceI
         }
         _ => {
             // Direct device name lookup for backward compatibility
-            let rdma_devices = get_all_devices();
+            let rdma_devices = list_all_devices();
             rdma_devices
                 .into_iter()
                 .find(|dev| dev.name() == device_hint)
@@ -110,7 +110,7 @@ pub fn resolve_ibv_device(device: &IbvDeviceInfo) -> Option<IbvDeviceInfo> {
         return Some(device.clone());
     }
 
-    let all_devices = get_all_devices();
+    let all_devices = list_all_devices();
     let is_likely_default = if let Some(first_device) = all_devices.first() {
         device_name == first_device.name()
     } else {
@@ -227,29 +227,29 @@ mod tests {
 
         // Step 6: Test distance calculation for GPU 0
         println!("\n6. DISTANCE CALCULATION TEST (GPU 0)");
-        if let Some(gpu0_pci_addr) = get_cuda_pci_address("0") {
-            if let Some(gpu0_device) = pci_devices.get(&gpu0_pci_addr) {
-                println!("GPU 0 PCI: {}", gpu0_pci_addr);
-                println!("GPU 0 path to root: {:?}", gpu0_device.get_path_to_root());
+        if let Some(gpu0_pci_addr) = get_cuda_pci_address("0")
+            && let Some(gpu0_device) = pci_devices.get(&gpu0_pci_addr)
+        {
+            println!("GPU 0 PCI: {}", gpu0_pci_addr);
+            println!("GPU 0 path to root: {:?}", gpu0_device.get_path_to_root());
 
-                let mut all_distances = Vec::new();
-                for (nic_name, nic_pci_addr) in &rdma_devices {
-                    if let Some(nic_device) = pci_devices.get(nic_pci_addr) {
-                        let distance = gpu0_device.distance_to(nic_device);
-                        all_distances.push((distance, nic_name.clone(), nic_pci_addr.clone()));
-                        println!("  {} ({}): distance = {}", nic_name, nic_pci_addr, distance);
-                        println!("    NIC path to root: {:?}", nic_device.get_path_to_root());
-                    }
+            let mut all_distances = Vec::new();
+            for (nic_name, nic_pci_addr) in &rdma_devices {
+                if let Some(nic_device) = pci_devices.get(nic_pci_addr) {
+                    let distance = gpu0_device.distance_to(nic_device);
+                    all_distances.push((distance, nic_name.clone(), nic_pci_addr.clone()));
+                    println!("  {} ({}): distance = {}", nic_name, nic_pci_addr, distance);
+                    println!("    NIC path to root: {:?}", nic_device.get_path_to_root());
                 }
+            }
 
-                // Find the minimum distance
-                all_distances.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-                if let Some((min_dist, min_nic, min_addr)) = all_distances.first() {
-                    println!(
-                        "  → CLOSEST: {} ({}) with distance {}",
-                        min_nic, min_addr, min_dist
-                    );
-                }
+            // Find the minimum distance
+            all_distances.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+            if let Some((min_dist, min_nic, min_addr)) = all_distances.first() {
+                println!(
+                    "  → CLOSEST: {} ({}) with distance {}",
+                    min_nic, min_addr, min_dist
+                );
             }
         }
 

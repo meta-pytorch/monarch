@@ -37,6 +37,7 @@ use typeuri::Named;
 
 use super::domain::IbvDomain;
 use crate::backend::ibverbs::device::IbvDeviceImpl;
+use crate::backend::ibverbs::device::list_all_devices;
 use crate::backend::ibverbs::efa_device::EfaDevice;
 
 #[derive(
@@ -287,9 +288,9 @@ impl std::fmt::Display for IbvConfig {
 /// # Examples
 ///
 /// ```
-/// use monarch_rdma::get_all_devices;
+/// use monarch_rdma::backend::ibverbs::device::list_all_devices;
 ///
-/// let devices = get_all_devices();
+/// let devices = list_all_devices();
 /// if let Some(device) = devices.first() {
 ///     // Access device name and firmware version
 ///     let device_name = device.name();
@@ -334,12 +335,7 @@ impl IbvDeviceInfo {
 
     /// Returns the first available RDMA device, if any.
     pub fn first_available() -> Option<IbvDeviceInfo> {
-        let devices = get_all_devices();
-        if devices.is_empty() {
-            None
-        } else {
-            Some(devices.into_iter().next().unwrap())
-        }
+        list_all_devices().into_iter().next()
     }
 
     /// Returns the vendor ID of the RDMA device.
@@ -410,7 +406,7 @@ impl Default for IbvDeviceInfo {
             device
         } else {
             // Fallback to first available device
-            get_all_devices()
+            list_all_devices()
                 .into_iter()
                 .next()
                 .unwrap_or_else(|| panic!("No RDMA devices found"))
@@ -570,54 +566,6 @@ pub fn format_gid(gid: &[u8; 16]) -> String {
         gid[14],
         gid[15]
     )
-}
-
-/// Retrieves information about all available RDMA devices in the system.
-///
-/// This function queries the system for all available RDMA devices and returns
-/// detailed information about each device, including its capabilities, ports,
-/// and attributes.
-///
-/// # Returns
-///
-/// A vector of `IbvDeviceInfo` structures, each representing an RDMA device in the system.
-/// Returns an empty vector if no devices are found or if there was an error querying
-/// the devices.
-pub fn get_all_devices() -> Vec<IbvDeviceInfo> {
-    let mut devices = Vec::new();
-    let mut num_devices = 0;
-    // SAFETY: `ibv_get_device_list` populates `num_devices` and
-    // returns either null or a pointer to `num_devices` entries;
-    // we free it before returning.
-    let device_list = unsafe { rdmaxcel_sys::ibv_get_device_list(&mut num_devices) };
-    if device_list.is_null() {
-        return devices;
-    }
-    for i in 0..num_devices {
-        // SAFETY: `device_list` is non-null with `num_devices`
-        // valid entries (checked above).
-        let device = unsafe { *device_list.add(i as usize) };
-        if device.is_null() {
-            continue;
-        }
-        // SAFETY: `device` is non-null per the check above.
-        let context = unsafe { rdmaxcel_sys::ibv_open_device(device) };
-        if context.is_null() {
-            continue;
-        }
-        // SAFETY: `device` and `context` are non-null and
-        // `context` was returned by `ibv_open_device(device)`.
-        if let Some(info) = unsafe { query_device_info(device, context) } {
-            devices.push(info);
-        }
-        // SAFETY: `context` was returned by `ibv_open_device`
-        // above and has not been closed elsewhere.
-        unsafe { rdmaxcel_sys::ibv_close_device(context) };
-    }
-    // SAFETY: `device_list` was returned by
-    // `ibv_get_device_list` above and has not been freed.
-    unsafe { rdmaxcel_sys::ibv_free_device_list(device_list) };
-    devices
 }
 
 /// Builds an [`IbvDeviceInfo`] from an already-open
@@ -1094,9 +1042,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_get_all_devices() {
+    fn test_list_all_devices() {
         // Skip test if RDMA devices are not available
-        let devices = get_all_devices();
+        let devices = list_all_devices();
         if devices.is_empty() {
             println!("Skipping test: RDMA devices not available");
             return;
@@ -1113,7 +1061,7 @@ mod tests {
     #[test]
     fn test_first_available() {
         // Skip test if RDMA is not available
-        let devices = get_all_devices();
+        let devices = list_all_devices();
         if devices.is_empty() {
             println!("Skipping test: RDMA devices not available");
             return;
