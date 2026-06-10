@@ -36,7 +36,6 @@ use hyperactor::actor::ActorStatus;
 use hyperactor::actor::StopMode;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
-use hyperactor::channel::TcpMode;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Flattrs;
 use hyperactor_remote::JoinResult;
@@ -304,7 +303,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn run_proc(args: ProcArgs) -> anyhow::Result<()> {
-    let _serve = hyperactor::serve(ChannelAddr::any(ChannelTransport::Tcp(TcpMode::Localhost)))?;
+    let _serve = hyperactor::serve(ChannelAddr::any(ChannelTransport::Unix))?;
     let remote_spawner = hyperactor::spawn(RemoteSpawner);
     let host = hyperactor::spawn(ProcHost {
         remote_spawner: remote_spawner.bind::<RemoteSpawner>(),
@@ -317,7 +316,7 @@ async fn run_proc(args: ProcArgs) -> anyhow::Result<()> {
 
 async fn run_driver(args: DriverArgs) -> anyhow::Result<()> {
     let token = read_token(&args.token_file).await?;
-    let _serve = hyperactor::serve(ChannelAddr::any(ChannelTransport::Tcp(TcpMode::Localhost)))?;
+    let _serve = hyperactor::serve(ChannelAddr::any(ChannelTransport::Unix))?;
     let mode = args.mode;
     let driver = hyperactor::spawn(Driver { token, mode });
     let status = driver.await;
