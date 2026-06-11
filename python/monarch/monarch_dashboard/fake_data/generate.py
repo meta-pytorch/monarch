@@ -152,7 +152,7 @@ CREATE TABLE IF NOT EXISTS messages (
     from_actor_id   INTEGER NOT NULL,
     to_actor_id     INTEGER NOT NULL,
     endpoint        TEXT,
-    port_id         INTEGER,
+    port_index         INTEGER,
     FOREIGN KEY (from_actor_id) REFERENCES actors(id),
     FOREIGN KEY (to_actor_id)   REFERENCES actors(id)
 );
@@ -661,7 +661,7 @@ def _generate_messages(
                     "from_actor_id": sender_id,
                     "to_actor_id": receiver_id,
                     "endpoint": endpoint,
-                    "port_id": rng.randint(1, 100),
+                    "port_index": rng.randint(1, 100),
                 }
             )
 

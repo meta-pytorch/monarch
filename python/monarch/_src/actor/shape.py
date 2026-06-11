@@ -74,8 +74,10 @@ class MeshTrait(ABC):
     # will only ever select a shape that is a subspace of the
     # current _ndslice.
     @abstractmethod
+    # pyrefly: ignore [not-a-type]
     def _new_with_shape(self, shape: Shape) -> Self: ...
 
+    # pyrefly: ignore [not-a-type]
     def slice(self, **kwargs: Any) -> Self:
         """Select along named dimensions. Integer values remove
         dimensions, slice objects keep dimensions but restrict them.
@@ -85,6 +87,7 @@ class MeshTrait(ABC):
         shape = Shape(list(self._labels), self._ndslice)
         return self._new_with_shape(ShapeExt.slice(shape, **kwargs))
 
+    # pyrefly: ignore [not-a-type]
     def split(self, **kwargs: Any) -> Self:
         """
         Returns a new device mesh with some dimensions of this mesh split.
@@ -166,6 +169,7 @@ class MeshTrait(ABC):
             Shape(names, NDSlice(offset=ndslice.offset, sizes=sizes, strides=strides))
         )
 
+    # pyrefly: ignore [not-a-type]
     def flatten(self, name: str) -> Self:
         """
         Returns a new device mesh with all dimensions flattened into a single dimension
@@ -193,6 +197,7 @@ class MeshTrait(ABC):
             )
         )
 
+    # pyrefly: ignore [not-a-type]
     def rename(self, **kwargs: Any) -> Self:
         """
         Returns a new device mesh with some of dimensions renamed.
