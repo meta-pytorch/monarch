@@ -371,7 +371,7 @@ pub fn set_cast_info_on_headers(headers: &mut Flattrs, cast_point: Point, sender
     // CAST_ORIGINATING_SENDER -- they carry overlapping sender identity.
     headers.set(
         hyperactor::mailbox::headers::SENDER_ACTOR_ID_HASH,
-        hyperactor_telemetry::hash_to_u64(&sender),
+        hyperactor_telemetry::hash_to_u64(sender.id()),
     );
     headers.set(CAST_POINT, cast_point);
     headers.set(CAST_ORIGINATING_SENDER, sender);

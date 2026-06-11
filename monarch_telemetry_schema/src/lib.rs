@@ -200,7 +200,7 @@ pub mod entity_tables {
         pub from_actor_id: u64,
         pub to_actor_id: u64,
         pub endpoint: Option<String>,
-        pub port_id: Option<u64>,
+        pub port_index: Option<u64>,
     }
 
     /// Row data for the message status events table.
