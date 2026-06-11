@@ -640,21 +640,101 @@ mod tests {
     }
 
     #[test]
-    fn test_part_codec_inline_fallback() {
+    fn test_part_codec_uses_multipart_parts() {
         let value = CodecPayload {
             label: "codec".to_string(),
             value: 123,
         };
+        let repr = value.to_repr().unwrap();
 
         let bincode_serialized = bincode::serialize(&value).unwrap();
         let bincode_deserialized: CodecPayload = bincode::deserialize(&bincode_serialized).unwrap();
         assert_eq!(bincode_deserialized, value);
 
         let message = serialize_bincode(&value).unwrap();
-        assert_eq!(message.num_parts(), 0);
+        assert!(message.body().is_empty());
+        assert_eq!(message.num_parts(), 1);
+        assert_eq!(
+            message.parts()[0].typehash(),
+            Some(CodecPayload::typehash())
+        );
+        assert_eq!(
+            message.parts()[0]
+                .deserialized_as::<CodecPayload, CodecPayloadRepr>()
+                .unwrap(),
+            repr
+        );
 
         let deserialized: CodecPayload = deserialize_bincode(message).unwrap();
         assert_eq!(deserialized, value);
+    }
+
+    #[test]
+    fn test_part_codec_compound_multipart() {
+        #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+        struct Envelope {
+            none: Option<CodecPayload>,
+            one: Option<CodecPayload>,
+            many: Vec<CodecPayload>,
+            tail: u64,
+        }
+
+        let value = Envelope {
+            none: None,
+            one: Some(CodecPayload {
+                label: "one".to_string(),
+                value: 1,
+            }),
+            many: vec![
+                CodecPayload {
+                    label: "two".to_string(),
+                    value: 2,
+                },
+                CodecPayload {
+                    label: "three".to_string(),
+                    value: 3,
+                },
+            ],
+            tail: 4,
+        };
+
+        let message = serialize_bincode(&value).unwrap();
+        assert_eq!(message.num_parts(), 3);
+        assert!(
+            message
+                .parts()
+                .iter()
+                .all(|part| part.typehash() == Some(CodecPayload::typehash()))
+        );
+
+        let deserialized: Envelope = deserialize_bincode(message).unwrap();
+        assert_eq!(deserialized, value);
+    }
+
+    #[test]
+    fn test_part_codec_malformed_messages() {
+        let value = CodecPayload {
+            label: "codec".to_string(),
+            value: 123,
+        };
+        let mut message = serialize_bincode(&value).unwrap();
+        message.parts[0] = Part::serialize(&TypedPayload {
+            label: "wrong".to_string(),
+            value: 999,
+        })
+        .unwrap();
+        let err = deserialize_bincode::<CodecPayload>(message).unwrap_err();
+        assert_matches!(*err, bincode::ErrorKind::Custom(message) if message.contains("type mismatch"));
+
+        let mut message = serialize_bincode(&value).unwrap();
+        message.parts.clear();
+        let err = deserialize_bincode::<CodecPayload>(message).unwrap_err();
+        assert_matches!(*err, bincode::ErrorKind::Custom(message) if message == "multipart underrun while decoding");
+
+        let mut message = serialize_bincode(&42u64).unwrap();
+        message.parts.push(Part::from("extra"));
+        let err = deserialize_bincode::<u64>(message).unwrap_err();
+        assert_matches!(*err, bincode::ErrorKind::Custom(message) if message == "multipart overrun while decoding");
     }
 
     #[test]
