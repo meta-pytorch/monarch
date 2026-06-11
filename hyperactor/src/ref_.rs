@@ -205,7 +205,7 @@ impl<A: Referable> Hash for ActorRef<A> {
 
 /// A reference to a remote port. All messages passed through
 /// PortRefs will be serialized. PortRefs are always streaming.
-#[derive(Debug, Serialize, Deserialize, Derivative, typeuri::Named)]
+#[derive(Debug, Derivative, typeuri::Named)]
 #[derivative(PartialEq, Eq, PartialOrd, Hash, Ord)]
 pub struct PortRef<M> {
     port_addr: PortAddr,
@@ -232,6 +232,44 @@ pub struct PortRef<M> {
         Hash = "ignore"
     )]
     unsplit: bool,
+}
+
+#[doc(hidden)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PortRefRepr {
+    port_addr: PortAddr,
+    reducer_spec: Option<ReducerSpec>,
+    streaming_opts: StreamingReducerOpts,
+    return_undeliverable: bool,
+    unsplit: bool,
+}
+
+serde_multipart::part_codec! {
+    impl<M> PortRef<M>
+    {
+        type Repr = PortRefRepr;
+
+        fn to_repr(&self) -> serde_multipart::Result<Self::Repr> {
+            Ok(PortRefRepr {
+                port_addr: self.port_addr.clone(),
+                reducer_spec: self.reducer_spec.clone(),
+                streaming_opts: self.streaming_opts.clone(),
+                return_undeliverable: self.return_undeliverable,
+                unsplit: self.unsplit,
+            })
+        }
+
+        fn from_repr(repr: Self::Repr) -> serde_multipart::Result<Self> {
+            Ok(Self {
+                port_addr: repr.port_addr,
+                reducer_spec: repr.reducer_spec,
+                streaming_opts: repr.streaming_opts,
+                phantom: PhantomData,
+                return_undeliverable: repr.return_undeliverable,
+                unsplit: repr.unsplit,
+            })
+        }
+    }
 }
 
 impl<M: RemoteMessage> PortRef<M> {
@@ -477,13 +515,48 @@ impl<M: RemoteMessage> Bind for PortRef<M> {
 /// A remote reference to a [`OncePort`]. References are serializable
 /// and may be passed to remote actors, which can then use it to send
 /// a message to this port.
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct OncePortRef<M> {
     port_addr: PortAddr,
     reducer_spec: Option<ReducerSpec>,
     return_undeliverable: bool,
     unsplit: bool,
     phantom: PhantomData<M>,
+}
+
+#[doc(hidden)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OncePortRefRepr {
+    port_addr: PortAddr,
+    reducer_spec: Option<ReducerSpec>,
+    return_undeliverable: bool,
+    unsplit: bool,
+}
+
+serde_multipart::part_codec! {
+    impl<M> OncePortRef<M>
+    {
+        type Repr = OncePortRefRepr;
+
+        fn to_repr(&self) -> serde_multipart::Result<Self::Repr> {
+            Ok(OncePortRefRepr {
+                port_addr: self.port_addr.clone(),
+                reducer_spec: self.reducer_spec.clone(),
+                return_undeliverable: self.return_undeliverable,
+                unsplit: self.unsplit,
+            })
+        }
+
+        fn from_repr(repr: Self::Repr) -> serde_multipart::Result<Self> {
+            Ok(Self {
+                port_addr: repr.port_addr,
+                reducer_spec: repr.reducer_spec,
+                return_undeliverable: repr.return_undeliverable,
+                unsplit: repr.unsplit,
+                phantom: PhantomData,
+            })
+        }
+    }
 }
 
 impl<M: RemoteMessage> OncePortRef<M> {
@@ -652,5 +725,156 @@ impl<M: RemoteMessage> Bind for OncePortRef<M> {
                 anyhow::bail!("PortRef cannot be bound to OncePortRef")
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde::Deserialize;
+    use serde::Serialize;
+    use serde_multipart::PartCodec;
+    use typeuri::Named;
+
+    use super::*;
+    use crate::channel::ChannelAddr;
+    use crate::id::ActorId;
+    use crate::id::Label;
+    use crate::id::PortId;
+    use crate::id::ProcId;
+
+    fn test_port_ref() -> PortRef<String> {
+        let proc_id = ProcId::singleton(Label::new("proc").unwrap());
+        let actor_id = ActorId::singleton(Label::new("actor").unwrap(), proc_id);
+        let port_id = PortId::new(actor_id, Port::from(7));
+        let port_addr = PortAddr::new(port_id, ChannelAddr::Local(42).into());
+        let mut port_ref = PortRef::<String>::attest(port_addr).unsplit();
+        port_ref.return_undeliverable(false);
+        port_ref
+    }
+
+    fn test_once_port_ref() -> OncePortRef<String> {
+        let proc_id = ProcId::singleton(Label::new("proc").unwrap());
+        let actor_id = ActorId::singleton(Label::new("actor").unwrap(), proc_id);
+        let port_id = PortId::new(actor_id, Port::from(8));
+        let port_addr = PortAddr::new(port_id, ChannelAddr::Local(43).into());
+        let mut once_port_ref = OncePortRef::<String>::attest(port_addr).unsplit();
+        once_port_ref.return_undeliverable(false);
+        once_port_ref
+    }
+
+    #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+    struct PortRefEnvelope {
+        port: PortRef<String>,
+        seq: u64,
+    }
+
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct OncePortRefEnvelope {
+        port: OncePortRef<String>,
+        seq: u64,
+    }
+
+    fn assert_same_port_ref(actual: &PortRef<String>, expected: &PortRef<String>) {
+        let actual = actual.to_repr().unwrap();
+        let expected = expected.to_repr().unwrap();
+        assert_eq!(actual.port_addr, expected.port_addr);
+        assert_eq!(actual.reducer_spec, expected.reducer_spec);
+        assert_eq!(actual.streaming_opts, expected.streaming_opts);
+        assert_eq!(actual.return_undeliverable, expected.return_undeliverable);
+        assert_eq!(actual.unsplit, expected.unsplit);
+    }
+
+    fn assert_same_once_port_ref(actual: &OncePortRef<String>, expected: &OncePortRef<String>) {
+        let actual = actual.to_repr().unwrap();
+        let expected = expected.to_repr().unwrap();
+        assert_eq!(actual.port_addr, expected.port_addr);
+        assert_eq!(actual.reducer_spec, expected.reducer_spec);
+        assert_eq!(actual.return_undeliverable, expected.return_undeliverable);
+        assert_eq!(actual.unsplit, expected.unsplit);
+    }
+
+    #[test]
+    fn test_port_ref_serde_multipart_part_codec() {
+        let value = PortRefEnvelope {
+            port: test_port_ref(),
+            seq: 123,
+        };
+
+        let message = serde_multipart::serialize_bincode(&value).unwrap();
+        assert_eq!(message.num_parts(), 1);
+        assert_eq!(
+            message.parts()[0].typehash(),
+            Some(PortRef::<String>::typehash())
+        );
+
+        let repr = message.parts()[0]
+            .deserialized_as::<PortRef<String>, PortRefRepr>()
+            .unwrap();
+        assert_eq!(repr.port_addr, value.port.port_addr().clone());
+        assert!(!repr.return_undeliverable);
+        assert!(repr.unsplit);
+
+        let deserialized: PortRefEnvelope = serde_multipart::deserialize_bincode(message).unwrap();
+        assert_eq!(deserialized.seq, value.seq);
+        assert_same_port_ref(&deserialized.port, &value.port);
+    }
+
+    #[test]
+    fn test_once_port_ref_serde_multipart_part_codec() {
+        let value = OncePortRefEnvelope {
+            port: test_once_port_ref(),
+            seq: 789,
+        };
+
+        let message = serde_multipart::serialize_bincode(&value).unwrap();
+        assert_eq!(message.num_parts(), 1);
+        assert_eq!(
+            message.parts()[0].typehash(),
+            Some(OncePortRef::<String>::typehash())
+        );
+
+        let repr = message.parts()[0]
+            .deserialized_as::<OncePortRef<String>, OncePortRefRepr>()
+            .unwrap();
+        assert_eq!(repr.port_addr, value.port.port_addr().clone());
+        assert!(!repr.return_undeliverable);
+        assert!(repr.unsplit);
+
+        let deserialized: OncePortRefEnvelope =
+            serde_multipart::deserialize_bincode(message).unwrap();
+        assert_eq!(deserialized.seq, value.seq);
+        assert_same_once_port_ref(&deserialized.port, &value.port);
+    }
+
+    #[test]
+    fn test_port_ref_regular_serde_uses_repr() {
+        let value = PortRefEnvelope {
+            port: test_port_ref(),
+            seq: 456,
+        };
+
+        let encoded = bincode::serde::encode_to_vec(&value, bincode::config::standard()).unwrap();
+        let (deserialized, len): (PortRefEnvelope, usize) =
+            bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
+
+        assert_eq!(len, encoded.len());
+        assert_eq!(deserialized.seq, value.seq);
+        assert_same_port_ref(&deserialized.port, &value.port);
+    }
+
+    #[test]
+    fn test_once_port_ref_regular_serde_uses_repr() {
+        let value = OncePortRefEnvelope {
+            port: test_once_port_ref(),
+            seq: 1011,
+        };
+
+        let encoded = bincode::serde::encode_to_vec(&value, bincode::config::standard()).unwrap();
+        let (deserialized, len): (OncePortRefEnvelope, usize) =
+            bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
+
+        assert_eq!(len, encoded.len());
+        assert_eq!(deserialized.seq, value.seq);
+        assert_same_once_port_ref(&deserialized.port, &value.port);
     }
 }

@@ -40,14 +40,39 @@ use bytes::Buf;
 use bytes::BufMut;
 use bytes::buf::UninitSlice;
 
+mod codec;
 mod de;
 mod part;
 mod ser;
 use bytes::Bytes;
 use bytes::BytesMut;
+pub use codec::PartCodec;
+pub use codec::deserialize_part_codec;
+pub use codec::serialize_part_codec;
 pub use part::Part;
 use serde::Deserialize;
 use serde::Serialize;
+
+/// The type of error returned by typed part operations.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    /// Errors returned from bincode.
+    #[error(transparent)]
+    Bincode(#[from] bincode::Error),
+
+    /// Type mismatch during deserialization.
+    #[error("type mismatch: expected {expected}, found {actual}")]
+    TypeMismatch {
+        expected: &'static str,
+        actual: String,
+    },
+}
+
+/// A specialized result type for typed part operations.
+pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+const FRAME_TYPEHASH_FLAG: u64 = 1 << 63;
+const FRAME_LEN_MASK: u64 = !FRAME_TYPEHASH_FLAG;
 
 /// A multi-part message, comprising a message body and a list of parts.
 /// Messages only contain references to underlying byte buffers and are
@@ -97,9 +122,8 @@ impl Message {
 
     /// Returns the total size (in bytes) of the message when it is framed.
     pub fn frame_len(&self) -> usize {
-        8 + self.body.len()
-            + (8 * self.parts.len())
-            + self.parts.iter().map(|p| p.len()).sum::<usize>()
+        Self::part_frame_len(&self.body)
+            + self.parts.iter().map(Self::part_frame_len).sum::<usize>()
     }
 
     /// Efficiently frames a message containing the body and all of its parts
@@ -107,31 +131,28 @@ impl Message {
     ///
     /// ```text
     /// +--------------------+-------------------+--------------------+-------------------+   ...   +
-    /// | body_len (u64 BE)  |   body bytes      | part1_len (u64 BE) |   part1 bytes     |         |
+    /// | body_tag (u64 BE)  |   body bytes      | part1_tag (u64 BE) |   part1 bytes     |         |
     /// +--------------------+-------------------+--------------------+-------------------+         +
     ///                                                                                      repeat
     ///                                                                                        for
     ///                                                                                      each part
     /// ```
+    ///
+    /// The high bit of each tag indicates whether the part is typed. If set,
+    /// the lower 63 bits hold the part length, and the tag is followed by the
+    /// part typehash as a `u64 BE` before the part bytes.
     pub fn framed(self) -> Frame {
         let (body, parts) = self.into_inner();
 
         let mut buffers = Vec::with_capacity(
-            1 + body.num_fragments()
-                + parts.len()
-                + parts.iter().map(|part| part.num_fragments()).sum::<usize>(),
+            Self::part_frame_buffers(&body)
+                + parts.iter().map(Self::part_frame_buffers).sum::<usize>(),
         );
 
-        buffers.push(Bytes::from_owner(body.len().to_be_bytes()));
-        for fragment in body.into_inner() {
-            buffers.push(fragment);
-        }
+        Self::push_framed_part(body, &mut buffers);
 
         for part in parts {
-            buffers.push(Bytes::from_owner(part.len().to_be_bytes()));
-            for fragment in part.into_inner() {
-                buffers.push(fragment);
-            }
+            Self::push_framed_part(part, &mut buffers);
         }
 
         Frame::from_buffers(buffers)
@@ -142,27 +163,75 @@ impl Message {
         if buf.len() < 8 {
             return Err(std::io::ErrorKind::UnexpectedEof.into());
         }
-        let body_len = buf.get_u64();
-        let body = buf.split_to(body_len as usize);
+        let body = Self::split_part(&mut buf)?;
         let mut parts = Vec::new();
         while !buf.is_empty() {
-            parts.push(Self::split_part(&mut buf)?.into());
+            parts.push(Self::split_part(&mut buf)?);
         }
-        Ok(Self {
-            body: body.into(),
-            parts,
+        Ok(Self { body, parts })
+    }
+
+    fn part_frame_len(part: &Part) -> usize {
+        8usize
+            .checked_add(part.typehash().map_or(0, |_| 8))
+            .and_then(|len| len.checked_add(part.len()))
+            .expect("part frame length exceeds usize")
+    }
+
+    fn part_frame_buffers(part: &Part) -> usize {
+        1 + part.typehash().map_or(0, |_| 1) + part.num_fragments()
+    }
+
+    fn push_framed_part(part: Part, buffers: &mut Vec<Bytes>) {
+        let typehash = part.typehash();
+        let tag = Self::frame_tag(part.len(), typehash);
+        buffers.push(Bytes::from_owner(tag.to_be_bytes()));
+        if let Some(typehash) = typehash {
+            buffers.push(Bytes::from_owner(typehash.to_be_bytes()));
+        }
+        for fragment in part.into_fragments() {
+            buffers.push(fragment);
+        }
+    }
+
+    fn frame_tag(len: usize, typehash: Option<u64>) -> u64 {
+        let len = u64::try_from(len).expect("part length exceeds u64");
+        if len > FRAME_LEN_MASK {
+            panic!("part length exceeds 63-bit frame limit");
+        }
+        len | typehash.map_or(0, |_| FRAME_TYPEHASH_FLAG)
+    }
+
+    fn frame_len_from_tag(tag: u64) -> Result<usize, std::io::Error> {
+        usize::try_from(tag & FRAME_LEN_MASK).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "part length exceeds addressable memory",
+            )
         })
     }
 
-    fn split_part(buf: &mut Bytes) -> Result<Bytes, std::io::Error> {
+    fn split_part(buf: &mut Bytes) -> Result<Part, std::io::Error> {
         if buf.len() < 8 {
             return Err(std::io::ErrorKind::UnexpectedEof.into());
         }
-        let at = buf.get_u64() as usize;
+        let tag = buf.get_u64();
+        let typehash = if tag & FRAME_TYPEHASH_FLAG == 0 {
+            None
+        } else {
+            if buf.len() < 8 {
+                return Err(std::io::ErrorKind::UnexpectedEof.into());
+            }
+            Some(buf.get_u64())
+        };
+        let at = Self::frame_len_from_tag(tag)?;
         if buf.len() < at {
             return Err(std::io::ErrorKind::UnexpectedEof.into());
         }
-        Ok(buf.split_to(at))
+        Ok(Part::from_typehash_and_fragments(
+            typehash,
+            vec![buf.split_to(at)],
+        ))
     }
 }
 
@@ -303,7 +372,7 @@ pub fn serialize_bincode<S: ?Sized + serde::Serialize>(
         ser::bincode::Serializer::new(bincode::Serializer::new(buffer_borrow.writer(), options()));
     value.serialize(&mut serializer)?;
     Ok(Message {
-        body: Part(vec![buffer.into_inner().freeze()]),
+        body: Part::from_fragments(vec![buffer.into_inner().freeze()]),
         parts: serializer.into_parts(),
     })
 }
@@ -339,13 +408,108 @@ mod tests {
     use std::net::SocketAddr;
     use std::net::SocketAddrV6;
 
+    use bytes::BufMut;
     use proptest::prelude::*;
     use proptest_derive::Arbitrary;
     use serde::Deserialize;
     use serde::Serialize;
     use serde::de::DeserializeOwned;
+    use typeuri::Named;
 
     use super::*;
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Named)]
+    struct TypedPayload {
+        label: String,
+        value: u64,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    struct TypedPayloadRepr {
+        label: String,
+        value: u64,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Named)]
+    struct CodecPayload {
+        label: String,
+        value: u64,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    struct CodecPayloadRepr {
+        label: String,
+        value: u64,
+    }
+
+    impl PartCodec for CodecPayload {
+        type Repr = CodecPayloadRepr;
+
+        fn to_repr(&self) -> Result<Self::Repr> {
+            Ok(CodecPayloadRepr {
+                label: self.label.clone(),
+                value: self.value,
+            })
+        }
+
+        fn from_repr(repr: Self::Repr) -> Result<Self> {
+            Ok(Self {
+                label: repr.label,
+                value: repr.value,
+            })
+        }
+    }
+
+    impl Serialize for CodecPayload {
+        fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            serialize_part_codec(self, serializer)
+        }
+    }
+
+    impl<'de> Deserialize<'de> for CodecPayload {
+        fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            deserialize_part_codec(deserializer)
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Named)]
+    struct MacroCodecPayload {
+        label: String,
+        value: u64,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    struct MacroCodecPayloadRepr {
+        label: String,
+        value: u64,
+    }
+
+    crate::part_codec! {
+        impl MacroCodecPayload
+        {
+            type Repr = MacroCodecPayloadRepr;
+
+            fn to_repr(&self) -> Result<Self::Repr> {
+                Ok(MacroCodecPayloadRepr {
+                    label: self.label.clone(),
+                    value: self.value,
+                })
+            }
+
+            fn from_repr(repr: Self::Repr) -> Result<Self> {
+                Ok(Self {
+                    label: repr.label,
+                    value: repr.value,
+                })
+            }
+        }
+    }
 
     fn test_roundtrip<T>(value: T, expected_parts: usize)
     where
@@ -448,6 +612,224 @@ mod tests {
     }
 
     #[test]
+    fn test_typed_part() {
+        let value = TypedPayload {
+            label: "hello".to_string(),
+            value: 42,
+        };
+        let part = Part::serialize(&value).unwrap();
+
+        assert_eq!(part.typehash(), Some(TypedPayload::typehash()));
+        assert!(part.is::<TypedPayload>());
+        assert_eq!(part.deserialized::<TypedPayload>().unwrap(), value);
+
+        let err = part.deserialized::<String>().unwrap_err();
+        assert_matches!(
+            err,
+            Error::TypeMismatch { expected, actual }
+                if expected == String::typename() && actual == TypedPayload::typehash().to_string()
+        );
+
+        let untyped = Part::from("hello");
+        let err = untyped.deserialized::<TypedPayload>().unwrap_err();
+        assert_matches!(
+            err,
+            Error::TypeMismatch { actual, .. } if actual == "unknown"
+        );
+
+        let bincode_serialized = bincode::serialize(&part).unwrap();
+        let bincode_deserialized: Part = bincode::deserialize(&bincode_serialized).unwrap();
+        assert_eq!(part, bincode_deserialized);
+        assert_eq!(
+            bincode_deserialized.deserialized::<TypedPayload>().unwrap(),
+            value
+        );
+    }
+
+    #[test]
+    fn test_typed_part_with_distinct_repr() {
+        let repr = TypedPayloadRepr {
+            label: "repr".to_string(),
+            value: 99,
+        };
+        let part = Part::serialize_as::<TypedPayload, _>(&repr).unwrap();
+
+        assert_eq!(part.typehash(), Some(TypedPayload::typehash()));
+        assert!(part.is::<TypedPayload>());
+        assert_eq!(
+            part.deserialized_as::<TypedPayload, TypedPayloadRepr>()
+                .unwrap(),
+            repr
+        );
+
+        let err = part
+            .deserialized_as::<String, TypedPayloadRepr>()
+            .unwrap_err();
+        assert_matches!(
+            err,
+            Error::TypeMismatch { expected, actual }
+                if expected == String::typename() && actual == TypedPayload::typehash().to_string()
+        );
+    }
+
+    #[test]
+    fn test_part_codec_uses_multipart_parts() {
+        let value = CodecPayload {
+            label: "codec".to_string(),
+            value: 123,
+        };
+        let repr = value.to_repr().unwrap();
+
+        let bincode_serialized = bincode::serialize(&value).unwrap();
+        let bincode_deserialized: CodecPayload = bincode::deserialize(&bincode_serialized).unwrap();
+        assert_eq!(bincode_deserialized, value);
+
+        let message = serialize_bincode(&value).unwrap();
+        assert!(message.body().is_empty());
+        assert_eq!(message.num_parts(), 1);
+        assert_eq!(
+            message.parts()[0].typehash(),
+            Some(CodecPayload::typehash())
+        );
+        assert_eq!(
+            message.parts()[0]
+                .deserialized_as::<CodecPayload, CodecPayloadRepr>()
+                .unwrap(),
+            repr
+        );
+
+        let deserialized: CodecPayload = deserialize_bincode(message).unwrap();
+        assert_eq!(deserialized, value);
+    }
+
+    #[test]
+    fn test_part_codec_compound_multipart() {
+        #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+        struct Envelope {
+            none: Option<CodecPayload>,
+            one: Option<CodecPayload>,
+            raw: Part,
+            many: Vec<CodecPayload>,
+            tail: u64,
+        }
+
+        let value = Envelope {
+            none: None,
+            one: Some(CodecPayload {
+                label: "one".to_string(),
+                value: 1,
+            }),
+            raw: Part::from("raw"),
+            many: vec![
+                CodecPayload {
+                    label: "two".to_string(),
+                    value: 2,
+                },
+                CodecPayload {
+                    label: "three".to_string(),
+                    value: 3,
+                },
+            ],
+            tail: 4,
+        };
+
+        let message = serialize_bincode(&value).unwrap();
+        assert_eq!(message.num_parts(), 4);
+        assert_eq!(
+            message.parts()[0].typehash(),
+            Some(CodecPayload::typehash())
+        );
+        assert_eq!(message.parts()[1].typehash(), None);
+        assert_eq!(message.parts()[1].to_bytes(), value.raw.to_bytes());
+        assert!(
+            message.parts()[2..]
+                .iter()
+                .all(|part| part.typehash() == Some(CodecPayload::typehash()))
+        );
+
+        let deserialized: Envelope = deserialize_bincode(message).unwrap();
+        assert_eq!(deserialized, value);
+    }
+
+    #[test]
+    fn test_part_codec_malformed_messages() {
+        let value = CodecPayload {
+            label: "codec".to_string(),
+            value: 123,
+        };
+        let mut message = serialize_bincode(&value).unwrap();
+        message.parts[0] = Part::serialize(&TypedPayload {
+            label: "wrong".to_string(),
+            value: 999,
+        })
+        .unwrap();
+        let err = deserialize_bincode::<CodecPayload>(message).unwrap_err();
+        assert_matches!(*err, bincode::ErrorKind::Custom(message) if message.contains("type mismatch"));
+
+        let mut message = serialize_bincode(&value).unwrap();
+        message.parts.clear();
+        let err = deserialize_bincode::<CodecPayload>(message).unwrap_err();
+        assert_matches!(*err, bincode::ErrorKind::Custom(message) if message == "multipart underrun while decoding");
+
+        let mut message = serialize_bincode(&42u64).unwrap();
+        message.parts.push(Part::from("extra"));
+        let err = deserialize_bincode::<u64>(message).unwrap_err();
+        assert_matches!(*err, bincode::ErrorKind::Custom(message) if message == "multipart overrun while decoding");
+    }
+
+    #[test]
+    fn test_part_codec_macro() {
+        let value = MacroCodecPayload {
+            label: "macro".to_string(),
+            value: 456,
+        };
+
+        let bincode_serialized = bincode::serialize(&value).unwrap();
+        let bincode_deserialized: MacroCodecPayload =
+            bincode::deserialize(&bincode_serialized).unwrap();
+        assert_eq!(bincode_deserialized, value);
+
+        let message = serialize_bincode(&value).unwrap();
+        assert!(message.body().is_empty());
+        assert_eq!(message.num_parts(), 1);
+        assert_eq!(
+            message.parts()[0].typehash(),
+            Some(MacroCodecPayload::typehash())
+        );
+
+        let deserialized: MacroCodecPayload = deserialize_bincode(message).unwrap();
+        assert_eq!(deserialized, value);
+    }
+
+    #[test]
+    fn test_raw_part_envelope_deserializes_payload() {
+        #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+        struct Envelope {
+            header: String,
+            payload: Part,
+        }
+
+        let payload = TypedPayload {
+            label: "payload".to_string(),
+            value: 7,
+        };
+        let envelope = Envelope {
+            header: "header".to_string(),
+            payload: Part::serialize(&payload).unwrap(),
+        };
+
+        let message = serialize_bincode(&envelope).unwrap();
+        assert_eq!(message.num_parts(), 1);
+
+        let deserialized: Envelope = deserialize_bincode(message).unwrap();
+        assert_eq!(deserialized.header, envelope.header);
+        assert_eq!(
+            deserialized.payload.deserialized::<TypedPayload>().unwrap(),
+            payload
+        );
+    }
+
+    #[test]
     fn test_malformed_messages() {
         let message = Message {
             body: Part::from("hello"),
@@ -514,6 +896,82 @@ mod tests {
         let mut framed = message.clone().framed();
         let framed = framed.copy_to_bytes(framed.remaining());
         assert_eq!(Message::from_framed(framed).unwrap(), message);
+    }
+
+    #[test]
+    fn test_typed_framing() {
+        let body_value = TypedPayload {
+            label: "body".to_string(),
+            value: 1,
+        };
+        let part_value = TypedPayload {
+            label: "part".to_string(),
+            value: 2,
+        };
+        let body = Part::serialize(&body_value).unwrap();
+        let typed_part = Part::serialize(&part_value).unwrap();
+        let opaque_part = Part::from("opaque");
+        let message = Message::from_body_and_parts(
+            body.clone(),
+            vec![opaque_part.clone(), typed_part.clone()],
+        );
+
+        let mut frame = message.clone().framed();
+        assert_eq!(frame.remaining(), message.frame_len());
+        let encoded = frame.copy_to_bytes(frame.remaining());
+
+        let mut bytes = encoded.clone();
+        assert_eq!(bytes.get_u64(), FRAME_TYPEHASH_FLAG | body.len() as u64);
+        assert_eq!(bytes.get_u64(), TypedPayload::typehash());
+        assert_eq!(bytes.split_to(body.len()), body.to_bytes());
+        assert_eq!(bytes.get_u64(), opaque_part.len() as u64);
+        assert_eq!(bytes.split_to(opaque_part.len()), opaque_part.to_bytes());
+        assert_eq!(
+            bytes.get_u64(),
+            FRAME_TYPEHASH_FLAG | typed_part.len() as u64
+        );
+        assert_eq!(bytes.get_u64(), TypedPayload::typehash());
+        assert_eq!(bytes.split_to(typed_part.len()), typed_part.to_bytes());
+        assert!(bytes.is_empty());
+
+        let unframed = Message::from_framed(encoded).unwrap();
+        assert_eq!(unframed, message);
+        assert_eq!(
+            unframed.body().deserialized::<TypedPayload>().unwrap(),
+            body_value
+        );
+        assert_eq!(
+            unframed.parts()[1].deserialized::<TypedPayload>().unwrap(),
+            part_value
+        );
+    }
+
+    #[test]
+    fn test_typed_framing_malformed_messages() {
+        let mut frame = BytesMut::new();
+        frame.put_u64(FRAME_TYPEHASH_FLAG | 1);
+        let err = Message::from_framed(frame.freeze()).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
+
+        let mut frame = BytesMut::new();
+        frame.put_u64(FRAME_TYPEHASH_FLAG | 4);
+        frame.put_u64(TypedPayload::typehash());
+        frame.extend_from_slice(b"xx");
+        let err = Message::from_framed(frame.freeze()).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn test_framing_rejects_lengths_that_need_typehash_bit() {
+        let Some(too_large) = usize::try_from(FRAME_LEN_MASK)
+            .ok()
+            .and_then(|len| len.checked_add(1))
+        else {
+            return;
+        };
+
+        let result = std::panic::catch_unwind(|| Message::frame_tag(too_large, None));
+        assert!(result.is_err());
     }
 
     #[test]
