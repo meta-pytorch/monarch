@@ -95,4 +95,5 @@ def _unflatten(xs, ctx):
     return ctx(xs)
 
 
+# pyrefly: ignore [bad-argument-type]
 register_pytree_node(OpaqueRef, _flatten, _unflatten)
