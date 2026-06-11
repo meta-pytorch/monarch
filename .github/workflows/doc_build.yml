@@ -55,20 +55,21 @@ jobs:
         # Source common setup functions
         source scripts/common-setup.sh
 
-        # Setup build environment (conda + system deps + rust + build deps)
-        # docs build will use 3.13
+        # Setup build environment (conda + system deps + rust + uv).
+        # docs build uses Python 3.13.
         setup_build_environment 3.13
-
-        # Install PyTorch with CUDA support (matching build-cuda.yml)
-        pip install --pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu132
 
         # Setup Tensor Engine
         setup_tensor_engine
 
-        # Setup Python dependencies
-        python -m pip install --upgrade pip
-        pip install -r build-requirements.txt
-        pip install -r docs/requirements.txt
+        # Install nightly cu132 torch + build-time Python deps only. The docs
+        # script below is the single project build; skipping the project here
+        # avoids an earlier isolated build stamping extensions against a
+        # different torch than the runtime environment.
+        uv sync --inexact --no-install-project --extra cu132-nightly --extra build
+
+        # Sphinx + doc-only deps (not represented in pyproject.toml).
+        uv pip install -r docs/requirements.txt
 
         # Set environment variables for CUDA build
         export USE_CUDA=1

@@ -79,15 +79,36 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 brew install uv
 ```
 
-**Configuring PyTorch Index**: By default, Monarch builds with PyTorch from the
-`pytorch-cu132` index (CUDA 13.2). To use a different CUDA version:
+**Selecting a PyTorch flavor**: torch is installed by picking exactly one
+extra. The extra name selects both the version requirement and the wheel
+index. Available extras:
 
-- Edit `[tool.uv.sources]` in `pyproject.toml` to point to a different index
-  (e.g., `pytorch-cu130`, or `pytorch-cpu`)
-- Or use `--extra-index-url` when running uv:
-  ```sh
-  uv sync --extra-index-url https://download.pytorch.org/whl/cu130
-  ```
+| Extra            | Index                                            | Use case                        |
+| ---------------- | ------------------------------------------------ | ------------------------------- |
+| `cpu`            | `download.pytorch.org/whl/cpu`                   | CPU-only laptop development     |
+| `cu128`          | `download.pytorch.org/whl/cu128`                 | Stable CUDA 12.8                |
+| `cu130`          | `download.pytorch.org/whl/cu130`                 | Stable CUDA 13.0                |
+| `cu132`          | `download.pytorch.org/whl/cu132`                 | Stable CUDA 13.2 (default GPU)  |
+| `rocm71`         | `download.pytorch.org/whl/rocm7.1`               | Stable ROCm 7.1                 |
+| `rocm72`         | `download.pytorch.org/whl/rocm7.2`               | Stable ROCm 7.2                 |
+| `cpu-nightly`    | `download.pytorch.org/whl/nightly/cpu`           | Nightly torch, CPU              |
+| `cu128-nightly`  | `download.pytorch.org/whl/nightly/cu128`         | Nightly torch, CUDA 12.8        |
+| `cu130-nightly`  | `download.pytorch.org/whl/nightly/cu130`         | Nightly torch, CUDA 13.0 (PR CI) |
+| `cu132-nightly`  | `download.pytorch.org/whl/nightly/cu132`         | Nightly torch, CUDA 13.2 (CI)   |
+| `rocm71-nightly` | `download.pytorch.org/whl/nightly/rocm7.1`       | Nightly torch, ROCm 7.1 (CI)    |
+| `rocm72-nightly` | `download.pytorch.org/whl/nightly/rocm7.2`       | Nightly torch, ROCm 7.2 (CI)    |
+
+```sh
+# Stable CUDA 13.2 build
+uv sync --extra cu132
+
+# CPU-only build
+uv sync --extra cpu
+```
+
+The extras are mutually exclusive; uv refuses to enable more than one at a
+time. Plain `uv sync` (no extra) installs everything except torch, which is
+appropriate for `USE_TENSOR_ENGINE=0` builds that don't need torch at all.
 
 #### Understanding Tensor Engine
 
@@ -124,10 +145,10 @@ explicit opt-out when you want the CPU tensor engine on a GPU-capable host.
 
 ```sh
 # Force a CPU-only tensor engine (no CUDA/ROCm/RDMA libraries required)
-MONARCH_GPU_PLATFORM=none uv sync
+MONARCH_GPU_PLATFORM=none uv sync --extra cpu
 
 # Force CUDA on a host that also has ROCm
-MONARCH_GPU_PLATFORM=cuda uv sync
+MONARCH_GPU_PLATFORM=cuda uv sync --extra cu132
 ```
 
 #### Build Dependencies by Platform
@@ -156,10 +177,10 @@ sudo dnf install -y libibverbs rdma-core libmlx5 libibverbs-devel rdma-core-deve
 git clone https://github.com/meta-pytorch/monarch.git
 cd monarch
 
-# Install in development mode with all dependencies
-uv sync
+# Install in development mode with stable CUDA 13.2 torch
+uv sync --extra cu132
 
-# Or install without tensor_engine
+# Or install without tensor_engine (no torch needed)
 USE_TENSOR_ENGINE=0 uv sync
 
 # Verify installation
@@ -195,10 +216,10 @@ sudo apt install -y rdma-core libibverbs1 libmlx5-1 libibverbs-dev
 git clone https://github.com/meta-pytorch/monarch.git
 cd monarch
 
-# Install in development mode with all dependencies
-uv sync
+# Install in development mode with stable CUDA 13.2 torch
+uv sync --extra cu132
 
-# Or install without tensor_engine (CPU-only)
+# Or install without tensor_engine (no torch needed)
 USE_TENSOR_ENGINE=0 uv sync
 
 # Verify installation
@@ -227,7 +248,7 @@ git clone https://github.com/meta-pytorch/monarch.git
 cd monarch
 
 # Build the CPU tensor engine (auto-detects no GPU)
-uv sync
+uv sync --extra cpu
 
 # Or, to skip the tensor engine entirely (actors only, no torch required)
 USE_TENSOR_ENGINE=0 uv sync
@@ -238,20 +259,19 @@ uv run python -c "from monarch import actor; print('Monarch installed successful
 
 #### Alternative: Using pip
 
-If you prefer to use pip instead of uv:
+If you prefer pip, note that pip does not honor `[tool.uv.sources]` — you have
+to pick the PyTorch index manually with `--extra-index-url`.
 
 ```sh
 # After installing system dependencies (see above)
 
-# Install build dependencies
+# Build and install with stable CUDA 13.2 torch
+pip install '.[cu132]' --extra-index-url https://download.pytorch.org/whl/cu132
 
-# Build and install Monarch
-pip install .
+# Editable install (development mode), CPU-only torch
+pip install -e '.[cpu]' --extra-index-url https://download.pytorch.org/whl/cpu
 
-# Or for development
-pip install -e .
-
-# Without tensor_engine
+# Without tensor_engine (no torch needed)
 USE_TENSOR_ENGINE=0 pip install -e .
 ```
 
@@ -275,8 +295,8 @@ Rust tests, you need to have a Python environment activated (conda, venv, or
 uv):
 
 ```sh
-# If using uv (recommended)
-uv sync  # This creates and activates a virtual environment
+# If using uv (recommended) — pick a torch flavor extra
+uv sync --extra cu132  # or --extra cpu / --extra rocm71 etc.
 uv run cargo nextest run  # Run tests within the uv environment
 
 # Or if using conda
@@ -309,14 +329,14 @@ cargo-nextest supports all of the filtering flags of "cargo test".
 ### Python tests
 
 ```sh
-# Install test dependencies (if not already installed via uv sync)
-uv sync --extra test
+# Install torch + test dependencies (pick one torch flavor)
+uv sync --extra cu132 --extra test  # or --extra cpu / --extra rocm71 / etc.
 
 # Run unit tests with uv
 uv run pytest python/tests/ -v -m "not oss_skip"
 
 # Or if using pip
-pip install -e '.[test]'
+pip install -e '.[cu132,test]'  # or .[cpu,test] / etc.
 pytest python/tests/ -v -m "not oss_skip"
 ```
 

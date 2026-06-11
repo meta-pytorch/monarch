@@ -44,7 +44,7 @@ jobs:
       # of auto-suffixing it from gpu-arch-type/version.
       runner: linux.c7i.2xlarge
       docker-image: 'pytorch/manylinux2_28-builder:cuda13.2'
-      torch-spec: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu132'
+      extra: cu132-nightly
       gpu-arch-type: cpu
       gpu-arch-version: ''
       arch-label: cuda13.2
@@ -56,7 +56,7 @@ jobs:
       python-versions: '["3.10", "3.11", "3.12", "3.13"]'
       runner: linux.arm64.2xlarge
       docker-image: 'pytorch/manylinuxaarch64-builder:cuda13.2'
-      torch-spec: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu132'
+      extra: cu132-nightly
       gpu-arch-type: cuda
       gpu-arch-version: '13.2'
       platform: aarch64
@@ -66,7 +66,7 @@ jobs:
     with:
       python-versions: '["3.10", "3.11", "3.12", "3.13"]'
       runner: macos-latest
-      torch-spec: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cpu'
+      extra: cpu-nightly
 
   publish-to-pypi:
     name: Publish to PyPI

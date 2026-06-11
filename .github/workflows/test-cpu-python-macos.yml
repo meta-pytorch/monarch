@@ -42,8 +42,10 @@ jobs:
           set -eux
           source scripts/common-setup-macos.sh
           install_macos_base_dependencies
-          install_macos_python_test_dependencies
-          python -m pip install pytest-split
+          setup_uv_macos
+          # Install nightly CPU torch + pytest stack, but keep Monarch itself
+          # coming from the wheel artifact installed below.
+          uv sync --inexact --no-install-project --extra cpu-nightly --extra test
 
       - name: Fetch disabled tests
         shell: bash
@@ -63,12 +65,16 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target
         run: |
           set -eux
-          python -m pip install "${{ runner.temp }}/wheel-artifact"/*.whl
+          source scripts/common-setup-macos.sh
+          setup_uv_macos
+          uv pip install "${{ runner.temp }}/wheel-artifact"/*.whl
 
       - name: Verify import
         shell: bash
         run: |
           set -eux
+          source scripts/common-setup-macos.sh
+          setup_uv_macos
           python -c "import monarch; import monarch.actor; print('Monarch imported successfully')"
 
       - name: Run macOS CPU Python tests
@@ -76,6 +82,7 @@ jobs:
         run: |
           set -eux
           source scripts/common-setup-macos.sh
+          setup_uv_macos
           run_test_groups
 
       - name: Upload test results

@@ -31,7 +31,9 @@ jobs:
       script: |
         source scripts/common-setup.sh
         setup_build_environment ${{ matrix.python-version }}
-        pip install ${{ matrix.torch-spec }}
-        pip install -r build-requirements.txt
         setup_tensor_engine
-        python setup.py bdist_wheel
+        # Install torch + build-time deps only. The uv build command below is
+        # the project build, so avoid an earlier isolated editable build that
+        # can stamp extensions against a different torch.
+        uv sync --inexact --no-install-project --extra ${{ matrix.extra }} --extra build
+        uv build --wheel --no-build-isolation

@@ -52,12 +52,20 @@ dependencies = [
     "py-spy",
 ]
 
-# PyTorch nightly build indices for different platforms
-# To use a different nightly, change the index in [tool.uv.sources] below
-# or use: uv pip install --extra-index-url https://download.pytorch.org/whl/nightly/{platform} torch
+# PyTorch wheel indices.
+#
+# A workflow (or developer) picks exactly one torch flavor via
+# `uv sync --extra <flavor>`. The flavor name matches an entry in
+# [project.optional-dependencies], and [tool.uv.sources] routes torch to the
+# matching index below. Plain `uv sync` (no extras) does not install torch,
+# which is useful for `USE_TENSOR_ENGINE=0` builds.
+#
+# Stable indices: used by tagged release builds.
+# Nightly indices: used by CI test workflows so problems are caught against
+# upcoming torch before the next stable release.
 [[tool.uv.index]]
-name = "pytorch-cu126"
-url = "https://download.pytorch.org/whl/cu126"
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [[tool.uv.index]]
@@ -76,25 +84,99 @@ url = "https://download.pytorch.org/whl/cu132"
 explicit = true
 
 [[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
+name = "pytorch-rocm71"
+url = "https://download.pytorch.org/whl/rocm7.1"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-rocm72"
+url = "https://download.pytorch.org/whl/rocm7.2"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-nightly-cpu"
+url = "https://download.pytorch.org/whl/nightly/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-nightly-cu128"
+url = "https://download.pytorch.org/whl/nightly/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-nightly-cu130"
+url = "https://download.pytorch.org/whl/nightly/cu130"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-nightly-cu132"
+url = "https://download.pytorch.org/whl/nightly/cu132"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-nightly-rocm71"
+url = "https://download.pytorch.org/whl/nightly/rocm7.1"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-nightly-rocm72"
+url = "https://download.pytorch.org/whl/nightly/rocm7.2"
 explicit = true
 
 [tool.uv.sources]
-# Override with: uv sync --extra-index-url https://download.pytorch.org/whl/nightly/{platform} e.g.
-# uv sync --extra-index-url https://download.pytorch.org/whl/nightly/cu132
+# Each entry binds PyTorch packages to a specific index when the named extra is
+# enabled. Extras are mutually exclusive (see [tool.uv].conflicts).
 torch = [
-    { index = "pytorch-cu132", marker = "sys_platform != 'darwin'"  },
-    # MacOS cannot have cuda symbols, so default to CPU.
-    { index = "pytorch-cpu", marker = "sys_platform == 'darwin'" },
+    { index = "pytorch-cpu",            extra = "cpu" },
+    { index = "pytorch-cu128",          extra = "cu128" },
+    { index = "pytorch-cu130",          extra = "cu130" },
+    { index = "pytorch-cu132",          extra = "cu132" },
+    { index = "pytorch-rocm71",         extra = "rocm71" },
+    { index = "pytorch-rocm72",         extra = "rocm72" },
+    { index = "pytorch-nightly-cpu",    extra = "cpu-nightly" },
+    { index = "pytorch-nightly-cu128",  extra = "cu128-nightly" },
+    { index = "pytorch-nightly-cu130",  extra = "cu130-nightly" },
+    { index = "pytorch-nightly-cu132",  extra = "cu132-nightly" },
+    { index = "pytorch-nightly-rocm71", extra = "rocm71-nightly" },
+    { index = "pytorch-nightly-rocm72", extra = "rocm72-nightly" },
+]
+triton = [
+    { index = "pytorch-cu128",          extra = "cu128" },
+    { index = "pytorch-cu130",          extra = "cu130" },
+    { index = "pytorch-cu132",          extra = "cu132" },
+    { index = "pytorch-nightly-cu128",  extra = "cu128-nightly" },
+    { index = "pytorch-nightly-cu130",  extra = "cu130-nightly" },
+    { index = "pytorch-nightly-cu132",  extra = "cu132-nightly" },
+]
+triton-rocm = [
+    { index = "pytorch-rocm71",         extra = "rocm71" },
+    { index = "pytorch-rocm72",         extra = "rocm72" },
+    { index = "pytorch-nightly-rocm71", extra = "rocm71-nightly" },
+    { index = "pytorch-nightly-rocm72", extra = "rocm72-nightly" },
 ]
 
-# Configure uv for torch nightly builds
 [tool.uv]
-prerelease = "allow"  # Required for torch nightly builds (pre-release versions)
-required-environments = ["sys_platform == 'linux'"]  # Force resolution for Linux x86_64
-python-preference = "managed"  # Use uv-managed Python installations
-python-downloads = "automatic"  # Automatically download Python if needed
+prerelease = "allow"  # nightly torch wheels are pre-release versions
+python-preference = "managed"  # CI overrides via UV_PYTHON_PREFERENCE=only-system
+python-downloads = "automatic"  # CI overrides via UV_PYTHON_DOWNLOADS=never
+# Torch flavor extras are mutually exclusive: enabling more than one would
+# request torch from multiple indices simultaneously.
+conflicts = [
+    [
+        { extra = "cpu" },
+        { extra = "cu128" },
+        { extra = "cu130" },
+        { extra = "cu132" },
+        { extra = "rocm71" },
+        { extra = "rocm72" },
+        { extra = "cpu-nightly" },
+        { extra = "cu128-nightly" },
+        { extra = "cu130-nightly" },
+        { extra = "cu132-nightly" },
+        { extra = "rocm71-nightly" },
+        { extra = "rocm72-nightly" },
+    ],
+]
 cache-keys = [
     { file = "pyproject.toml" },
     { file = "setup.py" },
@@ -120,13 +202,71 @@ test = [
     "pytest-timeout",
     "pytest-asyncio",
     "pytest-xdist",
+    "pytest-split",
     "pyright",
 ]
 kubernetes = [
     "kubernetes",
 ]
 
-# Modern dependency groups for uv
+# Build-time tools. Mirrors [build-system].requires so that
+# `uv sync --extra build` populates them without requiring PEP 517 isolation.
+build = [
+    "setuptools>=77",
+    "setuptools-rust",
+    "wheel",
+    "numpy",
+]
+
+# Torch flavor selectors. Pick exactly one — they are mutually exclusive (see
+# [tool.uv].conflicts). Each flavor maps to a PyTorch wheel index via
+# [tool.uv.sources]. Stable flavors target PyTorch's release channel; nightly
+# flavors target the nightly channel and are used by CI.
+cpu = ["torch>=2.9.1"]
+cu128 = [
+    "torch>=2.9.1",
+    "triton; sys_platform == 'linux' and python_version < '3.15'",
+]
+cu130 = [
+    "torch>=2.9.1",
+    "triton; sys_platform == 'linux' and python_version < '3.15'",
+]
+cu132 = [
+    "torch>=2.9.1",
+    "triton; sys_platform == 'linux' and python_version < '3.15'",
+]
+rocm71 = [
+    "torch>=2.9.1",
+    "triton-rocm; sys_platform == 'linux' and python_version < '3.15'",
+]
+rocm72 = [
+    "torch>=2.9.1",
+    "triton-rocm; sys_platform == 'linux' and python_version < '3.15'",
+]
+cpu-nightly = ["torch>=2.9.1"]
+cu128-nightly = [
+    "torch>=2.9.1",
+    "triton; sys_platform == 'linux' and python_version < '3.15'",
+]
+cu130-nightly = [
+    "torch>=2.9.1",
+    "triton; sys_platform == 'linux' and python_version < '3.15'",
+]
+cu132-nightly = [
+    "torch>=2.9.1",
+    "triton; sys_platform == 'linux' and python_version < '3.15'",
+]
+rocm71-nightly = [
+    "torch>=2.9.1",
+    "triton-rocm; sys_platform == 'linux' and python_version < '3.15'",
+]
+rocm72-nightly = [
+    "torch>=2.9.1",
+    "triton-rocm; sys_platform == 'linux' and python_version < '3.15'",
+]
+
+# Modern dependency groups for uv. Torch is intentionally absent: pick a flavor
+# extra (e.g., `uv sync --extra cpu` or `--extra cu132`) to get a torch install.
 [dependency-groups]
 dev = [
     "pytest>=7.0",
@@ -135,7 +275,6 @@ dev = [
     "pytest-xdist>=3.0",
     "pytest-split",
     "pyright>=1.1",
-    "torch>=2.9.1",
     "setuptools-rust",
 ]
 
