@@ -37,6 +37,7 @@ use std::time::Duration;
 use anyhow::Context;
 use datafusion::arrow::ipc::reader::StreamReader;
 use datafusion::arrow::record_batch::RecordBatch;
+use monarch_hyperactor::runtime::get_tokio_runtime;
 use monarch_telemetry_schema::MAX_FRAME_LEN;
 use monarch_telemetry_schema::MAX_TABLE_NAME_LEN;
 use tokio::io::AsyncRead;
@@ -107,8 +108,12 @@ pub fn run_ingest_server(
     // serving connections. Tokio requires the fd to be nonblocking before
     // `from_std`.
     listener.set_nonblocking(true)?;
+    // Called from a PyO3 thread with no ambient Tokio runtime. Use monarch's
+    // shared runtime.
+    let runtime = get_tokio_runtime();
+    let _guard = runtime.enter();
     let listener = UnixListener::from_std(listener)?;
-    let task = tokio::spawn(async move {
+    let task = runtime.spawn(async move {
         loop {
             match listener.accept().await {
                 Ok((stream, _addr)) => {
