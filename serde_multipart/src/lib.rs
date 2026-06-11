@@ -708,6 +708,7 @@ mod tests {
         struct Envelope {
             none: Option<CodecPayload>,
             one: Option<CodecPayload>,
+            raw: Part,
             many: Vec<CodecPayload>,
             tail: u64,
         }
@@ -718,6 +719,7 @@ mod tests {
                 label: "one".to_string(),
                 value: 1,
             }),
+            raw: Part::from("raw"),
             many: vec![
                 CodecPayload {
                     label: "two".to_string(),
@@ -732,10 +734,15 @@ mod tests {
         };
 
         let message = serialize_bincode(&value).unwrap();
-        assert_eq!(message.num_parts(), 3);
+        assert_eq!(message.num_parts(), 4);
+        assert_eq!(
+            message.parts()[0].typehash(),
+            Some(CodecPayload::typehash())
+        );
+        assert_eq!(message.parts()[1].typehash(), None);
+        assert_eq!(message.parts()[1].to_bytes(), value.raw.to_bytes());
         assert!(
-            message
-                .parts()
+            message.parts()[2..]
                 .iter()
                 .all(|part| part.typehash() == Some(CodecPayload::typehash()))
         );
