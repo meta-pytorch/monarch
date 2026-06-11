@@ -31,7 +31,7 @@ declare_attrs! {
     /// The rust type of the message.
     pub attr RUST_MESSAGE_TYPE: String;
 
-    /// Hashed ActorAddr of the message sender, injected in post_unchecked().
+    /// Hashed ActorId of the message sender, injected in post_unchecked().
     pub attr SENDER_ACTOR_ID_HASH: u64;
 
     /// Full ActorAddr of the session owner — the actor whose Sequencer
@@ -54,7 +54,7 @@ declare_attrs! {
     pub attr TELEMETRY_MESSAGE_ID: u64;
 
     /// Port index the message was delivered to, injected in post_unchecked().
-    pub attr TELEMETRY_PORT_ID: u64;
+    pub attr TELEMETRY_PORT_INDEX: u64;
 
     // Operation-context headers (see `OPERATION_CONTEXT_HEADER` in
     // `hyperactor_config::attrs`). Carried from the caller's outgoing
