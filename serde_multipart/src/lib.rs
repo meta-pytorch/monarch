@@ -478,6 +478,39 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Clone, PartialEq, Eq, Named)]
+    struct MacroCodecPayload {
+        label: String,
+        value: u64,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    struct MacroCodecPayloadRepr {
+        label: String,
+        value: u64,
+    }
+
+    crate::part_codec! {
+        impl MacroCodecPayload
+        {
+            type Repr = MacroCodecPayloadRepr;
+
+            fn to_repr(&self) -> Result<Self::Repr> {
+                Ok(MacroCodecPayloadRepr {
+                    label: self.label.clone(),
+                    value: self.value,
+                })
+            }
+
+            fn from_repr(repr: Self::Repr) -> Result<Self> {
+                Ok(Self {
+                    label: repr.label,
+                    value: repr.value,
+                })
+            }
+        }
+    }
+
     fn test_roundtrip<T>(value: T, expected_parts: usize)
     where
         T: Serialize + DeserializeOwned + PartialEq + std::fmt::Debug,
@@ -735,6 +768,30 @@ mod tests {
         message.parts.push(Part::from("extra"));
         let err = deserialize_bincode::<u64>(message).unwrap_err();
         assert_matches!(*err, bincode::ErrorKind::Custom(message) if message == "multipart overrun while decoding");
+    }
+
+    #[test]
+    fn test_part_codec_macro() {
+        let value = MacroCodecPayload {
+            label: "macro".to_string(),
+            value: 456,
+        };
+
+        let bincode_serialized = bincode::serialize(&value).unwrap();
+        let bincode_deserialized: MacroCodecPayload =
+            bincode::deserialize(&bincode_serialized).unwrap();
+        assert_eq!(bincode_deserialized, value);
+
+        let message = serialize_bincode(&value).unwrap();
+        assert!(message.body().is_empty());
+        assert_eq!(message.num_parts(), 1);
+        assert_eq!(
+            message.parts()[0].typehash(),
+            Some(MacroCodecPayload::typehash())
+        );
+
+        let deserialized: MacroCodecPayload = deserialize_bincode(message).unwrap();
+        assert_eq!(deserialized, value);
     }
 
     #[test]
