@@ -73,8 +73,8 @@ use hyperactor::mailbox::TransportFailure;
 use hyperactor::mailbox::TransportFailureReason;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::mailbox::UndeliverableReason;
+use hyperactor::proc::ActorWorkReceiver;
 use hyperactor::proc::Proc;
-use hyperactor::proc::WorkCell;
 use hyperactor::supervision::ActorSupervisionEvent;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -187,7 +187,7 @@ pub struct GlobalClientActor {
     /// Any bound handler message (e.g. `MeshFailure`,
     /// `Undeliverable<MessageEnvelope>`, introspection, etc.) is
     /// received here and executed via `WorkCell::handle`.
-    work_rx: mpsc::UnboundedReceiver<WorkCell<Self>>,
+    work_rx: ActorWorkReceiver<Self>,
 }
 
 impl GlobalClientActor {

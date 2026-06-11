@@ -35,9 +35,13 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tempfile::TempDir;
 use tokio::io::AsyncBufReadExt;
+use tokio::io::AsyncWriteExt;
 use tokio::io::BufReader;
 use tokio::process::Child;
+use tokio::process::ChildStdin;
 use tokio::process::Command;
+use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::mpsc;
 
 pub(crate) const QUERY_RETRY_ATTEMPTS: usize = 5;
 pub(crate) const QUERY_RETRY_DELAY: Duration = Duration::from_secs(10);
@@ -62,6 +66,14 @@ pub(crate) struct WorkloadFixture {
     pub(crate) client: Client,
     ca_pem: Vec<u8>,
     _cert_dir: TempDir,
+    /// Child stdin, for workloads driven by the stdin-command /
+    /// stdout-sentinel handshake (`execution_workload`). `None` for
+    /// workloads that are not command-driven. Async mutex so a write +
+    /// flush is atomic without blocking the runtime.
+    stdin: AsyncMutex<Option<ChildStdin>>,
+    /// Receiver fed by the background task that forwards each post-
+    /// sentinel stdout line. `wait_for_stdout` awaits lines from here.
+    stdout_rx: AsyncMutex<mpsc::UnboundedReceiver<String>>,
 }
 
 impl WorkloadFixture {
@@ -73,6 +85,49 @@ impl WorkloadFixture {
             let _ = child.start_kill();
             let _ = child.wait().await;
         }
+    }
+
+    /// Write `line` (plus a trailing newline) to the workload's stdin
+    /// and flush. For command-driven workloads only; errors if the
+    /// fixture was started without stdin piped.
+    pub(crate) async fn send_command(&self, line: &str) -> Result<()> {
+        let mut guard = self.stdin.lock().await;
+        let stdin = guard
+            .as_mut()
+            .ok_or_else(|| anyhow!("fixture has no stdin; workload is not command-driven"))?;
+        stdin
+            .write_all(format!("{line}\n").as_bytes())
+            .await
+            .with_context(|| format!("writing command {line:?} to workload stdin"))?;
+        stdin.flush().await.context("flushing workload stdin")?;
+        Ok(())
+    }
+
+    /// Await stdout lines forwarded from the workload until one starts
+    /// with `prefix`, returning that line. Errors on timeout or if the
+    /// workload's stdout closes first.
+    ///
+    /// This is the read half of the deterministic handshake: the test
+    /// blocks here on a positive sentinel (`EXEC_ENTERED`/`EXEC_ACK`)
+    /// instead of sleeping, so polls happen only once mesh-admin truth
+    /// is established.
+    pub(crate) async fn wait_for_stdout(&self, prefix: &str, timeout: Duration) -> Result<String> {
+        let mut rx = self.stdout_rx.lock().await;
+        tokio::time::timeout(timeout, async {
+            while let Some(line) = rx.recv().await {
+                if line.starts_with(prefix) {
+                    return Ok(line);
+                }
+            }
+            bail!("workload stdout closed before sentinel {prefix:?} appeared")
+        })
+        .await
+        .with_context(|| {
+            format!(
+                "waiting {}s for stdout sentinel {prefix:?}",
+                timeout.as_secs()
+            )
+        })?
     }
 
     /// Build a client that trusts the test CA but presents no client
@@ -311,6 +366,13 @@ pub(crate) fn inbound_ordering_workload_binary() -> PathBuf {
         .to_path_buf()
 }
 
+/// Resolve the execution_workload binary via Buck resources.
+pub(crate) fn execution_workload_binary() -> PathBuf {
+    buck_resources::get("monarch/hyperactor_mesh/execution_workload")
+        .expect("execution_workload resource not found")
+        .to_path_buf()
+}
+
 /// Build a canonical proc reference that is syntactically valid but
 /// points at an unreachable abstract unix socket.
 pub(crate) fn unreachable_proc_ref() -> String {
@@ -358,6 +420,10 @@ pub(crate) async fn start_workload(
         .env("HYPERACTOR_MESH_ADMIN_ADDR", "[::]:0")
         .env("HYPERACTOR_MESH_PROC_SPAWN_MAX_IDLE", "120s")
         .env("HYPERACTOR_MESH_ACTOR_SPAWN_MAX_IDLE", "120s")
+        // Pipe stdin so command-driven workloads (execution_workload)
+        // can be steered via send_command. Non-command-driven workloads
+        // simply never write to it and read stdin EOF on shutdown.
+        .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 
@@ -373,6 +439,13 @@ pub(crate) async fn start_workload(
     let mut child = cmd
         .spawn()
         .with_context(|| format!("failed to spawn {}", binary.display()))?;
+
+    // Take stdin for the command-driven handshake. Held in the fixture
+    // (Some) so send_command can write to it.
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("child stdin not captured"))?;
 
     // MIT-1: Wait for the admin URL sentinel on stdout.
     let stdout = child
@@ -439,8 +512,19 @@ pub(crate) async fn start_workload(
         }
     };
 
-    // Drain remaining stdout in background to prevent pipe deadlock.
-    tokio::spawn(async move { while let Ok(Some(_)) = reader.next_line().await {} });
+    // Forward remaining stdout lines to the fixture's receiver. This
+    // both prevents pipe-fill deadlock (the line is always consumed)
+    // and feeds wait_for_stdout for command-driven workloads. Workloads
+    // that print nothing further simply never send; the task ends when
+    // the child's stdout closes.
+    let (stdout_tx, stdout_rx) = mpsc::unbounded_channel::<String>();
+    tokio::spawn(async move {
+        while let Ok(Some(line)) = reader.next_line().await {
+            // A closed receiver is benign (fixture dropped); keep
+            // draining so the pipe never fills.
+            let _ = stdout_tx.send(line);
+        }
+    });
     // Drop the stderr collector — we only need it on failure.
     stderr_handle.abort();
 
@@ -453,6 +537,8 @@ pub(crate) async fn start_workload(
         client,
         ca_pem: pki.ca_pem,
         _cert_dir: cert_dir,
+        stdin: AsyncMutex::new(Some(stdin)),
+        stdout_rx: AsyncMutex::new(stdout_rx),
     })
 }
 

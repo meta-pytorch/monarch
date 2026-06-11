@@ -551,6 +551,7 @@ mod tests {
                     inbound_ordering: None,
                     is_system: false,
                     failure_info: None,
+                    execution: None,
                 },
                 children: vec![],
                 parent: Some(proc_ref),

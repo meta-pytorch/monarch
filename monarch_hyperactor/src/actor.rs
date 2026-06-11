@@ -6,11 +6,17 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::Debug;
 use std::future::pending;
 use std::ops::Deref;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering as AtomicOrdering;
+use std::time::SystemTime;
 
 use async_trait::async_trait;
 use hyperactor::Actor;
@@ -40,6 +46,9 @@ use hyperactor_config::Flattrs;
 use hyperactor_mesh::casting::update_undeliverable_envelope_for_casting;
 use hyperactor_mesh::comm::multicast::CAST_POINT;
 use hyperactor_mesh::comm::multicast::CastInfo;
+use hyperactor_mesh::introspect::ActiveHandler;
+use hyperactor_mesh::introspect::EXECUTION;
+use hyperactor_mesh::introspect::Execution;
 use hyperactor_mesh::supervision::MeshFailure;
 use hyperactor_mesh::transport::default_bind_spec;
 use hyperactor_mesh::value_mesh::ValueOverlay;
@@ -542,6 +551,277 @@ pub enum PythonActorDispatchMode {
     },
 }
 
+// In-flight handler execution tracking for a Python actor -- the producer
+// side of the mesh `execution` field. Per-actor Rust state, read GIL-free
+// by the introspect seam. Producer invariants (PE-*, monarch_hyperactor-
+// local; documented inline, no registry -- not our crate):
+//   PE-2: only the real user-method invocation is bracketed (in
+//         `_Actor.handle`), never Init/unpickling/plumbing.
+//   PE-3: the snapshot reads `Arc` state only (atomic load + `try_lock`);
+//         the `Mutex` is held only for an insert/remove, never across user
+//         code, so a handler wedged holding the GIL never blocks the
+//         snapshot and the read never touches the GIL.
+//   PE-4: tokens are >= 1; `0` is a reserved no-op sentinel (returned by
+//         the binding when an instance has no tracker), so the
+//         unconditional Python `finally` cannot collide it with a real
+//         token.
+
+/// EX-4 cap: at most this many distinct in-flight handler names are
+/// reported per snapshot; `truncated` is set when exceeded.
+const MAX_ACTIVE_HANDLERS: usize = 64;
+
+/// One in-flight handler invocation.
+#[derive(Debug)]
+struct ActiveEntry {
+    name: String,
+    started_at: SystemTime,
+}
+
+/// Per-actor in-flight handler tracker. Cheap to read concurrently: the
+/// count is a lock-free atomic and the per-handler detail sits behind a
+/// `try_lock` held only for an insert/remove (never across user code), so
+/// a wedged actor stays introspectable (PE-3).
+#[derive(Debug)]
+pub(crate) struct ExecutionTracker {
+    /// Lock-free count of in-flight invocations; always readable.
+    active_count: AtomicU64,
+    /// Monotonic token source, initialized to 1 so issued tokens are
+    /// `>= 1` and `0` stays reserved as the no-op sentinel (PE-4).
+    next_token: AtomicU64,
+    /// token -> entry for the in-flight invocations.
+    handlers: Mutex<HashMap<u64, ActiveEntry>>,
+}
+
+/// Aggregate raw in-flight entries into the reported per-handler view:
+/// grouped by handler name, oldest-first with a stable tie-break on
+/// `name`, capped at `max` (EX-4). Pure, so it can be unit-tested with
+/// explicit timestamps.
+fn aggregate_active(
+    handlers: &HashMap<u64, ActiveEntry>,
+    max: usize,
+) -> (Vec<ActiveHandler>, bool) {
+    let mut by_name: HashMap<&str, (u64, SystemTime)> = HashMap::new();
+    for entry in handlers.values() {
+        let slot = by_name
+            .entry(entry.name.as_str())
+            .or_insert((0, entry.started_at));
+        slot.0 += 1;
+        if entry.started_at < slot.1 {
+            slot.1 = entry.started_at;
+        }
+    }
+    let mut out: Vec<ActiveHandler> = by_name
+        .into_iter()
+        .map(|(name, (active_count, oldest_since))| ActiveHandler {
+            name: name.to_string(),
+            active_count,
+            oldest_since,
+        })
+        .collect();
+    // EX-4: oldest-first, stable tie-break on name.
+    out.sort_by(|a, b| {
+        a.oldest_since
+            .cmp(&b.oldest_since)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    let truncated = out.len() > max;
+    if truncated {
+        out.truncate(max);
+    }
+    (out, truncated)
+}
+
+impl ExecutionTracker {
+    pub(crate) fn new() -> Self {
+        Self {
+            active_count: AtomicU64::new(0),
+            next_token: AtomicU64::new(1),
+            handlers: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Record the start of a handler invocation; returns its token.
+    pub(crate) fn start(&self, name: String) -> u64 {
+        let token = self.next_token.fetch_add(1, AtomicOrdering::Relaxed);
+        self.handlers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(
+                token,
+                ActiveEntry {
+                    name,
+                    started_at: SystemTime::now(),
+                },
+            );
+        self.active_count.fetch_add(1, AtomicOrdering::Relaxed);
+        token
+    }
+
+    /// Record the end of a handler invocation. Idempotent (a token is
+    /// removed at most once) and a no-op for the `0` sentinel (PE-4).
+    pub(crate) fn finish(&self, token: u64) {
+        if token == 0 {
+            return;
+        }
+        let removed = self
+            .handlers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&token)
+            .is_some();
+        if removed {
+            self.active_count.fetch_sub(1, AtomicOrdering::Relaxed);
+        }
+    }
+
+    /// Point-in-time snapshot for the introspect seam. Never blocks: the
+    /// count is read lock-free and the per-handler detail is best-effort
+    /// behind `try_lock` (EX-2: a miss yields `complete: false`, it never
+    /// drops the field).
+    pub(crate) fn snapshot(&self) -> Execution {
+        let active_count = self.active_count.load(AtomicOrdering::Relaxed);
+        match self.handlers.try_lock() {
+            Ok(guard) => {
+                let (active_handlers, truncated) = aggregate_active(&guard, MAX_ACTIVE_HANDLERS);
+                Execution {
+                    active_count,
+                    active_handlers,
+                    complete: true,
+                    truncated,
+                }
+            }
+            Err(_) => Execution {
+                active_count,
+                active_handlers: Vec::new(),
+                complete: false,
+                truncated: false,
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod execution_tracker_tests {
+    use std::time::Duration;
+    use std::time::UNIX_EPOCH;
+
+    use super::*;
+
+    fn at(secs: u64) -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(secs)
+    }
+
+    #[test]
+    fn aggregates_by_name_oldest_first() {
+        let mut h = HashMap::new();
+        h.insert(
+            1,
+            ActiveEntry {
+                name: "b".to_string(),
+                started_at: at(10),
+            },
+        );
+        h.insert(
+            2,
+            ActiveEntry {
+                name: "a".to_string(),
+                started_at: at(20),
+            },
+        );
+        h.insert(
+            3,
+            ActiveEntry {
+                name: "a".to_string(),
+                started_at: at(30),
+            },
+        );
+        let (out, truncated) = aggregate_active(&h, MAX_ACTIVE_HANDLERS);
+        assert!(!truncated);
+        assert_eq!(out.len(), 2);
+        // Oldest-first: b (10) before a (20).
+        assert_eq!(out[0].name, "b");
+        assert_eq!(out[0].active_count, 1);
+        assert_eq!(out[0].oldest_since, at(10));
+        // "a" aggregates two invocations; oldest_since is the min (20).
+        assert_eq!(out[1].name, "a");
+        assert_eq!(out[1].active_count, 2);
+        assert_eq!(out[1].oldest_since, at(20));
+    }
+
+    #[test]
+    fn tie_break_on_name_when_same_oldest() {
+        let mut h = HashMap::new();
+        h.insert(
+            1,
+            ActiveEntry {
+                name: "zebra".to_string(),
+                started_at: at(5),
+            },
+        );
+        h.insert(
+            2,
+            ActiveEntry {
+                name: "alpha".to_string(),
+                started_at: at(5),
+            },
+        );
+        let (out, _) = aggregate_active(&h, MAX_ACTIVE_HANDLERS);
+        assert_eq!(out[0].name, "alpha");
+        assert_eq!(out[1].name, "zebra");
+    }
+
+    #[test]
+    fn truncates_to_n_oldest() {
+        let mut h = HashMap::new();
+        for i in 0..(MAX_ACTIVE_HANDLERS as u64 + 6) {
+            h.insert(
+                i,
+                ActiveEntry {
+                    name: format!("h{:03}", i),
+                    started_at: at(i),
+                },
+            );
+        }
+        let (out, truncated) = aggregate_active(&h, MAX_ACTIVE_HANDLERS);
+        assert!(truncated);
+        assert_eq!(out.len(), MAX_ACTIVE_HANDLERS);
+        // Prefix of the N oldest.
+        assert_eq!(out[0].name, "h000");
+        assert_eq!(
+            out[MAX_ACTIVE_HANDLERS - 1].name,
+            format!("h{:03}", MAX_ACTIVE_HANDLERS - 1)
+        );
+    }
+
+    #[test]
+    fn start_assigns_nonzero_distinct_tokens() {
+        let t = ExecutionTracker::new();
+        let a = t.start("a".to_string());
+        let b = t.start("b".to_string());
+        assert!(a >= 1);
+        assert!(b >= 1);
+        assert_ne!(a, b);
+        let snap = t.snapshot();
+        assert_eq!(snap.active_count, 2);
+        assert!(snap.complete);
+        assert_eq!(snap.active_handlers.len(), 2);
+    }
+
+    #[test]
+    fn finish_is_idempotent_and_zero_is_noop() {
+        let t = ExecutionTracker::new();
+        let tok = t.start("a".to_string());
+        t.finish(tok);
+        assert_eq!(t.snapshot().active_count, 0);
+        // Double-finish must not underflow the count.
+        t.finish(tok);
+        assert_eq!(t.snapshot().active_count, 0);
+        // The 0 sentinel is a no-op.
+        t.finish(0);
+        assert_eq!(t.snapshot().active_count, 0);
+    }
+}
+
 /// An actor for which message handlers are implemented in Python.
 #[derive(Debug)]
 #[hyperactor::export(
@@ -575,6 +855,12 @@ pub struct PythonActor {
     /// side channel; downstream code must not consume this field for
     /// any other purpose.
     mesh_base_name: Option<String>,
+
+    /// Per-actor in-flight handler tracker (producer of the mesh
+    /// `execution` field). Read GIL-free by the introspect seam; a clone
+    /// of this `Arc` is injected into the actor's `PyInstance` so
+    /// `_Actor.handle` can bracket each invocation.
+    execution_tracker: Arc<ExecutionTracker>,
 }
 
 impl PythonActor {
@@ -617,6 +903,7 @@ impl PythonActor {
                     spawn_point: OnceLock::from(spawn_point),
                     init_message,
                     mesh_base_name,
+                    execution_tracker: Arc::new(ExecutionTracker::new()),
                 })
             },
         )?)
@@ -628,6 +915,26 @@ impl PythonActor {
         self.task_locals
             .as_ref()
             .unwrap_or_else(|| shared_task_locals(py))
+    }
+
+    /// Get-or-create the actor's cached `PyInstance`, injecting a clone of
+    /// the execution tracker (PE-1) so `_Actor.handle` can bracket each
+    /// invocation. All four `self.instance` creation sites route through
+    /// this so the tracker is never silently absent -- notably the
+    /// supervision path, which can run before the first endpoint.
+    fn ensure_py_instance(
+        &mut self,
+        py: Python<'_>,
+        src: impl Into<crate::context::PyInstance>,
+    ) -> Py<crate::context::PyInstance> {
+        let tracker = self.execution_tracker.clone();
+        self.instance
+            .get_or_insert_with(|| {
+                let mut inst: crate::context::PyInstance = src.into();
+                inst.set_execution_tracker(tracker);
+                inst.into_pyobject(py).unwrap().into()
+            })
+            .clone_ref(py)
     }
 
     /// Bootstrap the root client actor, creating a new proc for it.
@@ -895,17 +1202,22 @@ pub(crate) fn root_client_actor(py: Python<'_>) -> &'static Instance<PythonActor
 #[async_trait]
 impl Actor for PythonActor {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        // PE-1: install the read side eagerly so the actor reports
+        // `execution` from its first handled message. The callback runs on
+        // the introspect task (off the actor loop) and only reads `Arc`
+        // state (PE-3), so it is `Send + Sync`, non-blocking, and infallible.
+        let tracker = self.execution_tracker.clone();
+        this.set_attrs_snapshot(move || {
+            let mut attrs = hyperactor_config::Attrs::new();
+            attrs.set(EXECUTION, tracker.snapshot());
+            attrs
+        });
+
         if let PythonActorDispatchMode::Queue { receiver, .. } = &mut self.dispatch_mode {
             let receiver = receiver.take().unwrap();
 
             monarch_with_gil(|py| {
-                let self_instance = self
-                    .instance
-                    .get_or_insert_with(|| {
-                        let inst: crate::context::PyInstance = this.into();
-                        inst.into_pyobject(py).unwrap().into()
-                    })
-                    .clone_ref(py);
+                let self_instance = self.ensure_py_instance(py, this);
 
                 let tl = self
                     .task_locals
@@ -1269,10 +1581,7 @@ impl PythonActor {
         let (sender, receiver) = oneshot::channel();
 
         let future = monarch_with_gil(|py| -> Result<_, SerializablePyErr> {
-            let inst = self.instance.get_or_insert_with(|| {
-                let inst: crate::context::PyInstance = cx.into();
-                inst.into_pyobject(py).unwrap().into()
-            });
+            let inst = self.ensure_py_instance(py, cx);
 
             let awaitable = self.actor.call_method(
                 py,
@@ -1324,10 +1633,7 @@ impl PythonActor {
         let resolved = message.resolve_indirect_call(cx).await?;
 
         let queued_msg = monarch_with_gil(|py| -> anyhow::Result<QueuedMessage> {
-            let inst = self.instance.get_or_insert_with(|| {
-                let inst: crate::context::PyInstance = cx.into();
-                inst.into_pyobject(py).unwrap().into()
-            });
+            let inst = self.ensure_py_instance(py, cx);
 
             let py_context = crate::context::PyContext::new(cx, inst.clone_ref(py));
             let py_context_obj = Py::new(py, py_context)?;
@@ -1374,10 +1680,7 @@ impl Handler<MeshFailure> for PythonActor {
         // `__supervise__` is dispatched under `fake_sync_state` inside
         // `_Actor.__supervise__`, mirroring `__cleanup__`.
         let (display_name, fut) = monarch_with_gil(|py| {
-            let inst = self.instance.get_or_insert_with(|| {
-                let inst: crate::context::PyInstance = cx.into();
-                inst.into_pyobject(py).unwrap().into()
-            });
+            let inst = self.ensure_py_instance(py, cx);
             // Compute display_name here since we can't call self.display_name() due to borrow.
             let display_name: Option<String> = inst.bind(py).str().ok().map(|s| s.to_string());
             let actor_bound = self.actor.bind(py);

@@ -1387,6 +1387,7 @@ mod tests {
                 is_system: false,
                 inbound_ordering,
                 failure_info: None,
+                execution: None,
             },
             children: vec![],
             parent: None,

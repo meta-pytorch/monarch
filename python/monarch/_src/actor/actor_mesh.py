@@ -253,6 +253,23 @@ class Instance(abc.ABC):
         ...
 
     @abstractmethod
+    def _execution_start(self, name: str) -> int:
+        """
+        Producer write-side for the mesh `execution` field: record the start
+        of a handler invocation, returning its in-flight token. Returns 0
+        (a no-op sentinel) when this instance has no execution tracker.
+        """
+        ...
+
+    @abstractmethod
+    def _execution_finish(self, token: int) -> None:
+        """
+        End the handler invocation started by `_execution_start`. A no-op
+        for the 0 sentinel. Called from `_Actor.handle`'s `finally`.
+        """
+        ...
+
+    @abstractmethod
     def kill(self, reason: Optional[str] = None) -> None:
         """
         Terminate the current actor with a failure. A supervision error
@@ -1317,21 +1334,30 @@ class _Actor:
 
             the_method, should_instrument, is_coro = self._method_cache[method_name]
 
-            if is_coro:
-                if should_instrument:
-                    with span(method_name):
-                        result = await the_method(*args, **kwargs)
-                else:
-                    result = await the_method(*args, **kwargs)
-                self._maybe_exit_debugger()
-            else:
-                with fake_sync_state():
+            # Bracket the real user-method invocation so the actor reports it
+            # as in-flight (PE-2: only the invocation, never Init/plumbing).
+            # The finally drains on normal return, exception, panic, and
+            # cancellation; `_execution_start` returns 0 (a no-op token) when
+            # the instance has no tracker.
+            token = ctx.actor_instance._execution_start(method_name)
+            try:
+                if is_coro:
                     if should_instrument:
                         with span(method_name):
-                            result = the_method(*args, **kwargs)
+                            result = await the_method(*args, **kwargs)
                     else:
-                        result = the_method(*args, **kwargs)
+                        result = await the_method(*args, **kwargs)
                     self._maybe_exit_debugger()
+                else:
+                    with fake_sync_state():
+                        if should_instrument:
+                            with span(method_name):
+                                result = the_method(*args, **kwargs)
+                        else:
+                            result = the_method(*args, **kwargs)
+                        self._maybe_exit_debugger()
+            finally:
+                ctx.actor_instance._execution_finish(token)
 
             await response_port.resolve_and_send(result)
         except Exception as e:
@@ -1438,6 +1464,7 @@ class _Actor:
             return await supervise(*args, **kwargs)
         else:
             with fake_sync_state():
+                # pyrefly: ignore [not-callable]
                 return supervise(*args, **kwargs)
 
     async def __cleanup__(self, cx: Context, exc: str | Exception | None) -> None:
@@ -1466,6 +1493,7 @@ class _Actor:
             return await cleanup(exc)
         else:
             with fake_sync_state():
+                # pyrefly: ignore [not-callable]
                 return cleanup(exc)
 
     async def _dispatch_loop(
@@ -1552,6 +1580,7 @@ class Actor(MeshTrait):
             "actor implementations are not meshes, but we can't convince the typechecker of it..."
         )
 
+    # pyrefly: ignore [not-a-type]
     def _new_with_shape(self, shape: Shape) -> Self:
         raise NotImplementedError(
             "actor implementations are not meshes, but we can't convince the typechecker of it..."

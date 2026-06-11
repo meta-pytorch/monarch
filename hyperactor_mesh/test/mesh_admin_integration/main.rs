@@ -339,6 +339,7 @@ mod admin;
 mod auth;
 mod config;
 mod dining;
+mod execution;
 mod harness;
 mod inbound_ordering;
 mod inbound_ordering_workload;
@@ -372,6 +373,17 @@ async fn test_dining_endpoints_python() {
 #[tokio::test]
 async fn test_inbound_ordering_workload() {
     inbound_ordering_workload::run_inbound_ordering_workload().await;
+}
+
+// --- execution surface family ---
+
+/// Execution surface, real Python hooks end-to-end: a Python workload
+/// driven by the stdin/stdout handshake proves the `_Actor.handle`
+/// bracket increments/decrements `execution` across direct and queue
+/// dispatch, visible over `GET /v1/{actor}`.
+#[tokio::test]
+async fn test_execution_workload() {
+    execution::run_execution_workload().await;
 }
 
 // --- pyspy family ---
