@@ -111,6 +111,7 @@ use crate::config::ENABLE_RECORDER_TRACING;
 use crate::config::ENABLE_SQLITE_TRACING;
 use crate::config::MONARCH_LOG_SUFFIX;
 use crate::recorder::Recorder;
+
 /// Hash any hashable value to a u64 using DefaultHasher.
 pub fn hash_to_u64(value: &impl Hash) -> u64 {
     let mut hasher = DefaultHasher::new();
@@ -241,9 +242,9 @@ lazy_static! {
     /// Short bootstrap buffer for entity events that fire before the current
     /// in-process entity materializer has registered as a `TraceEventSink`.
     ///
-    /// This is not a second dispatcher. It preserves today's early actor/mesh
-    /// visibility while still replaying through the unified `TraceEvent` queue
-    /// once both the dispatcher sender and an entity sink exist.
+    /// Sidecar sinks receive live `TraceEvent::Entity` events directly through
+    /// the dispatcher. This buffer only preserves legacy in-process scanner
+    /// visibility until that path is removed.
     static ref ENTITY_EVENT_BUFFER: Mutex<EntityEventBuffer> = Mutex::new(
         EntityEventBuffer::default()
     );
@@ -335,11 +336,11 @@ pub fn end_user_span(id: u64) {
 /// Event data for actor creation.
 #[derive(Debug, Clone)]
 pub struct ActorEvent {
-    /// Unique identifier for this actor (hashed from ActorAddr)
+    /// Unique identifier for this actor, hashed from ActorId.
     pub id: u64,
     /// Timestamp when the actor was created
     pub timestamp: SystemTime,
-    /// ID of the mesh this actor belongs to (hashed from actor_name)
+    /// ID of the mesh this actor belongs to, matching `MeshEvent.id`.
     pub mesh_id: u64,
     /// Rank index into the mesh shape
     pub rank: u64,
@@ -407,9 +408,9 @@ pub fn notify_actor_status_changed(event: ActorStatusEvent) {
 #[derive(Debug, Clone)]
 pub struct SentMessageEvent {
     pub timestamp: SystemTime,
-    /// Hash of the sending actor's [`ActorAddr`].
+    /// Hash of the sending actor's ActorId.
     pub sender_actor_id: u64,
-    /// Hash of the target actor mesh's name.
+    /// Hash of the target actor mesh's `(ProcMeshId, ActorMeshId)`.
     pub actor_mesh_id: u64,
     /// The view (slice) of the actor mesh that was targeted, serialized from
     /// [`ndslice::Region`]. For full-mesh sends (call, broadcast) this covers
@@ -432,14 +433,14 @@ pub struct MessageEvent {
     pub timestamp: SystemTime,
     /// Unique identifier for this received message.
     pub id: u64,
-    /// Hash of sender's ActorAddr.
+    /// Hash of sender's ActorId.
     pub from_actor_id: u64,
-    /// Hash of receiver's ActorAddr.
+    /// Hash of receiver's ActorId.
     pub to_actor_id: u64,
     /// Endpoint name if this message targets a specific actor endpoint
     pub endpoint: Option<String>,
-    /// Destination port ID
-    pub port_id: Option<u64>,
+    /// Destination port index, scoped by `to_actor_id`.
+    pub port_index: Option<u64>,
 }
 
 /// Notify telemetry that a message was received.
@@ -546,18 +547,27 @@ impl EntityEventBuffer {
         sender: Option<mpsc::SyncSender<TraceEvent>>,
     ) -> Option<(mpsc::SyncSender<TraceEvent>, EntityEvent)> {
         match (self, sender) {
+            (Self::WaitingForEntitySink(events), Some(sender)) => {
+                // Keep a copy for the temporary legacy replay path.
+                Self::push_bounded(events, event.clone());
+                Some((sender, event))
+            }
             (Self::EntitySinkRegistered(_), Some(sender)) => Some((sender, event)),
-            (Self::WaitingForEntitySink(events), _)
+            (Self::WaitingForEntitySink(events), None)
             | (Self::EntitySinkRegistered(events), None) => {
-                if events.len() < MAX_BUFFERED_ENTITY_EVENTS {
-                    events.push(event);
-                    if events.len() == MAX_BUFFERED_ENTITY_EVENTS {
-                        tracing::warn!(
-                            "entity event buffer full ({MAX_BUFFERED_ENTITY_EVENTS}); dropping further events until an entity sink and dispatcher sender are registered"
-                        );
-                    }
-                }
+                Self::push_bounded(events, event);
                 None
+            }
+        }
+    }
+
+    fn push_bounded(events: &mut Vec<EntityEvent>, event: EntityEvent) {
+        if events.len() < MAX_BUFFERED_ENTITY_EVENTS {
+            events.push(event);
+            if events.len() == MAX_BUFFERED_ENTITY_EVENTS {
+                tracing::warn!(
+                    "entity event buffer full ({MAX_BUFFERED_ENTITY_EVENTS}); dropping further replay events"
+                );
             }
         }
     }
@@ -579,12 +589,14 @@ impl EntityEventBuffer {
 
 /// Emit an entity event through the unified trace dispatcher queue.
 fn emit_entity_event(event: EntityEvent) {
-    let mut buffer = ENTITY_EVENT_BUFFER
-        .lock()
-        .expect("ENTITY_EVENT_BUFFER mutex should not be poisoned");
-    let sender = synthetic_trace_event_sender();
+    let event_to_send = {
+        let mut buffer = ENTITY_EVENT_BUFFER
+            .lock()
+            .expect("ENTITY_EVENT_BUFFER mutex should not be poisoned");
+        buffer.event_to_send(event, synthetic_trace_event_sender())
+    };
 
-    if let Some((sender, event)) = buffer.event_to_send(event, sender) {
+    if let Some((sender, event)) = event_to_send {
         let _ = sender.try_send(TraceEvent::Entity(event));
     }
 }
@@ -621,16 +633,10 @@ pub fn register_sink(sink: Box<dyn TraceEventSink>) {
 
 /// Register the current `DatabaseScanner` entity sink.
 ///
-/// Actor, mesh, and message events can be produced before `DatabaseScanner`
-/// starts. Until then, `ENTITY_EVENT_BUFFER` keeps a small bounded list of
-/// those early events. Registering this sink lets the dispatcher deliver
-/// `TraceEvent::Entity` events to the in-process scanner, then replays the
-/// buffered events through the same dispatcher queue.
-///
-/// This is a temporary bridge for `DatabaseScanner`: it keeps the existing
-/// query path alive while entity producers move to `TraceEvent::Entity`. Once
-/// `UnixSocketSink` writes entity table frames, `DatabaseScanner` should stop
-/// registering an entity sink here.
+/// This keeps the legacy in-process scanner populated while entity events move
+/// through the unified `TraceEvent` queue. Sidecar `UnixSocketSink`s receive
+/// live entity events through regular sink registration; the buffered replay
+/// here is only for early events that predate the legacy entity sink.
 pub fn register_entity_sink(sink: Box<dyn TraceEventSink>) {
     register_sink(sink);
 
