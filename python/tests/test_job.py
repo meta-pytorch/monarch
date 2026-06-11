@@ -152,19 +152,46 @@ class MockJobTrait(JobTrait):
         self.kill_called = True
 
 
-def test_create_job_sidecar_uses_job_sidecar_worker():
-    """The sidecar launcher should use the renamed job sidecar worker."""
-    with patch("monarch._src.job.process_guard.ProcessGuard.create") as create:
-        js.create_job_sidecar("apply_id")
+def test_spawn_module_uses_module_command_outside_par():
+    with (
+        patch.object(js, "_IN_PAR", False),
+        patch("monarch._src.job.process_guard.ProcessGuard.create") as create,
+    ):
+        js.spawn_module("lock", "key", "monarch.fake_module")
 
     lock_path, config_key, command = create.call_args.args
-    assert lock_path == js.job_sidecar_lock_path("apply_id")
-    assert config_key == "apply_id"
-    assert command == [
-        sys.executable,
-        "-m",
+    assert lock_path == "lock"
+    assert config_key == "key"
+    assert command == [sys.executable, "-m", "monarch.fake_module"]
+    assert create.call_args.kwargs == {"env": None}
+
+
+def test_spawn_module_reenters_parent_binary_inside_par():
+    with (
+        patch.object(js, "_IN_PAR", True),
+        patch.object(sys, "argv", ["/tmp/parent.par"]),
+        patch("monarch._src.job.process_guard.ProcessGuard.create") as create,
+    ):
+        js.spawn_module("lock", "key", "monarch.fake_module")
+
+    lock_path, config_key, command = create.call_args.args
+    assert lock_path == "lock"
+    assert config_key == "key"
+    assert command == ["/tmp/parent.par"]
+    assert create.call_args.kwargs == {
+        "env": {"PAR_MAIN_OVERRIDE": "monarch.fake_module"}
+    }
+
+
+def test_create_job_sidecar_spawns_job_sidecar_worker_module():
+    with patch.object(js, "spawn_module") as spawn_module:
+        js.create_job_sidecar("apply_id")
+
+    spawn_module.assert_called_once_with(
+        js.job_sidecar_lock_path("apply_id"),
+        "apply_id",
         "monarch._src.job._job_sidecar_worker",
-    ]
+    )
 
 
 def test_mounts_ensure_open_clears_existing_sidecar_when_empty():

@@ -2293,7 +2293,7 @@ impl<A: Actor> Instance<A> {
                 caller = %PanicLocation::caller(),
                 change_reason,
             );
-            let actor_id = hash_to_u64(self.self_addr());
+            let actor_id = hash_to_u64(self.self_addr().id());
             notify_actor_status_changed(ActorStatusEvent {
                 id: generate_actor_status_event_id(actor_id),
                 timestamp: std::time::SystemTime::now(),
@@ -3155,8 +3155,8 @@ impl<A: Actor> Instance<A> {
             let from_actor_id = headers
                 .get(crate::mailbox::headers::SENDER_ACTOR_ID_HASH)
                 .unwrap_or(0);
-            let to_actor_id = hash_to_u64(self.self_addr());
-            let port_id = headers.get(crate::mailbox::headers::TELEMETRY_PORT_ID);
+            let to_actor_id = hash_to_u64(self.self_addr().id());
+            let port_index = headers.get(crate::mailbox::headers::TELEMETRY_PORT_INDEX);
 
             notify_message(hyperactor_telemetry::MessageEvent {
                 timestamp: now,
@@ -3164,7 +3164,7 @@ impl<A: Actor> Instance<A> {
                 from_actor_id,
                 to_actor_id,
                 endpoint,
-                port_id,
+                port_index,
             });
 
             notify_message_status(hyperactor_telemetry::MessageStatusEvent {
@@ -4349,7 +4349,7 @@ impl<A: Actor> HandlerPorts<A> {
         let port = Port::handler::<M>();
         match self.bound.entry(port.clone()) {
             Entry::Vacant(entry) => {
-                self.get::<M>().bind_handler_port();
+                let _ = self.get::<M>().bind();
                 entry.insert(M::typename());
             }
             Entry::Occupied(entry) => {
