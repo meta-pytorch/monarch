@@ -53,7 +53,7 @@ export interface Message {
   from_actor_id: EntityId;
   to_actor_id: EntityId;
   endpoint: string | null;
-  port_id: EntityId | null;
+  port_index: EntityId | null;
   latest_status?: string | null;
 }
 

@@ -36,9 +36,9 @@
 //!   `InstanceCell` never sets `last_message_handler` to
 //!   `IntrospectMessage`.
 //! - **S3.** Sender routing is unchanged -- senders target the same
-//!   `PortId` (`IntrospectMessage::port()`) across processes.
+//!   control `PortId` across processes.
 //! - **S4.** `IntrospectMessage` never produces a `WorkCell` --
-//!   pre-registration via `bind_handler_port` gives the introspect
+//!   pre-registration via `bind_control_port` gives the introspect
 //!   port its own channel, independent of the actor's work queue.
 //! - **S5.** Replies never use `PanickingMailboxSender` -- the
 //!   introspect task replies via `Mailbox::serialize_and_send_once`.
@@ -133,28 +133,54 @@
 //!     while the cell exists -- inherit that Some.
 //!   * `Some({enabled: false, ...})` -- ordered path exists but reorder
 //!     buffering is disabled; `sessions` is empty regardless of traffic.
-//!     Messages flow via `OrderedSender::direct_send`.
+//!     Messages bypass receiver-local sequencing.
 //!   * `Some({enabled: true, ...})` -- buffering active; `sessions`
 //!     is meaningful.
 //!
 //!   `None` is NOT equivalent to `Some({enabled: false, ...})`.
 //! - **IO-2 (inbound-ordering reflects publish-time state):** When
 //!   present, the snapshot is computed at `build_actor_attrs`
-//!   invocation time via `OrderedSender::snapshot`. `last_released_seq`
-//!   etc. are point-in-time. Sessions held by a concurrent `send` show
-//!   up in `skipped_session_count` (never silently omitted);
+//!   invocation time via the sequenced receiver's snapshot handle.
+//!   `last_released_seq` etc. are point-in-time. Sessions held by a
+//!   concurrent receive show up in `skipped_session_count` (never silently omitted);
 //!   `is_complete()` reports the all-clear.
 //! - **IO-3 (queue-depth and inbound-ordering are independent
 //!   diagnostics, no arithmetic contract):**
 //!   * `ACTOR_QUEUE_DEPTH` (per PD-5a/PD-5b in `proc.rs`): accepted
 //!     handler work not yet dequeued by the actor loop.
 //!   * `INBOUND_ORDERING.sessions[*].buffered_count`: messages held by
-//!     `OrderedSender` waiting for a seq gap to fill.
+//!     receiver-local sequencing waiting for a seq gap to fill.
 //!
 //!   These are two independent point-in-time diagnostics. No
 //!   arithmetic or ordering relationship between them is part of the
 //!   API contract; the accounting paths are free to change. Consumers
 //!   must not derive one from the other.
+//!
+//! ## Actor-attrs snapshot invariants (AS-*)
+//!
+//! These govern the generic per-actor introspection-attrs snapshot
+//! seam: an actor may install a `Fn() -> Attrs` callback via
+//! `Instance::set_attrs_snapshot`, which the introspect task invokes in
+//! `build_actor_attrs` and merges into the Actor view. The seam is the
+//! runtime-agnostic transport for actor-supplied introspection data
+//! (e.g. a Python actor reporting in-flight handler execution); core
+//! interprets none of it.
+//!
+//! - **AS-1 (snapshot-opacity):** actor-supplied attrs are merged into
+//!   the Actor view verbatim. Core neither interprets nor validates the
+//!   keys -- any key the actor sets is transported as-is. This is what
+//!   keeps the seam runtime-agnostic (no Rust-vs-Python knowledge, no
+//!   "endpoint" concept in core).
+//! - **AS-2 (core-precedence):** on a key collision, the core/runtime
+//!   key wins over the actor-supplied value. This is the Actor-view
+//!   analog of IA-2, which governs the published-attrs path; the two
+//!   sources of actor-supplied keys (published attrs, snapshot seam) are
+//!   distinct, but both yield to core keys.
+//! - **AS-3 (snapshot-non-fatal):** an absent, empty, or panicking
+//!   snapshot degrades to the core-only Actor view. The callback is
+//!   `catch_unwind`-guarded and the merge falls back to the core attrs,
+//!   so a bad snapshot can never empty or invalidate `attrs` (with IA-1,
+//!   IA-5).
 
 use std::fmt;
 use std::str::FromStr;
@@ -420,9 +446,9 @@ declare_attrs! {
     })
     pub attr ACTOR_QUEUE_DEPTH: u64 = 0;
 
-    /// Per-session reorder state from `OrderedSender::snapshot`.
+    /// Per-session reorder state from the sequenced receiver snapshot.
     /// `sessions[*].buffered_count` reports messages held by
-    /// `OrderedSender` waiting for a seq gap to fill. Independent
+    /// receiver-local sequencing waiting for a seq gap to fill. Independent
     /// diagnostic from `queue_depth`; no arithmetic contract -- see
     /// IO-3.
     ///
@@ -431,7 +457,7 @@ declare_attrs! {
     /// means the path exists but buffering is disabled. See IO-1.
     @meta(INTROSPECT = IntrospectAttr {
         name: "inbound_ordering".into(),
-        desc: "Per-session reorder-buffer state from OrderedSender. Independent diagnostic from queue_depth; no arithmetic contract -- see IO-3. Absence vs Some({enabled: false}) is meaningful -- see IO-1.".into(),
+        desc: "Per-session reorder-buffer state from receiver-local sequencing. Independent diagnostic from queue_depth; no arithmetic contract -- see IO-3. Absence vs Some({enabled: false}) is meaningful -- see IO-1.".into(),
     })
     pub attr INBOUND_ORDERING: crate::ordering::OrderingSnapshot;
 }
@@ -864,7 +890,22 @@ fn build_actor_attrs(cell: &crate::InstanceCell, snap: &ActorSnapshot) -> String
     // IA-4: failure attrs absent when not failed — guaranteed by
     // starting from a fresh Attrs bag (no stale keys possible).
 
-    serde_json::to_string(&attrs).unwrap_or_else(|_| "{}".to_string())
+    let core_json = serde_json::to_string(&attrs).unwrap_or_else(|_| "{}".to_string());
+
+    // Merge actor-supplied attrs (the generic seam, AS-1). `Attrs::merge`
+    // overwrites the receiver's keys with the argument's, so merging the
+    // core bag *onto* the actor snapshot makes core keys win on collision
+    // (AS-2, the Actor-view analog of IA-2). No snapshot → the core bag is
+    // returned unchanged; if the merged bag somehow fails to serialize,
+    // fall back to the core-only JSON so a bad snapshot can never empty or
+    // invalidate the actor view (AS-3).
+    match cell.actor_attrs_snapshot() {
+        None => core_json,
+        Some(mut merged) => {
+            merged.merge(attrs);
+            serde_json::to_string(&merged).unwrap_or(core_json)
+        }
+    }
 }
 
 /// Build an [`IntrospectResult`] from live [`InstanceCell`] state.

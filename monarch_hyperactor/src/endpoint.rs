@@ -19,12 +19,10 @@ use hyperactor::accum::ReducerFactory;
 use hyperactor::accum::ReducerSpec;
 use hyperactor::mailbox::OncePortReceiver;
 use hyperactor::mailbox::PortReceiver;
-use hyperactor_mesh::sel;
 use hyperactor_mesh::value_mesh::ValueOverlay;
 use hyperactor_mesh::value_mesh::rle;
 use monarch_types::py_global;
 use ndslice::Extent;
-use ndslice::Selection;
 use ndslice::Shape;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -37,9 +35,10 @@ use crate::actor::PythonActor;
 use crate::actor::PythonMessage;
 use crate::actor::PythonMessageKind;
 use crate::actor::PythonResponseMessage;
+use crate::actor_mesh::AllOrChoose;
 use crate::actor_mesh::PythonActorMesh;
 use crate::actor_mesh::SupervisableActorMesh;
-use crate::actor_mesh::to_hy_sel;
+use crate::actor_mesh::to_all_or_choose;
 use crate::buffers::FrozenBuffer;
 use crate::context::PyInstance;
 use crate::mailbox::EitherPortRef;
@@ -577,7 +576,7 @@ pub(crate) trait Endpoint {
         args: &Bound<'py, PyTuple>,
         kwargs: Option<&Bound<'py, PyDict>>,
         port_ref: Option<EitherPortRef>,
-        selection: Selection,
+        selection: AllOrChoose,
         instance: &Instance<PythonActor>,
     ) -> PyResult<()>;
 
@@ -591,7 +590,7 @@ pub(crate) trait Endpoint {
         args: &Bound<'py, PyTuple>,
         kwargs: Option<&Bound<'py, PyDict>>,
         port_ref: Option<EitherPortRef>,
-        selection: Selection,
+        selection: AllOrChoose,
         instance: &Instance<PythonActor>,
         _caller_headers: hyperactor_config::Flattrs,
     ) -> PyResult<()> {
@@ -683,7 +682,7 @@ pub(crate) trait Endpoint {
             args,
             kwargs,
             Some(EitherPortRef::Once(port_ref)),
-            sel!(*),
+            AllOrChoose::All,
             &instance,
             caller_headers,
         )?;
@@ -723,7 +722,7 @@ pub(crate) trait Endpoint {
             args,
             kwargs,
             Some(EitherPortRef::Unbounded(port_ref)),
-            sel!(?),
+            AllOrChoose::Choose,
             &instance,
             caller_headers,
         )?;
@@ -767,7 +766,7 @@ pub(crate) trait Endpoint {
             args,
             kwargs,
             Some(EitherPortRef::Unbounded(port_ref)),
-            sel!(*),
+            AllOrChoose::All,
             &instance,
             caller_headers,
         )?;
@@ -804,7 +803,7 @@ pub(crate) trait Endpoint {
             args,
             kwargs,
             Some(EitherPortRef::Unbounded(port_ref)),
-            sel!(*),
+            AllOrChoose::All,
             &instance,
             caller_headers,
         )?;
@@ -848,7 +847,7 @@ pub(crate) trait Endpoint {
             "method" => method_name.to_string()
         );
 
-        match self.send_message(py, args, kwargs, None, sel!(*), &instance) {
+        match self.send_message(py, args, kwargs, None, AllOrChoose::All, &instance) {
             Ok(()) => {
                 ENDPOINT_BROADCAST_THROUGHPUT.add(1, attributes);
                 Ok(())
@@ -922,7 +921,7 @@ impl Endpoint for ActorEndpoint {
         args: &Bound<'py, PyTuple>,
         kwargs: Option<&Bound<'py, PyDict>>,
         port_ref: Option<EitherPortRef>,
-        selection: Selection,
+        selection: AllOrChoose,
         instance: &Instance<PythonActor>,
     ) -> PyResult<()> {
         let message = self.create_message(py, args, kwargs, port_ref)?;
@@ -935,7 +934,7 @@ impl Endpoint for ActorEndpoint {
         args: &Bound<'py, PyTuple>,
         kwargs: Option<&Bound<'py, PyDict>>,
         port_ref: Option<EitherPortRef>,
-        selection: Selection,
+        selection: AllOrChoose,
         instance: &Instance<PythonActor>,
         caller_headers: hyperactor_config::Flattrs,
     ) -> PyResult<()> {
@@ -1149,7 +1148,7 @@ impl ActorEndpoint {
         selection: &str,
     ) -> PyResult<()> {
         let instance = self.get_current_instance(py)?;
-        let sel = to_hy_sel(selection)?;
+        let sel = to_all_or_choose(selection)?;
         self.send_message(py, args, Some(kwargs), port, sel, &instance)
     }
 }
@@ -1183,7 +1182,7 @@ impl Endpoint for Remote {
         args: &Bound<'py, PyTuple>,
         kwargs: Option<&Bound<'py, PyDict>>,
         port_ref: Option<EitherPortRef>,
-        selection: Selection,
+        selection: AllOrChoose,
         _instance: &Instance<PythonActor>,
     ) -> PyResult<()> {
         let send_kwargs = PyDict::new(py);
@@ -1192,15 +1191,7 @@ impl Endpoint for Remote {
             None => send_kwargs.set_item("port", py.None())?,
         }
 
-        let selection_str = match selection {
-            Selection::All(inner) if matches!(*inner, Selection::True) => "all",
-            Selection::Any(inner) if matches!(*inner, Selection::True) => "choose",
-            _ => {
-                panic!("only sel!(*) and sel!(?) should be provided as selection for send_message")
-            }
-        };
-
-        send_kwargs.set_item("selection", selection_str)?;
+        send_kwargs.set_item("selection", selection.as_str())?;
 
         let kwargs_dict = kwargs.map_or_else(|| PyDict::new(py), |d| d.clone());
         self.inner
@@ -1494,7 +1485,7 @@ mod tests {
             _args: &Bound<'py, PyTuple>,
             _kwargs: Option<&Bound<'py, PyDict>>,
             _port_ref: Option<EitherPortRef>,
-            _selection: Selection,
+            _selection: AllOrChoose,
             _instance: &Instance<PythonActor>,
         ) -> PyResult<()> {
             unreachable!()

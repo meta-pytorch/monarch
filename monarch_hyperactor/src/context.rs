@@ -6,6 +6,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::sync::Arc;
+
 use hyperactor::Instance;
 use hyperactor::context;
 use hyperactor_mesh::comm::multicast::CastInfo;
@@ -14,6 +16,7 @@ use ndslice::Point;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
+use crate::actor::ExecutionTracker;
 use crate::actor::PythonActor;
 use crate::actor::root_client_actor;
 use crate::mailbox::PyMailbox;
@@ -42,6 +45,12 @@ pub struct PyInstance {
 
     #[pyo3(get, set, name = "_mock_tensor_engine_factory")]
     mock_tensor_engine_factory: Option<Py<PyAny>>,
+
+    /// Per-actor execution tracker -- a clone of the `PythonActor`'s `Arc`,
+    /// injected when the actor's own `PyInstance` is created. `None` for
+    /// root-client / `From`-built instances, which never bracket handlers.
+    /// Not exposed to Python.
+    execution_tracker: Option<Arc<ExecutionTracker>>,
 }
 
 impl Clone for PyInstance {
@@ -56,6 +65,7 @@ impl Clone for PyInstance {
             class_name: self.class_name.clone(),
             creator: self.creator.clone(),
             mock_tensor_engine_factory: self.mock_tensor_engine_factory.clone(),
+            execution_tracker: self.execution_tracker.clone(),
         }
     }
 }
@@ -146,17 +156,41 @@ impl PyInstance {
     /// observable without any extra plumbing.
     #[pyo3(name = "_debug_skip_next_ordering_seq")]
     fn debug_skip_next_ordering_seq(&self, receiver: &PyActorAddr, count: u64) {
-        use typeuri::Named;
-
         use crate::actor::PythonMessage;
-        let port_addr = receiver.inner.port_addr(PythonMessage::port().into());
+        let port_addr = receiver
+            .inner
+            .port_addr(hyperactor::Port::handler::<PythonMessage>());
         self.inner.debug_skip_next_ordering_seq(&port_addr, count);
+    }
+
+    /// Producer write-side for the mesh `execution` field: `_Actor.handle`
+    /// calls these around the real user-method invocation. `_execution_start`
+    /// returns the in-flight token; `_execution_finish` ends it. When this
+    /// instance has no tracker (root-client / `From`-built), start returns
+    /// the `0` no-op sentinel and finish ignores it (PE-4).
+    fn _execution_start(&self, name: String) -> u64 {
+        match &self.execution_tracker {
+            Some(tracker) => tracker.start(name),
+            None => 0,
+        }
+    }
+
+    fn _execution_finish(&self, token: u64) {
+        if let Some(tracker) = &self.execution_tracker {
+            tracker.finish(token);
+        }
     }
 }
 
 impl PyInstance {
     pub fn into_instance(self) -> Instance<PythonActor> {
         self.inner
+    }
+
+    /// Inject the per-actor execution tracker. Called when the actor's own
+    /// `PyInstance` is first created (see `PythonActor::ensure_py_instance`).
+    pub(crate) fn set_execution_tracker(&mut self, tracker: Arc<ExecutionTracker>) {
+        self.execution_tracker = Some(tracker);
     }
 }
 
@@ -172,6 +206,7 @@ impl<I: context::Actor<A = PythonActor>> From<I> for PyInstance {
             class_name: None,
             creator: None,
             mock_tensor_engine_factory: None,
+            execution_tracker: None,
         }
     }
 }

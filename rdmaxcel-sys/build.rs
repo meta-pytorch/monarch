@@ -119,9 +119,12 @@ fn main() {
     // Generate bindings
     let mut builder = bindgen::Builder::default()
         .header(header_path.to_string_lossy())
+        // Parse the header as C, matching the internal Buck build
+        // (`rust_bindgen_library(lang = "c")`). `rdmaxcel.h` guards its C++ and
+        // `std::atomic` usage behind `#ifdef __cplusplus`, so it parses cleanly
+        // as C.
         .clang_arg("-x")
-        .clang_arg("c++")
-        .clang_arg("-std=c++14")
+        .clang_arg("c")
         .clang_arg(format!("-I{}", compute_include_path))
         .clang_arg(format!("-I{}", rdma_include))
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))

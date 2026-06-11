@@ -32,6 +32,7 @@ use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::declare_attrs;
+use hyperactor_telemetry::hash_to_u64;
 use ndslice::Extent;
 use ndslice::ViewExt as _;
 use ndslice::view;
@@ -51,6 +52,7 @@ use crate::ValueMesh;
 use crate::comm::CommMeshConfig;
 use crate::host_mesh::host_agent::ProcState;
 use crate::host_mesh::mesh_to_rankedvalues_with_default;
+use crate::mesh_controller::ActorMeshControlPlane;
 use crate::mesh_controller::ActorMeshController;
 use crate::mesh_id::ActorMeshId;
 use crate::mesh_id::ProcMeshId;
@@ -85,6 +87,11 @@ declare_attrs! {
 /// The `CommActor` enables proc-to-proc mesh messaging and is always
 /// present as a system actor (`system_children`) on every proc mesh member.
 pub const COMM_ACTOR_NAME: &str = "comm";
+
+/// Returns the telemetry `meshes.id` value for an actor mesh.
+pub fn telemetry_actor_mesh_id(proc_mesh_id: &ProcMeshId, actor_mesh_id: &ActorMeshId) -> u64 {
+    hash_to_u64(&(proc_mesh_id, actor_mesh_id))
+}
 
 /// A reference to a single [`hyperactor::Proc`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -176,13 +183,13 @@ impl ProcMesh {
         // Notify telemetry that the ProcAgent mesh was created.
         {
             let name_str = id.to_string();
-            let mesh_id_hash = hyperactor_telemetry::hash_to_u64(&name_str);
+            let mesh_id_hash = hash_to_u64(&id);
 
             let hm = current_ref
                 .host_mesh
                 .as_ref()
                 .expect("ProcMesh always has a host mesh");
-            let parent_mesh_id = hyperactor_telemetry::hash_to_u64(&hm.id().to_string());
+            let parent_mesh_id = hash_to_u64(hm.id());
             let parent_view_json = serde_json::to_string(hm.region())
                 .unwrap_or_else(|e| format!("encountered error when serializing region: {}", e));
 
@@ -205,14 +212,14 @@ impl ProcMesh {
             // These are skipped in Proc::spawn_inner. mesh_id directly points to proc mesh.
             let now = std::time::SystemTime::now();
             for rank in current_ref.ranks.iter() {
-                let actor_id = rank.agent.actor_addr();
+                let actor_addr = rank.agent.actor_addr();
 
                 hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
-                    id: hyperactor_telemetry::hash_to_u64(&actor_id),
+                    id: hyperactor_telemetry::hash_to_u64(actor_addr.id()),
                     timestamp: now,
                     mesh_id: mesh_id_hash,
                     rank: rank.create_rank as u64,
-                    full_name: actor_id.to_string(),
+                    full_name: actor_addr.to_string(),
                     display_name: None,
                 });
             }
@@ -825,7 +832,7 @@ impl ProcMeshRef {
             // Spawn a unique mesh manager for each actor mesh, so the type of the
             // mesh can be preserved.
             let controller: ActorMeshController<A> = ActorMeshController::new(
-                mesh.deref().clone(),
+                ActorMeshControlPlane::new(mesh.deref().clone(), self.clone()),
                 supervision_display_name.clone(),
                 Some(cx.instance().port().bind()),
                 statuses,
@@ -848,12 +855,9 @@ impl ProcMeshRef {
         {
             let id_str = mesh.id().to_string();
 
-            // Hash the actor mesh id. This is used as mesh_id for both
-            // the MeshEvent and the per-actor ActorEvents below.
-            let mesh_id_hash = hyperactor_telemetry::hash_to_u64(&id_str);
-
             // Hash the proc mesh id for parent_mesh_id.
-            let parent_mesh_id_hash = hyperactor_telemetry::hash_to_u64(&self.id().to_string());
+            let parent_mesh_id_hash = hash_to_u64(self.id());
+            let mesh_id_hash = telemetry_actor_mesh_id(self.id(), mesh.id());
 
             hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
                 id: mesh_id_hash,
@@ -883,13 +887,13 @@ impl ProcMeshRef {
                     let point = self.region().extent().point_of_rank(rank).unwrap();
                     crate::actor_display_name(sdn, &point)
                 });
-                let actor_id = proc_ref.actor_addr(&actor_mesh_id);
+                let actor_addr = proc_ref.actor_addr(&actor_mesh_id);
                 hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
-                    id: hyperactor_telemetry::hash_to_u64(&actor_id),
+                    id: hyperactor_telemetry::hash_to_u64(actor_addr.id()),
                     timestamp: now,
                     mesh_id: mesh_id_hash,
                     rank: rank as u64,
-                    full_name: actor_id.to_string(),
+                    full_name: actor_addr.to_string(),
                     display_name,
                 });
             }
