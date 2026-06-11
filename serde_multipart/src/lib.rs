@@ -66,6 +66,10 @@ pub enum Error {
         expected: &'static str,
         actual: String,
     },
+
+    /// Errors returned from part codec conversions.
+    #[error("codec error: {0}")]
+    Codec(String),
 }
 
 /// A specialized result type for typed part operations.
@@ -444,15 +448,23 @@ mod tests {
 
     impl PartCodec for CodecPayload {
         type Repr = CodecPayloadRepr;
+    }
 
-        fn to_repr(&self) -> Result<Self::Repr> {
-            Ok(CodecPayloadRepr {
-                label: self.label.clone(),
-                value: self.value,
+    impl TryFrom<&CodecPayload> for CodecPayloadRepr {
+        type Error = Error;
+
+        fn try_from(value: &CodecPayload) -> Result<Self> {
+            Ok(Self {
+                label: value.label.clone(),
+                value: value.value,
             })
         }
+    }
 
-        fn from_repr(repr: Self::Repr) -> Result<Self> {
+    impl TryFrom<CodecPayloadRepr> for CodecPayload {
+        type Error = Error;
+
+        fn try_from(repr: CodecPayloadRepr) -> Result<Self> {
             Ok(Self {
                 label: repr.label,
                 value: repr.value,
@@ -494,20 +506,28 @@ mod tests {
         impl MacroCodecPayload
         {
             type Repr = MacroCodecPayloadRepr;
+        }
+    }
 
-            fn to_repr(&self) -> Result<Self::Repr> {
-                Ok(MacroCodecPayloadRepr {
-                    label: self.label.clone(),
-                    value: self.value,
-                })
-            }
+    impl TryFrom<&MacroCodecPayload> for MacroCodecPayloadRepr {
+        type Error = Error;
 
-            fn from_repr(repr: Self::Repr) -> Result<Self> {
-                Ok(Self {
-                    label: repr.label,
-                    value: repr.value,
-                })
-            }
+        fn try_from(value: &MacroCodecPayload) -> Result<Self> {
+            Ok(Self {
+                label: value.label.clone(),
+                value: value.value,
+            })
+        }
+    }
+
+    impl TryFrom<MacroCodecPayloadRepr> for MacroCodecPayload {
+        type Error = Error;
+
+        fn try_from(repr: MacroCodecPayloadRepr) -> Result<Self> {
+            Ok(Self {
+                label: repr.label,
+                value: repr.value,
+            })
         }
     }
 

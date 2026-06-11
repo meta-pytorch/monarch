@@ -244,31 +244,39 @@ pub struct PortRefRepr {
     unsplit: bool,
 }
 
+impl<M> TryFrom<&PortRef<M>> for PortRefRepr {
+    type Error = serde_multipart::Error;
+
+    fn try_from(port_ref: &PortRef<M>) -> serde_multipart::Result<Self> {
+        Ok(Self {
+            port_addr: port_ref.port_addr.clone(),
+            reducer_spec: port_ref.reducer_spec.clone(),
+            streaming_opts: port_ref.streaming_opts.clone(),
+            return_undeliverable: port_ref.return_undeliverable,
+            unsplit: port_ref.unsplit,
+        })
+    }
+}
+
+impl<M> TryFrom<PortRefRepr> for PortRef<M> {
+    type Error = serde_multipart::Error;
+
+    fn try_from(repr: PortRefRepr) -> serde_multipart::Result<Self> {
+        Ok(Self {
+            port_addr: repr.port_addr,
+            reducer_spec: repr.reducer_spec,
+            streaming_opts: repr.streaming_opts,
+            phantom: PhantomData,
+            return_undeliverable: repr.return_undeliverable,
+            unsplit: repr.unsplit,
+        })
+    }
+}
+
 serde_multipart::part_codec! {
     impl<M> PortRef<M>
     {
         type Repr = PortRefRepr;
-
-        fn to_repr(&self) -> serde_multipart::Result<Self::Repr> {
-            Ok(PortRefRepr {
-                port_addr: self.port_addr.clone(),
-                reducer_spec: self.reducer_spec.clone(),
-                streaming_opts: self.streaming_opts.clone(),
-                return_undeliverable: self.return_undeliverable,
-                unsplit: self.unsplit,
-            })
-        }
-
-        fn from_repr(repr: Self::Repr) -> serde_multipart::Result<Self> {
-            Ok(Self {
-                port_addr: repr.port_addr,
-                reducer_spec: repr.reducer_spec,
-                streaming_opts: repr.streaming_opts,
-                phantom: PhantomData,
-                return_undeliverable: repr.return_undeliverable,
-                unsplit: repr.unsplit,
-            })
-        }
     }
 }
 
@@ -533,29 +541,37 @@ pub struct OncePortRefRepr {
     unsplit: bool,
 }
 
+impl<M> TryFrom<&OncePortRef<M>> for OncePortRefRepr {
+    type Error = serde_multipart::Error;
+
+    fn try_from(port_ref: &OncePortRef<M>) -> serde_multipart::Result<Self> {
+        Ok(Self {
+            port_addr: port_ref.port_addr.clone(),
+            reducer_spec: port_ref.reducer_spec.clone(),
+            return_undeliverable: port_ref.return_undeliverable,
+            unsplit: port_ref.unsplit,
+        })
+    }
+}
+
+impl<M> TryFrom<OncePortRefRepr> for OncePortRef<M> {
+    type Error = serde_multipart::Error;
+
+    fn try_from(repr: OncePortRefRepr) -> serde_multipart::Result<Self> {
+        Ok(Self {
+            port_addr: repr.port_addr,
+            reducer_spec: repr.reducer_spec,
+            return_undeliverable: repr.return_undeliverable,
+            unsplit: repr.unsplit,
+            phantom: PhantomData,
+        })
+    }
+}
+
 serde_multipart::part_codec! {
     impl<M> OncePortRef<M>
     {
         type Repr = OncePortRefRepr;
-
-        fn to_repr(&self) -> serde_multipart::Result<Self::Repr> {
-            Ok(OncePortRefRepr {
-                port_addr: self.port_addr.clone(),
-                reducer_spec: self.reducer_spec.clone(),
-                return_undeliverable: self.return_undeliverable,
-                unsplit: self.unsplit,
-            })
-        }
-
-        fn from_repr(repr: Self::Repr) -> serde_multipart::Result<Self> {
-            Ok(Self {
-                port_addr: repr.port_addr,
-                reducer_spec: repr.reducer_spec,
-                return_undeliverable: repr.return_undeliverable,
-                unsplit: repr.unsplit,
-                phantom: PhantomData,
-            })
-        }
     }
 }
 

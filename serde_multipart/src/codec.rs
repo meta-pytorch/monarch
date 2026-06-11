@@ -16,15 +16,23 @@ use crate::part::BincodeDeserializer;
 use crate::part::BincodeSerializer;
 
 /// Converts a framework type to and from a typed multipart part.
-pub trait PartCodec: Sized + Named {
+pub trait PartCodec: Sized + Named
+where
+    for<'a> Self::Repr: std::convert::TryFrom<&'a Self, Error = crate::Error>,
+    Self: std::convert::TryFrom<Self::Repr, Error = crate::Error>,
+{
     /// The bincode representation stored in typed parts.
     type Repr: Serialize + DeserializeOwned;
 
     /// Convert this value to its typed part representation.
-    fn to_repr(&self) -> crate::Result<Self::Repr>;
+    fn to_repr(&self) -> crate::Result<Self::Repr> {
+        Self::Repr::try_from(self)
+    }
 
     /// Rebuild this value from its typed part representation.
-    fn from_repr(repr: Self::Repr) -> crate::Result<Self>;
+    fn from_repr(repr: Self::Repr) -> crate::Result<Self> {
+        Self::try_from(repr)
+    }
 
     /// Convert this value to a typed part.
     fn to_part(&self) -> crate::Result<Part> {
@@ -117,10 +125,6 @@ macro_rules! part_codec {
         impl <$($impl_generics:ident),+> $ty:ty
         {
             type Repr = $repr:ty;
-
-            fn to_repr(&$this:ident) -> $to_result:ty $to_body:block
-
-            fn from_repr($repr_arg:ident: Self::Repr) -> $from_result:ty $from_body:block
         }
     ) => {
         $crate::part_codec! {
@@ -129,12 +133,6 @@ macro_rules! part_codec {
             [<'de, $($impl_generics),+>]
             [$ty]
             [$repr]
-            [$this]
-            [$to_result]
-            $to_body
-            [$repr_arg]
-            [$from_result]
-            $from_body
         }
     };
 
@@ -142,10 +140,6 @@ macro_rules! part_codec {
         impl $ty:ty
         {
             type Repr = $repr:ty;
-
-            fn to_repr(&$this:ident) -> $to_result:ty $to_body:block
-
-            fn from_repr($repr_arg:ident: Self::Repr) -> $from_result:ty $from_body:block
         }
     ) => {
         $crate::part_codec! {
@@ -154,12 +148,6 @@ macro_rules! part_codec {
             [<'de>]
             [$ty]
             [$repr]
-            [$this]
-            [$to_result]
-            $to_body
-            [$repr_arg]
-            [$from_result]
-            $from_body
         }
     };
 
@@ -169,22 +157,14 @@ macro_rules! part_codec {
         [$($de_impl_generics:tt)*]
         [$ty:ty]
         [$repr:ty]
-        [$this:ident]
-        [$to_result:ty]
-        $to_body:block
-        [$repr_arg:ident]
-        [$from_result:ty]
-        $from_body:block
     ) => {
         impl $($impl_generics)* $crate::PartCodec for $ty
         where
             $ty: typeuri::Named,
+            for<'a> $repr: std::convert::TryFrom<&'a $ty, Error = $crate::Error>,
+            $ty: std::convert::TryFrom<$repr, Error = $crate::Error>,
         {
             type Repr = $repr;
-
-            fn to_repr(&$this) -> $to_result $to_body
-
-            fn from_repr($repr_arg: Self::Repr) -> $from_result $from_body
         }
 
         impl $($impl_generics)* serde::Serialize for $ty
