@@ -659,7 +659,7 @@ impl DatabaseScanner {
 
     /// Create an entity batch sink that pushes batches to this scanner's tables.
     ///
-    /// The sink can be registered with hyperactor_telemetry::register_entity_sink()
+    /// The sink can be registered with `hyperactor_telemetry::register_entity_sink`
     /// to receive `TraceEvent::Entity` events and store them as queryable tables.
     pub fn create_entity_batch_sink(&self, batch_size: usize) -> EntityBatchSink {
         let table_data = self.table_data.clone();
@@ -1102,7 +1102,7 @@ mod tests {
             from_actor_id: 10,
             to_actor_id: 30,
             endpoint: Some("old".to_string()),
-            port_id: None,
+            port_index: None,
         });
         messages.insert(Message {
             id: 4,
@@ -1110,7 +1110,7 @@ mod tests {
             from_actor_id: 11,
             to_actor_id: 31,
             endpoint: Some("fresh".to_string()),
-            port_id: Some(4),
+            port_index: Some(4),
         });
         ingest_batch(scanner, MESSAGES, messages.drain_to_record_batch().unwrap()).await;
 
