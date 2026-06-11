@@ -267,7 +267,7 @@ class MessageRoutesTest(_RouteTestBase):
             "from_actor_id",
             "to_actor_id",
             "endpoint",
-            "port_id",
+            "port_index",
         }
         self.assertEqual(set(msg.keys()), expected_keys)
 
