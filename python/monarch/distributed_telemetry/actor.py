@@ -81,6 +81,7 @@ def _register_scanner(
         retention_secs=retention_secs,
     )
     _scanner = scanner
+    # pyrefly: ignore [bad-assignment]
     _scanner_startup_impl = functools.partial(
         # pyrefly: ignore [bad-argument-type]
         _register_scanner,
