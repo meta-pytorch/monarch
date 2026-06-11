@@ -1415,6 +1415,7 @@ class _Actor:
             return await supervise(*args, **kwargs)
         else:
             with fake_sync_state():
+                # pyrefly: ignore [not-callable]
                 return supervise(*args, **kwargs)
 
     async def __cleanup__(self, cx: Context, exc: str | Exception | None) -> None:
@@ -1443,6 +1444,7 @@ class _Actor:
             return await cleanup(exc)
         else:
             with fake_sync_state():
+                # pyrefly: ignore [not-callable]
                 return cleanup(exc)
 
     async def _dispatch_loop(
@@ -1529,6 +1531,7 @@ class Actor(MeshTrait):
             "actor implementations are not meshes, but we can't convince the typechecker of it..."
         )
 
+    # pyrefly: ignore [not-a-type]
     def _new_with_shape(self, shape: Shape) -> Self:
         raise NotImplementedError(
             "actor implementations are not meshes, but we can't convince the typechecker of it..."

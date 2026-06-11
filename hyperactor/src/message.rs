@@ -253,14 +253,14 @@ impl<M: Bind> IndexedErasedUnbound<M> {
         M: RemoteMessage,
         C: context::Actor + Send + Sync + 'static,
     {
-        let port_handle = mailbox.open_enqueue_port::<IndexedErasedUnbound<M>>({
+        let port_handle = mailbox.open_handler_enqueue_port::<IndexedErasedUnbound<M>>({
             move |_, m| {
                 let bound_m = m.downcast()?.bind()?;
                 (&actor_ref).post(&cx, bound_m);
                 Ok(())
             }
         });
-        port_handle.bind_handler_port();
+        port_handle.bind();
         Ok(())
     }
 }

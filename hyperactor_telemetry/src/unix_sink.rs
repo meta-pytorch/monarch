@@ -498,7 +498,7 @@ fn buffer_entity_event(inner: &mut UnixSocketSinkInner, event: &EntityEvent) {
                 from_actor_id: event.from_actor_id,
                 to_actor_id: event.to_actor_id,
                 endpoint: event.endpoint.clone(),
-                port_id: event.port_id,
+                port_index: event.port_index,
             });
         }
         EntityEvent::MessageStatus(event) => {
@@ -766,7 +766,7 @@ mod tests {
                 from_actor_id: 1,
                 to_actor_id: 5,
                 endpoint: Some("endpoint".to_string()),
-                port_id: Some(6),
+                port_index: Some(6),
             })),
             TraceEvent::Entity(EntityEvent::MessageStatus(MessageStatusEvent {
                 timestamp: timestamp(),

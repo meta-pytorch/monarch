@@ -368,7 +368,7 @@ def _run_simulation(
                             "from_actor_id": sender_id,
                             "to_actor_id": receiver_id,
                             "endpoint": endpoint,
-                            "port_id": rng.randint(1, 100),
+                            "port_index": rng.randint(1, 100),
                         }
                     )
 
