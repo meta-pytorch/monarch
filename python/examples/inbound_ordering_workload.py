@@ -90,6 +90,7 @@ class Sender(Actor):
     @endpoint
     async def stall_and_send(self, skip_count: int, send_count: int) -> None:
         instance = context().actor_instance
+        # pyrefly: ignore [missing-attribute]
         instance._debug_skip_next_ordering_seq(self._receiver_addr, skip_count)
         # MUST be fire-and-forget. ``await self._receiver.handle_msg.call_one(i)``
         # would hang on the first call: the message is buffered behind the

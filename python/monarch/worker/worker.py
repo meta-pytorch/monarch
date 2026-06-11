@@ -168,6 +168,7 @@ class DeviceMesh:
             name += f"_group_{pg}"
         self.process_group_for_stream[stream][key] = (
             SingleControllerProcessGroupWrapper(
+                # pyrefly: ignore [bad-argument-type]
                 _new_process_group(name, ranks, split=True)
             )
         )
