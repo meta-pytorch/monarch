@@ -199,7 +199,7 @@ class WorkerTaskManager(Task):
         self.task_id = itertools.count()
 
     def add(self, task: Task) -> int:
-        # pyrefly: ignore [no-matching-overload]
+        # pyrefly: ignore [bad-argument-type, no-matching-overload]
         task_id = next(self.task_id)
         self.tasks[task_id] = task
         task.task_id = task_id
@@ -251,7 +251,7 @@ class WorkerTaskManager(Task):
 
         ret = WorkerTaskManager()
         # Waste one to ensure all the cloned WorkerTaskManager has the same task_id.
-        # pyrefly: ignore [no-matching-overload]
+        # pyrefly: ignore [bad-argument-type, no-matching-overload]
         next_task_id = next(self.task_id)
         # pyrefly: ignore [bad-assignment]
         ret.task_id = itertools.count(next_task_id + 1)

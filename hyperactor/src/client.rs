@@ -106,9 +106,7 @@ impl Client {
 
     /// Bind a handler port to this client.
     pub fn bind_handler_port<M: RemoteMessage>(&self) -> (PortHandle<M>, PortReceiver<M>) {
-        let (handle, receiver) = self.instance.open_port();
-        handle.bind_handler_port();
-        (handle, receiver)
+        self.instance.mailbox().bind_handler_port()
     }
 
     /// Bind this client as an actor ref.

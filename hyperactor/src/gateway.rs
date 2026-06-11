@@ -683,6 +683,7 @@ mod tests {
     use async_trait::async_trait;
     use hyperactor_config::Flattrs;
     use timed_test::async_timed_test;
+    use tokio::sync::mpsc;
     use tokio::time;
 
     use super::*;
@@ -699,6 +700,22 @@ mod tests {
     use crate::testing::ids::test_actor_id;
     use crate::testing::pingpong::PingPongActor;
     use crate::testing::pingpong::PingPongMessage;
+
+    #[derive(Clone)]
+    struct RecordingSender(mpsc::UnboundedSender<MessageEnvelope>);
+
+    #[async_trait]
+    impl MailboxSender for RecordingSender {
+        fn post_unchecked(
+            &self,
+            envelope: MessageEnvelope,
+            _return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+        ) {
+            self.0
+                .send(envelope)
+                .expect("recording sender should be open");
+        }
+    }
 
     /// Test-only helper that connects two gateways over real
     /// `Local`-transport channels, so the via-routing tests exercise a
@@ -811,24 +828,10 @@ mod tests {
     /// receivers.
     #[tokio::test]
     async fn test_gateway_post_demuxes_by_proc_id() {
-        #[derive(Clone)]
-        struct CountingSender(Arc<AtomicUsize>);
-
-        #[async_trait]
-        impl MailboxSender for CountingSender {
-            fn post_unchecked(
-                &self,
-                _envelope: MessageEnvelope,
-                _return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
-            ) {
-                self.0.fetch_add(1, Ordering::SeqCst);
-            }
-        }
-
-        let forwarded = Arc::new(AtomicUsize::new(0));
+        let (tx, mut forwarded_rx) = mpsc::unbounded_channel();
         let gateway = Gateway::configured(
             channel::reserve_local_addr().into(),
-            BoxedMailboxSender::new(CountingSender(forwarded.clone())),
+            BoxedMailboxSender::new(RecordingSender(tx)),
         );
 
         let alpha = Proc::builder()
@@ -866,7 +869,10 @@ mod tests {
             .expect("alpha_rx timed out")
             .expect("alpha_rx closed");
         assert_eq!(received, 111);
-        assert_eq!(forwarded.load(Ordering::SeqCst), 0);
+        assert!(matches!(
+            forwarded_rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
 
         gateway.post(
             MessageEnvelope::serialize(sender.clone(), beta_dest.clone(), &222u64, Flattrs::new())
@@ -878,17 +884,29 @@ mod tests {
             .expect("beta_rx timed out")
             .expect("beta_rx closed");
         assert_eq!(received, 222);
-        assert_eq!(forwarded.load(Ordering::SeqCst), 0);
+        assert!(matches!(
+            forwarded_rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
 
         let stranger_proc = ProcAddr::instance(ChannelAddr::Local(9999), "stranger");
         let stranger_dest = stranger_proc
             .actor_addr("ghost")
             .port_addr(Port::from(0u64));
         gateway.post(
-            MessageEnvelope::serialize(sender, stranger_dest, &333u64, Flattrs::new()).unwrap(),
+            MessageEnvelope::serialize(sender, stranger_dest.clone(), &333u64, Flattrs::new())
+                .unwrap()
+                .set_ttl(3),
             monitored_return_handle(),
         );
-        assert_eq!(forwarded.load(Ordering::SeqCst), 1);
+        let forwarded = time::timeout(Duration::from_secs(5), forwarded_rx.recv())
+            .await
+            .expect("forwarded_rx timed out")
+            .expect("forwarded_rx closed");
+        assert_eq!(forwarded.dest(), &stranger_dest);
+        // The fallback route is another `MailboxSender` hop: `gateway.post`
+        // decrements once, and then the forwarder's `post` decrements again.
+        assert_eq!(forwarded.ttl(), 1);
         assert!(
             time::timeout(Duration::from_millis(50), alpha_rx.recv())
                 .await
@@ -993,7 +1011,8 @@ mod tests {
             &9u64,
             Flattrs::new(),
         )
-        .unwrap();
+        .unwrap()
+        .set_ttl(3);
 
         gateway.post(envelope, return_handle);
 
@@ -1016,6 +1035,10 @@ mod tests {
             "expected NoRoute transport bounce, got {:?}",
             returned.delivery_failures(),
         );
+        // This self-via miss is returned directly from `Gateway::post_unchecked`
+        // without forwarding through another `MailboxSender`, so only
+        // `gateway.post` decrements the TTL.
+        assert_eq!(returned.ttl(), 2);
     }
 
     /// Ping-pong between two `PingPongActor`s on two procs that share

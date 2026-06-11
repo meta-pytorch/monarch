@@ -73,6 +73,7 @@ inventory = "0.3.24"
 jsonschema = "0.17.0"
 maplit = "1.0"
 timed_test = { version = "0.0.0", path = "../timed_test" }
+tracing-test = { version = "0.2.6", features = ["no-env-filter"] }
 
 [lints]
 workspace = true
