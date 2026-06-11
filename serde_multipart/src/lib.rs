@@ -40,11 +40,15 @@ use bytes::Buf;
 use bytes::BufMut;
 use bytes::buf::UninitSlice;
 
+mod codec;
 mod de;
 mod part;
 mod ser;
 use bytes::Bytes;
 use bytes::BytesMut;
+pub use codec::PartCodec;
+pub use codec::deserialize_part_codec;
+pub use codec::serialize_part_codec;
 pub use part::Part;
 use serde::Deserialize;
 use serde::Serialize;
@@ -426,6 +430,54 @@ mod tests {
         value: u64,
     }
 
+    #[derive(Debug, Clone, PartialEq, Eq, Named)]
+    struct CodecPayload {
+        label: String,
+        value: u64,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    struct CodecPayloadRepr {
+        label: String,
+        value: u64,
+    }
+
+    impl PartCodec for CodecPayload {
+        type Repr = CodecPayloadRepr;
+
+        fn to_repr(&self) -> Result<Self::Repr> {
+            Ok(CodecPayloadRepr {
+                label: self.label.clone(),
+                value: self.value,
+            })
+        }
+
+        fn from_repr(repr: Self::Repr) -> Result<Self> {
+            Ok(Self {
+                label: repr.label,
+                value: repr.value,
+            })
+        }
+    }
+
+    impl Serialize for CodecPayload {
+        fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            serialize_part_codec(self, serializer)
+        }
+    }
+
+    impl<'de> Deserialize<'de> for CodecPayload {
+        fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            deserialize_part_codec(deserializer)
+        }
+    }
+
     fn test_roundtrip<T>(value: T, expected_parts: usize)
     where
         T: Serialize + DeserializeOwned + PartialEq + std::fmt::Debug,
@@ -585,6 +637,24 @@ mod tests {
             Error::TypeMismatch { expected, actual }
                 if expected == String::typename() && actual == TypedPayload::typehash().to_string()
         );
+    }
+
+    #[test]
+    fn test_part_codec_inline_fallback() {
+        let value = CodecPayload {
+            label: "codec".to_string(),
+            value: 123,
+        };
+
+        let bincode_serialized = bincode::serialize(&value).unwrap();
+        let bincode_deserialized: CodecPayload = bincode::deserialize(&bincode_serialized).unwrap();
+        assert_eq!(bincode_deserialized, value);
+
+        let message = serialize_bincode(&value).unwrap();
+        assert_eq!(message.num_parts(), 0);
+
+        let deserialized: CodecPayload = deserialize_bincode(message).unwrap();
+        assert_eq!(deserialized, value);
     }
 
     #[test]
