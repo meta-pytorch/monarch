@@ -101,6 +101,15 @@ impl Part {
 
     /// Serialize a value into a typed part.
     pub fn serialize<T: Serialize + Named>(value: &T) -> crate::Result<Self> {
+        Self::serialize_as::<T, T>(value)
+    }
+
+    /// Serialize a value into a part carrying `T`'s typehash.
+    pub fn serialize_as<T, U>(value: &U) -> crate::Result<Self>
+    where
+        T: Named,
+        U: Serialize,
+    {
         Ok(Self {
             typehash: Some(T::typehash()),
             fragments: vec![Bytes::from(crate::options().serialize(value)?)],
@@ -109,6 +118,15 @@ impl Part {
 
     /// Deserialize this part into the provided type `T`.
     pub fn deserialized<T: DeserializeOwned + Named>(&self) -> crate::Result<T> {
+        self.deserialized_as::<T, T>()
+    }
+
+    /// Deserialize this part as `U` after checking that it carries `T`'s typehash.
+    pub fn deserialized_as<T, U>(&self) -> crate::Result<U>
+    where
+        T: Named,
+        U: DeserializeOwned,
+    {
         if !self.is::<T>() {
             return Err(crate::Error::TypeMismatch {
                 expected: T::typename(),

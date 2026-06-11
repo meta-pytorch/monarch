@@ -420,6 +420,12 @@ mod tests {
         value: u64,
     }
 
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    struct TypedPayloadRepr {
+        label: String,
+        value: u64,
+    }
+
     fn test_roundtrip<T>(value: T, expected_parts: usize)
     where
         T: Serialize + DeserializeOwned + PartialEq + std::fmt::Debug,
@@ -552,6 +558,32 @@ mod tests {
         assert_eq!(
             bincode_deserialized.deserialized::<TypedPayload>().unwrap(),
             value
+        );
+    }
+
+    #[test]
+    fn test_typed_part_with_distinct_repr() {
+        let repr = TypedPayloadRepr {
+            label: "repr".to_string(),
+            value: 99,
+        };
+        let part = Part::serialize_as::<TypedPayload, _>(&repr).unwrap();
+
+        assert_eq!(part.typehash(), Some(TypedPayload::typehash()));
+        assert!(part.is::<TypedPayload>());
+        assert_eq!(
+            part.deserialized_as::<TypedPayload, TypedPayloadRepr>()
+                .unwrap(),
+            repr
+        );
+
+        let err = part
+            .deserialized_as::<String, TypedPayloadRepr>()
+            .unwrap_err();
+        assert_matches!(
+            err,
+            Error::TypeMismatch { expected, actual }
+                if expected == String::typename() && actual == TypedPayload::typehash().to_string()
         );
     }
 
