@@ -908,6 +908,44 @@ impl PythonActor {
         )?)
     }
 
+    fn cancel_tasks_and_stop_python_loop(
+        py: Python<'_>,
+        task_locals: &pyo3_async_runtimes::TaskLocals,
+    ) -> PyResult<()> {
+        let asyncio = py.import("asyncio")?;
+        let event_loop = task_locals.event_loop(py);
+        let tasks = asyncio.call_method1("all_tasks", (&event_loop,))?;
+        let mut has_tasks = false;
+        for task in tasks.try_iter()? {
+            let task = task?;
+            let cancel = task.getattr("cancel")?;
+            event_loop.call_method1("call_soon_threadsafe", (cancel,))?;
+            has_tasks = true;
+        }
+        if has_tasks {
+            asyncio
+                .call_method1(
+                    "run_coroutine_threadsafe",
+                    (asyncio.call_method1("sleep", (0,))?, &event_loop),
+                )?
+                .call_method0("result")?;
+        }
+        let stop = event_loop.getattr("stop")?;
+        event_loop.call_method1("call_soon_threadsafe", (stop,))?;
+        Ok(())
+    }
+
+    fn cancel_pending_python_tasks_and_stop_loop(&self) -> anyhow::Result<()> {
+        let Some(task_locals) = &self.task_locals else {
+            return Ok(());
+        };
+        monarch_with_gil_blocking(|py| -> anyhow::Result<()> {
+            Self::cancel_tasks_and_stop_python_loop(py, task_locals)
+                .map_err(|err| anyhow::Error::from(SerializablePyErr::from(py, &err)))?;
+            Ok(())
+        })
+    }
+
     /// Get the TaskLocals to use for this actor.
     /// Returns either the shared TaskLocals or this actor's own TaskLocals based on configuration.
     fn get_task_locals(&self, py: Python) -> &pyo3_async_runtimes::TaskLocals {
@@ -1301,10 +1339,15 @@ impl Actor for PythonActor {
                     .map_err(anyhow::Error::from)
             }
         })
-        .await?;
-        if let Some(future) = future {
-            future.await.map_err(anyhow::Error::from)?;
-        }
+        .await;
+        let cleanup_result = match future {
+            Ok(Some(future)) => future.await.map(|_| ()).map_err(anyhow::Error::from),
+            Ok(None) => Ok(()),
+            Err(err) => Err(err),
+        };
+        let loop_shutdown_result = self.cancel_pending_python_tasks_and_stop_loop();
+        cleanup_result?;
+        loop_shutdown_result?;
         Ok(())
     }
 
