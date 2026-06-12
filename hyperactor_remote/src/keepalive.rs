@@ -39,7 +39,6 @@ use std::time::Duration;
 use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
-use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
 use hyperactor::HandleClient;
@@ -50,7 +49,6 @@ use hyperactor::PortRef;
 use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
 use hyperactor::Uid;
-use hyperactor::Unbind;
 use hyperactor::context;
 use hyperactor_config::Flattrs;
 use serde::Deserialize;
@@ -60,17 +58,7 @@ use typeuri::Named;
 use crate::LinkSpec;
 
 /// Keepalive timing parameters.
-#[derive(
-    Clone,
-    Debug,
-    Serialize,
-    Deserialize,
-    Named,
-    PartialEq,
-    Eq,
-    Bind,
-    Unbind
-)]
+#[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Eq)]
 pub struct KeepaliveParams {
     /// Duration between keepalive messages sent by the worker side.
     pub interval: Duration,
@@ -145,20 +133,9 @@ impl KeepaliveLink {
 }
 
 /// Parameters for [`KeepaliveWorker`].
-#[derive(
-    Clone,
-    Debug,
-    Serialize,
-    Deserialize,
-    Named,
-    PartialEq,
-    Eq,
-    Bind,
-    Unbind
-)]
+#[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Eq)]
 pub struct KeepaliveWorkerParams {
     /// Supervisor-side keepalive handler port.
-    #[binding(include)]
     pub supervisor: PortRef<Keepalive>,
     /// Keepalive timing parameters.
     pub keepalive: KeepaliveParams,
@@ -187,17 +164,7 @@ impl KeepaliveWorkerParams {
 }
 
 /// Parameters for [`KeepaliveSupervisor`].
-#[derive(
-    Clone,
-    Debug,
-    Serialize,
-    Deserialize,
-    Named,
-    PartialEq,
-    Eq,
-    Bind,
-    Unbind
-)]
+#[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Eq)]
 pub struct KeepaliveSupervisorParams {
     /// Maximum duration between accepted keepalive messages.
     pub timeout: Duration,
@@ -220,31 +187,18 @@ impl KeepaliveSupervisorParams {
     Named,
     Handler,
     HandleClient,
-    RefClient,
-    Bind,
-    Unbind
+    RefClient
 )]
 pub struct Keepalive {
     /// Worker-issued keepalive generation.
     pub generation: u64,
     /// Reply port that receives the keepalive acknowledgment.
-    #[binding(include)]
     pub reply: OncePortRef<KeepaliveAck>,
 }
 wirevalue::register_type!(Keepalive);
 
 /// Acknowledgment for an accepted keepalive.
-#[derive(
-    Clone,
-    Debug,
-    Serialize,
-    Deserialize,
-    Named,
-    PartialEq,
-    Eq,
-    Bind,
-    Unbind
-)]
+#[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Eq)]
 pub struct KeepaliveAck {
     /// Generation accepted by the link actor.
     pub generation: u64,

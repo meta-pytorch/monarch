@@ -25,10 +25,8 @@ use futures::TryStreamExt;
 use futures::try_join;
 use hyperactor as reference;
 use hyperactor::Actor;
-use hyperactor::Bind;
 use hyperactor::Endpoint as _;
 use hyperactor::Handler;
-use hyperactor::Unbind;
 use hyperactor::context;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::connect::Connect;
@@ -325,7 +323,7 @@ impl RsyncDaemon {
     }
 }
 
-#[derive(Debug, Clone, Named, Serialize, Deserialize, Bind, Unbind)]
+#[derive(Debug, Clone, Named, Serialize, Deserialize)]
 pub struct RsyncMessage {
     /// The connect message to create a duplex bytestream with the client.
     pub connect: reference::PortRef<Connect>,

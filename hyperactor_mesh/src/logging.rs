@@ -22,7 +22,6 @@ use chrono::Local;
 use hostname;
 use hyperactor::Actor;
 use hyperactor::ActorRef;
-use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
 use hyperactor::HandleClient;
@@ -31,7 +30,6 @@ use hyperactor::Instance;
 use hyperactor::OncePortRef;
 use hyperactor::ProcAddr;
 use hyperactor::RefClient;
-use hyperactor::Unbind;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelRx;
@@ -970,9 +968,7 @@ impl StreamFwder {
     Named,
     Handler,
     HandleClient,
-    RefClient,
-    Bind,
-    Unbind
+    RefClient
 )]
 pub enum LogForwardMessage {
     /// Receive the log from the parent process and forward it to the client.

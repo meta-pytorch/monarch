@@ -37,10 +37,6 @@ use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::mailbox::UndeliverableMessageError;
 use hyperactor::mailbox::UndeliverableReason;
-use hyperactor::message::Bind;
-use hyperactor::message::Bindings;
-use hyperactor::message::IndexedErasedUnbound;
-use hyperactor::message::Unbind;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::casting::update_undeliverable_envelope_for_casting;
@@ -234,33 +230,6 @@ wirevalue::submit! {
             // SAFETY: ptr points to a PythonMessage.
             let msg = unsafe { &*(ptr as *const PythonMessage) };
             python_message_endpoint_name(msg)
-        },
-    }
-}
-
-// Cast messages arrive as IndexedErasedUnbound<PythonMessage>, which wraps a
-// serialized PythonMessage. This type has no `register_type!` by default (it
-// shares ErasedUnbound's wire format), so we register it explicitly. The
-// endpoint_name deserializes the inner payload to read the method name. This
-// costs one extra deserialization per message, but the Part payload uses
-// zero-copy Bytes refcounting, and Python actor throughput is GIL-bounded,
-// so the serde overhead is negligible relative to Python-side processing.
-wirevalue::submit! {
-    wirevalue::TypeInfo {
-        typename: <IndexedErasedUnbound<PythonMessage> as wirevalue::Named>::typename,
-        typehash: <IndexedErasedUnbound<PythonMessage> as wirevalue::Named>::typehash,
-        typeid: <IndexedErasedUnbound<PythonMessage> as wirevalue::Named>::typeid,
-        port: <IndexedErasedUnbound<PythonMessage> as wirevalue::Named>::port,
-        dump: None,
-        arm_unchecked: <IndexedErasedUnbound<PythonMessage> as wirevalue::Named>::arm_unchecked,
-        endpoint_name: |ptr| {
-            // SAFETY: ptr points to an IndexedErasedUnbound<PythonMessage>.
-            let erased = unsafe { &*(ptr as *const IndexedErasedUnbound<PythonMessage>) };
-            erased
-                .inner_any()
-                .deserialized_unchecked::<PythonMessage>()
-                .ok()
-                .and_then(|msg| python_message_endpoint_name(&msg))
         },
     }
 }
@@ -476,24 +445,6 @@ impl std::fmt::Debug for PythonMessage {
                 &wirevalue::HexFmt(&(*self.message.to_bytes())[..]).to_string(),
             )
             .finish()
-    }
-}
-
-impl Unbind for PythonMessage {
-    fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        match &self.kind {
-            PythonMessageKind::CallMethod { response_port, .. } => response_port.unbind(bindings),
-            _ => Ok(()),
-        }
-    }
-}
-
-impl Bind for PythonMessage {
-    fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        match &mut self.kind {
-            PythonMessageKind::CallMethod { response_port, .. } => response_port.bind(bindings),
-            _ => Ok(()),
-        }
     }
 }
 

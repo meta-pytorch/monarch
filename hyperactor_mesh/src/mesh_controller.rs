@@ -13,13 +13,11 @@ use std::time::SystemTime;
 
 use async_trait::async_trait;
 use hyperactor::Actor;
-use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::RemoteEndpoint as _;
-use hyperactor::Unbind;
 use hyperactor::actor::ActorError;
 use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
@@ -208,26 +206,26 @@ fn compute_keepalive() -> Option<SystemTime> {
 /// Will send None if there are no failures on the mesh periodically. This guarantees
 /// the listener that the controller is still alive. Make sure to filter such events
 /// out as not useful.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
 pub struct Subscribe(pub hyperactor::PortRef<Option<MeshFailure>>);
 wirevalue::register_type!(Subscribe);
 
 /// Unsubscribe me to future updates about a mesh. Should be the same port used in
 /// the Subscribe message.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
 pub struct Unsubscribe(pub hyperactor::PortRef<Option<MeshFailure>>);
 wirevalue::register_type!(Unsubscribe);
 
 /// Query the number of active supervision subscribers on this controller.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
-pub struct GetSubscriberCount(#[binding(include)] pub hyperactor::PortRef<usize>);
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
+pub struct GetSubscriberCount(pub hyperactor::PortRef<usize>);
 wirevalue::register_type!(GetSubscriberCount);
 
 /// Check state of the actors in the mesh. This is used as a self message to
 /// periodically check.
 /// Stores the next time we expect to start running a check state message.
 /// Used to check for stalls in message handling.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
 pub struct CheckState(pub SystemTime);
 wirevalue::register_type!(CheckState);
 
