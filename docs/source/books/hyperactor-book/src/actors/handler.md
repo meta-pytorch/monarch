@@ -43,7 +43,7 @@ impl<A: Actor> Handler<Signal> for A {
 ### Multipart routed messages
 
 ```rust
-let mut message = ErasedUnbound::try_from_message(value)?;
+let mut message = MultipartMessage::try_from_message(value)?;
 message.visit_mut::<PortRefRepr>(|port| {
     port.update_port_addr(rewritten_addr);
     Ok(())

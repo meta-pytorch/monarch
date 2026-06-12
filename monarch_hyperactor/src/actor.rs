@@ -2055,7 +2055,7 @@ mod tests {
     use hyperactor::accum::ReducerSpec;
     use hyperactor::accum::StreamingReducerOpts;
     use hyperactor::id::Label;
-    use hyperactor::message::ErasedUnbound;
+    use hyperactor::message::MultipartMessage;
     use hyperactor::testing::ids::test_port_id;
     use hyperactor_mesh::Error as MeshError;
     use hyperactor_mesh::host_mesh::host_agent::ProcState;
@@ -2088,9 +2088,10 @@ mod tests {
             message: Part::from(vec![1, 2, 3]),
         };
         {
-            let mut erased = ErasedUnbound::try_from_message(message.clone()).unwrap();
+            let mut multipart_message =
+                MultipartMessage::try_from_message(message.clone()).unwrap();
             let mut ports = vec![];
-            erased
+            multipart_message
                 .visit_mut::<reference::PortRefRepr>(|b| {
                     ports.push(b.clone());
                     Ok(())
@@ -2104,7 +2105,10 @@ mod tests {
                 port_ref.get_return_undeliverable()
             );
             assert!(!ports[0].unsplit());
-            assert_eq!(message, erased.deserialize::<PythonMessage>().unwrap());
+            assert_eq!(
+                message,
+                multipart_message.deserialize::<PythonMessage>().unwrap()
+            );
         }
 
         let no_port_message = PythonMessage {
@@ -2117,9 +2121,10 @@ mod tests {
             ..message
         };
         {
-            let mut erased = ErasedUnbound::try_from_message(no_port_message.clone()).unwrap();
+            let mut multipart_message =
+                MultipartMessage::try_from_message(no_port_message.clone()).unwrap();
             let mut ports = vec![];
-            erased
+            multipart_message
                 .visit_mut::<reference::PortRefRepr>(|b| {
                     ports.push(b.clone());
                     Ok(())
@@ -2128,7 +2133,7 @@ mod tests {
             assert_eq!(ports.len(), 0);
             assert_eq!(
                 no_port_message,
-                erased.deserialize::<PythonMessage>().unwrap()
+                multipart_message.deserialize::<PythonMessage>().unwrap()
             );
         }
     }

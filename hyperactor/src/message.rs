@@ -14,9 +14,9 @@
 //! Briefly, it works by following these steps:
 //!
 //! 1. On the sender side, the typed message is serialized with multipart
-//!    encoding and bundled in an [ErasedUnbound] object.
-//! 2. On intermediate nodes, the [ErasedUnbound] object is relayed and selected
-//!    typed parts are mutated in place.
+//!    encoding and bundled in a [`MultipartMessage`] object.
+//! 2. On intermediate nodes, the [`MultipartMessage`] object is relayed and
+//!    selected typed parts are mutated in place.
 //! 3. On the receiver side, the serialized message is delivered to the ordinary
 //!    typed handler port and deserialized as the final message type.
 //!
@@ -40,12 +40,12 @@ impl<T: RemoteMessage> Castable for T {}
 
 /// Multipart-serialized message with its message type erased.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, typeuri::Named)]
-pub struct ErasedUnbound {
+pub struct MultipartMessage {
     message: wirevalue::Any,
 }
-wirevalue::register_type!(ErasedUnbound);
+wirevalue::register_type!(MultipartMessage);
 
-impl ErasedUnbound {
+impl MultipartMessage {
     /// Create an object directly from Any.
     pub fn new(message: wirevalue::Any) -> Self {
         Self { message }
@@ -134,23 +134,21 @@ mod tests {
             wirevalue::Any::serialize_with_encoding(wirevalue::Encoding::Multipart, &my_message)
                 .unwrap();
 
-        // convert to ErasedUnbound
-        let mut erased = ErasedUnbound::try_from_message(my_message.clone()).unwrap();
+        let mut message = MultipartMessage::try_from_message(my_message.clone()).unwrap();
         assert_eq!(
-            erased,
-            ErasedUnbound {
+            message,
+            MultipartMessage {
                 message: serialized_multipart_my_message,
             }
         );
 
-        // Modify the port in the erased
         let new_port_id0 = test_port_id("world_0", "comm", 680);
         assert_ne!(&new_port_id0, original_port0.port_addr());
         let new_port_id1 = test_port_id("world_1", "comm", 257);
         assert_ne!(&new_port_id1, original_port1.port_addr());
 
         let mut new_ports = vec![&new_port_id0, &new_port_id1].into_iter();
-        erased
+        message
             .visit_mut::<PortRefRepr>(|b| {
                 let port = new_ports.next().unwrap();
                 b.update_port_addr(port.clone());
@@ -167,8 +165,7 @@ mod tests {
             }),
             StreamingReducerOpts::default(),
         );
-        // convert back to MyMessage
-        let new_my_message = erased.downcast::<MyMessage>().unwrap();
+        let new_my_message = message.downcast::<MyMessage>().unwrap();
         assert_eq!(
             new_my_message,
             MyMessage {
