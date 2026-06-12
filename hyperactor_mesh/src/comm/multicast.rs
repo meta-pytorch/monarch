@@ -144,7 +144,7 @@ impl CastMessageEnvelope {
         dest_port: DestinationPort,
         shape: Shape,
         headers: Flattrs,
-        data: wirevalue::Any,
+        data: wirevalue::Any<wirevalue::encoding::Multipart>,
     ) -> Self {
         Self {
             actor_mesh_id,
