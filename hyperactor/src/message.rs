@@ -41,23 +41,23 @@ impl<T: RemoteMessage> Castable for T {}
 /// Multipart-serialized message with its message type erased.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, typeuri::Named)]
 pub struct MultipartMessage {
-    message: wirevalue::Any,
+    message: wirevalue::Any<wirevalue::encoding::Multipart>,
 }
 wirevalue::register_type!(MultipartMessage);
 
 impl MultipartMessage {
-    /// Create an object directly from Any.
-    pub fn new(message: wirevalue::Any) -> Self {
+    /// Create an object directly from a multipart [`wirevalue::Any`].
+    pub fn new(message: wirevalue::Any<wirevalue::encoding::Multipart>) -> Self {
         Self { message }
     }
 
     /// Access the inner serialized message.
-    pub fn message(&self) -> &wirevalue::Any {
+    pub fn message(&self) -> &wirevalue::Any<wirevalue::encoding::Multipart> {
         &self.message
     }
 
     /// Convert this wrapper into its inner serialized message.
-    pub fn into_message(self) -> wirevalue::Any {
+    pub fn into_message(self) -> wirevalue::Any<wirevalue::encoding::Multipart> {
         self.message
     }
 
@@ -65,11 +65,8 @@ impl MultipartMessage {
     // Note: cannot implement TryFrom<T> due to conflict with core crate's blanket impl.
     // More can be found in this issue: https://github.com/rust-lang/rust/issues/50133
     pub fn try_from_message<T: Serialize + Named>(msg: T) -> Result<Self, anyhow::Error> {
-        let serialized =
-            wirevalue::Any::serialize_with_encoding(wirevalue::Encoding::Multipart, &msg)?;
-        Ok(Self {
-            message: serialized,
-        })
+        let message = wirevalue::Any::<wirevalue::encoding::Multipart>::serialize(&msg)?;
+        Ok(Self { message })
     }
 
     /// Use the provided function to update matching typed multipart parts.
@@ -131,8 +128,7 @@ mod tests {
         };
 
         let serialized_multipart_my_message =
-            wirevalue::Any::serialize_with_encoding(wirevalue::Encoding::Multipart, &my_message)
-                .unwrap();
+            wirevalue::Any::<wirevalue::encoding::Multipart>::serialize(&my_message).unwrap();
 
         let mut message = MultipartMessage::try_from_message(my_message.clone()).unwrap();
         assert_eq!(
