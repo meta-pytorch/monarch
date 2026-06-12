@@ -43,7 +43,7 @@ struct TestActor {
 }
 ```
 
-When `cast = true` is specified, the macro registers both the concrete message type and its `IndexedErasedUnbound<T>` wrapper. This enables the message to be multicast to a group of actors via `CastMessageEnvelope`, with proper handling of reply port mutation so replies can be relayed through intermediate nodes and aggregated.
+When `cast = true` is specified, the macro requires the concrete message type to be castable. Cast routes send the message as multipart data to the destination's ordinary typed handler port, with reply-port mutation handled by visiting typed multipart part representations while the message is in transit.
 
 ## Generated Implementations (simplified)
 ```rust

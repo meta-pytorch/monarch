@@ -25,11 +25,9 @@ use derive_more::From;
 use derive_more::TryInto;
 use enum_as_inner::EnumAsInner;
 use hyperactor as reference;
-use hyperactor::Bind;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::RefClient;
-use hyperactor::Unbind;
 use monarch_types::ReduceOp;
 use monarch_types::SerializablePyErr;
 use monarch_types::UniqueId;
@@ -664,9 +662,7 @@ impl From<BorrowError> for CallFunctionError {
     Deserialize,
     Debug,
     Named,
-    EnumAsInner,
-    Bind,
-    Unbind
+    EnumAsInner
 )]
 pub enum WorkerMessage {
     /// Initialize backend network state.

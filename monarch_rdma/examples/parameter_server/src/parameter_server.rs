@@ -59,7 +59,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorRef;
-use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
 use hyperactor::Handler;
@@ -67,7 +66,6 @@ use hyperactor::Instance;
 use hyperactor::OncePortRef;
 use hyperactor::PortRef;
 use hyperactor::RemoteSpawn;
-use hyperactor::Unbind;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::context::Mailbox as _;
 use hyperactor::id::Label;
@@ -194,7 +192,7 @@ struct PsGetBuffers(
 struct PsUpdate(pub OncePortRef<bool>);
 
 // Message to log actors' weights and gradients.
-#[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
+#[derive(Debug, Serialize, Deserialize, Named, Clone)]
 struct Log;
 
 #[async_trait]
@@ -331,22 +329,22 @@ impl RemoteSpawn for WorkerActor {
 // Message to initialize the worker.
 // This message is sent to workers to establish their connection with the parameter server
 // and obtain handles to the shared weights and gradient buffers.
-#[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
+#[derive(Debug, Serialize, Deserialize, Named, Clone)]
 pub struct WorkerInit(pub ActorRef<ParameterServerActor>);
 
 // Message to signal the worker to update its gradients and transmit them to the server.
 // The PortRef<bool> is used to notify the main process when the operation completes.
 // - Workers compute local gradients (weights + 1)
 // - Workers write these gradients to their assigned buffer on the parameter server using RDMA
-#[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
-pub struct WorkerStep(#[binding(include)] PortRef<bool>);
+#[derive(Debug, Serialize, Deserialize, Named, Clone)]
+pub struct WorkerStep(PortRef<bool>);
 
 // Message to signal the worker to pull updated weights from the parameter server.
 // The PortRef<bool> is used to notify the main process when the operation completes.
 // - Workers read the updated weights from the parameter server using RDMA
 // - This happens after the parameter server has applied all gradients to update the weights
-#[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
-pub struct WorkerUpdate(#[binding(include)] PortRef<bool>);
+#[derive(Debug, Serialize, Deserialize, Named, Clone)]
+pub struct WorkerUpdate(PortRef<bool>);
 
 #[async_trait]
 impl Handler<WorkerInit> for WorkerActor {
