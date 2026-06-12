@@ -816,8 +816,11 @@ impl<A: Referable> ActorMeshRef<A> {
                     .expect("mismatched actor_ids and dest_region")
                     .port_addr(Port::handler_id(dest_port, None));
 
-                cx.instance()
-                    .post(port_id, rank_headers, rank_data.into_message());
+                cx.instance().post(
+                    port_id,
+                    rank_headers,
+                    rank_data.into_message().erase_encoding(),
+                );
             }
         } else {
             // Tree path: route through the comm actor tree.
