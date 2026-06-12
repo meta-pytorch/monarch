@@ -157,11 +157,38 @@ impl From<crate::host::LocalProcStatus> for Status {
 }
 
 /// Data type used to communicate ranks.
-/// Implements [`Bind`] and [`Unbind`]; the comm actor replaces
-/// instances with the delivered rank.
-#[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Eq, Default)]
+/// Serialized as a typed multipart part so comm actors can replace instances
+/// with the delivered rank while the message is in transit.
+#[derive(Clone, Debug, Named, PartialEq, Eq, Default)]
 pub struct Rank(pub Option<usize>);
 wirevalue::register_type!(Rank);
+
+/// Serialized representation for [`Rank`] multipart parts.
+#[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Eq)]
+pub struct RankRepr(pub Option<usize>);
+
+impl TryFrom<&Rank> for RankRepr {
+    type Error = serde_multipart::Error;
+
+    fn try_from(rank: &Rank) -> serde_multipart::Result<Self> {
+        Ok(Self(rank.0))
+    }
+}
+
+impl TryFrom<RankRepr> for Rank {
+    type Error = serde_multipart::Error;
+
+    fn try_from(repr: RankRepr) -> serde_multipart::Result<Self> {
+        Ok(Self(repr.0))
+    }
+}
+
+serde_multipart::part_codec! {
+    impl Rank
+    {
+        type Repr = RankRepr;
+    }
+}
 
 impl Rank {
     /// Create a new rank with the provided value.
