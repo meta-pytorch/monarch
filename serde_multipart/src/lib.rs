@@ -427,7 +427,7 @@ mod tests {
         value: u64,
     }
 
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Named)]
     struct TypedPayloadRepr {
         label: String,
         value: u64,
@@ -439,7 +439,7 @@ mod tests {
         value: u64,
     }
 
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Named)]
     struct CodecPayloadRepr {
         label: String,
         value: u64,
@@ -495,7 +495,7 @@ mod tests {
         value: u64,
     }
 
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Named)]
     struct MacroCodecPayloadRepr {
         label: String,
         value: u64,
@@ -708,11 +708,11 @@ mod tests {
         assert_eq!(message.num_parts(), 1);
         assert_eq!(
             message.parts()[0].typehash(),
-            Some(CodecPayload::typehash())
+            Some(CodecPayloadRepr::typehash())
         );
         assert_eq!(
             message.parts()[0]
-                .deserialized_as::<CodecPayload, CodecPayloadRepr>()
+                .deserialized::<CodecPayloadRepr>()
                 .unwrap(),
             repr
         );
@@ -756,14 +756,14 @@ mod tests {
         assert_eq!(message.num_parts(), 4);
         assert_eq!(
             message.parts()[0].typehash(),
-            Some(CodecPayload::typehash())
+            Some(CodecPayloadRepr::typehash())
         );
         assert_eq!(message.parts()[1].typehash(), None);
         assert_eq!(message.parts()[1].to_bytes(), value.raw.to_bytes());
         assert!(
             message.parts()[2..]
                 .iter()
-                .all(|part| part.typehash() == Some(CodecPayload::typehash()))
+                .all(|part| part.typehash() == Some(CodecPayloadRepr::typehash()))
         );
 
         let deserialized: Envelope = deserialize_bincode(message).unwrap();
@@ -813,7 +813,7 @@ mod tests {
         assert_eq!(message.num_parts(), 1);
         assert_eq!(
             message.parts()[0].typehash(),
-            Some(MacroCodecPayload::typehash())
+            Some(MacroCodecPayloadRepr::typehash())
         );
 
         let deserialized: MacroCodecPayload = deserialize_bincode(message).unwrap();
