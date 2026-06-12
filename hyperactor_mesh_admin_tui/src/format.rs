@@ -10,10 +10,19 @@ use std::str::FromStr;
 use std::time::Duration;
 use std::time::SystemTime;
 
+use hyperactor::ActorAddr;
 use hyperactor_mesh::introspect::NodePayload;
 use hyperactor_mesh::introspect::NodeProperties;
 use hyperactor_mesh::introspect::NodeRef;
 use serde_json::Value;
+
+/// Compact, non-redundant actor identity for tree/diagnostics labels:
+/// `name` (singleton), `name<base58>` (labeled instance), or
+/// `<base58>` (unlabeled instance). Single source of truth — `Uid`'s
+/// `Display` already yields the correct, non-duplicated string.
+pub(crate) fn actor_label(actor: &ActorAddr) -> String {
+    actor.uid().to_string()
+}
 
 /// Derive a human-friendly label for a resolved node payload.
 ///
@@ -25,8 +34,8 @@ use serde_json::Value;
 ///
 /// Uses `NodeProperties` to format a concise label for the tree view:
 /// roots show host counts, hosts show proc counts, procs show actor
-/// counts, and actors are rendered as `name[pid]` when the identity
-/// parses as an `ActorAddr`.
+/// counts, and actors are rendered as their compact identity —
+/// `name` for a singleton, `name<base58>` for an instance.
 pub(crate) fn derive_label(payload: &NodePayload) -> String {
     match &payload.properties {
         NodeProperties::Root { num_hosts, .. } => format!("Mesh Root ({} hosts)", num_hosts),
@@ -82,14 +91,7 @@ pub(crate) fn derive_label(payload: &NodePayload) -> String {
             }
         }
         NodeProperties::Actor { .. } => match &payload.identity {
-            NodeRef::Actor(actor_id) => format!(
-                "{}[{}]",
-                actor_id.log_name(),
-                actor_id
-                    .label()
-                    .map(|label| label.as_str().to_string())
-                    .unwrap_or_else(|| actor_id.uid().to_string())
-            ),
+            NodeRef::Actor(actor_id) => actor_label(actor_id),
             other => other.to_string(),
         },
         NodeProperties::Error { code, message } => {
@@ -101,18 +103,12 @@ pub(crate) fn derive_label(payload: &NodePayload) -> String {
 /// Derive a display label from a typed node reference without
 /// fetching.
 ///
-/// For actor references, format as `name[uid]`; for all others, fall
-/// back to the `Display` representation.
+/// For actor references, render the compact identity (`name`,
+/// `name<base58>`, or `<base58>`); for all others, fall back to the
+/// `Display` representation.
 pub(crate) fn derive_label_from_ref(reference: &NodeRef) -> String {
     match reference {
-        NodeRef::Actor(actor_id) => format!(
-            "{}[{}]",
-            actor_id.log_name(),
-            actor_id
-                .label()
-                .map(|label| label.as_str().to_string())
-                .unwrap_or_else(|| actor_id.uid().to_string())
-        ),
+        NodeRef::Actor(actor_id) => actor_label(actor_id),
         other => other.to_string(),
     }
 }
@@ -596,7 +592,62 @@ mod tests {
             parent: Some(NodeRef::Proc(proc_id)),
             as_of: SystemTime::now(),
         };
-        assert_eq!(derive_label(&payload), "worker[worker]");
+        assert_eq!(derive_label(&payload), "worker");
+    }
+
+    fn test_proc_addr() -> hyperactor::ProcAddr {
+        hyperactor_mesh::mesh_id::ResourceId::proc_addr_from_name(
+            "unix:@test"
+                .parse::<hyperactor::channel::ChannelAddr>()
+                .unwrap(),
+            "myworld",
+        )
+    }
+
+    #[test]
+    fn derive_label_from_ref_actor_singleton() {
+        let actor = test_proc_addr().actor_addr("worker");
+        assert_eq!(derive_label_from_ref(&NodeRef::Actor(actor)), "worker");
+    }
+
+    #[test]
+    fn derive_label_from_ref_actor_labeled_instance_shape() {
+        let actor = test_proc_addr().actor_addr_uid(hyperactor::Uid::instance(
+            hyperactor::Label::strip("worker"),
+        ));
+        let label = derive_label_from_ref(&NodeRef::Actor(actor));
+        assert!(
+            label.starts_with("worker<") && label.ends_with('>'),
+            "labeled instance should render as worker<base58>, got {label:?}"
+        );
+    }
+
+    #[test]
+    fn derive_label_from_ref_actor_unlabeled_instance_shape() {
+        let actor = test_proc_addr().actor_addr_uid(hyperactor::Uid::anonymous());
+        let label = derive_label_from_ref(&NodeRef::Actor(actor));
+        assert!(
+            label.starts_with('<') && label.ends_with('>'),
+            "unlabeled instance should render as <base58>, got {label:?}"
+        );
+    }
+
+    #[test]
+    fn actor_label_disambiguates_same_named_instances() {
+        // Two distinct labeled instances with the SAME human label must
+        // render differently — the base58 uid keeps them apart. The old
+        // `name[name]` form collapsed them to one string.
+        let a = test_proc_addr().actor_addr_uid(hyperactor::Uid::instance(
+            hyperactor::Label::strip("worker"),
+        ));
+        let b = test_proc_addr().actor_addr_uid(hyperactor::Uid::instance(
+            hyperactor::Label::strip("worker"),
+        ));
+        assert_ne!(
+            derive_label_from_ref(&NodeRef::Actor(a)),
+            derive_label_from_ref(&NodeRef::Actor(b)),
+            "same-named distinct instances must not collapse to one label"
+        );
     }
 
     #[test]

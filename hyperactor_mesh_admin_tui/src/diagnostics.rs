@@ -253,9 +253,7 @@ fn label_from_payload(
         NodeProperties::Host { addr, .. } => addr.clone(),
         NodeProperties::Proc { proc_name, .. } => proc_name.clone(),
         NodeProperties::Actor { .. } => match reference {
-            NodeRef::Actor(actor_id) => {
-                format!("{}[{}]", actor_id.log_name(), actor_id.uid())
-            }
+            NodeRef::Actor(actor_id) => crate::format::actor_label(actor_id),
             other => other.to_string(),
         },
         NodeProperties::Error { message, .. } => message.clone(),
@@ -392,9 +390,7 @@ async fn walk(
                         r.label = format!("  {}", label_from_payload(actor_ref, p));
                     } else {
                         let short = match actor_ref {
-                            NodeRef::Actor(id) => {
-                                format!("{}[{}]", id.log_name(), id.uid())
-                            }
+                            NodeRef::Actor(id) => crate::format::actor_label(id),
                             other => other.to_string(),
                         };
                         r.label = format!("  {}", short);
@@ -561,5 +557,69 @@ mod tests {
             outcome: DiagOutcome::Pass { elapsed_ms: 1 },
         }];
         assert_eq!(phase_fail_count(&results, DiagPhase::AdminInfra), 0);
+    }
+
+    fn test_proc_addr() -> hyperactor::ProcAddr {
+        hyperactor_mesh::mesh_id::ResourceId::proc_addr_from_name(
+            "unix:@test"
+                .parse::<hyperactor::channel::ChannelAddr>()
+                .unwrap(),
+            "myworld",
+        )
+    }
+
+    // Minimal actor payload — `label_from_payload`'s actor arm keys off
+    // `reference`, so these property fields are placeholders.
+    fn actor_node_payload() -> hyperactor_mesh::introspect::NodePayload {
+        hyperactor_mesh::introspect::NodePayload {
+            identity: hyperactor_mesh::introspect::NodeRef::Root,
+            properties: hyperactor_mesh::introspect::NodeProperties::Actor {
+                actor_status: "Running".to_string(),
+                actor_type: "Worker".to_string(),
+                instance_id: String::new(),
+                messages_processed: 0,
+                created_at: None,
+                last_message_handler: None,
+                total_processing_time_us: 0,
+                queue_depth: 0,
+                flight_recorder: None,
+                is_system: false,
+                inbound_ordering: None,
+                failure_info: None,
+                execution: None,
+            },
+            children: vec![],
+            parent: None,
+            as_of: std::time::SystemTime::UNIX_EPOCH,
+        }
+    }
+
+    #[test]
+    fn label_from_payload_actor_singleton_is_bare_name() {
+        let actor = test_proc_addr().actor_addr("worker");
+        let payload = actor_node_payload();
+        assert_eq!(
+            label_from_payload(
+                &hyperactor_mesh::introspect::NodeRef::Actor(actor),
+                &payload
+            ),
+            "worker"
+        );
+    }
+
+    #[test]
+    fn label_from_payload_actor_instance_keeps_disambiguator() {
+        let actor = test_proc_addr().actor_addr_uid(hyperactor::Uid::instance(
+            hyperactor::Label::strip("worker"),
+        ));
+        let payload = actor_node_payload();
+        let label = label_from_payload(
+            &hyperactor_mesh::introspect::NodeRef::Actor(actor),
+            &payload,
+        );
+        assert!(
+            label.starts_with("worker<") && label.ends_with('>'),
+            "instance must keep base58 disambiguator, got {label:?}"
+        );
     }
 }

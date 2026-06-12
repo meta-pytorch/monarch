@@ -123,6 +123,12 @@ pub(crate) struct Labels {
     pub(crate) ordering_sender_fallback: &'static str,
     pub(crate) ordering_footer: &'static str,
 
+    // Execution pane labels.
+    pub(crate) pane_execution: &'static str,
+    pub(crate) execution_active_handlers: &'static str,
+    pub(crate) execution_oldest: &'static str,
+    pub(crate) execution_more_names: &'static str,
+
     // Failure detail labels
     pub(crate) error_message: &'static str,
     pub(crate) root_cause: &'static str,
@@ -233,6 +239,10 @@ impl Labels {
             ordering_more_row: "… and {n} more",
             ordering_sender_fallback: "(no owner; session {id})",
             ordering_footer: "Owner = SEQ_INFO session owner (V1 = sender; V0 = forwarding CommActor).",
+            pane_execution: "Execution",
+            execution_active_handlers: "Active handlers: ",
+            execution_oldest: "Oldest: ",
+            execution_more_names: "… more endpoint names",
             error_message: "Error: ",
             root_cause: "Root cause: ",
             failed_at: "Failed at: ",
@@ -334,6 +344,10 @@ impl Labels {
             ordering_more_row: "… 还有 {n} 个",
             ordering_sender_fallback: "（无所有者；会话 {id}）",
             ordering_footer: "所有者 = SEQ_INFO 会话所有者（V1 = 发送者；V0 = 转发 CommActor）。",
+            pane_execution: "执行",
+            execution_active_handlers: "活跃处理器: ",
+            execution_oldest: "最早: ",
+            execution_more_names: "… 还有更多端点名称",
             error_message: "错误: ",
             root_cause: "根因: ",
             failed_at: "失败时间: ",

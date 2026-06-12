@@ -9,6 +9,7 @@
 use std::time::SystemTime;
 
 use hyperactor::introspect::RecordedEvent;
+use hyperactor_mesh::introspect::Execution;
 use hyperactor_mesh::introspect::FailureInfo;
 use hyperactor_mesh::introspect::InboundOrdering;
 use hyperactor_mesh::introspect::NodePayload;
@@ -322,6 +323,7 @@ pub(crate) fn render_node_detail(
             total_processing_time_us,
             flight_recorder,
             inbound_ordering,
+            execution,
             failure_info,
             ..
         } => {
@@ -339,6 +341,7 @@ pub(crate) fn render_node_detail(
                 *total_processing_time_us,
                 flight_recorder.as_deref(),
                 inbound_ordering.as_deref(),
+                execution.as_deref(),
                 failure_info.as_ref(),
                 scheme,
                 labels,
@@ -608,6 +611,7 @@ fn render_actor_detail(
     total_processing_time_us: u64,
     flight_recorder_json: Option<&str>,
     inbound_ordering: Option<&InboundOrdering>,
+    execution: Option<&Execution>,
     failure_info: Option<&FailureInfo>,
     scheme: &ColorScheme,
     l: &Labels,
@@ -616,11 +620,17 @@ fn render_actor_detail(
     // lines (Instance, Queue depth) in the info block.
     let info_height: u16 = if failure_info.is_some() { 17 } else { 13 };
     let ordering_height = compute_ordering_height(area.height, info_height, inbound_ordering);
+    // Execution section is hidden (height 0) when the actor reports no
+    // execution (None = unsupported) or nothing is in flight; its budget
+    // comes after info + ordering, preserving the flight recorder's minimum.
+    let execution_height =
+        compute_execution_height(area.height, info_height, ordering_height, execution);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(info_height),
             Constraint::Length(ordering_height),
+            Constraint::Length(execution_height),
             Constraint::Min(MIN_FLIGHT_RECORDER_HEIGHT),
         ])
         .split(area);
@@ -702,6 +712,9 @@ fn render_actor_detail(
     // Inbound ordering
     render_inbound_ordering(frame, chunks[1], inbound_ordering, scheme, l);
 
+    // Execution (hidden via a zero-height chunk when None / active_count 0).
+    render_execution(frame, chunks[2], execution, scheme, l);
+
     // Flight recorder
     let recorder_block = Block::default()
         .title(l.pane_flight_recorder)
@@ -744,7 +757,7 @@ fn render_actor_detail(
     let recorder = Paragraph::new(events)
         .block(recorder_block)
         .wrap(Wrap { trim: true });
-    frame.render_widget(recorder, chunks[2]);
+    frame.render_widget(recorder, chunks[3]);
 }
 
 /// Compute the desired height for the inbound-ordering section, capped
@@ -775,6 +788,120 @@ fn compute_ordering_height(
         }
     };
     want.min(budget)
+}
+
+/// Compute the desired height for the Execution section.
+///
+/// Returns 0 when the actor reports no execution (`None` = unsupported) or
+/// nothing is in flight (`active_count == 0`), hiding the section entirely.
+/// Otherwise sizes to the rendered line count, capped against the remaining
+/// budget so the flight recorder keeps its minimum height. Must match the
+/// line count produced by `build_execution_lines`.
+fn compute_execution_height(
+    area_height: u16,
+    info_height: u16,
+    ordering_height: u16,
+    execution: Option<&Execution>,
+) -> u16 {
+    let Some(e) = execution else {
+        return 0;
+    };
+    if e.active_count == 0 {
+        return 0;
+    }
+    let budget = area_height
+        .saturating_sub(info_height)
+        .saturating_sub(ordering_height)
+        .saturating_sub(MIN_FLIGHT_RECORDER_HEIGHT);
+    // border(2) + count line(1) + oldest line(1 iff a row exists)
+    // + per-name rows + truncation marker(1 iff truncated).
+    let oldest_line = u16::from(!e.active_handlers.is_empty());
+    let rows = e.active_handlers.len() as u16;
+    let more_row = u16::from(e.truncated);
+    let want = 2 + 1 + oldest_line + rows + more_row;
+    want.min(budget)
+}
+
+/// Render the Execution section: the second plane to lifecycle status,
+/// answering "what is this actor handling right now?".
+///
+/// Drawn only when the actor reports execution (`Some`) with
+/// `active_count > 0` (the caller gives this a zero-height chunk
+/// otherwise). The top-level count comes straight from `active_count` --
+/// never summed from the (possibly truncated) per-name rows (EX-3).
+fn render_execution(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    execution: Option<&Execution>,
+    scheme: &ColorScheme,
+    l: &Labels,
+) {
+    let Some(e) = execution else {
+        return;
+    };
+    if e.active_count == 0 {
+        return;
+    }
+    let block = Block::default()
+        .title(l.pane_execution)
+        .borders(Borders::ALL)
+        .border_style(scheme.border);
+    let p = Paragraph::new(build_execution_lines(e, scheme, l))
+        .block(block)
+        .wrap(Wrap { trim: false });
+    frame.render_widget(p, area);
+}
+
+fn build_execution_lines<'a>(
+    e: &'a Execution,
+    scheme: &ColorScheme,
+    l: &'a Labels,
+) -> Vec<Line<'a>> {
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Top-level count: read directly from active_count (EX-3).
+    lines.push(detail_line(
+        l.execution_active_handlers,
+        e.active_count.to_string(),
+        scheme,
+    ));
+
+    // Oldest live invocation: the first row (aggregated by name and sorted
+    // oldest-first upstream, EX-4). Absent when per-handler detail was
+    // momentarily unavailable on this poll (EX-2: complete == false leaves
+    // active_handlers empty while the count above stays authoritative).
+    if let Some(first) = e.active_handlers.first() {
+        lines.push(detail_line(
+            l.execution_oldest,
+            format!(
+                "{} ({})",
+                first.name,
+                format_system_time_relative(&first.oldest_since)
+            ),
+            scheme,
+        ));
+    }
+
+    // Per-name rows: "name ×active_count  age".
+    for h in &e.active_handlers {
+        lines.push(Line::from(Span::raw(format!(
+            "{} \u{00d7}{}  {}",
+            h.name,
+            h.active_count,
+            format_system_time_relative(&h.oldest_since),
+        ))));
+    }
+
+    // Truncation marker (EX-4): some of the oldest names were dropped. We
+    // don't carry a precise hidden-name count, so the marker is unqualified.
+    if e.truncated {
+        lines.push(Line::from(Span::styled(
+            l.execution_more_names,
+            scheme.detail_label,
+        )));
+    }
+
+    lines
 }
 
 /// Column widths for the per-session table. Owner column truncates
@@ -1393,6 +1520,96 @@ mod tests {
             parent: None,
             as_of: SystemTime::now(),
         }
+    }
+
+    fn actor_payload_with_execution(execution: Execution) -> NodePayload {
+        let mut payload = actor_payload(None);
+        if let NodeProperties::Actor { execution: e, .. } = &mut payload.properties {
+            *e = Some(Box::new(execution));
+        }
+        payload
+    }
+
+    // EX-1: a supported-but-idle actor (Some, active_count 0) hides the
+    // Execution section -- no border title, no count line.
+    #[test]
+    fn render_actor_detail_execution_hidden_when_idle() {
+        let idle = Execution {
+            active_count: 0,
+            active_handlers: vec![],
+            complete: true,
+            truncated: false,
+        };
+        let text = render_detail_to_string_with_size(&actor_payload_with_execution(idle), 120, 45);
+        assert!(
+            !text.contains("Active handlers"),
+            "Execution section must be hidden at active_count 0: {text}"
+        );
+    }
+
+    // Populated: the count line reads active_count directly (2), the oldest
+    // line names the oldest endpoint, and the aggregated per-name row shows
+    // "hold ×2".
+    #[test]
+    fn render_actor_detail_execution_populated() {
+        let execution = Execution {
+            active_count: 2,
+            active_handlers: vec![ActiveHandler {
+                name: "hold".to_string(),
+                active_count: 2,
+                oldest_since: SystemTime::now(),
+            }],
+            complete: true,
+            truncated: false,
+        };
+        let text =
+            render_detail_to_string_with_size(&actor_payload_with_execution(execution), 120, 45);
+        assert!(
+            text.contains("Active handlers: 2"),
+            "expected count line from active_count: {text}"
+        );
+        assert!(
+            text.contains("Oldest: hold"),
+            "expected oldest endpoint name: {text}"
+        );
+        assert!(
+            text.contains("hold \u{00d7}2"),
+            "expected aggregated row 'hold ×2': {text}"
+        );
+        assert!(
+            !text.contains("more endpoint names"),
+            "no truncation marker when not truncated: {text}"
+        );
+    }
+
+    // Truncation: the count line still reads the FULL total (200); the marker
+    // appears (we carry no precise hidden-name count, so it is unqualified).
+    #[test]
+    fn render_actor_detail_execution_truncated_marker() {
+        let mut active_handlers = Vec::new();
+        for i in 0..16u64 {
+            active_handlers.push(ActiveHandler {
+                name: format!("ep_{i:02}"),
+                active_count: 1,
+                oldest_since: SystemTime::now(),
+            });
+        }
+        let execution = Execution {
+            active_count: 200,
+            active_handlers,
+            complete: true,
+            truncated: true,
+        };
+        let text =
+            render_detail_to_string_with_size(&actor_payload_with_execution(execution), 120, 60);
+        assert!(
+            text.contains("Active handlers: 200"),
+            "count line is the full total, not the row count: {text}"
+        );
+        assert!(
+            text.contains("more endpoint names"),
+            "truncation marker present when truncated: {text}"
+        );
     }
 
     fn session(

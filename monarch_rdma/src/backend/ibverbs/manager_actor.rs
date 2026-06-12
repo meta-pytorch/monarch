@@ -1159,8 +1159,8 @@ mod tests {
     use crate::RdmaRemoteBuffer;
     use crate::backend::cuda_test_utils::CudaAllocation;
     use crate::backend::cuda_test_utils::CudaAllocator;
+    use crate::backend::ibverbs::device::list_all_devices;
     use crate::backend::ibverbs::primitives::IbvQpType;
-    use crate::backend::ibverbs::primitives::get_all_devices;
     use crate::local_memory::KeepaliveLocalMemory;
 
     // ====================================================================
@@ -1628,7 +1628,7 @@ mod tests {
     // ====================================================================
 
     fn require_rdma() {
-        if get_all_devices().is_empty() {
+        if list_all_devices().is_empty() {
             panic!("SKIPPED: no RDMA devices available");
         }
     }

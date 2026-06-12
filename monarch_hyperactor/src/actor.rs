@@ -1218,19 +1218,18 @@ impl Actor for PythonActor {
 
             monarch_with_gil(|py| {
                 let self_instance = self.ensure_py_instance(py, this);
+                let actor_mesh_mod = py.import("monarch._src.actor.actor_mesh")?;
 
                 let tl = self
                     .task_locals
                     .as_ref()
                     .unwrap_or_else(|| shared_task_locals(py));
-                let awaitable = self.actor.call_method(
-                    py,
+                let awaitable = actor_mesh_mod.call_method(
                     "_dispatch_loop",
-                    (receiver, self_instance),
+                    (self.actor.clone_ref(py), receiver, self_instance),
                     None,
                 )?;
-                let future =
-                    pyo3_async_runtimes::into_future_with_locals(tl, awaitable.into_bound(py))?;
+                let future = pyo3_async_runtimes::into_future_with_locals(tl, awaitable)?;
                 tokio::spawn(async move {
                     if let Err(e) = future.await {
                         tracing::error!("message loop error: {}", e);
