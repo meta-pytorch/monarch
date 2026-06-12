@@ -52,6 +52,8 @@ pub use codec::serialize_part_codec;
 pub use part::Part;
 use serde::Deserialize;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
+use typeuri::Named;
 
 /// The type of error returned by typed part operations.
 #[derive(Debug, thiserror::Error)]
@@ -122,6 +124,25 @@ impl Message {
     /// Convert this message into its constituent components.
     pub fn into_inner(self) -> (Part, Vec<Part>) {
         (self.body, self.parts)
+    }
+
+    /// Visit every typed part containing a `T`-typed value.
+    pub fn visit_parts_mut<T, E>(
+        &mut self,
+        mut f: impl FnMut(&mut T) -> std::result::Result<(), E>,
+    ) -> std::result::Result<(), E>
+    where
+        T: Serialize + DeserializeOwned + Named,
+        E: From<Error>,
+    {
+        for part in &mut self.parts {
+            if part.is::<T>() {
+                let mut value = part.deserialized::<T>().map_err(E::from)?;
+                f(&mut value)?;
+                *part = Part::serialize(&value).map_err(E::from)?;
+            }
+        }
+        Ok(())
     }
 
     /// Returns the total size (in bytes) of the message when it is framed.
@@ -769,6 +790,96 @@ mod tests {
 
         let deserialized: Envelope = deserialize_bincode(message).unwrap();
         assert_eq!(deserialized, value);
+    }
+
+    #[test]
+    fn test_visit_parts_mut() {
+        #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+        struct Envelope {
+            first: CodecPayload,
+            raw_typed: Part,
+            raw_untyped: Part,
+            many: Vec<CodecPayload>,
+        }
+
+        let typed_payload = TypedPayload {
+            label: "typed".to_string(),
+            value: 7,
+        };
+        let value = Envelope {
+            first: CodecPayload {
+                label: "one".to_string(),
+                value: 1,
+            },
+            raw_typed: Part::serialize(&typed_payload).unwrap(),
+            raw_untyped: Part::from("raw"),
+            many: vec![
+                CodecPayload {
+                    label: "two".to_string(),
+                    value: 2,
+                },
+                CodecPayload {
+                    label: "three".to_string(),
+                    value: 3,
+                },
+            ],
+        };
+
+        let mut message = serialize_bincode(&value).unwrap();
+        assert_eq!(message.num_parts(), 5);
+
+        let mut visited = 0;
+        message
+            .visit_parts_mut::<CodecPayloadRepr, _>(|repr| {
+                visited += 1;
+                repr.label.push_str("-visited");
+                repr.value += 10;
+                Ok::<(), Error>(())
+            })
+            .unwrap();
+
+        assert_eq!(visited, 3);
+        assert_eq!(
+            message
+                .parts()
+                .iter()
+                .filter(|part| part.typehash() == Some(CodecPayloadRepr::typehash()))
+                .count(),
+            3
+        );
+        assert_eq!(
+            message.parts()[1].typehash(),
+            Some(TypedPayload::typehash())
+        );
+        assert_eq!(
+            message.parts()[1].deserialized::<TypedPayload>().unwrap(),
+            typed_payload
+        );
+        assert_eq!(message.parts()[2].typehash(), None);
+        assert_eq!(message.parts()[2].to_bytes(), value.raw_untyped.to_bytes());
+
+        let deserialized: Envelope = deserialize_bincode(message).unwrap();
+        assert_eq!(
+            deserialized,
+            Envelope {
+                first: CodecPayload {
+                    label: "one-visited".to_string(),
+                    value: 11,
+                },
+                raw_typed: value.raw_typed,
+                raw_untyped: value.raw_untyped,
+                many: vec![
+                    CodecPayload {
+                        label: "two-visited".to_string(),
+                        value: 12,
+                    },
+                    CodecPayload {
+                        label: "three-visited".to_string(),
+                        value: 13,
+                    },
+                ],
+            }
+        );
     }
 
     #[test]
