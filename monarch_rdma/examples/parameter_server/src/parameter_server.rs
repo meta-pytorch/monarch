@@ -281,10 +281,10 @@ impl Handler<Log> for ParameterServerActor {
 #[hyperactor::spawnable]
 #[hyperactor::export(
     handlers = [
-        WorkerInit { cast = true },
-        WorkerStep { cast = true },
-        WorkerUpdate { cast = true },
-        Log { cast = true },
+        WorkerInit,
+        WorkerStep,
+        WorkerUpdate,
+        Log,
     ],
 )]
 pub struct WorkerActor {

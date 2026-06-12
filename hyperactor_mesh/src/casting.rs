@@ -21,7 +21,6 @@ use hyperactor::mailbox;
 use hyperactor::mailbox::MailboxSenderError;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
-use hyperactor::message::Castable;
 use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::declare_attrs;
 use ndslice::Selection;
@@ -108,7 +107,7 @@ pub(crate) fn actor_mesh_cast<A, M>(
 ) -> Result<(), CastError>
 where
     A: Referable + RemoteHandles<M>,
-    M: Castable + RemoteMessage,
+    M: RemoteMessage,
 {
     let _ = metrics::ACTOR_MESH_CAST_DURATION.start(hyperactor::kv_pairs!(
         "message_type" => M::typename(),
@@ -190,7 +189,7 @@ pub(crate) fn cast_to_sliced_mesh<A, M>(
 ) -> Result<(), CastError>
 where
     A: Referable + RemoteHandles<M>,
-    M: Castable + RemoteMessage,
+    M: RemoteMessage,
 {
     let root_slice = root_mesh_shape.slice();
 

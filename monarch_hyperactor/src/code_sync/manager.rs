@@ -180,8 +180,8 @@ wirevalue::register_type!(CodeSyncManagerParams);
 #[derive(Debug)]
 #[hyperactor::export(
     handlers = [
-        CodeSyncMessage { cast = true },
-        SetActorMeshMessage { cast = true }
+        CodeSyncMessage,
+        SetActorMeshMessage
     ],
 )]
 #[hyperactor::spawnable]

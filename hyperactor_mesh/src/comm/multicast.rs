@@ -15,7 +15,6 @@ use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
 use hyperactor::actor::Referable;
 use hyperactor::id::Uid;
-use hyperactor::message::Castable;
 use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::declare_attrs;
 use ndslice::Extent;
@@ -120,7 +119,7 @@ impl CastMessageEnvelope {
     ) -> Result<Self, anyhow::Error>
     where
         A: Referable + RemoteHandles<M>,
-        M: Castable + RemoteMessage,
+        M: RemoteMessage,
     {
         let actor_uid = actor_mesh_id.uid().clone();
         let data = wirevalue::Any::<wirevalue::encoding::Multipart>::serialize(&message)?;
@@ -220,7 +219,7 @@ impl DestinationPort {
     pub fn new<A, M>(actor_uid: Uid) -> Self
     where
         A: Referable + RemoteHandles<M>,
-        M: Castable + RemoteMessage,
+        M: RemoteMessage,
     {
         Self {
             actor_uid,
@@ -328,7 +327,7 @@ impl CastMessageV1 {
     ) -> Result<Self, anyhow::Error>
     where
         A: Referable + RemoteHandles<M>,
-        M: Castable + RemoteMessage,
+        M: RemoteMessage,
     {
         let data = wirevalue::Any::<wirevalue::encoding::Multipart>::serialize(&message)?;
         Ok(Self {

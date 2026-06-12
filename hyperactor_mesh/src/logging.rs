@@ -982,7 +982,7 @@ pub enum LogForwardMessage {
 }
 
 /// A log forwarder that receives the log from its parent process and forward it back to the client
-#[hyperactor::export(LogForwardMessage { cast = true })]
+#[hyperactor::export(LogForwardMessage)]
 #[hyperactor::spawnable]
 pub struct LogForwardActor {
     rx: ChannelRx<LogMessage>,

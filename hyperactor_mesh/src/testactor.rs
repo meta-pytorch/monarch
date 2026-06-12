@@ -55,13 +55,13 @@ use crate::testing;
 /// A simple test actor used by various unit tests.
 #[derive(Default, Debug)]
 #[hyperactor::export(
-    () { cast = true },
-    GetActorId { cast = true },
-    GetCastInfo { cast = true },
-    CauseSupervisionEvent { cast = true },
+    (),
+    GetActorId,
+    GetCastInfo,
+    CauseSupervisionEvent,
     Forward,
-    GetConfigAttrs { cast = true },
-    SetConfigAttrs { cast = true },
+    GetConfigAttrs,
+    SetConfigAttrs,
 )]
 #[hyperactor::spawnable]
 pub struct TestActor;
@@ -308,11 +308,7 @@ pub struct NextSupervisionFailure(pub hyperactor::PortRef<Option<MeshFailure>>);
 /// need to reach the client. This just wraps and forwards all messages to TestActor.
 /// The supervision events are sent back to "supervisor".
 #[derive(Debug)]
-#[hyperactor::export(
-    CauseSupervisionEvent { cast = true },
-    MeshFailure { cast = true },
-    NextSupervisionFailure { cast = true },
-)]
+#[hyperactor::export(CauseSupervisionEvent, MeshFailure, NextSupervisionFailure)]
 #[hyperactor::spawnable]
 pub struct WrapperActor {
     proc_mesh: ProcMeshRef,
