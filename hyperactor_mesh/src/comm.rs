@@ -40,7 +40,6 @@ use hyperactor::mailbox::Undeliverable;
 use hyperactor::mailbox::UndeliverableMailboxSender;
 use hyperactor::mailbox::UndeliverableMessageError;
 use hyperactor::mailbox::monitored_return_handle;
-use hyperactor::message::MultipartMessage;
 use hyperactor::ordering::SEQ_INFO;
 use hyperactor::ordering::SeqInfo;
 use hyperactor_config::CONFIG;
@@ -400,11 +399,7 @@ impl CommActor {
             );
         }
 
-        cx.post_with_external_seq_info(
-            dest,
-            headers,
-            message.data().message().clone().erase_encoding(),
-        );
+        cx.post_with_external_seq_info(dest, headers, message.data().clone().erase_encoding());
 
         Ok(())
     }
@@ -415,14 +410,14 @@ impl CommActor {
 // of to the original ports provided by parent.
 fn split_ports(
     cx: &Context<CommActor>,
-    data: &mut MultipartMessage,
+    data: &mut wirevalue::Any<wirevalue::encoding::Multipart>,
     deliver_here: bool,
     next_steps: &HashMap<usize, Vec<RoutingFrame>>,
 ) -> anyhow::Result<()> {
     // Split ports, if any, and update message with new ports. In this
     // way, children actors will reply to this comm actor's ports, instead
     // of to the original ports provided by parent.
-    data.visit_mut::<PortRefRepr>(|port| {
+    data.visit_multipart_parts_mut::<PortRefRepr, anyhow::Error>(|port| {
         if port.unsplit() {
             return Ok(());
         }
@@ -441,7 +436,7 @@ fn split_ports(
         Ok(())
     })?;
 
-    data.visit_mut::<OncePortRefRepr>(|port| {
+    data.visit_multipart_parts_mut::<OncePortRefRepr, anyhow::Error>(|port| {
         if port.unsplit() || port.reducer_spec().is_none() {
             // We can only split OncePorts that have reducers. Pass this
             // through; if it is used multiple times, it will cause a delivery
@@ -467,11 +462,16 @@ fn split_ports(
     Ok(())
 }
 
-fn replace_with_self_ranks(cast_point: &Point, data: &mut MultipartMessage) -> anyhow::Result<()> {
-    data.visit_mut::<resource::RankRepr>(|resource::RankRepr(rank)| {
-        *rank = Some(cast_point.rank());
-        Ok(())
-    })
+fn replace_with_self_ranks(
+    cast_point: &Point,
+    data: &mut wirevalue::Any<wirevalue::encoding::Multipart>,
+) -> anyhow::Result<()> {
+    data.visit_multipart_parts_mut::<resource::RankRepr, anyhow::Error>(
+        |resource::RankRepr(rank)| {
+            *rank = Some(cast_point.rank());
+            Ok(())
+        },
+    )
 }
 
 #[async_trait]
