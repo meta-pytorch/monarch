@@ -192,7 +192,11 @@ pub use proc::Proc;
 pub use proc::WeakProc;
 pub use ref_::ActorRef;
 pub use ref_::OncePortRef;
+#[doc(hidden)]
+pub use ref_::OncePortRefRepr;
 pub use ref_::PortRef;
+#[doc(hidden)]
+pub use ref_::PortRefRepr;
 pub use ref_::UnboundPort;
 pub use ref_::UnboundPortKind;
 pub use remote::Accepts;

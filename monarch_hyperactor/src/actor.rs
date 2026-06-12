@@ -2062,7 +2062,6 @@ mod tests {
     use hyperactor::accum::StreamingReducerOpts;
     use hyperactor::id::Label;
     use hyperactor::message::ErasedUnbound;
-    use hyperactor::message::Unbound;
     use hyperactor::testing::ids::test_port_id;
     use hyperactor_mesh::Error as MeshError;
     use hyperactor_mesh::host_mesh::host_agent::ProcState;
@@ -2075,7 +2074,7 @@ mod tests {
     use crate::actor::to_py_error;
 
     #[test]
-    fn test_python_message_bind_unbind() {
+    fn test_python_message_part_codec() {
         let reducer_spec = ReducerSpec {
             typehash: 123,
             builder_params: Some(wirevalue::Any::serialize(&"abcdefg12345".to_string()).unwrap()),
@@ -2096,16 +2095,22 @@ mod tests {
         };
         {
             let mut erased = ErasedUnbound::try_from_message(message.clone()).unwrap();
-            let mut bindings = vec![];
+            let mut ports = vec![];
             erased
-                .visit_mut::<reference::UnboundPort>(|b| {
-                    bindings.push(b.clone());
+                .visit_mut::<reference::PortRefRepr>(|b| {
+                    ports.push(b.clone());
                     Ok(())
                 })
                 .unwrap();
-            assert_eq!(bindings, vec![reference::UnboundPort::from(&port_ref)]);
-            let unbound = Unbound::try_from_message(message.clone()).unwrap();
-            assert_eq!(message, unbound.bind().unwrap());
+            assert_eq!(ports.len(), 1);
+            assert_eq!(ports[0].port_addr(), port_ref.port_addr());
+            assert_eq!(ports[0].reducer_spec(), port_ref.reducer_spec());
+            assert_eq!(
+                ports[0].get_return_undeliverable(),
+                port_ref.get_return_undeliverable()
+            );
+            assert!(!ports[0].unsplit());
+            assert_eq!(message, erased.deserialize::<PythonMessage>().unwrap());
         }
 
         let no_port_message = PythonMessage {
@@ -2119,16 +2124,18 @@ mod tests {
         };
         {
             let mut erased = ErasedUnbound::try_from_message(no_port_message.clone()).unwrap();
-            let mut bindings = vec![];
+            let mut ports = vec![];
             erased
-                .visit_mut::<reference::UnboundPort>(|b| {
-                    bindings.push(b.clone());
+                .visit_mut::<reference::PortRefRepr>(|b| {
+                    ports.push(b.clone());
                     Ok(())
                 })
                 .unwrap();
-            assert_eq!(bindings.len(), 0);
-            let unbound = Unbound::try_from_message(no_port_message.clone()).unwrap();
-            assert_eq!(no_port_message, unbound.bind().unwrap());
+            assert_eq!(ports.len(), 0);
+            assert_eq!(
+                no_port_message,
+                erased.deserialize::<PythonMessage>().unwrap()
+            );
         }
     }
 
