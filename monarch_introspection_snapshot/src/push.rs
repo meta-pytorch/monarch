@@ -9,14 +9,14 @@
 //! Drain [`SnapshotData`] into [`TableStore`] tables.
 //!
 //! The shared infrastructure is [`drain_to_batches`], which converts
-//! a [`SnapshotData`] into 11 named `RecordBatch` pairs. The public
+//! a [`SnapshotData`] into 13 named `RecordBatch` pairs. The public
 //! entry point [`push_snapshot`] uses this to ingest all tables into
 //! a [`TableStore`].
 //!
 //! # Push-snapshot invariants (PS-*)
 //!
 //! - **PS-1 (full table coverage):** Every `push_snapshot` call
-//!   ingests all eleven logical tables, including empty ones.
+//!   ingests all thirteen logical tables, including empty ones.
 //! - **PS-2 (canonical routing):** Each row family goes only to its
 //!   canonical table.
 //! - **PS-3 (append-preserving counts):** Each table's row count
@@ -38,6 +38,8 @@ use monarch_distributed_telemetry::database_scanner::TableStore;
 use monarch_record_batch::RecordBatchBuffer;
 
 use crate::capture::SnapshotData;
+use crate::schema::ActiveHandlerRowBuffer;
+use crate::schema::ActorExecutionRowBuffer;
 use crate::schema::ActorFailureRowBuffer;
 use crate::schema::ActorInboundOrderingRowBuffer;
 use crate::schema::ActorNodeRowBuffer;
@@ -52,9 +54,11 @@ use crate::schema::SnapshotRowBuffer;
 
 /// Canonical table names in sorted order.
 ///
-/// Every snapshot contains exactly these 11 tables. Both
+/// Every snapshot contains exactly these 13 tables. Both
 /// [`drain_to_batches`] and [`push_snapshot`] use this ordering.
 pub const SNAPSHOT_TABLE_NAMES: &[&str] = &[
+    "active_handlers",
+    "actor_executions",
     "actor_failures",
     "actor_inbound_orderings",
     "actor_nodes",
@@ -73,7 +77,7 @@ pub type NamedBatch = (&'static str, RecordBatch);
 
 /// Drain all row families in `data` to named `RecordBatch` pairs.
 ///
-/// Returns exactly 11 pairs, one per table, in
+/// Returns exactly 13 pairs, one per table, in
 /// [`SNAPSHOT_TABLE_NAMES`] order. Empty families produce zero-row
 /// batches with correct schemas (PS-4).
 pub fn drain_to_batches(data: SnapshotData) -> anyhow::Result<Vec<NamedBatch>> {
@@ -137,7 +141,19 @@ pub fn drain_to_batches(data: SnapshotData) -> anyhow::Result<Vec<NamedBatch>> {
     let mut snapshot_buf = SnapshotRowBuffer::default();
     snapshot_buf.insert(data.snapshot);
 
+    let mut execution_buf = ActorExecutionRowBuffer::default();
+    for row in data.actor_executions {
+        execution_buf.insert(row);
+    }
+
+    let mut handler_buf = ActiveHandlerRowBuffer::default();
+    for row in data.active_handlers {
+        handler_buf.insert(row);
+    }
+
     Ok(vec![
+        ("active_handlers", handler_buf.drain_to_record_batch()?),
+        ("actor_executions", execution_buf.drain_to_record_batch()?),
         ("actor_failures", failure_buf.drain_to_record_batch()?),
         ("actor_inbound_orderings", io_buf.drain_to_record_batch()?),
         ("actor_nodes", actor_buf.drain_to_record_batch()?),
@@ -248,6 +264,8 @@ mod tests {
             actor_failures: vec![],
             actor_inbound_orderings: vec![],
             ordering_sessions: vec![],
+            actor_executions: vec![],
+            active_handlers: vec![],
             resolution_errors: vec![],
         }
     }
@@ -453,7 +471,7 @@ mod tests {
                 },
                 OrderingSessionRow {
                     snapshot_id: id.to_owned(),
-                    node_id: actor_id,
+                    node_id: actor_id.clone(),
                     session_id: FIXTURE_SESSION_CLEAN.to_owned(),
                     sender: Some("client".to_owned()),
                     last_released_seq: 3,
@@ -461,6 +479,33 @@ mod tests {
                     buffered_count: 0,
                     oldest_buffered_seq: None,
                     newest_buffered_seq: None,
+                },
+            ],
+            // One execution rollup for the running actor (CV-10 Some);
+            // the failed actor exercises CV-10 None (no row here).
+            actor_executions: vec![ActorExecutionRow {
+                snapshot_id: id.to_owned(),
+                node_id: actor_id.clone(),
+                active_count: 2,
+                complete: true,
+                truncated: false,
+            }],
+            // Two in-flight handler rows (CV-11), oldest-first. Drives
+            // PS-11 + the execution JOIN test.
+            active_handlers: vec![
+                ActiveHandlerRow {
+                    snapshot_id: id.to_owned(),
+                    node_id: actor_id.clone(),
+                    name: "endpoint_slow".to_owned(),
+                    active_count: 1,
+                    oldest_since: 2,
+                },
+                ActiveHandlerRow {
+                    snapshot_id: id.to_owned(),
+                    node_id: actor_id,
+                    name: "endpoint_fast".to_owned(),
+                    active_count: 1,
+                    oldest_since: 6,
                 },
             ],
             resolution_errors: vec![ResolutionErrorRow {
@@ -472,7 +517,7 @@ mod tests {
         }
     }
 
-    // PS-1: every push ingests all eleven tables, including empty
+    // PS-1: every push ingests all thirteen tables, including empty
     // ones.
     #[tokio::test]
     async fn test_push_snapshot_registers_all_tables() {
@@ -486,7 +531,7 @@ mod tests {
                 .iter()
                 .map(|s| s.to_string())
                 .collect::<Vec<_>>(),
-            "PS-1: all eleven tables should be registered"
+            "PS-1: all thirteen tables should be registered"
         );
     }
 
@@ -518,6 +563,8 @@ mod tests {
         );
         assert_eq!(query_row_count(&ctx, "ordering_sessions").await.unwrap(), 2);
         assert_eq!(query_row_count(&ctx, "resolution_errors").await.unwrap(), 1);
+        assert_eq!(query_row_count(&ctx, "actor_executions").await.unwrap(), 1);
+        assert_eq!(query_row_count(&ctx, "active_handlers").await.unwrap(), 2);
     }
 
     // PS-3: cumulative counts after two pushes into the same store.
@@ -551,6 +598,8 @@ mod tests {
         );
         assert_eq!(query_row_count(&ctx, "ordering_sessions").await.unwrap(), 4);
         assert_eq!(query_row_count(&ctx, "resolution_errors").await.unwrap(), 2);
+        assert_eq!(query_row_count(&ctx, "actor_executions").await.unwrap(), 2);
+        assert_eq!(query_row_count(&ctx, "active_handlers").await.unwrap(), 4);
     }
 
     // PS-4, PS-6: empty subtype tables are still queryable.
@@ -945,14 +994,129 @@ mod tests {
         assert_eq!(expected.value(0), 1);
     }
 
+    // PS-10: when the populated fixture contains an actor with
+    // `execution: Some(...)`, the snapshot publish path produces an
+    // `actor_executions` row queryable via `SELECT complete FROM
+    // actor_executions`.
+    #[tokio::test]
+    async fn test_push_snapshot_actor_executions_presence() {
+        let store = TableStore::new_empty();
+        push_snapshot(&store, populated_snapshot("s1"))
+            .await
+            .unwrap();
+        let ctx = SessionContext::new();
+        register_all(&store, &ctx).await.unwrap();
+
+        let complete = query_bool_scalar(
+            &ctx,
+            "SELECT complete FROM actor_executions LIMIT 1",
+            "complete",
+        )
+        .await
+        .unwrap();
+        assert!(
+            complete,
+            "PS-10: fixture's rollup must have complete = true"
+        );
+    }
+
+    // PS-11: when the populated fixture contains an actor with
+    // `execution: Some({active_handlers: [non-empty]})`, the snapshot
+    // publish path produces `active_handlers` rows queryable via
+    // `SELECT name FROM active_handlers`. Asserts the oldest in-flight
+    // handler surfaces first (CV-11 oldest-first detail).
+    #[tokio::test]
+    async fn test_push_snapshot_active_handlers_presence() {
+        let store = TableStore::new_empty();
+        push_snapshot(&store, populated_snapshot("s1"))
+            .await
+            .unwrap();
+        let ctx = SessionContext::new();
+        register_all(&store, &ctx).await.unwrap();
+
+        let name = query_string_scalar(
+            &ctx,
+            "SELECT name FROM active_handlers ORDER BY oldest_since LIMIT 1",
+            "name",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            name, "endpoint_slow",
+            "PS-11: oldest in-flight handler must surface first",
+        );
+    }
+
+    // Diagnostic JOIN test: "which in-flight handler is oldest on
+    // which actor?" is answerable in SQL across the three tables.
+    // Asserts the running actor's two handlers surface alongside the
+    // rollup total, oldest-first; the failed actor (no execution row)
+    // is excluded by the inner join.
+    #[tokio::test]
+    async fn test_push_snapshot_execution_join() {
+        let store = TableStore::new_empty();
+        push_snapshot(&store, populated_snapshot("s1"))
+            .await
+            .unwrap();
+        let ctx = SessionContext::new();
+        register_all(&store, &ctx).await.unwrap();
+
+        let df = ctx
+            .sql(
+                "SELECT a.actor_type, \
+                        ae.active_count AS total, \
+                        h.name, \
+                        h.oldest_since \
+                 FROM actor_nodes a \
+                 JOIN actor_executions ae \
+                   USING (snapshot_id, node_id) \
+                 JOIN active_handlers h \
+                   USING (snapshot_id, node_id) \
+                 ORDER BY h.oldest_since ASC",
+            )
+            .await
+            .unwrap();
+        let batches = df.collect().await.unwrap();
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(
+            total_rows, 2,
+            "JOIN must surface both in-flight handler rows from the fixture",
+        );
+        let batch = &batches[0];
+
+        let actor_type = batch
+            .column_by_name("actor_type")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::StringArray>()
+            .unwrap();
+        assert_eq!(actor_type.value(0), ACTOR_NAME);
+
+        let total = batch
+            .column_by_name("total")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::Int64Array>()
+            .unwrap();
+        assert_eq!(total.value(0), 2);
+
+        let name = batch
+            .column_by_name("name")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::StringArray>()
+            .unwrap();
+        assert_eq!(name.value(0), "endpoint_slow");
+    }
+
     // --- drain_to_batches tests ---
 
-    // PS-1, PS-2: exactly 11 pairs in canonical order.
+    // PS-1, PS-2: exactly 13 pairs in canonical order.
     #[test]
-    fn test_drain_to_batches_produces_eleven_pairs() {
+    fn test_drain_to_batches_produces_thirteen_pairs() {
         let batches = drain_to_batches(populated_snapshot("d1")).unwrap();
         let names: Vec<&str> = batches.iter().map(|(n, _)| *n).collect();
-        assert_eq!(names.len(), 11);
+        assert_eq!(names.len(), 13);
         assert_eq!(names, SNAPSHOT_TABLE_NAMES.to_vec(),);
     }
 
@@ -961,7 +1125,7 @@ mod tests {
     #[test]
     fn test_drain_to_batches_empty_families() {
         let batches = drain_to_batches(minimal_snapshot("d2")).unwrap();
-        assert_eq!(batches.len(), 11);
+        assert_eq!(batches.len(), 13);
         // All tables except "snapshots" should have 0 rows.
         for (name, batch) in &batches {
             if *name == "snapshots" {

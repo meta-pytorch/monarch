@@ -74,7 +74,7 @@
 //! - **SV-2 (single capture):** Each `capture` call performs exactly
 //!   one BFS traversal and one `drain_to_batches`.
 //! - **SV-3 (table-store publication):** When `table_store` is
-//!   `Some`, all 11 tables are ingested (delegates to PS-1..PS-7).
+//!   `Some`, all 13 tables are ingested (delegates to PS-1..PS-7).
 //!   Publication is not atomic — a failure partway through may leave
 //!   some tables ingested and others not.
 //! - **SV-4 (counts before drain):** [`NodeCounts`] is computed from
@@ -406,6 +406,8 @@ pub struct NodeCounts {
     pub actor_failures: usize,
     pub actor_inbound_orderings: usize,
     pub ordering_sessions: usize,
+    pub actor_executions: usize,
+    pub active_handlers: usize,
     pub resolution_errors: usize,
 }
 
@@ -422,6 +424,8 @@ impl NodeCounts {
             actor_failures: data.actor_failures.len(),
             actor_inbound_orderings: data.actor_inbound_orderings.len(),
             ordering_sessions: data.ordering_sessions.len(),
+            actor_executions: data.actor_executions.len(),
+            active_handlers: data.active_handlers.len(),
             resolution_errors: data.resolution_errors.len(),
         }
     }
@@ -654,6 +658,8 @@ mod tests {
                     newest_buffered_seq: None,
                 },
             ],
+            actor_executions: vec![],
+            active_handlers: vec![],
             resolution_errors: vec![],
         };
 
@@ -670,6 +676,8 @@ mod tests {
                 actor_failures: 0,
                 actor_inbound_orderings: 1,
                 ordering_sessions: 2,
+                actor_executions: 0,
+                active_handlers: 0,
                 resolution_errors: 0,
             }
         );
@@ -692,6 +700,8 @@ mod tests {
             actor_failures: vec![],
             actor_inbound_orderings: vec![],
             ordering_sessions: vec![],
+            actor_executions: vec![],
+            active_handlers: vec![],
             resolution_errors: vec![],
         };
 
@@ -708,6 +718,8 @@ mod tests {
                 actor_failures: 0,
                 actor_inbound_orderings: 0,
                 ordering_sessions: 0,
+                actor_executions: 0,
+                active_handlers: 0,
                 resolution_errors: 0,
             }
         );
@@ -726,6 +738,8 @@ mod tests {
             actor_failures: 0,
             actor_inbound_orderings: 0,
             ordering_sessions: 0,
+            actor_executions: 0,
+            active_handlers: 0,
             resolution_errors: 0,
         };
         let json = serde_json::to_string(&counts).unwrap();
@@ -733,6 +747,7 @@ mod tests {
         assert!(json.contains("\"actor_failures\":0"));
         assert!(json.contains("\"actor_inbound_orderings\":0"));
         assert!(json.contains("\"ordering_sessions\":0"));
+        assert!(json.contains("\"actor_executions\":0"));
     }
 
     // --- CaptureResult tests (SV-5) ---
@@ -753,6 +768,8 @@ mod tests {
                 actor_failures: 0,
                 actor_inbound_orderings: 0,
                 ordering_sessions: 0,
+                actor_executions: 0,
+                active_handlers: 0,
                 resolution_errors: 0,
             },
             capture_duration_ms: 42.5,
@@ -796,9 +813,9 @@ mod tests {
         assert_eq!(result.node_counts.ordering_sessions, 0);
         assert_eq!(result.node_counts.resolution_errors, 0);
 
-        // Verify store is populated — all 11 tables registered.
+        // Verify store is populated — all 13 tables registered.
         let names = store.table_names().unwrap();
-        assert_eq!(names.len(), 11);
+        assert_eq!(names.len(), 13);
 
         // Verify data is queryable — snapshot row exists.
         let ctx = datafusion::prelude::SessionContext::new();
@@ -866,7 +883,7 @@ mod tests {
         let result = service.capture(resolve, Some(dir.path())).await.unwrap();
 
         // Table store populated.
-        assert_eq!(store.table_names().unwrap().len(), 11);
+        assert_eq!(store.table_names().unwrap().len(), 13);
 
         // Bundle written.
         let bundle_path = result.bundle_path.as_ref().unwrap();
@@ -916,7 +933,7 @@ mod tests {
         assert!(attempted, "PT-4: tick should attempt capture");
 
         // Store should be populated.
-        assert_eq!(store.table_names().unwrap().len(), 11);
+        assert_eq!(store.table_names().unwrap().len(), 13);
 
         // in_flight should be reset to false.
         assert!(!service.in_flight.load(Ordering::Acquire));
@@ -949,7 +966,7 @@ mod tests {
         let resolve = stub_resolver(payloads);
         let attempted = run_periodic_tick(&service, resolve).await;
         assert!(attempted, "PT-6: second tick should succeed");
-        assert_eq!(store.table_names().unwrap().len(), 11);
+        assert_eq!(store.table_names().unwrap().len(), 13);
     }
 
     // PT-7: run_periodic_tick always passes export_root = None.
@@ -963,7 +980,7 @@ mod tests {
         run_periodic_tick(&service, resolve).await;
 
         // Verify store was populated (live ingest happened).
-        assert_eq!(store.table_names().unwrap().len(), 11);
+        assert_eq!(store.table_names().unwrap().len(), 13);
 
         // PT-7 is structural: run_periodic_tick calls
         // service.capture(resolve, None). No bundle directory

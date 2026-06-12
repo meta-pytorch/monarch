@@ -463,7 +463,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
         .with_max_level(tracing::Level::INFO)
         .init();
 
-    let devices = monarch_rdma::get_all_devices();
+    let devices = monarch_rdma::backend::ibverbs::device::list_all_devices();
 
     // In this example, the parameter server and workers all live on the same host.
     // Parameter server is assigned to its unique ibverbs device, and all workers

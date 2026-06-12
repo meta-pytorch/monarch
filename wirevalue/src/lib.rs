@@ -257,6 +257,9 @@ impl Encoded {
                     hasher.update(fragment);
                 }
                 for part in message.parts() {
+                    if let Some(typehash) = part.typehash() {
+                        hasher.update(&typehash.to_be_bytes());
+                    }
                     for fragment in part.iter() {
                         hasher.update(fragment);
                     }
@@ -279,7 +282,17 @@ impl std::fmt::Debug for Encoded {
                     HexFmt(&message.body().to_bytes())
                 )?;
                 for (index, part) in message.parts().iter().enumerate() {
-                    write!(f, ", part[{}]={}", index, HexFmt(&part.to_bytes()))?;
+                    if let Some(typehash) = part.typehash() {
+                        write!(
+                            f,
+                            ", part[{}](typehash={})={}",
+                            index,
+                            typehash,
+                            HexFmt(&part.to_bytes())
+                        )?;
+                    } else {
+                        write!(f, ", part[{}]={}", index, HexFmt(&part.to_bytes()))?;
+                    }
                 }
                 write!(f, ")")
             }

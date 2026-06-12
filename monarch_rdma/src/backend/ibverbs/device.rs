@@ -430,4 +430,27 @@ impl<I: IbvDeviceImpl> IbvDevice<I> {
             .get(I::typename())
             .is_some_and(|backend| !backend.devices.is_empty())
     }
+
+    /// All devices claimed by impl `I` on this host. Reads the
+    /// [`DEVICE_NAMES_BY_IMPL`] registry, built on first access by a
+    /// single walk of the ibverbs device list.
+    pub fn list() -> Vec<IbvDeviceInfo> {
+        DEVICE_NAMES_BY_IMPL
+            .get(I::typename())
+            .map(|backend| backend.devices.clone())
+            .unwrap_or_default()
+    }
+}
+
+/// All RDMA devices on this host, across every registered backend
+/// impl. Reads the [`DEVICE_NAMES_BY_IMPL`] registry, built on first
+/// access by a single walk of the ibverbs device list.
+///
+/// A device claimed by no registered [`IbvDeviceImpl`] is omitted; in
+/// practice every RDMA NIC is claimed by some backend.
+pub fn list_all_devices() -> Vec<IbvDeviceInfo> {
+    DEVICE_NAMES_BY_IMPL
+        .values()
+        .flat_map(|backend| backend.devices.iter().cloned())
+        .collect()
 }

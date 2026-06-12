@@ -1179,6 +1179,61 @@ class ActorInitArgs:
     args: Tuple[Any, ...]
 
 
+class _QueuePanicFlag:
+    """Panic flag for queue dispatch mode.
+
+    Unlike the DummyPanicFlag, this one stores the exception so it can
+    be re-raised after handle() returns, ensuring proper cleanup.
+    """
+
+    def __init__(self) -> None:
+        self.panic_exception: BaseException | None = None
+
+    def signal_panic(self, ex: BaseException) -> None:
+        self.panic_exception = ex
+
+
+async def _dispatch_loop(
+    actor: Any,
+    receiver: "Receiver[QueuedMessage]",
+    self_instance: "Instance",
+) -> None:
+    """
+    Message loop for queue-dispatch mode. Called from Rust Actor::init.
+
+    Args:
+        actor: The Python actor object that implements ``handle``.
+        receiver: Channel receiver for queued messages.
+        self_instance: The actor's own Instance, used to kill self on
+            an unhandled exception.
+    """
+    while True:
+        msg = await receiver.recv()
+        try:
+            await _handle_queued_message(actor, msg)
+        except BaseException as e:
+            reason = "".join(TracebackException.from_exception(e).format())
+            self_instance.kill(reason)
+            raise
+
+
+async def _handle_queued_message(actor: Any, msg: "QueuedMessage") -> None:
+    """Handle a single queued message."""
+
+    panic_flag = _QueuePanicFlag()
+    await actor.handle(
+        msg.context,
+        msg.method,
+        msg.bytes,
+        panic_flag,  # pyre-ignore[6]: _QueuePanicFlag implements PanicFlag protocol
+        msg.local_state,
+        msg.response_port,
+    )
+    # If a panic was signaled, re-raise it after handle() has cleaned up.
+    if panic_flag.panic_exception is not None:
+        raise panic_flag.panic_exception
+
+
 class _Actor:
     """
     This is the message handling implementation of a Python actor.
@@ -1193,19 +1248,6 @@ class _Actor:
     routes messages to it, managing argument serialization/deserialization and
     error handling.
     """
-
-    class QueuePanicFlag:
-        """Panic flag for queue dispatch mode.
-
-        Unlike the DummyPanicFlag, this one stores the exception so it can
-        be re-raised after handle() returns, ensuring proper cleanup.
-        """
-
-        def __init__(self) -> None:
-            self.panic_exception: BaseException | None = None
-
-        def signal_panic(self, ex: BaseException) -> None:
-            self.panic_exception = ex
 
     def __init__(self) -> None:
         self.instance: object | None = None
@@ -1472,44 +1514,6 @@ class _Actor:
             with fake_sync_state():
                 # pyrefly: ignore [not-callable]
                 return cleanup(exc)
-
-    async def _dispatch_loop(
-        self,
-        receiver: "Receiver[QueuedMessage]",
-        self_instance: "Instance",
-    ) -> None:
-        """
-        Message loop for queue-dispatch mode. Called from Rust Actor::init.
-
-        Args:
-            receiver: Channel receiver for queued messages
-            self_instance: The actor's own Instance, used to kill self on
-                an unhandled exception.
-        """
-        while True:
-            msg = await receiver.recv()
-            try:
-                await self._handle_queued_message(msg)
-            except BaseException as e:
-                reason = "".join(TracebackException.from_exception(e).format())
-                self_instance.kill(reason)
-                raise
-
-    async def _handle_queued_message(self, msg: "QueuedMessage") -> None:
-        """Handle a single queued message."""
-
-        panic_flag = self.QueuePanicFlag()
-        await self.handle(
-            msg.context,
-            msg.method,
-            msg.bytes,
-            panic_flag,  # pyre-ignore[6]: QueuePanicFlag implements PanicFlag protocol
-            msg.local_state,
-            msg.response_port,
-        )
-        # If a panic was signaled, re-raise it after handle() has cleaned up
-        if panic_flag.panic_exception is not None:
-            raise panic_flag.panic_exception
 
     def __repr__(self) -> str:
         return f"_Actor(instance={self.instance!r})"
