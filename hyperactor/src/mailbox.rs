@@ -3153,9 +3153,8 @@ impl<M: RemoteMessage> SerializedSender for UnboundedSender<M> {
     ) -> Result<SerializedSendDisposition, SerializedSendFailure> {
         // Here, the stack ensures that this port is only instantiated for M-typed messages.
         // This does not protect against bad senders (e.g., encoding wrongly-typed messages),
-        // but it is required as we have some usages that rely on representational equivalence
-        // to provide type indexing, specifically in `IndexedErasedUnbound` which is used to
-        // support port aggregation.
+        // but it is required for serialized messages that have already been routed to the
+        // destination's typed handler port.
         match serialized.deserialized_unchecked() {
             Ok(message) => match self.sender.send(headers.clone(), message) {
                 Ok(()) => Ok(SerializedSendDisposition::Delivered),

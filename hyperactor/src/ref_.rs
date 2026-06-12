@@ -40,9 +40,6 @@ use crate::mailbox::DeliveryFailureReport;
 use crate::mailbox::MailboxSenderError;
 use crate::mailbox::MailboxSenderErrorKind;
 use crate::mailbox::PortSink;
-use crate::message::Bind;
-use crate::message::Bindings;
-use crate::message::Unbind;
 use crate::port::ControlPort;
 use crate::port::Port;
 
@@ -489,69 +486,6 @@ impl<M: RemoteMessage> fmt::Display for PortRef<M> {
     }
 }
 
-/// The kind of unbound port.
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Named)]
-pub enum UnboundPortKind {
-    /// A streaming port, which should be reduced with the provided options.
-    Streaming(Option<StreamingReducerOpts>),
-    /// A OncePort, which must be one-shot aggregated.
-    Once,
-}
-
-/// The parameters extracted from [`PortRef`] to [`Bindings`].
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, typeuri::Named)]
-pub struct UnboundPort(
-    pub PortAddr,
-    pub Option<ReducerSpec>,
-    pub bool, // return_undeliverable
-    pub UnboundPortKind,
-    pub bool, // unsplit
-);
-wirevalue::register_type!(UnboundPort);
-
-impl UnboundPort {
-    /// Update the port id of this binding.
-    pub fn update(&mut self, port_addr: PortAddr) {
-        self.0 = port_addr;
-    }
-}
-
-impl<M: RemoteMessage> From<&PortRef<M>> for UnboundPort {
-    fn from(port_ref: &PortRef<M>) -> Self {
-        UnboundPort(
-            port_ref.port_addr.clone(),
-            port_ref.reducer_spec.clone(),
-            port_ref.return_undeliverable,
-            UnboundPortKind::Streaming(Some(port_ref.streaming_opts.clone())),
-            port_ref.unsplit,
-        )
-    }
-}
-
-impl<M: RemoteMessage> Unbind for PortRef<M> {
-    fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        bindings.push_back(&UnboundPort::from(self))
-    }
-}
-
-impl<M: RemoteMessage> Bind for PortRef<M> {
-    fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        let UnboundPort(port_addr, reducer_spec, return_undeliverable, port_kind, unsplit) =
-            bindings.try_pop_front::<UnboundPort>()?;
-        self.port_addr = port_addr;
-        self.reducer_spec = reducer_spec;
-        self.return_undeliverable = return_undeliverable;
-        self.unsplit = unsplit;
-        self.streaming_opts = match port_kind {
-            UnboundPortKind::Streaming(opts) => opts.unwrap_or_default(),
-            UnboundPortKind::Once => {
-                anyhow::bail!("OncePortRef cannot be bound to PortRef")
-            }
-        };
-        Ok(())
-    }
-}
-
 /// A remote reference to a [`OncePort`]. References are serializable
 /// and may be passed to remote actors, which can then use it to send
 /// a message to this port.
@@ -764,42 +698,6 @@ impl<M: RemoteMessage> fmt::Display for OncePortRef<M> {
 impl<M: RemoteMessage> Named for OncePortRef<M> {
     fn typename() -> &'static str {
         wirevalue::intern_typename!(Self, "hyperactor::mailbox::OncePortRef<{}>", M)
-    }
-}
-
-impl<M: RemoteMessage> From<&OncePortRef<M>> for UnboundPort {
-    fn from(port_ref: &OncePortRef<M>) -> Self {
-        UnboundPort(
-            port_ref.port_addr.clone(),
-            port_ref.reducer_spec.clone(),
-            true, // return_undeliverable
-            UnboundPortKind::Once,
-            port_ref.unsplit,
-        )
-    }
-}
-
-impl<M: RemoteMessage> Unbind for OncePortRef<M> {
-    fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        bindings.push_back(&UnboundPort::from(self))
-    }
-}
-
-impl<M: RemoteMessage> Bind for OncePortRef<M> {
-    fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        let UnboundPort(port_addr, reducer_spec, _return_undeliverable, port_kind, unsplit) =
-            bindings.try_pop_front::<UnboundPort>()?;
-        match port_kind {
-            UnboundPortKind::Once => {
-                self.port_addr = port_addr;
-                self.reducer_spec = reducer_spec;
-                self.unsplit = unsplit;
-                Ok(())
-            }
-            UnboundPortKind::Streaming(_) => {
-                anyhow::bail!("PortRef cannot be bound to OncePortRef")
-            }
-        }
     }
 }
 
