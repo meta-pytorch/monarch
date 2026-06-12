@@ -35,7 +35,7 @@ use hyperactor::actor::Referable;
 use hyperactor::context;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::message::Castable;
-use hyperactor::message::ErasedUnbound;
+use hyperactor::message::MultipartMessage;
 use hyperactor::port::Port;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::CONFIG;
@@ -661,7 +661,7 @@ impl<A: Referable> ActorMeshRef<A> {
 
         // Make sure that we rewrite ranks, as these may be used for
         // bootstrapping comm actors.
-        let mut data = ErasedUnbound::try_from_message(message)
+        let mut data = MultipartMessage::try_from_message(message)
             .map_err(|e| Error::CastingError(self.id.clone(), e))?;
         data.visit_mut::<resource::RankRepr>(|resource::RankRepr(rank)| {
             *rank = Some(create_rank);
@@ -757,7 +757,7 @@ impl<A: Referable> ActorMeshRef<A> {
             let sender = cx.instance().self_addr().clone();
             let dest_port = M::port();
 
-            let mut data = ErasedUnbound::try_from_message(message)
+            let mut data = MultipartMessage::try_from_message(message)
                 .expect("cast message serialization should not fail");
 
             // Split ports for N destinations, matching the comm tree's
