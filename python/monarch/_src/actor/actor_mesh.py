@@ -7,6 +7,7 @@
 # pyre-strict
 
 import abc
+import asyncio
 import collections
 import contextvars
 import functools
@@ -1207,14 +1208,19 @@ async def _dispatch_loop(
         self_instance: The actor's own Instance, used to kill self on
             an unhandled exception.
     """
-    while True:
-        msg = await receiver.recv()
-        try:
-            await _handle_queued_message(actor, msg)
-        except BaseException as e:
-            reason = "".join(TracebackException.from_exception(e).format())
-            self_instance.kill(reason)
-            raise
+    try:
+        while True:
+            msg = await receiver.recv()
+            try:
+                await _handle_queued_message(actor, msg)
+            except asyncio.CancelledError:
+                raise
+            except BaseException as e:
+                reason = "".join(TracebackException.from_exception(e).format())
+                self_instance.kill(reason)
+                raise
+    except asyncio.CancelledError:
+        return
 
 
 async def _handle_queued_message(actor: Any, msg: "QueuedMessage") -> None:

@@ -908,6 +908,60 @@ impl PythonActor {
         )?)
     }
 
+    fn cancel_tasks_on_python_loop<'py>(
+        py: Python<'py>,
+        task_locals: &pyo3_async_runtimes::TaskLocals,
+    ) -> PyResult<Option<Bound<'py, PyAny>>> {
+        let asyncio = py.import("asyncio")?;
+        let event_loop = task_locals.event_loop(py);
+        let tasks = asyncio.call_method1("all_tasks", (&event_loop,))?;
+        let mut has_tasks = false;
+        for task in tasks.try_iter()? {
+            let task = task?;
+            let cancel = task.getattr("cancel")?;
+            event_loop.call_method1("call_soon_threadsafe", (cancel,))?;
+            has_tasks = true;
+        }
+        if !has_tasks {
+            return Ok(None);
+        }
+        Ok(Some(asyncio.call_method1("sleep", (0,))?))
+    }
+
+    async fn cancel_pending_python_tasks(&self) -> anyhow::Result<()> {
+        let Some(task_locals) = &self.task_locals else {
+            return Ok(());
+        };
+        let future = monarch_with_gil(|py| {
+            let Some(awaitable) = Self::cancel_tasks_on_python_loop(py, task_locals)? else {
+                return Ok(None);
+            };
+            pyo3_async_runtimes::into_future_with_locals(task_locals, awaitable).map(Some)
+        })
+        .await
+        .map_err(anyhow::Error::from)?;
+        if let Some(future) = future {
+            future.await.map_err(anyhow::Error::from)?;
+        }
+        Ok(())
+    }
+
+    fn stop_task_locals_event_loop(&self) -> anyhow::Result<()> {
+        let Some(task_locals) = &self.task_locals else {
+            return Ok(());
+        };
+        monarch_with_gil_blocking(|py| -> anyhow::Result<()> {
+            let event_loop = task_locals.event_loop(py);
+            let stop = event_loop
+                .getattr("stop")
+                .map_err(|err| anyhow::Error::from(SerializablePyErr::from(py, &err)))?;
+            event_loop
+                .call_method1("call_soon_threadsafe", (stop,))
+                .map_err(|err| anyhow::Error::from(SerializablePyErr::from(py, &err)))?;
+            Ok(())
+        })
+    }
+
     /// Get the TaskLocals to use for this actor.
     /// Returns either the shared TaskLocals or this actor's own TaskLocals based on configuration.
     fn get_task_locals(&self, py: Python) -> &pyo3_async_runtimes::TaskLocals {
@@ -1301,10 +1355,17 @@ impl Actor for PythonActor {
                     .map_err(anyhow::Error::from)
             }
         })
-        .await?;
-        if let Some(future) = future {
-            future.await.map_err(anyhow::Error::from)?;
-        }
+        .await;
+        let cleanup_result = match future {
+            Ok(Some(future)) => future.await.map(|_| ()).map_err(anyhow::Error::from),
+            Ok(None) => Ok(()),
+            Err(err) => Err(err),
+        };
+        let cancel_result = self.cancel_pending_python_tasks().await;
+        let stop_result = self.stop_task_locals_event_loop();
+        cleanup_result?;
+        cancel_result?;
+        stop_result?;
         Ok(())
     }
 
