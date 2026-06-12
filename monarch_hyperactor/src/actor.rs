@@ -776,8 +776,8 @@ mod execution_tracker_tests {
 #[derive(Debug)]
 #[hyperactor::export(
     handlers = [
-        PythonMessage { cast = true },
-        MeshFailure { cast = true },
+        PythonMessage,
+        MeshFailure,
     ],
 )]
 #[hyperactor::spawnable]

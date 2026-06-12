@@ -182,10 +182,10 @@ impl Ref {
         if let Ok(ref_) = obj.extract::<Ref>() {
             return Ok(ref_);
         }
-        if let Ok(func) = obj.getattr(attr_name) {
-            if let Ok(Ok(val)) = func.call0().map(|val| val.extract::<u64>()) {
-                return Ok(val.into());
-            }
+        if let Ok(func) = obj.getattr(attr_name)
+            && let Ok(Ok(val)) = func.call0().map(|val| val.extract::<u64>())
+        {
+            return Ok(val.into());
         }
         Err(PyValueError::new_err("Could not convert object to Ref"))
     }
@@ -305,7 +305,7 @@ impl Cloudpickle {
 }
 
 impl Cloudpickle {
-    pub fn dumps<'py>(obj: Bound<'py, PyAny>) -> PyResult<Self> {
+    pub fn dumps(obj: Bound<'_, PyAny>) -> PyResult<Self> {
         let py = obj.py();
         let dumps = cloudpickle_dumps(py);
         let bytes_obj = dumps.call1((obj,))?;
@@ -950,7 +950,4 @@ pub struct WorkerParams {
 }
 wirevalue::register_type!(WorkerParams);
 
-hyperactor::behavior!(
-    WorkerActor,
-    WorkerMessage { cast = true },
-);
+hyperactor::behavior!(WorkerActor, WorkerMessage,);

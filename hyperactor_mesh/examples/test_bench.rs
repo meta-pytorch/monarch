@@ -33,7 +33,7 @@ use serde::Serialize;
 use typeuri::Named;
 
 #[derive(Default, Debug)]
-#[hyperactor::export(TestMessage { cast = true })]
+#[hyperactor::export(TestMessage)]
 #[hyperactor::spawnable]
 struct TestActor {}
 

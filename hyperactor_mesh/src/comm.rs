@@ -746,7 +746,7 @@ pub mod test_utils {
     }
 
     #[derive(Debug)]
-    #[hyperactor::export(TestMessage { cast = true })]
+    #[hyperactor::export(TestMessage)]
     #[hyperactor::spawnable]
     pub struct TestActor {
         // Forward the received message to this port, so it can be inspected by
@@ -800,7 +800,7 @@ pub mod test_utils {
 
     #[doc(hidden)]
     #[derive(Debug)]
-    #[hyperactor::export(SenderCaptureMsg { cast = true })]
+    #[hyperactor::export(SenderCaptureMsg)]
     #[hyperactor::spawnable]
     pub struct SenderCapturingActor {
         forward_port: PortRef<CapturedSender>,

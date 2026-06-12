@@ -22,16 +22,7 @@
 //!
 //! One main use case of this framework is to mutate the reply ports of a
 //! multicast message, so the replies can be relayed through intermediate nodes,
-//! rather than directly sent to the original sender. Therefore, a [Castable]
-//! trait is defined, which collects requirements for message types using
-//! multicast.
-
-use crate::RemoteMessage;
-
-/// This trait collects the necessary requirements for messages that are can be
-/// cast.
-pub trait Castable: RemoteMessage {}
-impl<T: RemoteMessage> Castable for T {}
+//! rather than directly sent to the original sender.
 
 #[cfg(test)]
 mod tests {
@@ -58,7 +49,7 @@ mod tests {
     }
 
     #[test]
-    fn test_castable() {
+    fn test_multipart_part_mutation() {
         let original_port0 = PortRef::attest(test_port_id("world_0", "actor", 123));
         let original_port1 = PortRef::attest_reducible(
             test_port_id("world_1", "actor1", 456),
