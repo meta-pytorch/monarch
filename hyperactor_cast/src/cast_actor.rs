@@ -810,7 +810,11 @@ impl Handler<CastMessage> for CastActor {
                 &dest,
                 &message.sender,
             );
-            cx.post_with_external_seq_info(dest, headers, data.clone().into_message());
+            cx.post_with_external_seq_info(
+                dest,
+                headers,
+                data.clone().into_message().erase_encoding(),
+            );
         }
 
         for next_hop in &domain.next_hops {
