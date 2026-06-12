@@ -24,8 +24,6 @@
 //! supply — lives in `monarch_hyperactor/src/actor.rs`
 //! (`PythonActorParams.mesh_base_name`).
 
-use hyperactor::Bind;
-use hyperactor::Unbind;
 use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
 use hyperactor::context;
@@ -36,7 +34,7 @@ use typeuri::Named;
 
 /// Message about a supervision failure on a mesh of actors instead of a single
 /// actor.
-#[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Bind, Unbind)]
+#[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq)]
 pub struct MeshFailure {
     /// Mesh name carried by the `MeshFailure` construction site,
     /// when locally available. On the direct actor-handled path

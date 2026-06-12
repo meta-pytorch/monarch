@@ -37,10 +37,6 @@ use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::mailbox::UndeliverableMessageError;
 use hyperactor::mailbox::UndeliverableReason;
-use hyperactor::message::Bind;
-use hyperactor::message::Bindings;
-use hyperactor::message::IndexedErasedUnbound;
-use hyperactor::message::Unbind;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::casting::update_undeliverable_envelope_for_casting;
@@ -234,33 +230,6 @@ wirevalue::submit! {
             // SAFETY: ptr points to a PythonMessage.
             let msg = unsafe { &*(ptr as *const PythonMessage) };
             python_message_endpoint_name(msg)
-        },
-    }
-}
-
-// Cast messages arrive as IndexedErasedUnbound<PythonMessage>, which wraps a
-// serialized PythonMessage. This type has no `register_type!` by default (it
-// shares ErasedUnbound's wire format), so we register it explicitly. The
-// endpoint_name deserializes the inner payload to read the method name. This
-// costs one extra deserialization per message, but the Part payload uses
-// zero-copy Bytes refcounting, and Python actor throughput is GIL-bounded,
-// so the serde overhead is negligible relative to Python-side processing.
-wirevalue::submit! {
-    wirevalue::TypeInfo {
-        typename: <IndexedErasedUnbound<PythonMessage> as wirevalue::Named>::typename,
-        typehash: <IndexedErasedUnbound<PythonMessage> as wirevalue::Named>::typehash,
-        typeid: <IndexedErasedUnbound<PythonMessage> as wirevalue::Named>::typeid,
-        port: <IndexedErasedUnbound<PythonMessage> as wirevalue::Named>::port,
-        dump: None,
-        arm_unchecked: <IndexedErasedUnbound<PythonMessage> as wirevalue::Named>::arm_unchecked,
-        endpoint_name: |ptr| {
-            // SAFETY: ptr points to an IndexedErasedUnbound<PythonMessage>.
-            let erased = unsafe { &*(ptr as *const IndexedErasedUnbound<PythonMessage>) };
-            erased
-                .inner_any()
-                .deserialized_unchecked::<PythonMessage>()
-                .ok()
-                .and_then(|msg| python_message_endpoint_name(&msg))
         },
     }
 }
@@ -476,24 +445,6 @@ impl std::fmt::Debug for PythonMessage {
                 &wirevalue::HexFmt(&(*self.message.to_bytes())[..]).to_string(),
             )
             .finish()
-    }
-}
-
-impl Unbind for PythonMessage {
-    fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        match &self.kind {
-            PythonMessageKind::CallMethod { response_port, .. } => response_port.unbind(bindings),
-            _ => Ok(()),
-        }
-    }
-}
-
-impl Bind for PythonMessage {
-    fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        match &mut self.kind {
-            PythonMessageKind::CallMethod { response_port, .. } => response_port.bind(bindings),
-            _ => Ok(()),
-        }
     }
 }
 
@@ -2061,8 +2012,6 @@ mod tests {
     use hyperactor::accum::ReducerSpec;
     use hyperactor::accum::StreamingReducerOpts;
     use hyperactor::id::Label;
-    use hyperactor::message::ErasedUnbound;
-    use hyperactor::message::Unbound;
     use hyperactor::testing::ids::test_port_id;
     use hyperactor_mesh::Error as MeshError;
     use hyperactor_mesh::host_mesh::host_agent::ProcState;
@@ -2075,7 +2024,7 @@ mod tests {
     use crate::actor::to_py_error;
 
     #[test]
-    fn test_python_message_bind_unbind() {
+    fn test_python_message_part_codec() {
         let reducer_spec = ReducerSpec {
             typehash: 123,
             builder_params: Some(wirevalue::Any::serialize(&"abcdefg12345".to_string()).unwrap()),
@@ -2095,17 +2044,29 @@ mod tests {
             message: Part::from(vec![1, 2, 3]),
         };
         {
-            let mut erased = ErasedUnbound::try_from_message(message.clone()).unwrap();
-            let mut bindings = vec![];
-            erased
-                .visit_mut::<reference::UnboundPort>(|b| {
-                    bindings.push(b.clone());
+            let mut multipart_message =
+                wirevalue::Any::<wirevalue::encoding::Multipart>::serialize(&message).unwrap();
+            let mut ports = vec![];
+            multipart_message
+                .visit_multipart_parts_mut::<reference::PortRefRepr, anyhow::Error>(|b| {
+                    ports.push(b.clone());
                     Ok(())
                 })
                 .unwrap();
-            assert_eq!(bindings, vec![reference::UnboundPort::from(&port_ref)]);
-            let unbound = Unbound::try_from_message(message.clone()).unwrap();
-            assert_eq!(message, unbound.bind().unwrap());
+            assert_eq!(ports.len(), 1);
+            assert_eq!(ports[0].port_addr(), port_ref.port_addr());
+            assert_eq!(ports[0].reducer_spec(), port_ref.reducer_spec());
+            assert_eq!(
+                ports[0].get_return_undeliverable(),
+                port_ref.get_return_undeliverable()
+            );
+            assert!(!ports[0].unsplit());
+            assert_eq!(
+                message,
+                multipart_message
+                    .deserialized_unchecked::<PythonMessage>()
+                    .unwrap()
+            );
         }
 
         let no_port_message = PythonMessage {
@@ -2118,17 +2079,23 @@ mod tests {
             ..message
         };
         {
-            let mut erased = ErasedUnbound::try_from_message(no_port_message.clone()).unwrap();
-            let mut bindings = vec![];
-            erased
-                .visit_mut::<reference::UnboundPort>(|b| {
-                    bindings.push(b.clone());
+            let mut multipart_message =
+                wirevalue::Any::<wirevalue::encoding::Multipart>::serialize(&no_port_message)
+                    .unwrap();
+            let mut ports = vec![];
+            multipart_message
+                .visit_multipart_parts_mut::<reference::PortRefRepr, anyhow::Error>(|b| {
+                    ports.push(b.clone());
                     Ok(())
                 })
                 .unwrap();
-            assert_eq!(bindings.len(), 0);
-            let unbound = Unbound::try_from_message(no_port_message.clone()).unwrap();
-            assert_eq!(no_port_message, unbound.bind().unwrap());
+            assert_eq!(ports.len(), 0);
+            assert_eq!(
+                no_port_message,
+                multipart_message
+                    .deserialized_unchecked::<PythonMessage>()
+                    .unwrap()
+            );
         }
     }
 

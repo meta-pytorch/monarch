@@ -16,8 +16,6 @@ use hyperactor::RemoteMessage;
 use hyperactor::actor::Referable;
 use hyperactor::id::Uid;
 use hyperactor::message::Castable;
-use hyperactor::message::ErasedUnbound;
-use hyperactor::message::IndexedErasedUnbound;
 use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::declare_attrs;
 use ndslice::Extent;
@@ -43,8 +41,8 @@ pub(crate) trait CastEnvelope {
     fn headers(&self) -> &Flattrs;
     fn sender(&self) -> &ActorAddr;
     fn cast_point(&self, config: &CommMeshConfig) -> anyhow::Result<Point>;
-    fn data(&self) -> &ErasedUnbound;
-    fn data_mut(&mut self) -> &mut ErasedUnbound;
+    fn data(&self) -> &wirevalue::Any<wirevalue::encoding::Multipart>;
+    fn data_mut(&mut self) -> &mut wirevalue::Any<wirevalue::encoding::Multipart>;
 }
 
 /// A union of slices that can be used to represent arbitrary subset of
@@ -72,7 +70,7 @@ pub struct CastMessageEnvelope {
     /// rank wildcard.
     dest_port: DestinationPort,
     /// The serialized message.
-    data: ErasedUnbound,
+    data: wirevalue::Any<wirevalue::encoding::Multipart>,
     /// The shape of the cast.
     shape: Shape,
 }
@@ -91,11 +89,11 @@ impl CastEnvelope for CastMessageEnvelope {
         &self.dest_port
     }
 
-    fn data(&self) -> &ErasedUnbound {
+    fn data(&self) -> &wirevalue::Any<wirevalue::encoding::Multipart> {
         &self.data
     }
 
-    fn data_mut(&mut self) -> &mut ErasedUnbound {
+    fn data_mut(&mut self) -> &mut wirevalue::Any<wirevalue::encoding::Multipart> {
         &mut self.data
     }
 
@@ -121,11 +119,11 @@ impl CastMessageEnvelope {
         message: M,
     ) -> Result<Self, anyhow::Error>
     where
-        A: Referable + RemoteHandles<IndexedErasedUnbound<M>>,
+        A: Referable + RemoteHandles<M>,
         M: Castable + RemoteMessage,
     {
         let actor_uid = actor_mesh_id.uid().clone();
-        let data = ErasedUnbound::try_from_message(message)?;
+        let data = wirevalue::Any::<wirevalue::encoding::Multipart>::serialize(&message)?;
         Ok(Self {
             actor_mesh_id,
             headers,
@@ -145,14 +143,14 @@ impl CastMessageEnvelope {
         dest_port: DestinationPort,
         shape: Shape,
         headers: Flattrs,
-        data: wirevalue::Any,
+        data: wirevalue::Any<wirevalue::encoding::Multipart>,
     ) -> Self {
         Self {
             actor_mesh_id,
             sender,
             headers,
             dest_port,
-            data: ErasedUnbound::new(data),
+            data,
             shape,
         }
     }
@@ -221,12 +219,12 @@ impl DestinationPort {
     /// Create a new DestinationPort for an actor uid and message type.
     pub fn new<A, M>(actor_uid: Uid) -> Self
     where
-        A: Referable + RemoteHandles<IndexedErasedUnbound<M>>,
+        A: Referable + RemoteHandles<M>,
         M: Castable + RemoteMessage,
     {
         Self {
             actor_uid,
-            port: IndexedErasedUnbound::<M>::port(),
+            port: M::port(),
         }
     }
 
@@ -286,7 +284,7 @@ pub(crate) struct CastMessageV1 {
     /// rank wildcard.
     pub(super) dest_port: DestinationPort,
     /// The serialized message.
-    pub(super) data: ErasedUnbound,
+    pub(super) data: wirevalue::Any<wirevalue::encoding::Multipart>,
 }
 
 impl CastEnvelope for CastMessageV1 {
@@ -302,11 +300,11 @@ impl CastEnvelope for CastMessageV1 {
         &self.dest_port
     }
 
-    fn data(&self) -> &ErasedUnbound {
+    fn data(&self) -> &wirevalue::Any<wirevalue::encoding::Multipart> {
         &self.data
     }
 
-    fn data_mut(&mut self) -> &mut ErasedUnbound {
+    fn data_mut(&mut self) -> &mut wirevalue::Any<wirevalue::encoding::Multipart> {
         &mut self.data
     }
 
@@ -329,10 +327,10 @@ impl CastMessageV1 {
         seqs: ValueMesh<u64>,
     ) -> Result<Self, anyhow::Error>
     where
-        A: Referable + RemoteHandles<IndexedErasedUnbound<M>>,
+        A: Referable + RemoteHandles<M>,
         M: Castable + RemoteMessage,
     {
-        let data = ErasedUnbound::try_from_message(message)?;
+        let data = wirevalue::Any::<wirevalue::encoding::Multipart>::serialize(&message)?;
         Ok(Self {
             headers,
             sender,
