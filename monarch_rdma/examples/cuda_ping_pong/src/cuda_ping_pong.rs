@@ -61,14 +61,12 @@ use clap::Arg;
 use clap::Command as ClapCommand;
 use hyperactor::Actor;
 use hyperactor::ActorRef;
-use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::OncePortRef;
 use hyperactor::RemoteSpawn;
-use hyperactor::Unbind;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::context::Mailbox;
 use hyperactor::id::Label;
@@ -701,8 +699,8 @@ impl Handler<VerifyBuffer> for CudaRdmaActor {
 }
 
 // Message to get the buffer handle from an actor
-#[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
-struct GetBufferHandle(#[binding(include)] pub OncePortRef<RdmaRemoteBuffer>);
+#[derive(Debug, Serialize, Deserialize, Named, Clone)]
+struct GetBufferHandle(pub OncePortRef<RdmaRemoteBuffer>);
 
 #[async_trait]
 impl Handler<GetBufferHandle> for CudaRdmaActor {

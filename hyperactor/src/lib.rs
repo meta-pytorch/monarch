@@ -133,15 +133,11 @@ pub use endpoint::EndpointLocation;
 pub use endpoint::RemoteEndpoint;
 pub use gateway::Gateway;
 #[doc(inline)]
-pub use hyperactor_macros::Bind;
-#[doc(inline)]
 pub use hyperactor_macros::HandleClient;
 #[doc(inline)]
 pub use hyperactor_macros::Handler;
 #[doc(inline)]
 pub use hyperactor_macros::RefClient;
-#[doc(inline)]
-pub use hyperactor_macros::Unbind;
 #[doc(inline)]
 pub use hyperactor_macros::behavior;
 #[doc(inline)]
@@ -196,8 +192,6 @@ pub use ref_::OncePortRefRepr;
 pub use ref_::PortRef;
 #[doc(hidden)]
 pub use ref_::PortRefRepr;
-pub use ref_::UnboundPort;
-pub use ref_::UnboundPortKind;
 pub use remote::Accepts;
 /// Rank or position index used by distributed mesh helpers.
 pub type Index = usize;
