@@ -35,7 +35,6 @@ use hyperactor::actor::Referable;
 use hyperactor::context;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::message::Castable;
-use hyperactor::message::MultipartMessage;
 use hyperactor::port::Port;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::CONFIG;
@@ -661,17 +660,20 @@ impl<A: Referable> ActorMeshRef<A> {
 
         // Make sure that we rewrite ranks, as these may be used for
         // bootstrapping comm actors.
-        let mut data = MultipartMessage::try_from_message(message)
-            .map_err(|e| Error::CastingError(self.id.clone(), e))?;
-        data.visit_mut::<resource::RankRepr>(|resource::RankRepr(rank)| {
-            *rank = Some(create_rank);
-            Ok(())
-        })
+        let mut data = wirevalue::Any::<wirevalue::encoding::Multipart>::serialize(&message)
+            .map_err(|e| Error::CastingError(self.id.clone(), e.into()))?;
+        data.visit_multipart_parts_mut::<resource::RankRepr, anyhow::Error>(
+            |resource::RankRepr(rank)| {
+                *rank = Some(create_rank);
+                Ok(())
+            },
+        )
         .map_err(|e| Error::CastingError(self.id.clone(), e))?;
         let rebound_message = data
-            .deserialize()
-            .map_err(|e| Error::CastingError(self.id.clone(), e))?;
+            .deserialized_unchecked()
+            .map_err(|e| Error::CastingError(self.id.clone(), e.into()))?;
         actor.post_with_headers(cx, headers, rebound_message);
+
         Ok(())
     }
 
@@ -757,12 +759,12 @@ impl<A: Referable> ActorMeshRef<A> {
             let sender = cx.instance().self_addr().clone();
             let dest_port = M::port();
 
-            let mut data = MultipartMessage::try_from_message(message)
+            let mut data = wirevalue::Any::<wirevalue::encoding::Multipart>::serialize(&message)
                 .expect("cast message serialization should not fail");
 
             // Split ports for N destinations, matching the comm tree's
             // split_ports behavior.
-            data.visit_mut::<PortRefRepr>(|port| {
+            data.visit_multipart_parts_mut::<PortRefRepr, anyhow::Error>(|port| {
                 if port.unsplit() {
                     return Ok(());
                 }
@@ -777,7 +779,7 @@ impl<A: Referable> ActorMeshRef<A> {
             })
             .expect("port splitting should not fail");
 
-            data.visit_mut::<OncePortRefRepr>(|port| {
+            data.visit_multipart_parts_mut::<OncePortRefRepr, anyhow::Error>(|port| {
                 if port.unsplit() || port.reducer_spec().is_none() {
                     // Once ports without reducers pass through, same as the comm
                     // tree's split_ports.
@@ -802,10 +804,12 @@ impl<A: Referable> ActorMeshRef<A> {
                     .expect("rank should be valid in region");
 
                 rank_data
-                    .visit_mut::<resource::RankRepr>(|resource::RankRepr(r)| {
-                        *r = Some(cast_point.rank());
-                        Ok(())
-                    })
+                    .visit_multipart_parts_mut::<resource::RankRepr, anyhow::Error>(
+                        |resource::RankRepr(r)| {
+                            *r = Some(cast_point.rank());
+                            Ok(())
+                        },
+                    )
                     .expect("rank replacement should not fail");
 
                 let mut rank_headers = headers.clone();
@@ -816,11 +820,8 @@ impl<A: Referable> ActorMeshRef<A> {
                     .expect("mismatched actor_ids and dest_region")
                     .port_addr(Port::handler_id(dest_port, None));
 
-                cx.instance().post(
-                    port_id,
-                    rank_headers,
-                    rank_data.into_message().erase_encoding(),
-                );
+                cx.instance()
+                    .post(port_id, rank_headers, rank_data.erase_encoding());
             }
         } else {
             // Tree path: route through the comm actor tree.

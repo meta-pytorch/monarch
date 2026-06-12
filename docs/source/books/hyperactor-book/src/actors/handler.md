@@ -43,8 +43,8 @@ impl<A: Actor> Handler<Signal> for A {
 ### Multipart routed messages
 
 ```rust
-let mut message = MultipartMessage::try_from_message(value)?;
-message.visit_mut::<PortRefRepr>(|port| {
+let mut message = wirevalue::Any::<wirevalue::encoding::Multipart>::serialize(&value)?;
+message.visit_multipart_parts_mut::<PortRefRepr, anyhow::Error>(|port| {
     port.update_port_addr(rewritten_addr);
     Ok(())
 })?;
