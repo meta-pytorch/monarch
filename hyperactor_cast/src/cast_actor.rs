@@ -34,7 +34,7 @@ use hyperactor::mailbox::Undeliverable;
 use hyperactor::mailbox::UndeliverableMailboxSender;
 use hyperactor::mailbox::UndeliverableMessageError;
 use hyperactor::mailbox::monitored_return_handle;
-use hyperactor::message::ErasedUnbound;
+use hyperactor::message::MultipartMessage;
 use hyperactor::ordering::SEQ_INFO;
 use hyperactor::ordering::SeqInfo;
 use hyperactor::port::Port;
@@ -274,7 +274,7 @@ impl CastDomainRef {
         headers: Flattrs,
         message: M,
     ) -> anyhow::Result<()> {
-        let data = ErasedUnbound::try_from_message(message)?;
+        let data = MultipartMessage::try_from_message(message)?;
         let sender = cx.mailbox().actor_addr().clone();
         let dest_port = M::port();
         let (session_id, seqs) = self.seqs_for_cast(cx, dest_port)?;
@@ -627,7 +627,7 @@ impl Handler<CreateCastDomain> for CastActor {
 /// Ported from `hyperactor_mesh::comm::split_ports`.
 fn split_ports(
     cx: &Context<'_, CastActor>,
-    data: &mut ErasedUnbound,
+    data: &mut MultipartMessage,
     num_next_hops: usize,
     deliver_here: bool,
 ) -> Result<()> {
@@ -745,7 +745,7 @@ struct CastMessage {
     /// The target port index on each destination actor.
     dest_port: u64,
     /// The serialized message data.
-    data: ErasedUnbound,
+    data: MultipartMessage,
 }
 
 wirevalue::register_type!(CastMessage);
@@ -1733,7 +1733,7 @@ mod tests {
                 lineage: Vec::new(),
                 headers: Flattrs::new(),
                 dest_port: TestDelivery::port(),
-                data: ErasedUnbound::try_from_message(TestDelivery {
+                data: MultipartMessage::try_from_message(TestDelivery {
                     payload: "hello".to_string(),
                 })
                 .unwrap(),

@@ -40,7 +40,7 @@ use hyperactor::mailbox::Undeliverable;
 use hyperactor::mailbox::UndeliverableMailboxSender;
 use hyperactor::mailbox::UndeliverableMessageError;
 use hyperactor::mailbox::monitored_return_handle;
-use hyperactor::message::ErasedUnbound;
+use hyperactor::message::MultipartMessage;
 use hyperactor::ordering::SEQ_INFO;
 use hyperactor::ordering::SeqInfo;
 use hyperactor_config::CONFIG;
@@ -411,7 +411,7 @@ impl CommActor {
 // of to the original ports provided by parent.
 fn split_ports(
     cx: &Context<CommActor>,
-    data: &mut ErasedUnbound,
+    data: &mut MultipartMessage,
     deliver_here: bool,
     next_steps: &HashMap<usize, Vec<RoutingFrame>>,
 ) -> anyhow::Result<()> {
@@ -463,7 +463,7 @@ fn split_ports(
     Ok(())
 }
 
-fn replace_with_self_ranks(cast_point: &Point, data: &mut ErasedUnbound) -> anyhow::Result<()> {
+fn replace_with_self_ranks(cast_point: &Point, data: &mut MultipartMessage) -> anyhow::Result<()> {
     data.visit_mut::<resource::RankRepr>(|resource::RankRepr(rank)| {
         *rank = Some(cast_point.rank());
         Ok(())
