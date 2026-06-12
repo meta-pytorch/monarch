@@ -22,7 +22,6 @@ use hyperactor::Actor;
 use hyperactor::ActorAddr;
 use hyperactor::ActorHandle;
 use hyperactor::Addr;
-use hyperactor::Bind;
 use hyperactor::Client;
 use hyperactor::Context;
 use hyperactor::Data;
@@ -33,7 +32,6 @@ use hyperactor::PortAddr;
 use hyperactor::PortHandle;
 use hyperactor::PortRef;
 use hyperactor::RemoteEndpoint as _;
-use hyperactor::Unbind;
 use hyperactor::actor::handle_undeliverable_message;
 use hyperactor::actor::remote::Remote;
 use hyperactor::id::Label;
@@ -113,7 +111,7 @@ declare_attrs! {
 /// - `emit_memory_metrics: true` — sent from `Actor::init` and
 ///   re-armed by the handler at the `PROCESS_MEMORY_METRIC_INTERVAL`
 ///   cadence.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
 struct RepublishIntrospect {
     emit_memory_metrics: bool,
 }
@@ -252,17 +250,7 @@ impl ActorInstanceState {
     }
 }
 
-#[derive(
-    Clone,
-    Debug,
-    Default,
-    PartialEq,
-    Serialize,
-    Deserialize,
-    Named,
-    Bind,
-    Unbind
-)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Named)]
 pub(crate) struct SelfCheck {}
 
 /// A mesh agent is responsible for managing procs in a [`ProcMesh`].
@@ -886,7 +874,7 @@ pub struct ActorSpec {
 wirevalue::register_type!(ActorSpec);
 
 /// Actor state.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
 pub struct ActorState {
     /// The actor's ID.
     pub actor_id: ActorAddr,

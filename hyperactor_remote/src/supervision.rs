@@ -772,11 +772,9 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use hyperactor::Bind;
     use hyperactor::PortHandle;
     use hyperactor::Proc;
     use hyperactor::Uid;
-    use hyperactor::Unbind;
     use hyperactor::mailbox::PortReceiver;
     use serde::Deserialize;
     use serde::Serialize;
@@ -785,14 +783,14 @@ mod tests {
 
     use super::*;
 
-    #[derive(Clone, Debug, Serialize, Deserialize, Named, Bind, Unbind)]
+    #[derive(Clone, Debug, Serialize, Deserialize, Named)]
     enum TestChildCommand {
         Fail,
         Drain(String),
     }
     wirevalue::register_type!(TestChildCommand);
 
-    #[derive(Clone, Debug, Serialize, Deserialize, Named, Bind, Unbind)]
+    #[derive(Clone, Debug, Serialize, Deserialize, Named)]
     struct KillParent;
     wirevalue::register_type!(KillParent);
 

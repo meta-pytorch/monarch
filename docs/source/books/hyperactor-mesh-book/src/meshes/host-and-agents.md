@@ -195,7 +195,6 @@ So right now:
 ```rust
 pub struct CreateOrUpdate<S> {
     pub name: Name,
-    #[binding(include)]
     pub rank: Rank,
     pub spec: S,
 }

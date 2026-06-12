@@ -15,12 +15,10 @@
 
 use hyperactor::Actor;
 use hyperactor::AnyActorHandle;
-use hyperactor::Bind;
 use hyperactor::Data;
 #[cfg(test)]
 use hyperactor::Instance;
 use hyperactor::Uid;
-use hyperactor::Unbind;
 use hyperactor::context;
 use serde::Deserialize;
 use serde::Serialize;
@@ -31,17 +29,7 @@ use typeuri::Named;
 /// A supervisor-side link factory returns this after it starts the local
 /// supervisor link actor. The worker sends this spec to the remote worker,
 /// which calls [`LinkSpec::spawn_worker`] to instantiate its side of the link.
-#[derive(
-    Clone,
-    Debug,
-    Serialize,
-    Deserialize,
-    Named,
-    PartialEq,
-    Eq,
-    Bind,
-    Unbind
-)]
+#[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Eq)]
 pub struct LinkSpec {
     actor_type: String,
     uid: Uid,
