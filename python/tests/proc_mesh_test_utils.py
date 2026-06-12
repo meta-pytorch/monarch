@@ -13,12 +13,12 @@ auto-discovers the fixture in the importing module and runs it around every
 test in that module.
 """
 
-import pytest
+import pytest_asyncio
 from monarch.actor import context, ProcMesh
 from monarch.config import configured
 
 
-@pytest.fixture(autouse=True)
+@pytest_asyncio.fixture(autouse=True)
 async def stop_all_proc_meshes():
     """Tear down ProcMeshes that the test left attached to the root client.
 
