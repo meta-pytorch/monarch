@@ -235,13 +235,45 @@ pub struct PortRef<M> {
 }
 
 #[doc(hidden)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, typeuri::Named)]
 pub struct PortRefRepr {
     port_addr: PortAddr,
     reducer_spec: Option<ReducerSpec>,
     streaming_opts: StreamingReducerOpts,
     return_undeliverable: bool,
     unsplit: bool,
+}
+
+impl PortRefRepr {
+    /// This port's address.
+    pub fn port_addr(&self) -> &PortAddr {
+        &self.port_addr
+    }
+
+    /// The typehash of this port's reducer, if any.
+    pub fn reducer_spec(&self) -> &Option<ReducerSpec> {
+        &self.reducer_spec
+    }
+
+    /// This port's streaming reducer options.
+    pub fn streaming_opts(&self) -> &StreamingReducerOpts {
+        &self.streaming_opts
+    }
+
+    /// Get whether undeliverable messages should be returned to the sender.
+    pub fn get_return_undeliverable(&self) -> bool {
+        self.return_undeliverable
+    }
+
+    /// Whether the port must not be split.
+    pub fn unsplit(&self) -> bool {
+        self.unsplit
+    }
+
+    /// Update this port's address.
+    pub fn update_port_addr(&mut self, port_addr: PortAddr) {
+        self.port_addr = port_addr;
+    }
 }
 
 impl<M> TryFrom<&PortRef<M>> for PortRefRepr {
@@ -533,12 +565,39 @@ pub struct OncePortRef<M> {
 }
 
 #[doc(hidden)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, typeuri::Named)]
 pub struct OncePortRefRepr {
     port_addr: PortAddr,
     reducer_spec: Option<ReducerSpec>,
     return_undeliverable: bool,
     unsplit: bool,
+}
+
+impl OncePortRefRepr {
+    /// This port's address.
+    pub fn port_addr(&self) -> &PortAddr {
+        &self.port_addr
+    }
+
+    /// The typehash of this port's reducer, if any.
+    pub fn reducer_spec(&self) -> &Option<ReducerSpec> {
+        &self.reducer_spec
+    }
+
+    /// Get whether undeliverable messages should be returned to the sender.
+    pub fn get_return_undeliverable(&self) -> bool {
+        self.return_undeliverable
+    }
+
+    /// Whether the port must not be split.
+    pub fn unsplit(&self) -> bool {
+        self.unsplit
+    }
+
+    /// Update this port's address.
+    pub fn update_port_addr(&mut self, port_addr: PortAddr) {
+        self.port_addr = port_addr;
+    }
 }
 
 impl<M> TryFrom<&OncePortRef<M>> for OncePortRefRepr {
@@ -818,14 +877,9 @@ mod tests {
 
         let message = serde_multipart::serialize_bincode(&value).unwrap();
         assert_eq!(message.num_parts(), 1);
-        assert_eq!(
-            message.parts()[0].typehash(),
-            Some(PortRef::<String>::typehash())
-        );
+        assert_eq!(message.parts()[0].typehash(), Some(PortRefRepr::typehash()));
 
-        let repr = message.parts()[0]
-            .deserialized_as::<PortRef<String>, PortRefRepr>()
-            .unwrap();
+        let repr = message.parts()[0].deserialized::<PortRefRepr>().unwrap();
         assert_eq!(repr.port_addr, value.port.port_addr().clone());
         assert!(!repr.return_undeliverable);
         assert!(repr.unsplit);
@@ -846,11 +900,11 @@ mod tests {
         assert_eq!(message.num_parts(), 1);
         assert_eq!(
             message.parts()[0].typehash(),
-            Some(OncePortRef::<String>::typehash())
+            Some(OncePortRefRepr::typehash())
         );
 
         let repr = message.parts()[0]
-            .deserialized_as::<OncePortRef<String>, OncePortRefRepr>()
+            .deserialized::<OncePortRefRepr>()
             .unwrap();
         assert_eq!(repr.port_addr, value.port.port_addr().clone());
         assert!(!repr.return_undeliverable);
