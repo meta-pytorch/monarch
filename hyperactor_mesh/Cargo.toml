@@ -50,6 +50,7 @@ schemars = { version = "1.2.1", features = ["indexmap2"] }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_bytes = "0.11"
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
+serde_multipart = { version = "0.0.0", path = "../serde_multipart" }
 strum = { version = "0.28.0", features = ["derive"] }
 tempfile = "3.27.0"
 thiserror = "2.0.18"
