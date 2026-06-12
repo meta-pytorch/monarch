@@ -474,6 +474,21 @@ impl Any {
         }
     }
 
+    /// Visit every typed multipart part containing a `T`-typed value.
+    pub fn visit_multipart_parts_mut<T, E>(
+        &mut self,
+        f: impl FnMut(&mut T) -> std::result::Result<(), E>,
+    ) -> std::result::Result<(), E>
+    where
+        T: Serialize + DeserializeOwned + Named,
+        E: From<serde_multipart::Error>,
+    {
+        if let Encoded::Multipart(message) = &mut self.encoded {
+            message.visit_parts_mut(f)?;
+        }
+        Ok(())
+    }
+
     /// Transcode the serialized value to JSON. This operation will succeed if the type hash
     /// is embedded in the value, and the corresponding type is available in this binary.
     pub fn transcode_to_json(self) -> std::result::Result<Self, Self> {
