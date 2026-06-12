@@ -42,7 +42,6 @@ use base64::Engine as _;
 use base64::prelude::BASE64_STANDARD;
 use hyperactor::Actor;
 use hyperactor::ActorRef;
-use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
 use hyperactor::HandleClient;
@@ -51,7 +50,6 @@ use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::PortRef;
 use hyperactor::RefClient;
-use hyperactor::Unbind;
 use hyperactor::context;
 use serde::Deserialize;
 use serde::Serialize;
@@ -70,17 +68,7 @@ impl<T> TokenPeer for T where
 }
 
 /// Token join options.
-#[derive(
-    Clone,
-    Debug,
-    Serialize,
-    Deserialize,
-    Named,
-    PartialEq,
-    Eq,
-    Bind,
-    Unbind
-)]
+#[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Eq)]
 pub struct Options {
     /// Policy that governs how many joins are accepted.
     pub policy: Policy,
@@ -96,18 +84,7 @@ impl Default for Options {
 }
 
 /// Token join policy.
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Serialize,
-    Deserialize,
-    Named,
-    PartialEq,
-    Eq,
-    Bind,
-    Unbind
-)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Named, PartialEq, Eq)]
 pub enum Policy {
     /// Accept every join while the rendezvous actor is alive.
     Multi,
@@ -117,17 +94,7 @@ pub enum Policy {
 wirevalue::register_type!(Policy);
 
 /// Notification delivered to the token creator when a peer joins.
-#[derive(
-    Clone,
-    Debug,
-    Serialize,
-    Deserialize,
-    Named,
-    PartialEq,
-    Eq,
-    Bind,
-    Unbind
-)]
+#[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Eq)]
 #[serde(bound(serialize = "P: TokenPeer"))]
 #[serde(bound(deserialize = "P: TokenPeer"))]
 pub struct Joined<P: TokenPeer> {
@@ -136,17 +103,7 @@ pub struct Joined<P: TokenPeer> {
 }
 
 /// Result delivered to a joiner after it attempts to join.
-#[derive(
-    Clone,
-    Debug,
-    Serialize,
-    Deserialize,
-    Named,
-    PartialEq,
-    Eq,
-    Bind,
-    Unbind
-)]
+#[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Eq)]
 #[serde(bound(serialize = "P: TokenPeer"))]
 #[serde(bound(deserialize = "P: TokenPeer"))]
 pub enum JoinResult<P: TokenPeer> {
@@ -171,9 +128,7 @@ pub enum JoinResult<P: TokenPeer> {
     Named,
     Handler,
     HandleClient,
-    RefClient,
-    Bind,
-    Unbind
+    RefClient
 )]
 #[serde(bound(serialize = "C: TokenPeer, J: TokenPeer"))]
 #[serde(bound(deserialize = "C: TokenPeer, J: TokenPeer"))]
@@ -181,7 +136,6 @@ pub struct Join<C: TokenPeer, J: TokenPeer> {
     /// Joiner ref to deliver to the token creator.
     pub joiner: J,
     /// Port that receives the join result.
-    #[binding(include)]
     pub result: PortRef<JoinResult<C>>,
 }
 
@@ -445,43 +399,13 @@ mod tests {
         }
     }
 
-    #[derive(
-        Clone,
-        Debug,
-        Serialize,
-        Deserialize,
-        Named,
-        PartialEq,
-        Eq,
-        Bind,
-        Unbind
-    )]
+    #[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Eq)]
     struct CreatorRef;
 
-    #[derive(
-        Clone,
-        Debug,
-        Serialize,
-        Deserialize,
-        Named,
-        PartialEq,
-        Eq,
-        Bind,
-        Unbind
-    )]
+    #[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Eq)]
     struct JoinerRef;
 
-    #[derive(
-        Clone,
-        Debug,
-        Serialize,
-        Deserialize,
-        Named,
-        PartialEq,
-        Eq,
-        Bind,
-        Unbind
-    )]
+    #[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Eq)]
     struct OtherJoinerRef;
 
     #[derive(
@@ -493,9 +417,7 @@ mod tests {
         PartialEq,
         Eq,
         PartialOrd,
-        Ord,
-        Bind,
-        Unbind
+        Ord
     )]
     enum MultiJoinerRef {
         One,

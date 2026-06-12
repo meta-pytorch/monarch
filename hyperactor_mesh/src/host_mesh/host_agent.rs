@@ -1159,17 +1159,7 @@ impl Handler<ShutdownHost> for HostAgent {
     }
 }
 
-#[derive(
-    Debug,
-    Clone,
-    PartialEq,
-    Eq,
-    Named,
-    Serialize,
-    Deserialize,
-    hyperactor::Bind,
-    hyperactor::Unbind
-)]
+#[derive(Debug, Clone, PartialEq, Eq, Named, Serialize, Deserialize)]
 pub struct ProcState {
     pub proc_id: ProcAddr,
     pub create_rank: usize,
