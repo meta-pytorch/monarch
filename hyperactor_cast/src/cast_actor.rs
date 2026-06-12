@@ -1077,7 +1077,7 @@ mod tests {
 
     // -- Integration test infrastructure --
 
-    /// A simple castable message type for testing delivery.
+    /// A simple message type for testing cast delivery.
     #[derive(Debug, Clone, Serialize, Deserialize, typeuri::Named)]
     struct TestDelivery {
         payload: String,
@@ -1136,8 +1136,8 @@ mod tests {
     #[derive(Debug, Default)]
     #[hyperactor::export(
         handlers = [
-            TestDelivery { cast = true },
-            GetHistory { cast = true },
+            TestDelivery,
+            GetHistory,
         ],
     )]
     struct TestReceiver {
@@ -2097,7 +2097,7 @@ mod tests {
         }
     }
 
-    /// A castable message with a reply port for testing port splitting.
+    /// A message with a reply port for testing port splitting.
     #[derive(Debug, Clone, Serialize, Deserialize, typeuri::Named)]
     struct TestRequestWithReply {
         payload: String,
@@ -2109,7 +2109,7 @@ mod tests {
     /// through the (potentially split) reply port.
     #[derive(Debug, Default)]
     #[hyperactor::export(
-        handlers = [TestRequestWithReply { cast = true }],
+        handlers = [TestRequestWithReply],
     )]
     struct SplitPortReceiver;
 
