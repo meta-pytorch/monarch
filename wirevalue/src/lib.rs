@@ -520,6 +520,21 @@ impl Any {
         self.typehash
     }
 
+    /// Visit typed multipart parts in this value, if it uses multipart encoding.
+    pub fn visit_multipart_parts_mut<T, E>(
+        &mut self,
+        f: impl FnMut(&mut T) -> std::result::Result<(), E>,
+    ) -> std::result::Result<(), E>
+    where
+        T: Serialize + DeserializeOwned + Named,
+        E: From<serde_multipart::Error>,
+    {
+        match &mut self.encoded {
+            Encoded::Multipart(message) => message.visit_parts_mut(f),
+            Encoded::Bincode(_) | Encoded::Json(_) => Ok(()),
+        }
+    }
+
     /// The typename of the serialized value, if available.
     pub fn typename(&self) -> Option<&'static str> {
         TYPE_INFO
