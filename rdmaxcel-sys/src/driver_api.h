@@ -90,9 +90,7 @@ CUresult rdmaxcel_cuPointerGetAttribute(
 
 // Returns nonzero if the GPU runtime is initialized such that a device
 // pointer could exist. On ROCm, returns nonzero only when some device's
-// primary context is active; on CUDA it always returns nonzero. Used to
-// avoid rdmaxcel creating a HIP context before PyTorch initializes its own
-// runtime, which corrupts torch's lazy device initialization.
+// primary context is active; on CUDA it always returns nonzero.
 int rdmaxcel_cuPrimaryCtxActive(void);
 
 // Device management

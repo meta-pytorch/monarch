@@ -295,8 +295,6 @@ int rdmaxcel_cuPrimaryCtxActive(void) {
       !primary_ctx_get_state) {
     return 0;
   }
-  // hipInit initializes the driver but never creates a context, so it does
-  // not perturb torch's lazy runtime initialization.
   if (hip_init(0) != hipSuccess) {
     return 0;
   }
@@ -317,8 +315,7 @@ int rdmaxcel_cuPrimaryCtxActive(void) {
   }
   return 0;
 #else
-  // CUDA: rdmaxcel attaching to the driver does not corrupt torch's runtime
-  // init, so always allow the pointer probe (behavior unchanged).
+  // CUDA: behavior unchanged
   return 1;
 #endif
 }

@@ -24,14 +24,8 @@ use crate::backend::ibverbs::primitives::IbvMemoryRegionView;
 /// Probes the CUDA driver via `cuPointerGetAttribute`; returns `false`
 /// when CUDA is unavailable or the pointer is not device memory.
 pub fn is_device_ptr(addr: usize) -> bool {
-    // rdmaxcel must not be the first component to create a GPU context. On
-    // ROCm, creating a HIP primary context before PyTorch initializes its own
-    // runtime leaves torch unable to allocate device memory. When no primary
-    // context is active, no device pointer can exist, so `addr` is necessarily
-    // host memory and we skip the probe, which would otherwise force context
-    // creation. `rdmaxcel_cuPrimaryCtxActive` returns 1 on CUDA, so this is a
-    // no-op there. The runtime, once initialized, stays initialized, so we
-    // latch a ready result and avoid the FFI call on the steady-state path.
+    // On ROCm, a primary HIP context is created even if the pointer is in host memory.
+    // We only want to init primary HIP context if the pointer is actually on the device
     static RUNTIME_READY: std::sync::atomic::AtomicBool =
         std::sync::atomic::AtomicBool::new(false);
     if !RUNTIME_READY.load(std::sync::atomic::Ordering::Relaxed) {
