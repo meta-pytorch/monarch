@@ -43,6 +43,7 @@ use hyperactor::mailbox::Undeliverable;
 use hyperactor::mailbox::UndeliverableReason;
 use hyperactor::proc::Proc;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor_cast::cast_actor::CAST_ACTOR_NAME;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::Flattrs;
@@ -331,7 +332,7 @@ impl ProcAgent {
         shutdown_tx: Option<tokio::sync::oneshot::Sender<i32>>,
     ) -> Result<ActorHandle<Self>, anyhow::Error> {
         let cast_handle = proc.spawn_with_uid(
-            Uid::singleton(Label::strip("cast")),
+            Uid::singleton(Label::strip(CAST_ACTOR_NAME)),
             hyperactor_cast::cast_actor::CastActor::default(),
         )?;
         cast_handle.bind::<hyperactor_cast::cast_actor::CastActor>();

@@ -376,7 +376,7 @@ fn next_tiles(
 ///
 /// One `CastActor` is expected to run on every proc under this name. Internal
 /// setup uses this known address to route setup commands to child tile roots.
-const CAST_ACTOR_NAME: &str = "cast";
+pub const CAST_ACTOR_NAME: &str = "cast";
 
 /// System actor that establishes casting domains.
 ///
