@@ -34,7 +34,6 @@ use hyperactor::mailbox::Undeliverable;
 use hyperactor::mailbox::UndeliverableMailboxSender;
 use hyperactor::mailbox::UndeliverableMessageError;
 use hyperactor::mailbox::monitored_return_handle;
-use hyperactor::message::MultipartMessage;
 use hyperactor::ordering::SEQ_INFO;
 use hyperactor::ordering::SeqInfo;
 use hyperactor::port::Port;
@@ -274,7 +273,7 @@ impl CastDomainRef {
         headers: Flattrs,
         message: M,
     ) -> anyhow::Result<()> {
-        let data = MultipartMessage::try_from_message(message)?;
+        let data = wirevalue::Any::<wirevalue::encoding::Multipart>::serialize(&message)?;
         let sender = cx.mailbox().actor_addr().clone();
         let dest_port = M::port();
         let (session_id, seqs) = self.seqs_for_cast(cx, dest_port)?;
@@ -627,11 +626,11 @@ impl Handler<CreateCastDomain> for CastActor {
 /// Ported from `hyperactor_mesh::comm::split_ports`.
 fn split_ports(
     cx: &Context<'_, CastActor>,
-    data: &mut MultipartMessage,
+    data: &mut wirevalue::Any<wirevalue::encoding::Multipart>,
     num_next_hops: usize,
     deliver_here: bool,
 ) -> Result<()> {
-    data.visit_mut::<PortRefRepr>(|port| {
+    data.visit_multipart_parts_mut::<PortRefRepr, anyhow::Error>(|port| {
         if port.unsplit() {
             return Ok(());
         }
@@ -652,7 +651,7 @@ fn split_ports(
         Ok(())
     })?;
 
-    data.visit_mut::<OncePortRefRepr>(|port| {
+    data.visit_multipart_parts_mut::<OncePortRefRepr, anyhow::Error>(|port| {
         if port.unsplit() || port.reducer_spec().is_none() {
             // OncePorts without reducers cannot be split. Pass through as-is.
             // Using the port more than once will cause a delivery error downstream.
@@ -745,7 +744,7 @@ struct CastMessage {
     /// The target port index on each destination actor.
     dest_port: u64,
     /// The serialized message data.
-    data: MultipartMessage,
+    data: wirevalue::Any<wirevalue::encoding::Multipart>,
 }
 
 wirevalue::register_type!(CastMessage);
@@ -810,11 +809,7 @@ impl Handler<CastMessage> for CastActor {
                 &dest,
                 &message.sender,
             );
-            cx.post_with_external_seq_info(
-                dest,
-                headers,
-                data.clone().into_message().erase_encoding(),
-            );
+            cx.post_with_external_seq_info(dest, headers, data.clone().erase_encoding());
         }
 
         for next_hop in &domain.next_hops {
@@ -1737,7 +1732,7 @@ mod tests {
                 lineage: Vec::new(),
                 headers: Flattrs::new(),
                 dest_port: TestDelivery::port(),
-                data: MultipartMessage::try_from_message(TestDelivery {
+                data: wirevalue::Any::<wirevalue::encoding::Multipart>::serialize(&TestDelivery {
                     payload: "hello".to_string(),
                 })
                 .unwrap(),
