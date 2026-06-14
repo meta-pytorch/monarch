@@ -34,7 +34,6 @@ use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Referable;
 use hyperactor::context;
 use hyperactor::mailbox::PortReceiver;
-use hyperactor::message::Castable;
 use hyperactor::port::Port;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::CONFIG;
@@ -465,7 +464,7 @@ impl<A: Referable> ActorMeshRef<A> {
     pub fn cast<M>(&self, cx: &impl context::Actor, message: M) -> crate::Result<()>
     where
         A: RemoteHandles<M>,
-        M: Castable + RemoteMessage + Clone, // Clone is required until we are fully onto comm actor
+        M: RemoteMessage + Clone, // Clone is required until we are fully onto comm actor
     {
         self.cast_with_headers(cx, &Flattrs::new(), message)
     }
@@ -485,7 +484,7 @@ impl<A: Referable> ActorMeshRef<A> {
     ) -> crate::Result<()>
     where
         A: RemoteHandles<M>,
-        M: Castable + RemoteMessage + Clone,
+        M: RemoteMessage + Clone,
     {
         self.check_cached_failure(cx)?;
         self.emit_sent_message_telemetry(cx, view::Ranked::region(self));
@@ -522,7 +521,7 @@ impl<A: Referable> ActorMeshRef<A> {
     ) -> crate::Result<()>
     where
         A: RemoteHandles<M>,
-        M: Castable + RemoteMessage + Clone,
+        M: RemoteMessage + Clone,
     {
         self.check_cached_failure(cx)?;
         self.emit_sent_message_telemetry(
@@ -562,7 +561,7 @@ impl<A: Referable> ActorMeshRef<A> {
     ) -> crate::Result<()>
     where
         A: RemoteHandles<M>,
-        M: Castable + RemoteMessage + Clone, // Clone is required until we are fully onto comm actor
+        M: RemoteMessage + Clone, // Clone is required until we are fully onto comm actor
     {
         self.check_cached_failure(cx)?;
         self.emit_sent_message_telemetry(cx, view::Ranked::region(self));
@@ -615,7 +614,7 @@ impl<A: Referable> ActorMeshRef<A> {
     ) -> crate::Result<()>
     where
         A: RemoteHandles<M>,
-        M: Castable + RemoteMessage,
+        M: RemoteMessage,
     {
         let region = view::Ranked::region(self);
 
@@ -652,7 +651,7 @@ impl<A: Referable> ActorMeshRef<A> {
     ) -> crate::Result<()>
     where
         A: RemoteHandles<M>,
-        M: Castable + RemoteMessage,
+        M: RemoteMessage,
     {
         let create_rank = point.rank();
         let mut headers = caller_headers.clone();
@@ -688,7 +687,7 @@ impl<A: Referable> ActorMeshRef<A> {
     ) -> crate::Result<()>
     where
         A: RemoteHandles<M>,
-        M: Castable + RemoteMessage + Clone, // Clone is required until we are fully onto comm actor
+        M: RemoteMessage + Clone, // Clone is required until we are fully onto comm actor
     {
         let cast_mesh_shape = view::Ranked::region(self).into();
         let actor_mesh_id = self.id.clone();
@@ -729,7 +728,7 @@ impl<A: Referable> ActorMeshRef<A> {
         caller_headers: &Flattrs,
     ) where
         A: RemoteHandles<M>,
-        M: Castable + RemoteMessage,
+        M: RemoteMessage,
     {
         let _ = metrics::ACTOR_MESH_CAST_DURATION.start(hyperactor::kv_pairs!(
             "message_type" => <M as typeuri::Named>::typename(),

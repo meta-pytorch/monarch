@@ -56,7 +56,4 @@ pub enum DebuggerMessage {
 }
 wirevalue::register_type!(DebuggerMessage);
 
-hyperactor::behavior!(
-    DebuggerActor,
-    DebuggerMessage { cast = true },
-);
+hyperactor::behavior!(DebuggerActor, DebuggerMessage,);

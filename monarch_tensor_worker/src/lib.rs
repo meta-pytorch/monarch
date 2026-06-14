@@ -142,8 +142,8 @@ enum Recording {
 #[hyperactor::spawnable]
 #[hyperactor::export(
     handlers = [
-        WorkerMessage {cast = true},
-        AssignRankMessage {cast = true},
+        WorkerMessage,
+        AssignRankMessage,
     ],
 )]
 pub struct WorkerActor {

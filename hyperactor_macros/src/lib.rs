@@ -24,12 +24,10 @@ use syn::Attribute;
 use syn::Data;
 use syn::DeriveInput;
 use syn::Expr;
-use syn::ExprLit;
 use syn::Field;
 use syn::Ident;
 use syn::ItemFn;
 use syn::ItemImpl;
-use syn::Lit;
 use syn::Token;
 use syn::Type;
 use syn::WherePredicate;
@@ -1218,45 +1216,20 @@ pub fn instrument_infallible(args: TokenStream, input: TokenStream) -> TokenStre
 
 struct HandlerSpec {
     ty: Type,
-    cast: bool,
 }
 
 impl Parse for HandlerSpec {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let ty: Type = input.parse()?;
 
-        if input.peek(syn::token::Brace) {
-            let content;
-            syn::braced!(content in input);
-            let key: Ident = content.parse()?;
-            content.parse::<Token![=]>()?;
-            let expr: Expr = content.parse()?;
-
-            let cast = if key == "cast" {
-                if let Expr::Lit(ExprLit {
-                    lit: Lit::Bool(b), ..
-                }) = expr
-                {
-                    b.value
-                } else {
-                    return Err(syn::Error::new_spanned(expr, "expected boolean for `cast`"));
-                }
-            } else {
-                return Err(syn::Error::new_spanned(
-                    key,
-                    "unsupported field (expected `cast`)",
-                ));
-            };
-
-            Ok(HandlerSpec { ty, cast })
-        } else if input.is_empty() || input.peek(Token![,]) {
-            Ok(HandlerSpec { ty, cast: false })
+        if input.is_empty() || input.peek(Token![,]) {
+            Ok(HandlerSpec { ty })
         } else {
             // Something unexpected follows the type
             let unexpected: proc_macro2::TokenTree = input.parse()?;
             Err(syn::Error::new_spanned(
                 unexpected,
-                "unexpected token after type — expected `{ ... }` or nothing",
+                "unexpected token after type — use the bare message type",
             ))
         }
     }
@@ -1429,7 +1402,7 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut bind_predicates = Vec::new();
     let actor_ty: Type = syn::parse_quote!(#data_type_name #ty_generics);
 
-    for HandlerSpec { ty, cast } in &handlers {
+    for HandlerSpec { ty } in &handlers {
         let message_generics = generics_with_predicates(
             &named_generics,
             [syn::parse_quote!(#ty: hyperactor::RemoteMessage)],
@@ -1447,10 +1420,6 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
         });
         bind_predicates.push(syn::parse_quote!(#ty: hyperactor::RemoteMessage));
         bind_predicates.push(syn::parse_quote!(#actor_ty: hyperactor::Handler<#ty>));
-
-        if *cast {
-            bind_predicates.push(syn::parse_quote!(#ty: hyperactor::message::Castable));
-        }
     }
 
     let bind_generics = generics_with_predicates(&named_generics, bind_predicates);
@@ -1542,27 +1511,16 @@ impl syn::parse::Parse for BehaviorInput {
 
 /// Create a [`Referable`] definition, handling a specific set of message types.
 /// Behaviors are used to create an [`ActorRef`] without having to depend on the
-/// actor's implementation. If the message type need to be cast, add `castable`
-/// flag to those types. e.g. the following example creates a behavior with 5
-/// message types, and 4 of which need to be cast.
+/// actor's implementation. Casts are supported for any remote message handled
+/// by the actor.
 ///
 /// ```
-/// hyperactor::behavior!(
-///     TestActorBehavior,
-///     TestMessage { castable = true },
-///     () {castable = true },
-///     MyGeneric<()> {castable = true },
-///     u64,
-/// );
+/// hyperactor::behavior!(TestActorBehavior, TestMessage, (), MyGeneric<()>, u64,);
 /// ```
 ///
 /// This macro also supports generic behaviors:
 /// ```
-/// hyperactor::behavior!(
-///     TestBehavior<T>,
-///     Message<T> { castable = true },
-///     u64,
-/// );
+/// hyperactor::behavior!(TestBehavior<T>, Message<T>, u64,);
 /// ```
 #[proc_macro]
 pub fn behavior(input: TokenStream) -> TokenStream {

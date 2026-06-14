@@ -21,9 +21,9 @@ use typeuri::Named;
 
 #[derive(Debug)]
 #[hyperactor::export(
-    TestMessage { cast = true },
-    () { cast = true },
-    MyGeneric<()> { cast = true },
+    TestMessage,
+    (),
+    MyGeneric<()>,
     u64,
 )]
 struct TestActor {
@@ -120,13 +120,7 @@ impl Handler<u64> for TestActor {
     }
 }
 
-hyperactor::behavior!(
-    TestActorAlias,
-    TestMessage { cast = true },
-    () { cast = true },
-    MyGeneric<()> { cast = true },
-    u64,
-);
+hyperactor::behavior!(TestActorAlias, TestMessage, (), MyGeneric<()>, u64,);
 
 #[cfg(test)]
 mod tests {

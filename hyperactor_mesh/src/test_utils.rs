@@ -22,7 +22,7 @@ use crate::host_mesh::HostMesh;
 pub struct EmptyMessage();
 
 #[derive(Debug, PartialEq, Default)]
-#[hyperactor::export(EmptyMessage { cast = true })]
+#[hyperactor::export(EmptyMessage)]
 #[hyperactor::spawnable]
 pub struct EmptyActor();
 
