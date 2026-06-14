@@ -52,10 +52,8 @@ use device_mesh::DeviceMesh;
 use futures::future::try_join_all;
 use hyperactor as reference;
 use hyperactor::Actor;
-use hyperactor::Bind;
 use hyperactor::Handler;
 use hyperactor::RemoteSpawn;
-use hyperactor::Unbind;
 use hyperactor::actor::ActorHandle;
 use hyperactor::context;
 use hyperactor_config::Flattrs;
@@ -293,7 +291,7 @@ impl Handler<AssignRankMessage> for WorkerActor {
 
 /// Worker messages. These define the observable behavior of the worker, so the
 /// documentations here
-#[derive(Handler, Clone, Serialize, Deserialize, Debug, Named, Bind, Unbind)]
+#[derive(Handler, Clone, Serialize, Deserialize, Debug, Named)]
 pub enum AssignRankMessage {
     AssignRank(),
 }
