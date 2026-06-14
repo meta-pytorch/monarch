@@ -400,7 +400,11 @@ impl CommActor {
             );
         }
 
-        cx.post_with_external_seq_info(dest, headers, message.data().message().clone());
+        cx.post_with_external_seq_info(
+            dest,
+            headers,
+            message.data().message().clone().erase_encoding(),
+        );
 
         Ok(())
     }
