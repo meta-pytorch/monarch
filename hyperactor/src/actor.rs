@@ -482,7 +482,7 @@ where
         cx: &Context<Self>,
         msg: IndexedErasedUnbound<M>,
     ) -> anyhow::Result<()> {
-        let message = msg.downcast()?.bind()?;
+        let message = msg.deserialize()?;
         Handler::handle(self, cx, message).await
     }
 }

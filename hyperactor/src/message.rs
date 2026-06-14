@@ -65,8 +65,8 @@ pub trait Bind: Sized {
 
 /// This trait collects the necessary requirements for messages that are can be
 /// cast.
-pub trait Castable: RemoteMessage + Bind + Unbind {}
-impl<T: RemoteMessage + Bind + Unbind> Castable for T {}
+pub trait Castable: RemoteMessage {}
+impl<T: RemoteMessage> Castable for T {}
 
 /// Information extracted from a message through [Unbind], which can be merged
 /// back to the message through [Bind].
@@ -193,25 +193,34 @@ impl ErasedUnbound {
         &self.message
     }
 
+    /// Convert this wrapper into its inner serialized message.
+    pub fn into_message(self) -> wirevalue::Any {
+        self.message
+    }
+
     /// Create an object from a typed message.
     // Note: cannot implement TryFrom<T> due to conflict with core crate's blanket impl.
     // More can be found in this issue: https://github.com/rust-lang/rust/issues/50133
-    pub fn try_from_message<T: Unbind + Serialize + Named>(msg: T) -> Result<Self, anyhow::Error> {
-        let unbound = Unbound::try_from_message(msg)?;
-        let serialized = wirevalue::Any::serialize(&unbound.message)?;
+    pub fn try_from_message<T: Serialize + Named>(msg: T) -> Result<Self, anyhow::Error> {
+        let serialized =
+            wirevalue::Any::serialize_with_encoding(wirevalue::Encoding::Multipart, &msg)?;
         Ok(Self {
             message: serialized,
-            bindings: unbound.bindings,
+            bindings: Bindings::default(),
         })
     }
 
-    /// Use the provided function to update values inside bindings in the same
-    /// order as they were pushed into bindings.
+    /// Use the provided function to update matching typed multipart parts.
     pub fn visit_mut<T: Serialize + DeserializeOwned + Named>(
         &mut self,
         f: impl FnMut(&mut T) -> anyhow::Result<()>,
     ) -> anyhow::Result<()> {
-        self.bindings.visit_mut(f)
+        Ok(self.message.visit_multipart_parts_mut(f)?)
+    }
+
+    /// Deserialize the contained message.
+    pub fn deserialize<M: DeserializeOwned>(self) -> anyhow::Result<M> {
+        Ok(self.message.deserialized_unchecked()?)
     }
 
     fn downcast<M: DeserializeOwned + Named>(self) -> anyhow::Result<Unbound<M>> {
@@ -232,6 +241,10 @@ pub struct IndexedErasedUnbound<M>(ErasedUnbound, PhantomData<M>);
 impl<M: DeserializeOwned + Named> IndexedErasedUnbound<M> {
     pub(crate) fn downcast(self) -> anyhow::Result<Unbound<M>> {
         self.0.downcast()
+    }
+
+    pub(crate) fn deserialize(self) -> anyhow::Result<M> {
+        self.0.deserialize()
     }
 
     /// Access the inner serialized message.
@@ -335,8 +348,8 @@ mod tests {
     use crate as hyperactor; // for macros
     use crate::Bind;
     use crate::PortRef;
+    use crate::PortRefRepr;
     use crate::Unbind;
-    use crate::UnboundPort;
     use crate::accum::ReducerSpec;
     use crate::accum::StreamingReducerOpts;
     use crate::testing::ids::test_port_id;
@@ -383,28 +396,17 @@ mod tests {
             reply1: original_port1.clone(),
         };
 
-        let serialized_my_message = wirevalue::Any::serialize(&my_message).unwrap();
+        let serialized_multipart_my_message =
+            wirevalue::Any::serialize_with_encoding(wirevalue::Encoding::Multipart, &my_message)
+                .unwrap();
 
         // convert to ErasedUnbound
         let mut erased = ErasedUnbound::try_from_message(my_message.clone()).unwrap();
         assert_eq!(
             erased,
             ErasedUnbound {
-                message: serialized_my_message.clone(),
-                bindings: Bindings(
-                    [
-                        (
-                            UnboundPort::typehash(),
-                            wirevalue::Any::serialize(&UnboundPort::from(&original_port0)).unwrap(),
-                        ),
-                        (
-                            UnboundPort::typehash(),
-                            wirevalue::Any::serialize(&UnboundPort::from(&original_port1)).unwrap(),
-                        ),
-                    ]
-                    .into_iter()
-                    .collect()
-                ),
+                message: serialized_multipart_my_message,
+                bindings: Bindings::default(),
             }
         );
 
@@ -416,9 +418,9 @@ mod tests {
 
         let mut new_ports = vec![&new_port_id0, &new_port_id1].into_iter();
         erased
-            .visit_mut::<UnboundPort>(|b| {
+            .visit_mut::<PortRefRepr>(|b| {
                 let port = new_ports.next().unwrap();
-                b.update(port.clone());
+                b.update_port_addr(port.clone());
                 Ok(())
             })
             .unwrap();
@@ -432,38 +434,8 @@ mod tests {
             }),
             StreamingReducerOpts::default(),
         );
-        let new_bindings = Bindings(
-            [
-                (
-                    UnboundPort::typehash(),
-                    wirevalue::Any::serialize(&UnboundPort::from(&new_port0)).unwrap(),
-                ),
-                (
-                    UnboundPort::typehash(),
-                    wirevalue::Any::serialize(&UnboundPort::from(&new_port1)).unwrap(),
-                ),
-            ]
-            .into_iter()
-            .collect(),
-        );
-        assert_eq!(
-            erased,
-            ErasedUnbound {
-                message: serialized_my_message.clone(),
-                bindings: new_bindings.clone(),
-            }
-        );
-
         // convert back to MyMessage
-        let unbound = erased.downcast::<MyMessage>().unwrap();
-        assert_eq!(
-            unbound,
-            Unbound {
-                message: my_message,
-                bindings: new_bindings,
-            }
-        );
-        let new_my_message = unbound.bind().unwrap();
+        let new_my_message = erased.deserialize::<MyMessage>().unwrap();
         assert_eq!(
             new_my_message,
             MyMessage {

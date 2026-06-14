@@ -23,12 +23,12 @@ use std::time::Duration;
 use hyperactor::ActorLocal;
 use hyperactor::ActorRef;
 use hyperactor::Endpoint as _;
+use hyperactor::OncePortRefRepr;
 use hyperactor::PortRef;
+use hyperactor::PortRefRepr;
 use hyperactor::RemoteEndpoint as _;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
-use hyperactor::UnboundPort;
-use hyperactor::UnboundPortKind;
 use hyperactor::accum::ReducerMode;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Referable;
@@ -36,8 +36,6 @@ use hyperactor::context;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::message::Castable;
 use hyperactor::message::ErasedUnbound;
-use hyperactor::message::IndexedErasedUnbound;
-use hyperactor::message::Unbound;
 use hyperactor::port::Port;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::CONFIG;
@@ -467,7 +465,7 @@ impl<A: Referable> ActorMeshRef<A> {
     #[allow(clippy::result_large_err)]
     pub fn cast<M>(&self, cx: &impl context::Actor, message: M) -> crate::Result<()>
     where
-        A: RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,
+        A: RemoteHandles<M>,
         M: Castable + RemoteMessage + Clone, // Clone is required until we are fully onto comm actor
     {
         self.cast_with_headers(cx, &Flattrs::new(), message)
@@ -487,7 +485,7 @@ impl<A: Referable> ActorMeshRef<A> {
         message: M,
     ) -> crate::Result<()>
     where
-        A: RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,
+        A: RemoteHandles<M>,
         M: Castable + RemoteMessage + Clone,
     {
         self.check_cached_failure(cx)?;
@@ -524,7 +522,7 @@ impl<A: Referable> ActorMeshRef<A> {
         message: M,
     ) -> crate::Result<()>
     where
-        A: RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,
+        A: RemoteHandles<M>,
         M: Castable + RemoteMessage + Clone,
     {
         self.check_cached_failure(cx)?;
@@ -564,7 +562,7 @@ impl<A: Referable> ActorMeshRef<A> {
         message: M,
     ) -> crate::Result<()>
     where
-        A: RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,
+        A: RemoteHandles<M>,
         M: Castable + RemoteMessage + Clone, // Clone is required until we are fully onto comm actor
     {
         self.check_cached_failure(cx)?;
@@ -661,18 +659,17 @@ impl<A: Referable> ActorMeshRef<A> {
         let mut headers = caller_headers.clone();
         multicast::set_cast_info_on_headers(&mut headers, point, cx.instance().self_addr().clone());
 
-        // Make sure that we re-bind ranks, as these may be used for
+        // Make sure that we rewrite ranks, as these may be used for
         // bootstrapping comm actors.
-        let mut unbound = Unbound::try_from_message(message)
+        let mut data = ErasedUnbound::try_from_message(message)
             .map_err(|e| Error::CastingError(self.id.clone(), e))?;
-        unbound
-            .visit_mut::<resource::Rank>(|resource::Rank(rank)| {
-                *rank = Some(create_rank);
-                Ok(())
-            })
-            .map_err(|e| Error::CastingError(self.id.clone(), e))?;
-        let rebound_message = unbound
-            .bind()
+        data.visit_mut::<resource::RankRepr>(|resource::RankRepr(rank)| {
+            *rank = Some(create_rank);
+            Ok(())
+        })
+        .map_err(|e| Error::CastingError(self.id.clone(), e))?;
+        let rebound_message = data
+            .deserialize()
             .map_err(|e| Error::CastingError(self.id.clone(), e))?;
         actor.post_with_headers(cx, headers, rebound_message);
         Ok(())
@@ -688,7 +685,7 @@ impl<A: Referable> ActorMeshRef<A> {
         caller_headers: &Flattrs,
     ) -> crate::Result<()>
     where
-        A: RemoteHandles<IndexedErasedUnbound<M>>,
+        A: RemoteHandles<M>,
         M: Castable + RemoteMessage + Clone, // Clone is required until we are fully onto comm actor
     {
         let cast_mesh_shape = view::Ranked::region(self).into();
@@ -729,7 +726,7 @@ impl<A: Referable> ActorMeshRef<A> {
         root_comm_actor: &ActorRef<CommActor>,
         caller_headers: &Flattrs,
     ) where
-        A: RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,
+        A: RemoteHandles<M>,
         M: Castable + RemoteMessage,
     {
         let _ = metrics::ACTOR_MESH_CAST_DURATION.start(hyperactor::kv_pairs!(
@@ -758,40 +755,44 @@ impl<A: Referable> ActorMeshRef<A> {
             // bypassing the comm actor tree for lower latency when fanout
             // is small.
             let sender = cx.instance().self_addr().clone();
-            let dest_port = <IndexedErasedUnbound<M> as typeuri::Named>::port();
+            let dest_port = M::port();
 
             let mut data = ErasedUnbound::try_from_message(message)
                 .expect("cast message serialization should not fail");
 
             // Split ports for N destinations, matching the comm tree's
             // split_ports behavior.
-            data.visit_mut::<UnboundPort>(
-                |UnboundPort(port_id, reducer_spec, return_undeliverable, kind, unsplit)| {
-                    if *unsplit {
-                        return Ok(());
-                    }
-                    let reducer_mode = match kind {
-                        UnboundPortKind::Streaming(opts) => {
-                            ReducerMode::Streaming(opts.clone().unwrap_or_default())
-                        }
-                        UnboundPortKind::Once if reducer_spec.is_none() => {
-                            // Once ports without reducers pass through — same as
-                            // the comm tree's split_ports.
-                            return Ok(());
-                        }
-                        UnboundPortKind::Once => ReducerMode::Once(num_ranks),
-                    };
-                    let split = port_id.split(
-                        cx,
-                        reducer_spec.clone(),
-                        reducer_mode,
-                        *return_undeliverable,
-                    )?;
-                    *port_id = split;
-                    Ok(())
-                },
-            )
+            data.visit_mut::<PortRefRepr>(|port| {
+                if port.unsplit() {
+                    return Ok(());
+                }
+                let split = port.port_addr().split(
+                    cx,
+                    port.reducer_spec().clone(),
+                    ReducerMode::Streaming(port.streaming_opts().clone()),
+                    port.get_return_undeliverable(),
+                )?;
+                port.update_port_addr(split);
+                Ok(())
+            })
             .expect("port splitting should not fail");
+
+            data.visit_mut::<OncePortRefRepr>(|port| {
+                if port.unsplit() || port.reducer_spec().is_none() {
+                    // Once ports without reducers pass through, same as the comm
+                    // tree's split_ports.
+                    return Ok(());
+                }
+                let split = port.port_addr().split(
+                    cx,
+                    port.reducer_spec().clone(),
+                    ReducerMode::Once(num_ranks),
+                    true,
+                )?;
+                port.update_port_addr(split);
+                Ok(())
+            })
+            .expect("once port splitting should not fail");
 
             for rank in 0..num_ranks {
                 let mut rank_data = data.clone();
@@ -801,7 +802,7 @@ impl<A: Referable> ActorMeshRef<A> {
                     .expect("rank should be valid in region");
 
                 rank_data
-                    .visit_mut::<resource::Rank>(|resource::Rank(r)| {
+                    .visit_mut::<resource::RankRepr>(|resource::RankRepr(r)| {
                         *r = Some(cast_point.rank());
                         Ok(())
                     })
@@ -815,12 +816,8 @@ impl<A: Referable> ActorMeshRef<A> {
                     .expect("mismatched actor_ids and dest_region")
                     .port_addr(Port::handler_id(dest_port, None));
 
-                cx.instance().post(
-                    port_id,
-                    rank_headers,
-                    wirevalue::Any::serialize(&rank_data)
-                        .expect("cast message serialization should not fail"),
-                );
+                cx.instance()
+                    .post(port_id, rank_headers, rank_data.into_message());
             }
         } else {
             // Tree path: route through the comm actor tree.
@@ -828,8 +825,8 @@ impl<A: Referable> ActorMeshRef<A> {
             // rollback is not a concern.
             let sequencer = cx.instance().sequencer();
             let seqs: ValueMesh<u64> = actor_ids.map_into(|actor_id| {
-                let hyperactor::ordering::SeqInfo::Session { seq, .. } = sequencer
-                    .assign_seq(&actor_id.port_addr(Port::handler::<IndexedErasedUnbound<M>>()))
+                let hyperactor::ordering::SeqInfo::Session { seq, .. } =
+                    sequencer.assign_seq(&actor_id.port_addr(Port::handler::<M>()))
                 else {
                     unreachable!("assign_seq always returns SeqInfo::Session")
                 };

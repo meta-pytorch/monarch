@@ -17,7 +17,6 @@ use hyperactor::actor::Referable;
 use hyperactor::id::Uid;
 use hyperactor::message::Castable;
 use hyperactor::message::ErasedUnbound;
-use hyperactor::message::IndexedErasedUnbound;
 use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::declare_attrs;
 use ndslice::Extent;
@@ -121,7 +120,7 @@ impl CastMessageEnvelope {
         message: M,
     ) -> Result<Self, anyhow::Error>
     where
-        A: Referable + RemoteHandles<IndexedErasedUnbound<M>>,
+        A: Referable + RemoteHandles<M>,
         M: Castable + RemoteMessage,
     {
         let actor_uid = actor_mesh_id.uid().clone();
@@ -221,12 +220,12 @@ impl DestinationPort {
     /// Create a new DestinationPort for an actor uid and message type.
     pub fn new<A, M>(actor_uid: Uid) -> Self
     where
-        A: Referable + RemoteHandles<IndexedErasedUnbound<M>>,
+        A: Referable + RemoteHandles<M>,
         M: Castable + RemoteMessage,
     {
         Self {
             actor_uid,
-            port: IndexedErasedUnbound::<M>::port(),
+            port: M::port(),
         }
     }
 
@@ -329,7 +328,7 @@ impl CastMessageV1 {
         seqs: ValueMesh<u64>,
     ) -> Result<Self, anyhow::Error>
     where
-        A: Referable + RemoteHandles<IndexedErasedUnbound<M>>,
+        A: Referable + RemoteHandles<M>,
         M: Castable + RemoteMessage,
     {
         let data = ErasedUnbound::try_from_message(message)?;
