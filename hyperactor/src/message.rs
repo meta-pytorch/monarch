@@ -14,9 +14,9 @@
 //! Briefly, it works by following these steps:
 //!
 //! 1. On the sender side, the typed message is serialized with multipart
-//!    encoding and bundled in a [`MultipartMessage`] object.
-//! 2. On intermediate nodes, the [`MultipartMessage`] object is relayed and
-//!    selected typed parts are mutated in place.
+//!    encoding and bundled in a `wirevalue::Any<wirevalue::encoding::Multipart>`.
+//! 2. On intermediate nodes, the serialized message is relayed and selected
+//!    typed parts are mutated in place.
 //! 3. On the receiver side, the serialized message is delivered to the ordinary
 //!    typed handler port and deserialized as the final message type.
 //!
@@ -26,11 +26,6 @@
 //! trait is defined, which collects requirements for message types using
 //! multicast.
 
-use serde::Deserialize;
-use serde::Serialize;
-use serde::de::DeserializeOwned;
-use typeuri::Named;
-
 use crate::RemoteMessage;
 
 /// This trait collects the necessary requirements for messages that are can be
@@ -38,58 +33,11 @@ use crate::RemoteMessage;
 pub trait Castable: RemoteMessage {}
 impl<T: RemoteMessage> Castable for T {}
 
-/// Multipart-serialized message with its message type erased.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, typeuri::Named)]
-pub struct MultipartMessage {
-    message: wirevalue::Any<wirevalue::encoding::Multipart>,
-}
-wirevalue::register_type!(MultipartMessage);
-
-impl MultipartMessage {
-    /// Create an object directly from a multipart [`wirevalue::Any`].
-    pub fn new(message: wirevalue::Any<wirevalue::encoding::Multipart>) -> Self {
-        Self { message }
-    }
-
-    /// Access the inner serialized message.
-    pub fn message(&self) -> &wirevalue::Any<wirevalue::encoding::Multipart> {
-        &self.message
-    }
-
-    /// Convert this wrapper into its inner serialized message.
-    pub fn into_message(self) -> wirevalue::Any<wirevalue::encoding::Multipart> {
-        self.message
-    }
-
-    /// Create an object from a typed message.
-    // Note: cannot implement TryFrom<T> due to conflict with core crate's blanket impl.
-    // More can be found in this issue: https://github.com/rust-lang/rust/issues/50133
-    pub fn try_from_message<T: Serialize + Named>(msg: T) -> Result<Self, anyhow::Error> {
-        let message = wirevalue::Any::<wirevalue::encoding::Multipart>::serialize(&msg)?;
-        Ok(Self { message })
-    }
-
-    /// Use the provided function to update matching typed multipart parts.
-    pub fn visit_mut<T: Serialize + DeserializeOwned + Named>(
-        &mut self,
-        f: impl FnMut(&mut T) -> anyhow::Result<()>,
-    ) -> anyhow::Result<()> {
-        Ok(self.message.visit_multipart_parts_mut(f)?)
-    }
-
-    /// Deserialize the contained message.
-    pub fn deserialize<M: DeserializeOwned>(self) -> anyhow::Result<M> {
-        self.downcast()
-    }
-
-    fn downcast<M: DeserializeOwned>(self) -> anyhow::Result<M> {
-        Ok(self.message.deserialized_unchecked()?)
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use serde::Deserialize;
+    use serde::Serialize;
+
     use crate::PortRef;
     use crate::PortRefRepr;
     use crate::accum::ReducerSpec;
@@ -130,13 +78,9 @@ mod tests {
         let serialized_multipart_my_message =
             wirevalue::Any::<wirevalue::encoding::Multipart>::serialize(&my_message).unwrap();
 
-        let mut message = MultipartMessage::try_from_message(my_message.clone()).unwrap();
-        assert_eq!(
-            message,
-            MultipartMessage {
-                message: serialized_multipart_my_message,
-            }
-        );
+        let mut message =
+            wirevalue::Any::<wirevalue::encoding::Multipart>::serialize(&my_message).unwrap();
+        assert_eq!(message, serialized_multipart_my_message);
 
         let new_port_id0 = test_port_id("world_0", "comm", 680);
         assert_ne!(&new_port_id0, original_port0.port_addr());
@@ -145,7 +89,7 @@ mod tests {
 
         let mut new_ports = vec![&new_port_id0, &new_port_id1].into_iter();
         message
-            .visit_mut::<PortRefRepr>(|b| {
+            .visit_multipart_parts_mut::<PortRefRepr, anyhow::Error>(|b| {
                 let port = new_ports.next().unwrap();
                 b.update_port_addr(port.clone());
                 Ok(())
@@ -161,7 +105,7 @@ mod tests {
             }),
             StreamingReducerOpts::default(),
         );
-        let new_my_message = message.downcast::<MyMessage>().unwrap();
+        let new_my_message = message.deserialized_unchecked::<MyMessage>().unwrap();
         assert_eq!(
             new_my_message,
             MyMessage {
