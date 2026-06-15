@@ -982,6 +982,19 @@ class Port(Generic[R]):
         """
         ...
 
+    def send_message(self, message: PythonMessage) -> None: ...
+
+    async def resolve_and_send(self, result: object) -> None:
+        # This is Port.send with deferred-pickle resolution inserted before the
+        # already-serialized Result message is posted.
+        state = pickle(
+            result, allow_pending_pickles=True, allow_tensor_engine_references=False
+        )
+        kind = cast(PythonMessageKind, cast(Any, PythonMessageKind.Result)(self._rank))
+        message = PendingMessage(kind, state)
+        resolved = await Future(coro=cast(Any, message).resolve())
+        self.send_message(resolved)
+
     def exception(self, obj: Exception) -> None: ...
 
     def __reduce__(self) -> Tuple[Any, Tuple[Any, ...]]:
@@ -1381,7 +1394,11 @@ class _Actor:
             finally:
                 ctx.actor_instance._execution_finish(token)
 
-            response_port.send(result)
+            response = response_port.resolve_and_send(result)
+            if isinstance(response, PythonTask):
+                await Future(coro=response)
+            else:
+                await response
         except Exception as e:
             log_endpoint_exception(e, method_name, ctx.actor_instance.actor_id)
             self._post_mortem_debug(e.__traceback__)

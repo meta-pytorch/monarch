@@ -84,6 +84,7 @@ use crate::metrics::ENDPOINT_ACTOR_PANIC;
 use crate::pickle::pickle_to_part;
 use crate::proc::PyActorAddr;
 use crate::pympsc;
+use crate::pytokio::PyPythonTask;
 use crate::pytokio::PythonTask;
 use crate::runtime::get_tokio_runtime;
 use crate::runtime::monarch_with_gil;
@@ -1901,6 +1902,10 @@ impl LocalPort {
         port.post(self.instance.deref(), Ok(obj));
         Ok(())
     }
+    fn resolve_and_send(&mut self, obj: Py<PyAny>) -> PyResult<PyPythonTask> {
+        self.send(obj)?;
+        PyPythonTask::new(async { Ok(()) })
+    }
     fn exception(&mut self, e: Py<PyAny>) -> PyResult<()> {
         let port = self.inner.take().expect("use local port once");
         port.post(self.instance.deref(), Err(e));
@@ -1923,6 +1928,15 @@ impl DroppingPort {
     }
 
     fn send(&self, _obj: Py<PyAny>) -> PyResult<()> {
+        Ok(())
+    }
+
+    fn resolve_and_send(&self, obj: Py<PyAny>) -> PyResult<PyPythonTask> {
+        self.send(obj)?;
+        PyPythonTask::new(async { Ok(()) })
+    }
+
+    fn send_message(&self, _message: PythonMessage) -> PyResult<()> {
         Ok(())
     }
 
@@ -2000,6 +2014,12 @@ impl Port {
             pickle_to_part(py, &obj)?,
         );
 
+        self.port_ref
+            .post_with_headers(&self.instance, self.reply_headers.clone(), message)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    }
+
+    fn send_message(&mut self, message: PythonMessage) -> PyResult<()> {
         self.port_ref
             .post_with_headers(&self.instance, self.reply_headers.clone(), message)
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))
