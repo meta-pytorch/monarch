@@ -56,9 +56,6 @@ use hyperactor::mailbox::OncePortReceiver;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::mailbox::open_once_port;
 use hyperactor::mailbox::open_port;
-use hyperactor::message::Bind;
-use hyperactor::message::Bindings;
-use hyperactor::message::Unbind;
 use pin_project::pin_project;
 use pin_project::pinned_drop;
 use serde::Deserialize;
@@ -354,20 +351,6 @@ struct Accept {
     conn: PortRef<Io>,
 }
 wirevalue::register_type!(Accept);
-
-impl Bind for Connect {
-    fn bind(&mut self, bindings: &mut Bindings) -> Result<()> {
-        self.conn.bind(bindings)?;
-        self.return_conn.bind(bindings)
-    }
-}
-
-impl Unbind for Connect {
-    fn unbind(&self, bindings: &mut Bindings) -> Result<()> {
-        self.conn.unbind(bindings)?;
-        self.return_conn.unbind(bindings)
-    }
-}
 
 /// Helper used by `Handler<Connect>`s to accept a connection initiated by a `Connect` message and
 /// return `AsyncRead` and `AsyncWrite` streams that can be used to communicate with the other side.

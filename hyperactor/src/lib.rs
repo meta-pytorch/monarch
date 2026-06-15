@@ -47,7 +47,6 @@
 //! | Actor     | `addr,proc_name,name[pid]`    |
 
 #![feature(anonymous_lifetime_in_impl_trait)]
-#![feature(assert_matches)]
 #![feature(associated_type_defaults)]
 #![feature(box_patterns)]
 #![feature(btree_cursors)]
@@ -134,15 +133,11 @@ pub use endpoint::EndpointLocation;
 pub use endpoint::RemoteEndpoint;
 pub use gateway::Gateway;
 #[doc(inline)]
-pub use hyperactor_macros::Bind;
-#[doc(inline)]
 pub use hyperactor_macros::HandleClient;
 #[doc(inline)]
 pub use hyperactor_macros::Handler;
 #[doc(inline)]
 pub use hyperactor_macros::RefClient;
-#[doc(inline)]
-pub use hyperactor_macros::Unbind;
 #[doc(inline)]
 pub use hyperactor_macros::behavior;
 #[doc(inline)]
@@ -192,9 +187,11 @@ pub use proc::Proc;
 pub use proc::WeakProc;
 pub use ref_::ActorRef;
 pub use ref_::OncePortRef;
+#[doc(hidden)]
+pub use ref_::OncePortRefRepr;
 pub use ref_::PortRef;
-pub use ref_::UnboundPort;
-pub use ref_::UnboundPortKind;
+#[doc(hidden)]
+pub use ref_::PortRefRepr;
 pub use remote::Accepts;
 /// Rank or position index used by distributed mesh helpers.
 pub type Index = usize;

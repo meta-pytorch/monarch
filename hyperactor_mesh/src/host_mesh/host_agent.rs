@@ -275,9 +275,9 @@ impl fmt::Debug for DrainWorker {
         resource::Stop,
         resource::GetState<ProcState>,
         resource::KeepaliveGetState<ProcState>,
-        resource::StreamState<ProcState> { cast = true },
-        resource::GetRankStatus { cast = true },
-        resource::WaitRankStatus { cast = true },
+        resource::StreamState<ProcState>,
+        resource::GetRankStatus,
+        resource::WaitRankStatus,
         resource::List,
         ShutdownHost,
         DrainHost,
@@ -1159,17 +1159,7 @@ impl Handler<ShutdownHost> for HostAgent {
     }
 }
 
-#[derive(
-    Debug,
-    Clone,
-    PartialEq,
-    Eq,
-    Named,
-    Serialize,
-    Deserialize,
-    hyperactor::Bind,
-    hyperactor::Unbind
-)]
+#[derive(Debug, Clone, PartialEq, Eq, Named, Serialize, Deserialize)]
 pub struct ProcState {
     pub proc_id: ProcAddr,
     pub create_rank: usize,

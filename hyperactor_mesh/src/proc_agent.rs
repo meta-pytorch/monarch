@@ -22,7 +22,6 @@ use hyperactor::Actor;
 use hyperactor::ActorAddr;
 use hyperactor::ActorHandle;
 use hyperactor::Addr;
-use hyperactor::Bind;
 use hyperactor::Client;
 use hyperactor::Context;
 use hyperactor::Data;
@@ -33,7 +32,6 @@ use hyperactor::PortAddr;
 use hyperactor::PortHandle;
 use hyperactor::PortRef;
 use hyperactor::RemoteEndpoint as _;
-use hyperactor::Unbind;
 use hyperactor::actor::handle_undeliverable_message;
 use hyperactor::actor::remote::Remote;
 use hyperactor::id::Label;
@@ -43,6 +41,7 @@ use hyperactor::mailbox::Undeliverable;
 use hyperactor::mailbox::UndeliverableReason;
 use hyperactor::proc::Proc;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor_cast::cast_actor::CAST_ACTOR_NAME;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::Flattrs;
@@ -113,7 +112,7 @@ declare_attrs! {
 /// - `emit_memory_metrics: true` — sent from `Actor::init` and
 ///   re-armed by the handler at the `PROCESS_MEMORY_METRIC_INTERVAL`
 ///   cadence.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
 struct RepublishIntrospect {
     emit_memory_metrics: bool,
 }
@@ -252,17 +251,7 @@ impl ActorInstanceState {
     }
 }
 
-#[derive(
-    Clone,
-    Debug,
-    Default,
-    PartialEq,
-    Serialize,
-    Deserialize,
-    Named,
-    Bind,
-    Unbind
-)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Named)]
 pub(crate) struct SelfCheck {}
 
 /// A mesh agent is responsible for managing procs in a [`ProcMesh`].
@@ -288,15 +277,15 @@ pub(crate) struct SelfCheck {}
 #[hyperactor::export(
     handlers=[
         ActorSupervisionEvent,
-        resource::CreateOrUpdate<ActorSpec> { cast = true },
-        resource::Stop { cast = true },
-        resource::StopAll { cast = true },
-        resource::GetState<ActorState> { cast = true },
-        resource::StreamState<ActorState> { cast = true },
-        resource::KeepaliveGetState<ActorState> { cast = true },
-        resource::GetRankStatus { cast = true },
-        resource::WaitRankStatus { cast = true },
-        RepublishIntrospect { cast = true },
+        resource::CreateOrUpdate<ActorSpec>,
+        resource::Stop,
+        resource::StopAll,
+        resource::GetState<ActorState>,
+        resource::StreamState<ActorState>,
+        resource::KeepaliveGetState<ActorState>,
+        resource::GetRankStatus,
+        resource::WaitRankStatus,
+        RepublishIntrospect,
         PySpyDump,
         PySpyProfile,
         ConfigDump,
@@ -331,7 +320,7 @@ impl ProcAgent {
         shutdown_tx: Option<tokio::sync::oneshot::Sender<i32>>,
     ) -> Result<ActorHandle<Self>, anyhow::Error> {
         let cast_handle = proc.spawn_with_uid(
-            Uid::singleton(Label::strip("cast")),
+            Uid::singleton(Label::strip(CAST_ACTOR_NAME)),
             hyperactor_cast::cast_actor::CastActor::default(),
         )?;
         cast_handle.bind::<hyperactor_cast::cast_actor::CastActor>();
@@ -886,7 +875,7 @@ pub struct ActorSpec {
 wirevalue::register_type!(ActorSpec);
 
 /// Actor state.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
 pub struct ActorState {
     /// The actor's ID.
     pub actor_id: ActorAddr,

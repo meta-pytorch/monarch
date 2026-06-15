@@ -7,6 +7,7 @@
 # pyre-strict
 
 import abc
+import asyncio
 import collections
 import contextvars
 import functools
@@ -1221,9 +1222,11 @@ async def _dispatch_loop(
             an unhandled exception.
     """
     while True:
-        msg = await receiver.recv()
         try:
+            msg = await receiver.recv()
             await _handle_queued_message(actor, msg)
+        except asyncio.CancelledError:
+            return
         except BaseException as e:
             reason = "".join(TracebackException.from_exception(e).format())
             self_instance.kill(reason)

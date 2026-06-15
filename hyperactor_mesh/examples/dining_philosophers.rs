@@ -17,13 +17,11 @@ use async_trait::async_trait;
 use clap::Parser;
 use hyperactor as reference;
 use hyperactor::Actor;
-use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::RemoteSpawn;
-use hyperactor::Unbind;
 use hyperactor::context;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::ActorMesh;
@@ -60,7 +58,7 @@ enum ChopstickStatus {
 }
 
 #[derive(Debug)]
-#[hyperactor::export(PhilosopherMessage { cast = true })]
+#[hyperactor::export(PhilosopherMessage)]
 #[hyperactor::spawnable]
 struct PhilosopherActor {
     /// Status of left and right chopsticks
@@ -74,13 +72,13 @@ struct PhilosopherActor {
 }
 
 /// Message from the waiter to a philosopher
-#[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
+#[derive(Debug, Serialize, Deserialize, Named, Clone)]
 #[expect(
     clippy::large_enum_variant,
-    reason = "example actor message with #[binding(include)] PortRef whose Bind/Unbind derive interaction with Box<T> needs verification — separate diff"
+    reason = "example actor message with PortRef; boxing fields would make the example harder to read"
 )]
 enum PhilosopherMessage {
-    Start(#[binding(include)] reference::PortRef<WaiterMessage>),
+    Start(reference::PortRef<WaiterMessage>),
     GrantChopstick(usize),
 }
 
