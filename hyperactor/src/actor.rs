@@ -1111,7 +1111,7 @@ impl Debug for AnyActorGuard {
 }
 
 /// IntoFuture allows users to await the handle to join it. The future
-/// resolves when the actor itself has stopped processing messages.
+/// resolves when the actor runtime has fully stopped.
 /// The future resolves to the actor's final status.
 impl IntoFuture for AnyActorHandle {
     type Output = ActorStatus;
@@ -1148,7 +1148,7 @@ impl Clone for AnyActorHandle {
 }
 
 /// IntoFuture allows users to await the handle to join it. The future
-/// resolves when the actor itself has stopped processing messages.
+/// resolves when the actor runtime has fully stopped.
 /// The future resolves to the actor's final status.
 impl<A: Actor> IntoFuture for ActorHandle<A> {
     type Output = ActorStatus;
@@ -3244,8 +3244,8 @@ mod tests {
 
     /// Exercises CI-2 (see `proc` module doc).
     ///
-    /// Dropping the instance transitions status to terminal,
-    /// causing `serve_introspect` to store a terminated snapshot.
+    /// Dropping the instance shuts down and joins `serve_introspect`
+    /// before terminal status is published.
     #[tokio::test]
     async fn test_introspectable_instance_snapshot_on_drop() {
         let proc = Proc::isolated();
@@ -3257,21 +3257,8 @@ mod tests {
             "should appear in all_actor_ids while live"
         );
 
-        // Dropping `instance` transitions status to Stopped, waking
-        // the serve_introspect task which stores the snapshot.
         drop(instance);
-
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            if proc.terminated_snapshot(&actor_id).is_some() {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "timed out waiting for terminated snapshot"
-            );
-            tokio::task::yield_now().await;
-        }
+        handle.await;
 
         let snapshot = proc.terminated_snapshot(&actor_id).unwrap();
         let actor_status = attrs_get(&snapshot.attrs, "status")
