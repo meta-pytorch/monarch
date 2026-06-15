@@ -368,6 +368,20 @@ impl IbvDeviceInfo {
         &self.ports
     }
 
+    /// Aggregate bandwidth (MB/s) of the device's fastest active port,
+    /// derived from its IB `active_speed` / `active_width`. 0 if no port
+    /// is active (callers treat 0 as "unknown", applying no cap).
+    pub fn port_speed_mbytes_per_sec(&self) -> u32 {
+        self.ports
+            .iter()
+            .filter(|port| port.state == rdmaxcel_sys::ibv_port_state::IBV_PORT_ACTIVE)
+            .map(|port| {
+                ib_width_lanes(port.active_width) * ib_speed_mbits_per_lane(port.active_speed) / 8
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
     /// Returns the maximum number of queue pairs supported by the RDMA device.
     pub fn max_qp(&self) -> i32 {
         self.max_qp
@@ -418,8 +432,8 @@ impl Default for IbvDeviceInfo {
 pub struct IbvPort {
     /// `port_num` - The physical port number on the device.
     port_num: u8,
-    /// `state` - The current state of the port.
-    state: String,
+    /// `state` - The raw `ibv_port_state` of the port.
+    state: rdmaxcel_sys::ibv_port_state::Type,
     /// `physical_state` - The physical state of the port.
     physical_state: String,
     /// `base_lid` - Base Local Identifier for the port.
@@ -436,6 +450,10 @@ pub struct IbvPort {
     gid: String,
     /// `gid_tbl_len` - Length of the GID table.
     gid_tbl_len: i32,
+    /// `active_speed` - IB active speed bitmask (one bit set).
+    active_speed: u8,
+    /// `active_width` - IB active width bitmask (one bit set).
+    active_width: u8,
 }
 
 impl fmt::Display for IbvDeviceInfo {
@@ -465,7 +483,7 @@ impl fmt::Display for IbvDeviceInfo {
 impl fmt::Display for IbvPort {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "\tPort {}:", self.port_num)?;
-        writeln!(f, "\t\tState: {}", self.state)?;
+        writeln!(f, "\t\tState: {}", get_port_state_str(self.state))?;
         writeln!(f, "\t\tPhysical state: {}", self.physical_state)?;
         writeln!(f, "\t\tBase lid: {}", self.base_lid)?;
         writeln!(f, "\t\tLMC: {}", self.lmc)?;
@@ -476,6 +494,33 @@ impl fmt::Display for IbvPort {
         writeln!(f, "\t\tGID table length: {}", self.gid_tbl_len)?;
         Ok(())
     }
+}
+
+/// Per-lane IB bandwidth (Mbit/s) for an `active_speed` bitmask, indexed by
+/// its lowest set bit (SDR, DDR, QDR, QDR, FDR, EDR, HDR, NDR). Values match
+/// NCCL's `ibvSpeeds` (`transport/net_ib/init.cc`). The `active_speed` field
+/// is a `u8`, so NCCL's 9th rate (XDR, bit 8) is not representable here; an
+/// unset value yields 0.
+fn ib_speed_mbits_per_lane(active_speed: u8) -> u32 {
+    const RATES: [u32; 8] = [2500, 5000, 10000, 10000, 14000, 25000, 50000, 100000];
+    first_set_bit(active_speed)
+        .and_then(|bit| RATES.get(bit).copied())
+        .unwrap_or(0)
+}
+
+/// IB link width in lanes for an `active_width` bitmask, indexed by its
+/// lowest set bit (1x, 4x, 8x, 12x, 2x); values match NCCL's `ibvWidths`
+/// (`transport/net_ib/init.cc`). An unset value yields 0.
+fn ib_width_lanes(active_width: u8) -> u32 {
+    const WIDTHS: [u32; 5] = [1, 4, 8, 12, 2];
+    first_set_bit(active_width)
+        .and_then(|bit| WIDTHS.get(bit).copied())
+        .unwrap_or(0)
+}
+
+/// Index of the lowest set bit, or `None` if `v` is 0.
+fn first_set_bit(v: u8) -> Option<usize> {
+    (v != 0).then(|| v.trailing_zeros() as usize)
 }
 
 /// Converts the given port state to a human-readable string.
@@ -627,7 +672,6 @@ pub(super) unsafe fn query_device_info(
         {
             continue;
         }
-        let state = get_port_state_str(port_attr.state);
         let physical_state = get_port_phy_state_str(port_attr.phys_state);
         let link_layer = get_link_layer_str(port_attr.link_layer);
         let mut gid = rdmaxcel_sys::ibv_gid::default();
@@ -644,7 +688,7 @@ pub(super) unsafe fn query_device_info(
         };
         info.ports.push(IbvPort {
             port_num,
-            state,
+            state: port_attr.state,
             physical_state,
             base_lid: port_attr.lid,
             lmc: port_attr.lmc,
@@ -653,6 +697,8 @@ pub(super) unsafe fn query_device_info(
             link_layer,
             gid: gid_str,
             gid_tbl_len: port_attr.gid_tbl_len,
+            active_speed: port_attr.active_speed,
+            active_width: port_attr.active_width,
         });
     }
     Some(info)
@@ -1107,7 +1153,7 @@ mod tests {
             let port = &device.ports()[0];
             let display_output = format!("{}", port);
             assert!(
-                display_output.contains(&port.state),
+                display_output.contains(&get_port_state_str(port.state)),
                 "display should include port state"
             );
             assert!(
@@ -1115,6 +1161,95 @@ mod tests {
                 "display should include link layer"
             );
         }
+    }
+
+    #[test]
+    fn test_ib_speed_mbits_per_lane() {
+        // `active_speed` is a one-hot bitmask, indexed by its lowest set
+        // bit. Values mirror NCCL's `ibvSpeeds` (SDR..NDR).
+        assert_eq!(ib_speed_mbits_per_lane(1), 2500); // SDR
+        assert_eq!(ib_speed_mbits_per_lane(2), 5000); // DDR
+        assert_eq!(ib_speed_mbits_per_lane(4), 10000); // QDR
+        assert_eq!(ib_speed_mbits_per_lane(8), 10000); // QDR / FDR10
+        assert_eq!(ib_speed_mbits_per_lane(16), 14000); // FDR
+        assert_eq!(ib_speed_mbits_per_lane(32), 25000); // EDR
+        assert_eq!(ib_speed_mbits_per_lane(64), 50000); // HDR
+        assert_eq!(ib_speed_mbits_per_lane(128), 100000); // NDR
+        assert_eq!(ib_speed_mbits_per_lane(0), 0); // unset → unknown
+    }
+
+    #[test]
+    fn test_ib_width_lanes() {
+        assert_eq!(ib_width_lanes(1), 1); // 1x
+        assert_eq!(ib_width_lanes(2), 4); // 4x
+        assert_eq!(ib_width_lanes(4), 8); // 8x
+        assert_eq!(ib_width_lanes(8), 12); // 12x
+        assert_eq!(ib_width_lanes(16), 2); // 2x
+        assert_eq!(ib_width_lanes(0), 0); // unset → unknown
+    }
+
+    #[test]
+    fn test_port_speed_mbytes_per_sec() {
+        use rdmaxcel_sys::ibv_port_state::IBV_PORT_ACTIVE;
+        use rdmaxcel_sys::ibv_port_state::IBV_PORT_DOWN;
+        fn mk_port(
+            state: rdmaxcel_sys::ibv_port_state::Type,
+            active_speed: u8,
+            active_width: u8,
+        ) -> IbvPort {
+            IbvPort {
+                port_num: 1,
+                state,
+                physical_state: String::new(),
+                base_lid: 0,
+                lmc: 0,
+                sm_lid: 0,
+                capability_mask: 0,
+                link_layer: String::new(),
+                gid: String::new(),
+                gid_tbl_len: 0,
+                active_speed,
+                active_width,
+            }
+        }
+        fn mk_device(ports: Vec<IbvPort>) -> IbvDeviceInfo {
+            IbvDeviceInfo {
+                name: "test".to_string(),
+                vendor_id: 0,
+                vendor_part_id: 0,
+                hw_ver: 0,
+                fw_ver: String::new(),
+                node_guid: 0,
+                ports,
+                max_qp: 0,
+                max_cq: 0,
+                max_mr: 0,
+                max_pd: 0,
+                max_qp_wr: 0,
+                max_sge: 0,
+            }
+        }
+
+        // NDR (128) x4 (width bit 2): 100000 * 4 / 8 = 50000 MB/s.
+        assert_eq!(
+            mk_device(vec![mk_port(IBV_PORT_ACTIVE, 128, 2)]).port_speed_mbytes_per_sec(),
+            50000
+        );
+
+        // The fastest port is DOWN, so it is ignored; the result is the
+        // fastest ACTIVE port, not the (faster) down one.
+        let mixed = mk_device(vec![
+            mk_port(IBV_PORT_ACTIVE, 32, 2), // EDR x4 = 12500
+            mk_port(IBV_PORT_ACTIVE, 64, 2), // HDR x4 = 25000 (fastest ACTIVE)
+            mk_port(IBV_PORT_DOWN, 128, 2),  // NDR x4 = 50000, but DOWN → ignored
+        ]);
+        assert_eq!(mixed.port_speed_mbytes_per_sec(), 25000);
+
+        // No ACTIVE port → 0 (treated as unknown, no cap).
+        assert_eq!(
+            mk_device(vec![mk_port(IBV_PORT_DOWN, 128, 2)]).port_speed_mbytes_per_sec(),
+            0
+        );
     }
 
     #[test]
