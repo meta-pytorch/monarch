@@ -81,6 +81,7 @@ use monarch_rdma::IbvConfig;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
 use monarch_rdma::RdmaRemoteBuffer;
+use monarch_rdma::backend::ibverbs::device_selection::IbvDeviceTarget;
 use monarch_rdma::local_memory::Keepalive;
 use monarch_rdma::local_memory::KeepaliveLocalMemory;
 use ndslice::extent;
@@ -475,13 +476,13 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
     // Quick check for H100
     if devices.len() > 4 {
         ps_ibv_config = IbvConfig {
-            device: devices.clone().into_iter().next().unwrap(),
+            target: IbvDeviceTarget::nic(devices[0].name().clone()),
             ..Default::default()
         };
         // The second device used is the 3rd. Main reason is because 0 and 3 are both backend
         // devices on gtn H100 devices.
         worker_ibv_config = IbvConfig {
-            device: devices.clone().into_iter().nth(3).unwrap(),
+            target: IbvDeviceTarget::nic(devices[3].name().clone()),
             ..Default::default()
         };
     } else {

@@ -29,6 +29,7 @@ use hyperactor::channel::ChannelAddr;
 use hyperactor_config::Flattrs;
 
 use super::IbvBuffer;
+use super::device_selection::IbvDeviceTarget;
 use super::manager_actor::IbvManagerActor;
 use super::manager_actor::IbvManagerMessageClient;
 use super::mlx_device::MlxDevice;
@@ -532,6 +533,17 @@ pub struct Buffer {
     cpu_ref: Option<Box<[u8]>>,
 }
 
+/// Maps a test accelerator string (`"cpu:0"`, `"cuda:1"`, `"nic:mlx5_0"`)
+/// to an [`IbvDeviceTarget`].
+fn accel_target(accel: &str) -> IbvDeviceTarget {
+    let (backend, idx) = accel.split_once(':').unwrap();
+    match backend {
+        "cuda" => IbvDeviceTarget::gpu(idx.parse().unwrap()),
+        "nic" => IbvDeviceTarget::nic(idx),
+        _ => IbvDeviceTarget::cpu(idx.parse().unwrap()),
+    }
+}
+
 /// Helper function to parse accelerator strings
 async fn parse_accel(accel: &str, config: &mut IbvConfig) -> (String, usize) {
     let (backend, idx) = accel.split_once(':').unwrap();
@@ -564,8 +576,8 @@ impl DoorbellTestEnv {
         accel2: &str,
         qp_type: super::primitives::IbvQpType,
     ) -> Result<Self, anyhow::Error> {
-        let mut config1 = IbvConfig::targeting(accel1);
-        let mut config2 = IbvConfig::targeting(accel2);
+        let mut config1 = IbvConfig::targeting(accel_target(accel1));
+        let mut config2 = IbvConfig::targeting(accel_target(accel2));
 
         config1.qp_type = qp_type;
         config2.qp_type = qp_type;

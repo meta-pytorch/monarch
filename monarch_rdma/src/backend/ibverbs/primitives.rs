@@ -38,7 +38,9 @@ use typeuri::Named;
 use super::domain::IbvDomain;
 use crate::backend::ibverbs::device::IbvDeviceImpl;
 use crate::backend::ibverbs::device::list_all_devices;
-use crate::backend::ibverbs::efa_device::EfaDevice;
+use crate::backend::ibverbs::device_selection::IbvDeviceTarget;
+use crate::backend::ibverbs::device_selection::resolve_target;
+use crate::device_selection::MemoryLocation;
 
 #[derive(
     Default,
@@ -134,8 +136,9 @@ pub fn resolve_qp_type(qp_type: IbvQpType) -> u32 {
 /// parameters.
 #[derive(Debug, Named, Clone, Serialize, Deserialize)]
 pub struct IbvConfig {
-    /// `device` - The RDMA device to use for the connection.
-    pub device: IbvDeviceInfo,
+    /// `target` - Which RDMA device to use. A consumer resolves this to a
+    /// concrete device for its backend via [`resolve_target`].
+    pub target: IbvDeviceTarget,
     /// `cq_entries` - The number of completion queue entries.
     pub cq_entries: i32,
     /// `port_num` - The physical port number on the device.
@@ -182,13 +185,14 @@ pub struct IbvConfig {
 }
 wirevalue::register_type!(IbvConfig);
 
-/// Default RDMA parameters below are based on common values from rdma-core examples
-/// For high-performance or production use, consider tuning
-/// based on ibv_query_device() results and workload characteristics
+/// rdma-core defaults below come from common rdma-core examples; tune for
+/// production based on `ibv_query_device()` results and workload
+/// characteristics. The default target is CPU NUMA node 0; a consumer
+/// resolves it to a concrete device for its backend via [`resolve_target`].
 impl Default for IbvConfig {
     fn default() -> Self {
-        let mut config = Self {
-            device: IbvDeviceInfo::default(),
+        Self {
+            target: IbvDeviceTarget::MemoryLocation(MemoryLocation::Cpu(Some(0))),
             cq_entries: 1024,
             port_num: 1,
             gid_index: 3,
@@ -209,46 +213,16 @@ impl Default for IbvConfig {
             hw_init_delay_ms: 2,
             qp_type: IbvQpType::Auto,
             max_sge_override: 0,
-        };
-        if crate::efa::is_efa_device() {
-            EfaDevice::apply_config_defaults(&mut config);
         }
-        config
     }
 }
 
 impl IbvConfig {
-    /// Create a new IbvConfig targeting a specific device
-    ///
-    /// Device targets use a unified "type:id" format:
-    /// - "cpu:N" -> finds RDMA device closest to NUMA node N
-    /// - "cuda:N" -> finds RDMA device closest to CUDA device N
-    /// - "nic:mlx5_N" -> returns the specified NIC directly
-    ///
-    /// Shortcuts:
-    /// - "cpu" -> defaults to "cpu:0"
-    /// - "cuda" -> defaults to "cuda:0"
-    ///
-    /// # Arguments
-    ///
-    /// * `target` - Target device specification
-    ///
-    /// # Returns
-    ///
-    /// * `IbvConfig` with resolved device, or default device if resolution fails
-    pub fn targeting(target: &str) -> Self {
-        // Normalize shortcuts
-        let normalized_target = match target {
-            "cpu" => "cpu:0",
-            "cuda" => "cuda:0",
-            _ => target,
-        };
-
-        let device = super::device_selection::select_optimal_ibv_device(Some(normalized_target))
-            .unwrap_or_default();
-
+    /// An [`IbvConfig`] with default parameters whose device
+    /// [`target`](Self::target) is `target` (see [`IbvDeviceTarget`]).
+    pub fn targeting(target: IbvDeviceTarget) -> Self {
         Self {
-            device,
+            target,
             ..Default::default()
         }
     }
@@ -258,8 +232,8 @@ impl std::fmt::Display for IbvConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "IbvConfig {{ device: {}, port_num: {}, gid_index: {}, max_send_wr: {}, max_recv_wr: {}, max_send_sge: {}, max_recv_sge: {}, path_mtu: {:?}, retry_cnt: {}, rnr_retry: {}, qp_timeout: {}, min_rnr_timer: {}, max_dest_rd_atomic: {}, max_rd_atomic: {}, pkey_index: {}, psn: 0x{:x} }}",
-            self.device.name(),
+            "IbvConfig {{ target: {:?}, port_num: {}, gid_index: {}, max_send_wr: {}, max_recv_wr: {}, max_send_sge: {}, max_recv_sge: {}, path_mtu: {:?}, retry_cnt: {}, rnr_retry: {}, qp_timeout: {}, min_rnr_timer: {}, max_dest_rd_atomic: {}, max_rd_atomic: {}, pkey_index: {}, psn: 0x{:x} }}",
+            self.target,
             self.port_num,
             self.gid_index,
             self.max_send_wr,
@@ -370,7 +344,7 @@ impl IbvDeviceInfo {
 
     /// Aggregate bandwidth (MB/s) of the device's fastest active port,
     /// derived from its IB `active_speed` / `active_width`. 0 if no port
-    /// is active (callers treat 0 as "unknown", applying no cap).
+    /// is active, which ranks the device at the worst case.
     pub fn port_speed_mbytes_per_sec(&self) -> u32 {
         self.ports
             .iter()
@@ -413,18 +387,16 @@ impl IbvDeviceInfo {
     }
 }
 
-impl Default for IbvDeviceInfo {
-    fn default() -> Self {
-        // Try to get a smart default using device selection logic (defaults to cpu:0)
-        if let Some(device) = super::device_selection::select_optimal_ibv_device(Some("cpu:0")) {
-            device
-        } else {
-            // Fallback to first available device
-            list_all_devices()
-                .into_iter()
-                .next()
-                .unwrap_or_else(|| panic!("No RDMA devices found"))
-        }
+impl IbvDeviceInfo {
+    /// The optimal default device of backend `I`: the best NIC for CPU
+    /// memory on any NUMA node. Panics if `I` has no devices.
+    #[expect(
+        clippy::should_implement_trait,
+        reason = "generic over the backend impl, so it cannot be the parameterless Default::default"
+    )]
+    pub fn default<I: IbvDeviceImpl>() -> Self {
+        resolve_target::<I>(&IbvDeviceTarget::MemoryLocation(MemoryLocation::Cpu(None)))
+            .unwrap_or_else(|| panic!("no RDMA device for backend {}", I::backend_name()))
     }
 }
 
@@ -496,11 +468,11 @@ impl fmt::Display for IbvPort {
     }
 }
 
-/// Per-lane IB bandwidth (Mbit/s) for an `active_speed` bitmask, indexed by
-/// its lowest set bit (SDR, DDR, QDR, QDR, FDR, EDR, HDR, NDR). Values match
-/// NCCL's `ibvSpeeds` (`transport/net_ib/init.cc`). The `active_speed` field
-/// is a `u8`, so NCCL's 9th rate (XDR, bit 8) is not representable here; an
-/// unset value yields 0.
+/// Per-lane IB bandwidth (Mbit/s) for an `active_speed` bitmask,
+/// indexed by its lowest set bit (SDR, DDR, QDR, QDR, FDR, EDR, HDR, NDR).
+/// Values match NCCL's `ibvSpeeds` (`transport/net_ib/init.cc`). The
+/// `active_speed` field is a `u8`, so NCCL's 9th rate (XDR, bit 8) is not
+/// representable here; an unset value yields 0.
 fn ib_speed_mbits_per_lane(active_speed: u8) -> u32 {
     const RATES: [u32; 8] = [2500, 5000, 10000, 10000, 14000, 25000, 50000, 100000];
     first_set_bit(active_speed)

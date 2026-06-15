@@ -412,18 +412,11 @@ impl CudaAllocator {
 }
 
 /// Number of CUDA devices visible to the driver, or 0 on failure.
+/// Delegates to the canonical
+/// [`crate::backend::ibverbs::device_selection::cuda_device_count`].
 #[cfg(test)]
 pub(crate) fn cuda_device_count() -> i32 {
-    unsafe {
-        if rdmaxcel_sys::rdmaxcel_cuInit(0) != rdmaxcel_sys::CUDA_SUCCESS {
-            return 0;
-        }
-        let mut count: i32 = 0;
-        if rdmaxcel_sys::rdmaxcel_cuDeviceGetCount(&mut count) != rdmaxcel_sys::CUDA_SUCCESS {
-            return 0;
-        }
-        count
-    }
+    crate::backend::ibverbs::device_selection::cuda_device_count() as i32
 }
 
 /// Segment scanner callback compatible with `rdmaxcel_segment_scanner_fn`.

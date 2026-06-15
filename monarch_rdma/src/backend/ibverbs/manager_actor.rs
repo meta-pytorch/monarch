@@ -49,10 +49,12 @@ use super::IbvBuffer;
 use super::IbvOp;
 use super::device::IbvDevice;
 use super::device::IbvDeviceImpl;
+use super::device_selection::resolve_target;
 use super::domain::IbvDomain;
 use super::efa_device::EfaDevice;
 use super::mlx_device::MlxDevice;
 use super::primitives::IbvConfig;
+use super::primitives::IbvDeviceInfo;
 use super::primitives::IbvMemoryRegion;
 use super::primitives::IbvMemoryRegionView;
 use super::primitives::IbvQpInfo;
@@ -313,7 +315,7 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
                 config
             }
         };
-        tracing::debug!("rdma is enabled, config device hint: {}", config.device);
+        tracing::debug!("rdma is enabled, config target: {:?}", config.target);
 
         let mlx5dv_enabled = resolve_qp_type(config.qp_type) == rdmaxcel_sys::RDMA_QP_TYPE_MLX5DV;
 
@@ -502,7 +504,10 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
             let device_name = if let Some(info) = selected_rdma_device {
                 info.name().clone()
             } else {
-                self.config.device.name().clone()
+                resolve_target::<I>(&self.config.target)
+                    .unwrap_or_else(|| IbvDeviceInfo::default::<I>())
+                    .name()
+                    .clone()
             };
             tracing::debug!(
                 "Using RDMA device: {} for memory at 0x{:x}",
@@ -1160,6 +1165,7 @@ mod tests {
     use crate::backend::cuda_test_utils::CudaAllocation;
     use crate::backend::cuda_test_utils::CudaAllocator;
     use crate::backend::ibverbs::device::list_all_devices;
+    use crate::backend::ibverbs::device_selection::IbvDeviceTarget;
     use crate::backend::ibverbs::primitives::IbvQpType;
     use crate::local_memory::KeepaliveLocalMemory;
 
@@ -1650,7 +1656,7 @@ mod tests {
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_register_remote_buffer_fills_mr_slot() -> Result<(), anyhow::Error> {
         require_rdma();
-        let env = TestEnv::same_config(IbvConfig::targeting("cpu:0")).await?;
+        let env = TestEnv::same_config(IbvConfig::targeting(IbvDeviceTarget::cpu(0))).await?;
         let nic = RdmaManagerActor::local_handle(&env.client)
             .get_nic_backend_handle(&env.client)
             .await?
@@ -1677,7 +1683,7 @@ mod tests {
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_cross_actor_same_device_write() -> Result<(), anyhow::Error> {
         require_rdma();
-        let env = TestEnv::same_config(IbvConfig::targeting("cpu:0")).await?;
+        let env = TestEnv::same_config(IbvConfig::targeting(IbvDeviceTarget::cpu(0))).await?;
         run_cross_actor_write(&env, BufferDevice::Cpu, BufferDevice::Cpu, 32, 0xa5, 5).await?;
         env.shutdown().await
     }
@@ -1686,7 +1692,7 @@ mod tests {
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_cross_actor_same_device_read() -> Result<(), anyhow::Error> {
         require_rdma();
-        let env = TestEnv::same_config(IbvConfig::targeting("cpu:0")).await?;
+        let env = TestEnv::same_config(IbvConfig::targeting(IbvDeviceTarget::cpu(0))).await?;
         run_cross_actor_read(&env, BufferDevice::Cpu, BufferDevice::Cpu, 32, 0x3c, 5).await?;
         env.shutdown().await
     }
@@ -1698,7 +1704,7 @@ mod tests {
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_loopback_write() -> Result<(), anyhow::Error> {
         require_rdma();
-        let env = TestEnv::same_config(IbvConfig::targeting("cpu:0")).await?;
+        let env = TestEnv::same_config(IbvConfig::targeting(IbvDeviceTarget::cpu(0))).await?;
         run_true_loopback(&env, BufferDevice::Cpu, 32).await?;
         env.shutdown().await
     }
@@ -1707,8 +1713,11 @@ mod tests {
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_cross_device_write() -> Result<(), anyhow::Error> {
         require_rdma();
-        let env =
-            TestEnv::new(IbvConfig::targeting("cpu:0"), IbvConfig::targeting("cpu:1")).await?;
+        let env = TestEnv::new(
+            IbvConfig::targeting(IbvDeviceTarget::cpu(0)),
+            IbvConfig::targeting(IbvDeviceTarget::cpu(1)),
+        )
+        .await?;
         run_cross_actor_write(&env, BufferDevice::Cpu, BufferDevice::Cpu, 32, 0x77, 5).await?;
         env.shutdown().await
     }
@@ -1717,8 +1726,11 @@ mod tests {
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_cross_device_read() -> Result<(), anyhow::Error> {
         require_rdma();
-        let env =
-            TestEnv::new(IbvConfig::targeting("cpu:0"), IbvConfig::targeting("cpu:1")).await?;
+        let env = TestEnv::new(
+            IbvConfig::targeting(IbvDeviceTarget::cpu(0)),
+            IbvConfig::targeting(IbvDeviceTarget::cpu(1)),
+        )
+        .await?;
         run_cross_actor_read(&env, BufferDevice::Cpu, BufferDevice::Cpu, 32, 0x88, 5).await?;
         env.shutdown().await
     }
@@ -1729,7 +1741,7 @@ mod tests {
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_multi_op_same_qp_cpu() -> Result<(), anyhow::Error> {
         require_rdma();
-        let env = TestEnv::same_config(IbvConfig::targeting("cpu:0")).await?;
+        let env = TestEnv::same_config(IbvConfig::targeting(IbvDeviceTarget::cpu(0))).await?;
         run_multi_op_same_qp(&env, BufferDevice::Cpu, BufferDevice::Cpu, 64, 5).await?;
         env.shutdown().await
     }
@@ -1743,8 +1755,8 @@ mod tests {
         require_cuda();
         const SIZE: usize = 2 * 1024 * 1024;
         let env = TestEnv::new(
-            IbvConfig::targeting("cuda:0"),
-            IbvConfig::targeting("cuda:1"),
+            IbvConfig::targeting(IbvDeviceTarget::gpu(0)),
+            IbvConfig::targeting(IbvDeviceTarget::gpu(1)),
         )
         .await?;
         run_multi_op_same_qp(&env, BufferDevice::Cuda(0), BufferDevice::Cuda(1), SIZE, 10).await?;
@@ -1758,8 +1770,8 @@ mod tests {
         require_cuda();
         const SIZE: usize = 2 * 1024 * 1024;
         let env = TestEnv::new(
-            IbvConfig::targeting("cuda:0"),
-            IbvConfig::targeting("cpu:1"),
+            IbvConfig::targeting(IbvDeviceTarget::gpu(0)),
+            IbvConfig::targeting(IbvDeviceTarget::cpu(1)),
         )
         .await?;
         run_cross_actor_write(
@@ -1781,8 +1793,8 @@ mod tests {
         require_cuda();
         const SIZE: usize = 2 * 1024 * 1024;
         let env = TestEnv::new(
-            IbvConfig::targeting("cpu:0"),
-            IbvConfig::targeting("cuda:1"),
+            IbvConfig::targeting(IbvDeviceTarget::cpu(0)),
+            IbvConfig::targeting(IbvDeviceTarget::gpu(1)),
         )
         .await?;
         run_cross_actor_read(
@@ -1804,8 +1816,8 @@ mod tests {
         require_cuda();
         const SIZE: usize = 2 * 1024 * 1024;
         let env = TestEnv::new(
-            IbvConfig::targeting("cpu:0"),
-            IbvConfig::targeting("cuda:1"),
+            IbvConfig::targeting(IbvDeviceTarget::cpu(0)),
+            IbvConfig::targeting(IbvDeviceTarget::gpu(1)),
         )
         .await?;
         run_cross_actor_write(
@@ -1827,8 +1839,8 @@ mod tests {
         require_cuda();
         const SIZE: usize = 2 * 1024 * 1024;
         let env = TestEnv::new(
-            IbvConfig::targeting("cuda:0"),
-            IbvConfig::targeting("cpu:1"),
+            IbvConfig::targeting(IbvDeviceTarget::gpu(0)),
+            IbvConfig::targeting(IbvDeviceTarget::cpu(1)),
         )
         .await?;
         run_cross_actor_read(
@@ -1850,8 +1862,8 @@ mod tests {
         require_cuda();
         const SIZE: usize = 2 * 1024 * 1024;
         let env = TestEnv::new(
-            IbvConfig::targeting("cuda:0"),
-            IbvConfig::targeting("cuda:1"),
+            IbvConfig::targeting(IbvDeviceTarget::gpu(0)),
+            IbvConfig::targeting(IbvDeviceTarget::gpu(1)),
         )
         .await?;
         run_cross_actor_write(
@@ -1873,8 +1885,8 @@ mod tests {
         require_cuda();
         const SIZE: usize = 2 * 1024 * 1024;
         let env = TestEnv::new(
-            IbvConfig::targeting("cuda:0"),
-            IbvConfig::targeting("cuda:1"),
+            IbvConfig::targeting(IbvDeviceTarget::gpu(0)),
+            IbvConfig::targeting(IbvDeviceTarget::gpu(1)),
         )
         .await?;
         run_cross_actor_read(
@@ -1899,9 +1911,9 @@ mod tests {
         require_rdma();
         require_cuda();
         const SIZE: usize = 16 * 1024 * 1024;
-        let mut config_a = IbvConfig::targeting("cuda:0");
+        let mut config_a = IbvConfig::targeting(IbvDeviceTarget::gpu(0));
         config_a.qp_type = IbvQpType::Standard;
-        let mut config_b = IbvConfig::targeting("cuda:1");
+        let mut config_b = IbvConfig::targeting(IbvDeviceTarget::gpu(1));
         config_b.qp_type = IbvQpType::Standard;
         let env = TestEnv::new(config_a, config_b).await?;
         run_cross_actor_write(
@@ -1923,7 +1935,7 @@ mod tests {
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_multi_batch_same_qp() -> Result<(), anyhow::Error> {
         require_rdma();
-        let env = TestEnv::same_config(IbvConfig::targeting("cpu:0")).await?;
+        let env = TestEnv::same_config(IbvConfig::targeting(IbvDeviceTarget::cpu(0))).await?;
         let src1 = env
             .helper_a
             .allocate(&env.client, 32, BufferDevice::Cpu, 0xa1)
@@ -2083,7 +2095,7 @@ mod tests {
     async fn test_submit_timeout() -> Result<(), anyhow::Error> {
         require_rdma();
         const SIZE: usize = 1024 * 1024;
-        let env = TestEnv::same_config(IbvConfig::targeting("cpu:0")).await?;
+        let env = TestEnv::same_config(IbvConfig::targeting(IbvDeviceTarget::cpu(0))).await?;
         let src = env
             .helper_a
             .allocate(&env.client, SIZE, BufferDevice::Cpu, 0x77)
@@ -2128,7 +2140,7 @@ mod tests {
 
         require_rdma();
         const SIZE: usize = 32;
-        let env = TestEnv::same_config(IbvConfig::targeting("cpu:0")).await?;
+        let env = TestEnv::same_config(IbvConfig::targeting(IbvDeviceTarget::cpu(0))).await?;
 
         const GOOD_PAT: u8 = 0xc3;
         const POST_FLUSH_PAT: u8 = 0xde;

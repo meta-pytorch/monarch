@@ -1714,7 +1714,9 @@ mod tests {
 
     use super::*;
     use crate::backend::ibverbs::device::list_all_devices;
+    use crate::backend::ibverbs::device_selection::resolve_target;
     use crate::backend::ibverbs::domain::IbvDomain;
+    use crate::backend::ibverbs::mlx_device::MlxDevice;
     use crate::backend::ibverbs::primitives::IbvConfig;
 
     #[test]
@@ -1728,7 +1730,7 @@ mod tests {
             use_gpu_direct: false,
             ..Default::default()
         };
-        let domain = IbvDomain::new(config.device.clone());
+        let domain = IbvDomain::new(resolve_target::<MlxDevice>(&config.target).unwrap());
         assert!(domain.is_ok());
 
         let domain = Arc::new(domain.unwrap());
@@ -1752,8 +1754,12 @@ mod tests {
             ..Default::default()
         };
 
-        let server_domain = Arc::new(IbvDomain::new(server_config.device.clone()).unwrap());
-        let client_domain = Arc::new(IbvDomain::new(client_config.device.clone()).unwrap());
+        let server_domain = Arc::new(
+            IbvDomain::new(resolve_target::<MlxDevice>(&server_config.target).unwrap()).unwrap(),
+        );
+        let client_domain = Arc::new(
+            IbvDomain::new(resolve_target::<MlxDevice>(&client_config.target).unwrap()).unwrap(),
+        );
 
         let mut server_qp = IbvQueuePair::new(server_domain, server_config.clone()).unwrap();
         let mut client_qp = IbvQueuePair::new(client_domain, client_config.clone()).unwrap();
