@@ -7,7 +7,6 @@
  */
 
 #![allow(internal_features)]
-#![feature(assert_matches)]
 #![feature(sync_unsafe_cell)]
 #![feature(mpmc_channel)]
 #![feature(cfg_version)]

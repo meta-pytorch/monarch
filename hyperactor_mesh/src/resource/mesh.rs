@@ -15,8 +15,6 @@
 //! The mesh controller manages all aspects of the mesh lifecycle, and the owning
 //! actor uses the resource behavior directly to query the state of the mesh.
 
-use hyperactor::Bind;
-use hyperactor::Unbind;
 use ndslice::Extent;
 use serde::Deserialize;
 use serde::Serialize;
@@ -37,7 +35,7 @@ pub struct Spec<S> {
 }
 
 /// Mesh states
-#[derive(Debug, Named, Bind, Unbind, Serialize, Deserialize)]
+#[derive(Debug, Named, Serialize, Deserialize)]
 pub struct State<S> {
     /// The current status for each rank in the mesh.
     pub statuses: ValueMesh<Status>,

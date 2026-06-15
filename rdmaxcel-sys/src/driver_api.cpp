@@ -166,13 +166,29 @@ DriverAPI create_driver_api() {
   return r;
 }
 
+// Initialize the driver-API table once. create_driver_api() can throw on
+// dlopen/dlsym failure; catch it here so the exception never crosses the
+// extern "C" boundary into Rust (which would be undefined behavior). On
+// failure, log once and return nullptr; callers translate that into a
+// CUresult error.
+DriverAPI* create_driver_api_or_null() noexcept {
+  try {
+    static DriverAPI instance = create_driver_api();
+    return &instance;
+  } catch (const std::exception& e) {
+    std::cerr << "[RdmaXcel] Failed to load CUDA driver API: " << e.what()
+              << std::endl;
+    return nullptr;
+  }
+}
+
 } // namespace
 
 DriverAPI* DriverAPI::get() {
   // Ensure we have a valid CUDA context for this thread
   cudaFree(0);
-  static DriverAPI singleton = create_driver_api();
-  return &singleton;
+  static DriverAPI* singleton = create_driver_api_or_null();
+  return singleton;
 }
 
 } // namespace rdmaxcel
@@ -187,7 +203,11 @@ CUresult rdmaxcel_cuMemGetHandleForAddressRange(
     size_t size,
     CUmemRangeHandleType handleType,
     unsigned long long flags) {
-  return rdmaxcel::DriverAPI::get()->memGetHandleForAddressRange_(
+  rdmaxcel::DriverAPI* api = rdmaxcel::DriverAPI::get();
+  if (api == nullptr) {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+  return api->memGetHandleForAddressRange_(
       handle, dptr, size, handleType, flags);
 }
 
@@ -195,8 +215,11 @@ CUresult rdmaxcel_cuMemGetAllocationGranularity(
     size_t* granularity,
     const CUmemAllocationProp* prop,
     CUmemAllocationGranularity_flags option) {
-  return rdmaxcel::DriverAPI::get()->memGetAllocationGranularity_(
-      granularity, prop, option);
+  rdmaxcel::DriverAPI* api = rdmaxcel::DriverAPI::get();
+  if (api == nullptr) {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+  return api->memGetAllocationGranularity_(granularity, prop, option);
 }
 
 CUresult rdmaxcel_cuMemCreate(
@@ -204,7 +227,11 @@ CUresult rdmaxcel_cuMemCreate(
     size_t size,
     const CUmemAllocationProp* prop,
     unsigned long long flags) {
-  return rdmaxcel::DriverAPI::get()->memCreate_(handle, size, prop, flags);
+  rdmaxcel::DriverAPI* api = rdmaxcel::DriverAPI::get();
+  if (api == nullptr) {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+  return api->memCreate_(handle, size, prop, flags);
 }
 
 CUresult rdmaxcel_cuMemAddressReserve(
@@ -213,8 +240,11 @@ CUresult rdmaxcel_cuMemAddressReserve(
     size_t alignment,
     CUdeviceptr addr,
     unsigned long long flags) {
-  return rdmaxcel::DriverAPI::get()->memAddressReserve_(
-      ptr, size, alignment, addr, flags);
+  rdmaxcel::DriverAPI* api = rdmaxcel::DriverAPI::get();
+  if (api == nullptr) {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+  return api->memAddressReserve_(ptr, size, alignment, addr, flags);
 }
 
 CUresult rdmaxcel_cuMemMap(
@@ -223,7 +253,11 @@ CUresult rdmaxcel_cuMemMap(
     size_t offset,
     CUmemGenericAllocationHandle handle,
     unsigned long long flags) {
-  return rdmaxcel::DriverAPI::get()->memMap_(ptr, size, offset, handle, flags);
+  rdmaxcel::DriverAPI* api = rdmaxcel::DriverAPI::get();
+  if (api == nullptr) {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+  return api->memMap_(ptr, size, offset, handle, flags);
 }
 
 CUresult rdmaxcel_cuMemSetAccess(
@@ -231,38 +265,66 @@ CUresult rdmaxcel_cuMemSetAccess(
     size_t size,
     const CUmemAccessDesc* desc,
     size_t count) {
-  return rdmaxcel::DriverAPI::get()->memSetAccess_(ptr, size, desc, count);
+  rdmaxcel::DriverAPI* api = rdmaxcel::DriverAPI::get();
+  if (api == nullptr) {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+  return api->memSetAccess_(ptr, size, desc, count);
 }
 
 CUresult rdmaxcel_cuMemUnmap(CUdeviceptr ptr, size_t size) {
-  return rdmaxcel::DriverAPI::get()->memUnmap_(ptr, size);
+  rdmaxcel::DriverAPI* api = rdmaxcel::DriverAPI::get();
+  if (api == nullptr) {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+  return api->memUnmap_(ptr, size);
 }
 
 CUresult rdmaxcel_cuMemAddressFree(CUdeviceptr ptr, size_t size) {
-  return rdmaxcel::DriverAPI::get()->memAddressFree_(ptr, size);
+  rdmaxcel::DriverAPI* api = rdmaxcel::DriverAPI::get();
+  if (api == nullptr) {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+  return api->memAddressFree_(ptr, size);
 }
 
 CUresult rdmaxcel_cuMemRelease(CUmemGenericAllocationHandle handle) {
-  return rdmaxcel::DriverAPI::get()->memRelease_(handle);
+  rdmaxcel::DriverAPI* api = rdmaxcel::DriverAPI::get();
+  if (api == nullptr) {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+  return api->memRelease_(handle);
 }
 
 CUresult rdmaxcel_cuMemcpyHtoD_v2(
     CUdeviceptr dstDevice,
     const void* srcHost,
     size_t ByteCount) {
-  return rdmaxcel::DriverAPI::get()->memcpyHtoD_(dstDevice, srcHost, ByteCount);
+  rdmaxcel::DriverAPI* api = rdmaxcel::DriverAPI::get();
+  if (api == nullptr) {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+  return api->memcpyHtoD_(dstDevice, srcHost, ByteCount);
 }
 
 CUresult rdmaxcel_cuMemcpyDtoH_v2(
     void* dstHost,
     CUdeviceptr srcDevice,
     size_t ByteCount) {
-  return rdmaxcel::DriverAPI::get()->memcpyDtoH_(dstHost, srcDevice, ByteCount);
+  rdmaxcel::DriverAPI* api = rdmaxcel::DriverAPI::get();
+  if (api == nullptr) {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+  return api->memcpyDtoH_(dstHost, srcDevice, ByteCount);
 }
 
 CUresult
 rdmaxcel_cuMemsetD8_v2(CUdeviceptr dstDevice, unsigned char uc, size_t N) {
-  return rdmaxcel::DriverAPI::get()->memsetD8_(dstDevice, uc, N);
+  rdmaxcel::DriverAPI* api = rdmaxcel::DriverAPI::get();
+  if (api == nullptr) {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+  return api->memsetD8_(dstDevice, uc, N);
 }
 
 // Pointer queries
@@ -270,58 +332,106 @@ CUresult rdmaxcel_cuPointerGetAttribute(
     void* data,
     CUpointer_attribute attribute,
     CUdeviceptr ptr) {
-  return rdmaxcel::DriverAPI::get()->pointerGetAttribute_(data, attribute, ptr);
+  rdmaxcel::DriverAPI* api = rdmaxcel::DriverAPI::get();
+  if (api == nullptr) {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+  return api->pointerGetAttribute_(data, attribute, ptr);
 }
 
 // Device management
 CUresult rdmaxcel_cuInit(unsigned int Flags) {
-  return rdmaxcel::DriverAPI::get()->init_(Flags);
+  rdmaxcel::DriverAPI* api = rdmaxcel::DriverAPI::get();
+  if (api == nullptr) {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+  return api->init_(Flags);
 }
 
 CUresult rdmaxcel_cuDeviceGet(CUdevice* device, int ordinal) {
-  return rdmaxcel::DriverAPI::get()->deviceGet_(device, ordinal);
+  rdmaxcel::DriverAPI* api = rdmaxcel::DriverAPI::get();
+  if (api == nullptr) {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+  return api->deviceGet_(device, ordinal);
 }
 
 CUresult rdmaxcel_cuDeviceGetCount(int* count) {
-  return rdmaxcel::DriverAPI::get()->deviceGetCount_(count);
+  rdmaxcel::DriverAPI* api = rdmaxcel::DriverAPI::get();
+  if (api == nullptr) {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+  return api->deviceGetCount_(count);
 }
 
 CUresult rdmaxcel_cuDeviceGetAttribute(
     int* pi,
     CUdevice_attribute attrib,
     CUdevice dev) {
-  return rdmaxcel::DriverAPI::get()->deviceGetAttribute_(pi, attrib, dev);
+  rdmaxcel::DriverAPI* api = rdmaxcel::DriverAPI::get();
+  if (api == nullptr) {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+  return api->deviceGetAttribute_(pi, attrib, dev);
 }
 
 // Context management
 CUresult
 rdmaxcel_cuCtxCreate_v2(CUcontext* pctx, unsigned int flags, CUdevice dev) {
-  return rdmaxcel::DriverAPI::get()->ctxCreate_(pctx, flags, dev);
+  rdmaxcel::DriverAPI* api = rdmaxcel::DriverAPI::get();
+  if (api == nullptr) {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+  return api->ctxCreate_(pctx, flags, dev);
 }
 
 CUresult rdmaxcel_cuDevicePrimaryCtxRetain(CUcontext* pctx, CUdevice dev) {
-  return rdmaxcel::DriverAPI::get()->devicePrimaryCtxRetain_(pctx, dev);
+  rdmaxcel::DriverAPI* api = rdmaxcel::DriverAPI::get();
+  if (api == nullptr) {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+  return api->devicePrimaryCtxRetain_(pctx, dev);
 }
 
 CUresult rdmaxcel_cuDevicePrimaryCtxRelease(CUdevice dev) {
-  return rdmaxcel::DriverAPI::get()->devicePrimaryCtxRelease_(dev);
+  rdmaxcel::DriverAPI* api = rdmaxcel::DriverAPI::get();
+  if (api == nullptr) {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+  return api->devicePrimaryCtxRelease_(dev);
 }
 
 CUresult rdmaxcel_cuCtxGetCurrent(CUcontext* pctx) {
-  return rdmaxcel::DriverAPI::get()->ctxGetCurrent_(pctx);
+  rdmaxcel::DriverAPI* api = rdmaxcel::DriverAPI::get();
+  if (api == nullptr) {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+  return api->ctxGetCurrent_(pctx);
 }
 
 CUresult rdmaxcel_cuCtxSetCurrent(CUcontext ctx) {
-  return rdmaxcel::DriverAPI::get()->ctxSetCurrent_(ctx);
+  rdmaxcel::DriverAPI* api = rdmaxcel::DriverAPI::get();
+  if (api == nullptr) {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+  return api->ctxSetCurrent_(ctx);
 }
 
 CUresult rdmaxcel_cuCtxSynchronize(void) {
-  return rdmaxcel::DriverAPI::get()->ctxSynchronize_();
+  rdmaxcel::DriverAPI* api = rdmaxcel::DriverAPI::get();
+  if (api == nullptr) {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+  return api->ctxSynchronize_();
 }
 
 // Error handling
 CUresult rdmaxcel_cuGetErrorString(CUresult error, const char** pStr) {
-  return rdmaxcel::DriverAPI::get()->getErrorString_(error, pStr);
+  rdmaxcel::DriverAPI* api = rdmaxcel::DriverAPI::get();
+  if (api == nullptr) {
+    return CUDA_ERROR_NOT_INITIALIZED;
+  }
+  return api->getErrorString_(error, pStr);
 }
 
 } // extern "C"

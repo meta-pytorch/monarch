@@ -6,8 +6,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-#![feature(assert_matches)]
-
 pub mod nccl_types;
 mod pyobject;
 mod python;

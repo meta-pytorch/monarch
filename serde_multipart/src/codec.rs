@@ -16,13 +16,14 @@ use crate::part::BincodeDeserializer;
 use crate::part::BincodeSerializer;
 
 /// Converts a framework type to and from a typed multipart part.
-pub trait PartCodec: Sized + Named
+pub trait PartCodec: Sized
 where
+    Self::Repr: Serialize + DeserializeOwned + Named,
     for<'a> Self::Repr: std::convert::TryFrom<&'a Self, Error = crate::Error>,
     Self: std::convert::TryFrom<Self::Repr, Error = crate::Error>,
 {
     /// The bincode representation stored in typed parts.
-    type Repr: Serialize + DeserializeOwned;
+    type Repr;
 
     /// Convert this value to its typed part representation.
     fn to_repr(&self) -> crate::Result<Self::Repr> {
@@ -36,12 +37,12 @@ where
 
     /// Convert this value to a typed part.
     fn to_part(&self) -> crate::Result<Part> {
-        Part::serialize_as::<Self, _>(&self.to_repr()?)
+        Part::serialize(&self.to_repr()?)
     }
 
     /// Rebuild this value from a typed part.
     fn from_part(part: Part) -> crate::Result<Self> {
-        let repr = part.deserialized_as::<Self, Self::Repr>()?;
+        let repr = part.deserialized::<Self::Repr>()?;
         Self::from_repr(repr)
     }
 }
@@ -160,7 +161,7 @@ macro_rules! part_codec {
     ) => {
         impl $($impl_generics)* $crate::PartCodec for $ty
         where
-            $ty: typeuri::Named,
+            $repr: serde::Serialize + serde::de::DeserializeOwned + typeuri::Named,
             for<'a> $repr: std::convert::TryFrom<&'a $ty, Error = $crate::Error>,
             $ty: std::convert::TryFrom<$repr, Error = $crate::Error>,
         {

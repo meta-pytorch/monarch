@@ -28,19 +28,18 @@ use hyperactor::Context;
 use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Instance;
+use hyperactor::OncePortRefRepr;
 use hyperactor::PortAddr;
 use hyperactor::PortRef;
+use hyperactor::PortRefRepr;
 use hyperactor::RemoteEndpoint as _;
 use hyperactor::RemoteMessage;
-use hyperactor::UnboundPort;
-use hyperactor::UnboundPortKind;
 use hyperactor::accum::ReducerMode;
 use hyperactor::mailbox::MailboxSender;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::mailbox::UndeliverableMailboxSender;
 use hyperactor::mailbox::UndeliverableMessageError;
 use hyperactor::mailbox::monitored_return_handle;
-use hyperactor::message::ErasedUnbound;
 use hyperactor::ordering::SEQ_INFO;
 use hyperactor::ordering::SeqInfo;
 use hyperactor_config::CONFIG;
@@ -400,7 +399,7 @@ impl CommActor {
             );
         }
 
-        cx.post_with_external_seq_info(dest, headers, wirevalue::Any::serialize(message.data())?);
+        cx.post_with_external_seq_info(dest, headers, message.data().clone().erase_encoding());
 
         Ok(())
     }
@@ -411,61 +410,68 @@ impl CommActor {
 // of to the original ports provided by parent.
 fn split_ports(
     cx: &Context<CommActor>,
-    data: &mut ErasedUnbound,
+    data: &mut wirevalue::Any<wirevalue::encoding::Multipart>,
     deliver_here: bool,
     next_steps: &HashMap<usize, Vec<RoutingFrame>>,
 ) -> anyhow::Result<()> {
     // Split ports, if any, and update message with new ports. In this
     // way, children actors will reply to this comm actor's ports, instead
     // of to the original ports provided by parent.
-    data.visit_mut::<UnboundPort>(
-        |UnboundPort(port_id, reducer_spec, return_undeliverable, kind, unsplit)| {
-            if *unsplit {
-                return Ok(());
-            }
-            let reducer_mode = match kind {
-                UnboundPortKind::Streaming(opts) => {
-                    ReducerMode::Streaming(opts.clone().unwrap_or_default())
-                }
-                UnboundPortKind::Once if reducer_spec.is_none() => {
-                    // We can only split OncePorts that have reducers.
-                    // Pass this through -- if it is used multiple times,
-                    // it will cause a delivery error downstream.
-                    // However we should reconsider this behavior
-                    // as it its semantics will now differ between
-                    // unicast and broadcast messages.
-                    return Ok(());
-                }
-                UnboundPortKind::Once => {
-                    // Compute peer count for OncePort splitting. This is the number of
-                    // destinations the message will be delivered to, so that the split
-                    // port can correctly accumulate responses.
-                    let peer_count = next_steps.len() + if deliver_here { 1 } else { 0 };
-                    ReducerMode::Once(peer_count)
-                }
-            };
+    data.visit_multipart_parts_mut::<PortRefRepr, anyhow::Error>(|port| {
+        if port.unsplit() {
+            return Ok(());
+        }
 
-            let split = port_id.clone().split(
-                cx,
-                reducer_spec.clone(),
-                reducer_mode,
-                *return_undeliverable,
-            )?;
+        let split = port.port_addr().split(
+            cx,
+            port.reducer_spec().clone(),
+            ReducerMode::Streaming(port.streaming_opts().clone()),
+            port.get_return_undeliverable(),
+        )?;
 
-            #[cfg(test)]
-            tests::collect_split_port(&port_id.clone(), &split, deliver_here);
+        #[cfg(test)]
+        tests::collect_split_port(port.port_addr(), &split, deliver_here);
 
-            *port_id = split;
+        port.update_port_addr(split);
+        Ok(())
+    })?;
+
+    data.visit_multipart_parts_mut::<OncePortRefRepr, anyhow::Error>(|port| {
+        if port.unsplit() || port.reducer_spec().is_none() {
+            // We can only split OncePorts that have reducers. Pass this
+            // through; if it is used multiple times, it will cause a delivery
+            // error downstream.
+            return Ok(());
+        }
+
+        let peer_count = next_steps.len() + if deliver_here { 1 } else { 0 };
+        let split = port.port_addr().split(
+            cx,
+            port.reducer_spec().clone(),
+            ReducerMode::Once(peer_count),
+            true,
+        )?;
+
+        #[cfg(test)]
+        tests::collect_split_port(port.port_addr(), &split, deliver_here);
+
+        port.update_port_addr(split);
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
+fn replace_with_self_ranks(
+    cast_point: &Point,
+    data: &mut wirevalue::Any<wirevalue::encoding::Multipart>,
+) -> anyhow::Result<()> {
+    data.visit_multipart_parts_mut::<resource::RankRepr, anyhow::Error>(
+        |resource::RankRepr(rank)| {
+            *rank = Some(cast_point.rank());
             Ok(())
         },
     )
-}
-
-fn replace_with_self_ranks(cast_point: &Point, data: &mut ErasedUnbound) -> anyhow::Result<()> {
-    data.visit_mut::<resource::Rank>(|resource::Rank(rank)| {
-        *rank = Some(cast_point.rank());
-        Ok(())
-    })
 }
 
 #[async_trait]
@@ -701,11 +707,9 @@ pub mod test_utils {
     use async_trait::async_trait;
     use hyperactor::Actor;
     use hyperactor::ActorAddr;
-    use hyperactor::Bind;
     use hyperactor::Context;
     use hyperactor::Handler;
     use hyperactor::PortRef;
-    use hyperactor::Unbind;
     use serde::Deserialize;
     use serde::Serialize;
     use typeuri::Named;
@@ -718,37 +722,31 @@ pub mod test_utils {
         pub value: u64,
     }
 
-    #[derive(Debug, Named, Serialize, Deserialize, PartialEq, Clone, Bind, Unbind)]
+    #[derive(Debug, Named, Serialize, Deserialize, PartialEq, Clone)]
     #[expect(
         clippy::large_enum_variant,
-        reason = "test fixture; CastAndReply carries #[binding(include)] PortRefs whose Bind/Unbind derive interaction with Box<T> needs verification — separate diff"
+        reason = "test fixture; CastAndReply carries PortRefs and boxing fields ripples into handler assertions"
     )]
     pub enum TestMessage {
         Forward(String),
         CastAndReply {
             arg: String,
-            // Intentionally not including 0. As a result, this port will not be
-            // split.
-            // #[binding(include)]
+            // Intentionally unsplit so this port should pass through unchanged.
             reply_to0: PortRef<String>,
-            #[binding(include)]
             reply_to1: PortRef<u64>,
-            #[binding(include)]
             reply_to2: PortRef<MyReply>,
         },
         CastAndReplyOnce {
             arg: String,
-            #[binding(include)]
             reply_to: hyperactor::OncePortRef<u64>,
         },
         CastWithUnsplitPort {
-            #[binding(include)]
             reply_to: PortRef<u64>,
         },
     }
 
     #[derive(Debug)]
-    #[hyperactor::export(TestMessage { cast = true })]
+    #[hyperactor::export(TestMessage)]
     #[hyperactor::spawnable]
     pub struct TestActor {
         // Forward the received message to this port, so it can be inspected by
@@ -793,7 +791,7 @@ pub mod test_utils {
     // #[doc(hidden)] because this is a test fixture, not API.
 
     #[doc(hidden)]
-    #[derive(Debug, Clone, Serialize, Deserialize, Named, Bind, Unbind)]
+    #[derive(Debug, Clone, Serialize, Deserialize, Named)]
     pub struct SenderCaptureMsg();
 
     #[doc(hidden)]
@@ -802,7 +800,7 @@ pub mod test_utils {
 
     #[doc(hidden)]
     #[derive(Debug)]
-    #[hyperactor::export(SenderCaptureMsg { cast = true })]
+    #[hyperactor::export(SenderCaptureMsg)]
     #[hyperactor::spawnable]
     pub struct SenderCapturingActor {
         forward_port: PortRef<CapturedSender>,
@@ -1593,7 +1591,7 @@ mod tests {
         let reply_port_ref2 = reply_port_handle2.bind();
         let message = TestMessage::CastAndReply {
             arg: "abc".to_string(),
-            reply_to0: reply_port_ref0.clone(),
+            reply_to0: reply_port_ref0.clone().unsplit(),
             reply_to1: reply_port_ref1.clone(),
             reply_to2: reply_port_ref2.clone(),
         };
@@ -1612,9 +1610,8 @@ mod tests {
                     reply_to2,
                 } => {
                     assert_eq!(arg, "abc");
-                    // port 0 is still the same as the original one because it
-                    // is not included in MutVisitor.
-                    assert_eq!(reply_to0, reply_port_ref0);
+                    // port 0 is still the same as the original one because it is unsplit.
+                    assert_eq!(reply_to0, reply_port_ref0.clone().unsplit());
                     // ports have been replaced by split ports.
                     assert_ne!(reply_to1, reply_port_ref1);
                     assert_ne!(reply_to2, reply_port_ref2);

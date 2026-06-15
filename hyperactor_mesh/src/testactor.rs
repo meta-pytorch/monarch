@@ -21,13 +21,11 @@ use std::time::Duration;
 use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorRef;
-use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::RefClient;
-use hyperactor::Unbind;
 #[cfg(test)]
 use hyperactor::context;
 use hyperactor::ordering::SEQ_INFO;
@@ -57,13 +55,13 @@ use crate::testing;
 /// A simple test actor used by various unit tests.
 #[derive(Default, Debug)]
 #[hyperactor::export(
-    () { cast = true },
-    GetActorId { cast = true },
-    GetCastInfo { cast = true },
-    CauseSupervisionEvent { cast = true },
+    (),
+    GetActorId,
+    GetCastInfo,
+    CauseSupervisionEvent,
     Forward,
-    GetConfigAttrs { cast = true },
-    SetConfigAttrs { cast = true },
+    GetConfigAttrs,
+    SetConfigAttrs,
 )]
 #[hyperactor::spawnable]
 pub struct TestActor;
@@ -71,10 +69,8 @@ pub struct TestActor;
 impl Actor for TestActor {}
 
 /// A message that returns the recipient actor's id and cast message's seq info.
-#[derive(Debug, Clone, Named, Bind, Unbind, Serialize, Deserialize)]
-pub struct GetActorId(
-    #[binding(include)] pub hyperactor::PortRef<(hyperactor::ActorAddr, Option<SeqInfo>)>,
-);
+#[derive(Debug, Clone, Named, Serialize, Deserialize)]
+pub struct GetActorId(pub hyperactor::PortRef<(hyperactor::ActorAddr, Option<SeqInfo>)>);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SupervisionEventType {
@@ -85,7 +81,7 @@ pub enum SupervisionEventType {
 
 /// A message that causes a supervision event. The one argument determines what
 /// kind of supervision event it'll be.
-#[derive(Debug, Clone, Named, Bind, Unbind, Serialize, Deserialize)]
+#[derive(Debug, Clone, Named, Serialize, Deserialize)]
 pub struct CauseSupervisionEvent {
     pub kind: SupervisionEventType,
     pub send_to_children: bool,
@@ -199,7 +195,7 @@ impl Handler<std::time::Duration> for SleepActor {
 /// A message to forward to a visit list of ports.
 /// Each port removes the next entry, and adds it to the
 /// 'visited' list.
-#[derive(Debug, Clone, Named, Bind, Unbind, Serialize, Deserialize)]
+#[derive(Debug, Clone, Named, Serialize, Deserialize)]
 pub struct Forward {
     pub to_visit: VecDeque<hyperactor::PortRef<Forward>>,
     pub visited: Vec<hyperactor::PortRef<Forward>>,
@@ -227,17 +223,7 @@ impl Handler<Forward> for TestActor {
 }
 
 /// Just return the cast info of the sender.
-#[derive(
-    Debug,
-    Clone,
-    Named,
-    Bind,
-    Unbind,
-    Serialize,
-    Deserialize,
-    Handler,
-    RefClient
-)]
+#[derive(Debug, Clone, Named, Serialize, Deserialize, Handler, RefClient)]
 pub struct GetCastInfo {
     /// Originating actor, point, sender.
     #[reply]
@@ -276,7 +262,7 @@ impl hyperactor::RemoteSpawn for FailingCreateTestActor {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, Named, Bind, Unbind)]
+#[derive(Clone, Debug, Serialize, Deserialize, Named)]
 pub struct SetConfigAttrs(pub Vec<u8>);
 
 #[async_trait]
@@ -293,7 +279,7 @@ impl Handler<SetConfigAttrs> for TestActor {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, Named, Bind, Unbind)]
+#[derive(Clone, Debug, Serialize, Deserialize, Named)]
 pub struct GetConfigAttrs(pub hyperactor::PortRef<Vec<u8>>);
 
 #[async_trait]
@@ -315,18 +301,14 @@ impl Handler<GetConfigAttrs> for TestActor {
 /// A message to request the next supervision event delivered to WrapperActor.
 /// Replies with None if no supervision event is encountered within a timeout
 /// (10 seconds).
-#[derive(Clone, Debug, Serialize, Deserialize, Named, Bind, Unbind)]
+#[derive(Clone, Debug, Serialize, Deserialize, Named)]
 pub struct NextSupervisionFailure(pub hyperactor::PortRef<Option<MeshFailure>>);
 
 /// A small wrapper to handle supervision messages so they don't
 /// need to reach the client. This just wraps and forwards all messages to TestActor.
 /// The supervision events are sent back to "supervisor".
 #[derive(Debug)]
-#[hyperactor::export(
-    CauseSupervisionEvent { cast = true },
-    MeshFailure { cast = true },
-    NextSupervisionFailure { cast = true },
-)]
+#[hyperactor::export(CauseSupervisionEvent, MeshFailure, NextSupervisionFailure)]
 #[hyperactor::spawnable]
 pub struct WrapperActor {
     proc_mesh: ProcMeshRef,
