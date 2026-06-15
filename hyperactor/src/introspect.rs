@@ -914,8 +914,15 @@ fn build_actor_attrs(cell: &crate::InstanceCell, snap: &ActorSnapshot) -> String
 /// the cell. Used by the introspect task (which runs outside
 /// the actor's message loop) and by `Instance::introspect_payload`.
 pub fn live_actor_payload(cell: &InstanceCell) -> IntrospectResult {
-    let actor_id = cell.actor_addr();
     let status = cell.status().borrow().clone();
+    live_actor_payload_with_status(cell, &status)
+}
+
+fn live_actor_payload_with_status(
+    cell: &InstanceCell,
+    status: &crate::actor::ActorStatus,
+) -> IntrospectResult {
+    let actor_id = cell.actor_addr();
     let last_handler = cell.last_message_handler();
 
     let children: Vec<IntrospectRef> = cell
@@ -983,11 +990,26 @@ pub fn live_actor_payload(cell: &InstanceCell) -> IntrospectResult {
     }
 }
 
-/// Introspect task: runs on a dedicated tokio task per actor,
-/// handling [`IntrospectMessage`] by reading [`InstanceCell`]
-/// directly and replying through the owning [`Proc`](crate::Proc).
+/// Serve introspection for one actor.
 ///
-/// The actor's message loop never sees these messages.
+/// This runs on a dedicated Tokio task owned by the actor runtime. It
+/// handles [`IntrospectMessage`] by reading [`InstanceCell`] directly
+/// and replying through the owning [`Proc`](crate::Proc). The actor's
+/// message loop never sees these messages, so a stuck actor can still
+/// be introspected.
+///
+/// The task's lifetime is controlled by `shutdown`, not by terminal
+/// [`ActorStatus`](crate::actor::ActorStatus). Runtime teardown sends
+/// the final status through `shutdown`; this task then builds and
+/// stores the terminated snapshot with that status and exits. The actor
+/// runtime joins this task before publishing terminal status, so
+/// terminal status remains the single authoritative signal that the
+/// actor's full runtime, including introspection, has shut down.
+///
+/// If the introspect receiver closes before shutdown, the task stops
+/// accepting queries but remains alive until runtime shutdown. This
+/// preserves the shutdown path that stores the post-mortem snapshot and
+/// breaks the `InstanceCell` reference cycle.
 ///
 /// # Invariants exercised
 ///
@@ -995,45 +1017,30 @@ pub fn live_actor_payload(cell: &InstanceCell) -> IntrospectResult {
 pub(crate) async fn serve_introspect(
     cell: InstanceCell,
     mut receiver: crate::mailbox::PortReceiver<IntrospectMessage>,
+    mut shutdown: tokio::sync::oneshot::Receiver<crate::actor::ActorStatus>,
 ) {
-    use crate::actor::ActorStatus;
     use crate::mailbox::PortSender as _;
 
-    // Watch for terminal status so we can break the reference cycle:
-    // InstanceCellState → Ports → introspect sender → keeps receiver
-    // open → this task holds InstanceCell → InstanceCellState.
-    // Without this, a stopped actor's InstanceCellState is never
-    // dropped and the actor lingers in the proc's instances map.
-    let mut status = cell.status().clone();
+    // Runtime shutdown, not terminal status, owns this task's lifetime.
+    // Terminal status is published only after this task snapshots and exits.
+    let mut receiver_open = true;
 
     loop {
         let msg = tokio::select! {
-            msg = receiver.recv() => {
+            msg = receiver.recv(), if receiver_open => {
                 match msg {
                     Ok(msg) => msg,
                     Err(_) => {
-                        // Channel closed. If the actor reached a
-                        // terminal state, snapshot it before exiting
-                        // so it remains queryable post-mortem.
-                        if cell.status().borrow().is_terminal() {
-                            let snapshot = live_actor_payload(&cell);
-                            cell.store_terminated_snapshot(snapshot);
-                        }
-                        break;
+                        receiver_open = false;
+                        continue;
                     }
                 }
             }
-            status_ref = status.wait_for(ActorStatus::is_terminal) => {
-                // Explicitly drop the Ref before calling live_actor_payload.
-                // wait_for returns a Ref that holds a read lock on the watch
-                // channel's RwLock<ActorStatus>. tokio select! uses a match
-                // internally, so the scrutinee (and its read lock) stays alive
-                // through the arm body. live_actor_payload also calls borrow(),
-                // and parking_lot's write-preferring RwLock blocks new readers
-                // once a writer is queued — causing a deadlock if InstanceState
-                // ::drop tries to write between wait_for and live_actor_payload.
-                drop(status_ref);
-                let snapshot = live_actor_payload(&cell);
+            terminal_status = &mut shutdown => {
+                let Ok(terminal_status) = terminal_status else {
+                    break;
+                };
+                let snapshot = live_actor_payload_with_status(&cell, &terminal_status);
                 cell.store_terminated_snapshot(snapshot);
                 break;
             }
