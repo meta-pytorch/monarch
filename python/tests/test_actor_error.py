@@ -1608,8 +1608,13 @@ async def test_actor_abort(reason) -> None:
     monarch.actor.unhandled_fault_hook = make_fault_hook(fut)
     pm = this_host().spawn_procs({"gpus": 1})
     actor = pm.spawn("abort", AbortActor)
-    # This call will succeed, but the actor will abort.
-    await actor.abort.call(reason)
+    # A self-aborting endpoint can race its successful response with the
+    # supervision event for the same abort.
+    try:
+        await actor.abort.call(reason)
+    except SupervisionError:
+        pass
+
     if reason is None:
         assert "no reason provided" in await fut
     else:
