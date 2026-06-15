@@ -38,7 +38,7 @@ pub fn select_optimal_ibv_device(device_hint: Option<&str>) -> Option<IbvDeviceI
         }
         "cuda" | "cpu" => {
             let source_pci_addr = match prefix.as_str() {
-                "cuda" => get_cuda_pci_address(&postfix)?,
+                "cuda" => get_cuda_pci_address(postfix.parse().ok()?)?.to_string(),
                 "cpu" => get_numa_pci_address(&postfix)?,
                 _ => unreachable!(),
             };
@@ -140,8 +140,8 @@ mod tests {
         ];
 
         // Check if we have at least 8 GPUs (GT20 characteristic)
-        let gpu_count = (0..8)
-            .filter(|&i| get_cuda_pci_address(&i.to_string()).is_some())
+        let gpu_count = (0..8u32)
+            .filter(|&i| get_cuda_pci_address(i).is_some())
             .count();
 
         // Must have expected RDMA devices AND 8 GPUs
@@ -199,9 +199,8 @@ mod tests {
 
         // Step 4: Test CUDA PCI address resolution
         println!("\n4. CUDA PCI ADDRESS RESOLUTION");
-        for gpu_idx in 0..8 {
-            let gpu_idx_str = gpu_idx.to_string();
-            match get_cuda_pci_address(&gpu_idx_str) {
+        for gpu_idx in 0..8u32 {
+            match get_cuda_pci_address(gpu_idx) {
                 Some(pci_addr) => {
                     println!("  GPU {} -> PCI: {}", gpu_idx, pci_addr);
                 }
@@ -227,8 +226,8 @@ mod tests {
 
         // Step 6: Test distance calculation for GPU 0
         println!("\n6. DISTANCE CALCULATION TEST (GPU 0)");
-        if let Some(gpu0_pci_addr) = get_cuda_pci_address("0")
-            && let Some(gpu0_device) = pci_devices.get(&gpu0_pci_addr)
+        if let Some(gpu0_pci_addr) = get_cuda_pci_address(0)
+            && let Some(gpu0_device) = pci_devices.get(&gpu0_pci_addr.to_string())
         {
             println!("GPU 0 PCI: {}", gpu0_pci_addr);
             println!("GPU 0 path to root: {:?}", gpu0_device.get_path_to_root());
