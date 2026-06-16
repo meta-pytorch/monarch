@@ -527,7 +527,6 @@ def test_all_actors_in_proc_mesh(cleanup_callbacks) -> None:
             "telemetry",
             "logger",
             "setup",
-            "comm",
         }
 
         # For every child actor mesh, verify that actors exist in the actors table
@@ -610,7 +609,6 @@ def test_all_actors_in_host_mesh(cleanup_callbacks) -> None:
             "telemetry",
             "logger",
             "setup",
-            "comm",
         }
 
         # For every child actor mesh, verify that actors exist in the actors table

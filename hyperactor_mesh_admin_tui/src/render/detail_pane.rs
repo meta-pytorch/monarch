@@ -1272,7 +1272,7 @@ fn diag_result_line(r: &DiagResult, scheme: &ColorScheme, labels: &Labels) -> Li
             DiagNodeRole::IntrospectionHandler => labels.diag_note_introspection_handler,
             DiagNodeRole::ActorLifecycleManager => labels.diag_note_actor_lifecycle_manager,
             DiagNodeRole::RootClientBridge => labels.diag_note_root_client_bridge,
-            DiagNodeRole::CommActor => labels.diag_note_comm_actor,
+            DiagNodeRole::CastActor => labels.diag_note_cast_actor,
             DiagNodeRole::ProcAgent => labels.diag_note_proc_agent,
             DiagNodeRole::UserProc => labels.diag_note_user_proc,
             DiagNodeRole::UserActor => labels.diag_note_user_actor,

@@ -22,6 +22,7 @@ fbinit-tokio = { version = "0.1.2", git = "https://github.com/facebookexperiment
 futures = { version = "0.3.31", features = ["async-await", "compat"] }
 humantime = "2.1"
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
+hyperactor_cast = { version = "0.0.0", path = "../hyperactor_cast" }
 hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
 hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }
 indicatif = { version = "0.18.4", features = ["futures", "improved_unicode", "rayon", "tokio"] }

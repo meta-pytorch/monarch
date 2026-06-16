@@ -7,7 +7,6 @@
  */
 
 use std::any::type_name;
-use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt;
 use std::hash::Hash;
@@ -44,11 +43,9 @@ use typeuri::Named;
 
 use crate::ActorMesh;
 use crate::ActorMeshRef;
-use crate::CommActor;
 use crate::Error;
 use crate::HostMeshRef;
 use crate::ValueMesh;
-use crate::comm::CommMeshConfig;
 use crate::host_mesh::host_agent::ProcState;
 use crate::host_mesh::mesh_to_rankedvalues_with_default;
 use crate::mesh_controller::ActorMeshControlPlane;
@@ -80,12 +77,6 @@ declare_attrs! {
     ))
     pub attr GET_ACTOR_STATE_MAX_IDLE: Duration = Duration::from_secs(30);
 }
-
-/// Name used for the mesh communication actor spawned on each user proc.
-///
-/// The `CommActor` enables proc-to-proc mesh messaging and is always
-/// present as a system actor (`system_children`) on every proc mesh member.
-pub const COMM_ACTOR_NAME: &str = "comm";
 
 /// Returns the telemetry `meshes.id` value for an actor mesh.
 pub fn telemetry_actor_mesh_id(proc_mesh_id: &ProcMeshId, actor_mesh_id: &ActorMeshId) -> u64 {
@@ -126,25 +117,17 @@ impl ProcRef {
 pub struct ProcMesh {
     #[allow(dead_code)]
     id: ProcMeshId,
-    #[allow(dead_code)]
-    comm_actor_name: Option<ActorMeshId>,
     current_ref: ProcMeshRef,
     controller: Option<ActorRef<crate::mesh_controller::ProcMeshController>>,
 }
 
 impl ProcMesh {
-    pub(crate) async fn create<C: context::Actor>(
-        cx: &C,
+    pub(crate) fn create(
         id: ProcMeshId,
         extent: Extent,
         hosts: HostMeshRef,
         ranks: Vec<ProcRef>,
-    ) -> crate::Result<Self>
-    where
-        C::A: Handler<MeshFailure>,
-    {
-        let comm_actor_name = ActorMeshId::singleton(Label::new(COMM_ACTOR_NAME).unwrap());
-
+    ) -> crate::Result<Self> {
         let region = extent.into();
         let ranks = Arc::new(ranks);
 
@@ -157,21 +140,7 @@ impl ProcMesh {
             );
         }
 
-        let root_comm_actor: ActorRef<CommActor> = ActorRef::attest(
-            ranks
-                .first()
-                .expect("root mesh cannot be empty")
-                .actor_addr(&comm_actor_name),
-        );
-        let current_ref = ProcMeshRef::new(
-            id.clone(),
-            region,
-            ranks,
-            Some(hosts),
-            None, // this is the root mesh
-            None, // comm actor is not alive yet
-        )
-        .unwrap();
+        let current_ref = ProcMeshRef::new(id.clone(), region, ranks, Some(hosts)).unwrap();
 
         // Notify telemetry that the ProcAgent mesh was created.
         {
@@ -218,31 +187,11 @@ impl ProcMesh {
             }
         }
 
-        let mut proc_mesh = Self {
+        Ok(Self {
             id,
-            comm_actor_name: Some(comm_actor_name.clone()),
             current_ref,
             controller: None,
-        };
-
-        // CommActor satisfies `Actor + Referable`, so it can be
-        // spawned and safely referenced via ActorRef<CommActor>.
-        // It is a system actor that should not have a controller managing it.
-        let comm_actor_mesh: ActorMesh<CommActor> = proc_mesh
-            .spawn_with_name(cx, comm_actor_name, &Default::default(), None, true)
-            .await?;
-        let address_book: HashMap<_, _> = comm_actor_mesh
-            .iter()
-            .map(|(point, actor_ref)| (point.rank(), actor_ref))
-            .collect();
-        // Now that we have all of the spawned comm actors, kick them all into
-        // mesh mode.
-        for (rank, comm_actor) in &address_book {
-            comm_actor.post(cx, CommMeshConfig::new(*rank, address_book.clone()));
-        }
-        proc_mesh.current_ref.root_comm_actor = Some(root_comm_actor);
-
-        Ok(proc_mesh)
+        })
     }
 
     /// Set or clear the controller actor managing this mesh.
@@ -376,15 +325,6 @@ pub struct ProcMeshRef {
     proc_agent_mesh: ActorMeshRef<ProcAgent>,
     // Some if this was spawned from a host mesh, else none.
     host_mesh: Option<HostMeshRef>,
-    // Temporary: used to fit v1 ActorMesh with v0's casting implementation. This
-    // should be removed after we remove the v0 code.
-    // The root region of this mesh. None means this mesh itself is the root.
-    pub(crate) root_region: Option<Region>,
-    // Temporary: used to fit v1 ActorMesh with v0's casting implementation. This
-    // should be removed after we remove the v0 code.
-    // v0 casting requires root mesh rank 0 as the 1st hop, so we need to provide
-    // it here. For v1, this can be removed since v1 can use any rank.
-    pub(crate) root_comm_actor: Option<ActorRef<CommActor>>,
 }
 wirevalue::register_type!(ProcMeshRef);
 
@@ -396,8 +336,6 @@ impl PartialEq for ProcMeshRef {
             && self.region == other.region
             && self.ranks == other.ranks
             && self.host_mesh == other.host_mesh
-            && self.root_region == other.root_region
-            && self.root_comm_actor == other.root_comm_actor
     }
 }
 
@@ -409,8 +347,6 @@ impl std::hash::Hash for ProcMeshRef {
         self.region.hash(state);
         self.ranks.hash(state);
         self.host_mesh.hash(state);
-        self.root_region.hash(state);
-        self.root_comm_actor.hash(state);
     }
 }
 
@@ -422,8 +358,6 @@ impl ProcMeshRef {
         region: Region,
         ranks: Arc<Vec<ProcRef>>,
         host_mesh: Option<HostMeshRef>,
-        root_region: Option<Region>,
-        root_comm_actor: Option<ActorRef<CommActor>>,
     ) -> crate::Result<Self> {
         if ranks.is_empty() {
             return Err(crate::Error::ConfigurationError(anyhow::anyhow!(
@@ -443,8 +377,6 @@ impl ProcMeshRef {
             ranks,
             proc_agent_mesh,
             host_mesh,
-            root_region,
-            root_comm_actor,
         })
     }
 
@@ -461,8 +393,6 @@ impl ProcMeshRef {
             ranks,
             proc_agent_mesh,
             host_mesh: None,
-            root_region: None,
-            root_comm_actor: None,
         })
     }
 
@@ -893,7 +823,8 @@ impl ProcMeshRef {
             None,
             actor_mesh_members,
         );
-        // We don't need controllers for a system actor like the CommActor.
+        // System actors are managed by their owning runtime, not an
+        // ActorMeshController.
         if !is_system_actor {
             // Spawn a unique mesh manager for each actor mesh, so the type of the
             // mesh can be preserved.
@@ -1122,8 +1053,6 @@ impl view::RankedSliceable for ProcMeshRef {
             region,
             ranks: Arc::new(ranks),
             host_mesh: self.host_mesh.clone(),
-            root_region: Some(self.root_region.as_ref().unwrap_or(&self.region).clone()),
-            root_comm_actor: self.root_comm_actor.clone(),
         }
     }
 }

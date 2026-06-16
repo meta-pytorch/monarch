@@ -30,13 +30,13 @@
 use std::collections::HashSet;
 use std::time::Instant;
 
+use hyperactor_cast::cast_actor::CAST_ACTOR_NAME;
 use hyperactor_mesh::host::LOCAL_PROC_NAME;
 use hyperactor_mesh::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
 use hyperactor_mesh::introspect::NodeProperties;
 use hyperactor_mesh::mesh_admin::MESH_ADMIN_ACTOR_NAME;
 use hyperactor_mesh::mesh_admin::MESH_ADMIN_BRIDGE_NAME;
 use hyperactor_mesh::proc_agent::PROC_AGENT_ACTOR_NAME;
-use hyperactor_mesh::proc_mesh::COMM_ACTOR_NAME;
 use serde::Serialize;
 use tokio::sync::mpsc;
 
@@ -86,8 +86,8 @@ pub(crate) enum DiagNodeRole {
     /// ProcAgent and root client actor only when activated via
     /// `this_proc()` (Python/Monarch).
     LocalClientProc,
-    /// The `comm` actor on a user proc — enables proc-to-proc mesh messaging.
-    CommActor,
+    /// The `cast` actor on a user proc — routes mesh casts.
+    CastActor,
     /// The `proc_agent` actor on a user proc — manages actor spawn and lifecycle.
     ProcAgent,
     /// The first non-system proc — confirms user workload is alive.
@@ -452,8 +452,8 @@ async fn walk(
                     match nr {
                         NodeRef::Actor(actor_id) => {
                             let name = actor_id.log_name();
-                            if name.starts_with(COMM_ACTOR_NAME) {
-                                Some(DiagNodeRole::CommActor)
+                            if name.starts_with(CAST_ACTOR_NAME) {
+                                Some(DiagNodeRole::CastActor)
                             } else if name.starts_with(PROC_AGENT_ACTOR_NAME) {
                                 Some(DiagNodeRole::ProcAgent)
                             } else {
