@@ -75,6 +75,7 @@ use hyperactor::ActorAddr;
 use hyperactor::ProcAddr;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::context;
+use hyperactor_cast::cast_actor::CAST_ACTOR_NAME;
 use ndslice::Extent;
 use ndslice::Region;
 use ndslice::ViewExt;
@@ -505,6 +506,13 @@ impl HostMesh {
             )
             .map_err(crate::Error::SingletonActorSpawnError)?;
         host_mesh_agent.bind::<HostAgent>();
+        let cast_handle = system_proc
+            .spawn_with_uid(
+                Uid::singleton(Label::strip(CAST_ACTOR_NAME)),
+                hyperactor_cast::cast_actor::CastActor::default(),
+            )
+            .map_err(crate::Error::SingletonActorSpawnError)?;
+        cast_handle.bind::<hyperactor_cast::cast_actor::CastActor>();
 
         let host = HostRef::new(addr);
         let host_mesh_ref = HostMeshRef::new(
@@ -570,6 +578,16 @@ impl HostMesh {
             )
             .map_err(crate::Error::SingletonActorSpawnError)?;
         host_mesh_agent.bind::<HostAgent>();
+
+        let cast_handle = system_proc
+            .spawn_with_uid(
+                Uid::singleton(Label::strip(CAST_ACTOR_NAME)),
+                hyperactor_cast::cast_actor::CastActor::default(),
+            )
+            .map_err(crate::Error::SingletonActorSpawnError)?;
+
+        cast_handle.bind::<hyperactor_cast::cast_actor::CastActor>();
+
         Ok(HostRef::new(addr))
     }
 

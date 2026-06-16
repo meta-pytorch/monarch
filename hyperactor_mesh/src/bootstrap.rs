@@ -55,6 +55,7 @@ use hyperactor::mailbox::IntoBoxedMailboxSender;
 use hyperactor::mailbox::MailboxClient;
 use hyperactor::mailbox::MailboxServer;
 use hyperactor::proc::Proc;
+use hyperactor_cast::cast_actor::CAST_ACTOR_NAME;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::Attrs;
@@ -308,6 +309,12 @@ pub async fn host(
             shutdown_tx: Some(shutdown_tx),
         }),
     )?;
+    let cast_handle = system_proc.spawn_with_uid(
+        Uid::singleton(Label::strip(CAST_ACTOR_NAME)),
+        hyperactor_cast::cast_actor::CastActor::default(),
+    )?;
+
+    cast_handle.bind::<hyperactor_cast::cast_actor::CastActor>();
 
     tracing::info!(
         "serving host at {}, agent: {}",
