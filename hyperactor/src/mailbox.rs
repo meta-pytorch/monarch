@@ -1643,17 +1643,20 @@ impl MailboxSender for MailboxClient {
             // Failed to enqueue.
             envelope.undeliverable(failure, return_handle);
         } else {
-            self.submitted.fetch_add(1, Ordering::SeqCst);
+            self.submitted.fetch_add(1, Ordering::Relaxed);
         }
     }
 
     async fn flush(&self) -> Result<(), anyhow::Error> {
-        let target = self.submitted.load(Ordering::SeqCst);
+        let target = self.submitted.load(Ordering::Relaxed);
         loop {
-            if self.completed.load(Ordering::SeqCst) >= target {
+            // Register before checking so a completion cannot notify between
+            // the check and the wait.
+            let notified = self.completed_notify.notified();
+            if self.completed.load(Ordering::Relaxed) >= target {
                 return Ok(());
             }
-            self.completed_notify.notified().await;
+            notified.await;
         }
     }
 }
