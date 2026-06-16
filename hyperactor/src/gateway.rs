@@ -33,12 +33,19 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::RwLock;
 use std::sync::Weak;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::StreamExt as _;
+use serde::Deserialize;
+use serde::Serialize;
+use tokio::sync::watch;
+use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 
 use crate::Location;
 use crate::PortAddr;
+use crate::ProcAddr;
 use crate::ProcId;
 use crate::channel;
 use crate::channel::ChannelAddr;
@@ -62,6 +69,172 @@ use crate::mailbox::UndeliverableReason;
 use crate::mailbox::UnroutableMailboxSender;
 use crate::proc::Proc;
 use crate::proc::WeakProc;
+
+// ---------------------------------------------------------------------------
+// Gateway attach protocol
+// ---------------------------------------------------------------------------
+//
+// Gateways are the connectivity layer; all on-the-wire attach is
+// gateway-to-gateway. A client gateway dials a peer's accept endpoint
+// and sends [`AttachRequest`] carrying its own uid; the peer replies
+// with [`AttachAck`] carrying the via location through which the client
+// is reachable, then both ends serve regular [`MessageEnvelope`]
+// traffic on the same duplex.
+
+/// Label used for attach-control envelopes.
+const ATTACH_CONTROL_LABEL: &str = "attach";
+
+/// Upper bound on how long [`Gateway::serve_via`] waits for the peer's
+/// [`AttachAck`]. A peer that accepts the connection but never replies
+/// (hung, misconfigured, or running an older protocol) would otherwise
+/// block the caller — typically Python `bootstrap_host` — indefinitely.
+const ATTACH_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// First message a gateway sends when attaching to a peer. The peer
+/// records `uid` in its [`peers`] table; afterwards, any
+/// destination whose outermost location hop is `Via(uid, ...)` is
+/// peeled by the peer and forwarded back over the duplex.
+#[derive(Debug, Clone, Serialize, Deserialize, typeuri::Named)]
+pub(crate) struct AttachRequest {
+    /// The attaching gateway's uid.
+    pub(crate) uid: Uid,
+}
+wirevalue::register_type!(AttachRequest);
+
+/// Acknowledgement returned by a peer gateway during attach. Carries
+/// the via location the client should advertise as its
+/// [`default_location`] — `Via(client_uid, peer_default_location)`.
+#[derive(Debug, Clone, Serialize, Deserialize, typeuri::Named)]
+pub(crate) struct AttachAck {
+    /// The location through which the client is now reachable.
+    pub(crate) location: Location,
+}
+wirevalue::register_type!(AttachAck);
+
+/// Wire protocol for the peer → client direction on a duplex attach
+/// connection.
+#[derive(Debug, Serialize, Deserialize, typeuri::Named)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "wire-protocol enum; boxing Envelope would ripple through channel/networking destructure sites"
+)]
+pub(crate) enum AttachWire {
+    /// First message: the peer acknowledges and assigns a via location.
+    Ack(AttachAck),
+    /// Subsequent messages: routed envelopes.
+    Envelope(MessageEnvelope),
+}
+wirevalue::register_type!(AttachWire);
+
+/// [`Rx<MessageEnvelope>`](channel::Rx) adapter that unwraps
+/// [`AttachWire::Envelope`] from a duplex receiver. Errors if the
+/// peer sends another [`AttachWire::Ack`] after the handshake.
+pub(crate) struct AttachRx(pub(crate) channel::duplex::DuplexRx<AttachWire>);
+
+#[async_trait]
+impl channel::Rx<MessageEnvelope> for AttachRx {
+    async fn recv(&mut self) -> Result<MessageEnvelope, ChannelError> {
+        match self.0.recv().await? {
+            AttachWire::Envelope(envelope) => Ok(envelope),
+            AttachWire::Ack(_) => Err(ChannelError::Other(anyhow::anyhow!(
+                "unexpected attach ack after handshake"
+            ))),
+        }
+    }
+
+    fn addr(&self) -> ChannelAddr {
+        self.0.addr()
+    }
+
+    async fn join(self) {
+        self.0.join().await
+    }
+}
+
+/// [`Tx<MessageEnvelope>`](channel::Tx) adapter that wraps outbound
+/// [`MessageEnvelope`]s in [`AttachWire::Envelope`] before posting to
+/// a peer's [`DuplexTx<AttachWire>`]. Used through [`MailboxClient`]
+/// on the accept side so normal sender flushing semantics apply.
+#[derive(Clone)]
+pub(crate) struct AttachTx(pub(crate) channel::duplex::DuplexTx<AttachWire>);
+
+#[async_trait]
+impl channel::Tx<MessageEnvelope> for AttachTx {
+    fn do_post(
+        &self,
+        envelope: MessageEnvelope,
+        completion: channel::CompletionSink<MessageEnvelope>,
+    ) {
+        let completion = completion.contramap_rejected(
+            |channel::SendError {
+                 error,
+                 message,
+                 reason,
+             }| {
+                let AttachWire::Envelope(envelope) = message else {
+                    return None;
+                };
+                Some(channel::SendError {
+                    error,
+                    message: envelope,
+                    reason,
+                })
+            },
+        );
+        self.0.do_post(AttachWire::Envelope(envelope), completion);
+    }
+
+    fn addr(&self) -> ChannelAddr {
+        self.0.addr()
+    }
+
+    fn status(&self) -> &watch::Receiver<channel::TxStatus> {
+        self.0.status()
+    }
+}
+
+struct PreboundAcceptServer {
+    inner: channel::duplex::DuplexServer<MessageEnvelope, AttachWire>,
+}
+
+impl PreboundAcceptServer {
+    fn duplex(
+        addr: ChannelAddr,
+        listener: Option<std::net::TcpListener>,
+    ) -> Result<Self, channel::ServerError> {
+        let inner = channel::duplex::serve::<MessageEnvelope, AttachWire>(addr, listener)?;
+        Ok(Self { inner })
+    }
+
+    fn addr(&self) -> &ChannelAddr {
+        self.inner.addr()
+    }
+}
+
+/// Serialize a control payload into a placeholder [`MessageEnvelope`]
+/// suitable for posting on a duplex client→peer channel.
+///
+/// Sender/dest ids are placeholders the peer consumes without routing;
+/// `return_undeliverable` is cleared so an envelope that ever escapes
+/// into the forwarder is dropped rather than bounced to the fake
+/// sender.
+fn build_control_envelope<T>(payload: &T) -> anyhow::Result<MessageEnvelope>
+where
+    T: serde::Serialize + typeuri::Named,
+{
+    let signal_actor_id = crate::ActorAddr::root(
+        ProcAddr::singleton(
+            ChannelAddr::any(channel::ChannelTransport::Local),
+            ATTACH_CONTROL_LABEL,
+        ),
+        crate::id::Label::strip(ATTACH_CONTROL_LABEL),
+    );
+    let signal_port = signal_actor_id.port_addr(crate::port::Port::from(0u64));
+    let mut envelope =
+        MessageEnvelope::serialize(signal_actor_id, signal_port, payload, Default::default())?;
+    envelope.set_return_undeliverable(false);
+    Ok(envelope)
+}
 
 /// Connectivity boundary for one or more procs.
 #[derive(Clone)]
