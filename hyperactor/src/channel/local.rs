@@ -102,32 +102,26 @@ pub struct LocalTx<M: RemoteMessage> {
 
 #[async_trait]
 impl<M: RemoteMessage> Tx<M> for LocalTx<M> {
-    fn do_post(&self, message: M, return_channel: Option<oneshot::Sender<SendError<M>>>) {
+    fn do_post(&self, message: M, completion: CompletionSink<M>) {
         let data = match serde_multipart::serialize_bincode(&message) {
             Ok(data) => data,
             Err(err) => {
-                if let Some(return_channel) = return_channel {
-                    return_channel
-                        .send(SendError {
-                            error: ChannelError::Other(anyhow::Error::from(err)),
-                            message,
-                            reason: None,
-                        })
-                        .unwrap_or_else(|m| tracing::warn!("failed to deliver SendError: {}", m));
-                }
+                completion.reject(SendError {
+                    error: ChannelError::Other(anyhow::Error::from(err)),
+                    message,
+                    reason: None,
+                });
                 return;
             }
         };
-        if self.tx.send(data).is_err()
-            && let Some(return_channel) = return_channel
-        {
-            return_channel
-                .send(SendError {
-                    error: ChannelError::Closed,
-                    message,
-                    reason: None,
-                })
-                .unwrap_or_else(|m| tracing::warn!("failed to deliver SendError: {}", m));
+        if self.tx.send(data).is_err() {
+            completion.reject(SendError {
+                error: ChannelError::Closed,
+                message,
+                reason: None,
+            });
+        } else {
+            completion.accept();
         }
     }
 
