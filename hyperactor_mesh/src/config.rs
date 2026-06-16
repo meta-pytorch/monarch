@@ -273,4 +273,11 @@ declare_attrs! {
         Some("v1_cast_point_to_point_threshold".to_string()),
     ))
     pub attr V1_CAST_POINT_TO_POINT_THRESHOLD: usize = 0;
+
+
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_MAX_CAST_FANOUT".to_string()),
+        Some("max_cast_fanout".to_string()),
+    ))
+    pub attr MAX_CAST_FANOUT: usize = 16;
 }

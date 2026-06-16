@@ -36,6 +36,7 @@ use hyperactor::context;
 use hyperactor::mailbox::MailboxSenderError;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_mesh::ActorMesh;
+use hyperactor_mesh::ActorMeshRef;
 use hyperactor_mesh::ProcMeshRef;
 use hyperactor_mesh::supervision::MeshFailure;
 use hyperactor_mesh::value_mesh::ValueOverlay;
@@ -61,10 +62,11 @@ use monarch_messages::worker::WorkerMessage;
 use monarch_messages::worker::WorkerParams;
 use monarch_tensor_worker::AssignRankMessage;
 use monarch_tensor_worker::WorkerActor;
+use ndslice::Region;
 use ndslice::Slice;
 use ndslice::ViewExt;
-use ndslice::selection::ReifySlice;
 use ndslice::view::Ranked;
+use ndslice::view::RankedSliceable as _;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -724,6 +726,7 @@ enum ClientToControllerMessage {
 struct MeshControllerActor {
     proc_mesh_ref: ProcMeshRef,
     workers: Option<ActorMesh<WorkerActor>>,
+    worker_slice_cache: HashMap<Region, ActorMeshRef<WorkerActor>>,
     brokers: Option<ActorMesh<LocalStateBrokerActor>>,
     history: History,
     id: usize,
@@ -750,6 +753,7 @@ impl MeshControllerActor {
         MeshControllerActor {
             proc_mesh_ref,
             workers: None,
+            worker_slice_cache: HashMap::new(),
             brokers: None,
             history: History::new(world_size),
             id,
@@ -763,8 +767,69 @@ impl MeshControllerActor {
         self.workers.as_ref().unwrap()
     }
 
+    fn worker_slice(&mut self, region: Region) -> ActorMeshRef<WorkerActor> {
+        if let Some(slice) = self.worker_slice_cache.get(&region) {
+            return slice.clone();
+        }
+
+        let slice = self.workers().deref().sliced(region.clone());
+        self.worker_slice_cache.insert(region, slice.clone());
+        slice
+    }
+
     fn workers_mut(&mut self) -> &mut ActorMesh<WorkerActor> {
         self.workers.as_mut().unwrap()
+    }
+
+    fn cast_to_worker_slices(
+        &mut self,
+        this: &Context<'_, Self>,
+        slices: Vec<Slice>,
+        message: WorkerMessage,
+    ) -> anyhow::Result<()> {
+        let worker_region = Ranked::region(self.workers().deref()).clone();
+
+        let mut seen = HashSet::new();
+        for slice in slices {
+            let ranks = slice.iter().collect::<Vec<_>>();
+            if ranks.is_empty() {
+                continue;
+            }
+
+            let labels = if worker_region.labels().len() == slice.num_dim() {
+                worker_region.labels().to_vec()
+            } else {
+                (0..slice.num_dim())
+                    .map(|dim| format!("rank_{dim}"))
+                    .collect()
+            };
+            let region = Region::new(labels, slice);
+            anyhow::ensure!(
+                region.is_subset(&worker_region),
+                "worker send target must be a subset of the worker mesh"
+            );
+
+            // `Vec<Slice>` represents a union. Preserve the common efficient case
+            // by casting whole non-overlapping slices, but avoid duplicate delivery
+            // if later slices overlap earlier ones.
+            if ranks.iter().all(|rank| !seen.contains(rank)) {
+                seen.extend(ranks);
+                self.worker_slice(region).cast(this, message.clone())?;
+                continue;
+            }
+
+            for rank in ranks {
+                if !seen.insert(rank) {
+                    continue;
+                }
+                let singleton = Region::new(
+                    Vec::new(),
+                    Slice::new(rank, Vec::new(), Vec::new()).map_err(anyhow::Error::from)?,
+                );
+                self.worker_slice(singleton).cast(this, message.clone())?;
+            }
+        }
+        Ok(())
     }
 
     fn brokers_mut(&mut self) -> &mut ActorMesh<LocalStateBrokerActor> {
@@ -944,11 +1009,7 @@ impl Handler<ClientToControllerMessage> for MeshControllerActor {
     ) -> anyhow::Result<()> {
         match message {
             ClientToControllerMessage::Send { slices, message } => {
-                let workers = self.workers();
-                let sel = Ranked::region(workers.deref())
-                    .slice()
-                    .reify_slices(slices)?;
-                workers.cast_for_tensor_engine_only_do_not_use(this, sel, message)?;
+                self.cast_to_worker_slices(this, slices, message)?;
             }
             ClientToControllerMessage::Node {
                 seq,

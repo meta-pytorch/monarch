@@ -456,7 +456,8 @@ async fn bootstrap_host() -> GlobalState {
             0,
             local_proc_agent.bind(),
         ),
-    );
+    )
+    .expect("failed to create proc mesh ref");
     let actor_instance = local_proc
         .actor_instance::<GlobalClientActor>("client")
         .expect("failed to create root client instance");

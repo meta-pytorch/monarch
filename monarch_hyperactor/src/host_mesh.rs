@@ -397,7 +397,8 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
                 0,
                 local_proc_agent.bind(),
             ),
-        );
+        )
+        .map_err(|e| PyException::new_err(e.to_string()))?;
 
         let local_proc = local_proc_agent
             .get_proc(&temp_instance)
