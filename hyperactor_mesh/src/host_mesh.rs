@@ -1445,7 +1445,7 @@ impl HostMeshRef {
             }
         }
 
-        let mut mesh = ProcMesh::create(cx, proc_mesh_id, extent, self.clone(), procs).await;
+        let mut mesh = ProcMesh::create(proc_mesh_id, extent, self.clone(), procs);
         if let Ok(ref mut mesh) = mesh {
             // Spawn a unique mesh controller for each proc mesh, so the type of the
             // mesh can be preserved. Procs reached a non-terminating state above,
