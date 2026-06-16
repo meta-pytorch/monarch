@@ -76,6 +76,7 @@ use hyperactor::mailbox::UndeliverableReason;
 use hyperactor::proc::ActorWorkReceiver;
 use hyperactor::proc::Proc;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor_cast::cast_actor::CAST_ACTOR_NAME;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -420,6 +421,15 @@ async fn bootstrap_host() -> GlobalState {
             HostAgent::new(HostAgentMode::Local(host)),
         )
         .expect("failed to spawn host agent");
+
+    let cast_handle = system_proc
+        .spawn_with_uid(
+            Uid::singleton(Label::strip(CAST_ACTOR_NAME)),
+            hyperactor_cast::cast_actor::CastActor::default(),
+        )
+        .expect("failed to spawn cast actor");
+
+    cast_handle.bind::<hyperactor_cast::cast_actor::CastActor>();
 
     // 4. Build HostMeshRef.
     let host_mesh = HostMeshRef::from_host_agent(
