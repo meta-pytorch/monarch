@@ -131,6 +131,83 @@ pub struct SendError<M: RemoteMessage> {
     pub reason: Option<SendErrorReason>,
 }
 
+/// Terminal outcome for a posted message.
+pub enum SendCompletion<M: RemoteMessage> {
+    /// The channel accepted responsibility for the message.
+    Accepted,
+    /// The channel rejected the message and returned ownership to the sender.
+    Rejected(SendError<M>),
+}
+
+enum CompletionSinkInner<M: RemoteMessage> {
+    OneShot(oneshot::Sender<SendError<M>>),
+    Callback(Box<dyn FnOnce(SendCompletion<M>) + Send + Sync>),
+    Ignore,
+}
+
+/// Sink for the terminal outcome of a posted message.
+pub struct CompletionSink<M: RemoteMessage>(CompletionSinkInner<M>);
+
+impl<M: RemoteMessage> CompletionSink<M> {
+    /// Ignore the message completion.
+    pub fn ignore() -> Self {
+        Self(CompletionSinkInner::Ignore)
+    }
+
+    /// Invoke `f` when the message completes.
+    pub fn callback(f: impl FnOnce(SendCompletion<M>) + Send + Sync + 'static) -> Self {
+        Self(CompletionSinkInner::Callback(Box::new(f)))
+    }
+
+    /// Adapt a legacy oneshot send-error sender into a completion sink.
+    pub fn oneshot(sender: oneshot::Sender<SendError<M>>) -> Self {
+        Self(CompletionSinkInner::OneShot(sender))
+    }
+
+    /// Adapt rejected send errors for a wrapped message type.
+    pub fn contramap_rejected<N: RemoteMessage>(
+        self,
+        f: impl FnOnce(SendError<N>) -> Option<SendError<M>> + Send + Sync + 'static,
+    ) -> CompletionSink<N> {
+        CompletionSink::callback(move |completion| match completion {
+            SendCompletion::Accepted => self.accept(),
+            SendCompletion::Rejected(error) => {
+                if let Some(error) = f(error) {
+                    self.reject(error);
+                } else {
+                    self.accept();
+                }
+            }
+        })
+    }
+
+    /// Report that the channel accepted the message.
+    pub fn accept(self) {
+        match self.0 {
+            CompletionSinkInner::OneShot(_) => {}
+            CompletionSinkInner::Callback(f) => f(SendCompletion::Accepted),
+            CompletionSinkInner::Ignore => {}
+        }
+    }
+
+    /// Report that the channel rejected the message.
+    pub fn reject(self, error: SendError<M>) {
+        match self.0 {
+            CompletionSinkInner::OneShot(sender) => {
+                let _ = sender.send(error);
+            }
+            CompletionSinkInner::Callback(f) => f(SendCompletion::Rejected(error)),
+            CompletionSinkInner::Ignore => {}
+        }
+    }
+}
+
+impl<M: RemoteMessage> From<oneshot::Sender<SendError<M>>> for CompletionSink<M> {
+    fn from(sender: oneshot::Sender<SendError<M>>) -> Self {
+        Self::oneshot(sender)
+    }
+}
+
 impl<M: RemoteMessage> From<SendError<M>> for ChannelError {
     fn from(error: SendError<M>) -> Self {
         error.error
@@ -188,12 +265,10 @@ pub enum TxStatus {
 /// The transmit end of an M-typed channel.
 #[async_trait]
 pub trait Tx<M: RemoteMessage> {
-    /// Post a message; returning failed deliveries on the return channel, if provided.
-    /// If provided, the sender is dropped when the message has been
-    /// enqueued at the channel endpoint.
+    /// Post a message and report its terminal outcome to `completion`.
     ///
     /// Users should use the `try_post`, and `post` variants directly.
-    fn do_post(&self, message: M, return_channel: Option<oneshot::Sender<SendError<M>>>);
+    fn do_post(&self, message: M, completion: CompletionSink<M>);
 
     /// Enqueue a `message` on the local end of the channel. The
     /// message is either delivered, or we eventually discover that
@@ -201,13 +276,13 @@ pub trait Tx<M: RemoteMessage> {
     #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SendError`.
     #[tracing::instrument(level = "debug", skip_all)]
     fn try_post(&self, message: M, return_channel: oneshot::Sender<SendError<M>>) {
-        self.do_post(message, Some(return_channel));
+        self.do_post(message, CompletionSink::oneshot(return_channel));
     }
 
     /// Enqueue a message to be sent on the channel.
     #[hyperactor::instrument_infallible]
     fn post(&self, message: M) {
-        self.do_post(message, None);
+        self.do_post(message, CompletionSink::ignore());
     }
 
     /// Send a message synchronously, returning when the message has
@@ -274,17 +349,14 @@ impl<M: RemoteMessage> MpscTx<M> {
 
 #[async_trait]
 impl<M: RemoteMessage> Tx<M> for MpscTx<M> {
-    fn do_post(&self, message: M, return_channel: Option<oneshot::Sender<SendError<M>>>) {
-        if let Err(mpsc::error::SendError(message)) = self.tx.send(message)
-            && let Some(return_channel) = return_channel
-        {
-            return_channel
-                .send(SendError {
-                    error: ChannelError::Closed,
-                    message,
-                    reason: None,
-                })
-                .unwrap_or_else(|m| tracing::warn!("failed to deliver SendError: {}", m));
+    fn do_post(&self, message: M, completion: CompletionSink<M>) {
+        match self.tx.send(message) {
+            Ok(()) => completion.accept(),
+            Err(mpsc::error::SendError(message)) => completion.reject(SendError {
+                error: ChannelError::Closed,
+                message,
+                reason: None,
+            }),
         }
     }
 
@@ -1178,10 +1250,10 @@ enum ChannelTxKind<M: RemoteMessage> {
 
 #[async_trait]
 impl<M: RemoteMessage> Tx<M> for ChannelTx<M> {
-    fn do_post(&self, message: M, return_channel: Option<oneshot::Sender<SendError<M>>>) {
+    fn do_post(&self, message: M, completion: CompletionSink<M>) {
         match &self.inner {
-            ChannelTxKind::Local(tx) => tx.do_post(message, return_channel),
-            ChannelTxKind::Net(tx) => tx.do_post(message, return_channel),
+            ChannelTxKind::Local(tx) => tx.do_post(message, completion),
+            ChannelTxKind::Net(tx) => tx.do_post(message, completion),
         }
     }
 
