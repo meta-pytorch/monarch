@@ -1414,6 +1414,120 @@ mod tests {
     }
 
     #[async_timed_test(timeout_secs = 300)]
+    #[cfg(fbcode_build)]
+    async fn test_actor_mesh_slice_casts_only_to_slice_members() {
+        let instance = testing::instance();
+        let mut hm = testing::host_mesh(2).await;
+        let pm: ProcMesh = hm
+            .spawn(instance, "test", extent!(gpus = 2), None, None)
+            .await
+            .unwrap();
+        let actor_mesh: ActorMesh<testactor::TestActor> =
+            pm.spawn(instance, "test", &()).await.unwrap();
+
+        {
+            let host1_region = actor_mesh
+                .region()
+                .range("hosts", 1..2)
+                .expect("host slice should exist");
+            let host1 = actor_mesh.sliced(host1_region);
+            // This waits for one reply from every actor in the sliced mesh and
+            // then asserts that no extra actors replied. Passing `None` does not
+            // pin exact sequence numbers, but the destination handler still unwraps
+            // `SEQ_INFO`, so the delivered cast must carry ordering metadata.
+            testactor::assert_casting_correctness(&host1, instance, None).await;
+
+            {
+                let host1_gpu1_region = host1
+                    .region()
+                    .range("gpus", 1..2)
+                    .expect("nested slice should exist");
+                let host1_gpu1 = host1.sliced(host1_gpu1_region);
+                testactor::assert_casting_correctness(&host1_gpu1, instance, None).await;
+            }
+        }
+
+        let _ = hm.shutdown(instance).await;
+    }
+
+    async fn assert_slice_cast_points(
+        actor_mesh: &ActorMeshRef<testactor::TestActor>,
+        instance: &impl hyperactor::context::Actor,
+    ) {
+        let (port, mut rx) = mailbox::open_port(instance);
+        actor_mesh
+            .cast(
+                instance,
+                testactor::GetCastInfo {
+                    cast_info: port.bind(),
+                },
+            )
+            .unwrap();
+
+        let mut expected: HashMap<_, _> = actor_mesh
+            .values()
+            .enumerate()
+            .map(|(rank, actor_ref)| {
+                (
+                    actor_ref.actor_addr().clone(),
+                    actor_mesh
+                        .extent()
+                        .point_of_rank(rank)
+                        .expect("rank must be in-bounds for slice extent"),
+                )
+            })
+            .collect();
+
+        while !expected.is_empty() {
+            let (point, actor_ref, _sender) =
+                tokio::time::timeout(Duration::from_secs(3), rx.recv())
+                    .await
+                    .expect("timed out waiting for cast info")
+                    .expect("channel closed before receiving cast info");
+            let expected_point = expected
+                .remove(actor_ref.actor_addr())
+                .expect("received cast info from unexpected actor");
+            assert_eq!(
+                point, expected_point,
+                "cast point should be computed from slice-local rank and shape"
+            );
+        }
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let result = rx.try_recv();
+        assert!(result.as_ref().unwrap().is_none(), "got {result:?}");
+    }
+
+    #[async_timed_test(timeout_secs = 60)]
+    #[cfg(fbcode_build)]
+    async fn test_actor_mesh_slice_cast_uses_slice_local_points() {
+        let instance = testing::instance();
+        let mut hm = testing::host_mesh(2).await;
+        let pm: ProcMesh = hm
+            .spawn(instance, "test", extent!(gpus = 2), None, None)
+            .await
+            .unwrap();
+        let actor_mesh: ActorMesh<testactor::TestActor> =
+            pm.spawn(instance, "test", &()).await.unwrap();
+
+        let host1_region = actor_mesh
+            .region()
+            .range("hosts", 1..2)
+            .expect("host slice should exist");
+        let host1 = actor_mesh.sliced(host1_region);
+        assert_slice_cast_points(&host1, instance).await;
+
+        let host1_gpu1_region = host1
+            .region()
+            .range("gpus", 1..2)
+            .expect("nested slice should exist");
+        let host1_gpu1 = host1.sliced(host1_gpu1_region);
+        assert_slice_cast_points(&host1_gpu1, instance).await;
+
+        let _ = hm.shutdown(instance).await;
+    }
+
+    #[async_timed_test(timeout_secs = 300)]
     async fn test_actor_states_with_panic() {
         hyperactor_telemetry::initialize_logging_for_test();
 
