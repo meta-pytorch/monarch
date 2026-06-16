@@ -1219,6 +1219,7 @@ impl<A: Referable> view::RankedSliceable for ActorMeshRef<A> {
 #[cfg(all(test, fbcode_build))]
 mod tests {
 
+    use std::collections::HashMap;
     use std::collections::HashSet;
     use std::ops::Deref;
 
@@ -1744,6 +1745,87 @@ mod tests {
         assert_eq!(all_ranks, HashSet::from([0, 1]));
 
         let _ = host_mesh.shutdown(instance).await;
+    }
+
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_cast_domain_stamps_resource_rank_binding() {
+        let client_proc = hyperactor::proc::Proc::direct(
+            hyperactor::channel::ChannelTransport::Unix.any(),
+            "client_proc".into(),
+        )
+        .unwrap();
+
+        let client = client_proc.client("client");
+
+        let mut procs = Vec::new();
+
+        let members = (0..2)
+            .map(|rank| {
+                let proc = hyperactor::proc::Proc::direct(
+                    hyperactor::channel::ChannelTransport::Unix.any(),
+                    format!("proc_{rank}"),
+                )
+                .unwrap();
+
+                let cast_handle = proc
+                    .spawn_with_uid(
+                        hyperactor::Uid::singleton(Label::strip("cast")),
+                        hyperactor_cast::cast_actor::CastActor::default(),
+                    )
+                    .unwrap();
+
+                let _: hyperactor::ActorRef<hyperactor_cast::cast_actor::CastActor> =
+                    cast_handle.bind();
+
+                let receiver_handle = proc
+                    .spawn_with_uid(
+                        hyperactor::Uid::singleton(Label::strip("receiver")),
+                        testactor::TestActor,
+                    )
+                    .unwrap();
+
+                let _: hyperactor::ActorRef<testactor::TestActor> = receiver_handle.bind();
+
+                let actor_addr =
+                    hyperactor::ActorAddr::root(proc.proc_addr().clone(), Label::strip("receiver"));
+
+                procs.push(proc);
+
+                (rank, actor_addr)
+            })
+            .collect::<HashMap<_, _>>();
+
+        let cast_domain = hyperactor_cast::cast_actor::CastDomainId::new()
+            .materialize(
+                &client,
+                members,
+                Region::from(ndslice::shape!(rank = 2)),
+                hyperactor_cast::cast_actor::TilingPolicy::BlockPartitioning,
+            )
+            .unwrap();
+
+        let (rank_port, mut rank_rx) = client.mailbox().open_port();
+
+        cast_domain
+            .cast(
+                &client,
+                hyperactor_config::Flattrs::new(),
+                testactor::GetResourceRank {
+                    rank: crate::resource::Rank::default(),
+                    reply: rank_port.bind(),
+                },
+            )
+            .unwrap();
+
+        let mut received_ranks = HashSet::new();
+
+        for _ in 0..2 {
+            let (_point, rank) = rank_rx.recv().await.unwrap();
+
+            received_ranks.insert(rank);
+        }
+
+        assert_eq!(received_ranks, HashSet::from([Some(0), Some(1)]));
     }
 
     #[async_timed_test(timeout_secs = 30)]

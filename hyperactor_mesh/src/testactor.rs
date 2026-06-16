@@ -58,6 +58,7 @@ use crate::testing;
     (),
     GetActorId,
     GetCastInfo,
+    GetResourceRank,
     CauseSupervisionEvent,
     Forward,
     GetConfigAttrs,
@@ -238,6 +239,25 @@ impl Handler<GetCastInfo> for TestActor {
         GetCastInfo { cast_info }: GetCastInfo,
     ) -> Result<(), anyhow::Error> {
         cast_info.post(cx, (cx.cast_point(), cx.bind(), cx.sender().clone()));
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Named, Serialize, Deserialize)]
+pub struct GetResourceRank {
+    pub rank: crate::resource::Rank,
+    pub reply: hyperactor::PortRef<(Point, Option<usize>)>,
+}
+
+#[async_trait]
+impl Handler<GetResourceRank> for TestActor {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        GetResourceRank { rank, reply }: GetResourceRank,
+    ) -> Result<(), anyhow::Error> {
+        reply.post(cx, (cx.cast_point(), rank.0));
+
         Ok(())
     }
 }

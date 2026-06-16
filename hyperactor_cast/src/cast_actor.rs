@@ -50,7 +50,7 @@ use uuid::Uuid;
 
 use crate::tile::MaterializedTile;
 use crate::tile::Tile;
-use crate::tile::TilingPolicy;
+pub use crate::tile::TilingPolicy;
 
 hyperactor_config::declare_attrs! {
     /// Header stamped on each locally delivered message with the
@@ -80,6 +80,22 @@ hyperactor_config::declare_attrs! {
     /// recipient.
     pub attr CAST_LINEAGE: Vec<usize>;
 }
+
+/// Wire-compatible mirror of `hyperactor_mesh::resource::RankRepr`.
+///
+/// `hyperactor_cast` cannot depend on `hyperactor_mesh` without creating a
+/// crate cycle, but cast delivery still needs to stamp the rank multipart part
+/// for messages whose handlers read rank from the payload. The part is tagged
+/// with `RankRepr`'s typename, so this mirror must match it exactly.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ResourceRankRepr(Option<usize>);
+
+impl Named for ResourceRankRepr {
+    fn typename() -> &'static str {
+        "hyperactor_mesh::resource::RankRepr"
+    }
+}
+
 /// Pure, data-only identifier for a cast domain.
 ///
 /// This type contains no runtime references (e.g. `ActorRef`) and can
@@ -677,6 +693,7 @@ fn split_ports(
 
     Ok(())
 }
+
 /// Test-only forwarding path metadata.
 ///
 /// In production this is zero-sized and optimized away. In tests, each
@@ -779,6 +796,17 @@ impl Handler<CastMessage> for CastActor {
 
         // Deliver to destination actor.
         {
+            let mut local_data = data.clone();
+
+            let rank = domain.point_in_domain.rank();
+
+            local_data.visit_multipart_parts_mut::<ResourceRankRepr, anyhow::Error>(
+                |ResourceRankRepr(resource_rank)| {
+                    *resource_rank = Some(rank);
+                    Ok(())
+                },
+            )?;
+
             let seq = *message
                 .seqs
                 .get_by_base_rank(domain.base_rank_in_domain)
@@ -809,7 +837,7 @@ impl Handler<CastMessage> for CastActor {
                 &dest,
                 &message.sender,
             );
-            cx.post_with_external_seq_info(dest, headers, data.clone().erase_encoding());
+            cx.post_with_external_seq_info(dest, headers, local_data.erase_encoding());
         }
 
         for next_hop in &domain.next_hops {
