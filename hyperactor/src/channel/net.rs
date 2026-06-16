@@ -423,7 +423,11 @@ pub(crate) fn spawn_unordered<M: RemoteMessage>(links: Vec<impl Link + 'static>)
                                                     let mut guard = unacked.lock().await;
                                                     // Remove all entries with seq <= ack.
                                                     let retain: std::collections::BTreeMap<u64, session::QueuedMessage<M>> = guard.split_off(&(ack + 1));
-                                                    drop(std::mem::replace(&mut *guard, retain));
+                                                    let accepted = std::mem::replace(&mut *guard, retain);
+                                                    drop(guard);
+                                                    accepted.into_values().for_each(|queued| {
+                                                        queued.completion.accept();
+                                                    });
                                                 }
                                                 NetRxResponse::Reject(reason) => {
                                                     return Err(session::SendLoopError::Rejected(reason));
@@ -448,7 +452,7 @@ pub(crate) fn spawn_unordered<M: RemoteMessage>(links: Vec<impl Link + 'static>)
                                         seq,
                                         message,
                                         received_at,
-                                        return_channel,
+                                        completion,
                                     } = pending;
                                     let frame = Frame::Message(seq, message);
                                     let serialized = match serde_multipart::serialize_bincode(&frame) {
@@ -457,9 +461,7 @@ pub(crate) fn spawn_unordered<M: RemoteMessage>(links: Vec<impl Link + 'static>)
                                             tracing::error!(
                                                 "{log_id}: serialization error: {e}"
                                             );
-                                            // Drops return_channel; sender perceives success
-                                            // (preserving prior behavior of the dispatcher-side
-                                            // serialize path).
+                                            completion.accept();
                                             continue;
                                         }
                                     };
@@ -468,7 +470,7 @@ pub(crate) fn spawn_unordered<M: RemoteMessage>(links: Vec<impl Link + 'static>)
                                         message: serialized,
                                         received_at,
                                         sent_at: None,
-                                        return_channel,
+                                        completion,
                                     };
                                     let framed = queued.message.clone().framed();
                                     stream.write(framed).drive().await.map_err(|e| {
@@ -518,6 +520,7 @@ pub(crate) fn spawn_unordered<M: RemoteMessage>(links: Vec<impl Link + 'static>)
             }));
         }
 
+        let cleanup_rx = queue_rx.clone();
         // Drop our local receiver clone so the queue closes once the
         // dispatcher's sender (queue_tx) is dropped at shutdown.
         drop(queue_rx);
@@ -532,16 +535,17 @@ pub(crate) fn spawn_unordered<M: RemoteMessage>(links: Vec<impl Link + 'static>)
             "multi-stream dispatcher started"
         );
 
-        while let Some((message, return_channel, received_at)) = receiver.recv().await {
+        while let Some((message, completion, received_at)) = receiver.recv().await {
             let pending = session::PendingMessage {
                 seq: next_seq,
                 message,
                 received_at,
-                return_channel,
+                completion,
             };
             next_seq += 1;
 
-            if queue_tx.send(pending).await.is_err() {
+            if let Err(async_channel::SendError(pending)) = queue_tx.send(pending).await {
+                pending.completion.accept();
                 // All writers are gone.
                 break;
             }
@@ -551,6 +555,16 @@ pub(crate) fn spawn_unordered<M: RemoteMessage>(links: Vec<impl Link + 'static>)
         drop(queue_tx);
         for handle in writer_handles {
             let _ = handle.await;
+        }
+        while let Ok(pending) = cleanup_rx.try_recv() {
+            pending.completion.accept();
+        }
+        for queued in Arc::into_inner(unacked)
+            .expect("writer handles should drop their unacked clones")
+            .into_inner()
+            .into_values()
+        {
+            queued.completion.accept();
         }
 
         let reason = format!("{log_id}: dispatcher closed");
@@ -729,8 +743,8 @@ fn spawn_inner<M: RemoteMessage>(link: impl Link) -> NetTx<M> {
             .drain(..)
             .chain(deliveries.outbox.deque.drain(..))
             .for_each(|queued| queued.try_return(send_error_reason.clone()));
-        while let Ok((msg, return_channel, _)) = receiver.try_recv() {
-            let _ = return_channel.send(SendError {
+        while let Ok((msg, completion, _)) = receiver.try_recv() {
+            completion.reject(SendError {
                 error: ChannelError::Closed,
                 message: msg,
                 reason: send_error_reason.clone(),
@@ -1043,7 +1057,7 @@ pub(super) fn deserialize_response(
 /// A Tx implemented on top of a Link. The Tx manages the link state,
 /// reconnections, etc.
 pub(crate) struct NetTx<M: RemoteMessage> {
-    sender: mpsc::UnboundedSender<(M, oneshot::Sender<SendError<M>>, Instant)>,
+    sender: mpsc::UnboundedSender<(M, CompletionSink<M>, Instant)>,
     dest: ChannelAddr,
     status: watch::Receiver<TxStatus>,
 }
@@ -1058,24 +1072,23 @@ impl<M: RemoteMessage> Tx<M> for NetTx<M> {
         &self.status
     }
 
-    fn do_post(&self, message: M, return_channel: Option<oneshot::Sender<SendError<M>>>) {
+    fn do_post(&self, message: M, completion: CompletionSink<M>) {
         tracing::trace!(
             name = "post",
             dest = %self.dest,
             "sending message"
         );
 
-        let return_channel = return_channel.unwrap_or_else(|| oneshot::channel().0);
-        if let Err(mpsc::error::SendError((message, return_channel, _))) =
+        if let Err(mpsc::error::SendError((message, completion, _))) =
             self.sender
-                .send((message, return_channel, tokio::time::Instant::now()))
+                .send((message, completion, tokio::time::Instant::now()))
         {
             let reason = self
                 .status
                 .borrow()
                 .as_closed()
                 .map(|r| SendErrorReason::Other(r.to_string()));
-            let _ = return_channel.send(SendError {
+            completion.reject(SendError {
                 error: ChannelError::Closed,
                 message,
                 reason,
