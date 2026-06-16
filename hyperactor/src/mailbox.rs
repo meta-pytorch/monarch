@@ -156,6 +156,7 @@ use crate::channel::ChannelAddr;
 use crate::channel::ChannelError;
 use crate::channel::ChannelTransport;
 use crate::channel::CloseReason;
+use crate::channel::CompletionSink;
 use crate::channel::SendError;
 use crate::channel::SendErrorReason;
 use crate::channel::TxStatus;
@@ -1523,52 +1524,45 @@ impl MailboxClient {
             Buffer::new(move |envelope, return_handle| {
                 let tx = Arc::clone(&tx);
                 let addr = addr.clone();
-                let (return_channel, return_receiver) =
-                    oneshot::channel::<SendError<MessageEnvelope>>();
                 // Set up for delivery failure.
                 let return_handle_0 = return_handle.clone();
-                let completed = completed.clone();
-                let completed_notify = completed_notify.clone();
-                tokio::spawn(async move {
-                    match return_receiver.await {
-                        Ok(SendError {
+                let tracker =
+                    channel::CompletionTracker::new(completed.clone(), completed_notify.clone());
+                let completion = CompletionSink::tracked(
+                    tracker,
+                    move |send_error: SendError<MessageEnvelope>| {
+                        let SendError {
                             error,
                             message,
                             reason,
-                        }) => {
-                            let target = message.dest().clone();
-                            let reason_text = reason
-                                .as_ref()
-                                .map(ToString::to_string)
-                                .unwrap_or_else(|| "channel closed".to_owned());
-                            let reason = match reason {
-                                Some(SendErrorReason::OversizedFrame { len, max }) => {
-                                    TransportFailureReason::OversizedFrame { len, max }
-                                }
-                                Some(SendErrorReason::Other(_)) | None => {
-                                    TransportFailureReason::ChannelClosed { addr }
-                                }
-                            };
-                            let failure = DeliveryFailure::new(UndeliverableReason::Transport(
-                                TransportFailure::new(target, reason.clone()),
-                            ));
-                            tracing::debug!(
-                                %error,
-                                send_error_reason = %reason_text,
-                                ?reason,
-                                "failed to enqueue in mailbox client while processing buffer",
-                            );
-                            message.undeliverable(failure, return_handle_0);
-                        }
-                        Err(_) => {
-                            // Oneshot sender was dropped — message was acked.
-                        }
-                    }
-                    completed.fetch_add(1, Ordering::SeqCst);
-                    completed_notify.notify_waiters();
-                });
+                        } = send_error;
+                        let target = message.dest().clone();
+                        let reason_text = reason
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| "channel closed".to_owned());
+                        let reason = match reason {
+                            Some(SendErrorReason::OversizedFrame { len, max }) => {
+                                TransportFailureReason::OversizedFrame { len, max }
+                            }
+                            Some(SendErrorReason::Other(_)) | None => {
+                                TransportFailureReason::ChannelClosed { addr }
+                            }
+                        };
+                        let failure = DeliveryFailure::new(UndeliverableReason::Transport(
+                            TransportFailure::new(target, reason.clone()),
+                        ));
+                        tracing::debug!(
+                            %error,
+                            send_error_reason = %reason_text,
+                            ?reason,
+                            "failed to enqueue in mailbox client while processing buffer",
+                        );
+                        message.undeliverable(failure, return_handle_0);
+                    },
+                );
                 // Send the message for transmission.
-                tx.try_post(envelope, return_channel);
+                tx.do_post(envelope, completion);
                 future::ready(())
             })
         };
@@ -1649,17 +1643,20 @@ impl MailboxSender for MailboxClient {
             // Failed to enqueue.
             envelope.undeliverable(failure, return_handle);
         } else {
-            self.submitted.fetch_add(1, Ordering::SeqCst);
+            self.submitted.fetch_add(1, Ordering::Relaxed);
         }
     }
 
     async fn flush(&self) -> Result<(), anyhow::Error> {
-        let target = self.submitted.load(Ordering::SeqCst);
+        let target = self.submitted.load(Ordering::Relaxed);
         loop {
-            if self.completed.load(Ordering::SeqCst) >= target {
+            // Register before checking so a completion cannot notify between
+            // the check and the wait.
+            let notified = self.completed_notify.notified();
+            if self.completed.load(Ordering::Relaxed) >= target {
                 return Ok(());
             }
-            self.completed_notify.notified().await;
+            notified.await;
         }
     }
 }
