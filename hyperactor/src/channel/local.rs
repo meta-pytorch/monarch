@@ -238,11 +238,9 @@ mod tests {
 
         drop(rx);
 
-        let (return_tx, return_rx) = oneshot::channel();
-        tx.try_post(123, return_tx);
         assert_matches!(
-            return_rx.await,
-            Ok(SendError {
+            tx.try_post(123).await,
+            Err(SendError {
                 error: ChannelError::Closed,
                 message: 123,
                 ..
