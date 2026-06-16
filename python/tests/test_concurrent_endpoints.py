@@ -312,7 +312,7 @@ async def test_queue_dispatch_keeps_async_actor_non_concurrent_by_default() -> N
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False}, shared_asyncio_runtime={False})
+@parametrize_config(actor_queue_dispatch={True, False})
 @isolate_in_subprocess
 async def test_actor_loop_shutdown_cancels_concurrent_endpoint_tasks() -> None:
     with TemporaryDirectory() as tmpdir:
@@ -331,7 +331,7 @@ async def test_actor_loop_shutdown_cancels_concurrent_endpoint_tasks() -> None:
 
 
 @pytest.mark.timeout(60)
-@parametrize_config(actor_queue_dispatch={True, False}, shared_asyncio_runtime={False})
+@parametrize_config(actor_queue_dispatch={True, False})
 @isolate_in_subprocess
 async def test_actor_loop_shutdown_cancels_concurrent_endpoint_before_cleanup() -> None:
     with TemporaryDirectory() as tmpdir:

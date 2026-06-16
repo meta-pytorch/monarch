@@ -70,7 +70,6 @@ use typeuri::Named;
 
 use crate::buffers::FrozenBuffer;
 use crate::config::ACTOR_QUEUE_DISPATCH;
-use crate::config::SHARED_ASYNCIO_RUNTIME;
 use crate::context::PyInstance;
 use crate::local_state_broker::BrokerId;
 use crate::local_state_broker::LocalStateBrokerMessage;
@@ -786,8 +785,7 @@ pub struct PythonActor {
     /// The Python object that we delegate message handling to.
     actor: Py<PyAny>,
     /// Stores a reference to the Python event loop to run Python coroutines on.
-    /// This is None when using single runtime mode, Some when using per-actor mode.
-    task_locals: Option<pyo3_async_runtimes::TaskLocals>,
+    task_locals: pyo3_async_runtimes::TaskLocals,
     /// Instance object that we keep across handle calls so that we can store
     /// information from the Init (spawn rank, controller) and provide it to other calls.
     instance: Option<Py<crate::context::PyInstance>>,
@@ -829,9 +827,7 @@ impl PythonActor {
                 let class_type: &Bound<'_, PyType> = unpickled.downcast()?;
                 let actor: Py<PyAny> = class_type.call0()?.into_py_any(py)?;
 
-                // Only create per-actor TaskLocals if not using shared runtime
-                let task_locals = (!hyperactor_config::global::get(SHARED_ASYNCIO_RUNTIME))
-                    .then(|| Python::detach(py, create_task_locals));
+                let task_locals = Python::detach(py, create_task_locals);
 
                 let dispatch_mode = if use_queue_dispatch {
                     let (sender, receiver) = pympsc::channel().map_err(|e| {
@@ -888,22 +884,12 @@ impl PythonActor {
     }
 
     fn cancel_pending_python_tasks_and_stop_loop(&self) -> anyhow::Result<()> {
-        let Some(task_locals) = &self.task_locals else {
-            return Ok(());
-        };
+        let task_locals = &self.task_locals;
         monarch_with_gil_blocking(|py| -> anyhow::Result<()> {
             Self::cancel_tasks_and_stop_python_loop(py, task_locals)
                 .map_err(|err| anyhow::Error::from(SerializablePyErr::from(py, &err)))?;
             Ok(())
         })
-    }
-
-    /// Get the TaskLocals to use for this actor.
-    /// Returns either the shared TaskLocals or this actor's own TaskLocals based on configuration.
-    fn get_task_locals(&self, py: Python) -> &pyo3_async_runtimes::TaskLocals {
-        self.task_locals
-            .as_ref()
-            .unwrap_or_else(|| shared_task_locals(py))
     }
 
     /// Get-or-create the actor's cached `PyInstance`, injecting a clone of
@@ -1209,10 +1195,7 @@ impl Actor for PythonActor {
                 let self_instance = self.ensure_py_instance(py, this);
                 let actor_mesh_mod = py.import("monarch._src.actor.actor_mesh")?;
 
-                let tl = self
-                    .task_locals
-                    .as_ref()
-                    .unwrap_or_else(|| shared_task_locals(py));
+                let tl = &self.task_locals;
                 let awaitable = actor_mesh_mod.call_method(
                     "_dispatch_loop",
                     (self.actor.clone_ref(py), receiver, self_instance),
@@ -1286,7 +1269,7 @@ impl Actor for PythonActor {
             if awaitable.is_none() {
                 Ok(None)
             } else {
-                pyo3_async_runtimes::into_future_with_locals(self.get_task_locals(py), awaitable)
+                pyo3_async_runtimes::into_future_with_locals(&self.task_locals, awaitable)
                     .map(Some)
                     .map_err(anyhow::Error::from)
             }
@@ -1488,12 +1471,6 @@ fn create_task_locals() -> pyo3_async_runtimes::TaskLocals {
     })
 }
 
-/// Get the shared TaskLocals, creating it if necessary.
-fn shared_task_locals(py: Python) -> &'static pyo3_async_runtimes::TaskLocals {
-    static SHARED_TASK_LOCALS: OnceLock<pyo3_async_runtimes::TaskLocals> = OnceLock::new();
-    Python::detach(py, || SHARED_TASK_LOCALS.get_or_init(create_task_locals))
-}
-
 // [Panics in async endpoints]
 // This class exists to solve a deadlock when an async endpoint calls into some
 // Rust code that panics.
@@ -1594,13 +1571,11 @@ impl PythonActor {
                 None,
             )?;
 
-            let tl = self
-                .task_locals
-                .as_ref()
-                .unwrap_or_else(|| shared_task_locals(py));
-
-            pyo3_async_runtimes::into_future_with_locals(tl, awaitable.into_bound(py))
-                .map_err(|err| err.into())
+            pyo3_async_runtimes::into_future_with_locals(
+                &self.task_locals,
+                awaitable.into_bound(py),
+            )
+            .map_err(|err| err.into())
         })
         .await?;
 
@@ -1693,8 +1668,7 @@ impl Handler<MeshFailure> for PythonActor {
                 ),
                 None,
             )?;
-            let fut =
-                pyo3_async_runtimes::into_future_with_locals(self.get_task_locals(py), awaitable)?;
+            let fut = pyo3_async_runtimes::into_future_with_locals(&self.task_locals, awaitable)?;
             anyhow::Ok((display_name, fut))
         })
         .await?;
