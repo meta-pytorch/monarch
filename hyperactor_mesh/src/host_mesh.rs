@@ -53,6 +53,7 @@ use hyperactor::accum::StreamingReducerOpts;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::id::Label;
 use hyperactor::id::Uid;
+use hyperactor_cast::cast_actor::CastActor;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::declare_attrs;
@@ -88,6 +89,7 @@ use serde::Serialize;
 use tracing::Instrument;
 use typeuri::Named;
 
+use crate::ActorMeshRef;
 use crate::Bootstrap;
 use crate::ProcMesh;
 use crate::ValueMesh;
@@ -104,6 +106,7 @@ use crate::host_mesh::host_agent::ProcManagerSpawnFn;
 use crate::host_mesh::host_agent::ProcState;
 use crate::host_mesh::host_agent::ShutdownHostClient;
 use crate::mesh_controller::ProcMeshController;
+use crate::mesh_id::ActorMeshId;
 use crate::mesh_id::HostMeshId;
 use crate::mesh_id::ProcMeshId;
 use crate::mesh_id::ResourceId;
@@ -509,10 +512,10 @@ impl HostMesh {
         let cast_handle = system_proc
             .spawn_with_uid(
                 Uid::singleton(Label::strip(CAST_ACTOR_NAME)),
-                hyperactor_cast::cast_actor::CastActor::default(),
+                CastActor::default(),
             )
             .map_err(crate::Error::SingletonActorSpawnError)?;
-        cast_handle.bind::<hyperactor_cast::cast_actor::CastActor>();
+        cast_handle.bind::<CastActor>();
 
         let host = HostRef::new(addr);
         let host_mesh_ref = HostMeshRef::new(
@@ -582,11 +585,11 @@ impl HostMesh {
         let cast_handle = system_proc
             .spawn_with_uid(
                 Uid::singleton(Label::strip(CAST_ACTOR_NAME)),
-                hyperactor_cast::cast_actor::CastActor::default(),
+                CastActor::default(),
             )
             .map_err(crate::Error::SingletonActorSpawnError)?;
 
-        cast_handle.bind::<hyperactor_cast::cast_actor::CastActor>();
+        cast_handle.bind::<CastActor>();
 
         Ok(HostRef::new(addr))
     }
@@ -1012,11 +1015,12 @@ where
 /// Cloning this type does not confer ownership. If a corresponding
 /// owned [`HostMesh`] shuts down the hosts, operations via a cloned
 /// `HostMeshRef` may fail because the hosts are no longer running.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Named, Serialize, Deserialize)]
+#[derive(Debug, Clone, Named, Serialize, Deserialize)]
 pub struct HostMeshRef {
     id: HostMeshId,
     region: Region,
     ranks: Arc<Vec<HostRef>>,
+    host_agent_mesh: ActorMeshRef<HostAgent>,
     /// Uniform bootstrap command to use when spawning procs on this
     /// mesh. When `None`, each host agent uses its own default
     /// command. Per-proc overrides are supplied at spawn time via the
@@ -1031,6 +1035,28 @@ pub struct HostMeshRef {
 /// aborts the spawn with that error surfaced as a configuration
 /// failure.
 pub type PerRankBootstrapFn = dyn Fn(view::Point) -> anyhow::Result<BootstrapCommand> + Send + Sync;
+// Cast-domain materialization state is derived from the host ids and is not
+// part of host mesh identity.
+impl PartialEq for HostMeshRef {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.region == other.region
+            && self.ranks == other.ranks
+            && self.bootstrap_command == other.bootstrap_command
+    }
+}
+
+impl Eq for HostMeshRef {}
+
+impl std::hash::Hash for HostMeshRef {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+        self.region.hash(state);
+        self.ranks.hash(state);
+        self.bootstrap_command.hash(state);
+    }
+}
+
 wirevalue::register_type!(HostMeshRef);
 
 impl HostMeshRef {
@@ -1044,10 +1070,12 @@ impl HostMeshRef {
                 actual: ranks.len(),
             });
         }
+        let host_agent_mesh = Self::host_agent_mesh_ref(&region, &ranks)?;
         Ok(Self {
             id,
             region,
             ranks: Arc::new(ranks),
+            host_agent_mesh,
             bootstrap_command: None,
         })
     }
@@ -1055,10 +1083,15 @@ impl HostMeshRef {
     /// Create a new HostMeshRef from an arbitrary set of hosts. This is meant to
     /// enable extrinsic bootstrapping.
     pub fn from_hosts(id: HostMeshId, hosts: Vec<ChannelAddr>) -> Self {
+        let region = extent!(hosts = hosts.len()).into();
+        let ranks: Vec<HostRef> = hosts.into_iter().map(HostRef::new).collect();
+        let host_agent_mesh = Self::host_agent_mesh_ref(&region, &ranks)
+            .expect("host rank cardinality must match generated region");
         Self {
             id,
-            region: extent!(hosts = hosts.len()).into(),
-            ranks: Arc::new(hosts.into_iter().map(HostRef::new).collect()),
+            region,
+            ranks: Arc::new(ranks),
+            host_agent_mesh,
             bootstrap_command: None,
         }
     }
@@ -1068,25 +1101,31 @@ impl HostMeshRef {
         id: HostMeshId,
         agents: Vec<ActorRef<HostAgent>>,
     ) -> crate::Result<Self> {
+        let region = extent!(hosts = agents.len()).into();
+        let ranks: Vec<HostRef> = agents
+            .into_iter()
+            .map(HostRef::try_from)
+            .collect::<crate::Result<_>>()?;
+        let host_agent_mesh = Self::host_agent_mesh_ref(&region, &ranks)?;
         Ok(Self {
             id,
-            region: extent!(hosts = agents.len()).into(),
-            ranks: Arc::new(
-                agents
-                    .into_iter()
-                    .map(HostRef::try_from)
-                    .collect::<crate::Result<_>>()?,
-            ),
+            region,
+            ranks: Arc::new(ranks),
+            host_agent_mesh,
             bootstrap_command: None,
         })
     }
 
     /// Create a unit HostMeshRef from a host mesh agent.
     pub fn from_host_agent(id: HostMeshId, agent: ActorRef<HostAgent>) -> crate::Result<Self> {
+        let region = Extent::unity().into();
+        let ranks = vec![HostRef::try_from(agent)?];
+        let host_agent_mesh = Self::host_agent_mesh_ref(&region, &ranks)?;
         Ok(Self {
             id,
-            region: Extent::unity().into(),
-            ranks: Arc::new(vec![HostRef::try_from(agent)?]),
+            region,
+            ranks: Arc::new(ranks),
+            host_agent_mesh,
             bootstrap_command: None,
         })
     }
@@ -1098,6 +1137,28 @@ impl HostMeshRef {
             bootstrap_command: Some(cmd),
             ..self
         }
+    }
+
+    fn host_agent_mesh_ref(
+        region: &Region,
+        ranks: &[HostRef],
+    ) -> crate::Result<ActorMeshRef<HostAgent>> {
+        let members = Arc::new(
+            ranks
+                .iter()
+                .map(|host| host.mesh_agent().actor_addr().clone())
+                .collect_mesh::<ValueMesh<_>>(region.clone())
+                .map_err(|error| crate::Error::ConfigurationError(error.into()))?,
+        );
+
+        Ok(ActorMeshRef::new(
+            ActorMeshId::singleton(Label::strip(host_agent::HOST_MESH_AGENT_ACTOR_NAME)),
+            // The host-agent mesh is not backed by a user proc mesh.
+            None,
+            region.clone(),
+            None,
+            members,
+        ))
     }
 
     /// Returns the host entries as `(addr_string, ActorRef<HostAgent>)` pairs.
