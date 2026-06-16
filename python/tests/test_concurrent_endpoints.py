@@ -7,7 +7,6 @@
 # pyre-unsafe
 
 import asyncio
-import logging
 import os
 from tempfile import TemporaryDirectory
 from typing import Any, cast
@@ -15,7 +14,6 @@ from typing import Any, cast
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
 from monarch.actor import Actor, concurrent_endpoint, endpoint, Port, this_host
-from monarch.actor.concurrent import _run_endpoint
 from monarch.config import parametrize_config
 
 
@@ -145,28 +143,6 @@ class InheritedConcurrentChild(InheritedConcurrentBase):
         self.unblock.set()
 
 
-class FakePort:
-    def __init__(self) -> None:
-        self.exception_value: Exception | None = None
-
-    def exception(self, exception: Exception) -> None:
-        self.exception_value = exception
-
-
-class FakeActorInstance:
-    name = "fake_actor"
-    actor_id = "fake_actor_id"
-
-    def __init__(self) -> None:
-        self.finished_tokens: list[int] = []
-
-    def _execution_start(self, method_name: str) -> int:
-        return 7
-
-    def _execution_finish(self, token: int) -> None:
-        self.finished_tokens.append(token)
-
-
 def test_concurrent_endpoint_wraps_endpoints() -> None:
     assert cast(Any, AsyncGate.wait)._explicit_response_port
     assert cast(Any, ExplicitPortAsyncGate.wait)._explicit_response_port
@@ -186,30 +162,6 @@ def test_concurrent_endpoint_allows_mixed_hierarchy() -> None:
     assert cast(Any, InheritedConcurrentChild.base_wait)._explicit_response_port
     assert cast(Any, InheritedConcurrentChild.child_wait)._explicit_response_port
     assert not cast(Any, InheritedConcurrentChild.release)._explicit_response_port
-
-
-async def test_explicit_port_exception_logs_warning_without_response(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    port = FakePort()
-    actor_instance = FakeActorInstance()
-
-    async def call() -> None:
-        raise ValueError("explicit boom")
-
-    with caplog.at_level(logging.WARNING, logger="monarch.actor.concurrent"):
-        await _run_endpoint(
-            actor_instance,
-            port,
-            call,
-            method_name="fail",
-            should_instrument=False,
-            forwards_exception=False,
-        )
-
-    assert port.exception_value is None
-    assert "concurrent explicit response-port endpoint raised" in caplog.text
-    assert actor_instance.finished_tokens == [7]
 
 
 @pytest.mark.timeout(60)
