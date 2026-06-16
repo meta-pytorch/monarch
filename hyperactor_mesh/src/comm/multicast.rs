@@ -16,7 +16,6 @@ use hyperactor::RemoteMessage;
 use hyperactor::actor::Referable;
 use hyperactor::id::Uid;
 use hyperactor_config::Flattrs;
-use hyperactor_config::attrs::declare_attrs;
 use ndslice::Extent;
 use ndslice::Point;
 use ndslice::Region;
@@ -314,6 +313,7 @@ impl CastEnvelope for CastMessageV1 {
     }
 }
 
+#[cfg(test)]
 impl CastMessageV1 {
     /// Create a new CastMessageEnvelope.
     pub(crate) fn new<A, M>(
@@ -353,13 +353,8 @@ pub(super) struct ForwardMessageV1 {
     pub(super) message: CastMessageV1,
 }
 
-declare_attrs! {
-    /// Used inside headers to store the originating sender of a cast.
-    pub attr CAST_ORIGINATING_SENDER: ActorAddr;
-
-    /// The point in the casted region that this message was sent to.
-    pub attr CAST_POINT: Point;
-}
+pub use hyperactor_cast::cast_actor::CAST_ORIGINATING_SENDER;
+pub use hyperactor_cast::cast_actor::CAST_POINT;
 
 pub fn set_cast_info_on_headers(headers: &mut Flattrs, cast_point: Point, sender: ActorAddr) {
     // Pre-set the telemetry sender hash to the originating actor,

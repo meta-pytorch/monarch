@@ -272,14 +272,15 @@ impl GetRankStatus {
 
             alarm.arm(max_idle_time);
 
-            // Completion: once every rank (among the first
-            // `num_ranks`) has reported at least something (i.e.
-            // moved off NotExist).
-            if snapshot
+            // Completion: once every expected rank has reported at least
+            // something (i.e. moved off NotExist). Sliced meshes may report at
+            // non-zero base ranks, so do not assume the relevant ranks occupy
+            // the first `num_ranks` dense slots.
+            let reported = snapshot
                 .values()
-                .take(num_ranks)
-                .all(|s| !matches!(s, crate::resource::Status::NotExist))
-            {
+                .filter(|s| !matches!(s, crate::resource::Status::NotExist))
+                .count();
+            if reported >= num_ranks {
                 break Ok(snapshot);
             }
         }

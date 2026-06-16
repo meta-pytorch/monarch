@@ -131,6 +131,7 @@ impl CastDomainId {
         members: HashMap<usize, ActorAddr>,
         region: Region,
         tiling_policy: TilingPolicy,
+        headers: Flattrs,
     ) -> anyhow::Result<CastDomainRef> {
         anyhow::ensure!(
             members.len() == region.num_ranks()
@@ -168,8 +169,9 @@ impl CastDomainId {
         let root_tile =
             MaterializedTile::from_value_mesh_with_tile(Tile::from_view(&region), member_mesh);
 
-        domain_ref.entry_point.post(
+        domain_ref.entry_point.port().post_with_headers(
             cx,
+            headers,
             CreateCastDomain {
                 cast_domain_id: self,
                 region,
@@ -1360,6 +1362,7 @@ mod tests {
                     self.domain_members(),
                     region,
                     TilingPolicy::BlockPartitioning,
+                    Flattrs::new(),
                 )
                 .unwrap()
         }
@@ -1372,7 +1375,13 @@ mod tests {
 
         fn root_domain_with_policy(&self, region: Region, policy: TilingPolicy) -> CastDomainRef {
             CastDomainId::new()
-                .materialize(&self.client, self.member_ids.clone(), region, policy)
+                .materialize(
+                    &self.client,
+                    self.member_ids.clone(),
+                    region,
+                    policy,
+                    Flattrs::new(),
+                )
                 .unwrap()
         }
 

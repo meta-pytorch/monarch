@@ -8,18 +8,29 @@
 
 //! ## Actor mesh invariants (AM-*)
 //!
-//! - **AM-1 (rank-space):** `proc_mesh` and any view derived from
-//!   it share the same dense rank space.
+//! - **AM-1 (rank-space):** `ActorMeshRef` uses its `CastDomainRef` as
+//!   the source of truth for actor addresses. The cast domain stores
+//!   members in the same dense rank order as the mesh `Region`, so a
+//!   rank can be materialized by indexing the cast-domain member map
+//!   directly; the reference does not need to retain the `ProcMeshRef`
+//!   that created it.
+//! - **AM-2 (slice materialization):** `RankedSliceable::sliced` has no
+//!   caller context, so it carries only a raw cast-domain descriptor. The first
+//!   cast through that ref materializes the descriptor with the caller context
+//!   before sending the cast message, sequencing setup and delivery on the same
+//!   sender stream.
 
 use std::collections::HashMap;
 use std::fmt;
 use std::hash::Hash;
 use std::hash::Hasher;
+use std::num::NonZeroUsize;
 use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::OnceLock as OnceCell;
 use std::time::Duration;
 
+use hyperactor::ActorAddr;
 use hyperactor::ActorLocal;
 use hyperactor::ActorRef;
 use hyperactor::Endpoint as _;
@@ -36,14 +47,15 @@ use hyperactor::context;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::port::Port;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor_cast::TilingPolicy;
+use hyperactor_cast::cast_actor::CastDomainId;
+use hyperactor_cast::cast_actor::CastDomainRef;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::declare_attrs;
-use ndslice::Selection;
 use ndslice::ViewExt as _;
 use ndslice::view;
-use ndslice::view::MapIntoExt;
 use ndslice::view::Region;
 use ndslice::view::View;
 use serde::Deserialize;
@@ -52,14 +64,11 @@ use serde::Serialize;
 use serde::Serializer;
 use tokio::sync::watch;
 
-use crate::CommActor;
 use crate::Error;
 use crate::ProcMeshRef;
 use crate::ValueMesh;
-use crate::casting;
 use crate::comm::multicast;
-use crate::comm::multicast::CastMessageV1;
-use crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD;
+use crate::config::MAX_CAST_FANOUT;
 use crate::host_mesh::GET_PROC_STATE_MAX_IDLE;
 use crate::host_mesh::mesh_to_rankedvalues_with_default;
 use crate::mesh_controller::ActorMeshController;
@@ -67,7 +76,7 @@ use crate::mesh_controller::SUPERVISION_POLL_FREQUENCY;
 use crate::mesh_controller::Subscribe;
 use crate::mesh_controller::Unsubscribe;
 use crate::mesh_id::ActorMeshId;
-use crate::metrics;
+use crate::mesh_id::ProcMeshId;
 use crate::proc_mesh::GET_ACTOR_STATE_MAX_IDLE;
 use crate::proc_mesh::telemetry_actor_mesh_id;
 use crate::resource;
@@ -113,12 +122,14 @@ impl<A: Referable> ActorMesh<A> {
         proc_mesh: ProcMeshRef,
         id: ActorMeshId,
         controller: Option<ActorRef<ActorMeshController<A>>>,
+        members: Arc<ValueMesh<ActorAddr>>,
     ) -> Self {
-        let current_ref = ActorMeshRef::with_page_size(
+        let current_ref = ActorMeshRef::new(
             id.clone(),
-            proc_mesh.clone(),
-            DEFAULT_PAGE,
+            Some(proc_mesh.id().clone()),
+            proc_mesh.region().clone(),
             controller.clone(),
+            members,
         );
 
         Self {
@@ -355,6 +366,117 @@ impl<M: Send + Sync + Clone + Default + 'static> Default for MessageOrFailure<M>
     }
 }
 
+fn default_cast_tiling_policy() -> TilingPolicy {
+    TilingPolicy::BoundedFanout {
+        fanout: NonZeroUsize::new(hyperactor_config::global::get(MAX_CAST_FANOUT))
+            .expect("MAX_CAST_FANOUT must be > 0"),
+    }
+}
+
+#[derive(Clone)]
+struct ActorMeshCastDomain {
+    id: CastDomainId,
+    members: Arc<ValueMesh<ActorAddr>>,
+    region: Region,
+    tiling_policy: TilingPolicy,
+    cast_domain: ActorLocal<CastDomainRef>,
+}
+
+impl std::fmt::Debug for ActorMeshCastDomain {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ActorMeshCastDomain")
+            .field("id", &self.id)
+            .field("members", &self.members)
+            .field("region", &self.region)
+            .field("tiling_policy", &self.tiling_policy)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ActorMeshCastDomain {
+    fn new(members: Arc<ValueMesh<ActorAddr>>, region: Region) -> Self {
+        Self {
+            id: CastDomainId::new(),
+            members,
+            region,
+            tiling_policy: default_cast_tiling_policy(),
+            cast_domain: ActorLocal::new(),
+        }
+    }
+
+    fn ensure_materialized(
+        &self,
+        cx: &impl context::Actor,
+        headers: &Flattrs,
+    ) -> anyhow::Result<CastDomainRef> {
+        if let hyperactor::actor_local::Entry::Occupied(cast_domain) = self.cast_domain.entry(cx) {
+            return Ok(cast_domain.get().clone());
+        }
+
+        let members =
+            self.region
+                .slice()
+                .iter()
+                .map(|rank| {
+                    let member = self.members.get_by_base_rank(rank).ok_or_else(|| {
+                        anyhow::anyhow!("missing cast-domain member for rank {rank}")
+                    })?;
+                    Ok((rank, member.clone()))
+                })
+                .collect::<anyhow::Result<HashMap<_, _>>>()?;
+
+        let cast_domain = self.id.clone().materialize(
+            cx,
+            members,
+            self.region.clone(),
+            self.tiling_policy,
+            headers.clone(),
+        )?;
+
+        self.cast_domain.entry(cx).or_insert(cast_domain.clone());
+
+        Ok(cast_domain)
+    }
+
+    fn members(&self) -> &ValueMesh<ActorAddr> {
+        &self.members
+    }
+
+    fn region(&self) -> &Region {
+        &self.region
+    }
+}
+
+impl Serialize for ActorMeshCastDomain {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        (&self.id, &self.members, &self.region, self.tiling_policy).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for ActorMeshCastDomain {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let (id, members, region, tiling_policy) = <(
+            CastDomainId,
+            Arc<ValueMesh<ActorAddr>>,
+            Region,
+            TilingPolicy,
+        )>::deserialize(deserializer)?;
+        Ok(Self {
+            id,
+            members,
+            region,
+            tiling_policy,
+            cast_domain: ActorLocal::new(),
+        })
+    }
+}
+
 /// Turn the single-owner PortReceiver into a watch receiver, which can be
 /// cloned and subscribed to. Requires a default message to pre-populate with.
 /// Option can be used as M to provide a default of None.
@@ -411,8 +533,12 @@ fn into_watch<M: Send + Sync + Clone + Default + 'static>(
 /// A reference to a stable snapshot of an [`ActorMesh`].
 #[derive(typeuri::Named)]
 pub struct ActorMeshRef<A: Referable> {
-    proc_mesh: ProcMeshRef,
     id: ActorMeshId,
+    /// Id of the proc mesh backing this actor mesh, if any. Retained as a
+    /// lightweight id (not the `ProcMeshRef`) so telemetry can derive the same
+    /// mesh id as creation time without holding proc-mesh state. `None` for
+    /// meshes not backed by a user proc mesh (e.g. the host-agent mesh).
+    proc_mesh_id: Option<ProcMeshId>,
     /// Reference to a remote controller actor living on the proc that spawned
     /// the actors in this ref. If None, the actor mesh was already stopped, or
     /// this is a mesh ref to a "system actor" which has no controller and should
@@ -421,6 +547,13 @@ pub struct ActorMeshRef<A: Referable> {
     /// stopped.
     controller: Option<ActorRef<ActorMeshController<A>>>,
 
+    /// Cast-domain handle for this mesh view.
+    ///
+    /// A cast domain is the `hyperactor_cast` routing state used to deliver a
+    /// mesh-wide cast without iterating over every destination actor. The
+    /// descriptor can be carried by pure slices; routing setup is fenced by the
+    /// first cast from the caller that uses this ref.
+    cast_domain: ActorMeshCastDomain,
     /// Recorded health issues with the mesh, to quickly consult before sending
     /// out any casted messages. This is a locally updated copy of the authoritative
     /// state stored on the ActorMeshController.
@@ -489,24 +622,130 @@ impl<A: Referable> ActorMeshRef<A> {
         self.check_cached_failure(cx)?;
         self.emit_sent_message_telemetry(cx, view::Ranked::region(self));
 
-        if let Some(root_comm_actor) = self.proc_mesh.root_comm_actor() {
-            if casting::v1_casting_enabled() {
-                self.cast_v1(cx, message, root_comm_actor, caller_headers);
+        let mut headers = caller_headers.clone();
+        headers.set(
+            multicast::CAST_ORIGINATING_SENDER,
+            cx.instance().self_addr().clone(),
+        );
+        headers.set(crate::casting::CAST_ACTOR_MESH_ID, self.id.clone());
+
+        let threshold =
+            hyperactor_config::global::get(crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD);
+
+        let num_ranks = self.len();
+
+        match num_ranks {
+            0 => Ok(()),
+            1 if threshold >= 1 => {
+                // Avoid paying tax of conversion to IndexedErasedUnbound and port splitting
+                // when the threshold enables direct singleton sends.
+                let point = self
+                    .cast_domain
+                    .region()
+                    .extent()
+                    .point_of_rank(0)
+                    .map_err(|err| Error::CastingError(self.id.clone(), err.into()))?;
+
+                let actor = self.materialize(0).ok_or_else(|| {
+                    Error::CastingError(
+                        self.id.clone(),
+                        anyhow::anyhow!("missing actor for rank 0"),
+                    )
+                })?;
+
+                self.post_cast_direct(cx, point, actor, message, &headers)
+            }
+            n if threshold > 0 && n < threshold => {
+                // Point-to-point: send directly to each destination actor,
+                // bypassing the comm actor tree for lower latency when fanout
+                // is small.
+                let sender = cx.instance().self_addr().clone();
+                let dest_port = M::port();
+                let mut data =
+                    wirevalue::Any::<wirevalue::encoding::Multipart>::serialize(&message)
+                        .expect("cast message serialization should not fail");
+
+                // Split ports for N destinations, matching the comm tree's
+                // split_ports behavior.
+                data.visit_multipart_parts_mut::<PortRefRepr, anyhow::Error>(|port| {
+                    if port.unsplit() {
+                        return Ok(());
+                    }
+                    let split = port.port_addr().split(
+                        cx,
+                        port.reducer_spec().clone(),
+                        ReducerMode::Streaming(port.streaming_opts().clone()),
+                        port.get_return_undeliverable(),
+                    )?;
+                    port.update_port_addr(split);
+                    Ok(())
+                })
+                .map_err(|e| Error::CastingError(self.id.clone(), e))?;
+
+                data.visit_multipart_parts_mut::<OncePortRefRepr, anyhow::Error>(|port| {
+                    if port.unsplit() || port.reducer_spec().is_none() {
+                        // Once ports without reducers pass through. If used more
+                        // than once, only one destination can reply.
+                        return Ok(());
+                    }
+                    let split = port.port_addr().split(
+                        cx,
+                        port.reducer_spec().clone(),
+                        ReducerMode::Once(n),
+                        port.get_return_undeliverable(),
+                    )?;
+                    port.update_port_addr(split);
+                    Ok(())
+                })
+                .map_err(|e| Error::CastingError(self.id.clone(), e))?;
+
+                for rank in 0..n {
+                    let point = self
+                        .cast_domain
+                        .region()
+                        .extent()
+                        .point_of_rank(rank)
+                        .map_err(|err| Error::CastingError(self.id.clone(), err.into()))?;
+
+                    let actor = self.materialize(rank).ok_or_else(|| {
+                        Error::CastingError(
+                            self.id.clone(),
+                            anyhow::anyhow!("missing actor for rank {rank}"),
+                        )
+                    })?;
+
+                    let mut rank_data = data.clone();
+
+                    rank_data
+                        .visit_multipart_parts_mut::<resource::RankRepr, anyhow::Error>(
+                            |resource::RankRepr(rank)| {
+                                *rank = Some(point.rank());
+                                Ok(())
+                            },
+                        )
+                        .map_err(|e| Error::CastingError(self.id.clone(), e))?;
+
+                    let mut rank_headers = headers.clone();
+
+                    multicast::set_cast_info_on_headers(&mut rank_headers, point, sender.clone());
+
+                    cx.instance().post(
+                        actor
+                            .actor_addr()
+                            .port_addr(Port::handler_id(dest_port, None)),
+                        rank_headers,
+                        rank_data.erase_encoding(),
+                    );
+                }
+
                 Ok(())
-            } else {
-                self.cast_v0(
-                    cx,
-                    message,
-                    ndslice::selection::dsl::true_(),
-                    root_comm_actor,
-                    caller_headers,
-                )
             }
-        } else {
-            for (point, actor) in self.iter() {
-                self.post_cast_direct(cx, point, &actor, message.clone(), caller_headers)?;
-            }
-            Ok(())
+            _ => self
+                .cast_domain
+                .ensure_materialized(cx, &headers)
+                .map_err(|e| Error::CastingError(self.id.clone(), e))?
+                .cast(cx, headers, message)
+                .map_err(|e| Error::CastingError(self.id.clone(), e)),
         }
     }
 
@@ -533,47 +772,29 @@ impl<A: Referable> ActorMeshRef<A> {
             ),
         );
 
-        if !casting::v1_casting_enabled()
-            && let Some(root_comm_actor) = self.proc_mesh.root_comm_actor()
-        {
-            self.cast_v0(
-                cx,
-                message,
-                ndslice::selection::dsl::any(ndslice::selection::dsl::true_()),
-                root_comm_actor,
-                caller_headers,
-            )
-        } else {
-            self.cast_choose_direct(cx, message, caller_headers)
+        let num_ranks = self.cast_domain.region().num_ranks();
+
+        if num_ranks == 0 {
+            return Ok(());
         }
-    }
 
-    /// Cast a message to the actors in this mesh according to the provided selection.
-    /// This should *only* be used for temporary support for selections in the tensor
-    /// engine. If you use this for anything else, you will be fired (you too, OSS
-    /// contributor).
-    #[allow(clippy::result_large_err)]
-    pub fn cast_for_tensor_engine_only_do_not_use<M>(
-        &self,
-        cx: &impl context::Actor,
-        sel: Selection,
-        message: M,
-    ) -> crate::Result<()>
-    where
-        A: RemoteHandles<M>,
-        M: RemoteMessage + Clone, // Clone is required until we are fully onto comm actor
-    {
-        self.check_cached_failure(cx)?;
-        self.emit_sent_message_telemetry(cx, view::Ranked::region(self));
+        let rank_index = rand::random::<u64>() as usize % num_ranks;
 
-        let Some(root_comm_actor) = self.proc_mesh.root_comm_actor() else {
-            return Err(Error::CastingError(
+        let point = self
+            .cast_domain
+            .region()
+            .extent()
+            .point_of_rank(rank_index)
+            .map_err(|err| Error::CastingError(self.id.clone(), err.into()))?;
+
+        let actor = self.materialize(rank_index).ok_or_else(|| {
+            Error::CastingError(
                 self.id.clone(),
-                anyhow::anyhow!("tensor-engine selection casts require a root CommActor"),
-            ));
-        };
+                anyhow::anyhow!("missing actor for chosen rank {rank_index}"),
+            )
+        })?;
 
-        self.cast_v0(cx, message, sel, root_comm_actor, &Flattrs::new())
+        self.post_cast_direct(cx, point, actor, message, caller_headers)
     }
 
     #[allow(clippy::result_large_err)]
@@ -596,48 +817,18 @@ impl<A: Referable> ActorMeshRef<A> {
         hyperactor_telemetry::notify_sent_message(hyperactor_telemetry::SentMessageEvent {
             timestamp: std::time::SystemTime::now(),
             sender_actor_id: hyperactor_telemetry::hash_to_u64(cx.mailbox().actor_addr().id()),
-            actor_mesh_id: telemetry_actor_mesh_id(self.proc_mesh.id(), &self.id),
+            actor_mesh_id: match &self.proc_mesh_id {
+                Some(proc_mesh_id) => telemetry_actor_mesh_id(proc_mesh_id, &self.id),
+                // No backing proc mesh (e.g. the host-agent mesh): key telemetry
+                // on the actor mesh id alone.
+                None => hyperactor_telemetry::hash_to_u64(&self.id),
+            },
             view_json: serde_json::to_string(region).unwrap_or_default(),
             shape_json: {
                 let shape: ndslice::Shape = region.into();
                 serde_json::to_string(&shape).unwrap_or_default()
             },
         });
-    }
-
-    #[allow(clippy::result_large_err)]
-    fn cast_choose_direct<M>(
-        &self,
-        cx: &impl context::Actor,
-        message: M,
-        caller_headers: &Flattrs,
-    ) -> crate::Result<()>
-    where
-        A: RemoteHandles<M>,
-        M: RemoteMessage,
-    {
-        let region = view::Ranked::region(self);
-
-        let num_ranks = region.num_ranks();
-        if num_ranks == 0 {
-            return Ok(());
-        }
-
-        let rank_index = rand::random::<u64>() as usize % num_ranks;
-
-        let point = region
-            .extent()
-            .point_of_rank(rank_index)
-            .map_err(|err| Error::CastingError(self.id.clone(), err.into()))?;
-
-        let actor = view::Ranked::get(self, point.rank()).ok_or_else(|| {
-            Error::CastingError(
-                self.id.clone(),
-                anyhow::anyhow!("missing actor for chosen rank {}", point.rank()),
-            )
-        })?;
-
-        self.post_cast_direct(cx, point, actor, message, caller_headers)
     }
 
     #[allow(clippy::result_large_err)]
@@ -672,200 +863,17 @@ impl<A: Referable> ActorMeshRef<A> {
             .deserialized_unchecked()
             .map_err(|e| Error::CastingError(self.id.clone(), e.into()))?;
         actor.post_with_headers(cx, headers, rebound_message);
-
         Ok(())
     }
 
-    #[allow(clippy::result_large_err)]
-    fn cast_v0<M>(
-        &self,
-        cx: &impl context::Actor,
-        message: M,
-        sel: Selection,
-        root_comm_actor: &ActorRef<CommActor>,
-        caller_headers: &Flattrs,
-    ) -> crate::Result<()>
-    where
-        A: RemoteHandles<M>,
-        M: RemoteMessage + Clone, // Clone is required until we are fully onto comm actor
-    {
-        let cast_mesh_shape = view::Ranked::region(self).into();
-        let actor_mesh_id = self.id.clone();
-        match &self.proc_mesh.root_region {
-            Some(root_region) => {
-                let root_mesh_shape = root_region.into();
-                casting::cast_to_sliced_mesh::<A, M>(
-                    cx,
-                    actor_mesh_id,
-                    root_comm_actor,
-                    &sel,
-                    message,
-                    &cast_mesh_shape,
-                    &root_mesh_shape,
-                    caller_headers,
-                )
-                .map_err(|e| Error::CastingError(self.id.clone(), e.into()))
-            }
-            None => casting::actor_mesh_cast::<A, M>(
-                cx,
-                actor_mesh_id,
-                root_comm_actor,
-                sel,
-                &cast_mesh_shape,
-                &cast_mesh_shape,
-                message,
-                caller_headers,
-            )
-            .map_err(|e| Error::CastingError(self.id.clone(), e.into())),
-        }
-    }
-
-    fn cast_v1<M>(
-        &self,
-        cx: &impl context::Actor,
-        message: M,
-        root_comm_actor: &ActorRef<CommActor>,
-        caller_headers: &Flattrs,
-    ) where
-        A: RemoteHandles<M>,
-        M: RemoteMessage,
-    {
-        let _ = metrics::ACTOR_MESH_CAST_DURATION.start(hyperactor::kv_pairs!(
-            "message_type" => <M as typeuri::Named>::typename(),
-            "message_variant" => message.arm().unwrap_or_default(),
-        ));
-
-        let actor_ids: ValueMesh<_> = self.proc_mesh.map_into(|proc| proc.actor_addr(&self.id));
-
-        let mut headers = caller_headers.clone();
-        headers.set(
-            multicast::CAST_ORIGINATING_SENDER,
-            cx.instance().self_addr().clone(),
-        );
-        // Set CAST_ACTOR_MESH_ID temporarily to support supervision's
-        // v0 transition. Should be removed once supervision is migrated
-        // and ActorMeshId is deleted.
-        headers.set(casting::CAST_ACTOR_MESH_ID, self.id.clone());
-
-        let region = view::Ranked::region(self).clone();
-        let num_ranks = region.num_ranks();
-        let threshold = hyperactor_config::global::get(V1_CAST_POINT_TO_POINT_THRESHOLD);
-
-        if threshold > 0 && num_ranks < threshold {
-            // Point-to-point: send directly to each destination actor,
-            // bypassing the comm actor tree for lower latency when fanout
-            // is small.
-            let sender = cx.instance().self_addr().clone();
-            let dest_port = M::port();
-
-            let mut data = wirevalue::Any::<wirevalue::encoding::Multipart>::serialize(&message)
-                .expect("cast message serialization should not fail");
-
-            // Split ports for N destinations, matching the comm tree's
-            // split_ports behavior.
-            data.visit_multipart_parts_mut::<PortRefRepr, anyhow::Error>(|port| {
-                if port.unsplit() {
-                    return Ok(());
-                }
-                let split = port.port_addr().split(
-                    cx,
-                    port.reducer_spec().clone(),
-                    ReducerMode::Streaming(port.streaming_opts().clone()),
-                    port.get_return_undeliverable(),
-                )?;
-                port.update_port_addr(split);
-                Ok(())
-            })
-            .expect("port splitting should not fail");
-
-            data.visit_multipart_parts_mut::<OncePortRefRepr, anyhow::Error>(|port| {
-                if port.unsplit() || port.reducer_spec().is_none() {
-                    // Once ports without reducers pass through, same as the comm
-                    // tree's split_ports.
-                    return Ok(());
-                }
-                let split = port.port_addr().split(
-                    cx,
-                    port.reducer_spec().clone(),
-                    ReducerMode::Once(num_ranks),
-                    true,
-                )?;
-                port.update_port_addr(split);
-                Ok(())
-            })
-            .expect("once port splitting should not fail");
-
-            for rank in 0..num_ranks {
-                let mut rank_data = data.clone();
-
-                let cast_point = region
-                    .point_of_base_rank(rank)
-                    .expect("rank should be valid in region");
-
-                rank_data
-                    .visit_multipart_parts_mut::<resource::RankRepr, anyhow::Error>(
-                        |resource::RankRepr(r)| {
-                            *r = Some(cast_point.rank());
-                            Ok(())
-                        },
-                    )
-                    .expect("rank replacement should not fail");
-
-                let mut rank_headers = headers.clone();
-                multicast::set_cast_info_on_headers(&mut rank_headers, cast_point, sender.clone());
-
-                let port_id = actor_ids
-                    .get(rank)
-                    .expect("mismatched actor_ids and dest_region")
-                    .port_addr(Port::handler_id(dest_port, None));
-
-                cx.instance()
-                    .post(port_id, rank_headers, rank_data.erase_encoding());
-            }
-        } else {
-            // Tree path: route through the comm actor tree.
-            // Pre-compute sequence numbers — this block is infallible so
-            // rollback is not a concern.
-            let sequencer = cx.instance().sequencer();
-            let seqs: ValueMesh<u64> = actor_ids.map_into(|actor_id| {
-                let hyperactor::ordering::SeqInfo::Session { seq, .. } =
-                    sequencer.assign_seq(&actor_id.port_addr(Port::handler::<M>()))
-                else {
-                    unreachable!("assign_seq always returns SeqInfo::Session")
-                };
-                seq
-            });
-
-            let mut headers = caller_headers.clone();
-            headers.set(
-                multicast::CAST_ORIGINATING_SENDER,
-                cx.instance().self_addr().clone(),
-            );
-            // Set CAST_ACTOR_MESH_ID temporarily to support supervision's
-            // v0 transition. Should be removed once supervision is migrated
-            // and ActorMeshId is deleted.
-            headers.set(casting::CAST_ACTOR_MESH_ID, self.id.clone());
-            let cast_message = CastMessageV1::new::<A, M>(
-                cx.instance().self_addr().clone(),
-                &self.id,
-                region,
-                headers.clone(),
-                message,
-                sequencer.session_id(),
-                seqs,
-            )
-            .expect("infallible because CastMessage should not fail for serialization");
-
-            // TODO: load balancing instead of always using the first comm actor
-            root_comm_actor.post_with_headers(cx, headers, cast_message);
-        }
-    }
     pub(crate) fn new(
         id: ActorMeshId,
-        proc_mesh: ProcMeshRef,
+        proc_mesh_id: Option<ProcMeshId>,
+        region: Region,
         controller: Option<ActorRef<ActorMeshController<A>>>,
+        members: Arc<ValueMesh<ActorAddr>>,
     ) -> Self {
-        Self::with_page_size(id, proc_mesh, DEFAULT_PAGE, controller)
+        Self::with_page_size(id, proc_mesh_id, region, DEFAULT_PAGE, controller, members)
     }
 
     pub fn id(&self) -> &ActorMeshId {
@@ -874,14 +882,33 @@ impl<A: Referable> ActorMeshRef<A> {
 
     pub(crate) fn with_page_size(
         id: ActorMeshId,
-        proc_mesh: ProcMeshRef,
+        proc_mesh_id: Option<ProcMeshId>,
+        region: Region,
         page_size: usize,
         controller: Option<ActorRef<ActorMeshController<A>>>,
+        members: Arc<ValueMesh<ActorAddr>>,
+    ) -> Self {
+        Self::with_cast_domain(
+            id,
+            proc_mesh_id,
+            controller,
+            ActorMeshCastDomain::new(members, region),
+            page_size,
+        )
+    }
+
+    fn with_cast_domain(
+        id: ActorMeshId,
+        proc_mesh_id: Option<ProcMeshId>,
+        controller: Option<ActorRef<ActorMeshController<A>>>,
+        cast_domain: ActorMeshCastDomain,
+        page_size: usize,
     ) -> Self {
         Self {
-            proc_mesh,
             id,
+            proc_mesh_id,
             controller,
+            cast_domain,
             health_state: ActorLocal::new(),
             receiver: ActorLocal::new(),
             pages: OnceCell::new(),
@@ -889,13 +916,9 @@ impl<A: Referable> ActorMeshRef<A> {
         }
     }
 
-    pub fn proc_mesh(&self) -> &ProcMeshRef {
-        &self.proc_mesh
-    }
-
     #[inline]
     fn len(&self) -> usize {
-        view::Ranked::region(&self.proc_mesh).num_ranks()
+        self.cast_domain.region().num_ranks()
     }
 
     pub fn controller(&self) -> &Option<ActorRef<ActorMeshController<A>>> {
@@ -917,6 +940,7 @@ impl<A: Referable> ActorMeshRef<A> {
         if rank >= len {
             return None;
         }
+        let cast_domain = &self.cast_domain;
         let p = self.page_size;
         let page_ix = rank / p;
         let local_ix = rank % p;
@@ -931,20 +955,14 @@ impl<A: Referable> ActorMeshRef<A> {
         });
 
         Some(page.slots[local_ix].get_or_init(|| {
-            // AM-1: see module doc.
-            //   - ranks are contiguous [0, self.len()) with no gaps
-            //     or reordering
-            //   - for every rank r, `proc_mesh.get(r)` is Some(..)
-            // Therefore we can index `proc_mesh` with `rank`
-            // directly.
+            // AM-1: see module doc. The cast domain member map is in the
+            // same dense local-rank order as this mesh ref's region.
             debug_assert!(rank < self.len(), "rank must be within [0, len)");
-            debug_assert!(
-                ndslice::view::Ranked::get(&self.proc_mesh, rank).is_some(),
-                "proc_mesh must be dense/aligned with this view"
-            );
-            let proc_ref =
-                ndslice::view::Ranked::get(&self.proc_mesh, rank).expect("rank in-bounds");
-            proc_ref.attest(&self.id)
+            ActorRef::attest(
+                view::Ranked::get(cast_domain.members(), rank)
+                    .expect("rank must be present in cast-domain member map")
+                    .clone(),
+            )
         }))
     }
 
@@ -1094,9 +1112,10 @@ impl<A: Referable> ActorMeshRef<A> {
     /// Will have a separate cache.
     pub fn clone_with_supervision_receiver(&self) -> Self {
         Self {
-            proc_mesh: self.proc_mesh.clone(),
             id: self.id.clone(),
+            proc_mesh_id: self.proc_mesh_id.clone(),
             controller: self.controller.clone(),
+            cast_domain: self.cast_domain.clone(),
             health_state: self.health_state.clone(),
             receiver: self.receiver.clone(),
             // Cache does not support Clone at this time.
@@ -1109,9 +1128,10 @@ impl<A: Referable> ActorMeshRef<A> {
 impl<A: Referable> Clone for ActorMeshRef<A> {
     fn clone(&self) -> Self {
         Self {
-            proc_mesh: self.proc_mesh.clone(),
             id: self.id.clone(),
+            proc_mesh_id: self.proc_mesh_id.clone(),
             controller: self.controller.clone(),
+            cast_domain: self.cast_domain.clone(),
             // Cloning should not use the same health state or receiver, because
             // it should make a new subscriber.
             health_state: ActorLocal::new(),
@@ -1124,20 +1144,29 @@ impl<A: Referable> Clone for ActorMeshRef<A> {
 
 impl<A: Referable> fmt::Display for ActorMeshRef<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:{}@{}", self.id, A::typename(), self.proc_mesh)
+        write!(
+            f,
+            "{}:{}@{}",
+            self.id,
+            A::typename(),
+            self.cast_domain.region()
+        )
     }
 }
 
 impl<A: Referable> PartialEq for ActorMeshRef<A> {
     fn eq(&self, other: &Self) -> bool {
-        self.proc_mesh == other.proc_mesh && self.id == other.id
+        self.cast_domain.region() == other.cast_domain.region()
+            && self.cast_domain.id.domain_id() == other.cast_domain.id.domain_id()
+            && self.id == other.id
     }
 }
 impl<A: Referable> Eq for ActorMeshRef<A> {}
 
 impl<A: Referable> Hash for ActorMeshRef<A> {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.proc_mesh.hash(state);
+        self.cast_domain.region().hash(state);
+        self.cast_domain.id.domain_id().hash(state);
         self.id.hash(state);
     }
 }
@@ -1145,7 +1174,7 @@ impl<A: Referable> Hash for ActorMeshRef<A> {
 impl<A: Referable> fmt::Debug for ActorMeshRef<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ActorMeshRef")
-            .field("proc_mesh", &self.proc_mesh)
+            .field("region", self.cast_domain.region())
             .field("id", &self.id)
             .field("page_size", &self.page_size)
             .finish_non_exhaustive() // No print cache.
@@ -1158,7 +1187,14 @@ impl<A: Referable> Serialize for ActorMeshRef<A> {
     where
         S: Serializer,
     {
-        (&self.proc_mesh, &self.id, &self.controller).serialize(serializer)
+        // Serialize only the fields that don't depend on A.
+        (
+            &self.id,
+            &self.proc_mesh_id,
+            &self.controller,
+            &self.cast_domain,
+        )
+            .serialize(serializer)
     }
 }
 
@@ -1168,16 +1204,18 @@ impl<'de, A: Referable> Deserialize<'de> for ActorMeshRef<A> {
     where
         D: Deserializer<'de>,
     {
-        let (proc_mesh, id, controller) = <(
-            ProcMeshRef,
+        let (id, proc_mesh_id, controller, cast_domain) = <(
             ActorMeshId,
+            Option<ProcMeshId>,
             Option<ActorRef<ActorMeshController<A>>>,
+            ActorMeshCastDomain,
         )>::deserialize(deserializer)?;
-        Ok(ActorMeshRef::with_page_size(
+        Ok(Self::with_cast_domain(
             id,
-            proc_mesh,
-            DEFAULT_PAGE,
+            proc_mesh_id,
             controller,
+            cast_domain,
+            DEFAULT_PAGE,
         ))
     }
 }
@@ -1187,7 +1225,7 @@ impl<A: Referable> view::Ranked for ActorMeshRef<A> {
 
     #[inline]
     fn region(&self) -> &Region {
-        view::Ranked::region(&self.proc_mesh)
+        self.cast_domain.region()
     }
 
     #[inline]
@@ -1197,17 +1235,26 @@ impl<A: Referable> view::Ranked for ActorMeshRef<A> {
 }
 
 impl<A: Referable> view::RankedSliceable for ActorMeshRef<A> {
+    /// Return a pure slice of this actor mesh.
+    ///
+    /// This method cannot install routing state because the trait has no caller
+    /// context. Instead it carries a lazy cast-domain descriptor. The first cast
+    /// through the returned ref posts setup from that caller before sending the
+    /// cast message, preserving normal sender-side stream ordering.
     fn sliced(&self, region: Region) -> Self {
         // Slices inherit cached failures that were already observed on the parent
         // mesh ref so new sub-slices do not race the controller replay path.
         // The supervision receiver stays independent because each slice applies
         // its own region filter to future updates.
         debug_assert!(region.is_subset(view::Ranked::region(self)));
-        let proc_mesh = self.proc_mesh.subset(region).unwrap();
         Self {
-            proc_mesh,
             id: self.id.clone(),
+            proc_mesh_id: self.proc_mesh_id.clone(),
             controller: self.controller.clone(),
+            cast_domain: ActorMeshCastDomain::new(
+                Arc::new(self.cast_domain.members().sliced(region.clone())),
+                region.clone(),
+            ),
             health_state: self.health_state.clone(),
             receiver: ActorLocal::new(),
             pages: OnceCell::new(),
@@ -1222,6 +1269,7 @@ mod tests {
     use std::collections::HashMap;
     use std::collections::HashSet;
     use std::ops::Deref;
+    use std::sync::Arc;
 
     use hyperactor::Endpoint as _;
     use hyperactor::actor::ActorErrorKind;
@@ -1276,8 +1324,14 @@ mod tests {
         // force multiple pages:
         // page 0: ranks [0,1], page 1: [2,3], page 2: [4,5]
         let page_size = 2;
-        let amr: ActorMeshRef<testactor::TestActor> =
-            ActorMeshRef::with_page_size(am.id.clone(), pm.clone(), page_size, None);
+        let amr: ActorMeshRef<testactor::TestActor> = ActorMeshRef::with_page_size(
+            am.id.clone(),
+            am.deref().proc_mesh_id.clone(),
+            am.region().clone(),
+            page_size,
+            None,
+            Arc::clone(&am.deref().cast_domain.members),
+        );
         assert_eq!(amr.extent(), extent!(hosts = 2, gpus = 2));
         assert_eq!(amr.region().num_ranks(), 4);
 
@@ -1315,6 +1369,10 @@ mod tests {
         // (RankedSliceable::sliced)
         let sliced = amr.range("hosts", 0..2).expect("slice should be valid"); // leaves 4 ranks
         assert_eq!(sliced.region().num_ranks(), 4);
+        assert!(
+            sliced.get(0).is_some(),
+            "RankedSliceable::sliced preserves a lazy cast-domain descriptor"
+        );
         // First access materializes a new cache for the sliced view.
         let sp0_a = sliced.get(0).unwrap() as *const _;
         let sp0_b = sliced.get(0).unwrap() as *const _;
@@ -1801,6 +1859,7 @@ mod tests {
                 members,
                 Region::from(ndslice::shape!(rank = 2)),
                 hyperactor_cast::cast_actor::TilingPolicy::BlockPartitioning,
+                hyperactor_config::Flattrs::new(),
             )
             .unwrap();
 
