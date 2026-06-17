@@ -42,8 +42,11 @@ run_test_groups() {
         pkill -9 python || true
         pkill -9 pytest || true
         sleep 2
+        # test_gather_mount.py needs a real FUSE mount (/dev/fuse); those tests
+        # run in the dedicated ubuntu-latest test-fuse-python lane, not on macOS.
         LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip" \
             --ignore-glob="**/meta/**" \
+            --ignore=python/tests/test_gather_mount.py \
             --dist=no \
             --group="$GROUP" \
             --junit-xml="$test_results_dir/test-results-$GROUP.xml" \

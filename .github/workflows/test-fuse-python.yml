@@ -1,0 +1,100 @@
+name: Test FUSE Python
+
+on:
+  workflow_call:
+    inputs:
+      artifact-name:
+        description: 'Wheel artifact name from build workflow'
+        required: true
+        type: string
+      python-version:
+        description: 'Python version to test with'
+        type: string
+        default: '3.10'
+
+concurrency:
+  group: test-fuse-python-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-fuse-python:
+    name: Test FUSE Python - gather_mount
+    # GitHub-hosted ubuntu runners are full VMs with /dev/fuse and allow
+    # unprivileged FUSE mounts via the setuid fusermount3 helper. The
+    # pytorch/test-infra linux_job_v2 container used by the other Linux lanes
+    # does NOT expose /dev/fuse (its docker run only adds --cap-add=SYS_PTRACE),
+    # so the real-FUSE mount tests run here instead.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Install FUSE
+        shell: bash
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y fuse3
+          sudo modprobe fuse || true
+          # gather_mount mounts may use allow_other; internal devservers set
+          # this in /etc/fuse.conf, so mirror it here.
+          echo 'user_allow_other' | sudo tee -a /etc/fuse.conf
+          # Fail early (surfacing a runner regression) if FUSE isn't really here.
+          command -v fusermount3
+          ls -l /dev/fuse
+
+      - name: Install PyTorch (CPU) and test dependencies
+        shell: bash
+        run: |
+          set -eux
+          python -m pip install --upgrade pip
+          pip install --pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cpu
+          pip install -r python/tests/requirements.txt
+
+      - name: Fetch disabled tests
+        shell: bash
+        run: |
+          set -eux
+          python3 scripts/fetch_disabled_tests.py
+
+      - name: Download wheel artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ${{ runner.temp }}/wheel-artifact
+
+      - name: Install wheel
+        shell: bash
+        run: |
+          set -eux
+          python -m pip install "${{ runner.temp }}/wheel-artifact"/*.whl
+
+      - name: Verify import
+        shell: bash
+        run: |
+          set -eux
+          python -c "import monarch; import monarch.gather_mount; print('Monarch + gather_mount imported successfully')"
+
+      - name: Run gather_mount FUSE tests
+        shell: bash
+        run: |
+          set -eux
+          mkdir -p test-results
+          LC_ALL=C pytest python/tests/test_gather_mount.py -s -v \
+            --junit-xml=test-results/test-results.xml
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-fuse-python-${{ github.sha }}
+          path: test-results/*.xml
+          if-no-files-found: ignore
