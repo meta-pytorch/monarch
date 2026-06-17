@@ -346,13 +346,17 @@ impl CastDomainRef {
         dest_port: u64,
     ) -> Result<(Uuid, ValueMesh<u64>)> {
         let sequencer = cx.instance().sequencer();
-        let seqs = self.members.as_ref().map_into(|member| {
+
+        let mut seqs: ValueMesh<u64> = self.members.as_ref().map_into(|member| {
             let port = member.port_addr(Port::handler_id(dest_port, None));
             let SeqInfo::Session { session_id: _, seq } = sequencer.assign_seq(&port) else {
                 unreachable!("assign_seq always returns SeqInfo::Session");
             };
             seq
         });
+
+        seqs.compress_adjacent_in_place();
+
         Ok((sequencer.session_id(), seqs))
     }
 }
