@@ -190,24 +190,10 @@ impl HostRef {
         ResourceId::proc_addr_from_name(self.0.clone(), SERVICE_PROC_NAME)
     }
 
-    /// Request an orderly teardown of this host and all procs it
-    /// spawned.
-    ///
-    /// This resolves the per-child grace **timeout** and the maximum
-    /// termination **concurrency** from config and sends a
-    /// [`ShutdownHost`] message to the host's agent. The agent then:
-    ///
-    /// 1) Performs a graceful termination pass over all tracked
-    ///    children (TERM → wait(`timeout`) → KILL), with at most
-    ///    `max_in_flight` running concurrently.
-    /// 2) After the pass completes, **drops the Host**, which also
-    ///    drops the embedded `BootstrapProcManager`. The manager's
-    ///    `Drop` serves as a last-resort safety net (it SIGKILLs
-    ///    anything that somehow remains).
-    ///
-    /// This call returns `Ok(()))` only after the agent has finished
-    /// the termination pass and released the host, so the host is no
-    /// longer reachable when this returns.
+    /// Request an orderly teardown of this host and all procs it spawned:
+    /// send `ShutdownHost` to the host's agent and wait for its single direct
+    /// rank ack. Used by the best-effort Drop-cleanup path; the mesh-wide path
+    /// is `HostMeshRef::cast_shutdown`.
     pub(crate) async fn shutdown(
         &self,
         cx: &impl hyperactor::context::Actor,
@@ -217,9 +203,20 @@ impl HostRef {
             hyperactor_config::global::get(crate::bootstrap::MESH_TERMINATE_TIMEOUT);
         let max_in_flight =
             hyperactor_config::global::get(crate::bootstrap::MESH_TERMINATE_CONCURRENCY);
+        let (ack, mut rx) = cx.mailbox().open_port::<usize>();
+
         agent
-            .shutdown_host(cx, terminate_timeout, max_in_flight.clamp(1, 256))
+            .shutdown_host(
+                cx,
+                terminate_timeout,
+                max_in_flight.clamp(1, 256),
+                resource::Rank::new(0),
+                ack.bind(),
+            )
             .await?;
+
+        rx.recv().await.map_err(anyhow::Error::from)?;
+
         Ok(())
     }
 }
@@ -666,9 +663,8 @@ impl HostMesh {
     /// Uses a two-phase approach:
     /// 1. Cast `DrainHost` and wait for every host to finish draining
     ///    its user procs while networking stays alive.
-    /// 2. **Shut down hosts** concurrently. No user procs remain, so
-    ///    this is fast and cannot deadlock on cross-host flush
-    ///    timeouts.
+    /// 2. Cast `ShutdownHost` and wait for every host to acknowledge
+    ///    that its local shutdown handler has completed.
     #[hyperactor::instrument(fields(host_mesh=self.id.to_string()))]
     pub async fn shutdown(&mut self, cx: &impl hyperactor::context::Actor) -> anyhow::Result<()> {
         let t0 = std::time::Instant::now();
@@ -685,47 +681,30 @@ impl HostMesh {
                 "failed to cast DrainHost barrier"
             );
         }
-        let phase1_ms = t0.elapsed().as_millis();
+        let drain_ms = t0.elapsed().as_millis();
 
-        // Phase 2: shut down hosts concurrently. No user procs remain.
+        // Phase 2: request host shutdown once the drain barrier has cleared.
         let t1 = std::time::Instant::now();
-        let results = futures::future::join_all(self.current_ref.values().map(|host| async move {
-            let result = host.shutdown(cx).await;
-            (host, result)
-        }))
-        .await;
-        let phase2_ms = t1.elapsed().as_millis();
+        let shutdown_result = self.current_ref.cast_shutdown(cx).await;
+        let shutdown_ack_ms = t1.elapsed().as_millis();
         let total_ms = t0.elapsed().as_millis();
-        let mut failed_hosts = vec![];
-        for (host, result) in &results {
-            if let Err(e) = result {
-                tracing::warn!(
-                    name = "HostMeshStatus",
-                    status = "Shutdown::Host::Failed",
-                    host = %host,
-                    error = %e,
-                    "host shutdown failed"
-                );
-                failed_hosts.push(host);
-            }
-        }
-        if failed_hosts.is_empty() {
+        if let Err(e) = shutdown_result {
+            tracing::warn!(
+                name = "HostMeshStatus",
+                status = "Shutdown::Ack::Failed",
+                drain_ms,
+                shutdown_ack_ms,
+                total_ms,
+                error = %e,
+                "failed waiting for ShutdownHost acknowledgment barrier"
+            );
+        } else {
             tracing::info!(
                 name = "HostMeshStatus",
                 status = "Shutdown::Success",
-                phase1_ms,
-                phase2_ms,
-                total_ms,
-            );
-        } else {
-            tracing::error!(
-                name = "HostMeshStatus",
-                status = "Shutdown::Failed",
-                phase1_ms,
-                phase2_ms,
-                total_ms,
-                "host mesh shutdown failed; check the logs of the failed hosts for details: {:?}",
-                failed_hosts
+                drain_ms,
+                shutdown_ack_ms,
+                total_ms
             );
         }
 
@@ -1175,6 +1154,70 @@ impl HostMeshRef {
                 )
             }
         }
+    }
+
+    async fn cast_shutdown(&self, cx: &impl context::Actor) -> anyhow::Result<()> {
+        let num_hosts = self.ranks.len();
+        if num_hosts == 0 {
+            return Ok(());
+        }
+
+        // Each host replies its own rank directly once shutdown work is done.
+        // `ShutdownHost` acks cannot be tree-reduced (hosts exit right after
+        // acking), so we collect one direct reply per host on a plain
+        // multi-receive port rather than a reduced barrier, and track which
+        // ranks acknowledged so we can report the hosts that didn't.
+        let (ack, mut rx) = cx.mailbox().open_port::<usize>();
+        // Bind `.unsplit()`: every `PortRef` becomes a multipart part the cast
+        // split loop would otherwise tree-reduce. `ShutdownHost` acks must reach
+        // the caller directly (hosts exit right after acking), so mark this port
+        // unsplit to keep it out of the reduction tree.
+        let mut ack = ack.bind().unsplit();
+        ack.return_undeliverable(false);
+
+        let terminate_timeout =
+            hyperactor_config::global::get(crate::bootstrap::MESH_TERMINATE_TIMEOUT);
+
+        self.host_agent_mesh.cast(
+            cx,
+            host_agent::ShutdownHost {
+                timeout: terminate_timeout,
+                max_in_flight: hyperactor_config::global::get(
+                    crate::bootstrap::MESH_TERMINATE_CONCURRENCY,
+                )
+                .clamp(1, 256),
+                rank: Default::default(),
+                ack,
+            },
+        )?;
+
+        // Hosts only reply after a (timeout-bounded) termination pass, so the
+        // per-reply wait must exceed the per-host terminate timeout.
+        let barrier_timeout = terminate_timeout.saturating_add(std::time::Duration::from_secs(30));
+
+        let mut acked = std::collections::HashSet::new();
+
+        while acked.len() < num_hosts {
+            match tokio::time::timeout(barrier_timeout, rx.recv()).await {
+                Ok(Ok(rank)) => {
+                    acked.insert(rank);
+                }
+                Ok(Err(err)) => return Err(anyhow::Error::from(err)),
+                Err(_) => {
+                    let missing: Vec<usize> =
+                        (0..num_hosts).filter(|r| !acked.contains(r)).collect();
+
+                    anyhow::bail!(
+                        "ShutdownHost barrier timed out after {:?}; {} of {} hosts did not acknowledge shutdown (host ranks {:?})",
+                        barrier_timeout,
+                        missing.len(),
+                        num_hosts,
+                        missing,
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Returns the host entries as `(addr_string, ActorRef<HostAgent>)` pairs.

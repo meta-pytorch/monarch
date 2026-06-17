@@ -531,7 +531,7 @@ fn shutdown_local_host_mesh() -> PyResult<PyPythonTask> {
         // - MESH_TERMINATE_TIMEOUT = 10 seconds
         // - MESH_TERMINATE_CONCURRENCY = 16
 
-        let (port, _) = instance.open_port();
+        let (port, _) = instance.open_port::<usize>();
         let mut port = port.bind();
         // We don't need the ack, and this temporary proc doesn't have a mailbox
         // receiver set up anyways. Just ignore the message.
@@ -541,6 +541,7 @@ fn shutdown_local_host_mesh() -> PyResult<PyPythonTask> {
             ShutdownHost {
                 timeout: Duration::from_secs(10),
                 max_in_flight: 16,
+                rank: hyperactor_mesh::resource::Rank::new(0),
                 ack: port,
             },
         );

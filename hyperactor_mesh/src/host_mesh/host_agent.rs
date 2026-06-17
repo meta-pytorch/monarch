@@ -1036,16 +1036,35 @@ fn start_proc_watch<S>(
     });
 }
 
-#[derive(Serialize, Deserialize, Debug, Named, Handler, RefClient, HandleClient)]
+#[derive(
+    Serialize,
+    Deserialize,
+    Clone,
+    Debug,
+    Named,
+    Handler,
+    RefClient,
+    HandleClient
+)]
 pub struct ShutdownHost {
     /// Grace window: send SIGTERM and wait this long before
     /// escalating.
     pub timeout: std::time::Duration,
     /// Max number of children to terminate concurrently on this host.
     pub max_in_flight: usize,
-    /// Ack that the agent finished shutdown work (best-effort).
-    #[reply]
-    pub ack: hyperactor::PortRef<()>,
+    /// This host's ordinal within the shutdown cast region, stamped by the
+    /// cast layer. The host echoes it back via `ack` so the caller can tell
+    /// exactly which hosts acknowledged shutdown.
+    pub rank: resource::Rank,
+    /// Direct reply carrying this host's rank once shutdown work is done.
+    ///
+    /// Intentionally must NOT be split/tree-reduced: `ShutdownHost` makes each
+    /// host exit right after acking, so a tree-reduced ack would stall — the
+    /// node that fans in peers' acks tears down before they arrive. Replying
+    /// directly to the caller survives the responders exiting. The caller binds
+    /// this port `.unsplit()` so the cast layer leaves it alone, and collects
+    /// one direct reply per host (see `HostMeshRef::cast_shutdown`).
+    pub ack: PortRef<usize>,
 }
 wirevalue::register_type!(ShutdownHost);
 
@@ -1159,6 +1178,7 @@ impl Handler<DrainComplete> for HostAgent {
 #[async_trait]
 impl Handler<ShutdownHost> for HostAgent {
     async fn handle(&mut self, cx: &Context<Self>, msg: ShutdownHost) -> anyhow::Result<()> {
+        let rank = msg.rank.unwrap();
         // Terminate children BEFORE acking, so the caller's networking
         // stays alive while children flush their forwarders during
         // teardown. If we ack first, the caller proceeds to tear down
@@ -1169,9 +1189,9 @@ impl Handler<ShutdownHost> for HostAgent {
             self.drain(cx, msg.timeout, msg.max_in_flight).await;
         }
 
-        // Ack after children are terminated so the caller does not
-        // tear down the host's networking prematurely.
-        msg.ack.post(cx, ());
+        // Reply this host's rank after children are terminated so the
+        // caller does not tear down the host's networking prematurely.
+        msg.ack.post(cx, rank);
 
         // Drop the host and signal the bootstrap loop to drain the
         // mailbox and exit.
