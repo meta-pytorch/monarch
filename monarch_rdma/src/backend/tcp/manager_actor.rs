@@ -669,6 +669,15 @@ impl TcpBackend {
         chunk_size: usize,
         deadline: Instant,
     ) -> Result<()> {
+        // A write transfers the whole local buffer into the remote prefix; the
+        // remote buffer may be larger, so its tail is left untouched.
+        if op.local_memory.size() > op.remote_size {
+            anyhow::bail!(
+                "remote buffer size ({}) is smaller than local buffer size ({})",
+                op.remote_size,
+                op.local_memory.size(),
+            );
+        }
         let size = op.local_memory.size();
         let total_chunks = size.div_ceil(chunk_size);
 
@@ -724,7 +733,16 @@ impl TcpBackend {
         chunk_size: usize,
         deadline: Instant,
     ) -> Result<()> {
-        let size = op.local_memory.size();
+        // A read transfers the whole remote buffer into the local prefix; the
+        // local buffer may be larger, so its tail is left untouched.
+        if op.remote_size > op.local_memory.size() {
+            anyhow::bail!(
+                "remote buffer size ({}) is larger than local buffer size ({})",
+                op.remote_size,
+                op.local_memory.size(),
+            );
+        }
+        let size = op.remote_size;
         let total_chunks = size.div_ceil(chunk_size);
 
         let (done_handle, done_rx) = hyperactor::mailbox::open_once_port::<Result<(), String>>(cx);
@@ -785,6 +803,15 @@ impl TcpBackend {
         chunk_size: usize,
         deadline: Instant,
     ) -> Result<()> {
+        // A write transfers the whole local buffer into the remote prefix; the
+        // remote buffer may be larger, so its tail is left untouched.
+        if op.local_memory.size() > op.remote_size {
+            anyhow::bail!(
+                "remote buffer size ({}) is smaller than local buffer size ({})",
+                op.remote_size,
+                op.local_memory.size(),
+            );
+        }
         let size = op.local_memory.size();
         let mut offset = 0;
 
@@ -827,7 +854,16 @@ impl TcpBackend {
         chunk_size: usize,
         deadline: Instant,
     ) -> Result<()> {
-        let size = op.local_memory.size();
+        // A read transfers the whole remote buffer into the local prefix; the
+        // local buffer may be larger, so its tail is left untouched.
+        if op.remote_size > op.local_memory.size() {
+            anyhow::bail!(
+                "remote buffer size ({}) is larger than local buffer size ({})",
+                op.remote_size,
+                op.local_memory.size(),
+            );
+        }
+        let size = op.remote_size;
         let mut offset = 0;
 
         while offset < size {
@@ -900,6 +936,7 @@ impl RdmaBackend for TcpBackend {
                 local_memory: op.local,
                 remote_tcp_manager: remote_tcp_mgr,
                 remote_buf_id,
+                remote_size: op.remote.size,
             };
 
             if parallelism > 1 {

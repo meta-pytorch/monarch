@@ -619,7 +619,7 @@ impl IbvQueuePair {
         let total_size = lhandle.size;
         if rhandle.size < total_size {
             return Err(anyhow::anyhow!(
-                "Remote buffer size ({}) is smaller than local buffer size ({})",
+                "remote buffer size ({}) is smaller than local buffer size ({})",
                 rhandle.size,
                 total_size
             ));
@@ -769,12 +769,12 @@ impl IbvQueuePair {
         lhandle: IbvBuffer,
         rhandle: IbvBuffer,
     ) -> Result<Vec<u64>, anyhow::Error> {
-        let total_size = lhandle.size;
-        if rhandle.size < total_size {
+        let total_size = rhandle.size;
+        if rhandle.size > lhandle.size {
             return Err(anyhow::anyhow!(
-                "Remote buffer size ({}) is smaller than local buffer size ({})",
+                "remote buffer size ({}) is larger than local buffer size ({})",
                 rhandle.size,
-                total_size
+                lhandle.size
             ));
         }
 
