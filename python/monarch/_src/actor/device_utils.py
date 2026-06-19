@@ -6,15 +6,8 @@
 
 # pyre-strict
 
-import os
-import re
-from pathlib import Path
+import torch
 
 
 def _local_device_count() -> int:
-    if "CUDA_VISIBLE_DEVICES" in os.environ:
-        return len(os.environ["CUDA_VISIBLE_DEVICES"].split(","))
-    dev_path = Path("/dev")
-    pattern = re.compile(r"nvidia\d+$")
-    nvidia_devices = [dev for dev in dev_path.iterdir() if pattern.match(dev.name)]
-    return len(nvidia_devices)
+    return torch.accelerator.device_count()
