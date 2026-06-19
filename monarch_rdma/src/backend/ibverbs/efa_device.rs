@@ -14,6 +14,7 @@ use typeuri::Named;
 
 use super::device::IbvContext;
 use super::device::IbvDeviceImpl;
+use super::efa_domain::EfaDomain;
 use super::primitives::IbvConfig;
 use crate::register_ibv_device_impl;
 
@@ -22,6 +23,8 @@ use crate::register_ibv_device_impl;
 pub struct EfaDevice;
 
 impl IbvDeviceImpl for EfaDevice {
+    type IbvDomainImpl = EfaDomain;
+
     fn backend_name() -> &'static str {
         "efa"
     }
