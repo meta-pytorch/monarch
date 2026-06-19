@@ -381,7 +381,9 @@ if build_tensor_engine:
 rust_extensions = []
 
 # Main Python extension
-rust_features = ["extension-module", "distributed_sql_telemetry"]
+rust_features = ["extension-module"]
+if build_tensor_engine:
+    rust_features.append("distributed_sql_telemetry")
 if build_rdma:
     rust_features.append("rdma")
 if build_tensor_engine:

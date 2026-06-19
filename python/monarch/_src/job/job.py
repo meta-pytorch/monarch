@@ -29,7 +29,30 @@ from monarch._src.actor.sync_state import fake_sync_state
 from monarch._src.job._batch_env import in_batch_job, MONARCH_BATCH_JOB_ENV
 from monarch._src.job.job_sidecar import stop_job_sidecar
 from monarch._src.job.mount_config import Mounts
-from monarch._src.job.telemetry_config import TelemetryConfig
+
+# `telemetry_config` transitively imports the SQL-backed
+# `monarch_distributed_telemetry` Rust submodule, which is only built when
+# MONARCH_ENABLE_SQL_TELEMETRY=1. Skip-and-stub `TelemetryConfig` on
+# actors-only builds (e.g. XPU) where the submodule is absent.
+try:
+    from monarch._src.job.telemetry_config import TelemetryConfig
+except ModuleNotFoundError:
+
+    @dataclass
+    class TelemetryConfig:  # type: ignore[no-redef]
+        """Stub used when `monarch_distributed_telemetry` is not built.
+
+        Mirrors the real ``TelemetryConfig`` shape so type annotations and
+        defaults still resolve; consumers calling ``state()`` / ``ensure_open``
+        will hit a runtime error in the actor that requires the submodule.
+        """
+
+        batch_size: int = 1000
+        retention_secs: int = 600
+        include_dashboard: bool = False
+        dashboard_port: int = 8265
+        snapshot_interval_secs: float = 0
+
 
 # note: the jobs api is intended as a library so it should
 # only be importing _public_ monarch API functions.
@@ -43,8 +66,24 @@ from monarch.actor import (
     Port,
     this_host,
 )
-from monarch.distributed_telemetry.actor import start_telemetry
-from monarch.distributed_telemetry.engine import QueryEngine
+
+# Telemetry uses the SQL-backed `monarch_distributed_telemetry` Rust submodule,
+# which is only compiled when MONARCH_ENABLE_SQL_TELEMETRY=1. Skip-and-stub on
+# actors-only builds where the submodule is absent (e.g. XPU).
+try:
+    from monarch.distributed_telemetry.actor import start_telemetry
+    from monarch.distributed_telemetry.engine import QueryEngine
+except ModuleNotFoundError:
+    QueryEngine = None  # type: ignore[assignment,misc]
+
+    def start_telemetry(*args, **kwargs):  # type: ignore[no-redef]
+        raise RuntimeError(
+            "Distributed telemetry is unavailable: monarch was built without the "
+            "`monarch_distributed_telemetry` Rust submodule. Rebuild with "
+            "MONARCH_ENABLE_SQL_TELEMETRY=1 to use telemetry."
+        )
+
+
 from typing_extensions import Self
 
 
