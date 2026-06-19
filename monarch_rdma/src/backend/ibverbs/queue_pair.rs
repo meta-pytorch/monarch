@@ -208,6 +208,17 @@ impl IbvQueuePair {
         self.qp as *mut rdmaxcel_sys::rdmaxcel_qp
     }
 
+    /// Consumes the queue pair and returns its raw `rdmaxcel_qp` pointer,
+    /// transferring ownership to the caller. The handle is nulled out first
+    /// so the `Drop` that runs as `self` falls out of scope skips
+    /// `rdmaxcel_qp_destroy`; the caller takes over the QP and must
+    /// eventually destroy it.
+    pub(super) fn take_ptr(mut self) -> *mut rdmaxcel_sys::rdmaxcel_qp {
+        let qp = self.qp as *mut rdmaxcel_sys::rdmaxcel_qp;
+        self.qp = 0;
+        qp
+    }
+
     fn is_efa(&self) -> bool {
         self.is_efa
     }

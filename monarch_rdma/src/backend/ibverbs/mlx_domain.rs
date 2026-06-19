@@ -13,34 +13,31 @@
 //! to an indirect mlx5dv memory key so a whole allocator segment is
 //! addressable through a single key.
 //!
-//! This commit introduces the segment-binding core — the CUDA segment
-//! scanner, the per-segment bookkeeping and binding ([`RegisteredSegment`]),
-//! and the device/FFI seam ([`MlxDomainOps`]) they depend on — with
-//! mock-backed unit tests. [`MlxDomain`] still stubs the mlx5dv path (callers
-//! fall back to a dmabuf MR); a follow-up wires it to drive this core.
+//! The segment scanning + binding bookkeeping lives here in Rust. Every
+//! device/FFI touch goes through [`MlxDomainOps`] so the (intricate)
+//! scan/bind/teardown logic can be unit-tested against a mock; the
+//! production implementation ([`ProdMlxDomainOps`]) delegates to the real
+//! functions and the [`rdmaxcel_sys::rdmaxcel_bind_mr_list`] shim.
 
-// The binding core below (scanner, `RegisteredSegment`, `MlxDomainOps`) is
-// exercised by this module's unit tests but only driven by `MlxDomain` in the
-// next commit, so it is unused in non-test builds.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "binding core is unit-tested here; MlxDomain drives it in the next commit"
-    )
-)]
-
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::OnceLock;
+
+use anyhow::Context;
 
 use super::device::IbvContext;
+use super::device_selection::get_cuda_device_to_ibv_device;
 use super::domain::IbvDomain;
 use super::domain::IbvDomainImpl;
+use super::domain::register_dmabuf_mr;
 use super::domain::register_host_or_dmabuf_mr;
 use super::memory_region::IbvMemoryRegionKeepalive;
 use super::memory_region::IbvMemoryRegionView;
 use super::primitives::IbvConfig;
 use super::primitives::IbvDeviceInfo;
+use super::queue_pair::IbvQueuePair;
 use crate::local_memory::KeepaliveLocalMemory;
 use crate::local_memory::is_device_ptr;
 
@@ -91,20 +88,26 @@ fn scan_cuda_segments() -> Vec<ScannedSegment> {
 }
 
 // ===========================================================================
-// MlxDomainOps: the device/FFI surface the binding core delegates to
+// MlxDomainOps: the device/FFI surface MlxDomain delegates to
 // ===========================================================================
 
-/// Device/FFI operations the mlx5dv binding logic depends on. Tests
-/// substitute a mock so the scan/bind/teardown algorithm can be exercised
-/// without hardware. The raw FFI pointer types are used directly — the mock
-/// fabricates fake pointers.
-///
-/// This commit defines the subset [`RegisteredSegment`] needs; a follow-up
-/// adds the rest (segment scan, loopback QP) alongside the production
-/// implementation.
+/// Device/FFI operations the mlx5dv binding logic depends on. Production
+/// uses [`ProdMlxDomainOps`]; tests substitute a mock so the scan/bind/
+/// teardown algorithm can be exercised without hardware. The raw FFI
+/// pointer types are used directly — the mock fabricates fake pointers.
 pub(super) trait MlxDomainOps: Send + Sync + 'static {
     /// Name of the RDMA device this domain drives.
     fn device_name(&self) -> String;
+
+    /// Whether the device supports mlx5dv direct verbs.
+    fn mlx5dv_enabled(&self) -> bool;
+
+    /// CUDA ordinals whose optimal NIC is this domain's device; only segments
+    /// on these ordinals are bound here.
+    fn assigned_cuda_devices(&self) -> Vec<i32>;
+
+    /// Enumerate the currently-live CUDA segments.
+    fn scan_segments(&self) -> Vec<ScannedSegment>;
 
     /// Register `[addr, addr + size)` of device memory as a dmabuf MR.
     ///
@@ -127,6 +130,25 @@ pub(super) trait MlxDomainOps: Send + Sync + 'static {
     /// `mr` must be null or an MR returned by [`Self::register_dmabuf_mr`] that
     /// has not already been deregistered.
     unsafe fn dereg_mr(&self, mr: *mut rdmaxcel_sys::ibv_mr);
+
+    /// Create and connect a fresh loopback queue pair against `domain`'s PD,
+    /// returning the raw `rdmaxcel_qp` pointer. The caller ([`MlxDomain`])
+    /// caches it and is responsible for destroying it via
+    /// [`Self::destroy_loopback_qp`]. We manage the raw pointer directly since
+    /// we only ever use it for indirect mkey binding.
+    fn create_loopback_qp(
+        &self,
+        domain: Arc<IbvDomain>,
+        config: &IbvConfig,
+    ) -> anyhow::Result<*mut rdmaxcel_sys::rdmaxcel_qp>;
+
+    /// Destroy a loopback QP returned by [`Self::create_loopback_qp`].
+    ///
+    /// # Safety
+    ///
+    /// `qp` must be null or a queue pair returned by [`Self::create_loopback_qp`]
+    /// that has not already been destroyed.
+    unsafe fn destroy_loopback_qp(&self, qp: *mut rdmaxcel_sys::rdmaxcel_qp);
 
     /// Bind `mrs` to a freshly created indirect key using `qp`'s work-request
     /// builder, returning the new key.
@@ -158,6 +180,165 @@ pub(super) trait MlxDomainOps: Send + Sync + 'static {
     /// If `mkey` is non-null it must be a live key returned by
     /// [`Self::bind_mr_list`].
     unsafe fn mkey_keys(&self, mkey: *mut rdmaxcel_sys::mlx5dv_mkey) -> Option<(u32, u32)>;
+}
+
+/// Production [`MlxDomainOps`] backed by the real ibverbs / mlx5dv FFI.
+///
+/// The device name (taken from the queried [`IbvDeviceInfo`]) and mlx5dv
+/// support are immutable properties of the device, recorded once at
+/// construction; the per-op FFI methods operate on the `pd` passed in by
+/// [`MlxDomain`], so no context handle needs to be retained here.
+pub(super) struct ProdMlxDomainOps {
+    device_name: String,
+    mlx5dv_enabled: bool,
+}
+
+impl ProdMlxDomainOps {
+    fn new(context: &IbvContext, device_info: &IbvDeviceInfo) -> Self {
+        let ctx = context.as_ptr();
+        // A null context (e.g. a test double) has no device to query, so treat
+        // it as mlx5dv-unsupported rather than dereferencing null.
+        let mlx5dv_enabled = if ctx.is_null() {
+            false
+        } else {
+            // SAFETY: `ctx` is a non-null, live `ibv_context`; its `device`
+            // field is the `ibv_device` we query for mlx5dv support.
+            unsafe { rdmaxcel_sys::mlx5dv_is_supported((*ctx).device) }
+        };
+        Self {
+            device_name: device_info.name().to_string(),
+            mlx5dv_enabled,
+        }
+    }
+}
+
+impl MlxDomainOps for ProdMlxDomainOps {
+    fn device_name(&self) -> String {
+        self.device_name.clone()
+    }
+
+    fn mlx5dv_enabled(&self) -> bool {
+        self.mlx5dv_enabled
+    }
+
+    fn assigned_cuda_devices(&self) -> Vec<i32> {
+        get_cuda_device_to_ibv_device()
+            .iter()
+            .enumerate()
+            .filter_map(|(ordinal, nic)| {
+                nic.as_ref()
+                    .filter(|n| n.name() == &self.device_name)
+                    .map(|_| ordinal as i32)
+            })
+            .collect()
+    }
+
+    fn scan_segments(&self) -> Vec<ScannedSegment> {
+        scan_cuda_segments()
+    }
+
+    unsafe fn register_dmabuf_mr(
+        &self,
+        pd: *mut rdmaxcel_sys::ibv_pd,
+        addr: usize,
+        size: usize,
+        access: i32,
+    ) -> anyhow::Result<*mut rdmaxcel_sys::ibv_mr> {
+        // SAFETY: forwards this method's contract (non-null `pd` is a live PD).
+        unsafe { register_dmabuf_mr(pd, addr, size, access) }
+    }
+
+    unsafe fn dereg_mr(&self, mr: *mut rdmaxcel_sys::ibv_mr) {
+        if mr.is_null() {
+            return;
+        }
+        // SAFETY: `mr` was returned by `register_dmabuf_mr` and is dereg'd
+        // exactly once.
+        let result = unsafe { rdmaxcel_sys::ibv_dereg_mr(mr) };
+        if result != 0 {
+            tracing::error!("failed to deregister MR at {:p}: error code {}", mr, result);
+        }
+    }
+
+    fn create_loopback_qp(
+        &self,
+        domain: Arc<IbvDomain>,
+        config: &IbvConfig,
+    ) -> anyhow::Result<*mut rdmaxcel_sys::rdmaxcel_qp> {
+        // Build a full queue pair (QP + mlx5dv structures) and connect it to
+        // its own endpoint (loopback) so it can post the key-binding work
+        // request, then take ownership of the raw pointer: MlxDomain manages
+        // the QP directly and destroys it via destroy_loopback_qp.
+        let mut qp = IbvQueuePair::new(domain, config.clone())
+            .context("could not create loopback QP for mkey binding")?;
+        let info = qp
+            .get_qp_info()
+            .context("could not query loopback QP info for mkey binding")?;
+        qp.connect(&info)
+            .context("could not connect loopback QP for mkey binding")?;
+        Ok(qp.take_ptr())
+    }
+
+    unsafe fn destroy_loopback_qp(&self, qp: *mut rdmaxcel_sys::rdmaxcel_qp) {
+        if qp.is_null() {
+            return;
+        }
+        // SAFETY: `qp` is non-null (checked above), was returned by
+        // `create_loopback_qp`'s `rdmaxcel_qp_create`, and is destroyed exactly
+        // once.
+        unsafe { rdmaxcel_sys::rdmaxcel_qp_destroy(qp) };
+    }
+
+    unsafe fn bind_mr_list(
+        &self,
+        pd: *mut rdmaxcel_sys::ibv_pd,
+        qp: *mut rdmaxcel_sys::rdmaxcel_qp,
+        access: i32,
+        mrs: &[*mut rdmaxcel_sys::ibv_mr],
+    ) -> anyhow::Result<*mut rdmaxcel_sys::mlx5dv_mkey> {
+        if pd.is_null() || qp.is_null() {
+            anyhow::bail!("bind_mr_list called with a null protection domain or queue pair");
+        }
+        // `rdmaxcel_bind_mr_list` creates the indirect key in place when the
+        // `mkey` out-param starts null, which it always does here.
+        let mut mkey: *mut rdmaxcel_sys::mlx5dv_mkey = std::ptr::null_mut();
+        // SAFETY: `pd` and `qp` are non-null (checked above), so reading `qp`'s
+        // `ibv_qp` field is sound; `mrs` is a contiguous array of `mrs.len()`
+        // non-null MRs; `mkey` is created in place. `rdmaxcel_bind_mr_list`
+        // reports any failure via its return code.
+        let ret = unsafe {
+            let ibv_qp = (*qp).ibv_qp;
+            rdmaxcel_sys::rdmaxcel_bind_mr_list(
+                pd,
+                ibv_qp,
+                access,
+                mrs.as_ptr() as *mut *mut rdmaxcel_sys::ibv_mr,
+                mrs.len(),
+                &mut mkey,
+            )
+        };
+        if ret != 0 {
+            anyhow::bail!("rdmaxcel_bind_mr_list failed: error code {}", ret);
+        }
+        Ok(mkey)
+    }
+
+    unsafe fn destroy_mkey(&self, mkey: *mut rdmaxcel_sys::mlx5dv_mkey) {
+        if mkey.is_null() {
+            return;
+        }
+        // SAFETY: `mkey` was created by `rdmaxcel_bind_mr_list` and is
+        // destroyed exactly once.
+        unsafe { rdmaxcel_sys::rdmaxcel_destroy_mkey(mkey) };
+    }
+
+    unsafe fn mkey_keys(&self, mkey: *mut rdmaxcel_sys::mlx5dv_mkey) -> Option<(u32, u32)> {
+        if mkey.is_null() {
+            return None;
+        }
+        // SAFETY: `mkey` is non-null (checked above), a key bound by `bind_mr_list`.
+        Some(unsafe { ((*mkey).lkey, (*mkey).rkey) })
+    }
 }
 
 // ===========================================================================
@@ -450,27 +631,169 @@ unsafe fn register_range(
 }
 
 // ===========================================================================
-// MlxDomain (mlx5dv path stubbed; wired to the binding core in a follow-up)
+// MlxDomain
 // ===========================================================================
 
 /// Mellanox [`IbvDomainImpl`].
 pub struct MlxDomain {
+    ops: Arc<dyn MlxDomainOps>,
+    /// Config for the loopback binding QP.
+    config: IbvConfig,
     mlx5dv_enabled: bool,
+    /// CUDA ordinals whose optimal NIC is this device. Only segments on
+    /// these ordinals are bound here.
+    cuda_ordinals: Vec<i32>,
+    /// Lazily-created loopback QP used to post key-binding work requests,
+    /// held as a raw `rdmaxcel_qp` pointer (stored as `usize` for `Send`)
+    /// owned by this domain and destroyed in [`Drop`].
+    loopback_qp: OnceLock<usize>,
+    /// Currently-bound segments, keyed by `(base address, CUDA ordinal)`. Each
+    /// grows in place (reusing its MRs, retiring superseded keys internally);
+    /// a key whose base vanishes from the scan is dropped (a live view keeps
+    /// its own `Arc` alive regardless).
+    segments: Mutex<HashMap<(usize, i32), Arc<RegisteredSegment>>>,
+}
+
+impl Drop for MlxDomain {
+    fn drop(&mut self) {
+        if let Some(&qp) = self.loopback_qp.get() {
+            // SAFETY: `qp` was returned by `create_loopback_qp` and is destroyed
+            // exactly once, here, at the end of this domain's life.
+            unsafe {
+                self.ops
+                    .destroy_loopback_qp(qp as *mut rdmaxcel_sys::rdmaxcel_qp);
+            }
+        }
+    }
+}
+
+impl MlxDomain {
+    /// Build a domain over the given ops, deriving mlx5dv support and the
+    /// served CUDA ordinals from them.
+    fn new_with_ops(ops: Arc<dyn MlxDomainOps>, config: IbvConfig) -> Self {
+        let mlx5dv_enabled = ops.mlx5dv_enabled();
+        let cuda_ordinals = ops.assigned_cuda_devices();
+        Self {
+            ops,
+            config,
+            mlx5dv_enabled,
+            cuda_ordinals,
+            loopback_qp: OnceLock::new(),
+            segments: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Get-or-create the loopback QP and return its raw `rdmaxcel_qp`
+    /// pointer.
+    fn loopback_qp_ptr(
+        &self,
+        domain: &Arc<IbvDomain>,
+    ) -> anyhow::Result<*mut rdmaxcel_sys::rdmaxcel_qp> {
+        // `OnceLock::get_or_try_init` would fit here but is still unstable
+        // (`once_cell_try`); calls are serialized under the `segments` lock,
+        // so this check-then-set is race-free.
+        if let Some(&qp) = self.loopback_qp.get() {
+            return Ok(qp as *mut rdmaxcel_sys::rdmaxcel_qp);
+        }
+        let qp = self
+            .ops
+            .create_loopback_qp(Arc::clone(domain), &self.config)?;
+        self.loopback_qp
+            .set(qp as usize)
+            .expect("loopback qp already initialized");
+        Ok(qp)
+    }
+
+    /// Bind CUDA `[addr, addr + size)` via an indirect mlx5dv key. Scans for
+    /// live segments on the ordinals this NIC serves, binding a fresh segment
+    /// for any that appeared and growing in place any that expanded, dropping
+    /// any whose base address vanished from the scan, then returns a view
+    /// anchored at `addr`.
+    ///
+    /// # Safety
+    ///
+    /// `domain.as_ptr()` must be null or a live protection domain whose context
+    /// outlives this call.
+    unsafe fn register_cuda_mlx5dv_mr(
+        &self,
+        domain: &Arc<IbvDomain>,
+        addr: usize,
+        size: usize,
+    ) -> anyhow::Result<IbvMemoryRegionView> {
+        let pd = domain.as_ptr();
+        let access = self.mr_access_flags();
+        let mut segments = self
+            .segments
+            .lock()
+            .expect("mlx domain segments lock poisoned");
+
+        // Fast path: a current binding already covers the request.
+        if let Some(seg) = segments.values().find(|s| s.covers(addr, size)) {
+            return Ok(RegisteredSegment::view(seg, addr, size, Arc::clone(domain)));
+        }
+
+        // Pull live segments and keep only the ones on ordinals we serve.
+        let scanned: Vec<ScannedSegment> = self
+            .ops
+            .scan_segments()
+            .into_iter()
+            .filter(|s| self.cuda_ordinals.contains(&s.cuda_ordinal))
+            .collect();
+
+        let qp = self.loopback_qp_ptr(domain)?;
+
+        let mut snapshot: HashSet<(usize, i32)> = HashSet::new();
+        for scanned_seg in &scanned {
+            let key = (scanned_seg.address, scanned_seg.cuda_ordinal);
+            snapshot.insert(key);
+            match segments.get(&key) {
+                // Already bound at this extent: nothing to do.
+                Some(seg) if seg.size() == scanned_seg.size => {}
+                // Grew: extend the existing segment in place (reuses its MRs,
+                // retires its prior key internally).
+                // SAFETY: `pd`/`qp` satisfy this function's contract (live PD or
+                // null; valid loopback QP) and are forwarded unchanged.
+                Some(seg) => unsafe { seg.grow(pd, qp, access, scanned_seg) }?,
+                // New: create an empty segment and grow it to the full range.
+                None => {
+                    let fresh = Arc::new(RegisteredSegment::empty(
+                        self.ops.clone(),
+                        scanned_seg.address,
+                    ));
+                    // SAFETY: as above.
+                    unsafe { fresh.grow(pd, qp, access, scanned_seg) }?;
+                    segments.insert(key, fresh);
+                }
+            }
+        }
+
+        // Drop segments whose base address vanished from the scan: the
+        // allocator freed that region. A still-live view keeps its own `Arc`
+        // alive regardless, so this never frees memory in use.
+        segments.retain(|key, _| snapshot.contains(key));
+
+        // Serve the caller's view from a current segment that covers it.
+        segments
+            .values()
+            .find(|s| s.covers(addr, size))
+            .map(|s| RegisteredSegment::view(s, addr, size, Arc::clone(domain)))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "CUDA address 0x{:x} + size {} is not covered by any scanned segment on the CUDA ordinals {:?} mapped to this NIC",
+                    addr,
+                    size,
+                    self.cuda_ordinals,
+                )
+            })
+    }
 }
 
 impl IbvDomainImpl for MlxDomain {
-    unsafe fn new(context: &IbvContext, _device_info: &IbvDeviceInfo, _config: &IbvConfig) -> Self {
-        let ctx = context.as_ptr();
-        // A null context (e.g. a test double) has no device to query, so treat
-        // it as mlx5dv-unsupported rather than dereferencing null.
-        let mlx5dv_enabled = if ctx.is_null() {
-            false
-        } else {
-            // SAFETY: `ctx` is a non-null, live `ibv_context`; its `device`
-            // field is the `ibv_device` we query for mlx5dv support.
-            unsafe { rdmaxcel_sys::mlx5dv_is_supported((*ctx).device) }
-        };
-        Self { mlx5dv_enabled }
+    unsafe fn new(context: &IbvContext, device_info: &IbvDeviceInfo, config: &IbvConfig) -> Self {
+        Self::new_with_ops(
+            Arc::new(ProdMlxDomainOps::new(context, device_info)),
+            config.clone(),
+        )
     }
 
     fn mr_access_flags(&self) -> i32 {
@@ -489,7 +812,7 @@ impl IbvDomainImpl for MlxDomain {
         if self.mlx5dv_enabled && is_device_ptr(mem.addr()) {
             // SAFETY: `domain.as_ptr()` is null or a live PD, per this method's
             // contract.
-            match unsafe { self.register_cuda_mlx5dv_mr(domain.as_ptr(), mem) } {
+            match unsafe { self.register_cuda_mlx5dv_mr(&domain, mem.addr(), mem.size()) } {
                 Ok(view) => return Ok(view),
                 Err(e) => {
                     tracing::warn!("mlx5dv CUDA registration failed, falling back to dmabuf: {e}")
@@ -503,48 +826,21 @@ impl IbvDomainImpl for MlxDomain {
     }
 }
 
-impl MlxDomain {
-    /// Bind CUDA memory via an indirect mlx5dv memory key. Stub: the binding
-    /// core ([`RegisteredSegment`]) lands in this commit, but is driven by
-    /// [`MlxDomain`] only in a follow-up; today this always errors so
-    /// [`Self::register_mr`] falls back to a dmabuf MR.
-    ///
-    /// # Safety
-    ///
-    /// If `pd` is non-null it must be a live protection domain whose context
-    /// outlives this call.
-    unsafe fn register_cuda_mlx5dv_mr(
-        &self,
-        _pd: *mut rdmaxcel_sys::ibv_pd,
-        _mem: &KeepaliveLocalMemory,
-    ) -> anyhow::Result<IbvMemoryRegionView> {
-        anyhow::bail!("mlx5dv CUDA registration not yet implemented")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
     use std::sync::Mutex;
     use std::sync::MutexGuard;
 
-    use super::super::device::IbvContext;
     use super::super::primitives::IbvDeviceInfo;
     use super::*;
 
     const MIB2: usize = 2 * 1024 * 1024;
     const SERVED_NIC: &str = "mlx5_0";
 
-    fn null_pd() -> *mut rdmaxcel_sys::ibv_pd {
-        std::ptr::null_mut()
-    }
-
-    fn null_qp() -> *mut rdmaxcel_sys::rdmaxcel_qp {
-        std::ptr::null_mut()
-    }
-
-    /// A test domain whose `pd`/`context` are null, so its `Drop` is a no-op.
-    /// Segment views hold it only as a (never-read) keepalive.
+    /// A test domain whose `pd`/`context` are null, so its `Drop` is a
+    /// no-op. The `MockOps` ignore the `pd`, and the resulting views only
+    /// hold this as a (never-read) keepalive.
     fn fake_domain() -> Arc<IbvDomain> {
         // SAFETY: null `ibv_context*`/`pd` are explicitly allowed — both
         // `IbvContext` and `IbvDomain` skip their FFI destructors for null.
@@ -589,11 +885,18 @@ mod tests {
     #[derive(Default)]
     struct MockState {
         device_name: String,
+        mlx5dv_enabled: bool,
+        served_ordinals: Vec<i32>,
+        scan: Vec<ScannedSegment>,
         next_handle: usize,
         live_mrs: HashSet<usize>,
         live_mkeys: HashSet<usize>,
+        live_loopback_qps: HashSet<usize>,
+        /// Every loopback QP handle passed to `destroy_loopback_qp`, in order.
+        destroyed_loopback_qps: Vec<usize>,
         fail_dmabuf_after: Option<usize>,
         fail_bind: bool,
+        scan_calls: usize,
         /// Every `register_dmabuf_mr` call, including a failing one.
         dmabuf_calls: Vec<DmabufCall>,
         /// Every successful `bind_mr_list` call.
@@ -605,6 +908,13 @@ mod tests {
         /// Teardown events in order: "mkey" on `destroy_mkey`, "mr" on
         /// `dereg_mr`. Lets a test assert keys are destroyed before MRs.
         teardown_order: Vec<&'static str>,
+        /// When set, `dereg_mr` records whether this (weakly-held) domain is
+        /// still alive at each MR deregistration. Lets a test assert a
+        /// segment's MRs are freed while its domain's PD is still alive.
+        domain_probe: Option<std::sync::Weak<IbvDomain>>,
+        /// One entry per `dereg_mr` while `domain_probe` is set: whether the
+        /// probed domain was still alive.
+        domain_alive_at_dereg: Vec<bool>,
     }
 
     impl MockState {
@@ -619,10 +929,12 @@ mod tests {
     }
 
     impl MockOps {
-        fn new(device_name: &str) -> Arc<Self> {
+        fn new(device_name: &str, mlx5dv_enabled: bool, served_ordinals: &[i32]) -> Arc<Self> {
             Arc::new(Self {
                 state: Mutex::new(MockState {
                     device_name: device_name.to_string(),
+                    mlx5dv_enabled,
+                    served_ordinals: served_ordinals.to_vec(),
                     next_handle: 0x1_0000,
                     ..Default::default()
                 }),
@@ -637,6 +949,20 @@ mod tests {
     impl MlxDomainOps for MockOps {
         fn device_name(&self) -> String {
             self.lock().device_name.clone()
+        }
+
+        fn mlx5dv_enabled(&self) -> bool {
+            self.lock().mlx5dv_enabled
+        }
+
+        fn assigned_cuda_devices(&self) -> Vec<i32> {
+            self.lock().served_ordinals.clone()
+        }
+
+        fn scan_segments(&self) -> Vec<ScannedSegment> {
+            let mut s = self.lock();
+            s.scan_calls += 1;
+            s.scan.clone()
         }
 
         unsafe fn register_dmabuf_mr(
@@ -664,6 +990,29 @@ mod tests {
             s.live_mrs.remove(&v);
             s.dereg_log.push(v);
             s.teardown_order.push("mr");
+            let probe = s.domain_probe.clone();
+            if let Some(probe) = probe {
+                let alive = probe.upgrade().is_some();
+                s.domain_alive_at_dereg.push(alive);
+            }
+        }
+
+        fn create_loopback_qp(
+            &self,
+            _domain: Arc<IbvDomain>,
+            _config: &IbvConfig,
+        ) -> anyhow::Result<*mut rdmaxcel_sys::rdmaxcel_qp> {
+            let mut s = self.lock();
+            let h = s.mint();
+            s.live_loopback_qps.insert(h);
+            Ok(h as *mut rdmaxcel_sys::rdmaxcel_qp)
+        }
+
+        unsafe fn destroy_loopback_qp(&self, qp: *mut rdmaxcel_sys::rdmaxcel_qp) {
+            let mut s = self.lock();
+            let v = qp as usize;
+            s.live_loopback_qps.remove(&v);
+            s.destroyed_loopback_qps.push(v);
         }
 
         unsafe fn bind_mr_list(
@@ -705,6 +1054,29 @@ mod tests {
         }
     }
 
+    fn domain(mock: Arc<MockOps>) -> MlxDomain {
+        MlxDomain::new_with_ops(mock, IbvConfig::default())
+    }
+
+    /// Drive [`MlxDomain::register_cuda_mlx5dv_mr`] against a [`fake_domain`].
+    fn register_cuda(
+        domain: &MlxDomain,
+        addr: usize,
+        size: usize,
+    ) -> anyhow::Result<IbvMemoryRegionView> {
+        // SAFETY: `fake_domain`'s pd is null and the `MockOps` never dereference
+        // it, so passing it through is sound.
+        unsafe { domain.register_cuda_mlx5dv_mr(&fake_domain(), addr, size) }
+    }
+
+    fn null_pd() -> *mut rdmaxcel_sys::ibv_pd {
+        std::ptr::null_mut()
+    }
+
+    fn null_qp() -> *mut rdmaxcel_sys::rdmaxcel_qp {
+        std::ptr::null_mut()
+    }
+
     /// Upcast the mock to the `Arc<dyn MlxDomainOps>` `RegisteredSegment` takes.
     fn dyn_ops(ops: &Arc<MockOps>) -> Arc<dyn MlxDomainOps> {
         ops.clone()
@@ -719,6 +1091,8 @@ mod tests {
         segment
     }
 
+    // ----- RegisteredSegment binding-core unit tests -----
+
     #[test]
     fn test_scanner_registration_round_trips() {
         register_cuda_segment_scanner(Box::new(|| vec![seg(0x1000, MIB2, 3)]));
@@ -731,7 +1105,7 @@ mod tests {
 
     #[test]
     fn test_fresh_bind_registers_one_mr_and_key() {
-        let ops = MockOps::new(SERVED_NIC);
+        let ops = MockOps::new(SERVED_NIC, true, &[0]);
         let base = 0x10_0000_0000;
         let rs = bind_fresh(&ops, base, MIB2);
 
@@ -758,7 +1132,7 @@ mod tests {
 
     #[test]
     fn test_large_segment_splits_into_chunks() {
-        let ops = MockOps::new(SERVED_NIC);
+        let ops = MockOps::new(SERVED_NIC, true, &[0]);
         let base = 0x10_0000_0000;
         // One MR maxes out at MAX_MR_SIZE, so MAX_MR_SIZE + 2 MiB needs two,
         // both bound to a single key.
@@ -794,7 +1168,7 @@ mod tests {
 
     #[test]
     fn test_grow_reuses_mrs_and_retires_prior_key() {
-        let ops = MockOps::new(SERVED_NIC);
+        let ops = MockOps::new(SERVED_NIC, true, &[0]);
         let base = 0x10_0000_0000;
         let rs = bind_fresh(&ops, base, MIB2);
         let mkey_a = *ops.lock().live_mkeys.iter().next().unwrap();
@@ -843,8 +1217,7 @@ mod tests {
         assert_eq!(
             s.bind_calls[1].mrs,
             vec![mr_a, mr_tail],
-            "the second bind reuses the original MR and adds the tail (a \
-             brand-new key, never a rebind)"
+            "the second bind reuses the original MR and adds the tail"
         );
         assert_eq!(
             s.live_mrs.len(),
@@ -864,7 +1237,7 @@ mod tests {
 
     #[test]
     fn test_grow_failure_leaves_segment_unchanged() {
-        let ops = MockOps::new(SERVED_NIC);
+        let ops = MockOps::new(SERVED_NIC, true, &[0]);
         let base = 0x10_0000_0000;
         let rs = bind_fresh(&ops, base, MIB2);
         // The fresh bind used one dmabuf call; fail the second tail chunk.
@@ -909,7 +1282,7 @@ mod tests {
 
     #[test]
     fn test_grow_to_equal_size_is_noop() {
-        let ops = MockOps::new(SERVED_NIC);
+        let ops = MockOps::new(SERVED_NIC, true, &[0]);
         let base = 0x10_0000_0000;
         let rs = bind_fresh(&ops, base, 2 * MIB2);
         let binds_before = ops.lock().bind_calls.len();
@@ -927,7 +1300,7 @@ mod tests {
 
     #[test]
     fn test_view_pins_segment_and_anchors_at_base() {
-        let ops = MockOps::new(SERVED_NIC);
+        let ops = MockOps::new(SERVED_NIC, true, &[0]);
         let base = 0x10_0000_0000;
         let rs = bind_fresh(&ops, base, MIB2);
 
@@ -955,7 +1328,7 @@ mod tests {
 
     #[test]
     fn test_partial_dmabuf_failure_cleans_up() {
-        let ops = MockOps::new(SERVED_NIC);
+        let ops = MockOps::new(SERVED_NIC, true, &[0]);
         ops.lock().fail_dmabuf_after = Some(1);
         let base = 0x10_0000_0000;
         let segment = RegisteredSegment::empty(dyn_ops(&ops), base);
@@ -978,7 +1351,7 @@ mod tests {
 
     #[test]
     fn test_bind_failure_cleans_up() {
-        let ops = MockOps::new(SERVED_NIC);
+        let ops = MockOps::new(SERVED_NIC, true, &[0]);
         ops.lock().fail_bind = true;
         let base = 0x10_0000_0000;
         let segment = RegisteredSegment::empty(dyn_ops(&ops), base);
@@ -999,7 +1372,7 @@ mod tests {
 
     #[test]
     fn test_drop_destroys_all_keys_before_mrs() {
-        let ops = MockOps::new(SERVED_NIC);
+        let ops = MockOps::new(SERVED_NIC, true, &[0]);
         let base = 0x10_0000_0000;
         let rs = bind_fresh(&ops, base, MIB2);
         // Grow once so the segment carries a parked (stale) key plus its
@@ -1022,6 +1395,444 @@ mod tests {
             s.teardown_order,
             vec!["mkey", "mkey", "mr", "mr"],
             "every key is destroyed before any MR it might reference"
+        );
+    }
+
+    #[test]
+    fn test_view_guard_drops_segment_before_domain() {
+        // The `Mlx5dvMemoryRegion` guard inside a view declares `_segment` before
+        // `_domain`, so the segment's MRs are deregistered while the domain's
+        // PD is still alive. Drive a real view through drop and confirm that at
+        // each MR deregistration the weakly-probed domain is still alive.
+        let ops = MockOps::new(SERVED_NIC, true, &[0]);
+        let base = 0x10_0000_0000;
+        let rs = bind_fresh(&ops, base, MIB2);
+        let domain = fake_domain();
+        ops.lock().domain_probe = Some(Arc::downgrade(&domain));
+
+        let view = RegisteredSegment::view(&rs, base, 4096, Arc::clone(&domain));
+
+        // Make the view's guard the sole owner of both the segment and the
+        // domain, so dropping the view drops each exactly once, in field order.
+        drop(rs);
+        drop(domain);
+
+        drop(view);
+
+        let s = ops.lock();
+        assert!(
+            !s.domain_alive_at_dereg.is_empty(),
+            "dropping the view deregistered the segment's MR"
+        );
+        assert!(
+            s.domain_alive_at_dereg.iter().all(|&alive| alive),
+            "the segment's MRs are freed before the domain is dropped"
+        );
+    }
+
+    // ----- MlxDomain integration tests -----
+
+    #[test]
+    fn test_cuda_ordinals_and_mlx5dv_enabled_derived_from_ops() {
+        let mock = MockOps::new(SERVED_NIC, true, &[0, 2]);
+        let domain = domain(mock);
+        assert_eq!(domain.cuda_ordinals, vec![0, 2]);
+        assert!(domain.mlx5dv_enabled);
+    }
+
+    #[test]
+    fn test_fresh_bind() {
+        let base = 0x10_0000_0000;
+        let mock = MockOps::new(SERVED_NIC, true, &[0]);
+        mock.lock().scan = vec![seg(base, MIB2, 0)];
+        let domain = domain(mock.clone());
+
+        let view = register_cuda(&domain, base, 4096).expect("fresh bind should succeed");
+
+        // The per-segment binding details are covered by the binding-core unit
+        // tests above; here we only check the domain wired scan → bind → view.
+        assert_eq!(view.rdma_addr, 0, "view is anchored at the segment base");
+        assert_eq!(view.size, 4096);
+        assert_eq!(view.device_name, SERVED_NIC);
+        assert_eq!(mock.lock().live_mkeys.len(), 1, "one segment bound");
+    }
+
+    #[test]
+    fn test_fast_path_skips_scan() {
+        let mock = MockOps::new(SERVED_NIC, true, &[0]);
+        mock.lock().scan = vec![seg(0x10_0000_0000, MIB2, 0)];
+        let domain = domain(mock.clone());
+
+        register_cuda(&domain, 0x10_0000_0000, 4096).unwrap();
+        let scans_after_first = mock.lock().scan_calls;
+
+        // A second request covered by the existing binding must not rescan
+        // or rebind.
+        register_cuda(&domain, 0x10_0000_0400, 4096).unwrap();
+        let s = mock.lock();
+        assert_eq!(s.scan_calls, scans_after_first, "fast path skips the scan");
+        assert_eq!(s.bind_calls.len(), 1, "fast path performs no new bind");
+    }
+
+    #[test]
+    fn test_segment_growth_via_register() {
+        let base = 0x10_0000_0000;
+        let mock = MockOps::new(SERVED_NIC, true, &[0]);
+        mock.lock().scan = vec![seg(base, MIB2, 0)];
+        let domain = domain(mock.clone());
+
+        register_cuda(&domain, base, 4096).unwrap();
+
+        // The scanner now reports the segment has grown; a request into the new
+        // tail grows the mapped segment in place and serves a view from it. (MR
+        // reuse / key retirement are covered by the binding-core unit tests.)
+        mock.lock().scan = vec![seg(base, 2 * MIB2, 0)];
+        let view =
+            register_cuda(&domain, base + MIB2, 4096).expect("growth registration should succeed");
+
+        assert_eq!(view.rdma_addr, MIB2, "the view anchors into the grown tail");
+        let s = mock.lock();
+        assert_eq!(
+            s.live_mkeys.len(),
+            2,
+            "growth created a new key and retired (kept) the prior one"
+        );
+        assert!(
+            s.destroy_log.is_empty(),
+            "nothing freed while the segment lives"
+        );
+    }
+
+    #[test]
+    fn test_unserved_ordinal_is_not_covered() {
+        let mock = MockOps::new(SERVED_NIC, true, &[0]);
+        // Segment is on ordinal 5, which this NIC does not serve.
+        mock.lock().scan = vec![seg(0x10_0000_0000, MIB2, 5)];
+        let domain = domain(mock.clone());
+
+        let result = register_cuda(&domain, 0x10_0000_0000, 4096);
+        assert!(
+            result.is_err(),
+            "memory on an unserved ordinal is not bound"
+        );
+        assert!(
+            mock.lock().bind_calls.is_empty(),
+            "no bind attempted for an unserved ordinal"
+        );
+    }
+
+    #[test]
+    fn test_drop_frees_segment_keys_and_loopback_qp() {
+        let base = 0x10_0000_0000;
+        let mock = MockOps::new(SERVED_NIC, true, &[0]);
+        mock.lock().scan = vec![seg(base, MIB2, 0)];
+        let domain = domain(mock.clone());
+
+        // Bind then grow, so the segment carries a retired key plus its current
+        // key, and two MRs. Views are dropped immediately.
+        register_cuda(&domain, base, 4096).unwrap();
+        mock.lock().scan = vec![seg(base, 2 * MIB2, 0)];
+        register_cuda(&domain, base + MIB2, 4096).unwrap();
+
+        assert_eq!(mock.lock().live_mrs.len(), 2);
+        assert_eq!(mock.lock().live_mkeys.len(), 2, "current + retired key");
+        assert_eq!(
+            mock.lock().live_loopback_qps.len(),
+            1,
+            "the loopback binding QP was created"
+        );
+
+        drop(domain);
+
+        let s = mock.lock();
+        assert!(
+            s.live_mrs.is_empty(),
+            "dropping the domain frees all segment MRs"
+        );
+        assert!(
+            s.live_mkeys.is_empty(),
+            "dropping the domain destroys the current + retired keys"
+        );
+        assert!(
+            s.live_loopback_qps.is_empty(),
+            "dropping the domain destroys its loopback QP"
+        );
+    }
+
+    #[test]
+    fn test_loopback_qp_created_once() {
+        let base = 0x10_0000_0000;
+        let other = 0x20_0000_0000;
+        let mock = MockOps::new(SERVED_NIC, true, &[0]);
+        mock.lock().scan = vec![seg(base, MIB2, 0)];
+        let domain = domain(mock.clone());
+
+        // The first binding creates the loopback QP used to post key-binding
+        // work requests; capture its handle.
+        register_cuda(&domain, base, 4096).unwrap();
+        let qp = {
+            let s = mock.lock();
+            assert_eq!(
+                s.live_loopback_qps.len(),
+                1,
+                "the first binding creates the loopback QP"
+            );
+            *s.live_loopback_qps.iter().next().unwrap()
+        };
+
+        // Later scans — a growth, then a brand-new segment — each consult the
+        // loopback QP, but must reuse the very same cached one. After each, the
+        // single live QP is unchanged (same handle), never recreated.
+        mock.lock().scan = vec![seg(base, 2 * MIB2, 0)];
+        register_cuda(&domain, base + MIB2, 4096).unwrap();
+        assert_eq!(
+            mock.lock().live_loopback_qps,
+            HashSet::from([qp]),
+            "growth reuses the same loopback QP handle"
+        );
+
+        mock.lock().scan = vec![seg(base, 2 * MIB2, 0), seg(other, MIB2, 0)];
+        register_cuda(&domain, other, 4096).unwrap();
+        assert_eq!(
+            mock.lock().live_loopback_qps,
+            HashSet::from([qp]),
+            "binding a new segment reuses the same loopback QP handle"
+        );
+
+        // No loopback QP was ever destroyed across the domain's lifetime.
+        assert!(
+            mock.lock().destroyed_loopback_qps.is_empty(),
+            "no loopback QP is destroyed while the domain lives"
+        );
+    }
+
+    #[test]
+    fn test_multi_device_subset_growth_new_segments_and_boundaries() {
+        // Three CUDA devices are visible, but this NIC only serves ordinals
+        // 0 and 2; ordinal 1's segment must never be bound.
+        let a = 0x10_0000_0000usize; // ordinal 0
+        let a2 = 0x18_0000_0000usize; // ordinal 0, appears later
+        let b = 0x20_0000_0000usize; // ordinal 1 (unserved)
+        let c = 0x30_0000_0000usize; // ordinal 2
+        let mock = MockOps::new(SERVED_NIC, true, &[0, 2]);
+        mock.lock().scan = vec![seg(a, MIB2, 0), seg(b, MIB2, 1), seg(c, 2 * MIB2, 2)];
+        let domain = domain(mock.clone());
+        // The registration path registers MRs with the domain's own access
+        // flags; capture them to assert the dmabuf registration arguments.
+        let access = domain.mr_access_flags();
+
+        // Validate every field of a returned view: its address fields, its
+        // size, the serving NIC's name, and the keys. The mock's `mkey_keys`
+        // derives `(lkey, rkey)` from the segment's current mkey as
+        // `(handle, handle ^ 0xffff)`, so a bound view always has a non-zero
+        // lkey and an rkey that is its lkey xor 0xffff.
+        let assert_view =
+            |view: &IbvMemoryRegionView, virtual_addr: usize, rdma_addr: usize, size: usize| {
+                assert_eq!(
+                    view.virtual_addr, virtual_addr,
+                    "virtual_addr is the requested address"
+                );
+                assert_eq!(
+                    view.rdma_addr, rdma_addr,
+                    "rdma_addr is the offset from the segment base"
+                );
+                assert_eq!(view.size, size, "size matches the request");
+                assert_eq!(view.device_name, SERVED_NIC, "view names the serving NIC");
+                assert_ne!(view.lkey, 0, "a bound view carries a real lkey");
+                assert_eq!(
+                    view.rkey,
+                    view.lkey ^ 0xffff,
+                    "rkey and lkey are derived from the same mkey"
+                );
+            };
+
+        // First registration binds every served segment in the scan (ordinals
+        // 0 and 2), skipping the unserved ordinal-1 segment, then serves the
+        // requested view from ordinal 0's segment.
+        let view_a = register_cuda(&domain, a, 0x2000).expect("served ordinal binds");
+        assert_view(&view_a, a, 0, 0x2000);
+        let (mr_a, mr_c) = {
+            let s = mock.lock();
+            assert_eq!(s.live_mkeys.len(), 2, "only the two served segments bound");
+            assert_eq!(s.live_mrs.len(), 2);
+            assert_eq!(s.bind_calls.len(), 2, "one bind per served segment");
+            // Each served segment fits in a single MR, so each bind got a
+            // one-element MR list.
+            assert_eq!(s.bind_calls[0].mrs.len(), 1, "segment a binds a single MR");
+            assert_eq!(s.bind_calls[1].mrs.len(), 1, "segment c binds a single MR");
+            // Each served segment is registered as one MR covering its whole
+            // extent, with the domain's access flags; the unserved ordinal-1
+            // segment is absent.
+            assert_eq!(
+                s.dmabuf_calls,
+                vec![
+                    DmabufCall {
+                        addr: a,
+                        size: MIB2,
+                        access,
+                    },
+                    DmabufCall {
+                        addr: c,
+                        size: 2 * MIB2,
+                        access,
+                    },
+                ],
+                "a and c are each registered once, covering their full extent"
+            );
+            assert_eq!(s.scan_calls, 1);
+            let (mr_a, mr_c) = (s.bind_calls[0].mrs[0], s.bind_calls[1].mrs[0]);
+            assert_ne!(mr_a, mr_c, "a and c are backed by distinct MRs");
+            (mr_a, mr_c)
+        };
+
+        // A request into the other served segment (ordinal 2) resolves to it,
+        // not segment a, and is served from the fast path (no rescan).
+        let view_c =
+            register_cuda(&domain, c + 0x800, 0x4000).expect("segment c covers the request");
+        assert_view(&view_c, c + 0x800, 0x800, 0x4000);
+        assert_ne!(
+            view_c.lkey, view_a.lkey,
+            "distinct segments are backed by distinct keys"
+        );
+        assert_eq!(
+            mock.lock().scan_calls,
+            1,
+            "fast path serves c without a scan"
+        );
+
+        // Boundary handling: a request ending exactly at segment c's end is
+        // covered (and shares c's key, since c has not been rebound); one that
+        // crosses the end is not.
+        let tail = register_cuda(&domain, c + 2 * MIB2 - 0x6000, 0x6000)
+            .expect("a request ending exactly at the boundary is covered");
+        assert_view(&tail, c + 2 * MIB2 - 0x6000, 2 * MIB2 - 0x6000, 0x6000);
+        assert_eq!(
+            (tail.lkey, tail.rkey),
+            (view_c.lkey, view_c.rkey),
+            "both views of segment c share its current key"
+        );
+        assert!(
+            register_cuda(&domain, c + 2 * MIB2 - 2048, 4096).is_err(),
+            "a request straddling the segment's end boundary is rejected"
+        );
+
+        // The scanner now reports segment a grew, segment c is unchanged, and a
+        // brand-new segment a2 appeared on ordinal 0. A single request into a's
+        // grown tail processes all of that: grow a, skip c, bind a2.
+        mock.lock().scan = vec![
+            seg(a, 3 * MIB2, 0),
+            seg(b, MIB2, 1),
+            seg(c, 2 * MIB2, 2),
+            seg(a2, MIB2, 0),
+        ];
+        let grown =
+            register_cuda(&domain, a + 2 * MIB2, 0x3000).expect("a's grown tail is now covered");
+        assert_view(&grown, a + 2 * MIB2, 2 * MIB2, 0x3000);
+        assert_ne!(
+            grown.lkey, view_a.lkey,
+            "growing segment a rotated it onto a new key"
+        );
+        {
+            let s = mock.lock();
+            // a: current + retired key (2 MRs); c: unchanged (1); a2: new (1).
+            assert_eq!(
+                s.live_mkeys.len(),
+                4,
+                "a retired+current, c, and the new a2 segment"
+            );
+            assert_eq!(s.live_mrs.len(), 4, "a's reused MR + tail, c, a2");
+            assert!(
+                s.destroy_log.is_empty(),
+                "nothing vanished, so nothing is freed"
+            );
+            // Two binds added: a's growth rebind and a2's fresh bind (c was
+            // already full-size, so it is not rebound).
+            assert_eq!(s.bind_calls.len(), 4);
+            // a's growth rebinds its reused original MR followed by the one new
+            // tail MR.
+            assert_eq!(
+                s.bind_calls[2].mrs.len(),
+                2,
+                "a's growth binds the reused original MR plus the new tail"
+            );
+            assert_eq!(
+                s.bind_calls[2].mrs[0], mr_a,
+                "the original MR is reused, not re-registered"
+            );
+            let mr_a_tail = s.bind_calls[2].mrs[1];
+            // a2's fresh bind passes a single new MR.
+            assert_eq!(
+                s.bind_calls[3].mrs.len(),
+                1,
+                "the new segment a2 binds a single MR"
+            );
+            let mr_a2 = s.bind_calls[3].mrs[0];
+            // a's original + tail, c, and a2 are four distinct MR handles.
+            let distinct: HashSet<usize> = [mr_a, mr_c, mr_a_tail, mr_a2].into_iter().collect();
+            assert_eq!(
+                distinct.len(),
+                4,
+                "a, a-tail, c, and a2 are four distinct MRs"
+            );
+            // Growth registered only a's new tail (at a + MIB2, covering the 2
+            // MiB it grew by) and a2's single MR; c was left untouched and the
+            // first two registrations are unchanged. MR extents track segment
+            // sizes, never the (varied) request sizes.
+            assert_eq!(
+                s.dmabuf_calls,
+                vec![
+                    DmabufCall {
+                        addr: a,
+                        size: MIB2,
+                        access,
+                    },
+                    DmabufCall {
+                        addr: c,
+                        size: 2 * MIB2,
+                        access,
+                    },
+                    DmabufCall {
+                        addr: a + MIB2,
+                        size: 2 * MIB2,
+                        access,
+                    },
+                    DmabufCall {
+                        addr: a2,
+                        size: MIB2,
+                        access,
+                    },
+                ],
+                "growth registers only a's new tail and a2; c is not re-registered"
+            );
+        }
+
+        // The brand-new segment is independently usable, carries its own
+        // distinct key, and has correct boundary handling of its own.
+        let view_a2 = register_cuda(&domain, a2 + 0x400, 0x800)
+            .expect("the new segment a2 covers the request");
+        assert_view(&view_a2, a2 + 0x400, 0x400, 0x800);
+        assert_ne!(
+            view_a2.lkey, grown.lkey,
+            "the new segment a2 has a key distinct from a's"
+        );
+        assert_ne!(
+            view_a2.lkey, view_c.lkey,
+            "the new segment a2 has a key distinct from c's"
+        );
+        assert!(
+            register_cuda(&domain, a2 + MIB2 - 512, 1024).is_err(),
+            "a request past a2's end boundary is rejected"
+        );
+
+        // Even after all the rebinding, memory on the unserved ordinal is still
+        // never bound or served.
+        assert!(
+            register_cuda(&domain, b, 4096).is_err(),
+            "the unserved ordinal-1 segment is never served"
+        );
+        assert!(
+            !mock.lock().dmabuf_calls.iter().any(|call| call.addr == b),
+            "the unserved ordinal-1 segment was never registered"
         );
     }
 }
