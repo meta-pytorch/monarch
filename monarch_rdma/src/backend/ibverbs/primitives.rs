@@ -398,6 +398,28 @@ impl IbvDeviceInfo {
         resolve_target::<I>(&IbvDeviceTarget::MemoryLocation(MemoryLocation::Cpu(None)))
             .unwrap_or_else(|| panic!("no RDMA device for backend {}", I::backend_name()))
     }
+
+    /// Construct an [`IbvDeviceInfo`] with only `name` set (all other
+    /// fields zeroed/empty), for tests that need a named device without
+    /// touching hardware.
+    #[cfg(test)]
+    pub(crate) fn for_test_named(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            vendor_id: 0,
+            vendor_part_id: 0,
+            hw_ver: 0,
+            fw_ver: String::new(),
+            node_guid: 0,
+            ports: Vec::new(),
+            max_qp: 0,
+            max_cq: 0,
+            max_mr: 0,
+            max_pd: 0,
+            max_qp_wr: 0,
+            max_sge: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

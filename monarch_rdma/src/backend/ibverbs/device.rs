@@ -34,6 +34,7 @@ use std::sync::LazyLock;
 use typeuri::Named;
 
 use super::domain::IbvDomain;
+use super::domain::IbvDomainImpl;
 use super::primitives::IbvConfig;
 use super::primitives::IbvDeviceInfo;
 use super::primitives::query_device_info;
@@ -41,6 +42,11 @@ use super::primitives::query_device_info;
 /// Per-backend driver for [`IbvDevice`]. Concrete impls register
 /// themselves via [`register_ibv_device_impl!`].
 pub trait IbvDeviceImpl: Named + std::fmt::Debug + Send + Sync + 'static {
+    /// The per-domain strategy used by this backend (how memory regions
+    /// are registered and queue pairs built against a PD). A follow-up
+    /// commit makes [`IbvDomain`] generic over this.
+    type IbvDomainImpl: IbvDomainImpl;
+
     /// Human-readable display name for the backend this impl
     /// drives (e.g., `"mellanox"`, `"efa"`). Surfaced in
     /// diagnostics; not used as a registry key.
@@ -50,31 +56,6 @@ pub trait IbvDeviceImpl: Named + std::fmt::Debug + Send + Sync + 'static {
     /// transiently, once per ibverbs device, while
     /// [`DEVICE_NAMES_BY_IMPL`] is built.
     fn is_instance(ctx: Arc<IbvContext>) -> bool;
-
-    /// Allocates a protection domain against `ctx` and wraps it in
-    /// an [`IbvDomain`]. The returned `Arc<IbvDomain>` is the sole
-    /// owner of the PD; the last drop runs `ibv_dealloc_pd`.
-    ///
-    /// The default implementation calls `ibv_alloc_pd` on
-    /// `ctx.as_ptr()` and constructs a plain [`IbvDomain`].
-    /// In a followup, we'll add an `IbvDomainImpl` trait to allow for
-    /// backend-specific domain implementations.
-    fn create_domain(ctx: Arc<IbvContext>) -> anyhow::Result<Arc<IbvDomain>> {
-        // SAFETY: `ctx.as_ptr()` is the non-null context owned by
-        // the `Arc<IbvContext>` for the duration of this call.
-        let pd = unsafe { rdmaxcel_sys::ibv_alloc_pd(ctx.as_ptr()) };
-        if pd.is_null() {
-            anyhow::bail!("ibv_alloc_pd failed: {}", std::io::Error::last_os_error());
-        }
-        // TODO: `IbvDomain` should hold the `Arc<IbvContext>`
-        // itself so the context outlives the PD by construction;
-        // for now we copy the raw pointer and rely on the
-        // surrounding [`IbvDevice`] to keep the context alive.
-        Ok(Arc::new(IbvDomain {
-            context: ctx.as_ptr(),
-            pd,
-        }))
-    }
 
     /// Seeds an [`IbvConfig`] with backend-appropriate defaults
     /// (e.g., EFA caps `max_send_sge` at 1).
@@ -190,7 +171,9 @@ static DEVICE_NAMES_BY_IMPL: LazyLock<HashMap<&'static str, RegisteredBackend>> 
             if raw_ctx.is_null() {
                 continue;
             }
-            let ctx = Arc::new(IbvContext(raw_ctx));
+            // SAFETY: `raw_ctx` was just returned by `ibv_open_device` and is
+            // non-null (checked above); this `Arc<IbvContext>` is its sole owner.
+            let ctx = Arc::new(unsafe { IbvContext::new(raw_ctx) });
             // Assign the device to the first impl that claims it.
             if let Some(reg) = registrations
                 .iter()
@@ -221,7 +204,9 @@ static DEVICE_NAMES_BY_IMPL: LazyLock<HashMap<&'static str, RegisteredBackend>> 
 /// the raw pointer can be passed around with a lifetime safeguard
 /// where borrow-checked references aren't practical.
 #[derive(Debug)]
-pub struct IbvContext(*mut rdmaxcel_sys::ibv_context);
+pub struct IbvContext {
+    context: *mut rdmaxcel_sys::ibv_context,
+}
 
 // SAFETY: libibverbs treats `ibv_context*` as thread-safe for the
 // operations we perform (allocation, polling, and the final close).
@@ -229,27 +214,40 @@ unsafe impl Send for IbvContext {}
 unsafe impl Sync for IbvContext {}
 
 impl IbvContext {
+    /// Wraps a raw `ibv_context*`. A null pointer yields a no-op context
+    /// (its `Drop` does nothing).
+    ///
+    /// # Safety
+    ///
+    /// `context` must be either null or a pointer returned by
+    /// `ibv_open_device` that has not been (and will not be) closed elsewhere:
+    /// the resulting `IbvContext` takes sole ownership and its `Drop` calls
+    /// `ibv_close_device` exactly once.
+    pub(super) unsafe fn new(context: *mut rdmaxcel_sys::ibv_context) -> Self {
+        Self { context }
+    }
+
     /// Returns the raw `ibv_context*`. The pointer is valid for
     /// the lifetime of `&self`.
     pub fn as_ptr(&self) -> *mut rdmaxcel_sys::ibv_context {
-        self.0
+        self.context
     }
 }
 
 impl Drop for IbvContext {
     fn drop(&mut self) {
-        if self.0.is_null() {
+        if self.context.is_null() {
             return;
         }
-        // SAFETY: `self.0` was returned by `ibv_open_device` in
+        // SAFETY: `self.context` was returned by `ibv_open_device` in
         // `IbvDevice::open` and has not been closed elsewhere. The
         // intended ownership is a single `Arc<IbvContext>`, whose
         // final `Drop` calls `ibv_close_device` exactly once.
-        let result = unsafe { rdmaxcel_sys::ibv_close_device(self.0) };
+        let result = unsafe { rdmaxcel_sys::ibv_close_device(self.context) };
         if result != 0 {
             tracing::error!(
                 "ibv_close_device failed for context {:p}: error code {}",
-                self.0,
+                self.context,
                 result
             );
         }
@@ -382,7 +380,10 @@ impl<I: IbvDeviceImpl> IbvDevice<I> {
             domains: HashMap::new(),
             device_info,
             config,
-            context: Arc::new(IbvContext(context)),
+            // SAFETY: `context` was returned by `ibv_open_device` above and is
+            // non-null (a null open set `failure`, which panics before here);
+            // this `Arc<IbvContext>` is its sole owner.
+            context: Arc::new(unsafe { IbvContext::new(context) }),
             _marker: PhantomData,
         })
     }
@@ -410,14 +411,17 @@ impl<I: IbvDeviceImpl> IbvDevice<I> {
         self.domains.get(name)
     }
 
-    /// Returns the `Arc<IbvDomain>` registered under `name`,
-    /// creating (and caching) a new one via
-    /// [`IbvDeviceImpl::create_domain`] on first access.
+    /// Returns the `Arc<IbvDomain>` registered under `name`, creating (and
+    /// caching) a new one via [`IbvDomain::new`] on first access.
     pub fn get_or_create_domain(&mut self, name: &str) -> anyhow::Result<Arc<IbvDomain>> {
         if let Some(domain) = self.domains.get(name) {
             return Ok(Arc::clone(domain));
         }
-        let domain = I::create_domain(Arc::clone(&self.context))?;
+        // SAFETY: `self.context` wraps the live `ibv_context` opened by
+        // `IbvDevice::open`, valid for this device's lifetime.
+        let domain = Arc::new(unsafe {
+            IbvDomain::new(Arc::clone(&self.context), self.device_info.clone())
+        }?);
         self.domains.insert(name.to_string(), Arc::clone(&domain));
         Ok(domain)
     }

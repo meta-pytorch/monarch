@@ -371,7 +371,7 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
         let domain = device.get_or_create_domain(DEFAULT_DOMAIN)?;
 
         // Print device info if MONARCH_DEBUG_RDMA=1 is set (before initial QP creation)
-        crate::print_device_info_if_debug_enabled(domain.context);
+        crate::print_device_info_if_debug_enabled(domain.context.as_ptr());
 
         // Create loopback QP for this domain if mlx5dv is supported (needed for segment registration)
         // For EFA, we don't need a loopback QP for segment scanning
@@ -422,7 +422,7 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
                 if let Some((device, qp)) = self.devices.get(info.name()) {
                     let pd = device
                         .domain(DEFAULT_DOMAIN)
-                        .map(|d| d.pd)
+                        .map(|d| d.as_ptr())
                         .unwrap_or(std::ptr::null_mut());
                     pds.push(pd);
                     qps.push(
@@ -534,7 +534,7 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
                 let mut segment_info = None;
                 if self.mlx5dv_enabled {
                     // Try to find in already registered segments
-                    segment_info = self.find_cuda_segment_for_address(addr, size, domain.pd);
+                    segment_info = self.find_cuda_segment_for_address(addr, size, domain.as_ptr());
 
                     // If not found, trigger a re-sync with the allocator and retry
                     if segment_info.is_none() {
@@ -559,7 +559,7 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
                             self.segments_mr
                                 .get_or_insert_with(|| Arc::new(IbvMemoryRegion::Segments));
                             segment_info =
-                                self.find_cuda_segment_for_address(addr, size, domain.pd);
+                                self.find_cuda_segment_for_address(addr, size, domain.as_ptr());
                         }
                     }
                 }
@@ -601,8 +601,14 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
                             fd
                         ));
                     }
-                    let mr =
-                        rdmaxcel_sys::ibv_reg_dmabuf_mr(domain.pd, 0, size, 0, fd, access.0 as i32);
+                    let mr = rdmaxcel_sys::ibv_reg_dmabuf_mr(
+                        domain.as_ptr(),
+                        0,
+                        size,
+                        0,
+                        fd,
+                        access.0 as i32,
+                    );
                     if mr.is_null() {
                         return Err(anyhow::anyhow!("Failed to register dmabuf MR"));
                     }
@@ -625,7 +631,7 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
             } else {
                 // CPU memory path
                 let mr = rdmaxcel_sys::ibv_reg_mr(
-                    domain.pd,
+                    domain.as_ptr(),
                     addr as *mut std::ffi::c_void,
                     size,
                     access.0 as i32,
