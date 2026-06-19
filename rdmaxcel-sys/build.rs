@@ -153,6 +153,8 @@ fn main() {
         .allowlist_function("rdmaxcel_error_string")
         .allowlist_function("rdmaxcel_qp_.*")
         .allowlist_function("rdmaxcel_register_segment_scanner")
+        .allowlist_function("rdmaxcel_bind_mr_list")
+        .allowlist_function("rdmaxcel_destroy_mkey")
         .allowlist_function("poll_cq_with_cache")
         .allowlist_function("completion_cache_.*")
         // EFA functions (ibverbs-based)
