@@ -170,9 +170,9 @@ pub struct IbvQueuePair {
     context: usize,        // *mut rdmaxcel_sys::ibv_context,
     config: IbvConfig,
     is_efa: bool,
-    // The QP's `context` and `pd` pointers are owned by this domain;
-    // hold an `Arc` so the domain outlives the QP regardless of what
-    // happens to other owners (the manager, registered MRs, etc.).
+    // Keepalive for the domain whose `context`/`pd` this QP was built
+    // against, so it outlives the QP regardless of other owners (the
+    // manager, registered MRs, etc.). Never read directly.
     _domain: Arc<IbvDomain>,
 }
 
@@ -251,8 +251,8 @@ impl IbvQueuePair {
     /// Returns errors if CQ or QP creation fails.
     pub fn new(domain: Arc<IbvDomain>, config: IbvConfig) -> Result<Self, anyhow::Error> {
         tracing::debug!("creating an IbvQueuePair from config {}", config);
-        let context = domain.context;
-        let pd = domain.pd;
+        let context = domain.context.as_ptr();
+        let pd = domain.as_ptr();
         unsafe {
             // Resolve Auto to a concrete QP type based on device capabilities
             let resolved_qp_type = resolve_qp_type(config.qp_type);
@@ -1713,6 +1713,7 @@ mod tests {
     use hyperactor::proc::Proc;
 
     use super::*;
+    use crate::backend::ibverbs::device::IbvDevice;
     use crate::backend::ibverbs::device::list_all_devices;
     use crate::backend::ibverbs::device_selection::resolve_target;
     use crate::backend::ibverbs::domain::IbvDomain;
@@ -1730,10 +1731,12 @@ mod tests {
             use_gpu_direct: false,
             ..Default::default()
         };
-        let domain = IbvDomain::new(resolve_target::<MlxDevice>(&config.target).unwrap());
-        assert!(domain.is_ok());
-
-        let domain = Arc::new(domain.unwrap());
+        let device_info = resolve_target::<MlxDevice>(&config.target).unwrap();
+        let mut device = IbvDevice::<MlxDevice>::open(device_info.name(), config.clone())
+            .expect("resolved device should open");
+        let domain = device
+            .get_or_create_domain("test")
+            .expect("domain creation should succeed");
         let queue_pair = IbvQueuePair::new(domain, config.clone());
         assert!(queue_pair.is_ok());
     }
@@ -1754,12 +1757,20 @@ mod tests {
             ..Default::default()
         };
 
-        let server_domain = Arc::new(
-            IbvDomain::new(resolve_target::<MlxDevice>(&server_config.target).unwrap()).unwrap(),
-        );
-        let client_domain = Arc::new(
-            IbvDomain::new(resolve_target::<MlxDevice>(&client_config.target).unwrap()).unwrap(),
-        );
+        let server_info = resolve_target::<MlxDevice>(&server_config.target).unwrap();
+        let mut server_device =
+            IbvDevice::<MlxDevice>::open(server_info.name(), server_config.clone())
+                .expect("server device should open");
+        let server_domain = server_device
+            .get_or_create_domain("test")
+            .expect("server domain creation should succeed");
+        let client_info = resolve_target::<MlxDevice>(&client_config.target).unwrap();
+        let mut client_device =
+            IbvDevice::<MlxDevice>::open(client_info.name(), client_config.clone())
+                .expect("client device should open");
+        let client_domain = client_device
+            .get_or_create_domain("test")
+            .expect("client domain creation should succeed");
 
         let mut server_qp = IbvQueuePair::new(server_domain, server_config.clone()).unwrap();
         let mut client_qp = IbvQueuePair::new(client_domain, client_config.clone()).unwrap();
@@ -2331,14 +2342,27 @@ mod tests {
     // QueuePairActor op processing
     // =================================================================
 
+    use crate::backend::ibverbs::device::IbvContext;
+    use crate::backend::ibverbs::primitives::IbvDeviceInfo;
     use crate::backend::ibverbs::primitives::IbvMemoryRegion;
     use crate::local_memory::Keepalive;
     use crate::local_memory::KeepaliveLocalMemory;
 
+    /// A throwaway [`IbvDomain`] with null `context`/`pd`, used as the
+    /// `_domain` keepalive of [`fake_mrv`]'s region; its `Drop` deallocs
+    /// nothing (null `pd`).
     fn null_domain() -> Arc<IbvDomain> {
-        Arc::new(IbvDomain {
-            context: std::ptr::null_mut(),
-            pd: std::ptr::null_mut(),
+        // SAFETY: a null `ibv_context*` is explicitly allowed — `IbvContext`'s
+        // `Drop` is a no-op for null, so nothing is ever closed.
+        let context = Arc::new(unsafe { IbvContext::new(std::ptr::null_mut()) });
+        // SAFETY: a null `pd` is allowed — `IbvDomain`'s `Drop` skips
+        // `ibv_dealloc_pd` for null, so nothing is ever freed.
+        Arc::new(unsafe {
+            IbvDomain::from_parts(
+                context,
+                std::ptr::null_mut(),
+                IbvDeviceInfo::for_test_named("null_domain"),
+            )
         })
     }
 

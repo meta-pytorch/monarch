@@ -14,6 +14,7 @@ use typeuri::Named;
 
 use super::device::IbvContext;
 use super::device::IbvDeviceImpl;
+use super::mlx_domain::MlxDomain;
 use super::primitives::IbvConfig;
 use crate::register_ibv_device_impl;
 
@@ -25,6 +26,8 @@ const MELLANOX_VENDOR_ID: u32 = 0x02c9;
 pub struct MlxDevice;
 
 impl IbvDeviceImpl for MlxDevice {
+    type IbvDomainImpl = MlxDomain;
+
     fn backend_name() -> &'static str {
         "mellanox"
     }
