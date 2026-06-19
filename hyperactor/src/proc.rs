@@ -133,6 +133,7 @@ use hyperactor_telemetry::notify_message_status;
 use hyperactor_telemetry::recorder::Recording;
 use tokio::sync::Notify;
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::Instrument;
@@ -1031,10 +1032,7 @@ impl Proc {
         let (instance, receivers) = Instance::new(self.clone(), actor_id, false, None);
         let handle = ActorHandle::new(instance.inner.cell.clone(), instance.inner.ports.clone());
         instance.change_status(ActorStatus::Client);
-        tokio::spawn(crate::introspect::serve_introspect(
-            instance.inner.cell.clone(),
-            receivers.introspect,
-        ));
+        instance.spawn_detached_introspect(receivers.introspect);
         Ok((instance, handle))
     }
 
@@ -1054,10 +1052,7 @@ impl Proc {
         let handle = ActorHandle::new(instance.inner.cell.clone(), instance.inner.ports.clone());
         instance.change_status(ActorStatus::Client);
 
-        tokio::spawn(crate::introspect::serve_introspect(
-            instance.inner.cell.clone(),
-            receivers.introspect,
-        ));
+        instance.spawn_detached_introspect(receivers.introspect);
 
         let (signal_rx, supervision_rx) = receivers.actor_loop.unwrap();
         Ok(ActorInstance {
@@ -1422,14 +1417,11 @@ impl Proc {
     /// - the actor's `InstanceCell` has been dropped, or
     /// - the actor's status is terminal (stopped or failed).
     ///
-    /// The terminal-status check guards a race window: the introspect
-    /// task (`serve_introspect`) holds a strong `InstanceCell` Arc
-    /// and drops it only after observing terminal status. Between the
-    /// actor reaching terminal and the introspect task reacting,
-    /// `upgrade()` on the weak ref succeeds even though the actor is
-    /// dead. The `is_terminal()` check closes that window. Once the
-    /// introspect task exits, the Arc is dropped and `upgrade()`
-    /// returns `None` on its own.
+    /// The terminal-status check makes the live/dead boundary explicit:
+    /// terminal status is published only after runtime epilogue tasks
+    /// such as introspection have completed, so a terminal actor must
+    /// not be returned even if another local handle still keeps its cell
+    /// alive.
     ///
     /// Bounds:
     /// - `R: Actor` — must be a real actor that can live in this
@@ -1799,6 +1791,17 @@ struct InstanceState<A: Actor> {
     /// Runtime-owned delayed-post scheduler.
     delayed_posts: DelayedPosts<A>,
 
+    /// Shutdown signal for the runtime-owned introspection task.
+    introspect_shutdown_tx: Mutex<Option<oneshot::Sender<ActorStatus>>>,
+
+    /// Join handle for the runtime-owned introspection task.
+    introspect_task_handle: Mutex<Option<JoinHandle<()>>>,
+
+    /// Shutdown signal for proc-managed detached introspection
+    /// lifecycle. Used by client/inverted instances that have no actor
+    /// serving loop to join introspection.
+    detached_introspect_shutdown_tx: Mutex<Option<oneshot::Sender<ActorStatus>>>,
+
     /// A watch for communicating the actor's state.
     status_tx: watch::Sender<ActorStatus>,
 
@@ -2115,24 +2118,47 @@ impl<A: Actor> InstanceState<A> {
     }
 }
 
+fn publish_dropped_instance_status(
+    status_tx: watch::Sender<ActorStatus>,
+    actor_addr: ActorAddr,
+    terminal_status: ActorStatus,
+) {
+    status_tx.send_if_modified(|status| {
+        if status.is_terminal() {
+            false
+        } else {
+            tracing::info!(
+                name = "ActorStatus",
+                actor_id = %actor_addr,
+                actor_name = actor_addr.log_name(),
+                status = "Stopped",
+                prev_status = status.arm().unwrap_or("unknown"),
+                "instance is dropped",
+            );
+            *status = terminal_status.clone();
+            true
+        }
+    });
+}
+
 impl<A: Actor> Drop for InstanceState<A> {
     fn drop(&mut self) {
-        self.status_tx.send_if_modified(|status| {
-            if status.is_terminal() {
-                false
-            } else {
-                tracing::info!(
-                    name = "ActorStatus",
-                    actor_id = %self.self_addr(),
-                    actor_name = self.self_addr().log_name(),
-                    status = "Stopped",
-                    prev_status = status.arm().unwrap_or("unknown"),
-                    "instance is dropped",
-                );
-                *status = ActorStatus::Stopped("instance is dropped".into());
-                true
-            }
-        });
+        let terminal_status = ActorStatus::Stopped("instance is dropped".into());
+        if let Some(shutdown_tx) = self.detached_introspect_shutdown_tx.lock().unwrap().take() {
+            let _ = shutdown_tx.send(terminal_status.clone());
+            return;
+        }
+
+        if let Some(shutdown_tx) = self.introspect_shutdown_tx.lock().unwrap().take() {
+            let _ = shutdown_tx.send(terminal_status.clone());
+        }
+        let _ = self.introspect_task_handle.lock().unwrap().take();
+
+        publish_dropped_instance_status(
+            self.status_tx.clone(),
+            self.self_addr().clone(),
+            terminal_status,
+        );
     }
 }
 
@@ -2235,6 +2261,9 @@ impl<A: Actor> Instance<A> {
             mailbox,
             ports,
             delayed_posts: DelayedPosts::new(),
+            introspect_shutdown_tx: Mutex::new(None),
+            introspect_task_handle: Mutex::new(None),
+            detached_introspect_shutdown_tx: Mutex::new(None),
             status_tx,
             sequencer: Sequencer::new(instance_id),
             id: instance_id,
@@ -2248,6 +2277,70 @@ impl<A: Actor> Instance<A> {
                 introspect: introspect_receiver,
             },
         )
+    }
+
+    fn spawn_introspect(&self, receiver: PortReceiver<IntrospectMessage>) {
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let handle = tokio::spawn(crate::introspect::serve_introspect(
+            self.inner.cell.clone(),
+            receiver,
+            shutdown_rx,
+        ));
+
+        let mut shutdown = self.inner.introspect_shutdown_tx.lock().unwrap();
+        assert!(
+            shutdown.is_none(),
+            "introspection shutdown handle already set"
+        );
+        let mut task = self.inner.introspect_task_handle.lock().unwrap();
+        assert!(task.is_none(), "introspection task already set");
+        *shutdown = Some(shutdown_tx);
+        *task = Some(handle);
+    }
+
+    fn spawn_detached_introspect(&self, receiver: PortReceiver<IntrospectMessage>) {
+        let (detached_shutdown_tx, detached_shutdown_rx) = oneshot::channel::<ActorStatus>();
+        let (introspect_shutdown_tx, introspect_shutdown_rx) = oneshot::channel();
+        let introspect_handle = tokio::spawn(crate::introspect::serve_introspect(
+            self.inner.cell.clone(),
+            receiver,
+            introspect_shutdown_rx,
+        ));
+
+        let status_tx = self.inner.status_tx.clone();
+        let actor_addr = self.self_addr().clone();
+        tokio::spawn(async move {
+            let Ok(terminal_status) = detached_shutdown_rx.await else {
+                return;
+            };
+            let _ = introspect_shutdown_tx.send(terminal_status.clone());
+            if let Err(err) = introspect_handle.await {
+                tracing::debug!("introspect task join failed: {:?}", err);
+            }
+            publish_dropped_instance_status(status_tx, actor_addr, terminal_status);
+        });
+
+        let mut shutdown = self.inner.detached_introspect_shutdown_tx.lock().unwrap();
+        assert!(
+            shutdown.is_none(),
+            "detached introspection shutdown handle already set"
+        );
+        *shutdown = Some(detached_shutdown_tx);
+    }
+
+    fn signal_introspect_stop(&self, terminal_status: ActorStatus) -> Option<JoinHandle<()>> {
+        if let Some(shutdown_tx) = self.inner.introspect_shutdown_tx.lock().unwrap().take() {
+            let _ = shutdown_tx.send(terminal_status);
+        }
+        self.inner.introspect_task_handle.lock().unwrap().take()
+    }
+
+    async fn stop_introspect(&self, terminal_status: ActorStatus) {
+        if let Some(handle) = self.signal_introspect_stop(terminal_status)
+            && let Err(err) = handle.await
+        {
+            tracing::debug!("introspect task join failed: {:?}", err);
+        }
     }
 
     /// Notify subscribers of a change in the actors status and bump counters with the duration which
@@ -2714,10 +2807,7 @@ impl<A: Actor> Instance<A> {
         // Spawn the introspect task — a separate tokio task that
         // reads InstanceCell directly and replies through the owning Proc. The
         // actor loop never sees IntrospectMessage.
-        tokio::spawn(crate::introspect::serve_introspect(
-            self.inner.cell.clone(),
-            receivers.introspect,
-        ));
+        self.spawn_introspect(receivers.introspect);
 
         let actor_loop_receivers = receivers
             .actor_loop
@@ -2829,6 +2919,7 @@ impl<A: Actor> Instance<A> {
             }
         }
 
+        self.stop_introspect(terminal_status.clone()).await;
         self.change_status(terminal_status);
     }
 
