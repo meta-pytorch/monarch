@@ -33,6 +33,7 @@ use crate::PortAddr;
 /// (i.e. one that must not be wired through `Ports::get`).
 pub(crate) fn is_bypass_workq_type_id(id: TypeId) -> bool {
     id == TypeId::of::<crate::introspect::IntrospectMessage>()
+        || id == TypeId::of::<crate::proc::StatusMessage>()
 }
 
 /// Per-session receiver-local ordering snapshot. This does not lock the
@@ -274,6 +275,7 @@ mod tests {
     use crate::mailbox::headers::stamp_sender_actor_id;
     use crate::port::ControlPort;
     use crate::port::Port;
+    use crate::proc::StatusMessage;
     use crate::testing::ids::test_actor_id;
 
     /// Test message type 1 for handler port sequencing tests.
@@ -401,6 +403,11 @@ mod tests {
     #[test]
     fn bypass_registry_introspect_message() {
         assert!(is_bypass_workq_type_id(TypeId::of::<IntrospectMessage>()));
+    }
+
+    #[test]
+    fn bypass_registry_status_message() {
+        assert!(is_bypass_workq_type_id(TypeId::of::<StatusMessage>()));
     }
 
     #[test]

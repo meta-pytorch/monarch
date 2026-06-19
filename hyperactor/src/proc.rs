@@ -131,6 +131,8 @@ use hyperactor_telemetry::notify_actor_status_changed;
 use hyperactor_telemetry::notify_message;
 use hyperactor_telemetry::notify_message_status;
 use hyperactor_telemetry::recorder::Recording;
+use serde::Deserialize;
+use serde::Serialize;
 use tokio::sync::Notify;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
@@ -192,8 +194,10 @@ use crate::mailbox::MailboxSender;
 use crate::mailbox::MessageEnvelope;
 use crate::mailbox::OncePortHandle;
 use crate::mailbox::OncePortReceiver;
+use crate::mailbox::PortGone;
 use crate::mailbox::PortHandle;
 use crate::mailbox::PortReceiver;
+use crate::mailbox::PortSender as _;
 use crate::mailbox::TransportFailure;
 use crate::mailbox::TransportFailureReason;
 use crate::mailbox::Undeliverable;
@@ -433,6 +437,12 @@ struct ProcState {
     /// [`config::TERMINATED_SNAPSHOT_RETENTION`].
     terminated_snapshots: DashMap<ActorId, TerminatedSnapshot>,
 
+    /// Terminal statuses for actors that existed on this proc.
+    /// Note: this map is retained for the lifetime of the process; thus
+    /// tombstones will grow with the number of actors that have ever existed
+    /// in the proc.
+    actor_tombstones: DashMap<ActorId, ActorStatus>,
+
     /// Used by root actors to send events to the actor coordinating
     /// supervision of root actors in this proc.
     supervision_coordinator_port: OnceLock<PortHandle<ActorSupervisionEvent>>,
@@ -460,6 +470,69 @@ struct ProcState {
 struct TerminatedSnapshot {
     actor_addr: ActorAddr,
     payload: crate::introspect::IntrospectResult,
+}
+
+/// Actor status control-plane message.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
+pub enum StatusMessage {
+    /// Return the destination actor's current or tombstoned status.
+    GetStatus {
+        /// Reply port receiving `None` for an unknown actor and
+        /// `Some(status)` for a known actor.
+        reply: crate::OncePortRef<Option<ActorStatus>>,
+    },
+}
+wirevalue::register_type!(StatusMessage);
+
+struct StatusSender(WeakProc);
+
+impl StatusSender {
+    fn new(weak_proc: WeakProc) -> Self {
+        Self(weak_proc)
+    }
+}
+
+#[async_trait]
+impl MailboxSender for StatusSender {
+    fn post_unchecked(
+        &self,
+        envelope: MessageEnvelope,
+        return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+    ) {
+        let reply = match envelope.deserialized() {
+            Ok(StatusMessage::GetStatus { reply }) => reply,
+            Err(err) => {
+                let target = envelope.dest().clone();
+                let failure =
+                    DeliveryFailure::new(UndeliverableReason::Transport(TransportFailure::new(
+                        target,
+                        TransportFailureReason::LinkUnavailable(format!(
+                            "status message deserialization failed: {err}"
+                        )),
+                    )));
+                envelope.undeliverable(failure, return_handle);
+                return;
+            }
+        };
+
+        let Some(proc) = self.0.upgrade() else {
+            let failure = DeliveryFailure::new(UndeliverableReason::PortGone(PortGone::new(
+                envelope.dest().clone(),
+                envelope.data().typename().map(str::to_string),
+            )));
+            envelope.undeliverable(failure, return_handle);
+            return;
+        };
+
+        let actor_id = envelope.dest().actor_id().clone();
+        let status = proc.status_for_actor(&actor_id);
+
+        if let Err(err) =
+            proc.serialize_and_send_once(reply, status, crate::mailbox::monitored_return_handle())
+        {
+            tracing::error!("status reply failed: {err}");
+        }
+    }
 }
 
 impl Drop for ProcState {
@@ -661,12 +734,21 @@ impl Proc {
                 root_actors: DashSet::new(),
                 queue_stats: Arc::new(ProcQueueStats::new()),
                 terminated_snapshots: DashMap::new(),
+                actor_tombstones: DashMap::new(),
                 supervision_coordinator_port: OnceLock::new(),
                 supervision_coordinator_actor_id: OnceLock::new(),
                 mailbox_server_handle: std::sync::Mutex::new(None),
                 _attached_proc_guard: OnceLock::new(),
             }),
         };
+        let bound = proc
+            .inner
+            .proc_muxer
+            .bind_status(StatusSender::new(proc.downgrade()));
+        assert!(
+            bound,
+            "fresh proc muxer must not have a status control port"
+        );
         // Attach to the gateway now that the `Arc<ProcState>` exists;
         // the returned guard's drop will remove the entry when the last
         // `Proc` referencing this state is dropped.
@@ -676,6 +758,21 @@ impl Proc {
             .set(guard)
             .expect("fresh ProcState's attached-proc guard slot is empty");
         proc
+    }
+
+    fn status_for_actor(&self, actor_id: &ActorId) -> Option<ActorStatus> {
+        let live_status = self
+            .inner
+            .instances
+            .get(actor_id)
+            .and_then(|entry| entry.value().upgrade())
+            .map(|cell| cell.status().borrow().clone());
+        live_status.or_else(|| {
+            self.inner
+                .actor_tombstones
+                .get(actor_id)
+                .map(|entry| entry.value().clone())
+        })
     }
 
     fn from_parts(proc_id: ProcId, gateway: Gateway) -> Self {
@@ -2119,14 +2216,19 @@ impl<A: Actor> InstanceState<A> {
 }
 
 fn publish_dropped_instance_status(
+    proc: Proc,
     status_tx: watch::Sender<ActorStatus>,
     actor_addr: ActorAddr,
     terminal_status: ActorStatus,
 ) {
+    let actor_id = actor_addr.id().clone();
     status_tx.send_if_modified(|status| {
         if status.is_terminal() {
             false
         } else {
+            proc.inner
+                .actor_tombstones
+                .insert(actor_id.clone(), terminal_status.clone());
             tracing::info!(
                 name = "ActorStatus",
                 actor_id = %actor_addr,
@@ -2155,6 +2257,7 @@ impl<A: Actor> Drop for InstanceState<A> {
         let _ = self.introspect_task_handle.lock().unwrap().take();
 
         publish_dropped_instance_status(
+            self.proc.clone(),
             self.status_tx.clone(),
             self.self_addr().clone(),
             terminal_status,
@@ -2307,6 +2410,7 @@ impl<A: Actor> Instance<A> {
             introspect_shutdown_rx,
         ));
 
+        let proc = self.inner.proc.clone();
         let status_tx = self.inner.status_tx.clone();
         let actor_addr = self.self_addr().clone();
         tokio::spawn(async move {
@@ -2317,7 +2421,7 @@ impl<A: Actor> Instance<A> {
             if let Err(err) = introspect_handle.await {
                 tracing::debug!("introspect task join failed: {:?}", err);
             }
-            publish_dropped_instance_status(status_tx, actor_addr, terminal_status);
+            publish_dropped_instance_status(proc, status_tx, actor_addr, terminal_status);
         });
 
         let mut shutdown = self.inner.detached_introspect_shutdown_tx.lock().unwrap();
@@ -2347,6 +2451,13 @@ impl<A: Actor> Instance<A> {
     /// the last status was active for.
     #[track_caller]
     pub fn change_status(&self, new: ActorStatus) {
+        if new.is_terminal() {
+            self.inner
+                .proc
+                .inner
+                .actor_tombstones
+                .insert(self.self_addr().id().clone(), new.clone());
+        }
         let old = self.inner.status_tx.send_replace(new.clone());
         // 2 cases are allowed:
         // * non-terminal -> non-terminal
@@ -3887,6 +3998,8 @@ impl InstanceCell {
             }),
         };
         cell.maybe_link_parent();
+        // TODO: disallow reuse; maybe only for instance ids.
+        proc.inner.actor_tombstones.remove(actor_id.id());
         proc.inner
             .instances
             .insert(actor_id.id().clone(), cell.downgrade());
@@ -4566,10 +4679,68 @@ mod tests {
 
     impl Actor for TestActor {}
 
+    async fn get_status(client: &Client, actor_addr: &ActorAddr) -> Option<ActorStatus> {
+        let (reply_port, reply_rx) = client.open_once_port::<Option<ActorStatus>>();
+        PortRef::<StatusMessage>::attest_control_port(actor_addr, crate::ControlPort::Status).post(
+            client,
+            StatusMessage::GetStatus {
+                reply: reply_port.bind(),
+            },
+        );
+        tokio::time::timeout(Duration::from_secs(5), reply_rx.recv())
+            .await
+            .expect("status reply should arrive")
+            .expect("status reply port should remain open")
+    }
+
     #[derive(Debug)]
     struct ChildLabelActor;
 
     impl Actor for ChildLabelActor {}
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_status_control_port_reports_live_actor() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let handle = proc.spawn(TestActor);
+
+        let mut status_rx = handle.status();
+        status_rx
+            .wait_for(|status| matches!(status, ActorStatus::Idle))
+            .await
+            .expect("actor should become idle");
+
+        let status = get_status(&client, handle.actor_addr()).await;
+        assert_eq!(status, Some(ActorStatus::Idle));
+
+        handle.drain_and_stop("test").unwrap();
+        handle.await;
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_status_control_port_reports_tombstoned_actor() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let handle = proc.spawn(TestActor);
+        let actor_addr = handle.actor_addr().clone();
+
+        handle.drain_and_stop("test").unwrap();
+        let terminal_status = handle.await;
+
+        assert_eq!(
+            get_status(&client, &actor_addr).await,
+            Some(terminal_status)
+        );
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_status_control_port_reports_unknown_actor() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let missing = proc.root_addr(Uid::instance(Label::strip("missing")));
+
+        assert_eq!(get_status(&client, &missing).await, None);
+    }
 
     #[derive(Debug)]
     struct DelayedSelfActor {

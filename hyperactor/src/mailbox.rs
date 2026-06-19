@@ -112,6 +112,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Condvar;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::sync::RwLock;
 use std::sync::Weak;
 use std::sync::atomic::AtomicU64;
@@ -3353,6 +3354,7 @@ impl fmt::Debug for State {
 #[derive(Clone)]
 pub struct MailboxMuxer {
     mailboxes: Arc<DashMap<ActorId, Box<dyn MailboxSender + Send + Sync>>>,
+    status_sender: Arc<OnceLock<Box<dyn MailboxSender + Send + Sync>>>,
 }
 
 impl Default for MailboxMuxer {
@@ -3366,6 +3368,7 @@ impl MailboxMuxer {
     pub fn new() -> Self {
         Self {
             mailboxes: Arc::new(DashMap::new()),
+            status_sender: Arc::new(OnceLock::new()),
         }
     }
 
@@ -3388,6 +3391,12 @@ impl MailboxMuxer {
         self.bind(mailbox.actor_addr().id().clone(), mailbox)
     }
 
+    /// Route status messages to the provided sender, regardless of the
+    /// destination actor's liveness.
+    pub fn bind_status(&self, sender: impl MailboxSender + 'static) -> bool {
+        self.status_sender.set(Box::new(sender)).is_ok()
+    }
+
     /// Unbind the sender associated with the provided actor ID. After
     /// unbinding, the muxer will no longer be able to send messages to
     /// that actor.
@@ -3404,6 +3413,13 @@ impl MailboxSender for MailboxMuxer {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
+        if envelope.dest().is_control_port_kind(ControlPort::Status)
+            && let Some(sender) = self.status_sender.get()
+        {
+            sender.post(envelope, return_handle);
+            return;
+        }
+
         let dest_actor_ref = envelope.dest().actor_addr();
         match self.mailboxes.get(dest_actor_ref.id()) {
             None => {

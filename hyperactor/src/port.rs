@@ -59,6 +59,8 @@ pub enum ControlPort {
     Introspect,
     /// Actor lifecycle signals.
     Signal,
+    /// Actor lifecycle status.
+    Status,
 }
 
 /// Errors that can occur when parsing a [`ControlPort`].
@@ -118,6 +120,7 @@ impl Port {
             }),
             Self::Control(ControlPort::Introspect) => 0,
             Self::Control(ControlPort::Signal) => 1,
+            Self::Control(ControlPort::Status) => 2,
         }
     }
 }
@@ -170,6 +173,7 @@ impl fmt::Display for ControlPort {
         match self {
             Self::Introspect => f.write_str("introspect"),
             Self::Signal => f.write_str("signal"),
+            Self::Status => f.write_str("status"),
         }
     }
 }
@@ -181,6 +185,7 @@ impl FromStr for ControlPort {
         match s {
             "introspect" => Ok(Self::Introspect),
             "signal" => Ok(Self::Signal),
+            "status" => Ok(Self::Status),
             _ => Err(ControlPortParseError::Unknown(s.to_string())),
         }
     }
@@ -234,6 +239,16 @@ mod tests {
         let s = port.to_string();
         let parsed: Port = s.parse().expect("parse port");
         assert_eq!(port, parsed);
+    }
+
+    #[test]
+    fn test_control_port_status() {
+        assert_eq!(ControlPort::Status.to_string(), "status");
+        assert_eq!(
+            "status".parse::<ControlPort>().expect("parse status"),
+            ControlPort::Status
+        );
+        assert_eq!(Port::control(ControlPort::Status).as_u64(), 2);
     }
 
     #[test]
