@@ -141,22 +141,17 @@ fn cap_by_port_speed(path: PciPath, nic: &IbvDeviceInfo) -> PciPath {
     }
 }
 
-/// Number of CUDA devices visible to this process (0 if CUDA is
-/// unavailable or can't be initialized).
-pub(crate) fn cuda_device_count() -> usize {
-    // SAFETY: FFI to the CUDA driver. `cuInit` must precede any other
-    // driver call, and each call writes only through its out-pointer; a
-    // non-success status is treated as "no devices".
-    unsafe {
-        if rdmaxcel_sys::rdmaxcel_cuInit(0) != rdmaxcel_sys::CUDA_SUCCESS {
-            return 0;
-        }
-        let mut count: i32 = 0;
-        if rdmaxcel_sys::rdmaxcel_cuDeviceGetCount(&mut count) != rdmaxcel_sys::CUDA_SUCCESS {
-            return 0;
-        }
-        count.max(0) as usize
-    }
+/// Number of NVIDIA GPUs visible to the kernel driver, counted from the
+/// per-GPU directories under `/proc/driver/nvidia/gpus`. This reads kernel
+/// driver state, so unlike `cuDeviceGetCount` it needs no CUDA
+/// initialization; it returns 0 when the NVIDIA driver is absent (no GPU, or
+/// a non-NVIDIA platform).
+///
+/// TODO(slurye): Generalize this (and `get_cuda_pci_address`) to support AMD.
+pub(crate) fn cuda_device_count() -> i32 {
+    std::fs::read_dir("/proc/driver/nvidia/gpus")
+        .map(|entries| entries.flatten().count() as i32)
+        .unwrap_or(0)
 }
 
 /// Resolves an [`IbvDeviceTarget`] to a single NIC of backend `I`: the

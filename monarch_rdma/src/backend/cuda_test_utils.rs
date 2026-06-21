@@ -256,6 +256,12 @@ impl CudaAllocator {
     pub fn get() -> &'static CudaAllocator {
         CUDA_ALLOCATOR.get_or_init(|| {
             unsafe {
+                // rdmaxcel only adopts an already-loaded driver, so load it first.
+                assert_eq!(
+                    rdmaxcel_sys::ensure_cuda_driver_loaded(),
+                    0,
+                    "failed to load the CUDA driver"
+                );
                 cu_check!(rdmaxcel_sys::rdmaxcel_cuInit(0));
             }
             CudaAllocator {
@@ -411,12 +417,29 @@ impl CudaAllocator {
     }
 }
 
-/// Number of CUDA devices visible to the driver, or 0 on failure.
-/// Delegates to the canonical
-/// [`crate::backend::ibverbs::device_selection::cuda_device_count`].
+/// Number of CUDA devices the driver can use, or 0 on failure. Initializes
+/// CUDA (loading the driver if needed) and queries the driver directly, so it
+/// honors `CUDA_VISIBLE_DEVICES` — unlike
+/// [`crate::backend::ibverbs::device_selection::cuda_device_count`], which
+/// counts the kernel-visible GPUs without initializing CUDA.
 #[cfg(test)]
 pub(crate) fn cuda_device_count() -> i32 {
-    crate::backend::ibverbs::device_selection::cuda_device_count() as i32
+    // SAFETY: FFI to the CUDA driver. rdmaxcel only adopts an already-loaded
+    // driver, so load it first; `cuInit` must precede any other driver call.
+    // A non-success status is treated as "no devices".
+    unsafe {
+        if rdmaxcel_sys::ensure_cuda_driver_loaded() != 0 {
+            return 0;
+        }
+        if rdmaxcel_sys::rdmaxcel_cuInit(0) != rdmaxcel_sys::CUDA_SUCCESS {
+            return 0;
+        }
+        let mut count: i32 = 0;
+        if rdmaxcel_sys::rdmaxcel_cuDeviceGetCount(&mut count) != rdmaxcel_sys::CUDA_SUCCESS {
+            return 0;
+        }
+        count.max(0)
+    }
 }
 
 /// Segment scanner callback compatible with `rdmaxcel_segment_scanner_fn`.

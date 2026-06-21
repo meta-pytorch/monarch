@@ -95,6 +95,10 @@ impl RemoteSpawn for CudaActor {
 
     async fn new(device_id: i32, _environment: Flattrs) -> Result<Self, anyhow::Error> {
         unsafe {
+            // rdmaxcel only adopts an already-loaded driver, so load it first.
+            if rdmaxcel_sys::ensure_cuda_driver_loaded() != 0 {
+                anyhow::bail!("failed to load the CUDA driver");
+            }
             cu_check!(rdmaxcel_sys::rdmaxcel_cuInit(0));
             let mut device: rdmaxcel_sys::CUdevice = std::mem::zeroed();
             cu_check!(rdmaxcel_sys::rdmaxcel_cuDeviceGet(&mut device, device_id));

@@ -88,6 +88,17 @@ CUresult rdmaxcel_cuPointerGetAttribute(
     CUpointer_attribute attribute,
     CUdeviceptr ptr);
 
+// Driver library loading
+//
+// Ensure the GPU driver library is loaded into the process. Call this before
+// rdmaxcel_cuInit from tests/tools that must initialize the driver from
+// scratch; the wrapper functions never load the library themselves -- they
+// only adopt one the owning framework loaded. Returns 0 on success and -1
+// if the library could not be loaded. A load failure will be cached behind
+// a function-local static variable, so if this fails once, it will never
+// succeed for the lifetime of the process.
+int ensure_cuda_driver_loaded(void);
+
 // Device management
 CUresult rdmaxcel_cuInit(unsigned int Flags);
 

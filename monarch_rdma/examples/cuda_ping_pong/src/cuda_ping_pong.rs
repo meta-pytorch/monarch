@@ -324,6 +324,10 @@ impl RemoteSpawn for CudaRdmaActor {
         // For this example, we'll use a regular Rust allocation as a placeholder
         // The actual CUDA allocation would be handled by the monarch_rdma library
         unsafe {
+            // rdmaxcel only adopts an already-loaded driver, so load it first.
+            if rdmaxcel_sys::ensure_cuda_driver_loaded() != 0 {
+                anyhow::bail!("failed to load the CUDA driver");
+            }
             cu_check!(rdmaxcel_sys::rdmaxcel_cuInit(0));
             let mut dptr: rdmaxcel_sys::CUdeviceptr = std::mem::zeroed();
             let mut handle: rdmaxcel_sys::CUmemGenericAllocationHandle = std::mem::zeroed();

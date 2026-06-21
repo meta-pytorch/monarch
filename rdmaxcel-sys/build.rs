@@ -147,6 +147,7 @@ fn main() {
         .allowlist_function("rdma_get_all_registered_segment_info")
         .allowlist_function("register_segments")
         .allowlist_function("deregister_segments")
+        .allowlist_function("ensure_cuda_driver_loaded")
         .allowlist_function("rdmaxcel_cu.*")
         .allowlist_function("get_cuda_pci_address_from_ptr")
         .allowlist_function("rdmaxcel_print_device_info")

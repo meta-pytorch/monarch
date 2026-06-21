@@ -45,6 +45,10 @@ pub fn is_cuda_available() -> bool {
 /// Internal function that performs the actual CUDA availability check
 fn check_cuda_available() -> bool {
     unsafe {
+        // rdmaxcel only adopts an already-loaded driver, so load it first.
+        if rdmaxcel_sys::ensure_cuda_driver_loaded() != 0 {
+            return false;
+        }
         // Try to initialize CUDA
         let result = rdmaxcel_sys::rdmaxcel_cuInit(0);
 
