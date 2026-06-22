@@ -2032,10 +2032,7 @@ mod tests {
             .proc_addr()
             .actor_addr(HOST_MESH_AGENT_ACTOR_NAME);
         let agent_id: ActorAddr = agent_ref;
-        let port = PortRef::<IntrospectMessage>::attest_control_port(
-            &agent_id,
-            hyperactor::ControlPort::Introspect,
-        );
+        let port = agent_id.introspect_port();
 
         // Poll until we see non-zero watermark (evidence of queue
         // traffic since startup).
