@@ -8,10 +8,8 @@
 
 use async_trait::async_trait;
 use hyperactor::Actor;
-use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Handler;
-use hyperactor::Unbind;
 use hyperactor::channel::ChannelTransport;
 use serde::Deserialize;
 use serde::Serialize;
@@ -20,11 +18,11 @@ use typeuri::Named;
 use crate::host_mesh::HostMesh;
 
 /// Message that can be sent to an EmptyActor.
-#[derive(Serialize, Deserialize, Debug, Named, Clone, Bind, Unbind)]
+#[derive(Serialize, Deserialize, Debug, Named, Clone)]
 pub struct EmptyMessage();
 
 #[derive(Debug, PartialEq, Default)]
-#[hyperactor::export(EmptyMessage { cast = true })]
+#[hyperactor::export(EmptyMessage)]
 #[hyperactor::spawnable]
 pub struct EmptyActor();
 

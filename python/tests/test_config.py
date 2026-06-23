@@ -297,8 +297,6 @@ def test_integer_params(param_name, test_value, default_value):
         ("enable_dest_actor_reordering_buffer", True),
         # Mesh bootstrap config
         ("mesh_bootstrap_enable_pdeathsig", True),
-        # Runtime and buffering
-        ("shared_asyncio_runtime", False),
         # Logging config
         ("force_file_log", False),
         ("prefix_with_rank", True),
@@ -373,7 +371,7 @@ def test_encoding_param_invalid():
 
 
 def test_all_params_together():
-    """Test setting all 29 config parameters simultaneously."""
+    """Test setting all 28 config parameters simultaneously."""
     from monarch._rust_bindings.monarch_hyperactor.config import Encoding
 
     with configured(
@@ -395,7 +393,6 @@ def test_all_params_together():
         mesh_terminate_concurrency=16,
         mesh_terminate_timeout="20s",
         # Runtime and buffering
-        shared_asyncio_runtime=True,
         small_write_threshold=512,
         # Mesh config
         max_cast_dimension_size=2048,
@@ -433,7 +430,6 @@ def test_all_params_together():
         assert config["mesh_bootstrap_enable_pdeathsig"] is False
         assert config["mesh_terminate_concurrency"] == 16
         assert config["mesh_terminate_timeout"] == "20s"
-        assert config["shared_asyncio_runtime"] is True
         assert config["small_write_threshold"] == 512
         assert config["max_cast_dimension_size"] == 2048
         assert config["read_log_buffer"] == 16384
@@ -465,7 +461,6 @@ def test_all_params_together():
     assert config["mesh_bootstrap_enable_pdeathsig"] is True
     assert config["mesh_terminate_concurrency"] == 16
     assert config["mesh_terminate_timeout"] == "10s"
-    assert config["shared_asyncio_runtime"] is False
     assert config["small_write_threshold"] == 256
     assert config["max_cast_dimension_size"] == 16
     assert config["read_log_buffer"] == 100

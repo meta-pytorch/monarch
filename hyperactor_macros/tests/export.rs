@@ -11,11 +11,9 @@ use std::fmt::Debug;
 use async_trait::async_trait;
 use hyperactor as reference;
 use hyperactor::Actor;
-use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
 use hyperactor::Handler;
-use hyperactor::Unbind;
 use hyperactor::port::Port;
 use serde::Deserialize;
 use serde::Serialize;
@@ -23,9 +21,9 @@ use typeuri::Named;
 
 #[derive(Debug)]
 #[hyperactor::export(
-    TestMessage { cast = true },
-    () { cast = true },
-    MyGeneric<()> { cast = true },
+    TestMessage,
+    (),
+    MyGeneric<()>,
     u64,
 )]
 struct TestActor {
@@ -65,7 +63,7 @@ where
 {
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize, Bind, Unbind, Named)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, Named)]
 struct GenericMessage<T>(T);
 
 #[async_trait]
@@ -84,7 +82,7 @@ where
     }
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, Named)]
 struct TestMessage(String);
 
 #[async_trait]
@@ -95,7 +93,7 @@ impl Handler<TestMessage> for TestActor {
     }
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize, Bind, Unbind, Named)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, Named)]
 struct MyGeneric<T>(T);
 
 #[async_trait]
@@ -122,19 +120,11 @@ impl Handler<u64> for TestActor {
     }
 }
 
-hyperactor::behavior!(
-    TestActorAlias,
-    TestMessage { cast = true },
-    () { cast = true },
-    MyGeneric<()> { cast = true },
-    u64,
-);
+hyperactor::behavior!(TestActorAlias, TestMessage, (), MyGeneric<()>, u64,);
 
 #[cfg(test)]
 mod tests {
     use hyperactor::Endpoint as _;
-    use hyperactor::message::ErasedUnbound;
-    use hyperactor::message::IndexedErasedUnbound;
     use hyperactor::proc::Proc;
     use timed_test::async_timed_test;
 
@@ -157,25 +147,21 @@ mod tests {
             // TestMessage type
             let port_id = actor_handle
                 .actor_addr()
-                .port_addr(Port::from(TestMessage::port()));
+                .port_addr(Port::handler::<TestMessage>());
             let port_ref: reference::PortRef<TestMessage> = reference::PortRef::attest(port_id);
             port_ref.post(&client, TestMessage("abc".to_string()));
             assert_eq!(rx.recv().await.unwrap(), "abc");
         }
         {
             // () type
-            let port_id = actor_handle
-                .actor_addr()
-                .port_addr(Port::from(<()>::port()));
+            let port_id = actor_handle.actor_addr().port_addr(Port::handler::<()>());
             let port_ref: reference::PortRef<()> = reference::PortRef::attest(port_id);
             port_ref.post(&client, ());
             assert_eq!(rx.recv().await.unwrap(), "()");
         }
         {
             // u64 type
-            let port_id = actor_handle
-                .actor_addr()
-                .port_addr(Port::from(<u64>::port()));
+            let port_id = actor_handle.actor_addr().port_addr(Port::handler::<u64>());
             let port_ref: reference::PortRef<u64> = reference::PortRef::attest(port_id);
             port_ref.post(&client, 987654321);
             assert_eq!(rx.recv().await.unwrap(), "u64: 987654321");
@@ -184,49 +170,9 @@ mod tests {
             // MyGeneric<()> type
             let port_id = actor_handle
                 .actor_addr()
-                .port_addr(Port::from(MyGeneric::<()>::port()));
+                .port_addr(Port::handler::<MyGeneric<()>>());
             let port_ref: reference::PortRef<MyGeneric<()>> = reference::PortRef::attest(port_id);
             port_ref.post(&client, MyGeneric(()));
-            assert_eq!(rx.recv().await.unwrap(), "MyGeneric<()>");
-        }
-        {
-            // IndexedErasedUnbound<TestMessage> type, which is added due to
-            // the `castable` flag.
-            let erased_msg =
-                ErasedUnbound::try_from_message(TestMessage("efg".to_string())).unwrap();
-            let indexed_msg = IndexedErasedUnbound::<TestMessage>::from(erased_msg);
-            let port_id = actor_handle
-                .actor_addr()
-                .port_addr(Port::from(<IndexedErasedUnbound<TestMessage>>::port()));
-            let port_ref: reference::PortRef<IndexedErasedUnbound<TestMessage>> =
-                reference::PortRef::attest(port_id);
-            port_ref.post(&client, indexed_msg);
-            assert_eq!(rx.recv().await.unwrap(), "efg");
-        }
-        {
-            // IndexedErasedUnbound<()> type, which is added due to the `castable`
-            // flag.
-            let erased_msg = ErasedUnbound::try_from_message(()).unwrap();
-            let indexed_msg = IndexedErasedUnbound::<()>::from(erased_msg);
-            let port_id = actor_handle
-                .actor_addr()
-                .port_addr(Port::from(<IndexedErasedUnbound<()>>::port()));
-            let port_ref: reference::PortRef<IndexedErasedUnbound<()>> =
-                reference::PortRef::attest(port_id);
-            port_ref.post(&client, indexed_msg);
-            assert_eq!(rx.recv().await.unwrap(), "()");
-        }
-        {
-            // IndexedErasedUnbound<MyGeneric<()>> type, which is added due to the
-            // `castable` flag.
-            let erased_msg = ErasedUnbound::try_from_message(()).unwrap();
-            let indexed_msg = IndexedErasedUnbound::<MyGeneric<()>>::from(erased_msg);
-            let port_id = actor_handle
-                .actor_addr()
-                .port_addr(Port::from(<IndexedErasedUnbound<MyGeneric<()>>>::port()));
-            let port_ref: reference::PortRef<IndexedErasedUnbound<MyGeneric<()>>> =
-                reference::PortRef::attest(port_id);
-            port_ref.post(&client, indexed_msg);
             assert_eq!(rx.recv().await.unwrap(), "MyGeneric<()>");
         }
     }
@@ -246,17 +192,6 @@ mod tests {
         myref.port().post(&client, TestMessage("biz".to_string()));
         myref.port().post(&client, 999u64);
         myref.port().post(&client, ());
-        {
-            let erased_msg =
-                ErasedUnbound::try_from_message(TestMessage("bar".to_string())).unwrap();
-            let indexed_msg = IndexedErasedUnbound::<TestMessage>::from(erased_msg);
-            myref.port().post(&client, indexed_msg);
-        }
-        {
-            let erased_msg = ErasedUnbound::try_from_message(()).unwrap();
-            let indexed_msg = IndexedErasedUnbound::<MyGeneric<()>>::from(erased_msg);
-            myref.port().post(&client, indexed_msg);
-        }
 
         assert_eq!(rx.recv().await.unwrap(), "u64: 123");
         assert_eq!(rx.recv().await.unwrap(), "foo");
@@ -264,8 +199,6 @@ mod tests {
         assert_eq!(rx.recv().await.unwrap(), "biz");
         assert_eq!(rx.recv().await.unwrap(), "u64: 999");
         assert_eq!(rx.recv().await.unwrap(), "()");
-        assert_eq!(rx.recv().await.unwrap(), "bar");
-        assert_eq!(rx.recv().await.unwrap(), "MyGeneric<()>");
     }
 
     #[async_timed_test(timeout_secs = 30)]
@@ -279,7 +212,7 @@ mod tests {
 
         let port_id = actor_handle
             .actor_addr()
-            .port_addr(Port::from(GenericMessage::<u64>::port()));
+            .port_addr(Port::handler::<GenericMessage<u64>>());
         let port_ref: reference::PortRef<GenericMessage<u64>> = reference::PortRef::attest(port_id);
         port_ref.post(&client, GenericMessage(42));
         assert_eq!(rx.recv().await.unwrap(), "42");

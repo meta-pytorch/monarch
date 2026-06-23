@@ -21,27 +21,28 @@ mod tests {
 
     use super::super::IbvQueuePair;
     use super::super::PollTarget;
+    use super::super::device::list_all_devices;
     use super::super::doorbell_test_utils::DoorbellTestEnv;
     use super::super::doorbell_test_utils::*;
     use super::super::manager_actor::IbvManagerActor;
     use super::super::manager_actor::RawQueuePair;
-    use super::super::primitives::get_all_devices;
+    use super::super::mlx_device::MlxDevice;
     use crate::rdma_components::validate_execution_context;
 
     /// Opens a one-shot reply port and posts [`RawQueuePair`] to bring up
     /// a queue pair via the legacy test path. Replaces the old
     /// `manager_actor::request_queue_pair` helper.
     async fn request_queue_pair(
-        actor: &ActorHandle<IbvManagerActor>,
+        actor: &ActorHandle<IbvManagerActor<MlxDevice>>,
         cx: &(impl hyperactor::context::Actor + Send + Sync),
-        other: ActorRef<IbvManagerActor>,
+        other: ActorRef<IbvManagerActor<MlxDevice>>,
         self_device: String,
         other_device: String,
     ) -> Result<Result<IbvQueuePair, String>, anyhow::Error> {
         let (reply, rx) = Mailbox::mailbox(cx).open_once_port::<Result<IbvQueuePair, String>>();
         actor.try_post(
             cx,
-            RawQueuePair {
+            RawQueuePair::<MlxDevice> {
                 peer: other,
                 self_device,
                 peer_device: other_device,
@@ -67,7 +68,7 @@ mod tests {
             return Ok(());
         }
         const BSIZE: usize = 1024;
-        let devices = get_all_devices();
+        let devices = list_all_devices();
         if devices.len() < 4 {
             println!(
                 "skipping this test as it is only configured on H100 nodes with backend network"
@@ -99,7 +100,7 @@ mod tests {
             return Ok(());
         }
         const BSIZE: usize = 1024;
-        let devices = get_all_devices();
+        let devices = list_all_devices();
         if devices.len() < 4 {
             println!(
                 "skipping this test as it is only configured on H100 nodes with backend network"
@@ -136,7 +137,7 @@ mod tests {
             return Ok(());
         }
         const BSIZE: usize = 2 * 1024 * 1024;
-        let devices = get_all_devices();
+        let devices = list_all_devices();
         if devices.len() < 4 {
             println!(
                 "skipping this test as it is only configured on H100 nodes with backend network"
@@ -176,7 +177,7 @@ mod tests {
             return Ok(());
         }
         const BSIZE: usize = 2 * 1024 * 1024;
-        let devices = get_all_devices();
+        let devices = list_all_devices();
         if devices.len() < 4 {
             println!(
                 "skipping this test as it is only configured on H100 nodes with backend network"
@@ -216,7 +217,7 @@ mod tests {
             return Ok(());
         }
         const BSIZE: usize = 2 * 1024 * 1024;
-        let devices = get_all_devices();
+        let devices = list_all_devices();
         if devices.len() < 5 {
             println!(
                 "skipping this test as it is only configured on H100 nodes with backend network"

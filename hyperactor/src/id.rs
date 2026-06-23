@@ -19,6 +19,8 @@
 //! actor-id     := actor-part "." proc-id
 //! actor-part   := label | "<" uid58 ">" | label "<" uid58 ">"
 //! port-id      := actor-id ":" decimal-port
+//!              | actor-id ":" uid
+//!              | actor-id "!" control-port
 //! ```
 //!
 //! Singletons are self-documenting and therefore display as bare labels.
@@ -254,6 +256,14 @@ impl Uid {
         match self {
             Uid::Singleton(_) => None,
             Uid::Instance(uid, _) => Some(encode_base58_uid(*uid)),
+        }
+    }
+
+    /// Returns the raw instance uid.
+    pub fn instance_value(&self) -> Option<u64> {
+        match self {
+            Uid::Singleton(_) => None,
+            Uid::Instance(uid, _) => Some(*uid),
         }
     }
 
@@ -743,7 +753,7 @@ impl PortId {
 
     /// Returns the port.
     pub fn port(&self) -> Port {
-        self.port
+        self.port.clone()
     }
 
     /// Returns the proc id (delegates to actor_id).
@@ -783,7 +793,10 @@ impl Ord for PortId {
 
 impl fmt::Display for PortId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:{}", self.actor_id, self.port)
+        match &self.port {
+            Port::Control(port) => write!(f, "{}!{}", self.actor_id, port),
+            _ => write!(f, "{}:{}", self.actor_id, self.port),
+        }
     }
 }
 
@@ -791,20 +804,16 @@ impl fmt::Debug for PortId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match (self.actor_id.label(), self.actor_id.proc_id().label()) {
             (Some(actor_label), Some(proc_label)) => {
-                write!(
-                    f,
-                    "<'{}.{}' {}:{}>",
-                    actor_label, proc_label, self.actor_id, self.port
-                )
+                write!(f, "<'{}.{}' {}>", actor_label, proc_label, self)
             }
             (Some(actor_label), None) => {
-                write!(f, "<'{}' {}:{}>", actor_label, self.actor_id, self.port)
+                write!(f, "<'{}' {}>", actor_label, self)
             }
             (None, Some(proc_label)) => {
-                write!(f, "<'.{}' {}:{}>", proc_label, self.actor_id, self.port)
+                write!(f, "<'.{}' {}>", proc_label, self)
             }
             (None, None) => {
-                write!(f, "<{}:{}>", self.actor_id, self.port)
+                write!(f, "<{}>", self)
             }
         }
     }
@@ -1700,7 +1709,7 @@ mod tests {
             Some(Label::new("my-actor").unwrap()),
         );
         let port = Port::from(42);
-        let pid = PortId::new(actor_id.clone(), port);
+        let pid = PortId::new(actor_id.clone(), port.clone());
         assert_eq!(pid.actor_id(), &actor_id);
         assert_eq!(pid.port(), port);
         assert_eq!(pid.proc_id(), &proc_id);

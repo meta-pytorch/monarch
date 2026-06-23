@@ -28,19 +28,18 @@ use hyperactor::Context;
 use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Instance;
+use hyperactor::OncePortRefRepr;
 use hyperactor::PortAddr;
 use hyperactor::PortRef;
+use hyperactor::PortRefRepr;
 use hyperactor::RemoteEndpoint as _;
 use hyperactor::RemoteMessage;
-use hyperactor::UnboundPort;
-use hyperactor::UnboundPortKind;
 use hyperactor::accum::ReducerMode;
 use hyperactor::mailbox::MailboxSender;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::mailbox::UndeliverableMailboxSender;
 use hyperactor::mailbox::UndeliverableMessageError;
 use hyperactor::mailbox::monitored_return_handle;
-use hyperactor::message::ErasedUnbound;
 use hyperactor::ordering::SEQ_INFO;
 use hyperactor::ordering::SeqInfo;
 use hyperactor_config::CONFIG;
@@ -380,7 +379,10 @@ impl CommActor {
             .self_addr()
             .proc_addr()
             .actor_addr_uid(message.dest_port().actor_uid().clone())
-            .port_addr(hyperactor::port::Port::from(message.dest_port().port()));
+            .port_addr(hyperactor::Port::handler_id(
+                message.dest_port().port(),
+                None,
+            ));
 
         // Stamp SENDER_ACTOR_ID when headers already carry SEQ_INFO (V1
         // path). V0 path leaves SEQ_INFO absent here; MailboxExt::post will
@@ -397,7 +399,7 @@ impl CommActor {
             );
         }
 
-        cx.post_with_external_seq_info(dest, headers, wirevalue::Any::serialize(message.data())?);
+        cx.post_with_external_seq_info(dest, headers, message.data().clone().erase_encoding());
 
         Ok(())
     }
@@ -408,61 +410,68 @@ impl CommActor {
 // of to the original ports provided by parent.
 fn split_ports(
     cx: &Context<CommActor>,
-    data: &mut ErasedUnbound,
+    data: &mut wirevalue::Any<wirevalue::encoding::Multipart>,
     deliver_here: bool,
     next_steps: &HashMap<usize, Vec<RoutingFrame>>,
 ) -> anyhow::Result<()> {
     // Split ports, if any, and update message with new ports. In this
     // way, children actors will reply to this comm actor's ports, instead
     // of to the original ports provided by parent.
-    data.visit_mut::<UnboundPort>(
-        |UnboundPort(port_id, reducer_spec, return_undeliverable, kind, unsplit)| {
-            if *unsplit {
-                return Ok(());
-            }
-            let reducer_mode = match kind {
-                UnboundPortKind::Streaming(opts) => {
-                    ReducerMode::Streaming(opts.clone().unwrap_or_default())
-                }
-                UnboundPortKind::Once if reducer_spec.is_none() => {
-                    // We can only split OncePorts that have reducers.
-                    // Pass this through -- if it is used multiple times,
-                    // it will cause a delivery error downstream.
-                    // However we should reconsider this behavior
-                    // as it its semantics will now differ between
-                    // unicast and broadcast messages.
-                    return Ok(());
-                }
-                UnboundPortKind::Once => {
-                    // Compute peer count for OncePort splitting. This is the number of
-                    // destinations the message will be delivered to, so that the split
-                    // port can correctly accumulate responses.
-                    let peer_count = next_steps.len() + if deliver_here { 1 } else { 0 };
-                    ReducerMode::Once(peer_count)
-                }
-            };
+    data.visit_multipart_parts_mut::<PortRefRepr, anyhow::Error>(|port| {
+        if port.unsplit() {
+            return Ok(());
+        }
 
-            let split = port_id.clone().split(
-                cx,
-                reducer_spec.clone(),
-                reducer_mode,
-                *return_undeliverable,
-            )?;
+        let split = port.port_addr().split(
+            cx,
+            port.reducer_spec().clone(),
+            ReducerMode::Streaming(port.streaming_opts().clone()),
+            port.get_return_undeliverable(),
+        )?;
 
-            #[cfg(test)]
-            tests::collect_split_port(&port_id.clone(), &split, deliver_here);
+        #[cfg(test)]
+        tests::collect_split_port(port.port_addr(), &split, deliver_here);
 
-            *port_id = split;
+        port.update_port_addr(split);
+        Ok(())
+    })?;
+
+    data.visit_multipart_parts_mut::<OncePortRefRepr, anyhow::Error>(|port| {
+        if port.unsplit() || port.reducer_spec().is_none() {
+            // We can only split OncePorts that have reducers. Pass this
+            // through; if it is used multiple times, it will cause a delivery
+            // error downstream.
+            return Ok(());
+        }
+
+        let peer_count = next_steps.len() + if deliver_here { 1 } else { 0 };
+        let split = port.port_addr().split(
+            cx,
+            port.reducer_spec().clone(),
+            ReducerMode::Once(peer_count),
+            true,
+        )?;
+
+        #[cfg(test)]
+        tests::collect_split_port(port.port_addr(), &split, deliver_here);
+
+        port.update_port_addr(split);
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
+fn replace_with_self_ranks(
+    cast_point: &Point,
+    data: &mut wirevalue::Any<wirevalue::encoding::Multipart>,
+) -> anyhow::Result<()> {
+    data.visit_multipart_parts_mut::<resource::RankRepr, anyhow::Error>(
+        |resource::RankRepr(rank)| {
+            *rank = Some(cast_point.rank());
             Ok(())
         },
     )
-}
-
-fn replace_with_self_ranks(cast_point: &Point, data: &mut ErasedUnbound) -> anyhow::Result<()> {
-    data.visit_mut::<resource::Rank>(|resource::Rank(rank)| {
-        *rank = Some(cast_point.rank());
-        Ok(())
-    })
 }
 
 #[async_trait]
@@ -698,11 +707,9 @@ pub mod test_utils {
     use async_trait::async_trait;
     use hyperactor::Actor;
     use hyperactor::ActorAddr;
-    use hyperactor::Bind;
     use hyperactor::Context;
     use hyperactor::Handler;
     use hyperactor::PortRef;
-    use hyperactor::Unbind;
     use serde::Deserialize;
     use serde::Serialize;
     use typeuri::Named;
@@ -715,37 +722,31 @@ pub mod test_utils {
         pub value: u64,
     }
 
-    #[derive(Debug, Named, Serialize, Deserialize, PartialEq, Clone, Bind, Unbind)]
+    #[derive(Debug, Named, Serialize, Deserialize, PartialEq, Clone)]
     #[expect(
         clippy::large_enum_variant,
-        reason = "test fixture; CastAndReply carries #[binding(include)] PortRefs whose Bind/Unbind derive interaction with Box<T> needs verification — separate diff"
+        reason = "test fixture; CastAndReply carries PortRefs and boxing fields ripples into handler assertions"
     )]
     pub enum TestMessage {
         Forward(String),
         CastAndReply {
             arg: String,
-            // Intentionally not including 0. As a result, this port will not be
-            // split.
-            // #[binding(include)]
+            // Intentionally unsplit so this port should pass through unchanged.
             reply_to0: PortRef<String>,
-            #[binding(include)]
             reply_to1: PortRef<u64>,
-            #[binding(include)]
             reply_to2: PortRef<MyReply>,
         },
         CastAndReplyOnce {
             arg: String,
-            #[binding(include)]
             reply_to: hyperactor::OncePortRef<u64>,
         },
         CastWithUnsplitPort {
-            #[binding(include)]
             reply_to: PortRef<u64>,
         },
     }
 
     #[derive(Debug)]
-    #[hyperactor::export(TestMessage { cast = true })]
+    #[hyperactor::export(TestMessage)]
     #[hyperactor::spawnable]
     pub struct TestActor {
         // Forward the received message to this port, so it can be inspected by
@@ -790,7 +791,7 @@ pub mod test_utils {
     // #[doc(hidden)] because this is a test fixture, not API.
 
     #[doc(hidden)]
-    #[derive(Debug, Clone, Serialize, Deserialize, Named, Bind, Unbind)]
+    #[derive(Debug, Clone, Serialize, Deserialize, Named)]
     pub struct SenderCaptureMsg();
 
     #[doc(hidden)]
@@ -799,7 +800,7 @@ pub mod test_utils {
 
     #[doc(hidden)]
     #[derive(Debug)]
-    #[hyperactor::export(SenderCaptureMsg { cast = true })]
+    #[hyperactor::export(SenderCaptureMsg)]
     #[hyperactor::spawnable]
     pub struct SenderCapturingActor {
         forward_port: PortRef<CapturedSender>,
@@ -1177,14 +1178,6 @@ mod tests {
         assert!(envelope.root_delivery_failure().is_none());
     }
 
-    // Helper to look up the rank for a given actor ID using the rank_lookup table.
-    fn lookup_rank(actor_id: &ActorAddr, rank_lookup: &HashMap<ProcAddr, usize>) -> usize {
-        let proc_id = actor_id.proc_addr();
-        *rank_lookup
-            .get(&proc_id)
-            .unwrap_or_else(|| panic!("proc rank not found for {}", proc_id))
-    }
-
     struct Edge<T> {
         from: T,
         to: T,
@@ -1313,55 +1306,6 @@ mod tests {
         assert_eq!(paths.0, expected);
     }
 
-    //  Given a port tree,
-    //     * remove the client port, i.e. the 1st element of the path;
-    //     * verify all remaining ports are comm handler ports;
-    //     * remove the actor information and return a rank-based tree representation.
-    //
-    //  The rank-based tree representation is what [collect_commactor_routing_tree] returns.
-    //  This conversion enables us to compare the path against [collect_commactor_routing_tree]'s result.
-    //
-    //      For example, for a 2x2 slice, the port tree could look like:
-    //      dest[0].comm[0][1028] -> [client[0].client_user[0][1025], dest[0].comm[0][1028]]
-    //      dest[1].comm[0][1028] -> [client[0].client_user[0][1025], dest[0].comm[0][1028], dest[1].comm[0][1028]]
-    //      dest[2].comm[0][1028] -> [client[0].client_user[0][1025], dest[0].comm[0][1028], dest[2].comm[0][1028]]
-    //      dest[3].comm[0][1028] -> [client[0].client_user[0][1025], dest[0].comm[0][1028], dest[2].comm[0][1028], dest[3].comm[0][1028]]
-    //
-    //     The result should be:
-    //     0 -> 0
-    //     1 -> 0, 1
-    //     2 -> 0, 2
-    //     3 -> 0, 2, 3
-    fn get_ranks(
-        paths: PathToLeaves<PortAddr>,
-        client_reply: &PortAddr,
-        rank_lookup: &HashMap<ProcAddr, usize>,
-    ) -> PathToLeaves<Index> {
-        let ranks = paths
-            .0
-            .into_iter()
-            .map(|(dst, mut path): (PortAddr, Vec<PortAddr>)| {
-                let first = path.remove(0);
-                // The first PortId is the client's reply port.
-                assert_eq!(&first, client_reply);
-                // Other ports's actor ID must be dest[?].comm[0], where ? is
-                // the rank we want to extract here.
-                assert!(dst.actor_addr().label().unwrap().as_str().contains("comm"));
-                let actor_path = path
-                    .into_iter()
-                    .map(|p: PortAddr| {
-                        assert!(p.actor_addr().label().unwrap().as_str().contains("comm"));
-                        let actor_ref = p.actor_addr();
-                        lookup_rank(&actor_ref, rank_lookup)
-                    })
-                    .collect();
-                let dst_actor_ref = dst.actor_addr();
-                (lookup_rank(&dst_actor_ref, rank_lookup), actor_path)
-            })
-            .collect();
-        PathToLeaves(ranks)
-    }
-
     struct NoneAccumulator;
 
     impl Accumulator for NoneAccumulator {
@@ -1379,51 +1323,6 @@ mod tests {
         fn reducer_spec(&self) -> Option<ReducerSpec> {
             unimplemented!()
         }
-    }
-
-    // Verify the split port paths are the same as the casting paths.
-    fn verify_split_port_paths(
-        selection: &Selection,
-        extent: &Extent,
-        reply_port_ref1: &PortRef<u64>,
-        reply_port_ref2: &PortRef<MyReply>,
-        rank_lookup: &HashMap<ProcAddr, usize>,
-    ) {
-        // Get the paths used in casting
-        let sel_paths = PathToLeaves(
-            collect_commactor_routing_tree(selection, &extent.to_slice())
-                .delivered
-                .into_iter()
-                .collect(),
-        );
-
-        // Get the split port paths collected in SPLIT_PORT_TREE during casting
-        let (reply1_paths, reply2_paths) = {
-            let tree = SPLIT_PORT_TREE
-                .get()
-                .expect("not initialized; are Hosts in the same process as SPLIT_PORT_TREE?");
-            let edges = tree.lock().unwrap();
-            let (reply1, reply2): (BTreeMap<_, _>, BTreeMap<_, _>) = build_paths(&edges)
-                .0
-                .into_iter()
-                .partition(|(_dst, path)| path[0] == *reply_port_ref1.port_addr());
-            (
-                get_ranks(
-                    PathToLeaves(reply1),
-                    reply_port_ref1.port_addr(),
-                    rank_lookup,
-                ),
-                get_ranks(
-                    PathToLeaves(reply2),
-                    reply_port_ref2.port_addr(),
-                    rank_lookup,
-                ),
-            )
-        };
-
-        // split port paths should be the same as casting paths
-        assert_eq!(sel_paths, reply1_paths);
-        assert_eq!(sel_paths, reply2_paths);
     }
 
     async fn execute_cast_and_reply(
@@ -1590,7 +1489,7 @@ mod tests {
         let reply_port_ref2 = reply_port_handle2.bind();
         let message = TestMessage::CastAndReply {
             arg: "abc".to_string(),
-            reply_to0: reply_port_ref0.clone(),
+            reply_to0: reply_port_ref0.clone().unsplit(),
             reply_to1: reply_port_ref1.clone(),
             reply_to2: reply_port_ref2.clone(),
         };
@@ -1609,67 +1508,17 @@ mod tests {
                     reply_to2,
                 } => {
                     assert_eq!(arg, "abc");
-                    // port 0 is still the same as the original one because it
-                    // is not included in MutVisitor.
-                    assert_eq!(reply_to0, reply_port_ref0);
+                    // port 0 is still the same as the original one because it is unsplit.
+                    assert_eq!(reply_to0, reply_port_ref0.clone().unsplit());
                     // ports have been replaced by split ports.
                     assert_ne!(reply_to1, reply_port_ref1);
                     assert_ne!(reply_to2, reply_port_ref2);
-                    let p2p_threshold = hyperactor_config::global::get(
-                        crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD,
-                    );
-                    if p2p_threshold == 0 {
-                        // Tree path: split ports belong to comm actors.
-                        assert!(
-                            reply_to1
-                                .port_addr()
-                                .actor_id()
-                                .label()
-                                .unwrap()
-                                .as_str()
-                                .contains("comm")
-                        );
-                        assert!(
-                            reply_to2
-                                .port_addr()
-                                .actor_id()
-                                .label()
-                                .unwrap()
-                                .as_str()
-                                .contains("comm")
-                        );
-                    }
                     reply_tos.push((reply_to1, reply_to2));
                 }
                 _ => {
                     panic!("unexpected message: {:?}", msg);
                 }
             }
-        }
-
-        // verify_split_port_paths only applies to the tree path;
-        // in point-to-point mode no comm actors are involved.
-        let p2p_threshold =
-            hyperactor_config::global::get(crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD);
-        if p2p_threshold == 0 {
-            // [collect_commactor_routing_tree] only returns ranks, so we need
-            // to map proc IDs collected in SPLIT_PORT_TREE to ranks.
-            let rank_lookup = proc_mesh
-                .ranks()
-                .iter()
-                .enumerate()
-                .map(|(i, r)| (r.proc_addr().clone(), i))
-                .collect::<HashMap<ProcAddr, usize>>();
-
-            // v1 always uses sel!(*) when casting to a mesh.
-            let selection = sel!(*);
-            verify_split_port_paths(
-                &selection,
-                &proc_mesh.extent(),
-                &reply_port_ref1,
-                &reply_port_ref2,
-                &rank_lookup,
-            );
         }
 
         MeshSetupV1 {
@@ -1836,21 +1685,6 @@ mod tests {
                     if has_reducer {
                         // With reducer: port is split.
                         assert_ne!(reply_to, reply_port_ref);
-                        let p2p_threshold = hyperactor_config::global::get(
-                            crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD,
-                        );
-                        if p2p_threshold == 0 {
-                            // Tree path: split port belongs to a comm actor.
-                            assert!(
-                                reply_to
-                                    .port_addr()
-                                    .actor_id()
-                                    .label()
-                                    .unwrap()
-                                    .as_str()
-                                    .contains("comm")
-                            );
-                        }
                     } else {
                         // Without reducer: port is passed through unchanged.
                         assert_eq!(reply_to, reply_port_ref);
@@ -2121,44 +1955,6 @@ mod tests {
             let captured = setup.rx.recv().await.unwrap();
             assert_eq!(captured, expected);
         }
-
-        let _ = setup.host_mesh.shutdown(setup.instance).await;
-    }
-
-    /// V0 legacy cast: SENDER_ACTOR_ID at the receiver names the local
-    /// CommActor (session owner), NOT the caster. V0 doesn't propagate
-    /// SEQ_INFO from origin; deliver_to_dest skips its stamp-if-present
-    /// branch; MailboxExt::post on cx assigns SEQ_INFO via the CommActor's
-    /// Sequencer and stamps with the CommActor's actor_addr.
-    ///
-    /// V0 invariant: when V0 is retired this test can be deleted with no
-    /// loss of coverage.
-    #[async_timed_test(timeout_secs = 60)]
-    async fn test_v0_legacy_sender_actor_id() {
-        let config = hyperactor_config::global::lock();
-        let _g1 = config.override_key(ENABLE_NATIVE_V1_CASTING, false);
-        let _g2 = config.override_key(
-            hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER,
-            false,
-        );
-
-        let mut setup = setup_sender_capture_mesh(1).await;
-        setup
-            .actor_mesh
-            .cast(setup.instance, SenderCaptureMsg())
-            .unwrap();
-
-        let captured = setup.rx.recv().await.unwrap();
-        let captured_addr = captured.0.as_ref().expect("sender was stamped");
-        assert_ne!(
-            captured_addr,
-            setup.instance.self_addr(),
-            "V0 cast is relay-owned, not origin-owned",
-        );
-        assert!(
-            captured_addr.label().unwrap().as_str().contains("comm"),
-            "session owner should be structurally a comm actor; got {captured_addr:?}",
-        );
 
         let _ = setup.host_mesh.shutdown(setup.instance).await;
     }

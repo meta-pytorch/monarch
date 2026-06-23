@@ -527,7 +527,6 @@ def test_all_actors_in_proc_mesh(cleanup_callbacks) -> None:
             "telemetry",
             "logger",
             "setup",
-            "comm",
         }
 
         # For every child actor mesh, verify that actors exist in the actors table
@@ -610,7 +609,6 @@ def test_all_actors_in_host_mesh(cleanup_callbacks) -> None:
             "telemetry",
             "logger",
             "setup",
-            "comm",
         }
 
         # For every child actor mesh, verify that actors exist in the actors table
@@ -666,6 +664,17 @@ def test_actor_status_events_table() -> None:
         event_count = len(result_dict.get("timestamp_us", []))
         assert event_count > 0, (
             f"Expected at least one actor status event, got {event_count}"
+        )
+
+        joined = engine.query(
+            "SELECT ase.id FROM actor_status_events ase "
+            "INNER JOIN actors a ON ase.actor_id = a.id "
+            "WHERE a.display_name LIKE '%status_test_worker%'"
+        )
+        joined_count = len(joined.to_pydict().get("id", []))
+        assert joined_count > 0, (
+            "Expected actor_status_events.actor_id to join actors.id for "
+            f"status_test_worker, got {joined_count} joined rows"
         )
 
         # Verify new_status values are valid ActorStatus arm names
@@ -795,8 +804,8 @@ def test_sent_messages_table(
     All send paths (call, call_one, broadcast, choose) go through
     cast_with_selection in actor_mesh.rs, which calls notify_sent_message
     with a SentMessageEvent containing:
-      - sender_actor_id: hash of the sending actor's ActorAddr
-      - actor_mesh_id: hash of the target actor mesh name
+      - sender_actor_id: hash of the sending actor's ActorId
+      - actor_mesh_id: hash of the target (ProcMeshId, ActorMeshId)
       - view_json: serialized ndslice::Region of the current view
       - shape_json: serialized ndslice::Shape (converted from the Region)
     """
@@ -847,6 +856,25 @@ def test_sent_messages_table(
         joined_count = len(joined.to_pydict().get("id", []))
         assert joined_count == 42, (
             f"Expected 42 sent_messages via {send_path}, got {joined_count}"
+        )
+
+        actor_joined = engine.query(
+            "SELECT COUNT(DISTINCT sm.id) AS message_count, "
+            "COUNT(DISTINCT a.id) AS actor_count "
+            "FROM sent_messages sm "
+            "JOIN actors a ON sm.actor_mesh_id = a.mesh_id "
+            "JOIN meshes m ON a.mesh_id = m.id "
+            f"WHERE m.given_name = '{mesh_name}'"
+        )
+        actor_joined_dict = actor_joined.to_pydict()
+        joined_message_count = actor_joined_dict["message_count"][0]
+        joined_actor_count = actor_joined_dict["actor_count"][0]
+        assert joined_message_count == 42, (
+            "Expected sent_messages.actor_mesh_id to join actors.mesh_id for "
+            f"{send_path}, got {joined_message_count} messages"
+        )
+        assert joined_actor_count == 2, (
+            f"Expected 2 target actors for {send_path}, got {joined_actor_count}"
         )
 
         # Verify view_json (ndslice Region) and shape_json (ndslice Shape).
@@ -911,7 +939,7 @@ def test_messages_table(cleanup_callbacks) -> None:
             "from_actor_id",
             "to_actor_id",
             "endpoint",
-            "port_id",
+            "port_index",
         ], f"Unexpected columns: {column_names}"
 
         # Verify rows exist
@@ -932,6 +960,20 @@ def test_messages_table(cleanup_callbacks) -> None:
         assert joined_count == 10, (
             f"Expected 10 messages received by msg_test_worker, got {joined_count}"
         )
+
+        ports_by_actor = engine.query(
+            "SELECT m.to_actor_id, COUNT(*) AS message_count, "
+            "COUNT(DISTINCT m.port_index) AS port_count "
+            "FROM messages m "
+            "JOIN actors a ON m.to_actor_id = a.id "
+            "JOIN meshes mesh ON a.mesh_id = mesh.id "
+            "WHERE mesh.given_name = 'msg_test_worker' "
+            "AND m.endpoint = 'ping' AND m.port_index IS NOT NULL "
+            "GROUP BY m.to_actor_id"
+        ).to_pydict()
+        assert len(ports_by_actor["to_actor_id"]) == 2, ports_by_actor
+        assert ports_by_actor["message_count"] == [5, 5], ports_by_actor
+        assert ports_by_actor["port_count"] == [1, 1], ports_by_actor
 
 
 @pytest.mark.timeout(120)

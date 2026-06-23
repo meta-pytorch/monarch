@@ -17,7 +17,6 @@ use anyhow::Result;
 use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
-use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
 use hyperactor::HandleClient;
@@ -25,7 +24,6 @@ use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
-use hyperactor::Unbind;
 use hyperactor::context;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::ActorMesh;
@@ -59,9 +57,7 @@ use crate::runtime::monarch_with_gil;
     Named,
     Handler,
     HandleClient,
-    RefClient,
-    Bind,
-    Unbind
+    RefClient
 )]
 pub enum LoggerRuntimeMessage {
     SetLogging { level: u8 },
@@ -69,7 +65,7 @@ pub enum LoggerRuntimeMessage {
 
 /// Simple Rust actor that invokes python logger APIs. It needs a python runtime.
 #[derive(Debug)]
-#[hyperactor::export(handlers = [LoggerRuntimeMessage {cast = true}])]
+#[hyperactor::export(handlers = [LoggerRuntimeMessage])]
 #[hyperactor::spawnable]
 pub struct LoggerRuntimeActor {
     logger: Arc<Py<PyAny>>,

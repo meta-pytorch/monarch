@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -31,12 +32,15 @@ use hyperactor_mesh::host_mesh::host_agent::GetLocalProcClient;
 use hyperactor_mesh::host_mesh::host_agent::HostAgent;
 use hyperactor_mesh::host_mesh::host_agent::ShutdownHost;
 use hyperactor_mesh::mesh_admin::MeshAdminMessageClient;
+use hyperactor_mesh::mesh_id::ActorMeshId;
 use hyperactor_mesh::mesh_id::HostMeshId;
 use hyperactor_mesh::mesh_id::ProcMeshId;
 use hyperactor_mesh::proc_agent::GetProcClient;
 use hyperactor_mesh::proc_mesh::ProcRef;
+use hyperactor_mesh::proc_mesh::telemetry_actor_mesh_id;
 use hyperactor_mesh::shared_cell::SharedCell;
 use hyperactor_mesh::transport::default_bind_spec;
+use hyperactor_telemetry::hash_to_u64;
 use ndslice::View;
 use ndslice::view::RankedSliceable;
 use pyo3::IntoPyObjectExt;
@@ -333,12 +337,53 @@ static HOST_SHUTDOWN_HANDLE: OnceLock<
     tokio::sync::Mutex<Option<hyperactor_mesh::bootstrap::HostShutdownHandle>>,
 > = OnceLock::new();
 
+enum ViaServeState {
+    Idle,
+    Starting,
+    Serving(Box<hyperactor::gateway::GatewayServeHandle>),
+}
+
 /// Handle for the via-mode duplex session opened by
 /// [`Gateway::serve_via`]. Kept until shutdown so the cluster-inbound
 /// serve and outbound duplex stay alive for the host's lifetime.
-static VIA_SERVE_HANDLE: OnceLock<
-    tokio::sync::Mutex<Option<hyperactor::gateway::GatewayServeHandle>>,
-> = OnceLock::new();
+static VIA_SERVE_HANDLE: OnceLock<Mutex<ViaServeState>> = OnceLock::new();
+
+async fn serve_global_gateway_via(addr: ChannelAddr) -> PyResult<()> {
+    let state = VIA_SERVE_HANDLE.get_or_init(|| Mutex::new(ViaServeState::Idle));
+    {
+        let mut state = state.lock().unwrap();
+        match &*state {
+            ViaServeState::Idle => {
+                *state = ViaServeState::Starting;
+            }
+            ViaServeState::Starting | ViaServeState::Serving(_) => {
+                return Err(PyException::new_err(
+                    "via serve handle is already initialized; \
+                     bootstrap_host called more than once with a via address",
+                ));
+            }
+        }
+    }
+
+    let result = Gateway::global().clone().serve_via(addr).await;
+    let mut state = state.lock().unwrap();
+    match result {
+        Ok(handle) => {
+            assert!(
+                matches!(&*state, ViaServeState::Starting),
+                "via serve state changed while initializing"
+            );
+            *state = ViaServeState::Serving(Box::new(handle));
+            Ok(())
+        }
+        Err(err) => {
+            if matches!(&*state, ViaServeState::Starting) {
+                *state = ViaServeState::Idle;
+            }
+            Err(PyException::new_err(err.to_string()))
+        }
+    }
+}
 
 /// Bootstrap the client host and root client actor.
 ///
@@ -380,39 +425,14 @@ fn bootstrap_host(
         .transpose()?;
 
     PyPythonTask::new(async move {
-        // Take the process-wide global gateway up front so we can
-        // `serve_via` it before the host registers its system/local
-        // procs. With via active first, every port bound on those procs
-        // inherits the via prefix automatically — no separate
-        // post-bootstrap registration step.
+        // Take the process-wide global gateway up front so `serve_via`
+        // installs the cluster route before host bootstrap creates any
+        // actors or ports. Host bootstrap will serve its own backend
+        // and frontend endpoints, while the via session remains active
+        // as an outbound route and local delivery location.
         let gateway = Gateway::global().clone();
         if let Some(addr) = via_addr {
-            let via_handle = VIA_SERVE_HANDLE.get_or_init(|| tokio::sync::Mutex::new(None));
-            if via_handle.lock().await.is_some() {
-                return Err(PyException::new_err(
-                    "via serve handle is already initialized; \
-                     bootstrap_host called more than once with a via address",
-                ));
-            }
-
-            let mut serve_handle = Some(
-                gateway
-                    .serve_via(addr)
-                    .await
-                    .map_err(|e| PyException::new_err(e.to_string()))?,
-            );
-            let mut via_handle = via_handle.lock().await;
-            if via_handle.is_some() {
-                drop(via_handle);
-                let mut serve_handle = serve_handle.expect("serve_handle is still unstored");
-                serve_handle.stop("duplicate local host bootstrap");
-                let _ = serve_handle.join().await;
-                return Err(PyException::new_err(
-                    "via serve handle is already initialized; \
-                     bootstrap_host called more than once with a via address",
-                ));
-            }
-            *via_handle = serve_handle.take();
+            serve_global_gateway_via(addr).await?;
         }
 
         let (host_mesh_agent, shutdown_handle) = host(
@@ -455,7 +475,8 @@ fn bootstrap_host(
                 0,
                 local_proc_agent.bind(),
             ),
-        );
+        )
+        .map_err(|e| PyException::new_err(e.to_string()))?;
 
         let local_proc = local_proc_agent
             .get_proc(&temp_instance)
@@ -472,7 +493,7 @@ fn bootstrap_host(
             let now = std::time::SystemTime::now();
 
             let host_name_str = host_mesh.id().to_string();
-            let host_mesh_id = hyperactor_telemetry::hash_to_u64(&host_name_str);
+            let host_mesh_id = hash_to_u64(host_mesh.id());
             hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
                 id: host_mesh_id,
                 timestamp: now,
@@ -489,18 +510,18 @@ fn bootstrap_host(
                 parent_view_json: None,
             });
 
-            let host_agent_id = host_mesh_agent.actor_addr();
+            let host_agent_addr = host_mesh_agent.actor_addr();
             hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
-                id: hyperactor_telemetry::hash_to_u64(host_agent_id),
+                id: hyperactor_telemetry::hash_to_u64(host_agent_addr.id()),
                 timestamp: now,
                 mesh_id: host_mesh_id,
                 rank: 0,
-                full_name: host_agent_id.to_string(),
+                full_name: host_agent_addr.to_string(),
                 display_name: None,
             });
 
             let proc_id_str = proc_mesh.id().to_string();
-            let proc_mesh_id = hyperactor_telemetry::hash_to_u64(&proc_id_str);
+            let proc_mesh_id = hash_to_u64(proc_mesh.id());
             hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
                 id: proc_mesh_id,
                 timestamp: now,
@@ -517,18 +538,19 @@ fn bootstrap_host(
                 parent_view_json: None,
             });
 
-            let proc_agent_id = local_proc_agent.actor_addr();
+            let proc_agent_addr = local_proc_agent.actor_addr();
             hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
-                id: hyperactor_telemetry::hash_to_u64(proc_agent_id),
+                id: hyperactor_telemetry::hash_to_u64(proc_agent_addr.id()),
                 timestamp: now,
                 mesh_id: proc_mesh_id,
                 rank: 0,
-                full_name: proc_agent_id.to_string(),
+                full_name: proc_agent_addr.to_string(),
                 display_name: None,
             });
 
+            let client_mesh_actor_id = ActorMeshId::singleton(Label::new("client").unwrap());
             let client_mesh_name = format!("{}/client", proc_mesh.id());
-            let client_mesh_id = hyperactor_telemetry::hash_to_u64(&client_mesh_name);
+            let client_mesh_id = telemetry_actor_mesh_id(proc_mesh.id(), &client_mesh_actor_id);
             hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
                 id: client_mesh_id,
                 timestamp: now,
@@ -541,7 +563,7 @@ fn bootstrap_host(
             });
 
             hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
-                id: hyperactor_telemetry::hash_to_u64(instance.self_addr()),
+                id: hyperactor_telemetry::hash_to_u64(instance.self_addr().id()),
                 timestamp: now,
                 mesh_id: client_mesh_id,
                 rank: 0,
@@ -587,7 +609,7 @@ fn shutdown_local_host_mesh() -> PyResult<PyPythonTask> {
         // - MESH_TERMINATE_TIMEOUT = 10 seconds
         // - MESH_TERMINATE_CONCURRENCY = 16
 
-        let (port, _) = instance.open_port();
+        let (port, _) = instance.open_port::<usize>();
         let mut port = port.bind();
         // We don't need the ack, and this temporary proc doesn't have a mailbox
         // receiver set up anyways. Just ignore the message.
@@ -597,6 +619,7 @@ fn shutdown_local_host_mesh() -> PyResult<PyPythonTask> {
             ShutdownHost {
                 timeout: Duration::from_secs(10),
                 max_in_flight: 16,
+                rank: hyperactor_mesh::resource::Rank::new(0),
                 ack: port,
             },
         );
@@ -609,9 +632,14 @@ fn shutdown_local_host_mesh() -> PyResult<PyPythonTask> {
             handle.join().await;
         }
 
-        if let Some(lock) = VIA_SERVE_HANDLE.get()
-            && let Some(mut handle) = lock.lock().await.take()
-        {
+        let via_handle = VIA_SERVE_HANDLE.get().and_then(|lock| {
+            let mut state = lock.lock().unwrap();
+            match std::mem::replace(&mut *state, ViaServeState::Idle) {
+                ViaServeState::Serving(handle) => Some(*handle),
+                ViaServeState::Idle | ViaServeState::Starting => None,
+            }
+        });
+        if let Some(mut handle) = via_handle {
             handle.stop("local host shutdown");
             let _ = handle.join().await;
         }

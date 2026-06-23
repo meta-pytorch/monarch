@@ -90,18 +90,18 @@ class TestCommands(unittest.TestCase):
         mock_schedule.assert_called_once()
         self.assertEqual(server_handle, "slurm:///test_job_id")
 
-    @mock.patch("monarch._src.tools.commands.Runner.cancel")
+    @mock.patch("torchx.runner.Runner.cancel")
     def test_kill(self, mock_cancel: mock.MagicMock) -> None:
         handle = "slurm:///test_job_id"
         commands.kill(handle)
         mock_cancel.assert_called_once_with(handle)
 
-    @mock.patch("monarch._src.tools.commands.Runner.status", return_value=None)
+    @mock.patch("torchx.runner.Runner.status", return_value=None)
     def test_info_non_existent_server(self, _: mock.MagicMock) -> None:
         self.assertIsNone(commands.info("slurm:///job-does-not-exist"))
 
-    @mock.patch("monarch._src.tools.commands.Runner.describe")
-    @mock.patch("monarch._src.tools.commands.Runner.status")
+    @mock.patch("torchx.runner.Runner.describe")
+    @mock.patch("torchx.runner.Runner.status")
     def test_info(
         self, mock_status: mock.MagicMock, mock_describe: mock.MagicMock
     ) -> None:

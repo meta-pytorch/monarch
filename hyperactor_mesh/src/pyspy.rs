@@ -1070,7 +1070,7 @@ mod tests {
             }],
             warnings: vec![],
         };
-        let any = wirevalue::Any::serialize(&original).expect("serialize");
+        let any: wirevalue::Any = wirevalue::Any::serialize(&original).expect("serialize");
         let restored: PySpyResult = any.deserialized().expect("deserialize");
         assert_eq!(original, restored);
     }

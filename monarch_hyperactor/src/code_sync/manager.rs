@@ -23,12 +23,10 @@ use futures::try_join;
 use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
-use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::RemoteSpawn;
-use hyperactor::Unbind;
 use hyperactor::context;
 use hyperactor::handle;
 use hyperactor_config::Flattrs;
@@ -147,10 +145,10 @@ pub struct WorkspaceConfig {
     pub shape: WorkspaceShape,
 }
 
-#[derive(Handler, Clone, Serialize, Deserialize, Debug, Named, Bind, Unbind)]
+#[derive(Handler, Clone, Serialize, Deserialize, Debug, Named)]
 #[expect(
     clippy::large_enum_variant,
-    reason = "actor message enum with Handler/Bind/Unbind derives; boxing fields ripples into handler call sites and may require derive-macro changes — separate diff"
+    reason = "actor message enum with handler-generated call sites; boxing fields ripples into handlers"
 )]
 pub enum CodeSyncMessage {
     Sync {
@@ -169,7 +167,7 @@ pub enum CodeSyncMessage {
 }
 wirevalue::register_type!(CodeSyncMessage);
 
-#[derive(Clone, Serialize, Deserialize, Debug, Named, Bind, Unbind)]
+#[derive(Clone, Serialize, Deserialize, Debug, Named)]
 pub struct SetActorMeshMessage {
     pub actor_mesh: hyperactor_mesh::ActorMeshRef<CodeSyncManager>,
 }
@@ -182,8 +180,8 @@ wirevalue::register_type!(CodeSyncManagerParams);
 #[derive(Debug)]
 #[hyperactor::export(
     handlers = [
-        CodeSyncMessage { cast = true },
-        SetActorMeshMessage { cast = true }
+        CodeSyncMessage,
+        SetActorMeshMessage
     ],
 )]
 #[hyperactor::spawnable]

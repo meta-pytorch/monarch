@@ -101,7 +101,7 @@ class SchemaTest(unittest.TestCase):
             "from_actor_id",
             "to_actor_id",
             "endpoint",
-            "port_id",
+            "port_index",
         ]
         self.assertEqual(self._columns("messages"), expected)
 

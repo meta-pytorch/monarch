@@ -676,7 +676,12 @@ impl PyRdmaBuffer {
             buffer
                 .read_into_local(client.deref(), dst.inner, timeout)
                 .await
-                .map_err(|e| PyException::new_err(format!("failed to read into buffer: {}", e)))?;
+                .map_err(|e| {
+                    PyException::new_err(format!(
+                        "failed to read from remote buffer into local buffer: {}",
+                        e
+                    ))
+                })?;
 
             Ok(())
         })
@@ -701,7 +706,12 @@ impl PyRdmaBuffer {
             buffer
                 .write_from_local(client.deref(), src.inner, timeout)
                 .await
-                .map_err(|e| PyException::new_err(format!("failed to write from buffer: {}", e)))?;
+                .map_err(|e| {
+                    PyException::new_err(format!(
+                        "failed to write from local buffer into remote buffer: {}",
+                        e
+                    ))
+                })?;
 
             Ok(())
         })
