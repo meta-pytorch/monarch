@@ -212,6 +212,24 @@ impl<I: IbvDomainImpl> IbvDomain<I> {
     pub fn device_info(&self) -> &IbvDeviceInfo {
         &self.device_info
     }
+
+    /// Register `mem` against this domain's PD, dispatching to the backend
+    /// [`IbvDomainImpl`] strategy.
+    pub fn register_mr(
+        self: Arc<Self>,
+        mem: &KeepaliveLocalMemory,
+    ) -> anyhow::Result<IbvMemoryRegionView> {
+        // SAFETY: a fully-constructed `IbvDomain` holds a null-or-live PD per its
+        // construction contract, and `KeepaliveLocalMemory` keeps `mem`'s backing
+        // memory alive for the registration.
+        unsafe { I::register_mr(self, mem) }
+    }
+
+    /// Create a queue pair against this domain, dispatching to the backend
+    /// [`IbvDomainImpl`] strategy.
+    pub fn create_queue_pair(self: Arc<Self>, config: &IbvConfig) -> anyhow::Result<IbvQueuePair> {
+        I::create_queue_pair(self, config)
+    }
 }
 
 /// Per-backend strategy for a protection domain: how memory regions are

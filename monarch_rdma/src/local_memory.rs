@@ -17,7 +17,7 @@ use std::sync::Condvar;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 
-use crate::backend::ibverbs::primitives::IbvMemoryRegionView;
+use crate::backend::ibverbs::memory_region::IbvMemoryRegionView;
 
 /// Returns `true` when `addr` is a CUDA device pointer.
 ///

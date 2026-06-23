@@ -21,21 +21,17 @@
 //!   its name, vendor ID, vendor part ID, hardware version, firmware version, node GUID, and capabilities.
 //! - `IbvPort`: Represents information about the port of an RDMA device, including state, physical state,
 //!   LID (Local Identifier), and GID (Global Identifier) information.
-//! - `IbvMemoryRegionView`: Represents a memory region that can be registered with an RDMA device for direct
-//!   memory access operations.
 //! - `IbvOperation`: Represents the type of RDMA operation to perform (Read or Write).
 //! - `IbvQpInfo`: Contains connection information needed to establish an RDMA connection with a remote endpoint.
 //! - `IbvWc`: Wrapper around ibverbs work completion structure, used to track the status of RDMA operations.
 use std::ffi::CStr;
 use std::fmt;
-use std::sync::Arc;
 use std::sync::OnceLock;
 
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
-use super::domain::IbvDomainKeepalive;
 use crate::backend::ibverbs::device::IbvDeviceImpl;
 use crate::backend::ibverbs::device::list_all_devices;
 use crate::backend::ibverbs::device_selection::IbvDeviceTarget;
@@ -760,158 +756,6 @@ fn ibverbs_supported_impl() -> bool {
             rdmaxcel_sys::ibv_free_device_list(device_list);
         }
         num_devices > 0
-    }
-}
-
-/// Refcounted owner of an ibverbs memory region. The intended
-/// sharing pattern is `Arc<IbvMemoryRegion>` cloned into every
-/// [`IbvMemoryRegionView`] backed by the region; the FFI resource
-/// is released by [`Drop`] when the last clone goes away.
-///
-/// `Direct` carries an `Arc<dyn IbvDomainKeepalive>` so the PD the MR was
-/// registered against outlives the `ibv_dereg_mr` call. The struct
-/// field order is significant: the `mr` pointer is dereg'd in
-/// `Drop` before the `_domain` field is released, so the PD is
-/// still alive when libibverbs walks back to it. The eventual
-/// `ibv_dealloc_pd` only fires when every other `Arc<dyn IbvDomainKeepalive>`
-/// (e.g. the manager's `device_domains` entry) is also gone.
-#[derive(Debug)]
-pub(super) enum IbvMemoryRegion {
-    /// A standalone `ibv_mr*` registered via `ibv_reg_mr` /
-    /// `ibv_reg_dmabuf_mr`.
-    Direct {
-        mr: *mut rdmaxcel_sys::ibv_mr,
-        /// PD the MR was registered against, kept alive past
-        /// `ibv_dereg_mr` via this clone. Never read directly.
-        _domain: Arc<dyn IbvDomainKeepalive>,
-    },
-    /// Singleton owner shared by every segment-backed view from the
-    /// mlx5dv segment scanner. `Drop` calls
-    /// `rdmaxcel_sys::deregister_segments`.
-    Segments,
-}
-
-// SAFETY: `IbvMemoryRegion::Direct`'s `*mut ibv_mr` is treated as
-// thread-safe by libibverbs for deregistration; `Segments` holds no
-// data. The intended sharing pattern is `Arc<IbvMemoryRegion>`.
-unsafe impl Send for IbvMemoryRegion {}
-unsafe impl Sync for IbvMemoryRegion {}
-
-impl Drop for IbvMemoryRegion {
-    fn drop(&mut self) {
-        match self {
-            IbvMemoryRegion::Direct { mr, .. } => {
-                if mr.is_null() {
-                    return;
-                }
-                // SAFETY: `*mr` was returned by `ibv_reg_mr` /
-                // `ibv_reg_dmabuf_mr` at construction (see
-                // `resolve_local_mr`) and is non-null per the
-                // null-check above. The intended sharing pattern
-                // is `Arc<IbvMemoryRegion>`, so `Drop` runs exactly
-                // once when the last clone goes away, meaning
-                // `ibv_dereg_mr` is called exactly once on this
-                // pointer. The PD the MR was registered against is
-                // kept alive by the sibling `_domain` `Arc<dyn IbvDomainKeepalive>`
-                // until after this dereg returns.
-                let result = unsafe { rdmaxcel_sys::ibv_dereg_mr(*mr) };
-                if result != 0 {
-                    tracing::error!(
-                        "failed to deregister MR at {:p}: error code {}",
-                        *mr,
-                        result
-                    );
-                }
-            }
-            IbvMemoryRegion::Segments => {
-                // SAFETY: `IbvMemoryRegion::Segments` is the
-                // singleton owner of the mlx5dv scanner's globally
-                // registered segments. `resolve_local_mr` lazily
-                // wraps it in `Arc::new(...)` at most once per
-                // manager (stored in `IbvManagerActor::segments_mr`)
-                // and clones it into every segment-backed view, so
-                // `deregister_segments` runs exactly once when the
-                // last reference is dropped.
-                let result = unsafe { rdmaxcel_sys::deregister_segments() };
-                if result != 0 {
-                    tracing::error!("failed to deregister CUDA segments: error code {}", result);
-                }
-            }
-        }
-    }
-}
-
-/// Represents a view of a memory region that can be registered with an RDMA device.
-///
-/// This is a 'view' of a registered Memory Region, allowing multiple views into a single
-/// large MR registration. This is commonly used with PyTorch's caching allocator, which
-/// reserves large memory blocks and provides different data pointers into that space.
-///
-/// # Example
-/// PyTorch Caching Allocator creates a 16GB segment at virtual address `0x01000000`.
-/// The underlying Memory Region registers 16GB but at RDMA address `0x0`.
-/// To access virtual address `0x01100000`, we return a view at RDMA address `0x100000`.
-///
-/// # Safety
-/// The caller must ensure the memory remains valid and is not freed, moved, or
-/// overwritten while RDMA operations are in progress.
-#[derive(Debug, Clone)]
-pub struct IbvMemoryRegionView {
-    // id should be unique with a given rdmam manager
-    pub id: usize,
-    /// Virtual address in the process address space.
-    /// This is the pointer/address as seen by the local process.
-    pub virtual_addr: usize,
-    /// Memory address assigned after Memory Region (MR) registration.
-    /// This is the address may be offset a base MR addr.
-    pub rdma_addr: usize,
-    pub size: usize,
-    pub lkey: u32,
-    pub rkey: u32,
-    /// Name of the RDMA device the view's protection domain is on.
-    pub device_name: String,
-    /// Keeps the underlying FFI MR (and, transitively, the PD it
-    /// was registered against) alive for the lifetime of any clone
-    /// of this view; the last drop triggers deregistration. Never
-    /// read directly.
-    pub(super) _mr: Arc<IbvMemoryRegion>,
-}
-
-impl IbvMemoryRegionView {
-    pub(super) fn new(
-        id: usize,
-        virtual_addr: usize,
-        rdma_addr: usize,
-        size: usize,
-        lkey: u32,
-        rkey: u32,
-        device_name: String,
-        mr: Arc<IbvMemoryRegion>,
-    ) -> Self {
-        Self {
-            id,
-            virtual_addr,
-            rdma_addr,
-            size,
-            lkey,
-            rkey,
-            device_name,
-            _mr: mr,
-        }
-    }
-}
-
-/// Compact identifier for log messages and per-op errors. Carries
-/// the MR-identifying fields all in one place so callers that
-/// embed an `IbvMemoryRegionView` in their error format get a
-/// consistent shape.
-impl fmt::Display for IbvMemoryRegionView {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "lkey={}, rkey={}, virtual_addr=0x{:x}, rdma_addr=0x{:x}, size={}",
-            self.lkey, self.rkey, self.virtual_addr, self.rdma_addr, self.size,
-        )
     }
 }
 

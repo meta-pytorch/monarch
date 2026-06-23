@@ -36,10 +36,12 @@ pub fn rdma_supported() -> bool {
     ibverbs_supported() || hyperactor_config::global::get(config::RDMA_ALLOW_TCP_FALLBACK)
 }
 pub use action::RdmaAction;
+// Re-export the CUDA segment scanner API for the extension/test crates to
+// install a process-wide scanner (see `backend::ibverbs::mlx_domain`).
+pub use backend::ibverbs::mlx_domain::CudaSegmentScanner;
+pub use backend::ibverbs::mlx_domain::ScannedSegment;
+pub use backend::ibverbs::mlx_domain::register_cuda_segment_scanner;
 pub use rdma_components::RdmaRemoteBuffer;
-pub use rdma_components::SegmentScannerFn;
-// Re-export segment scanner types for extension crate
-pub use rdma_components::register_segment_scanner;
 pub use rdma_components::*;
 pub use rdma_manager_actor::*;
 // Re-export rdmaxcel_sys for extension crate to access types

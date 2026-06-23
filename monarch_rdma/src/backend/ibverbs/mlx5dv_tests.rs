@@ -137,13 +137,14 @@ fn ibv_keys_of(remote: &crate::RdmaRemoteBuffer) -> Result<(u32, u32), anyhow::E
     Ok((buf.lkey, buf.rkey))
 }
 
-/// Integration test for the successful indirect-mkey rebind path.
+/// Integration test for the indirect-mkey segment-growth path.
 ///
-/// Allocates two segments S1 and S2 and registers a buffer in each
-/// (distinct mkeys). Then expands S1 and registers another buffer
-/// in S1's new chunk: the rebind must grow S1's existing mkey, so
-/// the new buffer shares S1's `(lkey, rkey)` and differs from S2's.
-/// Round-trips each buffer to confirm wire payload.
+/// Allocates two segments S1 and S2 and registers a buffer in each (distinct
+/// mkeys). Then expands S1 and registers another buffer in S1's new chunk:
+/// growth rotates S1 onto a fresh mkey (parking the prior one rather than
+/// mutating an in-flight key), so the new buffer carries a key distinct from
+/// both S1's pre-grow buffer and S2's. Round-trips every buffer — including the
+/// pre-grow one — to confirm the parked key stays valid and payloads land.
 ///
 /// Hardware-gated: needs CUDA + mlx5dv.
 #[timed_test::async_timed_test(timeout_secs = 60)]
@@ -245,11 +246,19 @@ async fn test_indirect_mkey_rebind_grows_existing_segment() -> Result<(), anyhow
         .expect("buf C");
 
     let (lkey_c, rkey_c) = ibv_keys_of(&buf_c)?;
-    assert_eq!(
+    // Growth rotates the segment onto a fresh indirect mkey (parking the prior
+    // one), so buf C — carved after the grow — carries a new key, distinct from
+    // buf A's pre-grow key; the round-trips below confirm A's parked key stays
+    // valid. It is also distinct from buf B's separate segment.
+    assert_ne!(
         (lkey_c, rkey_c),
         (lkey_a, rkey_a),
-        "buffer carved from a rebound expandable segment must share \
-         the segment's (lkey, rkey)",
+        "growth rotates the expandable segment onto a new (lkey, rkey)",
+    );
+    assert_ne!(
+        (lkey_c, rkey_c),
+        (lkey_b, rkey_b),
+        "buffers in distinct segments must have distinct (lkey, rkey)",
     );
 
     // Each buffer was filled with its own pattern at registration;
@@ -470,71 +479,4 @@ async fn test_indirect_mkey_rebind_falls_back_to_dmabuf_at_max_sge() -> Result<(
     sender.free_allocations(instance).await?;
     let _ = host_mesh.shutdown(instance).await;
     Ok(())
-}
-
-/// Unit test for the `phys_size` vs `mr_size` boundary in
-/// `lookup_segment_for_address`. Drives the pure helper with a
-/// synthetic `rdma_segment_info_t` shaped like the post-`max_sge`
-/// state (`phys_size > mr_size`) and asserts addresses in the
-/// `[mr_size, phys_size)` gap miss while addresses inside `mr_size`
-/// hit.
-#[test]
-fn test_lookup_segment_respects_mr_size_when_scanner_reports_larger_phys_size() {
-    use rdmaxcel_sys::rdma_segment_info_t;
-
-    use crate::backend::ibverbs::manager_actor::lookup_segment_for_address;
-
-    // Scanner reports 64 MiB but only the first 16 MiB is bound
-    // (max_sge cap). `mr_addr` is the post-registration RDMA
-    // address and need not equal `phys_address`.
-    const PHYS_ADDR: usize = 0x1000_0000;
-    const PHYS_SIZE: usize = 64 * 1024 * 1024;
-    const MR_SIZE: usize = 16 * 1024 * 1024;
-    const MR_ADDR: usize = 0xdead_0000;
-    const LKEY: u32 = 0xabcd;
-    const RKEY: u32 = 0x1234;
-
-    let segment = rdma_segment_info_t {
-        phys_address: PHYS_ADDR,
-        phys_size: PHYS_SIZE,
-        device: 0,
-        is_expandable: 1,
-        lkey: LKEY,
-        rkey: RKEY,
-        mr_size: MR_SIZE,
-        mr_addr: MR_ADDR,
-    };
-    let segments = [segment];
-
-    // Inside the bound region: hit; rdma_addr is offset from the
-    // registered `mr_addr`, not the physical address.
-    let in_bound_addr = PHYS_ADDR + 4 * 1024 * 1024;
-    let in_bound = lookup_segment_for_address(&segments, in_bound_addr, 1024)
-        .expect("in-bound address should hit the segment cache");
-    assert_eq!(in_bound.rdma_addr, MR_ADDR + 4 * 1024 * 1024);
-    assert_eq!(in_bound.lkey, LKEY);
-    assert_eq!(in_bound.rkey, RKEY);
-
-    // Inside the `[mr_size, phys_size)` gap: must miss so the
-    // caller falls through to dmabuf.
-    let in_gap_addr = PHYS_ADDR + MR_SIZE + 1024;
-    assert!(
-        lookup_segment_for_address(&segments, in_gap_addr, 1024).is_none(),
-        "address in the [mr_size, phys_size) gap must not be reported \
-         as covered by the indirect mkey",
-    );
-
-    // Request straddling the mr_size boundary must miss.
-    let straddling_addr = PHYS_ADDR + MR_SIZE - 512;
-    assert!(
-        lookup_segment_for_address(&segments, straddling_addr, 4096).is_none(),
-        "request straddling the mr_size boundary must miss",
-    );
-
-    // Past `phys_size`: out of range.
-    let past_end_addr = PHYS_ADDR + PHYS_SIZE + 1;
-    assert!(
-        lookup_segment_for_address(&segments, past_end_addr, 1).is_none(),
-        "address past phys_size must miss",
-    );
 }
