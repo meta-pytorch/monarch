@@ -19,6 +19,7 @@ hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
 hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }
 inventory = "0.3.24"
+libc = "0.2.186"
 paste = "1.0.14"
 rand = "0.10.1"
 rdmaxcel-sys = { path = "../rdmaxcel-sys" }

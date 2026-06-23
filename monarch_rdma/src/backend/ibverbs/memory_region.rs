@@ -46,6 +46,15 @@ unsafe impl Sync for IbvMemoryRegion {}
 
 impl IbvMemoryRegionKeepalive for IbvMemoryRegion {}
 
+#[cfg(test)]
+impl IbvMemoryRegion {
+    /// The raw `ibv_mr` this guard owns. Valid until the guard drops (which
+    /// deregisters it).
+    pub(super) fn as_ptr(&self) -> *mut rdmaxcel_sys::ibv_mr {
+        self.mr
+    }
+}
+
 impl Drop for IbvMemoryRegion {
     fn drop(&mut self) {
         if self.mr.is_null() {

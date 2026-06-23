@@ -191,6 +191,24 @@ impl CudaAllocation {
         Ok(new_total)
     }
 
+    /// A [`KeepaliveLocalMemory`] over the sub-range
+    /// `[ptr + offset, ptr + offset + size)` of this allocation. The handle
+    /// keeps the whole allocation mapped for its lifetime.
+    ///
+    /// Panics if the sub-range does not fit within the currently mapped extent.
+    pub fn keepalive_slice(&self, offset: usize, size: usize) -> KeepaliveLocalMemory {
+        let mapped = self.size();
+        assert!(
+            offset.checked_add(size).is_some_and(|end| end <= mapped),
+            "slice [0x{offset:x}, 0x{offset:x}+{size}) exceeds mapped allocation size {mapped}",
+        );
+        KeepaliveLocalMemory::new(Arc::new(CudaAllocationSlice {
+            alloc: self.clone(),
+            offset,
+            size,
+        }))
+    }
+
     /// Try to free the backing CUDA memory. Returns `true` if the
     /// resources were released, or `false` if other clones still exist.
     pub fn try_free(self) -> bool {
@@ -604,11 +622,7 @@ impl SenderMessageHandler for SenderActor {
 
         let mut remotes = Vec::with_capacity(buffers.len());
         for &(offset, size) in &buffers {
-            let local = KeepaliveLocalMemory::new(Arc::new(CudaAllocationSlice {
-                alloc: alloc.clone(),
-                offset,
-                size,
-            }));
+            let local = alloc.keepalive_slice(offset, size);
             // Pre-fill so reads return a known sequence; write_at
             // routes to the GPU path for CUDA-backed memory.
             let fill = vec![pattern; size];

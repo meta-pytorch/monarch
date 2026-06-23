@@ -31,7 +31,7 @@ use super::device::IbvContext;
 use super::device_selection::get_cuda_device_to_ibv_device;
 use super::domain::IbvDomain;
 use super::domain::IbvDomainImpl;
-use super::domain::register_dmabuf_mr;
+use super::domain::register_dmabuf_range;
 use super::domain::register_host_or_dmabuf_mr;
 use super::memory_region::IbvMemoryRegionKeepalive;
 use super::memory_region::IbvMemoryRegionView;
@@ -121,7 +121,7 @@ pub(super) trait MlxDomainOps: Send + Sync + 'static {
     ///
     /// If `pd` is non-null it must be a live protection domain whose context
     /// outlives this call.
-    unsafe fn register_dmabuf_mr(
+    unsafe fn register_dmabuf_range(
         &self,
         pd: *mut rdmaxcel_sys::ibv_pd,
         addr: usize,
@@ -129,11 +129,11 @@ pub(super) trait MlxDomainOps: Send + Sync + 'static {
         access: i32,
     ) -> anyhow::Result<*mut rdmaxcel_sys::ibv_mr>;
 
-    /// Deregister an MR returned by [`Self::register_dmabuf_mr`].
+    /// Deregister an MR returned by [`Self::register_dmabuf_range`].
     ///
     /// # Safety
     ///
-    /// `mr` must be null or an MR returned by [`Self::register_dmabuf_mr`] that
+    /// `mr` must be null or an MR returned by [`Self::register_dmabuf_range`] that
     /// has not already been deregistered.
     unsafe fn dereg_mr(&self, mr: *mut rdmaxcel_sys::ibv_mr);
 
@@ -243,7 +243,7 @@ impl MlxDomainOps for ProdMlxDomainOps {
         scan_cuda_segments()
     }
 
-    unsafe fn register_dmabuf_mr(
+    unsafe fn register_dmabuf_range(
         &self,
         pd: *mut rdmaxcel_sys::ibv_pd,
         addr: usize,
@@ -251,14 +251,14 @@ impl MlxDomainOps for ProdMlxDomainOps {
         access: i32,
     ) -> anyhow::Result<*mut rdmaxcel_sys::ibv_mr> {
         // SAFETY: forwards this method's contract (non-null `pd` is a live PD).
-        unsafe { register_dmabuf_mr(pd, addr, size, access) }
+        unsafe { register_dmabuf_range(pd, addr, size, access) }
     }
 
     unsafe fn dereg_mr(&self, mr: *mut rdmaxcel_sys::ibv_mr) {
         if mr.is_null() {
             return;
         }
-        // SAFETY: `mr` was returned by `register_dmabuf_mr` and is dereg'd
+        // SAFETY: `mr` was returned by `register_dmabuf_range` and is dereg'd
         // exactly once.
         let result = unsafe { rdmaxcel_sys::ibv_dereg_mr(mr) };
         if result != 0 {
@@ -578,7 +578,7 @@ impl Drop for RegisteredSegment {
         // remote access.
         let state = self.state.get_mut().expect("segment state lock poisoned");
         // SAFETY: `state.mkey`, `stale_mkeys`, and `mrs` are this segment's own
-        // keys/MRs from `bind_mr_list`/`register_dmabuf_mr` (or null), each
+        // keys/MRs from `bind_mr_list`/`register_dmabuf_range` (or null), each
         // destroyed/deregistered exactly once here.
         unsafe {
             self.ops.destroy_mkey(state.mkey);
@@ -614,7 +614,7 @@ unsafe fn register_range(
         let chunk = remaining.min(MAX_MR_SIZE);
         let result = if chunk.is_multiple_of(MR_ALIGNMENT) {
             // SAFETY: `pd` is null or a live PD per this function's contract.
-            unsafe { ops.register_dmabuf_mr(pd, chunk_start, chunk, access) }
+            unsafe { ops.register_dmabuf_range(pd, chunk_start, chunk, access) }
         } else {
             Err(anyhow::anyhow!(
                 "CUDA chunk size {} is not a multiple of {}",
@@ -625,7 +625,7 @@ unsafe fn register_range(
         match result {
             Ok(mr) => mrs.push(mr),
             Err(e) => {
-                // SAFETY: the MRs in `mrs` were returned by `register_dmabuf_mr`
+                // SAFETY: the MRs in `mrs` were returned by `register_dmabuf_range`
                 // above and are deregistered exactly once here.
                 mrs.iter().for_each(|mr| unsafe { ops.dereg_mr(*mr) });
                 return Err(e);
@@ -835,11 +835,10 @@ impl IbvDomainImpl for MlxDomain {
                 }
             }
         }
-        let access = this.mr_access_flags();
         // SAFETY: `domain.as_ptr()` is null or a live PD (per this method's
         // contract; `register_host_or_dmabuf_mr` errors on null), and the caller
         // keeps `mem`'s backing memory valid for the MR's lifetime.
-        unsafe { register_host_or_dmabuf_mr(domain, access, mem) }
+        unsafe { register_host_or_dmabuf_mr(domain, mem) }
     }
 }
 
@@ -864,7 +863,7 @@ mod tests {
         }
     }
 
-    /// A recorded `register_dmabuf_mr` call.
+    /// A recorded `register_dmabuf_range` call.
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct DmabufCall {
         addr: usize,
@@ -899,7 +898,7 @@ mod tests {
         fail_dmabuf_after: Option<usize>,
         fail_bind: bool,
         scan_calls: usize,
-        /// Every `register_dmabuf_mr` call, including a failing one.
+        /// Every `register_dmabuf_range` call, including a failing one.
         dmabuf_calls: Vec<DmabufCall>,
         /// Every successful `bind_mr_list` call.
         bind_calls: Vec<BindCall>,
@@ -967,7 +966,7 @@ mod tests {
             s.scan.clone()
         }
 
-        unsafe fn register_dmabuf_mr(
+        unsafe fn register_dmabuf_range(
             &self,
             _pd: *mut rdmaxcel_sys::ibv_pd,
             addr: usize,
