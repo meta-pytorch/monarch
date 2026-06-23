@@ -46,6 +46,8 @@ use typeuri::Named;
 use super::IbvBuffer;
 use super::IbvOp;
 use super::domain::IbvDomain;
+use super::domain::IbvDomainImpl;
+use super::domain::IbvDomainKeepalive;
 use super::manager_actor::CreatePeerQueuePair;
 use super::primitives::Gid;
 use super::primitives::IbvConfig;
@@ -173,7 +175,7 @@ pub struct IbvQueuePair {
     // Keepalive for the domain whose `context`/`pd` this QP was built
     // against, so it outlives the QP regardless of other owners (the
     // manager, registered MRs, etc.). Never read directly.
-    _domain: Arc<IbvDomain>,
+    _domain: Arc<dyn IbvDomainKeepalive>,
 }
 
 impl Drop for IbvQueuePair {
@@ -260,7 +262,10 @@ impl IbvQueuePair {
     /// # Errors
     ///
     /// Returns errors if CQ or QP creation fails.
-    pub fn new(domain: Arc<IbvDomain>, config: IbvConfig) -> Result<Self, anyhow::Error> {
+    pub fn new<I: IbvDomainImpl>(
+        domain: Arc<IbvDomain<I>>,
+        config: IbvConfig,
+    ) -> Result<Self, anyhow::Error> {
         tracing::debug!("creating an IbvQueuePair from config {}", config);
         let context = domain.context.as_ptr();
         let pd = domain.as_ptr();
@@ -1728,6 +1733,7 @@ mod tests {
     use crate::backend::ibverbs::device::list_all_devices;
     use crate::backend::ibverbs::device_selection::resolve_target;
     use crate::backend::ibverbs::domain::IbvDomain;
+    use crate::backend::ibverbs::efa_domain::EfaDomain;
     use crate::backend::ibverbs::mlx_device::MlxDevice;
     use crate::backend::ibverbs::primitives::IbvConfig;
 
@@ -2362,17 +2368,18 @@ mod tests {
     /// A throwaway [`IbvDomain`] with null `context`/`pd`, used as the
     /// `_domain` keepalive of [`fake_mrv`]'s region; its `Drop` deallocs
     /// nothing (null `pd`).
-    fn null_domain() -> Arc<IbvDomain> {
+    fn null_domain() -> Arc<IbvDomain<EfaDomain>> {
         // SAFETY: a null `ibv_context*` is explicitly allowed — `IbvContext`'s
         // `Drop` is a no-op for null, so nothing is ever closed.
         let context = Arc::new(unsafe { IbvContext::new(std::ptr::null_mut()) });
         // SAFETY: a null `pd` is allowed — `IbvDomain`'s `Drop` skips
         // `ibv_dealloc_pd` for null, so nothing is ever freed.
         Arc::new(unsafe {
-            IbvDomain::from_parts(
+            IbvDomain::for_test(
                 context,
                 std::ptr::null_mut(),
                 IbvDeviceInfo::for_test_named("null_domain"),
+                EfaDomain,
             )
         })
     }

@@ -138,7 +138,7 @@ pub(super) trait MlxDomainOps: Send + Sync + 'static {
     /// we only ever use it for indirect mkey binding.
     fn create_loopback_qp(
         &self,
-        domain: Arc<IbvDomain>,
+        domain: Arc<IbvDomain<MlxDomain>>,
         config: &IbvConfig,
     ) -> anyhow::Result<*mut rdmaxcel_sys::rdmaxcel_qp>;
 
@@ -262,7 +262,7 @@ impl MlxDomainOps for ProdMlxDomainOps {
 
     fn create_loopback_qp(
         &self,
-        domain: Arc<IbvDomain>,
+        domain: Arc<IbvDomain<MlxDomain>>,
         config: &IbvConfig,
     ) -> anyhow::Result<*mut rdmaxcel_sys::rdmaxcel_qp> {
         // Build a full queue pair (QP + mlx5dv structures) and connect it to
@@ -345,22 +345,23 @@ impl MlxDomainOps for ProdMlxDomainOps {
 // RegisteredSegment: a CUDA segment bound to an indirect key
 // ===========================================================================
 
-/// [`IbvMemoryRegionKeepalive`] for a segment-bound mlx5dv MR: a no-op (no `Drop`). It pins the
-/// owning [`RegisteredSegment`] — which deregisters its MRs and destroys its
-/// keys on its own `Drop` — and the domain (PD keepalive).
+/// [`IbvMemoryRegionKeepalive`] for a segment-bound mlx5dv MR: a no-op (no
+/// `Drop`). It pins the owning [`RegisteredSegment`] — which deregisters its MRs
+/// and destroys its keys on its own `Drop` — and the domain (PD keepalive).
 ///
 /// `_segment` is declared before `_domain` so it drops first (struct fields
-/// drop in declaration order). A follow-up commit stores an [`IbvDomainImpl`]
-/// in each [`IbvDomain`], so `IbvDomain<MlxDomain>` will itself hold a strong
-/// reference to every `Arc<RegisteredSegment>`. Were `_domain` dropped before
-/// `_segment`, the PD could be deallocated before a segment registered against
-/// it — wrong. Dropping `_segment` first won't actually free the segment (the
-/// domain still references it), but it ensures that once the last `_domain`
-/// reference drops, the segment is freed before the PD is deallocated.
+/// drop in declaration order). Each [`IbvDomain`] stores its [`IbvDomainImpl`]
+/// (here, [`MlxDomain`]), so an `IbvDomain<MlxDomain>` itself holds a strong
+/// reference to every `Arc<RegisteredSegment>` it has bound. Were `_domain`
+/// dropped before `_segment`, the PD could be deallocated before a segment
+/// registered against it — wrong. Dropping `_segment` first won't actually free
+/// the segment (the domain still references it), but it ensures that once the
+/// last `_domain` reference drops, the segment is freed before the PD is
+/// deallocated.
 #[derive(Debug)]
 struct Mlx5dvMemoryRegion {
     _segment: Arc<RegisteredSegment>,
-    _domain: Arc<IbvDomain>,
+    _domain: Arc<IbvDomain<MlxDomain>>,
 }
 
 impl IbvMemoryRegionKeepalive for Mlx5dvMemoryRegion {}
@@ -537,7 +538,7 @@ impl RegisteredSegment {
         seg: &Arc<Self>,
         addr: usize,
         size: usize,
-        domain: Arc<IbvDomain>,
+        domain: Arc<IbvDomain<MlxDomain>>,
     ) -> IbvMemoryRegionView {
         let mkey = seg.state.lock().expect("segment state lock poisoned").mkey;
         // SAFETY: `view` is only called on a segment that covers the request,
@@ -654,6 +655,15 @@ pub struct MlxDomain {
     segments: Mutex<HashMap<(usize, i32), Arc<RegisteredSegment>>>,
 }
 
+impl std::fmt::Debug for MlxDomain {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MlxDomain")
+            .field("mlx5dv_enabled", &self.mlx5dv_enabled)
+            .field("cuda_ordinals", &self.cuda_ordinals)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Drop for MlxDomain {
     fn drop(&mut self) {
         if let Some(&qp) = self.loopback_qp.get() {
@@ -687,7 +697,7 @@ impl MlxDomain {
     /// pointer.
     fn loopback_qp_ptr(
         &self,
-        domain: &Arc<IbvDomain>,
+        domain: &Arc<IbvDomain<MlxDomain>>,
     ) -> anyhow::Result<*mut rdmaxcel_sys::rdmaxcel_qp> {
         // `OnceLock::get_or_try_init` would fit here but is still unstable
         // (`once_cell_try`); calls are serialized under the `segments` lock,
@@ -716,7 +726,7 @@ impl MlxDomain {
     /// outlives this call.
     unsafe fn register_cuda_mlx5dv_mr(
         &self,
-        domain: &Arc<IbvDomain>,
+        domain: &Arc<IbvDomain<MlxDomain>>,
         addr: usize,
         size: usize,
     ) -> anyhow::Result<IbvMemoryRegionView> {
@@ -805,24 +815,25 @@ impl IbvDomainImpl for MlxDomain {
     }
 
     unsafe fn register_mr(
-        &self,
-        domain: Arc<IbvDomain>,
+        domain: Arc<IbvDomain<MlxDomain>>,
         mem: &KeepaliveLocalMemory,
     ) -> anyhow::Result<IbvMemoryRegionView> {
-        if self.mlx5dv_enabled && is_device_ptr(mem.addr()) {
+        let this = domain.domain_impl();
+        if this.mlx5dv_enabled && is_device_ptr(mem.addr()) {
             // SAFETY: `domain.as_ptr()` is null or a live PD, per this method's
             // contract.
-            match unsafe { self.register_cuda_mlx5dv_mr(&domain, mem.addr(), mem.size()) } {
+            match unsafe { this.register_cuda_mlx5dv_mr(&domain, mem.addr(), mem.size()) } {
                 Ok(view) => return Ok(view),
                 Err(e) => {
                     tracing::warn!("mlx5dv CUDA registration failed, falling back to dmabuf: {e}")
                 }
             }
         }
+        let access = this.mr_access_flags();
         // SAFETY: `domain.as_ptr()` is null or a live PD (per this method's
         // contract; `register_host_or_dmabuf_mr` errors on null), and the caller
         // keeps `mem`'s backing memory valid for the MR's lifetime.
-        unsafe { register_host_or_dmabuf_mr(domain, self.mr_access_flags(), mem) }
+        unsafe { register_host_or_dmabuf_mr(domain, access, mem) }
     }
 }
 
@@ -837,21 +848,6 @@ mod tests {
 
     const MIB2: usize = 2 * 1024 * 1024;
     const SERVED_NIC: &str = "mlx5_0";
-
-    /// A test domain whose `pd`/`context` are null, so its `Drop` is a
-    /// no-op. The `MockOps` ignore the `pd`, and the resulting views only
-    /// hold this as a (never-read) keepalive.
-    fn fake_domain() -> Arc<IbvDomain> {
-        // SAFETY: null `ibv_context*`/`pd` are explicitly allowed — both
-        // `IbvContext` and `IbvDomain` skip their FFI destructors for null.
-        unsafe {
-            Arc::new(IbvDomain::from_parts(
-                Arc::new(IbvContext::new(std::ptr::null_mut())),
-                std::ptr::null_mut(),
-                IbvDeviceInfo::for_test_named("test"),
-            ))
-        }
-    }
 
     fn seg(address: usize, size: usize, cuda_ordinal: i32) -> ScannedSegment {
         ScannedSegment {
@@ -911,7 +907,7 @@ mod tests {
         /// When set, `dereg_mr` records whether this (weakly-held) domain is
         /// still alive at each MR deregistration. Lets a test assert a
         /// segment's MRs are freed while its domain's PD is still alive.
-        domain_probe: Option<std::sync::Weak<IbvDomain>>,
+        domain_probe: Option<std::sync::Weak<IbvDomain<MlxDomain>>>,
         /// One entry per `dereg_mr` while `domain_probe` is set: whether the
         /// probed domain was still alive.
         domain_alive_at_dereg: Vec<bool>,
@@ -999,7 +995,7 @@ mod tests {
 
         fn create_loopback_qp(
             &self,
-            _domain: Arc<IbvDomain>,
+            _domain: Arc<IbvDomain<MlxDomain>>,
             _config: &IbvConfig,
         ) -> anyhow::Result<*mut rdmaxcel_sys::rdmaxcel_qp> {
             let mut s = self.lock();
@@ -1054,19 +1050,36 @@ mod tests {
         }
     }
 
-    fn domain(mock: Arc<MockOps>) -> MlxDomain {
-        MlxDomain::new_with_ops(mock, IbvConfig::default())
+    /// A domain wrapping the mock-driven [`MlxDomain`] under test. Its
+    /// `pd`/`context` are null (no-op `Drop`); the segment views built against
+    /// it hold it only as a keepalive. Drive the strategy via
+    /// [`IbvDomain::domain_impl`].
+    fn domain(mock: Arc<MockOps>) -> Arc<IbvDomain<MlxDomain>> {
+        let mlx = MlxDomain::new_with_ops(mock, IbvConfig::default());
+        // SAFETY: null `ibv_context*`/`pd` are explicitly allowed — both
+        // `IbvContext` and `IbvDomain` skip their FFI destructors for null.
+        unsafe {
+            Arc::new(IbvDomain::for_test(
+                Arc::new(IbvContext::new(std::ptr::null_mut())),
+                std::ptr::null_mut(),
+                IbvDeviceInfo::for_test_named("test"),
+                mlx,
+            ))
+        }
     }
 
-    /// Drive [`MlxDomain::register_cuda_mlx5dv_mr`] against a [`fake_domain`].
+    /// Drive `domain`'s own [`MlxDomain`] strategy to register CUDA memory.
     fn register_cuda(
-        domain: &MlxDomain,
+        domain: &Arc<IbvDomain<MlxDomain>>,
         addr: usize,
         size: usize,
     ) -> anyhow::Result<IbvMemoryRegionView> {
-        // SAFETY: `fake_domain`'s pd is null and the `MockOps` never dereference
-        // it, so passing it through is sound.
-        unsafe { domain.register_cuda_mlx5dv_mr(&fake_domain(), addr, size) }
+        // SAFETY: `domain`'s pd is null and the `MockOps` never dereference it.
+        unsafe {
+            domain
+                .domain_impl()
+                .register_cuda_mlx5dv_mr(domain, addr, size)
+        }
     }
 
     fn null_pd() -> *mut rdmaxcel_sys::ibv_pd {
@@ -1305,7 +1318,7 @@ mod tests {
         let rs = bind_fresh(&ops, base, MIB2);
 
         assert!(rs.covers(base + 0x400, 4096));
-        let view = RegisteredSegment::view(&rs, base + 0x400, 4096, fake_domain());
+        let view = RegisteredSegment::view(&rs, base + 0x400, 4096, domain(ops.clone()));
         assert_eq!(
             view.rdma_addr, 0x400,
             "rdma_addr is the offset from the segment base"
@@ -1407,7 +1420,7 @@ mod tests {
         let ops = MockOps::new(SERVED_NIC, true, &[0]);
         let base = 0x10_0000_0000;
         let rs = bind_fresh(&ops, base, MIB2);
-        let domain = fake_domain();
+        let domain = domain(ops.clone());
         ops.lock().domain_probe = Some(Arc::downgrade(&domain));
 
         let view = RegisteredSegment::view(&rs, base, 4096, Arc::clone(&domain));
@@ -1436,8 +1449,8 @@ mod tests {
     fn test_cuda_ordinals_and_mlx5dv_enabled_derived_from_ops() {
         let mock = MockOps::new(SERVED_NIC, true, &[0, 2]);
         let domain = domain(mock);
-        assert_eq!(domain.cuda_ordinals, vec![0, 2]);
-        assert!(domain.mlx5dv_enabled);
+        assert_eq!(domain.domain_impl().cuda_ordinals, vec![0, 2]);
+        assert!(domain.domain_impl().mlx5dv_enabled);
     }
 
     #[test]
@@ -1619,7 +1632,7 @@ mod tests {
         let domain = domain(mock.clone());
         // The registration path registers MRs with the domain's own access
         // flags; capture them to assert the dmabuf registration arguments.
-        let access = domain.mr_access_flags();
+        let access = domain.domain_impl().mr_access_flags();
 
         // Validate every field of a returned view: its address fields, its
         // size, the serving NIC's name, and the keys. The mock's `mkey_keys`

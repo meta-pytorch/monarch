@@ -359,7 +359,7 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
     fn get_or_create_device_domain(
         &mut self,
         device_name: &str,
-    ) -> Result<Arc<IbvDomain>, anyhow::Error> {
+    ) -> Result<Arc<IbvDomain<I::IbvDomainImpl>>, anyhow::Error> {
         if let Some((device, _)) = self.devices.get_mut(device_name) {
             return device.get_or_create_domain(DEFAULT_DOMAIN);
         }
@@ -614,6 +614,7 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
                     }
                     let id = self.mrv_id;
                     self.mrv_id += 1;
+                    let keepalive = Arc::clone(&domain);
                     mrv = IbvMemoryRegionView::new(
                         id,
                         addr,
@@ -624,7 +625,7 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
                         device_name.clone(),
                         Arc::new(IbvMemoryRegion::Direct {
                             mr,
-                            _domain: Arc::clone(&domain),
+                            _domain: keepalive,
                         }),
                     );
                 }
@@ -643,6 +644,7 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
 
                 let id = self.mrv_id;
                 self.mrv_id += 1;
+                let keepalive = Arc::clone(&domain);
                 mrv = IbvMemoryRegionView::new(
                     id,
                     addr,
@@ -653,7 +655,7 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
                     device_name.clone(),
                     Arc::new(IbvMemoryRegion::Direct {
                         mr,
-                        _domain: Arc::clone(&domain),
+                        _domain: keepalive,
                     }),
                 );
             }

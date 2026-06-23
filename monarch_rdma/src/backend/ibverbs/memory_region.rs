@@ -17,7 +17,7 @@
 
 use std::sync::Arc;
 
-use super::domain::IbvDomain;
+use super::domain::IbvDomainKeepalive;
 
 /// Guards the resources behind a registered MR, releasing them when the last
 /// [`IbvMemoryRegionView`] over it drops. Each implementor frees whatever it
@@ -35,7 +35,7 @@ pub(super) struct IbvMemoryRegion {
     /// Keepalive for the PD `mr` was registered against; dropped only after
     /// this struct's `Drop` returns, so the PD is alive during `ibv_dereg_mr`.
     /// Never read directly.
-    pub(super) _domain: Arc<IbvDomain>,
+    pub(super) _domain: Arc<dyn IbvDomainKeepalive>,
 }
 
 // SAFETY: `mr` is only handed to `ibv_dereg_mr` (which libibverbs treats as
