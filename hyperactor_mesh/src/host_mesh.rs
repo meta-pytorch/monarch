@@ -269,6 +269,11 @@ pub enum ConfigPushFailure {
     #[error("send failed: {0}")]
     SendFailed(#[source] Box<hyperactor::mailbox::MailboxSenderError>),
 
+    /// The collective cast failed before the caller observed the
+    /// acknowledgement barrier.
+    #[error("cast failed: {0}")]
+    CastFailed(String),
+
     /// The awaited reply did not arrive within
     /// `MESH_ATTACH_CONFIG_TIMEOUT`. With request-bounce suppression
     /// (HM-3 mechanism), this is the dominant failure mode for an
@@ -317,47 +322,6 @@ impl std::error::Error for ConfigPushError {
         // top-level `source()` would arbitrarily pick one host's
         // cause and obscure the others.
         None
-    }
-}
-
-/// Push the propagatable client config to a single host, awaiting
-/// the host's installation acknowledgement.
-///
-/// HM-3 mechanism: the outbound request envelope is constructed
-/// manually (rather than via the `RefClient`-derived
-/// `set_client_config` shortcut) so the per-call
-/// `return_undeliverable(false)` setter can suppress the request
-/// bounce. With suppression, the only failure surface is the awaited
-/// reply path — exactly what `push_config()` wants in-band.
-async fn push_config_to_host(
-    cx: &impl context::Actor,
-    host: &HostRef,
-    attrs: hyperactor_config::attrs::Attrs,
-    per_host_timeout: Duration,
-) -> Result<(), ConfigPushFailure> {
-    use crate::host_mesh::host_agent::SetClientConfig;
-
-    let (reply_handle, mut reply_receiver) = hyperactor::mailbox::open_port::<()>(cx);
-    let reply_ref = reply_handle.bind();
-    let msg = SetClientConfig {
-        attrs,
-        done: reply_ref,
-    };
-
-    let mut request_port = host.mesh_agent().port::<SetClientConfig>();
-    // HM-3: bypass the default `return_undeliverable: true` from
-    // `PortRef::attest`. Without this, a transient session failure
-    // (e.g. "never connected") would bounce the request back through
-    // the caller's `Undeliverable<MessageEnvelope>` handler — the
-    // exact bypass HM-3 prohibits.
-    request_port.return_undeliverable(false);
-
-    request_port.post(cx, msg);
-
-    match tokio::time::timeout(per_host_timeout, reply_receiver.recv()).await {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(_recv_err)) => Err(ConfigPushFailure::ReplyChannelClosed),
-        Err(_elapsed) => Err(ConfigPushFailure::ReplyTimedOut),
     }
 }
 
@@ -1230,17 +1194,17 @@ impl HostMeshRef {
             .collect()
     }
 
-    /// Push client config to all host agents in this mesh, in parallel.
+    /// Push client config to all host agents in this mesh via the HostAgent
+    /// actor mesh.
     ///
     /// Each host installs the attrs as `Source::ClientOverride`.
     /// Idempotent: sending the same attrs twice replaces the layer.
     ///
-    /// Implements HM-1, HM-2, HM-3, and HM-4 (see module docs):
-    /// returns `Err(ConfigPushError)` if any host's push didn't
-    /// succeed, naming each failing host individually. The outbound
-    /// request envelope is sent with `return_undeliverable: false` to
-    /// keep failure in-band on the awaited reply (HM-3 mechanism);
-    /// per-host wait is bounded by `MESH_ATTACH_CONFIG_TIMEOUT`.
+    /// Implements HM-1, HM-2, HM-3, and HM-4 (see module docs): returns
+    /// `Err(ConfigPushError)` if the acknowledgement barrier does not complete.
+    /// Each host acks its own ordinal via a reduced status barrier, so a
+    /// timeout names exactly the hosts that did not install. Only a synchronous
+    /// failure to initiate the cast at all is reported mesh-wide.
     pub(crate) async fn push_config(
         &self,
         cx: &impl context::Actor,
@@ -1248,44 +1212,91 @@ impl HostMeshRef {
     ) -> Result<(), ConfigPushError> {
         let timeout = hyperactor_config::global::get(crate::config::MESH_ATTACH_CONFIG_TIMEOUT);
         let hosts: Vec<_> = self.values().collect();
+        let num_hosts = hosts.len();
 
-        let per_host = hosts.into_iter().map(|host| {
-            let attrs = attrs.clone();
-            async move {
-                (
-                    host.clone(),
-                    push_config_to_host(cx, &host, attrs, timeout).await,
-                )
-            }
-        });
+        if num_hosts == 0 {
+            tracing::info!(success = 0, "push_config complete");
+            return Ok(());
+        }
 
-        let results = futures::future::join_all(per_host).await;
-
-        let mut failures = Vec::new();
-        let mut success = 0_usize;
-        for (host, outcome) in results {
-            match outcome {
-                Ok(()) => {
-                    success += 1;
-                    tracing::debug!(host = %host, "host agent config installed");
-                }
-                Err(failure) => {
-                    tracing::warn!(host = %host, error = %failure, "config push failed");
-                    failures.push((host, failure));
-                }
+        fn failures_for_hosts(
+            hosts: &[HostRef],
+            mut make_failure: impl FnMut() -> ConfigPushFailure,
+        ) -> ConfigPushError {
+            ConfigPushError {
+                failures: hosts
+                    .iter()
+                    .cloned()
+                    .map(|host| (host, make_failure()))
+                    .collect(),
             }
         }
 
-        if failures.is_empty() {
-            tracing::info!(success, "push_config complete");
-            Ok(())
-        } else {
-            tracing::info!(
-                success,
-                failed = failures.len(),
-                "push_config complete with failures",
-            );
-            Err(ConfigPushError { failures })
+        let region = self.region.clone();
+
+        // Each host posts a single-rank `Running` overlay at its ordinal once
+        // it has installed the config; reduce them into a StatusMesh barrier so
+        // a timeout names exactly which hosts (if any) never acknowledged.
+        let (reply, rx) = cx.mailbox().open_accum_port_opts(
+            crate::StatusMesh::from_single(region.clone(), Status::NotExist),
+            StreamingReducerOpts {
+                max_update_interval: Some(std::time::Duration::from_millis(50)),
+                initial_update_interval: None,
+            },
+        );
+        let mut reply = reply.bind();
+        reply.return_undeliverable(false);
+
+        // HM-3: an unreachable host does not bounce the outbound request into
+        // the caller's `Undeliverable<MessageEnvelope>` handler — it surfaces as
+        // a channel-level `BrokenLink` (logged at debug), and the missing ack is
+        // detected by the barrier timeout below. `return_undeliverable(false)`
+        // above covers the ack direction. Covered by
+        // `test_attach_fails_closed_on_unreachable_host`.
+        if let Err(err) = self.host_agent_mesh.cast(
+            cx,
+            host_agent::SetClientConfig {
+                attrs,
+                rank: Default::default(),
+                reply,
+            },
+        ) {
+            let error = err.to_string();
+
+            tracing::warn!(error = %error, "config push cast failed");
+
+            // The collective cast could not be initiated at all (a synchronous
+            // send failure, before any host was contacted) — genuinely
+            // mesh-wide, so report every host.
+            return Err(failures_for_hosts(&hosts, || {
+                ConfigPushFailure::CastFailed(error.clone())
+            }));
+        }
+
+        match GetRankStatus::wait(rx, num_hosts, timeout, region).await {
+            Ok(_) => {
+                tracing::info!(success = num_hosts, "push_config complete");
+                Ok(())
+            }
+            Err(partial) => {
+                // Ranks still at `NotExist` never acknowledged within the
+                // timeout (or the reply channel closed). Report exactly those
+                // hosts, preserving per-host identity (HM-4).
+                let failures: Vec<(HostRef, ConfigPushFailure)> = partial
+                    .values()
+                    .enumerate()
+                    .filter(|(_, status)| status.is_not_exist())
+                    .map(|(rank, _)| (hosts[rank].clone(), ConfigPushFailure::ReplyTimedOut))
+                    .collect();
+
+                tracing::info!(
+                    success = num_hosts - failures.len(),
+                    failed = failures.len(),
+                    "push_config complete with failures"
+                );
+
+                Err(ConfigPushError { failures })
+            }
         }
     }
 
