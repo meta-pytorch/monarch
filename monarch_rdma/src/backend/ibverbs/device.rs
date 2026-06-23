@@ -43,8 +43,8 @@ use super::primitives::query_device_info;
 /// themselves via [`register_ibv_device_impl!`].
 pub trait IbvDeviceImpl: Named + std::fmt::Debug + Send + Sync + 'static {
     /// The per-domain strategy used by this backend (how memory regions
-    /// are registered and queue pairs built against a PD). A follow-up
-    /// commit makes [`IbvDomain`] generic over this.
+    /// are registered and queue pairs built against a PD). [`IbvDomain`] is
+    /// generic over this.
     type IbvDomainImpl: IbvDomainImpl;
 
     /// Human-readable display name for the backend this impl
@@ -270,7 +270,7 @@ impl Drop for IbvContext {
 /// reference closes the context.
 #[derive(Debug)]
 pub(crate) struct IbvDevice<I: IbvDeviceImpl> {
-    domains: HashMap<String, Arc<IbvDomain>>,
+    domains: HashMap<String, Arc<IbvDomain<I::IbvDomainImpl>>>,
     device_info: IbvDeviceInfo,
     config: IbvConfig,
     context: Arc<IbvContext>,
@@ -407,20 +407,27 @@ impl<I: IbvDeviceImpl> IbvDevice<I> {
     /// Returns the `Arc<IbvDomain>` registered under `name`, if
     /// one has already been created. Read-only lookup; use
     /// [`Self::get_or_create_domain`] to create on demand.
-    pub fn domain(&self, name: &str) -> Option<&Arc<IbvDomain>> {
+    pub fn domain(&self, name: &str) -> Option<&Arc<IbvDomain<I::IbvDomainImpl>>> {
         self.domains.get(name)
     }
 
     /// Returns the `Arc<IbvDomain>` registered under `name`, creating (and
     /// caching) a new one via [`IbvDomain::new`] on first access.
-    pub fn get_or_create_domain(&mut self, name: &str) -> anyhow::Result<Arc<IbvDomain>> {
+    pub fn get_or_create_domain(
+        &mut self,
+        name: &str,
+    ) -> anyhow::Result<Arc<IbvDomain<I::IbvDomainImpl>>> {
         if let Some(domain) = self.domains.get(name) {
             return Ok(Arc::clone(domain));
         }
         // SAFETY: `self.context` wraps the live `ibv_context` opened by
         // `IbvDevice::open`, valid for this device's lifetime.
         let domain = Arc::new(unsafe {
-            IbvDomain::new(Arc::clone(&self.context), self.device_info.clone())
+            IbvDomain::<I::IbvDomainImpl>::new(
+                Arc::clone(&self.context),
+                self.device_info.clone(),
+                &self.config,
+            )
         }?);
         self.domains.insert(name.to_string(), Arc::clone(&domain));
         Ok(domain)

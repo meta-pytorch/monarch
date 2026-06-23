@@ -35,7 +35,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
-use super::domain::IbvDomain;
+use super::domain::IbvDomainKeepalive;
 use crate::backend::ibverbs::device::IbvDeviceImpl;
 use crate::backend::ibverbs::device::list_all_devices;
 use crate::backend::ibverbs::device_selection::IbvDeviceTarget;
@@ -768,12 +768,12 @@ fn ibverbs_supported_impl() -> bool {
 /// [`IbvMemoryRegionView`] backed by the region; the FFI resource
 /// is released by [`Drop`] when the last clone goes away.
 ///
-/// `Direct` carries an `Arc<IbvDomain>` so the PD the MR was
+/// `Direct` carries an `Arc<dyn IbvDomainKeepalive>` so the PD the MR was
 /// registered against outlives the `ibv_dereg_mr` call. The struct
 /// field order is significant: the `mr` pointer is dereg'd in
 /// `Drop` before the `_domain` field is released, so the PD is
 /// still alive when libibverbs walks back to it. The eventual
-/// `ibv_dealloc_pd` only fires when every other `Arc<IbvDomain>`
+/// `ibv_dealloc_pd` only fires when every other `Arc<dyn IbvDomainKeepalive>`
 /// (e.g. the manager's `device_domains` entry) is also gone.
 #[derive(Debug)]
 pub(super) enum IbvMemoryRegion {
@@ -783,7 +783,7 @@ pub(super) enum IbvMemoryRegion {
         mr: *mut rdmaxcel_sys::ibv_mr,
         /// PD the MR was registered against, kept alive past
         /// `ibv_dereg_mr` via this clone. Never read directly.
-        _domain: Arc<IbvDomain>,
+        _domain: Arc<dyn IbvDomainKeepalive>,
     },
     /// Singleton owner shared by every segment-backed view from the
     /// mlx5dv segment scanner. `Drop` calls
@@ -812,7 +812,7 @@ impl Drop for IbvMemoryRegion {
                 // once when the last clone goes away, meaning
                 // `ibv_dereg_mr` is called exactly once on this
                 // pointer. The PD the MR was registered against is
-                // kept alive by the sibling `_domain` `Arc<IbvDomain>`
+                // kept alive by the sibling `_domain` `Arc<dyn IbvDomainKeepalive>`
                 // until after this dereg returns.
                 let result = unsafe { rdmaxcel_sys::ibv_dereg_mr(*mr) };
                 if result != 0 {
