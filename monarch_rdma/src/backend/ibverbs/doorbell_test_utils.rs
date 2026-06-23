@@ -771,11 +771,11 @@ impl DoorbellTestEnv {
 
     pub async fn cleanup(self) -> Result<(), anyhow::Error> {
         self.ibv_actor_1
-            .release_buffer(&self.client_1, self.ibv_buffer_1.mr_id)
+            .release_buffer(&self.client_1, self.rdma_handle_1.id)
             .await?;
 
         self.ibv_actor_2
-            .release_buffer(&self.client_2, self.ibv_buffer_2.mr_id)
+            .release_buffer(&self.client_2, self.rdma_handle_2.id)
             .await?;
         Ok(())
     }

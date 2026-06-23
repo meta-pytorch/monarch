@@ -18,7 +18,6 @@
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -52,15 +51,12 @@ use super::device::IbvDeviceImpl;
 use super::device_selection::resolve_target;
 use super::domain::IbvDomain;
 use super::efa_device::EfaDevice;
+use super::memory_region::IbvMemoryRegionView;
 use super::mlx_device::MlxDevice;
 use super::primitives::IbvConfig;
 use super::primitives::IbvDeviceInfo;
-use super::primitives::IbvMemoryRegion;
-use super::primitives::IbvMemoryRegionView;
 use super::primitives::IbvQpInfo;
 use super::primitives::ibverbs_supported;
-use super::primitives::mlx5dv_supported;
-use super::primitives::resolve_qp_type;
 use super::queue_pair::IbvQueuePair;
 use super::queue_pair::OpResult;
 use super::queue_pair::ProcessOps;
@@ -70,8 +66,8 @@ use crate::RdmaOp;
 use crate::RdmaTransportLevel;
 use crate::backend::RdmaBackend;
 use crate::local_memory::KeepaliveLocalMemory;
+use crate::local_memory::is_device_ptr;
 use crate::nic::NicRemoteBackendContext;
-use crate::rdma_components::get_registered_cuda_segments;
 use crate::rdma_manager_actor::RdmaManagerActor;
 use crate::validate_execution_context;
 
@@ -150,53 +146,6 @@ pub enum IbvManagerLocalMessage {
     },
 }
 
-/// Look up `(addr, size)` in a slice of registered CUDA segments
-/// and return a view into the matching mkey.
-///
-/// Bounded by `mr_size` (what the mkey actually covers), NOT by
-/// `phys_size` (the scanner-reported extent). They diverge when
-/// `register_segments` hits `max_sge` and stops growing the binding.
-/// Returning a view based on `phys_size` would hand out an
-/// `(lkey, offset)` past the bound and the WR would fail with
-/// `IBV_WC_LOC_PROT_ERR`; bounding by `mr_size` makes the gap a
-/// miss so the caller falls back to per-buffer dmabuf.
-///
-/// Free function so the boundary can be unit-tested without an actor.
-pub(super) fn lookup_segment_for_address(
-    segments: &[rdmaxcel_sys::rdma_segment_info_t],
-    addr: usize,
-    size: usize,
-) -> Option<SegmentInfo> {
-    for segment in segments {
-        let start_addr = segment.phys_address;
-        let end_addr = start_addr + segment.mr_size;
-        if start_addr <= addr && addr + size <= end_addr {
-            let offset = addr - start_addr;
-            let rdma_addr = segment.mr_addr + offset;
-            return Some(SegmentInfo {
-                rdma_addr,
-                size,
-                lkey: segment.lkey,
-                rkey: segment.rkey,
-            });
-        }
-    }
-    None
-}
-
-/// Result of a successful [`lookup_segment_for_address`] hit. Just
-/// the device-derived facts about the matched mkey; the caller
-/// composes these with whatever provenance it needs (mrv id,
-/// device name, refcounted owners) when materializing an
-/// [`IbvMemoryRegionView`].
-#[derive(Debug)]
-pub(super) struct SegmentInfo {
-    pub(super) rdma_addr: usize,
-    pub(super) size: usize,
-    pub(super) lkey: u32,
-    pub(super) rkey: u32,
-}
-
 /// Default key used for the per-device protection domain inside
 /// each [`IbvDevice<I>`] entry of [`IbvManagerActor::devices`].
 const DEFAULT_DOMAIN: &str = "default";
@@ -232,36 +181,19 @@ pub struct IbvManagerActor<I: IbvDeviceImpl> {
     /// each QP via [`IbvQueuePair`]'s own `Drop`.
     peer_created_qps: HashMap<QpKey, IbvQueuePair>,
 
-    /// Map of RDMA device names to their opened [`IbvDevice<I>`]
-    /// (which owns the per-device `Arc<IbvContext>` and the
-    /// `DEFAULT_DOMAIN` `Arc<IbvDomain>`) and an optional loopback
-    /// QP used by the CUDA segment scanner. The loopback QP is
-    /// owned by this map and destroyed via [`IbvQueuePair`]'s `Drop`
-    /// when the entry is removed.
-    devices: HashMap<String, (IbvDevice<I>, Option<IbvQueuePair>)>,
+    /// Map of RDMA device names to their opened [`IbvDevice<I>`], each of
+    /// which owns the per-device `Arc<IbvContext>` and the `DEFAULT_DOMAIN`
+    /// `Arc<IbvDomain>`.
+    devices: HashMap<String, IbvDevice<I>>,
 
     config: IbvConfig,
 
-    mlx5dv_enabled: bool,
-
-    /// Singleton Arc owning the CUDA segment scanner state. `Some`
-    /// once `register_segments` succeeds; cloned into every
-    /// segment-backed view. `deregister_segments` runs from the
-    /// `IbvMemoryRegion::Segments` Drop when the last reference goes
-    /// away.
-    segments_mr: Option<Arc<IbvMemoryRegion>>,
-
-    /// Id for next mrv created.
-    mrv_id: usize,
-
-    /// Map from buffer_id to the buffer's `(IbvBuffer, view)`. The
-    /// view keeps the MR (and its PD) alive for the lifetime of the
-    /// registration; `ReleaseBuffer` drops the entry, and the FFI
-    /// resources are released by the `Arc`s' `Drop`s once no other
-    /// holder of those views remains.
-    buffer_registrations: HashMap<usize, (IbvBuffer, IbvMemoryRegionView)>,
-
-    _marker: PhantomData<I>,
+    /// Map from buffer_id to the registered MR view. The view keeps the MR (and
+    /// its PD) alive for the lifetime of the registration; `ReleaseBuffer` drops
+    /// the entry, and the FFI resources are released by the `Arc`s' `Drop`s once
+    /// no other holder of the view remains. The wire-facing [`IbvBuffer`] is
+    /// derived from the view on demand.
+    buffer_registrations: HashMap<usize, IbvMemoryRegionView>,
 }
 
 #[async_trait]
@@ -290,9 +222,8 @@ impl<I: IbvDeviceImpl> Drop for IbvManagerActor<I> {
         }
 
         // The remaining fields (`peer_created_qps`,
-        // `buffer_registrations`, `segments_mr`, `devices`)
-        // free their FFI resources through their elements' `Drop`s
-        // when this struct is dropped.
+        // `buffer_registrations`, `devices`) free their FFI resources
+        // through their elements' `Drop`s when this struct is dropped.
     }
 }
 
@@ -317,8 +248,6 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
         };
         tracing::debug!("rdma is enabled, config target: {:?}", config.target);
 
-        let mlx5dv_enabled = resolve_qp_type(config.qp_type) == rdmaxcel_sys::RDMA_QP_TYPE_MLX5DV;
-
         // check config and hardware support align
         if config.use_gpu_direct {
             match validate_execution_context().await {
@@ -341,26 +270,19 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
             peer_created_qps: HashMap::new(),
             devices: HashMap::new(),
             config,
-            mlx5dv_enabled,
-            segments_mr: None,
-            mrv_id: 0,
             buffer_registrations: HashMap::new(),
-            _marker: PhantomData,
         };
 
         Ok(actor)
     }
 
-    /// Get or create the default domain (and a loopback QP, if
-    /// mlx5dv is supported) for the named RDMA device. The
-    /// loopback QP is kept in [`Self::devices`] solely so
-    /// the CUDA segment scanner can hand its raw pointer to
-    /// `register_segments`.
+    /// Get or create the `DEFAULT_DOMAIN` for the named RDMA device, opening
+    /// the device on first use.
     fn get_or_create_device_domain(
         &mut self,
         device_name: &str,
     ) -> Result<Arc<IbvDomain<I::IbvDomainImpl>>, anyhow::Error> {
-        if let Some((device, _)) = self.devices.get_mut(device_name) {
+        if let Some(device) = self.devices.get_mut(device_name) {
             return device.get_or_create_domain(DEFAULT_DOMAIN);
         }
 
@@ -370,99 +292,18 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
             })?;
         let domain = device.get_or_create_domain(DEFAULT_DOMAIN)?;
 
-        // Print device info if MONARCH_DEBUG_RDMA=1 is set (before initial QP creation)
+        // Print device info if MONARCH_DEBUG_RDMA=1 is set.
         crate::print_device_info_if_debug_enabled(domain.context.as_ptr());
 
-        // Create loopback QP for this domain if mlx5dv is supported (needed for segment registration)
-        // For EFA, we don't need a loopback QP for segment scanning
-        let qp = if mlx5dv_supported() && !crate::efa::is_efa_device() {
-            let mut qp =
-                IbvQueuePair::new(Arc::clone(&domain), self.config.clone()).map_err(|e| {
-                    anyhow::anyhow!(
-                        "could not create loopback QP for device {}: {}",
-                        device_name,
-                        e
-                    )
-                })?;
-
-            let endpoint = qp.get_qp_info().map_err(|e| {
-                anyhow::anyhow!("could not get QP info for device {}: {}", device_name, e)
-            })?;
-
-            qp.connect(&endpoint).map_err(|e| {
-                anyhow::anyhow!(
-                    "could not connect loopback QP for device {}: {}",
-                    device_name,
-                    e
-                )
-            })?;
-
-            Some(qp)
-        } else {
-            None
-        };
-
-        self.devices.insert(device_name.to_string(), (device, qp));
+        self.devices.insert(device_name.to_string(), device);
         Ok(domain)
     }
 
-    /// Build parallel PD/QP arrays indexed by CUDA device ordinal
-    /// for the C++ register_segments call.
-    fn build_per_device_pd_qp_arrays(
-        &self,
-    ) -> (
-        Vec<*mut rdmaxcel_sys::ibv_pd>,
-        Vec<*mut rdmaxcel_sys::rdmaxcel_qp_t>,
-    ) {
-        let cuda_map = super::device_selection::get_cuda_device_to_ibv_device();
-        let mut pds = Vec::with_capacity(cuda_map.len());
-        let mut qps = Vec::with_capacity(cuda_map.len());
-        for maybe_device in cuda_map {
-            if let Some(info) = maybe_device {
-                if let Some((device, qp)) = self.devices.get(info.name()) {
-                    let pd = device
-                        .domain(DEFAULT_DOMAIN)
-                        .map(|d| d.as_ptr())
-                        .unwrap_or(std::ptr::null_mut());
-                    pds.push(pd);
-                    qps.push(
-                        qp.as_ref()
-                            // SAFETY: the returned pointer is read by
-                            // the segment-scan FFI under a separate
-                            // call on this same `&self`; the QP lives
-                            // in `devices` for the lifetime of
-                            // this `IbvManagerActor`, so its `Drop`
-                            // cannot run while these pointers are in
-                            // use.
-                            .map(|q| unsafe { q.as_ptr() } as *mut rdmaxcel_sys::rdmaxcel_qp_t)
-                            .unwrap_or(std::ptr::null_mut()),
-                    );
-                } else {
-                    pds.push(std::ptr::null_mut());
-                    qps.push(std::ptr::null_mut());
-                }
-            } else {
-                pds.push(std::ptr::null_mut());
-                qps.push(std::ptr::null_mut());
-            }
-        }
-        (pds, qps)
-    }
-
-    fn find_cuda_segment_for_address(
-        &self,
-        addr: usize,
-        size: usize,
-        pd: *mut rdmaxcel_sys::ibv_pd,
-    ) -> Option<SegmentInfo> {
-        lookup_segment_for_address(&get_registered_cuda_segments(pd), addr, size)
-    }
-
-    /// Resolve `mem` to an [`IbvMemoryRegionView`] using the slot
-    /// shared by every clone of `mem`. On a cold slot, registers the
-    /// region (CPU via `ibv_reg_mr`, CUDA via segment scanning or a
-    /// dmabuf MR) and installs the result; on a warm slot, returns the
-    /// previously-installed view.
+    /// Resolve `mem` to an [`IbvMemoryRegionView`] using the slot shared by
+    /// every clone of `mem`. On a cold slot, picks the RDMA device (the
+    /// CUDA-co-located NIC for device memory, else the config fallback) and
+    /// registers the region through that device's [`IbvDomainImpl`] strategy,
+    /// installing the result; on a warm slot, returns the cached view.
     fn resolve_local_mr(
         &mut self,
         mem: &KeepaliveLocalMemory,
@@ -471,196 +312,46 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
             return Ok(mrv.clone());
         }
         let addr = mem.addr();
-        let size = mem.size();
-        let mrv = unsafe {
-            let mut mem_type: i32 = 0;
-            let ptr = addr as rdmaxcel_sys::CUdeviceptr;
-            let err = rdmaxcel_sys::rdmaxcel_cuPointerGetAttribute(
-                &mut mem_type as *mut _ as *mut std::ffi::c_void,
-                rdmaxcel_sys::CU_POINTER_ATTRIBUTE_MEMORY_TYPE,
-                ptr,
-            );
-            let is_cuda = err == rdmaxcel_sys::CUDA_SUCCESS;
 
-            let mut selected_rdma_device = None;
-
-            if is_cuda {
-                // Get device ordinal from the CUDA pointer
-                let mut device_ordinal: i32 = -1;
-                let err = rdmaxcel_sys::rdmaxcel_cuPointerGetAttribute(
+        // Pick the RDMA device: for device memory, the CUDA-co-located NIC;
+        // otherwise the configured fallback.
+        let cuda_nic = if is_device_ptr(addr) {
+            let mut device_ordinal: i32 = -1;
+            // SAFETY: `addr` is a CUDA device pointer (per `is_device_ptr`); the
+            // FFI call writes the owning device ordinal through the out-pointer.
+            let err = unsafe {
+                rdmaxcel_sys::rdmaxcel_cuPointerGetAttribute(
                     &mut device_ordinal as *mut _ as *mut std::ffi::c_void,
                     rdmaxcel_sys::CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL,
-                    ptr,
-                );
-                if err == rdmaxcel_sys::CUDA_SUCCESS && device_ordinal >= 0 {
-                    selected_rdma_device = super::device_selection::get_cuda_device_to_ibv_device()
-                        .get(device_ordinal as usize)
-                        .and_then(|d| d.clone());
-                }
-            }
-
-            // Determine the RDMA device name to use: CUDA-co-located
-            // NIC if available, otherwise the config fallback.
-            let device_name = if let Some(info) = selected_rdma_device {
-                info.name().clone()
-            } else {
-                resolve_target::<I>(&self.config.target)
-                    .unwrap_or_else(|| IbvDeviceInfo::default::<I>())
-                    .name()
-                    .clone()
+                    addr as rdmaxcel_sys::CUdeviceptr,
+                )
             };
-            tracing::debug!(
-                "Using RDMA device: {} for memory at 0x{:x}",
-                device_name,
-                addr
-            );
-
-            // Get or create domain and loopback QP for this device
-            let domain = self.get_or_create_device_domain(&device_name)?;
-
-            let access = if crate::efa::is_efa_device() {
-                crate::efa::mr_access_flags()
-            } else {
-                rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
-                    | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
-                    | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_READ
-                    | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC
-            };
-
-            let mrv;
-
-            if is_cuda {
-                // First, try to use segment scanning if mlx5dv is enabled
-                let mut segment_info = None;
-                if self.mlx5dv_enabled {
-                    // Try to find in already registered segments
-                    segment_info = self.find_cuda_segment_for_address(addr, size, domain.as_ptr());
-
-                    // If not found, trigger a re-sync with the allocator and retry
-                    if segment_info.is_none() {
-                        let (mut pds, mut qps) = self.build_per_device_pd_qp_arrays();
-                        let err = rdmaxcel_sys::register_segments(
-                            pds.as_mut_ptr(),
-                            qps.as_mut_ptr(),
-                            pds.len() as i32,
-                            self.config.max_sge_override,
-                        );
-                        // Only retry if register_segments succeeded
-                        // If it fails (e.g., scanner returns 0 segments), we'll fall back to dmabuf
-                        if err == 0 {
-                            // The scanner just registered (or
-                            // re-synced) global segment state. Lazily
-                            // install the singleton `segments_mr` now,
-                            // independent of whether *this* address
-                            // matches a segment. Without this, a
-                            // subsequent retry that doesn't find a
-                            // segment would leak the newly-registered
-                            // global state on manager teardown.
-                            self.segments_mr
-                                .get_or_insert_with(|| Arc::new(IbvMemoryRegion::Segments));
-                            segment_info =
-                                self.find_cuda_segment_for_address(addr, size, domain.as_ptr());
-                        }
-                    }
-                }
-
-                // Use segment if found, otherwise fall back to direct dmabuf registration
-                if let Some(info) = segment_info {
-                    let segments_mr = Arc::clone(
-                        self.segments_mr
-                            .get_or_insert_with(|| Arc::new(IbvMemoryRegion::Segments)),
-                    );
-                    let id = self.mrv_id;
-                    self.mrv_id += 1;
-                    mrv = IbvMemoryRegionView::new(
-                        id,
-                        addr,
-                        info.rdma_addr,
-                        info.size,
-                        info.lkey,
-                        info.rkey,
-                        device_name.clone(),
-                        segments_mr,
-                    );
-                } else {
-                    // Dmabuf path: used when mlx5dv is disabled OR scanner returns no segments
-                    let mut fd: i32 = -1;
-                    let cu_err = rdmaxcel_sys::rdmaxcel_cuMemGetHandleForAddressRange(
-                        &mut fd,
-                        addr as rdmaxcel_sys::CUdeviceptr,
-                        size,
-                        rdmaxcel_sys::CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
-                        0,
-                    );
-                    if cu_err != rdmaxcel_sys::CUDA_SUCCESS || fd < 0 {
-                        return Err(anyhow::anyhow!(
-                            "failed to get dmabuf handle for CUDA memory (addr: 0x{:x}, size: {}, cu_err: {}, fd: {})",
-                            addr,
-                            size,
-                            cu_err,
-                            fd
-                        ));
-                    }
-                    let mr = rdmaxcel_sys::ibv_reg_dmabuf_mr(
-                        domain.as_ptr(),
-                        0,
-                        size,
-                        0,
-                        fd,
-                        access.0 as i32,
-                    );
-                    if mr.is_null() {
-                        return Err(anyhow::anyhow!("Failed to register dmabuf MR"));
-                    }
-                    let id = self.mrv_id;
-                    self.mrv_id += 1;
-                    let keepalive = Arc::clone(&domain);
-                    mrv = IbvMemoryRegionView::new(
-                        id,
-                        addr,
-                        (*mr).addr as usize,
-                        size,
-                        (*mr).lkey,
-                        (*mr).rkey,
-                        device_name.clone(),
-                        Arc::new(IbvMemoryRegion::Direct {
-                            mr,
-                            _domain: keepalive,
-                        }),
-                    );
-                }
-            } else {
-                // CPU memory path
-                let mr = rdmaxcel_sys::ibv_reg_mr(
-                    domain.as_ptr(),
-                    addr as *mut std::ffi::c_void,
-                    size,
-                    access.0 as i32,
-                );
-
-                if mr.is_null() {
-                    return Err(anyhow::anyhow!("failed to register standard MR"));
-                }
-
-                let id = self.mrv_id;
-                self.mrv_id += 1;
-                let keepalive = Arc::clone(&domain);
-                mrv = IbvMemoryRegionView::new(
-                    id,
-                    addr,
-                    (*mr).addr as usize,
-                    size,
-                    (*mr).lkey,
-                    (*mr).rkey,
-                    device_name.clone(),
-                    Arc::new(IbvMemoryRegion::Direct {
-                        mr,
-                        _domain: keepalive,
-                    }),
-                );
-            }
-            mrv
+            // A non-success code yields no NIC.
+            let ordinal = (err == rdmaxcel_sys::CUDA_SUCCESS).then_some(device_ordinal);
+            ordinal.filter(|o| *o >= 0).and_then(|o| {
+                super::device_selection::get_cuda_device_to_ibv_device::<I>()
+                    .get(o as usize)
+                    .and_then(|d| d.clone())
+            })
+        } else {
+            None
         };
+        let device_name = cuda_nic.map(|info| info.name().clone()).unwrap_or_else(|| {
+            resolve_target::<I>(&self.config.target)
+                .unwrap_or_else(|| IbvDeviceInfo::default::<I>())
+                .name()
+                .clone()
+        });
+        tracing::debug!(
+            "Using RDMA device: {} for memory at 0x{:x}",
+            device_name,
+            addr
+        );
+
+        let domain = self.get_or_create_device_domain(&device_name)?;
+        // The backend strategy handles host vs. device memory (standard MR,
+        // dmabuf MR, or a device-specific segment binding).
+        let mrv = domain.register_mr(mem)?;
         Ok(mem.mr_slot().get_or_init(|| mrv).clone())
     }
 
@@ -679,7 +370,8 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
         }
         let self_device = &qp_key.self_device;
         let domain = self.get_or_create_device_domain(self_device)?;
-        let mut qp = IbvQueuePair::new(domain, self.config.clone())
+        let mut qp = domain
+            .create_queue_pair(&self.config)
             .map_err(|e| anyhow::anyhow!("could not create peer IbvQueuePair: {}", e))?;
         let local_info = qp
             .get_qp_info()
@@ -705,7 +397,8 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
         }
         let self_device = &qp_key.self_device;
         let domain = self.get_or_create_device_domain(self_device)?;
-        let qp = IbvQueuePair::new(domain, self.config.clone())
+        let qp = domain
+            .create_queue_pair(&self.config)
             .map_err(|e| anyhow::anyhow!("could not create IbvQueuePair for {qp_key:?}: {}", e))?;
         let local_manager: ActorRef<Self> = cx.bind();
         let is_loopback = local_manager.actor_addr() == peer_manager.actor_addr()
@@ -822,7 +515,8 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
         peer_device: String,
     ) -> Result<(IbvQueuePair, OncePortReceiver<Result<IbvQpInfo, String>>), anyhow::Error> {
         let domain = self.get_or_create_device_domain(&self_device)?;
-        let mut qp = IbvQueuePair::new(domain, self.config.clone())
+        let mut qp = domain
+            .create_queue_pair(&self.config)
             .map_err(|e| anyhow::anyhow!("could not create IbvQueuePair: {e}"))?;
         let sender_info = qp
             .get_qp_info()
@@ -930,8 +624,8 @@ impl<I: IbvDeviceImpl> IbvManagerLocalMessageHandler for IbvManagerActor<I> {
         remote_buf_id: usize,
         local: KeepaliveLocalMemory,
     ) -> Result<Result<IbvBuffer, String>, anyhow::Error> {
-        if let Some((buf, _)) = self.buffer_registrations.get(&remote_buf_id) {
-            return Ok(Ok(buf.clone()));
+        if let Some(mrv) = self.buffer_registrations.get(&remote_buf_id) {
+            return Ok(Ok(IbvBuffer::from(mrv)));
         }
         // `resolve_local_mr` installs the view in `local`'s shared MR
         // slot, so every clone of this handle — including the one the
@@ -941,16 +635,8 @@ impl<I: IbvDeviceImpl> IbvManagerLocalMessageHandler for IbvManagerActor<I> {
             Ok(v) => v,
             Err(e) => return Ok(Err(e.to_string())),
         };
-        let buf = IbvBuffer {
-            mr_id: mrv.id,
-            lkey: mrv.lkey,
-            rkey: mrv.rkey,
-            addr: mrv.rdma_addr,
-            size: mrv.size,
-            device_name: mrv.device_name.clone(),
-        };
-        self.buffer_registrations
-            .insert(remote_buf_id, (buf.clone(), mrv));
+        let buf = IbvBuffer::from(&mrv);
+        self.buffer_registrations.insert(remote_buf_id, mrv);
         Ok(Ok(buf))
     }
 }

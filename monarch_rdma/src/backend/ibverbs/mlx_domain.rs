@@ -38,6 +38,7 @@ use super::memory_region::IbvMemoryRegionView;
 use super::primitives::IbvConfig;
 use super::primitives::IbvDeviceInfo;
 use super::queue_pair::IbvQueuePair;
+use crate::backend::ibverbs::mlx_device::MlxDevice;
 use crate::local_memory::KeepaliveLocalMemory;
 use crate::local_memory::is_device_ptr;
 
@@ -63,8 +64,10 @@ pub struct ScannedSegment {
     pub is_expandable: bool,
 }
 
-/// Enumerates the currently-live CUDA segments.
-pub type CudaSegmentScanner = Box<dyn Fn() -> Vec<ScannedSegment> + Send + Sync>;
+/// Enumerates the currently-live CUDA segments. An `Arc` (not `Box`) so
+/// [`scan_cuda_segments`] can clone it out and drop the registry lock before
+/// invoking it — see that function.
+pub type CudaSegmentScanner = Arc<dyn Fn() -> Vec<ScannedSegment> + Send + Sync>;
 
 static CUDA_SEGMENT_SCANNER: Mutex<Option<CudaSegmentScanner>> = Mutex::new(None);
 
@@ -79,12 +82,15 @@ pub fn register_cuda_segment_scanner(scanner: CudaSegmentScanner) {
 /// Invoke the registered CUDA segment scanner, returning an empty list when
 /// none is registered.
 fn scan_cuda_segments() -> Vec<ScannedSegment> {
-    CUDA_SEGMENT_SCANNER
+    // Clone the `Arc` and release the registry lock before invoking: the
+    // pytorch scanner takes the Python GIL, and even though scan_cuda_segments
+    // is never called concurrently from multiple threads (in the current design),
+    // this protects against the possibility of deadlock.
+    let scanner = CUDA_SEGMENT_SCANNER
         .lock()
         .expect("CUDA segment scanner lock poisoned")
-        .as_ref()
-        .map(|scan| scan())
-        .unwrap_or_default()
+        .clone();
+    scanner.as_deref().map(|scan| scan()).unwrap_or_default()
 }
 
 // ===========================================================================
@@ -222,7 +228,7 @@ impl MlxDomainOps for ProdMlxDomainOps {
     }
 
     fn assigned_cuda_devices(&self) -> Vec<i32> {
-        get_cuda_device_to_ibv_device()
+        get_cuda_device_to_ibv_device::<MlxDevice>()
             .iter()
             .enumerate()
             .filter_map(|(ordinal, nic)| {
@@ -1108,7 +1114,7 @@ mod tests {
 
     #[test]
     fn test_scanner_registration_round_trips() {
-        register_cuda_segment_scanner(Box::new(|| vec![seg(0x1000, MIB2, 3)]));
+        register_cuda_segment_scanner(Arc::new(|| vec![seg(0x1000, MIB2, 3)]));
         assert_eq!(
             scan_cuda_segments(),
             vec![seg(0x1000, MIB2, 3)],
