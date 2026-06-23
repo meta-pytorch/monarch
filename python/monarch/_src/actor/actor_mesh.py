@@ -7,6 +7,7 @@
 # pyre-strict
 
 import abc
+import asyncio
 import collections
 import contextvars
 import functools
@@ -226,6 +227,23 @@ class Instance(abc.ABC):
         """
         Abort the current actor. This will cause the actor to terminate
         with a failure, and a supervision error will propagate to its creator.
+        """
+        ...
+
+    @abstractmethod
+    def _execution_start(self, name: str) -> int:
+        """
+        Producer write-side for the mesh `execution` field: record the start
+        of a handler invocation, returning its in-flight token. Returns 0
+        (a no-op sentinel) when this instance has no execution tracker.
+        """
+        ...
+
+    @abstractmethod
+    def _execution_finish(self, token: int) -> None:
+        """
+        End the handler invocation started by `_execution_start`. A no-op
+        for the 0 sentinel. Called from `_Actor.handle`'s `finally`.
         """
         ...
 
@@ -469,9 +487,13 @@ def attach(addr: str) -> None:
 
     Must be called before the client context is bootstrapped — i.e.
     before the first ``context()`` / ``this_host()`` / ``this_proc()``
-    on the client; raises ``RuntimeError`` if the client context has
-    already been bootstrapped. ``this_host()`` still names the current
-    machine — attach only changes how this host's procs are reached.
+    on the client — because actor and port refs snapshot their
+    location when they are created. We are working to remove this
+    sequencing dependency so attach can be configured independently of
+    first client-context use. Raises ``RuntimeError`` if the client
+    context has already been bootstrapped. ``this_host()`` still names
+    the current machine — attach only changes how this host's procs
+    are reached.
     """
     with _client_context._lock:
         if _client_context._val is not None:
@@ -997,6 +1019,19 @@ class Port(Generic[R]):
         """
         ...
 
+    def send_message(self, message: PythonMessage) -> None: ...
+
+    async def resolve_and_send(self, result: object) -> None:
+        # This is Port.send with deferred-pickle resolution inserted before the
+        # already-serialized Result message is posted.
+        state = pickle(
+            result, allow_pending_pickles=True, allow_tensor_engine_references=False
+        )
+        kind = cast(PythonMessageKind, cast(Any, PythonMessageKind.Result)(self._rank))
+        message = PendingMessage(kind, state)
+        resolved = await Future(coro=cast(Any, message).resolve())
+        self.send_message(resolved)
+
     def exception(self, obj: Exception) -> None: ...
 
     def __reduce__(self) -> Tuple[Any, Tuple[Any, ...]]:
@@ -1195,6 +1230,63 @@ class ActorInitArgs:
     args: Tuple[Any, ...]
 
 
+class _QueuePanicFlag:
+    """Panic flag for queue dispatch mode.
+
+    Unlike the DummyPanicFlag, this one stores the exception so it can
+    be re-raised after handle() returns, ensuring proper cleanup.
+    """
+
+    def __init__(self) -> None:
+        self.panic_exception: BaseException | None = None
+
+    def signal_panic(self, ex: BaseException) -> None:
+        self.panic_exception = ex
+
+
+async def _dispatch_loop(
+    actor: Any,
+    receiver: "Receiver[QueuedMessage]",
+    self_instance: "Instance",
+) -> None:
+    """
+    Message loop for queue-dispatch mode. Called from Rust Actor::init.
+
+    Args:
+        actor: The Python actor object that implements ``handle``.
+        receiver: Channel receiver for queued messages.
+        self_instance: The actor's own Instance, used to kill self on
+            an unhandled exception.
+    """
+    while True:
+        try:
+            msg = await receiver.recv()
+            await _handle_queued_message(actor, msg)
+        except asyncio.CancelledError:
+            return
+        except BaseException as e:
+            reason = "".join(TracebackException.from_exception(e).format())
+            self_instance.kill(reason)
+            raise
+
+
+async def _handle_queued_message(actor: Any, msg: "QueuedMessage") -> None:
+    """Handle a single queued message."""
+
+    panic_flag = _QueuePanicFlag()
+    await actor.handle(
+        msg.context,
+        msg.method,
+        msg.bytes,
+        panic_flag,  # pyre-ignore[6]: _QueuePanicFlag implements PanicFlag protocol
+        msg.local_state,
+        msg.response_port,
+    )
+    # If a panic was signaled, re-raise it after handle() has cleaned up.
+    if panic_flag.panic_exception is not None:
+        raise panic_flag.panic_exception
+
+
 class _Actor:
     """
     This is the message handling implementation of a Python actor.
@@ -1209,19 +1301,6 @@ class _Actor:
     routes messages to it, managing argument serialization/deserialization and
     error handling.
     """
-
-    class QueuePanicFlag:
-        """Panic flag for queue dispatch mode.
-
-        Unlike the DummyPanicFlag, this one stores the exception so it can
-        be re-raised after handle() returns, ensuring proper cleanup.
-        """
-
-        def __init__(self) -> None:
-            self.panic_exception: BaseException | None = None
-
-        def signal_panic(self, ex: BaseException) -> None:
-            self.panic_exception = ex
 
     def __init__(self) -> None:
         self.instance: object | None = None
@@ -1327,23 +1406,36 @@ class _Actor:
 
             the_method, should_instrument, is_coro = self._method_cache[method_name]
 
-            if is_coro:
-                if should_instrument:
-                    with span(method_name):
-                        result = await the_method(*args, **kwargs)
-                else:
-                    result = await the_method(*args, **kwargs)
-                self._maybe_exit_debugger()
-            else:
-                with fake_sync_state():
+            # Bracket the real user-method invocation so the actor reports it
+            # as in-flight (PE-2: only the invocation, never Init/plumbing).
+            # The finally drains on normal return, exception, panic, and
+            # cancellation; `_execution_start` returns 0 (a no-op token) when
+            # the instance has no tracker.
+            token = ctx.actor_instance._execution_start(method_name)
+            try:
+                if is_coro:
                     if should_instrument:
                         with span(method_name):
-                            result = the_method(*args, **kwargs)
+                            result = await the_method(*args, **kwargs)
                     else:
-                        result = the_method(*args, **kwargs)
+                        result = await the_method(*args, **kwargs)
                     self._maybe_exit_debugger()
+                else:
+                    with fake_sync_state():
+                        if should_instrument:
+                            with span(method_name):
+                                result = the_method(*args, **kwargs)
+                        else:
+                            result = the_method(*args, **kwargs)
+                        self._maybe_exit_debugger()
+            finally:
+                ctx.actor_instance._execution_finish(token)
 
-            response_port.send(result)
+            response = response_port.resolve_and_send(result)
+            if isinstance(response, PythonTask):
+                await Future(coro=response)
+            else:
+                await response
         except Exception as e:
             log_endpoint_exception(e, method_name, ctx.actor_instance.actor_id)
             self._post_mortem_debug(e.__traceback__)
@@ -1448,6 +1540,7 @@ class _Actor:
             return await supervise(*args, **kwargs)
         else:
             with fake_sync_state():
+                # pyrefly: ignore [not-callable]
                 return supervise(*args, **kwargs)
 
     async def __cleanup__(self, cx: Context, exc: str | Exception | None) -> None:
@@ -1476,45 +1569,8 @@ class _Actor:
             return await cleanup(exc)
         else:
             with fake_sync_state():
+                # pyrefly: ignore [not-callable]
                 return cleanup(exc)
-
-    async def _dispatch_loop(
-        self,
-        receiver: "Receiver[QueuedMessage]",
-        self_instance: "Instance",
-    ) -> None:
-        """
-        Message loop for queue-dispatch mode. Called from Rust Actor::init.
-
-        Args:
-            receiver: Channel receiver for queued messages
-            self_instance: The actor's own Instance, used to kill self on
-                an unhandled exception.
-        """
-        while True:
-            msg = await receiver.recv()
-            try:
-                await self._handle_queued_message(msg)
-            except BaseException as e:
-                reason = "".join(TracebackException.from_exception(e).format())
-                self_instance.kill(reason)
-                raise
-
-    async def _handle_queued_message(self, msg: "QueuedMessage") -> None:
-        """Handle a single queued message."""
-
-        panic_flag = self.QueuePanicFlag()
-        await self.handle(
-            msg.context,
-            msg.method,
-            msg.bytes,
-            panic_flag,  # pyre-ignore[6]: QueuePanicFlag implements PanicFlag protocol
-            msg.local_state,
-            msg.response_port,
-        )
-        # If a panic was signaled, re-raise it after handle() has cleaned up
-        if panic_flag.panic_exception is not None:
-            raise panic_flag.panic_exception
 
     def __repr__(self) -> str:
         return f"_Actor(instance={self.instance!r})"
@@ -1562,6 +1618,7 @@ class Actor(MeshTrait):
             "actor implementations are not meshes, but we can't convince the typechecker of it..."
         )
 
+    # pyrefly: ignore [not-a-type]
     def _new_with_shape(self, shape: Shape) -> Self:
         raise NotImplementedError(
             "actor implementations are not meshes, but we can't convince the typechecker of it..."

@@ -26,7 +26,9 @@ from monarch._rust_bindings.monarch_hyperactor.host_mesh import PyMeshAdminRef
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.actor.host_mesh import _spawn_admin
 from monarch._src.actor.sync_state import fake_sync_state
+from monarch._src.job.job_sidecar import stop_job_sidecar
 from monarch._src.job.mount_config import Mounts
+from monarch._src.job.telemetry_config import TelemetryConfig
 
 # note: the jobs api is intended as a library so it should
 # only be importing _public_ monarch API functions.
@@ -297,38 +299,6 @@ class BashActor(Actor):
 
 
 @dataclass
-class TelemetryConfig:
-    """Configuration for automatic telemetry startup.
-
-    When passed to a job constructor, telemetry (and optionally a dashboard)
-    is started automatically when ``state()`` is called.
-
-    Args:
-        batch_size: Number of rows to buffer before flushing to a RecordBatch.
-        retention_secs: Retention window in seconds for message tables.
-            0 disables retention.
-        include_dashboard: Whether to start the monarch dashboard web server.
-        dashboard_port: Preferred port for the dashboard.
-        snapshot_interval_secs: Interval in seconds between periodic mesh
-            introspection snapshots. Snapshots capture the mesh topology
-            into the telemetry query surface. 0 disables periodic capture
-            (default). When ``include_dashboard`` is True and this is 0,
-            it is automatically set to 30s because the dashboard requires
-            snapshot data for system actor filtering.
-    """
-
-    batch_size: int = 1000
-    retention_secs: int = 600
-    include_dashboard: bool = False
-    dashboard_port: int = 8265
-    snapshot_interval_secs: float = 0  # 0 = disabled
-
-    def __post_init__(self) -> None:
-        if self.include_dashboard and self.snapshot_interval_secs <= 0:
-            self.snapshot_interval_secs = 30.0
-
-
-@dataclass
 class MeshAdminConfig:
     """Configuration for automatic mesh admin agent startup.
 
@@ -530,7 +500,10 @@ class JobTrait(ABC):
         return job_state
 
     def enable_telemetry(
-        self, config: "Optional[TelemetryConfig]" = None, **kwargs
+        self,
+        config: "Optional[TelemetryConfig]" = None,
+        **kwargs,
+        # pyrefly: ignore [not-a-type]
     ) -> Self:
         """Configure automatic telemetry startup on the next :meth:`state` call.
 
@@ -545,7 +518,10 @@ class JobTrait(ABC):
         return self
 
     def enable_admin(
-        self, config: "Optional[MeshAdminConfig]" = None, **kwargs
+        self,
+        config: "Optional[MeshAdminConfig]" = None,
+        **kwargs,
+        # pyrefly: ignore [not-a-type]
     ) -> Self:
         """Configure automatic mesh admin agent startup on the next :meth:`state` call.
 
@@ -673,7 +649,7 @@ class JobTrait(ABC):
         apply_id = self.apply_id
         running = self._running
         if apply_id is not None and running is not None:
-            self._mounts.ensure_open(running)
+            self._mounts.ensure_open(apply_id, raw._hosts)
         hosts = {}
         for mesh_name, mesh in raw._hosts.items():
             exe = self._python_executables.get(mesh_name, self._default_python_exe)
@@ -746,8 +722,9 @@ class JobTrait(ABC):
         return pickle.dumps(self)
 
     def kill(self):
-        if self._apply_id is not None:
-            self._mounts.ensure_stopped(self._apply_id)
+        apply_id = self.apply_id
+        if apply_id is not None:
+            stop_job_sidecar(apply_id)
         running = self._running
         if running is not None:
             running._kill()
@@ -1062,6 +1039,7 @@ def exec_command(
                         print(stdout, end="")
                     if stderr:
                         print(stderr, end="", file=sys.stderr)
+            # pyrefly: ignore [bad-return]
             return max_rc
         finally:
             await procs.stop()

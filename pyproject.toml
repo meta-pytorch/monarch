@@ -42,7 +42,7 @@ dependencies = [
     "pyre-extensions",
     "typing-extensions>=4.12",
     "cloudpickle",
-    "torchx-nightly",
+    # torchx-nightly is an optional dependency; see the `torchx` extra below.
     "lark",
     "tabulate",
     "opentelemetry-api",
@@ -114,6 +114,10 @@ examples = [
     "ipython",
     "psutil",
 ]
+torchx = [
+    # Optional dependency — only needed for TorchX-backed scheduling / job launching.
+    "torchx-nightly",
+]
 test = [
     "kubernetes",
     "pytest",
@@ -121,6 +125,7 @@ test = [
     "pytest-asyncio",
     "pytest-xdist",
     "pyright",
+    "torchx-nightly",
 ]
 kubernetes = [
     "kubernetes",
@@ -136,6 +141,7 @@ dev = [
     "pytest-split",
     "pyright>=1.1",
     "torch>=2.9.1",
+    "torchx-nightly",
     "setuptools-rust",
 ]
 

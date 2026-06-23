@@ -8,7 +8,6 @@
 
 //! This crate provides hyperactor's mesh abstractions.
 
-#![feature(assert_matches)]
 #![feature(associated_type_defaults)]
 #![feature(exit_status_error)]
 #![feature(impl_trait_in_bindings)]

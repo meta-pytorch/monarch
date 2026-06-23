@@ -796,7 +796,93 @@ If you own a mesh of N actors, each of which generates a supervision error, it m
 
 ## Advanced Patterns
 
-### 1. Explicit Response Ports
+### 1. Concurrent Endpoints
+
+Use `@concurrent_endpoint` when one async endpoint should continue running while
+the actor accepts later messages. This is a convenience wrapper for common
+request/response endpoints; it preserves the normal `call()`, `call_one()`, and
+`stream()` API while running the endpoint body in an `asyncio` task.
+
+For two messages sent from the same source actor to `@concurrent_endpoint`
+methods on the same target actor, the first endpoint body starts before the
+second. This is only a start-order guarantee: the first endpoint runs until its
+first `await`, not to completion, before the second starts.
+
+Warning: if you mix `@concurrent_endpoint` with normal `@endpoint` methods, a
+normal endpoint that follows a concurrent endpoint may run before the
+concurrent endpoint body has started.
+
+```python
+import asyncio
+from monarch.actor import Actor, concurrent_endpoint, endpoint
+
+class Gate(Actor):
+    def __init__(self):
+        self.ready = asyncio.Event()
+        self.unblock = asyncio.Event()
+
+    @concurrent_endpoint
+    async def wait(self) -> str:
+        self.ready.set()
+        await self.unblock.wait()
+        return "done"
+
+    @endpoint
+    async def release_when_ready(self) -> None:
+        await self.ready.wait()
+        self.unblock.set()
+```
+
+When an actor stops, `@concurrent_endpoint` cancels and awaits the outstanding
+tasks that it created before user `__cleanup__` runs. This is a cleanup-time
+guarantee only: meshes owned by the actor may already have been stopped by the
+core actor lifecycle before this cancellation runs. General pending tasks on the
+actor's asyncio loop are cancelled after user `__cleanup__` completes, when the
+loop is stopped.
+
+Pass endpoint options directly to `@concurrent_endpoint(...)`, such as
+`explicit_response_port=True`; do not stack it with `@endpoint`.
+
+There is nothing special about `@concurrent_endpoint`: it packages the
+`explicit_response_port=True` pattern with `asyncio.create_task`, result
+forwarding for non-explicit endpoints, warning logs for escaped explicit-port
+exceptions, and cleanup-time cancellation of the tasks it starts. You can write
+the simple version yourself when you want full control:
+
+```python
+import asyncio
+from monarch.actor import Actor, Port, endpoint
+
+class ManualGate(Actor):
+    def __init__(self):
+        self.ready = asyncio.Event()
+        self.unblock = asyncio.Event()
+
+    @endpoint(explicit_response_port=True)
+    async def wait(self, port: Port[str]) -> None:
+        async def run() -> None:
+            try:
+                self.ready.set()
+                await self.unblock.wait()
+                port.send("done")
+            except Exception as e:
+                port.exception(e)
+
+        asyncio.create_task(run())
+```
+
+This manual form intentionally has no extra task tracking; the task lifetime is
+part of the endpoint protocol you are writing. If an explicit-port endpoint lets
+an exception escape before sending a response, the caller will keep waiting until
+it times out or is cancelled.
+
+`@concurrent_endpoint` works on individual endpoints, including inherited
+endpoints, so an actor can mix concurrent and sequential endpoints. For protocols
+that need custom response ordering, multiple sends, or more complex lifetime
+control, use `@endpoint(explicit_response_port=True)` directly and manage the
+response port yourself.
+
+### 2. Explicit Response Ports
 
 For out-of-order responses or background processing:
 
@@ -825,7 +911,7 @@ class AsyncProcessor(Actor):
             port.send(result)
 ```
 
-### 2. Actor Supervision
+### 3. Actor Supervision
 
 Custom supervision for fine-grained error handling:
 

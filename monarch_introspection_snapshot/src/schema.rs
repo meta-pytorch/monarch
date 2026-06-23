@@ -90,7 +90,7 @@ use monarch_record_batch::RecordBatchRow;
 //       (the Rust field name IS the column name).
 // SR-2: ID and identity-string columns (`snapshot_id`, `node_id`,
 //       `parent_id`, `child_id`, `failure_root_cause_actor`,
-//       `instance_id`, `session_id`, `sender`) are Arrow `Utf8`.
+//       `instance_id`, `session_id`, `sender`, `name`) are Arrow `Utf8`.
 // SR-3: Time and count columns (`snapshot_ts`, `as_of`, `started_at`,
 //       `created_at`, `failure_occurred_at`, `num_hosts`,
 //       `host_num_procs`, `num_actors`, `stopped_retention_cap`,
@@ -101,10 +101,11 @@ use monarch_record_batch::RecordBatchRow;
 //       `returned_buffered_message_count`,
 //       `returned_max_buffered_count`, `last_released_seq`,
 //       `expected_next_seq`, `buffered_count`, `oldest_buffered_seq`,
-//       `newest_buffered_seq`) are Arrow `Int64`.
+//       `newest_buffered_seq`, `active_count`, `oldest_since`) are
+//       Arrow `Int64`.
 // SR-4: Flag columns (`is_system`, `is_stopped`, `is_poisoned`,
-//       `failure_is_propagated`, `enabled`, `snapshot_complete`) are
-//       Arrow `Boolean`.
+//       `failure_is_propagated`, `enabled`, `snapshot_complete`,
+//       `complete`, `truncated`) are Arrow `Boolean`.
 // SR-5: Optional source fields map to nullable Arrow columns; required
 //       fields are non-nullable. The optional fields are:
 //       `ActorNodeRow.created_at`, `ActorNodeRow.last_message_handler`,
@@ -344,6 +345,60 @@ pub struct OrderingSessionRow {
     pub newest_buffered_seq: Option<i64>,
 }
 
+/// Snapshot-time execution rollup for an actor. PK:
+/// `(snapshot_id, node_id)`, FK → `ActorNode(snapshot_id, node_id)`.
+///
+/// Conditional row: one row per actor that reports execution
+/// (EX-1: `execution: Some(...)`). Actors with `execution: None`
+/// (unsupported — no snapshot callback installed) have NO row, matching
+/// [`ActorFailureRow`] / [`ActorInboundOrderingRow`].
+///
+/// `active_count` is the authoritative in-flight total (EX-3), never
+/// summed from [`ActiveHandlerRow`] rows (which may be a truncated
+/// prefix). `complete == false` (EX-2) means the per-handler detail was
+/// momentarily unavailable on that read — [`ActiveHandlerRow`] rows for
+/// this key are then empty while `active_count` stays authoritative.
+/// `truncated == true` (EX-4) means [`ActiveHandlerRow`] holds only the
+/// N oldest handler names.
+#[derive(Debug, Clone, PartialEq, RecordBatchRow)]
+pub struct ActorExecutionRow {
+    /// PK component. FK → `ActorNode(snapshot_id, node_id)`.
+    pub snapshot_id: String,
+    /// PK component. FK → `ActorNode(snapshot_id, node_id)`.
+    pub node_id: String,
+    /// EX-3: authoritative count of in-flight handler invocations.
+    pub active_count: i64,
+    /// EX-2: `true` iff the per-handler detail was captured on this read.
+    pub complete: bool,
+    /// EX-4: `true` iff [`ActiveHandlerRow`] is a prefix of the N oldest.
+    pub truncated: bool,
+}
+
+/// Per-handler detail of an actor's in-flight execution. PK:
+/// `(snapshot_id, node_id, name)`, FK →
+/// `ActorExecution(snapshot_id, node_id)`.
+///
+/// One row per in-flight handler name at snapshot time, aggregated by
+/// name and ordered oldest-first upstream. A prefix of the N oldest when
+/// the parent rollup's `truncated == true`; empty when its
+/// `complete == false` (EX-2). The parent's `active_count` stays the full
+/// total regardless.
+#[derive(Debug, Clone, PartialEq, RecordBatchRow)]
+pub struct ActiveHandlerRow {
+    /// PK component. FK → `ActorExecution(snapshot_id, node_id)`.
+    pub snapshot_id: String,
+    /// PK component. FK → `ActorExecution(snapshot_id, node_id)`.
+    pub node_id: String,
+    /// PK component. Handler name (e.g. a Python endpoint method name) —
+    /// the per-actor aggregation key.
+    pub name: String,
+    /// In-flight invocations of this handler.
+    pub active_count: i64,
+    /// Start time of the oldest in-flight invocation, microseconds since
+    /// epoch. Non-null (`SystemTime` in source, not `Option`).
+    pub oldest_since: i64,
+}
+
 /// Snapshot-time failure projection for a failed actor. PK:
 /// `(snapshot_id, node_id)`, FK → `ActorNode(snapshot_id, node_id)`.
 ///
@@ -566,6 +621,31 @@ mod tests {
         assert_field(&schema, 6, "buffered_count", DataType::Int64, false);
         assert_field(&schema, 7, "oldest_buffered_seq", DataType::Int64, true);
         assert_field(&schema, 8, "newest_buffered_seq", DataType::Int64, true);
+    }
+
+    // Verifies SR-1, SR-2, SR-3, SR-4.
+    #[test]
+    fn test_actor_execution_row_schema() {
+        let schema = ActorExecutionRowBuffer::schema();
+        assert_eq!(schema.fields().len(), 5);
+        assert_field(&schema, 0, "snapshot_id", DataType::Utf8, false);
+        assert_field(&schema, 1, "node_id", DataType::Utf8, false);
+        assert_field(&schema, 2, "active_count", DataType::Int64, false);
+        assert_field(&schema, 3, "complete", DataType::Boolean, false);
+        assert_field(&schema, 4, "truncated", DataType::Boolean, false);
+    }
+
+    // Verifies SR-1, SR-2, SR-3. All columns non-null — `oldest_since` is
+    // `SystemTime` (not `Option`) in the source model.
+    #[test]
+    fn test_active_handler_row_schema() {
+        let schema = ActiveHandlerRowBuffer::schema();
+        assert_eq!(schema.fields().len(), 5);
+        assert_field(&schema, 0, "snapshot_id", DataType::Utf8, false);
+        assert_field(&schema, 1, "node_id", DataType::Utf8, false);
+        assert_field(&schema, 2, "name", DataType::Utf8, false);
+        assert_field(&schema, 3, "active_count", DataType::Int64, false);
+        assert_field(&schema, 4, "oldest_since", DataType::Int64, false);
     }
 
     // Verifies SR-1, SR-2, SR-3, SR-4, SR-5.
@@ -955,6 +1035,51 @@ mod tests {
         assert!(!newest.is_null(0));
         assert_eq!(newest.value(0), 6);
         assert!(newest.is_null(1));
+    }
+
+    // Verifies SR-6 for the execution rollup.
+    #[test]
+    fn test_drain_actor_execution_row() {
+        let mut buf = ActorExecutionRowBuffer::default();
+        buf.insert(ActorExecutionRow {
+            snapshot_id: "s1".into(),
+            node_id: "actor-1".into(),
+            active_count: 3,
+            complete: true,
+            truncated: false,
+        });
+        let batch = buf.drain_to_record_batch().unwrap();
+        assert_eq!(batch.num_rows(), 1);
+        let count = batch
+            .column_by_name("active_count")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::Int64Array>()
+            .unwrap();
+        assert_eq!(count.value(0), 3);
+    }
+
+    // Verifies SR-6 for the per-handler detail (non-null `oldest_since`).
+    #[test]
+    fn test_drain_active_handler_row() {
+        let mut buf = ActiveHandlerRowBuffer::default();
+        buf.insert(ActiveHandlerRow {
+            snapshot_id: "s1".into(),
+            node_id: "actor-1".into(),
+            name: "hold".into(),
+            active_count: 2,
+            oldest_since: 1_700_000_000_000_000,
+        });
+        let batch = buf.drain_to_record_batch().unwrap();
+        assert_eq!(batch.num_rows(), 1);
+        let oldest = batch
+            .column_by_name("oldest_since")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::Int64Array>()
+            .unwrap();
+        assert!(!oldest.is_null(0));
+        assert_eq!(oldest.value(0), 1_700_000_000_000_000);
     }
 
     // Verifies SR-5, SR-6.

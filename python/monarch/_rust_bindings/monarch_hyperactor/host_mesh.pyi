@@ -135,8 +135,9 @@ def bootstrap_host(
       gateway: outbound traffic to unknown destinations is forwarded over
       the duplex, and inbound traffic from the duplex is delivered into
       local procs. `this_host()` still names the current machine; `via`
-      only controls how this host's procs are reached. Supplied via the
-      `attach` entrypoint.
+      only controls how this host's procs are reached. It must be supplied
+      before actor and port refs are minted, because those refs snapshot
+      their location. Supplied via the `attach` entrypoint.
     """
     ...
 

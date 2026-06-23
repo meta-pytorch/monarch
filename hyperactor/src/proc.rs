@@ -57,9 +57,9 @@
 //!   not yet dequeued by the actor loop. Accounting increments in
 //!   `HandlerPorts::get`'s enqueue closure *before* the reorder-buffer
 //!   decision, so this counter includes both in-order messages waiting
-//!   in `work_rx` AND out-of-order messages held in the
-//!   `OrderedSender` reorder buffer. (Reflected at the introspection
-//!   layer in IO-3 of the `introspect` module doc.)
+//!   in `work_rx` AND out-of-order messages held in the receiver-local
+//!   reorder buffer. (Reflected at the introspection layer in IO-3 of
+//!   the `introspect` module doc.)
 //! - **PD-5b:** Queue depth is incremented exactly once per accepted
 //!   message in the enqueue closure of `HandlerPorts::get`, before
 //!   the in-order / out-of-order branch.
@@ -136,8 +136,11 @@ use hyperactor_telemetry::notify_actor_status_changed;
 use hyperactor_telemetry::notify_message;
 use hyperactor_telemetry::notify_message_status;
 use hyperactor_telemetry::recorder::Recording;
+use serde::Deserialize;
+use serde::Serialize;
 use tokio::sync::Notify;
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::Instrument;
@@ -196,8 +199,10 @@ use crate::mailbox::MailboxSender;
 use crate::mailbox::MessageEnvelope;
 use crate::mailbox::OncePortHandle;
 use crate::mailbox::OncePortReceiver;
+use crate::mailbox::PortGone;
 use crate::mailbox::PortHandle;
 use crate::mailbox::PortReceiver;
+use crate::mailbox::PortSender as _;
 use crate::mailbox::TransportFailure;
 use crate::mailbox::TransportFailureReason;
 use crate::mailbox::Undeliverable;
@@ -205,6 +210,7 @@ use crate::mailbox::UndeliverableReason;
 use crate::metrics::ACTOR_MESSAGE_HANDLER_DURATION;
 use crate::metrics::ACTOR_MESSAGE_QUEUE_SIZE;
 use crate::metrics::ACTOR_MESSAGES_RECEIVED;
+use crate::port::Port;
 use crate::subject::AsSubject as _;
 
 tokio::task_local! {
@@ -369,13 +375,13 @@ fn account_cancel_enqueue(queue_depth: &AtomicU64, proc_stats: &ProcQueueStats, 
         hyperactor_telemetry::kv_pairs!("actor_id" => actor_id.to_owned()),
     );
 }
-use crate::ordering::OrderedSender;
-use crate::ordering::OrderedSenderError;
 use crate::ordering::SEQ_INFO;
 use crate::ordering::SeqInfo;
 use crate::ordering::Sequencer;
-use crate::ordering::ordered_channel;
 use crate::panic_handler;
+use crate::sequenced::SequencedEnvelope;
+use crate::sequenced::SequencedReceiver;
+use crate::sequenced::sequenced_unbounded_with_buffering;
 use crate::supervision::ActorSupervisionEvent;
 
 /// A proc instance is the runtime managing a single proc in Hyperactor.
@@ -436,6 +442,12 @@ struct ProcState {
     /// [`config::TERMINATED_SNAPSHOT_RETENTION`].
     terminated_snapshots: DashMap<ActorId, TerminatedSnapshot>,
 
+    /// Terminal statuses for actors that existed on this proc.
+    /// Note: this map is retained for the lifetime of the process; thus
+    /// tombstones will grow with the number of actors that have ever existed
+    /// in the proc.
+    actor_tombstones: DashMap<ActorId, ActorStatus>,
+
     /// Used by root actors to send events to the actor coordinating
     /// supervision of root actors in this proc.
     supervision_coordinator_port: OnceLock<PortHandle<ActorSupervisionEvent>>,
@@ -463,6 +475,69 @@ struct ProcState {
 struct TerminatedSnapshot {
     actor_addr: ActorAddr,
     payload: crate::introspect::IntrospectResult,
+}
+
+/// Actor status control-plane message.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
+pub enum StatusMessage {
+    /// Return the destination actor's current or tombstoned status.
+    GetStatus {
+        /// Reply port receiving `None` for an unknown actor and
+        /// `Some(status)` for a known actor.
+        reply: crate::OncePortRef<Option<ActorStatus>>,
+    },
+}
+wirevalue::register_type!(StatusMessage);
+
+struct StatusSender(WeakProc);
+
+impl StatusSender {
+    fn new(weak_proc: WeakProc) -> Self {
+        Self(weak_proc)
+    }
+}
+
+#[async_trait]
+impl MailboxSender for StatusSender {
+    fn post_unchecked(
+        &self,
+        envelope: MessageEnvelope,
+        return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+    ) {
+        let reply = match envelope.deserialized() {
+            Ok(StatusMessage::GetStatus { reply }) => reply,
+            Err(err) => {
+                let target = envelope.dest().clone();
+                let failure =
+                    DeliveryFailure::new(UndeliverableReason::Transport(TransportFailure::new(
+                        target,
+                        TransportFailureReason::LinkUnavailable(format!(
+                            "status message deserialization failed: {err}"
+                        )),
+                    )));
+                envelope.undeliverable(failure, return_handle);
+                return;
+            }
+        };
+
+        let Some(proc) = self.0.upgrade() else {
+            let failure = DeliveryFailure::new(UndeliverableReason::PortGone(PortGone::new(
+                envelope.dest().clone(),
+                envelope.data().typename().map(str::to_string),
+            )));
+            envelope.undeliverable(failure, return_handle);
+            return;
+        };
+
+        let actor_id = envelope.dest().actor_id().clone();
+        let status = proc.status_for_actor(&actor_id);
+
+        if let Err(err) =
+            proc.serialize_and_send_once(reply, status, crate::mailbox::monitored_return_handle())
+        {
+            tracing::error!("status reply failed: {err}");
+        }
+    }
 }
 
 impl Drop for ProcState {
@@ -508,7 +583,34 @@ pub struct ActorInstance<A: Actor> {
     /// Control signals for the actor.
     pub signal: mpsc::UnboundedReceiver<Signal>,
     /// Primary work queue for handler dispatch.
-    pub work: mpsc::UnboundedReceiver<WorkCell<A>>,
+    pub work: ActorWorkReceiver<A>,
+}
+
+/// Receiver for actor handler work.
+pub struct ActorWorkReceiver<A: Actor> {
+    inner: SequencedReceiver<SequencedEnvelope<WorkCell<A>>>,
+}
+
+impl<A: Actor> fmt::Debug for ActorWorkReceiver<A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ActorWorkReceiver").finish_non_exhaustive()
+    }
+}
+
+impl<A: Actor> ActorWorkReceiver<A> {
+    fn new(inner: SequencedReceiver<SequencedEnvelope<WorkCell<A>>>) -> Self {
+        Self { inner }
+    }
+
+    /// Receive the next deliverable handler work item.
+    pub async fn recv(&mut self) -> Option<WorkCell<A>> {
+        self.inner.recv().await
+    }
+
+    /// Try to receive the next deliverable handler work item without waiting.
+    pub fn try_recv(&mut self) -> Result<WorkCell<A>, mpsc::error::TryRecvError> {
+        self.inner.try_recv()
+    }
 }
 
 /// Builder for constructing a [`Proc`] with explicit identity and connectivity.
@@ -637,12 +739,21 @@ impl Proc {
                 root_actors: DashSet::new(),
                 queue_stats: Arc::new(ProcQueueStats::new()),
                 terminated_snapshots: DashMap::new(),
+                actor_tombstones: DashMap::new(),
                 supervision_coordinator_port: OnceLock::new(),
                 supervision_coordinator_actor_id: OnceLock::new(),
                 mailbox_server_handle: std::sync::Mutex::new(None),
                 _attached_proc_guard: OnceLock::new(),
             }),
         };
+        let bound = proc
+            .inner
+            .proc_muxer
+            .bind_status(StatusSender::new(proc.downgrade()));
+        assert!(
+            bound,
+            "fresh proc muxer must not have a status control port"
+        );
         // Attach to the gateway now that the `Arc<ProcState>` exists;
         // the returned guard's drop will remove the entry when the last
         // `Proc` referencing this state is dropped.
@@ -652,6 +763,21 @@ impl Proc {
             .set(guard)
             .expect("fresh ProcState's attached-proc guard slot is empty");
         proc
+    }
+
+    fn status_for_actor(&self, actor_id: &ActorId) -> Option<ActorStatus> {
+        let live_status = self
+            .inner
+            .instances
+            .get(actor_id)
+            .and_then(|entry| entry.value().upgrade())
+            .map(|cell| cell.status().borrow().clone());
+        live_status.or_else(|| {
+            self.inner
+                .actor_tombstones
+                .get(actor_id)
+                .map(|entry| entry.value().clone())
+        })
     }
 
     fn from_parts(proc_id: ProcId, gateway: Gateway) -> Self {
@@ -1008,10 +1134,7 @@ impl Proc {
         let (instance, receivers) = Instance::new(self.clone(), actor_id, false, None);
         let handle = ActorHandle::new(instance.inner.cell.clone(), instance.inner.ports.clone());
         instance.change_status(ActorStatus::Client);
-        tokio::spawn(crate::introspect::serve_introspect(
-            instance.inner.cell.clone(),
-            receivers.introspect,
-        ));
+        instance.spawn_detached_introspect(receivers.introspect);
         Ok((instance, handle))
     }
 
@@ -1031,10 +1154,7 @@ impl Proc {
         let handle = ActorHandle::new(instance.inner.cell.clone(), instance.inner.ports.clone());
         instance.change_status(ActorStatus::Client);
 
-        tokio::spawn(crate::introspect::serve_introspect(
-            instance.inner.cell.clone(),
-            receivers.introspect,
-        ));
+        instance.spawn_detached_introspect(receivers.introspect);
 
         let (signal_rx, supervision_rx) = receivers.actor_loop.unwrap();
         Ok(ActorInstance {
@@ -1399,14 +1519,11 @@ impl Proc {
     /// - the actor's `InstanceCell` has been dropped, or
     /// - the actor's status is terminal (stopped or failed).
     ///
-    /// The terminal-status check guards a race window: the introspect
-    /// task (`serve_introspect`) holds a strong `InstanceCell` Arc
-    /// and drops it only after observing terminal status. Between the
-    /// actor reaching terminal and the introspect task reacting,
-    /// `upgrade()` on the weak ref succeeds even though the actor is
-    /// dead. The `is_terminal()` check closes that window. Once the
-    /// introspect task exits, the Arc is dropped and `upgrade()`
-    /// returns `None` on its own.
+    /// The terminal-status check makes the live/dead boundary explicit:
+    /// terminal status is published only after runtime epilogue tasks
+    /// such as introspection have completed, so a terminal actor must
+    /// not be returned even if another local handle still keeps its cell
+    /// alive.
     ///
     /// Bounds:
     /// - `R: Actor` — must be a real actor that can live in this
@@ -1544,30 +1661,19 @@ impl Proc {
     }
 
     pub(crate) fn is_local_delivery_target(&self, dest_proc: &ProcAddr) -> bool {
-        self.is_local_delivery_target_with_options(dest_proc, false)
+        self.is_local_delivery_target_at(dest_proc, &[self.default_location()])
     }
 
-    pub(crate) fn is_local_delivery_target_after_peeled_via(&self, dest_proc: &ProcAddr) -> bool {
-        self.is_local_delivery_target_with_options(dest_proc, true)
-    }
-
-    fn is_local_delivery_target_with_options(
+    pub(crate) fn is_local_delivery_target_at(
         &self,
         dest_proc: &ProcAddr,
-        allow_peeled_via_location: bool,
+        local_locations: &[Location],
     ) -> bool {
-        let local_proc_id = self.proc_id();
-        if requires_location_for_local_delivery_identity(dest_proc.id()) {
-            let default_location = self.default_location();
-            let peeled_via_location_matches = allow_peeled_via_location
-                && default_location
-                    .as_via()
-                    .is_some_and(|(_, inner)| dest_proc.location() == inner.as_ref());
-            return dest_proc.id() == local_proc_id
-                && (dest_proc.location() == &default_location || peeled_via_location_matches);
-        }
-
-        dest_proc.id() == local_proc_id
+        dest_proc.id() == self.proc_id()
+            && (!requires_location_for_local_delivery_identity(dest_proc.id())
+                || local_locations
+                    .iter()
+                    .any(|location| dest_proc.location() == location))
     }
 }
 
@@ -1576,7 +1682,7 @@ fn requires_location_for_local_delivery_identity(proc_id: &ProcId) -> bool {
     // still creates a `service` proc and a `local` proc in every host
     // process, so those proc ids are not globally unique. Until those
     // construction paths are assigned instance ids, local delivery for
-    // those two ids must keep the old full-address comparison.
+    // those two ids also compares the terminal channel address.
     is_legacy_pseudo_singleton_proc_id(proc_id)
 }
 
@@ -1637,10 +1743,9 @@ impl MailboxSender for Proc {
         }
         // Route through the gateway as a [`MailboxSender`] (not its
         // raw forwarder) so peers sharing the same gateway —
-        // typically a host's `service_proc` / `local_proc` and any
-        // child procs attached via `gateway.attach_proc_sender(...)`
-        // — are reached by an in-gateway lookup rather than
-        // bouncing out through the forwarder.
+        // typically a host's `service_proc` / `local_proc` — are
+        // reached by an in-gateway lookup rather than bouncing out
+        // through the forwarder.
         self.state().gateway.post(envelope, return_handle);
     }
 
@@ -1790,6 +1895,17 @@ struct InstanceState<A: Actor> {
 
     /// Runtime-owned delayed-post scheduler.
     delayed_posts: DelayedPosts<A>,
+
+    /// Shutdown signal for the runtime-owned introspection task.
+    introspect_shutdown_tx: Mutex<Option<oneshot::Sender<ActorStatus>>>,
+
+    /// Join handle for the runtime-owned introspection task.
+    introspect_task_handle: Mutex<Option<JoinHandle<()>>>,
+
+    /// Shutdown signal for proc-managed detached introspection
+    /// lifecycle. Used by client/inverted instances that have no actor
+    /// serving loop to join introspection.
+    detached_introspect_shutdown_tx: Mutex<Option<oneshot::Sender<ActorStatus>>>,
 
     /// A watch for communicating the actor's state.
     status_tx: watch::Sender<ActorStatus>,
@@ -2107,24 +2223,53 @@ impl<A: Actor> InstanceState<A> {
     }
 }
 
+fn publish_dropped_instance_status(
+    proc: Proc,
+    status_tx: watch::Sender<ActorStatus>,
+    actor_addr: ActorAddr,
+    terminal_status: ActorStatus,
+) {
+    let actor_id = actor_addr.id().clone();
+    status_tx.send_if_modified(|status| {
+        if status.is_terminal() {
+            false
+        } else {
+            proc.inner
+                .actor_tombstones
+                .insert(actor_id.clone(), terminal_status.clone());
+            tracing::info!(
+                name = "ActorStatus",
+                actor_id = %actor_addr,
+                actor_name = actor_addr.log_name(),
+                status = "Stopped",
+                prev_status = status.arm().unwrap_or("unknown"),
+                "instance is dropped",
+            );
+            *status = terminal_status.clone();
+            true
+        }
+    });
+}
+
 impl<A: Actor> Drop for InstanceState<A> {
     fn drop(&mut self) {
-        self.status_tx.send_if_modified(|status| {
-            if status.is_terminal() {
-                false
-            } else {
-                tracing::info!(
-                    name = "ActorStatus",
-                    actor_id = %self.self_addr(),
-                    actor_name = self.self_addr().log_name(),
-                    status = "Stopped",
-                    prev_status = status.arm().unwrap_or("unknown"),
-                    "instance is dropped",
-                );
-                *status = ActorStatus::Stopped("instance is dropped".into());
-                true
-            }
-        });
+        let terminal_status = ActorStatus::Stopped("instance is dropped".into());
+        if let Some(shutdown_tx) = self.detached_introspect_shutdown_tx.lock().unwrap().take() {
+            let _ = shutdown_tx.send(terminal_status.clone());
+            return;
+        }
+
+        if let Some(shutdown_tx) = self.introspect_shutdown_tx.lock().unwrap().take() {
+            let _ = shutdown_tx.send(terminal_status.clone());
+        }
+        let _ = self.introspect_task_handle.lock().unwrap().take();
+
+        publish_dropped_instance_status(
+            self.proc.clone(),
+            self.status_tx.clone(),
+            self.self_addr().clone(),
+            terminal_status,
+        );
     }
 }
 
@@ -2142,7 +2287,7 @@ pub struct InstanceReceivers<A: Actor> {
         mpsc::UnboundedReceiver<ActorSupervisionEvent>,
     )>,
     /// Work queue for dispatching messages to actor handlers.
-    work: mpsc::UnboundedReceiver<WorkCell<A>>,
+    work: ActorWorkReceiver<A>,
     /// Introspect message receiver for the dedicated introspect task.
     introspect: PortReceiver<IntrospectMessage>,
 }
@@ -2157,15 +2302,16 @@ impl<A: Actor> Instance<A> {
     ) -> (Self, InstanceReceivers<A>) {
         // Set up messaging
         let mailbox = Mailbox::new(actor_id.clone());
-        let (work_tx, work_rx) = ordered_channel(
-            actor_id.to_string(),
-            hyperactor_config::global::get(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER),
-        );
+        let enable_buffering =
+            hyperactor_config::global::get(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER);
+        let (work_tx, work_rx) = sequenced_unbounded_with_buffering(enable_buffering);
+        let inbound_ordering_snapshot_handle = work_rx.snapshot_handle();
         let queue_depth = Arc::new(AtomicU64::new(0));
         let proc_stats = Arc::clone(&proc.state().queue_stats);
         let ports: Arc<HandlerPorts<A>> = Arc::new(HandlerPorts::new(
             mailbox.clone(),
             work_tx,
+            enable_buffering,
             Arc::clone(&queue_depth),
             proc_stats,
         ));
@@ -2191,24 +2337,22 @@ impl<A: Actor> Instance<A> {
         let (actor_loop, actor_loop_receivers) = actor_loop_ports.unzip();
 
         // Introspect port: a separate channel handled by a dedicated
-        // tokio task (not the actor's message loop). bind_handler_port()
-        // registers in the mailbox
-        // dispatch table at IntrospectMessage::port().
+        // tokio task (not the actor's message loop). bind_control_port()
+        // registers it in the mailbox dispatch table.
         //
         // Exercises S3, S4, S9 (see introspect module doc).
         let (introspect_port, introspect_receiver) = mailbox.open_port::<IntrospectMessage>();
-        introspect_port.bind_handler_port();
+        introspect_port.bind_control_port(crate::port::ControlPort::Introspect);
 
         let instance_id = Uuid::now_v7();
 
-        // Type-erased snapshot callback: captures `Arc<HandlerPorts<A>>::clone()`
-        // (the typed Arc), which lets `InstanceCellState` invoke
-        // `OrderedSender::snapshot` from non-generic code. Only the typed
-        // ports are captured; nothing cyclic (no Instance, no InstanceCell).
-        let workq_ports = ports.clone();
+        // Type-erased snapshot callback: captures only the receiver-local
+        // sequencing snapshot handle. Nothing cyclic is captured.
         let inbound_ordering_snapshot: Option<
             Box<dyn Fn() -> crate::ordering::OrderingSnapshot + Send + Sync>,
-        > = Some(Box::new(move || workq_ports.workq.snapshot()));
+        > = Some(Box::new(move || {
+            inbound_ordering_snapshot_handle.snapshot()
+        }));
 
         let cell = InstanceCell::new(
             actor_id,
@@ -2228,6 +2372,9 @@ impl<A: Actor> Instance<A> {
             mailbox,
             ports,
             delayed_posts: DelayedPosts::new(),
+            introspect_shutdown_tx: Mutex::new(None),
+            introspect_task_handle: Mutex::new(None),
+            detached_introspect_shutdown_tx: Mutex::new(None),
             status_tx,
             sequencer: Sequencer::new(instance_id),
             id: instance_id,
@@ -2237,16 +2384,88 @@ impl<A: Actor> Instance<A> {
             Self { inner },
             InstanceReceivers {
                 actor_loop: actor_loop_receivers,
-                work: work_rx,
+                work: ActorWorkReceiver::new(work_rx),
                 introspect: introspect_receiver,
             },
         )
+    }
+
+    fn spawn_introspect(&self, receiver: PortReceiver<IntrospectMessage>) {
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let handle = tokio::spawn(crate::introspect::serve_introspect(
+            self.inner.cell.clone(),
+            receiver,
+            shutdown_rx,
+        ));
+
+        let mut shutdown = self.inner.introspect_shutdown_tx.lock().unwrap();
+        assert!(
+            shutdown.is_none(),
+            "introspection shutdown handle already set"
+        );
+        let mut task = self.inner.introspect_task_handle.lock().unwrap();
+        assert!(task.is_none(), "introspection task already set");
+        *shutdown = Some(shutdown_tx);
+        *task = Some(handle);
+    }
+
+    fn spawn_detached_introspect(&self, receiver: PortReceiver<IntrospectMessage>) {
+        let (detached_shutdown_tx, detached_shutdown_rx) = oneshot::channel::<ActorStatus>();
+        let (introspect_shutdown_tx, introspect_shutdown_rx) = oneshot::channel();
+        let introspect_handle = tokio::spawn(crate::introspect::serve_introspect(
+            self.inner.cell.clone(),
+            receiver,
+            introspect_shutdown_rx,
+        ));
+
+        let proc = self.inner.proc.clone();
+        let status_tx = self.inner.status_tx.clone();
+        let actor_addr = self.self_addr().clone();
+        tokio::spawn(async move {
+            let Ok(terminal_status) = detached_shutdown_rx.await else {
+                return;
+            };
+            let _ = introspect_shutdown_tx.send(terminal_status.clone());
+            if let Err(err) = introspect_handle.await {
+                tracing::debug!("introspect task join failed: {:?}", err);
+            }
+            publish_dropped_instance_status(proc, status_tx, actor_addr, terminal_status);
+        });
+
+        let mut shutdown = self.inner.detached_introspect_shutdown_tx.lock().unwrap();
+        assert!(
+            shutdown.is_none(),
+            "detached introspection shutdown handle already set"
+        );
+        *shutdown = Some(detached_shutdown_tx);
+    }
+
+    fn signal_introspect_stop(&self, terminal_status: ActorStatus) -> Option<JoinHandle<()>> {
+        if let Some(shutdown_tx) = self.inner.introspect_shutdown_tx.lock().unwrap().take() {
+            let _ = shutdown_tx.send(terminal_status);
+        }
+        self.inner.introspect_task_handle.lock().unwrap().take()
+    }
+
+    async fn stop_introspect(&self, terminal_status: ActorStatus) {
+        if let Some(handle) = self.signal_introspect_stop(terminal_status)
+            && let Err(err) = handle.await
+        {
+            tracing::debug!("introspect task join failed: {:?}", err);
+        }
     }
 
     /// Notify subscribers of a change in the actors status and bump counters with the duration which
     /// the last status was active for.
     #[track_caller]
     pub fn change_status(&self, new: ActorStatus) {
+        if new.is_terminal() {
+            self.inner
+                .proc
+                .inner
+                .actor_tombstones
+                .insert(self.self_addr().id().clone(), new.clone());
+        }
         let old = self.inner.status_tx.send_replace(new.clone());
         // 2 cases are allowed:
         // * non-terminal -> non-terminal
@@ -2286,7 +2505,7 @@ impl<A: Actor> Instance<A> {
                 caller = %PanicLocation::caller(),
                 change_reason,
             );
-            let actor_id = hash_to_u64(self.self_addr());
+            let actor_id = hash_to_u64(self.self_addr().id());
             notify_actor_status_changed(ActorStatusEvent {
                 id: generate_actor_status_event_id(actor_id),
                 timestamp: std::time::SystemTime::now(),
@@ -2428,6 +2647,22 @@ impl<A: Actor> Instance<A> {
             key.name()
         );
         self.inner.cell.merge_published_attr(key, value);
+    }
+
+    /// Install an actor-supplied introspection-attrs snapshot callback.
+    ///
+    /// The callback is invoked by the introspect task (outside the actor
+    /// loop) when building this actor's node payload; its `Attrs` are
+    /// merged into the Actor view, core keys winning on collision (AS-2).
+    /// It must be `Send + Sync`, non-blocking (`try_lock`), and
+    /// infallible. Core does not interpret the keys — the actor owns its
+    /// own introspection vocabulary (AS-1). See the AS-* family in
+    /// `introspect.rs`.
+    pub fn set_attrs_snapshot(
+        &self,
+        callback: impl Fn() -> hyperactor_config::Attrs + Send + Sync + 'static,
+    ) {
+        self.inner.cell.set_attrs_snapshot(callback);
     }
 
     /// Mark this actor as system/infrastructure. System actors are
@@ -2610,7 +2845,7 @@ impl<A: Actor> Instance<A> {
             .inner
             .ports
             .workq
-            .direct_send(work)
+            .send(SequencedEnvelope::new(SeqInfo::Direct, None, work))
             .map_err(anyhow::Error::from);
         if result.is_err() {
             account_cancel_enqueue(
@@ -2691,10 +2926,7 @@ impl<A: Actor> Instance<A> {
         // Spawn the introspect task — a separate tokio task that
         // reads InstanceCell directly and replies through the owning Proc. The
         // actor loop never sees IntrospectMessage.
-        tokio::spawn(crate::introspect::serve_introspect(
-            self.inner.cell.clone(),
-            receivers.introspect,
-        ));
+        self.spawn_introspect(receivers.introspect);
 
         let actor_loop_receivers = receivers
             .actor_loop
@@ -2724,7 +2956,7 @@ impl<A: Actor> Instance<A> {
             mpsc::UnboundedReceiver<Signal>,
             mpsc::UnboundedReceiver<ActorSupervisionEvent>,
         ),
-        mut work_rx: mpsc::UnboundedReceiver<WorkCell<A>>,
+        mut work_rx: ActorWorkReceiver<A>,
     ) {
         let result = self
             .run_actor_tree(&mut actor, actor_loop_receivers, &mut work_rx)
@@ -2806,6 +3038,7 @@ impl<A: Actor> Instance<A> {
             }
         }
 
+        self.stop_introspect(terminal_status.clone()).await;
         self.change_status(terminal_status);
     }
 
@@ -2819,7 +3052,7 @@ impl<A: Actor> Instance<A> {
             mpsc::UnboundedReceiver<Signal>,
             mpsc::UnboundedReceiver<ActorSupervisionEvent>,
         ),
-        work_rx: &mut mpsc::UnboundedReceiver<WorkCell<A>>,
+        work_rx: &mut ActorWorkReceiver<A>,
     ) -> Result<String, ActorError> {
         // It is okay to catch all panics here, because we are in a tokio task,
         // and tokio will catch the panic anyway:
@@ -2955,7 +3188,7 @@ impl<A: Actor> Instance<A> {
             mpsc::UnboundedReceiver<Signal>,
             mpsc::UnboundedReceiver<ActorSupervisionEvent>,
         ),
-        work_rx: &mut mpsc::UnboundedReceiver<WorkCell<A>>,
+        work_rx: &mut ActorWorkReceiver<A>,
     ) -> Result<String, ActorError> {
         let (signal_receiver, supervision_event_receiver) = actor_loop_receivers;
 
@@ -3148,8 +3381,8 @@ impl<A: Actor> Instance<A> {
             let from_actor_id = headers
                 .get(crate::mailbox::headers::SENDER_ACTOR_ID_HASH)
                 .unwrap_or(0);
-            let to_actor_id = hash_to_u64(self.self_addr());
-            let port_id = headers.get(crate::mailbox::headers::TELEMETRY_PORT_ID);
+            let to_actor_id = hash_to_u64(self.self_addr().id());
+            let port_index = headers.get(crate::mailbox::headers::TELEMETRY_PORT_INDEX);
 
             notify_message(hyperactor_telemetry::MessageEvent {
                 timestamp: now,
@@ -3157,7 +3390,7 @@ impl<A: Actor> Instance<A> {
                 from_actor_id,
                 to_actor_id,
                 endpoint,
-                port_id,
+                port_index,
             });
 
             notify_message_status(hyperactor_telemetry::MessageStatusEvent {
@@ -3564,7 +3797,7 @@ struct InstanceCellState {
     actor_task_handle: OnceLock<JoinHandle<()>>,
 
     /// The set of named ports that are exported by this actor.
-    exported_named_ports: DashMap<u64, &'static str>,
+    exported_named_ports: DashMap<Port, &'static str>,
 
     /// The number of messages processed by this actor.
     num_processed_messages: AtomicU64,
@@ -3642,6 +3875,20 @@ struct InstanceCellState {
     /// `Instance::new`; production live actors always install Some.
     inbound_ordering_snapshot:
         Option<Box<dyn Fn() -> crate::ordering::OrderingSnapshot + Send + Sync>>,
+
+    /// Type-erased snapshot callback for actor-supplied introspection
+    /// attrs. Installed by the actor (e.g. in `Actor::init`) via
+    /// `Instance::set_attrs_snapshot`; invoked by the introspect task
+    /// (outside the actor loop) in `build_actor_attrs`, where the
+    /// returned `Attrs` are merged into the Actor view with core keys
+    /// winning on collision (AS-2).
+    ///
+    /// Generic: core does not interpret the keys (AS-1). The callback
+    /// must be non-blocking (`try_lock` internally); it is
+    /// `catch_unwind`-guarded at the call site so a panic degrades to no
+    /// extra attrs rather than breaking introspection (AS-3). `None`
+    /// means the actor publishes no extra attrs.
+    actor_attrs_snapshot: RwLock<Option<Box<dyn Fn() -> hyperactor_config::Attrs + Send + Sync>>>,
 }
 
 impl InstanceCellState {
@@ -3755,9 +4002,12 @@ impl InstanceCell {
                 is_system: AtomicBool::new(false),
                 ports,
                 inbound_ordering_snapshot,
+                actor_attrs_snapshot: RwLock::new(None),
             }),
         };
         cell.maybe_link_parent();
+        // TODO: disallow reuse; maybe only for instance ids.
+        proc.inner.actor_tombstones.remove(actor_id.id());
         proc.inner
             .instances
             .insert(actor_id.id().clone(), cell.downgrade());
@@ -3980,10 +4230,54 @@ impl InstanceCell {
 
     /// Out-of-band inbound ordering snapshot. Returns `None` when no
     /// snapshot callback was installed (see IO-1 in `introspect` module
-    /// doc). The callback uses `OrderedSender::snapshot` (`try_lock`,
-    /// non-blocking) and never perturbs ordering state.
+    /// doc). The callback uses the sequenced receiver's snapshot handle
+    /// (`try_lock`, non-blocking) and never perturbs ordering state.
     pub fn inbound_ordering_snapshot(&self) -> Option<crate::ordering::OrderingSnapshot> {
         self.inner.inbound_ordering_snapshot.as_ref().map(|f| f())
+    }
+
+    /// Install the actor-supplied introspection-attrs snapshot callback.
+    /// Called by the actor (e.g. in `Actor::init`). The callback runs on
+    /// the introspect task (outside the actor loop), so it must be
+    /// `Send + Sync`, non-blocking (`try_lock`), and must not access
+    /// actor-mutable state.
+    pub fn set_attrs_snapshot(
+        &self,
+        callback: impl Fn() -> hyperactor_config::Attrs + Send + Sync + 'static,
+    ) {
+        *self.inner.actor_attrs_snapshot.write().unwrap() = Some(Box::new(callback));
+    }
+
+    /// Out-of-band actor-supplied introspection attrs. `None` when no
+    /// callback was installed (the actor publishes no extra attrs).
+    /// `catch_unwind`-guarded: a panicking callback degrades to `None`
+    /// rather than killing the introspect task (AS-3).
+    pub fn actor_attrs_snapshot(&self) -> Option<hyperactor_config::Attrs> {
+        let guard = self.inner.actor_attrs_snapshot.read().unwrap();
+        let callback = guard.as_ref()?;
+        let attrs = std::panic::catch_unwind(std::panic::AssertUnwindSafe(callback))
+            .map_err(|_| {
+                tracing::warn!(
+                    actor_id = %self.actor_addr(),
+                    "actor_attrs_snapshot callback panicked; omitting actor attrs",
+                );
+            })
+            .ok()?;
+        // AS-1 discipline: actor-supplied keys must be INTROSPECT-tagged
+        // (mirrors the `publish_attr` guard), so they carry a stable HTTP
+        // short-name and schema entry rather than forming an ungoverned
+        // second introspection channel.
+        #[cfg(debug_assertions)]
+        for (name, _) in attrs.iter() {
+            debug_assert!(
+                inventory::iter::<hyperactor_config::attrs::AttrKeyInfo>().any(|info| {
+                    info.name == name && info.meta.get(hyperactor_config::INTROSPECT).is_some()
+                }),
+                "actor_attrs_snapshot callback returned non-INTROSPECT key `{name}`; \
+                 actor introspection keys must carry @meta(INTROSPECT)"
+            );
+        }
+        Some(attrs)
     }
 
     /// Get parent instance cell, if it exists.
@@ -4109,7 +4403,7 @@ impl InstanceCell {
         for entry in ports.bound.iter() {
             self.inner
                 .exported_named_ports
-                .insert(*entry.key(), entry.value());
+                .insert(entry.key().clone(), entry.value());
         }
         ActorRef::attest(ActorAddr::new(
             self.actor_addr().id().clone(),
@@ -4202,9 +4496,10 @@ impl WeakInstanceCell {
 /// actor.
 pub struct HandlerPorts<A: Actor> {
     ports: DashMap<TypeId, Box<dyn Any + Send + Sync + 'static>>,
-    bound: DashMap<u64, &'static str>,
+    bound: DashMap<Port, &'static str>,
     mailbox: Mailbox,
-    workq: OrderedSender<WorkCell<A>>,
+    workq: mpsc::UnboundedSender<SequencedEnvelope<WorkCell<A>>>,
+    enable_buffering: bool,
     /// Per-actor queue depth (PD-5). Shared with `InstanceCellState`.
     queue_depth: Arc<AtomicU64>,
     /// Proc-level queue-pressure stats (PD-6 through PD-9).
@@ -4214,7 +4509,8 @@ pub struct HandlerPorts<A: Actor> {
 impl<A: Actor> HandlerPorts<A> {
     fn new(
         mailbox: Mailbox,
-        workq: OrderedSender<WorkCell<A>>,
+        workq: mpsc::UnboundedSender<SequencedEnvelope<WorkCell<A>>>,
+        enable_buffering: bool,
         queue_depth: Arc<AtomicU64>,
         proc_stats: Arc<ProcQueueStats>,
     ) -> Self {
@@ -4223,6 +4519,7 @@ impl<A: Actor> HandlerPorts<A> {
             bound: DashMap::new(),
             mailbox,
             workq,
+            enable_buffering,
             queue_depth,
             proc_stats,
         }
@@ -4248,6 +4545,7 @@ impl<A: Actor> HandlerPorts<A> {
 
                 let type_info = TypeInfo::get_by_typeid(key);
                 let workq = self.workq.clone();
+                let enable_buffering = self.enable_buffering;
                 let actor_id = self.mailbox.actor_addr().to_string();
                 let enqueue_depth = Arc::clone(&self.queue_depth);
                 let enqueue_proc_stats = Arc::clone(&self.proc_stats);
@@ -4255,18 +4553,41 @@ impl<A: Actor> HandlerPorts<A> {
                 // closure runs. Therefore, the drain guarantee depends on this
                 // closure synchronously finishing all work that it admits into
                 // the actor work queue before it returns. That includes the
-                // ordered path: `OrderedSender::send` delivers the current item
-                // and synchronously flushes any consecutive buffered items that
-                // the current item unblocks. Messages already held in the
-                // reorder buffer but still waiting on a future sequence are not
-                // considered drainable accepted work; after draining begins,
-                // that missing future sequence is rejected.
+                // sequenced path: enqueue synchronously hands accepted work to
+                // the receiver's channel. Messages already held in the
+                // receiver-local reorder buffer but still waiting on a future
+                // sequence are not considered drainable accepted work; after
+                // draining begins, that missing future sequence is rejected.
                 let enqueue = move |headers: Flattrs, msg: M| {
                     // Extract values from headers BEFORE they're moved into
                     // WorkCell — Flattrs::get returns owned typed values, so
                     // these bindings don't borrow from `headers` and `headers`
                     // can be moved into WorkCell freely.
-                    let seq_info = headers.get(SEQ_INFO);
+                    let seq_info = if enable_buffering {
+                        match headers.get(SEQ_INFO) {
+                            Some(seq_info) => seq_info,
+                            None => {
+                                let error_msg = format!(
+                                    "in enqueue func for {}, buffering is enabled, but SEQ_INFO is not set for message type {}",
+                                    actor_id,
+                                    std::any::type_name::<M>(),
+                                );
+                                tracing::error!(error_msg);
+                                return Err(anyhow::anyhow!(error_msg));
+                            }
+                        }
+                    } else {
+                        SeqInfo::Direct
+                    };
+                    if !seq_info.is_valid() {
+                        let error_msg = format!(
+                            "in enqueue func for {}, got seq 0 for message type {}",
+                            actor_id,
+                            std::any::type_name::<M>(),
+                        );
+                        tracing::error!(error_msg);
+                        return Err(anyhow::anyhow!(error_msg));
+                    }
                     let sender = headers.get(crate::mailbox::headers::SENDER_ACTOR_ID);
 
                     let work = WorkCell::new(move |actor: &mut A, instance: &Instance<A>| {
@@ -4286,41 +4607,11 @@ impl<A: Actor> HandlerPorts<A> {
                     // failure, `account_cancel_enqueue` rolls back the
                     // counters so `queue_depth` does not drift.
                     account_enqueue(&enqueue_depth, &enqueue_proc_stats, &actor_id);
-                    let result = if workq.enable_buffering {
-                        match seq_info {
-                            Some(SeqInfo::Session { session_id, seq }) => {
-                                // TODO: return the message contained in the error instead of dropping them when converting
-                                // to anyhow::Error. In that way, the message can be picked up by mailbox and returned to sender.
-                                workq.send(session_id, seq, sender, work).map_err(|e| match e {
-                                    OrderedSenderError::InvalidZeroSeq(_) => {
-                                        let error_msg = format!(
-                                            "in enqueue func for {}, got seq 0 for message type {}",
-                                            actor_id,
-                                            std::any::type_name::<M>(),
-                                        );
-                                        tracing::error!(error_msg);
-                                        anyhow::anyhow!(error_msg)
-                                    }
-                                    OrderedSenderError::SendError(e) => anyhow::Error::from(e),
-                                    OrderedSenderError::FlushError(e) => e,
-                                })
-                            }
-                            Some(SeqInfo::Direct) => {
-                                workq.direct_send(work).map_err(anyhow::Error::from)
-                            }
-                            None => {
-                                let error_msg = format!(
-                                    "in enqueue func for {}, buffering is enabled, but SEQ_INFO is not set for message type {}",
-                                    actor_id,
-                                    std::any::type_name::<M>(),
-                                );
-                                tracing::error!(error_msg);
-                                Err(anyhow::anyhow!(error_msg))
-                            }
-                        }
-                    } else {
-                        workq.direct_send(work).map_err(anyhow::Error::from)
-                    };
+                    // TODO: return the message contained in the error instead of dropping them when converting
+                    // to anyhow::Error. In that way, the message can be picked up by mailbox and returned to sender.
+                    let result = workq
+                        .send(SequencedEnvelope::new(seq_info, sender, work))
+                        .map_err(anyhow::Error::from);
                     if result.is_err() {
                         account_cancel_enqueue(&enqueue_depth, &enqueue_proc_stats, &actor_id);
                     }
@@ -4342,19 +4633,19 @@ impl<A: Actor> HandlerPorts<A> {
     where
         A: Handler<M>,
     {
-        let port_index = M::port();
-        match self.bound.entry(port_index) {
+        let port = Port::handler::<M>();
+        match self.bound.entry(port.clone()) {
             Entry::Vacant(entry) => {
-                self.get::<M>().bind_handler_port();
+                let _ = self.get::<M>().bind();
                 entry.insert(M::typename());
             }
             Entry::Occupied(entry) => {
                 assert_eq!(
                     *entry.get(),
                     M::typename(),
-                    "bind {}: port index {} already bound to type {}",
+                    "bind {}: port {} already bound to type {}",
                     M::typename(),
-                    port_index,
+                    port,
                     entry.get(),
                 );
             }
@@ -4396,10 +4687,68 @@ mod tests {
 
     impl Actor for TestActor {}
 
+    async fn get_status(client: &Client, actor_addr: &ActorAddr) -> Option<ActorStatus> {
+        let (reply_port, reply_rx) = client.open_once_port::<Option<ActorStatus>>();
+        PortRef::<StatusMessage>::attest_control_port(actor_addr, crate::ControlPort::Status).post(
+            client,
+            StatusMessage::GetStatus {
+                reply: reply_port.bind(),
+            },
+        );
+        tokio::time::timeout(Duration::from_secs(5), reply_rx.recv())
+            .await
+            .expect("status reply should arrive")
+            .expect("status reply port should remain open")
+    }
+
     #[derive(Debug)]
     struct ChildLabelActor;
 
     impl Actor for ChildLabelActor {}
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_status_control_port_reports_live_actor() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let handle = proc.spawn(TestActor);
+
+        let mut status_rx = handle.status();
+        status_rx
+            .wait_for(|status| matches!(status, ActorStatus::Idle))
+            .await
+            .expect("actor should become idle");
+
+        let status = get_status(&client, handle.actor_addr()).await;
+        assert_eq!(status, Some(ActorStatus::Idle));
+
+        handle.drain_and_stop("test").unwrap();
+        handle.await;
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_status_control_port_reports_tombstoned_actor() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let handle = proc.spawn(TestActor);
+        let actor_addr = handle.actor_addr().clone();
+
+        handle.drain_and_stop("test").unwrap();
+        let terminal_status = handle.await;
+
+        assert_eq!(
+            get_status(&client, &actor_addr).await,
+            Some(terminal_status)
+        );
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_status_control_port_reports_unknown_actor() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let missing = proc.root_addr(Uid::instance(Label::strip("missing")));
+
+        assert_eq!(get_status(&client, &missing).await, None);
+    }
 
     #[derive(Debug)]
     struct DelayedSelfActor {
@@ -4966,8 +5315,6 @@ mod tests {
     /// outbound envelope.
     #[tokio::test]
     async fn test_mailbox_ext_post_stamps_sender_actor_id() {
-        use typeuri::Named;
-
         use crate::mailbox::headers::SENDER_ACTOR_ID;
 
         #[derive(typeuri::Named)]
@@ -5001,7 +5348,7 @@ mod tests {
         // forwarder (CapturingSender), where we can inspect the headers.
         let remote_dest = ProcAddr::instance(ChannelAddr::Local(2), "remote")
             .actor_addr("worker")
-            .port_addr(Port::from(DestHandlerMsg::port()));
+            .port_addr(Port::handler::<DestHandlerMsg>());
 
         // UFCS to select MailboxExt::post over Endpoint::post (also in
         // scope at module level via `use ... as _`). Client implements
@@ -5110,7 +5457,7 @@ mod tests {
         let (port, mut receiver) = instance.bind_handler_port::<u64>();
 
         let PortLocation::Bound(default_dest) = port.location() else {
-            panic!("actor port must be bound");
+            panic!("handler port must be bound");
         };
         let alternate_dest =
             PortAddr::new(default_dest.id().clone(), ChannelAddr::Local(9876).into());
@@ -5408,7 +5755,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_gateway_attach_proc_sender_routes_through_sender() {
+    async fn test_gateway_attach_peer_routes_via_through_sender() {
         use tokio::sync::mpsc::UnboundedSender;
         use tokio::sync::mpsc::unbounded_channel;
 
@@ -5434,9 +5781,9 @@ mod tests {
         let proc = Proc::isolated();
         let gateway = proc.gateway();
 
-        // Advertise the remote proc with a `Via(remote_uid, ...)`
-        // prefix, mirroring the host-spawn convention so the proc
-        // route matches the outermost via hop.
+        // Advertise the peer with a `Via(remote_uid, ...)` prefix,
+        // mirroring the host-spawn convention so the peer route
+        // matches the outermost via hop.
         let remote_uid = Uid::Instance(0xabc123, Some(Label::strip("remote")));
         let remote_inner_addr = ChannelAddr::Local(1234);
         let remote_location =
@@ -5446,11 +5793,7 @@ mod tests {
 
         let (tx, mut rx) = unbounded_channel::<MessageEnvelope>();
         let route_guard = gateway
-            .attach_proc_sender(
-                remote_proc.id().clone(),
-                remote_uid.clone(),
-                MpscSender(tx).into_boxed(),
-            )
+            .attach_peer(remote_uid.clone(), MpscSender(tx).into_boxed())
             .unwrap();
 
         gateway.post(
@@ -5466,15 +5809,16 @@ mod tests {
 
         let routed = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
-            .expect("attach_proc_sender did not route envelope before timeout")
+            .expect("attach_peer did not route envelope before timeout")
             .expect("recording sender closed unexpectedly");
-        // The outer via is peeled before forwarding: dest id is
-        // preserved, but the location is rewritten to the inner.
-        assert_eq!(routed.dest().id(), remote_dest.id());
-        assert_eq!(routed.dest().location().addr(), &remote_inner_addr);
+        // The outer via is peeled from the next hop before
+        // forwarding; the canonical destination is preserved.
+        assert_eq!(routed.dest(), &remote_dest);
+        assert_eq!(routed.next_hop().id(), remote_dest.id());
+        assert_eq!(routed.next_hop().location().addr(), &remote_inner_addr);
         assert!(
-            routed.dest().location().as_via().is_none(),
-            "outer via hop must be peeled before forwarding"
+            !routed.next_hop().location().is_via(),
+            "outer via hop must be peeled from the next hop"
         );
 
         drop(route_guard);
@@ -5945,10 +6289,10 @@ mod tests {
     // Supervision propagation is deterministic (uses Notify + channel
     // recv for ordering), but the chain of message passes is sensitive
     // to tokio runtime scheduling. Under suite-wide CPU contention this
-    // can take well above the natural sub-second runtime; 60s gives
+    // can take well above the natural sub-second runtime; 120s gives
     // headroom without masking genuine hangs.
     #[cfg_attr(not(target_os = "linux"), ignore = "linux-only")]
-    #[async_timed_test(timeout_secs = 60)]
+    #[async_timed_test(timeout_secs = 120)]
     async fn test_local_supervision_propagation() {
         hyperactor_telemetry::initialize_logging_for_test();
 
@@ -6141,7 +6485,6 @@ mod tests {
         );
     }
 
-    #[ignore = "until trace recording is turned back on"]
     #[test]
     fn test_handler_logging() {
         #[derive(Debug, Default)]
@@ -6880,10 +7223,9 @@ mod tests {
     // Test-only Named message + dedicated actor with explicit handler
     // export, so the integration test can bind the BufferTestMsg
     // handler port (`handle.bind()`) and drive ordered traffic through
-    // `OrderedSender`. Without the bind, `PortHandle::try_post` stamps
-    // `SeqInfo::Direct` and the enqueue closure takes the `direct_send`
-    // branch -- which never populates `OrderedSender::states`, leaving
-    // the snapshot empty.
+    // the sequenced receiver. Without the bind, `PortHandle::try_post`
+    // stamps `SeqInfo::Direct`, and the enqueue closure bypasses
+    // sequencing, leaving the snapshot empty.
     #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, typeuri::Named)]
     struct BufferTestMsg;
 
@@ -6921,8 +7263,6 @@ mod tests {
     /// is not timing-sensitive.
     #[async_timed_test(timeout_secs = 30)]
     async fn test_inbound_ordering_snapshot_callback_publishes_session() {
-        use typeuri::Named;
-
         // Pin reorder buffering ON regardless of any global config
         // overrides set by other tests in the same binary. Without this
         // guard the snapshot would observe `enabled = false` and the
@@ -6945,7 +7285,7 @@ mod tests {
         // Reserve seq 1 on the actor's BufferTestMsg handler port so
         // subsequent client posts get seqs 2..=N which then buffer
         // (waiting for seq 1, which will never arrive).
-        let handler_port = actor_id.port_addr(Port::from(BufferTestMsg::port()));
+        let handler_port = actor_id.port_addr(Port::handler::<BufferTestMsg>());
         // Reserve one seq directly on the client's sequencer. Equivalent
         // to `Instance::debug_skip_next_ordering_seq(dest, 1)`, but
         // inlined here so the test does not depend on a Client-side
@@ -6953,20 +7293,33 @@ mod tests {
         let _ = client.sequencer().assign_seq(&handler_port);
 
         // Post three messages. These flow through MailboxExt::post ->
-        // HandlerPorts enqueue closure -> OrderedSender::send, where
-        // they buffer (out of order from seq 1's perspective).
+        // HandlerPorts enqueue closure -> SequencedReceiver, where they
+        // buffer (out of order from seq 1's perspective).
         for _ in 0..3 {
             handle.post(&client, BufferTestMsg);
         }
-        // Let the enqueues propagate to the buffer.
-        tokio::task::yield_now().await;
-
         // Direct accessor: cell.inbound_ordering_snapshot() invokes the
-        // type-erased callback installed at Instance::new.
+        // type-erased callback installed at Instance::new. Sequencing is
+        // receiver-local, so wait until the actor loop has polled the
+        // work receiver and populated the buffered session.
         let cell = proc.get_instance(&actor_id).expect("actor exists");
-        let snapshot = cell
-            .inbound_ordering_snapshot()
-            .expect("snapshot callback should be installed for live actors");
+        let snapshot = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let snapshot = cell
+                    .inbound_ordering_snapshot()
+                    .expect("snapshot callback should be installed for live actors");
+                if snapshot
+                    .sessions
+                    .first()
+                    .is_some_and(|session| session.buffered_count == 3)
+                {
+                    break snapshot;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("receiver-local sequencing state should be populated");
 
         assert!(snapshot.enabled, "buffering enabled by override");
         assert_eq!(snapshot.sessions.len(), 1, "one client session expected");

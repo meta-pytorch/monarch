@@ -12,18 +12,16 @@ use anyhow::Result;
 use async_trait::async_trait;
 use hyperactor as reference;
 use hyperactor::Actor;
-use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::RemoteSpawn;
-use hyperactor::Unbind;
 use hyperactor_config::Flattrs;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
-#[derive(Debug, Clone, Serialize, Deserialize, Named, Bind, Unbind)]
+#[derive(Debug, Clone, Serialize, Deserialize, Named)]
 pub struct BenchMessage {
     pub step: usize,
     pub reply: reference::PortRef<usize>,
@@ -32,7 +30,7 @@ pub struct BenchMessage {
 }
 
 #[derive(Debug)]
-#[hyperactor::export(BenchMessage { cast = true })]
+#[hyperactor::export(BenchMessage)]
 #[hyperactor::spawnable]
 pub struct BenchActor {
     processing_time: Duration,

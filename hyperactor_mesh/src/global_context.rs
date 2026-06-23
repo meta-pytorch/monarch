@@ -73,9 +73,10 @@ use hyperactor::mailbox::TransportFailure;
 use hyperactor::mailbox::TransportFailureReason;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::mailbox::UndeliverableReason;
+use hyperactor::proc::ActorWorkReceiver;
 use hyperactor::proc::Proc;
-use hyperactor::proc::WorkCell;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor_cast::cast_actor::CAST_ACTOR_NAME;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -85,7 +86,6 @@ use crate::host::LocalProcManager;
 use crate::host_mesh::host_agent::GetLocalProcClient;
 use crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
 use crate::host_mesh::host_agent::HostAgent;
-use crate::host_mesh::host_agent::HostAgentMode;
 use crate::host_mesh::host_agent::ProcManagerSpawnFn;
 use crate::mesh_id::HostMeshId;
 use crate::mesh_id::ProcMeshId;
@@ -187,7 +187,7 @@ pub struct GlobalClientActor {
     /// Any bound handler message (e.g. `MeshFailure`,
     /// `Undeliverable<MessageEnvelope>`, introspection, etc.) is
     /// received here and executed via `WorkCell::handle`.
-    work_rx: mpsc::UnboundedReceiver<WorkCell<Self>>,
+    work_rx: ActorWorkReceiver<Self>,
 }
 
 impl GlobalClientActor {
@@ -417,9 +417,21 @@ async fn bootstrap_host() -> GlobalState {
     let host_agent = system_proc
         .spawn_with_uid(
             Uid::singleton(Label::new(HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
-            HostAgent::new(HostAgentMode::Local(host)),
+            HostAgent::new_local(host),
         )
         .expect("failed to spawn host agent");
+    HostAgent::wait_initialized(&host_agent)
+        .await
+        .expect("failed to initialize host agent");
+
+    let cast_handle = system_proc
+        .spawn_with_uid(
+            Uid::singleton(Label::strip(CAST_ACTOR_NAME)),
+            hyperactor_cast::cast_actor::CastActor::default(),
+        )
+        .expect("failed to spawn cast actor");
+
+    cast_handle.bind::<hyperactor_cast::cast_actor::CastActor>();
 
     // 4. Build HostMeshRef.
     let host_mesh = HostMeshRef::from_host_agent(
@@ -456,7 +468,8 @@ async fn bootstrap_host() -> GlobalState {
             0,
             local_proc_agent.bind(),
         ),
-    );
+    )
+    .expect("failed to create proc mesh ref");
     let actor_instance = local_proc
         .actor_instance::<GlobalClientActor>("client")
         .expect("failed to create root client instance");

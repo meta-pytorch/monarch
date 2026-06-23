@@ -1563,6 +1563,7 @@ fn pyspy_proc_ref_actor_node_with_parent() {
             is_system: false,
             inbound_ordering: None,
             failure_info: None,
+            execution: None,
         },
         children: vec![],
         parent: Some(proc_ref("worker")),
@@ -2566,6 +2567,7 @@ fn help_content_actor_buffered_independence() {
         is_system: false,
         inbound_ordering: None,
         failure_info: None,
+        execution: None,
     };
     let (_, entries) = crate::render::detail_pane::help_content(&props);
     let buffered = entries

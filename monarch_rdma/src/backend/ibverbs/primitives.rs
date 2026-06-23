@@ -17,7 +17,7 @@
 //! - `IbvConfig`: Represents ibverbs specific configurations, holding parameters required to establish and
 //!   manage an RDMA connection, including settings for the RDMA device, queue pair attributes, and other
 //!   connection-specific parameters.
-//! - `IbvDevice`: Represents an RDMA device, i.e. 'mlx5_0'. Contains information about the device, such as:
+//! - `IbvDeviceInfo`: Represents an RDMA device, i.e. 'mlx5_0'. Contains information about the device, such as:
 //!   its name, vendor ID, vendor part ID, hardware version, firmware version, node GUID, and capabilities.
 //! - `IbvPort`: Represents information about the port of an RDMA device, including state, physical state,
 //!   LID (Local Identifier), and GID (Global Identifier) information.
@@ -36,6 +36,11 @@ use serde::Serialize;
 use typeuri::Named;
 
 use super::domain::IbvDomain;
+use crate::backend::ibverbs::device::IbvDeviceImpl;
+use crate::backend::ibverbs::device::list_all_devices;
+use crate::backend::ibverbs::device_selection::IbvDeviceTarget;
+use crate::backend::ibverbs::device_selection::resolve_target;
+use crate::device_selection::MemoryLocation;
 
 #[derive(
     Default,
@@ -131,8 +136,9 @@ pub fn resolve_qp_type(qp_type: IbvQpType) -> u32 {
 /// parameters.
 #[derive(Debug, Named, Clone, Serialize, Deserialize)]
 pub struct IbvConfig {
-    /// `device` - The RDMA device to use for the connection.
-    pub device: IbvDevice,
+    /// `target` - Which RDMA device to use. A consumer resolves this to a
+    /// concrete device for its backend via [`resolve_target`].
+    pub target: IbvDeviceTarget,
     /// `cq_entries` - The number of completion queue entries.
     pub cq_entries: i32,
     /// `port_num` - The physical port number on the device.
@@ -179,13 +185,14 @@ pub struct IbvConfig {
 }
 wirevalue::register_type!(IbvConfig);
 
-/// Default RDMA parameters below are based on common values from rdma-core examples
-/// For high-performance or production use, consider tuning
-/// based on ibv_query_device() results and workload characteristics
+/// rdma-core defaults below come from common rdma-core examples; tune for
+/// production based on `ibv_query_device()` results and workload
+/// characteristics. The default target is CPU NUMA node 0; a consumer
+/// resolves it to a concrete device for its backend via [`resolve_target`].
 impl Default for IbvConfig {
     fn default() -> Self {
-        let mut config = Self {
-            device: IbvDevice::default(),
+        Self {
+            target: IbvDeviceTarget::MemoryLocation(MemoryLocation::Cpu(Some(0))),
             cq_entries: 1024,
             port_num: 1,
             gid_index: 3,
@@ -206,46 +213,16 @@ impl Default for IbvConfig {
             hw_init_delay_ms: 2,
             qp_type: IbvQpType::Auto,
             max_sge_override: 0,
-        };
-        if crate::efa::is_efa_device() {
-            crate::efa::apply_efa_defaults(&mut config);
         }
-        config
     }
 }
 
 impl IbvConfig {
-    /// Create a new IbvConfig targeting a specific device
-    ///
-    /// Device targets use a unified "type:id" format:
-    /// - "cpu:N" -> finds RDMA device closest to NUMA node N
-    /// - "cuda:N" -> finds RDMA device closest to CUDA device N
-    /// - "nic:mlx5_N" -> returns the specified NIC directly
-    ///
-    /// Shortcuts:
-    /// - "cpu" -> defaults to "cpu:0"
-    /// - "cuda" -> defaults to "cuda:0"
-    ///
-    /// # Arguments
-    ///
-    /// * `target` - Target device specification
-    ///
-    /// # Returns
-    ///
-    /// * `IbvConfig` with resolved device, or default device if resolution fails
-    pub fn targeting(target: &str) -> Self {
-        // Normalize shortcuts
-        let normalized_target = match target {
-            "cpu" => "cpu:0",
-            "cuda" => "cuda:0",
-            _ => target,
-        };
-
-        let device = super::device_selection::select_optimal_ibv_device(Some(normalized_target))
-            .unwrap_or_default();
-
+    /// An [`IbvConfig`] with default parameters whose device
+    /// [`target`](Self::target) is `target` (see [`IbvDeviceTarget`]).
+    pub fn targeting(target: IbvDeviceTarget) -> Self {
         Self {
-            device,
+            target,
             ..Default::default()
         }
     }
@@ -255,8 +232,8 @@ impl std::fmt::Display for IbvConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "IbvConfig {{ device: {}, port_num: {}, gid_index: {}, max_send_wr: {}, max_recv_wr: {}, max_send_sge: {}, max_recv_sge: {}, path_mtu: {:?}, retry_cnt: {}, rnr_retry: {}, qp_timeout: {}, min_rnr_timer: {}, max_dest_rd_atomic: {}, max_rd_atomic: {}, pkey_index: {}, psn: 0x{:x} }}",
-            self.device.name(),
+            "IbvConfig {{ target: {:?}, port_num: {}, gid_index: {}, max_send_wr: {}, max_recv_wr: {}, max_send_sge: {}, max_recv_sge: {}, path_mtu: {:?}, retry_cnt: {}, rnr_retry: {}, qp_timeout: {}, min_rnr_timer: {}, max_dest_rd_atomic: {}, max_rd_atomic: {}, pkey_index: {}, psn: 0x{:x} }}",
+            self.target,
             self.port_num,
             self.gid_index,
             self.max_send_wr,
@@ -285,9 +262,9 @@ impl std::fmt::Display for IbvConfig {
 /// # Examples
 ///
 /// ```
-/// use monarch_rdma::get_all_devices;
+/// use monarch_rdma::backend::ibverbs::device::list_all_devices;
 ///
-/// let devices = get_all_devices();
+/// let devices = list_all_devices();
 /// if let Some(device) = devices.first() {
 ///     // Access device name and firmware version
 ///     let device_name = device.name();
@@ -295,7 +272,7 @@ impl std::fmt::Display for IbvConfig {
 /// }
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IbvDevice {
+pub struct IbvDeviceInfo {
     /// `name` - The name of the RDMA device (e.g., "mlx5_0").
     pub name: String,
     /// `vendor_id` - The vendor ID of the device.
@@ -324,20 +301,15 @@ pub struct IbvDevice {
     max_sge: i32,
 }
 
-impl IbvDevice {
+impl IbvDeviceInfo {
     /// Returns the name of the RDMA device.
     pub fn name(&self) -> &String {
         &self.name
     }
 
     /// Returns the first available RDMA device, if any.
-    pub fn first_available() -> Option<IbvDevice> {
-        let devices = get_all_devices();
-        if devices.is_empty() {
-            None
-        } else {
-            Some(devices.into_iter().next().unwrap())
-        }
+    pub fn first_available() -> Option<IbvDeviceInfo> {
+        list_all_devices().into_iter().next()
     }
 
     /// Returns the vendor ID of the RDMA device.
@@ -368,6 +340,20 @@ impl IbvDevice {
     /// Returns a reference to the vector of ports available on the RDMA device.
     pub fn ports(&self) -> &Vec<IbvPort> {
         &self.ports
+    }
+
+    /// Aggregate bandwidth (MB/s) of the device's fastest active port,
+    /// derived from its IB `active_speed` / `active_width`. 0 if no port
+    /// is active, which ranks the device at the worst case.
+    pub fn port_speed_mbytes_per_sec(&self) -> u32 {
+        self.ports
+            .iter()
+            .filter(|port| port.state == rdmaxcel_sys::ibv_port_state::IBV_PORT_ACTIVE)
+            .map(|port| {
+                ib_width_lanes(port.active_width) * ib_speed_mbits_per_lane(port.active_speed) / 8
+            })
+            .max()
+            .unwrap_or(0)
     }
 
     /// Returns the maximum number of queue pairs supported by the RDMA device.
@@ -401,17 +387,37 @@ impl IbvDevice {
     }
 }
 
-impl Default for IbvDevice {
-    fn default() -> Self {
-        // Try to get a smart default using device selection logic (defaults to cpu:0)
-        if let Some(device) = super::device_selection::select_optimal_ibv_device(Some("cpu:0")) {
-            device
-        } else {
-            // Fallback to first available device
-            get_all_devices()
-                .into_iter()
-                .next()
-                .unwrap_or_else(|| panic!("No RDMA devices found"))
+impl IbvDeviceInfo {
+    /// The optimal default device of backend `I`: the best NIC for CPU
+    /// memory on any NUMA node. Panics if `I` has no devices.
+    #[expect(
+        clippy::should_implement_trait,
+        reason = "generic over the backend impl, so it cannot be the parameterless Default::default"
+    )]
+    pub fn default<I: IbvDeviceImpl>() -> Self {
+        resolve_target::<I>(&IbvDeviceTarget::MemoryLocation(MemoryLocation::Cpu(None)))
+            .unwrap_or_else(|| panic!("no RDMA device for backend {}", I::backend_name()))
+    }
+
+    /// Construct an [`IbvDeviceInfo`] with only `name` set (all other
+    /// fields zeroed/empty), for tests that need a named device without
+    /// touching hardware.
+    #[cfg(test)]
+    pub(crate) fn for_test_named(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            vendor_id: 0,
+            vendor_part_id: 0,
+            hw_ver: 0,
+            fw_ver: String::new(),
+            node_guid: 0,
+            ports: Vec::new(),
+            max_qp: 0,
+            max_cq: 0,
+            max_mr: 0,
+            max_pd: 0,
+            max_qp_wr: 0,
+            max_sge: 0,
         }
     }
 }
@@ -420,8 +426,8 @@ impl Default for IbvDevice {
 pub struct IbvPort {
     /// `port_num` - The physical port number on the device.
     port_num: u8,
-    /// `state` - The current state of the port.
-    state: String,
+    /// `state` - The raw `ibv_port_state` of the port.
+    state: rdmaxcel_sys::ibv_port_state::Type,
     /// `physical_state` - The physical state of the port.
     physical_state: String,
     /// `base_lid` - Base Local Identifier for the port.
@@ -438,9 +444,13 @@ pub struct IbvPort {
     gid: String,
     /// `gid_tbl_len` - Length of the GID table.
     gid_tbl_len: i32,
+    /// `active_speed` - IB active speed bitmask (one bit set).
+    active_speed: u8,
+    /// `active_width` - IB active width bitmask (one bit set).
+    active_width: u8,
 }
 
-impl fmt::Display for IbvDevice {
+impl fmt::Display for IbvDeviceInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "{}", self.name)?;
         writeln!(f, "\tNumber of ports: {}", self.ports.len())?;
@@ -467,7 +477,7 @@ impl fmt::Display for IbvDevice {
 impl fmt::Display for IbvPort {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "\tPort {}:", self.port_num)?;
-        writeln!(f, "\t\tState: {}", self.state)?;
+        writeln!(f, "\t\tState: {}", get_port_state_str(self.state))?;
         writeln!(f, "\t\tPhysical state: {}", self.physical_state)?;
         writeln!(f, "\t\tBase lid: {}", self.base_lid)?;
         writeln!(f, "\t\tLMC: {}", self.lmc)?;
@@ -478,6 +488,33 @@ impl fmt::Display for IbvPort {
         writeln!(f, "\t\tGID table length: {}", self.gid_tbl_len)?;
         Ok(())
     }
+}
+
+/// Per-lane IB bandwidth (Mbit/s) for an `active_speed` bitmask,
+/// indexed by its lowest set bit (SDR, DDR, QDR, QDR, FDR, EDR, HDR, NDR).
+/// Values match NCCL's `ibvSpeeds` (`transport/net_ib/init.cc`). The
+/// `active_speed` field is a `u8`, so NCCL's 9th rate (XDR, bit 8) is not
+/// representable here; an unset value yields 0.
+fn ib_speed_mbits_per_lane(active_speed: u8) -> u32 {
+    const RATES: [u32; 8] = [2500, 5000, 10000, 10000, 14000, 25000, 50000, 100000];
+    first_set_bit(active_speed)
+        .and_then(|bit| RATES.get(bit).copied())
+        .unwrap_or(0)
+}
+
+/// IB link width in lanes for an `active_width` bitmask, indexed by its
+/// lowest set bit (1x, 4x, 8x, 12x, 2x); values match NCCL's `ibvWidths`
+/// (`transport/net_ib/init.cc`). An unset value yields 0.
+fn ib_width_lanes(active_width: u8) -> u32 {
+    const WIDTHS: [u32; 5] = [1, 4, 8, 12, 2];
+    first_set_bit(active_width)
+        .and_then(|bit| WIDTHS.get(bit).copied())
+        .unwrap_or(0)
+}
+
+/// Index of the lowest set bit, or `None` if `v` is 0.
+fn first_set_bit(v: u8) -> Option<usize> {
+    (v != 0).then(|| v.trailing_zeros() as usize)
 }
 
 /// Converts the given port state to a human-readable string.
@@ -570,115 +607,95 @@ pub fn format_gid(gid: &[u8; 16]) -> String {
     )
 }
 
-/// Retrieves information about all available RDMA devices in the system.
+/// Builds an [`IbvDeviceInfo`] from an already-open
+/// `ibv_context`. Returns `None` if `ibv_query_device` fails.
 ///
-/// This function queries the system for all available RDMA devices and returns
-/// detailed information about each device, including its capabilities, ports,
-/// and attributes.
+/// # Safety
 ///
-/// # Returns
-///
-/// A vector of `IbvDevice` structures, each representing an RDMA device in the system.
-/// Returns an empty vector if no devices are found or if there was an error querying
-/// the devices.
-pub fn get_all_devices() -> Vec<IbvDevice> {
-    let mut devices = Vec::new();
-
-    // SAFETY: We are calling several C functions from libibverbs.
-    unsafe {
-        let mut num_devices = 0;
-        let device_list = rdmaxcel_sys::ibv_get_device_list(&mut num_devices);
-        if device_list.is_null() || num_devices == 0 {
-            return devices;
-        }
-
-        for i in 0..num_devices {
-            let device = *device_list.add(i as usize);
-            if device.is_null() {
-                continue;
-            }
-
-            let context = rdmaxcel_sys::ibv_open_device(device);
-            if context.is_null() {
-                continue;
-            }
-
-            let device_name = CStr::from_ptr(rdmaxcel_sys::ibv_get_device_name(device))
-                .to_string_lossy()
-                .into_owned();
-
-            let mut device_attr = rdmaxcel_sys::ibv_device_attr::default();
-            if rdmaxcel_sys::ibv_query_device(context, &mut device_attr) != 0 {
-                rdmaxcel_sys::ibv_close_device(context);
-                continue;
-            }
-
-            let fw_ver = CStr::from_ptr(device_attr.fw_ver.as_ptr())
-                .to_string_lossy()
-                .into_owned();
-
-            let mut rdma_device = IbvDevice {
-                name: device_name,
-                vendor_id: device_attr.vendor_id,
-                vendor_part_id: device_attr.vendor_part_id,
-                hw_ver: device_attr.hw_ver,
-                fw_ver,
-                node_guid: device_attr.node_guid,
-                ports: Vec::new(),
-                max_qp: device_attr.max_qp,
-                max_cq: device_attr.max_cq,
-                max_mr: device_attr.max_mr,
-                max_pd: device_attr.max_pd,
-                max_qp_wr: device_attr.max_qp_wr,
-                max_sge: device_attr.max_sge,
-            };
-
-            for port_num in 1..=device_attr.phys_port_cnt {
-                let mut port_attr = rdmaxcel_sys::ibv_port_attr::default();
-                if rdmaxcel_sys::ibv_query_port(
-                    context,
-                    port_num,
-                    &mut port_attr as *mut rdmaxcel_sys::ibv_port_attr as *mut _,
-                ) != 0
-                {
-                    continue;
-                }
-                let state = get_port_state_str(port_attr.state);
-                let physical_state = get_port_phy_state_str(port_attr.phys_state);
-
-                let link_layer = get_link_layer_str(port_attr.link_layer);
-
-                let mut gid = rdmaxcel_sys::ibv_gid::default();
-                let gid_str = if rdmaxcel_sys::ibv_query_gid(context, port_num, 0, &mut gid) == 0 {
-                    format_gid(&gid.raw)
-                } else {
-                    "N/A".to_string()
-                };
-
-                let rdma_port = IbvPort {
-                    port_num,
-                    state,
-                    physical_state,
-                    base_lid: port_attr.lid,
-                    lmc: port_attr.lmc,
-                    sm_lid: port_attr.sm_lid,
-                    capability_mask: port_attr.port_cap_flags,
-                    link_layer,
-                    gid: gid_str,
-                    gid_tbl_len: port_attr.gid_tbl_len,
-                };
-
-                rdma_device.ports.push(rdma_port);
-            }
-
-            devices.push(rdma_device);
-            rdmaxcel_sys::ibv_close_device(context);
-        }
-
-        rdmaxcel_sys::ibv_free_device_list(device_list);
+/// `device` and `context` must both be non-null and valid for
+/// the duration of the call; `context` must be the result of
+/// `ibv_open_device(device)`.
+pub(super) unsafe fn query_device_info(
+    device: *mut rdmaxcel_sys::ibv_device,
+    context: *mut rdmaxcel_sys::ibv_context,
+) -> Option<IbvDeviceInfo> {
+    // SAFETY: `device` is non-null per the caller's contract;
+    // `ibv_get_device_name` returns a null-terminated C string
+    // owned by the device list.
+    let device_name = unsafe { CStr::from_ptr(rdmaxcel_sys::ibv_get_device_name(device)) }
+        .to_string_lossy()
+        .into_owned();
+    let mut device_attr = rdmaxcel_sys::ibv_device_attr::default();
+    // SAFETY: `context` is a non-null context per the caller's
+    // contract; `&mut device_attr` is a writable, properly
+    // aligned `ibv_device_attr`.
+    if unsafe { rdmaxcel_sys::ibv_query_device(context, &mut device_attr) } != 0 {
+        return None;
     }
-
-    devices
+    // SAFETY: `device_attr.fw_ver` is a null-terminated C buffer
+    // populated by `ibv_query_device`.
+    let fw_ver = unsafe { CStr::from_ptr(device_attr.fw_ver.as_ptr()) }
+        .to_string_lossy()
+        .into_owned();
+    let mut info = IbvDeviceInfo {
+        name: device_name,
+        vendor_id: device_attr.vendor_id,
+        vendor_part_id: device_attr.vendor_part_id,
+        hw_ver: device_attr.hw_ver,
+        fw_ver,
+        node_guid: device_attr.node_guid,
+        ports: Vec::new(),
+        max_qp: device_attr.max_qp,
+        max_cq: device_attr.max_cq,
+        max_mr: device_attr.max_mr,
+        max_pd: device_attr.max_pd,
+        max_qp_wr: device_attr.max_qp_wr,
+        max_sge: device_attr.max_sge,
+    };
+    for port_num in 1..=device_attr.phys_port_cnt {
+        let mut port_attr = rdmaxcel_sys::ibv_port_attr::default();
+        // SAFETY: `context` is a valid context; `port_attr` is
+        // a writable, properly aligned `ibv_port_attr`.
+        if unsafe {
+            rdmaxcel_sys::ibv_query_port(
+                context,
+                port_num,
+                &mut port_attr as *mut rdmaxcel_sys::ibv_port_attr as *mut _,
+            )
+        } != 0
+        {
+            continue;
+        }
+        let physical_state = get_port_phy_state_str(port_attr.phys_state);
+        let link_layer = get_link_layer_str(port_attr.link_layer);
+        let mut gid = rdmaxcel_sys::ibv_gid::default();
+        // SAFETY: `context` is a valid context; `&mut gid` is a
+        // writable, properly aligned `ibv_gid`.
+        let gid_str = if unsafe { rdmaxcel_sys::ibv_query_gid(context, port_num, 0, &mut gid) } == 0
+        {
+            // SAFETY: `gid.raw` is a union field that is
+            // always initialized; `ibv_query_gid` filled it.
+            let raw = unsafe { gid.raw };
+            format_gid(&raw)
+        } else {
+            "N/A".to_string()
+        };
+        info.ports.push(IbvPort {
+            port_num,
+            state: port_attr.state,
+            physical_state,
+            base_lid: port_attr.lid,
+            lmc: port_attr.lmc,
+            sm_lid: port_attr.sm_lid,
+            capability_mask: port_attr.port_cap_flags,
+            link_layer,
+            gid: gid_str,
+            gid_tbl_len: port_attr.gid_tbl_len,
+            active_speed: port_attr.active_speed,
+            active_width: port_attr.active_width,
+        });
+    }
+    Some(info)
 }
 
 /// Cached result of mlx5dv support check.
@@ -1065,9 +1082,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_get_all_devices() {
+    fn test_list_all_devices() {
         // Skip test if RDMA devices are not available
-        let devices = get_all_devices();
+        let devices = list_all_devices();
         if devices.is_empty() {
             println!("Skipping test: RDMA devices not available");
             return;
@@ -1084,7 +1101,7 @@ mod tests {
     #[test]
     fn test_first_available() {
         // Skip test if RDMA is not available
-        let devices = get_all_devices();
+        let devices = list_all_devices();
         if devices.is_empty() {
             println!("Skipping test: RDMA devices not available");
             return;
@@ -1109,7 +1126,7 @@ mod tests {
 
     #[test]
     fn test_device_display() {
-        if let Some(device) = IbvDevice::first_available() {
+        if let Some(device) = IbvDeviceInfo::first_available() {
             let display_output = format!("{}", device);
             assert!(
                 display_output.contains(&device.name),
@@ -1124,13 +1141,13 @@ mod tests {
 
     #[test]
     fn test_port_display() {
-        if let Some(device) = IbvDevice::first_available()
+        if let Some(device) = IbvDeviceInfo::first_available()
             && !device.ports().is_empty()
         {
             let port = &device.ports()[0];
             let display_output = format!("{}", port);
             assert!(
-                display_output.contains(&port.state),
+                display_output.contains(&get_port_state_str(port.state)),
                 "display should include port state"
             );
             assert!(
@@ -1138,6 +1155,95 @@ mod tests {
                 "display should include link layer"
             );
         }
+    }
+
+    #[test]
+    fn test_ib_speed_mbits_per_lane() {
+        // `active_speed` is a one-hot bitmask, indexed by its lowest set
+        // bit. Values mirror NCCL's `ibvSpeeds` (SDR..NDR).
+        assert_eq!(ib_speed_mbits_per_lane(1), 2500); // SDR
+        assert_eq!(ib_speed_mbits_per_lane(2), 5000); // DDR
+        assert_eq!(ib_speed_mbits_per_lane(4), 10000); // QDR
+        assert_eq!(ib_speed_mbits_per_lane(8), 10000); // QDR / FDR10
+        assert_eq!(ib_speed_mbits_per_lane(16), 14000); // FDR
+        assert_eq!(ib_speed_mbits_per_lane(32), 25000); // EDR
+        assert_eq!(ib_speed_mbits_per_lane(64), 50000); // HDR
+        assert_eq!(ib_speed_mbits_per_lane(128), 100000); // NDR
+        assert_eq!(ib_speed_mbits_per_lane(0), 0); // unset → unknown
+    }
+
+    #[test]
+    fn test_ib_width_lanes() {
+        assert_eq!(ib_width_lanes(1), 1); // 1x
+        assert_eq!(ib_width_lanes(2), 4); // 4x
+        assert_eq!(ib_width_lanes(4), 8); // 8x
+        assert_eq!(ib_width_lanes(8), 12); // 12x
+        assert_eq!(ib_width_lanes(16), 2); // 2x
+        assert_eq!(ib_width_lanes(0), 0); // unset → unknown
+    }
+
+    #[test]
+    fn test_port_speed_mbytes_per_sec() {
+        use rdmaxcel_sys::ibv_port_state::IBV_PORT_ACTIVE;
+        use rdmaxcel_sys::ibv_port_state::IBV_PORT_DOWN;
+        fn mk_port(
+            state: rdmaxcel_sys::ibv_port_state::Type,
+            active_speed: u8,
+            active_width: u8,
+        ) -> IbvPort {
+            IbvPort {
+                port_num: 1,
+                state,
+                physical_state: String::new(),
+                base_lid: 0,
+                lmc: 0,
+                sm_lid: 0,
+                capability_mask: 0,
+                link_layer: String::new(),
+                gid: String::new(),
+                gid_tbl_len: 0,
+                active_speed,
+                active_width,
+            }
+        }
+        fn mk_device(ports: Vec<IbvPort>) -> IbvDeviceInfo {
+            IbvDeviceInfo {
+                name: "test".to_string(),
+                vendor_id: 0,
+                vendor_part_id: 0,
+                hw_ver: 0,
+                fw_ver: String::new(),
+                node_guid: 0,
+                ports,
+                max_qp: 0,
+                max_cq: 0,
+                max_mr: 0,
+                max_pd: 0,
+                max_qp_wr: 0,
+                max_sge: 0,
+            }
+        }
+
+        // NDR (128) x4 (width bit 2): 100000 * 4 / 8 = 50000 MB/s.
+        assert_eq!(
+            mk_device(vec![mk_port(IBV_PORT_ACTIVE, 128, 2)]).port_speed_mbytes_per_sec(),
+            50000
+        );
+
+        // The fastest port is DOWN, so it is ignored; the result is the
+        // fastest ACTIVE port, not the (faster) down one.
+        let mixed = mk_device(vec![
+            mk_port(IBV_PORT_ACTIVE, 32, 2), // EDR x4 = 12500
+            mk_port(IBV_PORT_ACTIVE, 64, 2), // HDR x4 = 25000 (fastest ACTIVE)
+            mk_port(IBV_PORT_DOWN, 128, 2),  // NDR x4 = 50000, but DOWN → ignored
+        ]);
+        assert_eq!(mixed.port_speed_mbytes_per_sec(), 25000);
+
+        // No ACTIVE port → 0 (treated as unknown, no cap).
+        assert_eq!(
+            mk_device(vec![mk_port(IBV_PORT_DOWN, 128, 2)]).port_speed_mbytes_per_sec(),
+            0
+        );
     }
 
     #[test]

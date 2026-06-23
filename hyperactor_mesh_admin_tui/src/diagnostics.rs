@@ -30,13 +30,13 @@
 use std::collections::HashSet;
 use std::time::Instant;
 
+use hyperactor_cast::cast_actor::CAST_ACTOR_NAME;
 use hyperactor_mesh::host::LOCAL_PROC_NAME;
 use hyperactor_mesh::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
 use hyperactor_mesh::introspect::NodeProperties;
 use hyperactor_mesh::mesh_admin::MESH_ADMIN_ACTOR_NAME;
 use hyperactor_mesh::mesh_admin::MESH_ADMIN_BRIDGE_NAME;
 use hyperactor_mesh::proc_agent::PROC_AGENT_ACTOR_NAME;
-use hyperactor_mesh::proc_mesh::COMM_ACTOR_NAME;
 use serde::Serialize;
 use tokio::sync::mpsc;
 
@@ -86,8 +86,8 @@ pub(crate) enum DiagNodeRole {
     /// ProcAgent and root client actor only when activated via
     /// `this_proc()` (Python/Monarch).
     LocalClientProc,
-    /// The `comm` actor on a user proc — enables proc-to-proc mesh messaging.
-    CommActor,
+    /// The `cast` actor on a user proc — routes mesh casts.
+    CastActor,
     /// The `proc_agent` actor on a user proc — manages actor spawn and lifecycle.
     ProcAgent,
     /// The first non-system proc — confirms user workload is alive.
@@ -253,9 +253,7 @@ fn label_from_payload(
         NodeProperties::Host { addr, .. } => addr.clone(),
         NodeProperties::Proc { proc_name, .. } => proc_name.clone(),
         NodeProperties::Actor { .. } => match reference {
-            NodeRef::Actor(actor_id) => {
-                format!("{}[{}]", actor_id.log_name(), actor_id.uid())
-            }
+            NodeRef::Actor(actor_id) => crate::format::actor_label(actor_id),
             other => other.to_string(),
         },
         NodeProperties::Error { message, .. } => message.clone(),
@@ -392,9 +390,7 @@ async fn walk(
                         r.label = format!("  {}", label_from_payload(actor_ref, p));
                     } else {
                         let short = match actor_ref {
-                            NodeRef::Actor(id) => {
-                                format!("{}[{}]", id.log_name(), id.uid())
-                            }
+                            NodeRef::Actor(id) => crate::format::actor_label(id),
                             other => other.to_string(),
                         };
                         r.label = format!("  {}", short);
@@ -456,8 +452,8 @@ async fn walk(
                     match nr {
                         NodeRef::Actor(actor_id) => {
                             let name = actor_id.log_name();
-                            if name.starts_with(COMM_ACTOR_NAME) {
-                                Some(DiagNodeRole::CommActor)
+                            if name.starts_with(CAST_ACTOR_NAME) {
+                                Some(DiagNodeRole::CastActor)
                             } else if name.starts_with(PROC_AGENT_ACTOR_NAME) {
                                 Some(DiagNodeRole::ProcAgent)
                             } else {
@@ -561,5 +557,69 @@ mod tests {
             outcome: DiagOutcome::Pass { elapsed_ms: 1 },
         }];
         assert_eq!(phase_fail_count(&results, DiagPhase::AdminInfra), 0);
+    }
+
+    fn test_proc_addr() -> hyperactor::ProcAddr {
+        hyperactor_mesh::mesh_id::ResourceId::proc_addr_from_name(
+            "unix:@test"
+                .parse::<hyperactor::channel::ChannelAddr>()
+                .unwrap(),
+            "myworld",
+        )
+    }
+
+    // Minimal actor payload — `label_from_payload`'s actor arm keys off
+    // `reference`, so these property fields are placeholders.
+    fn actor_node_payload() -> hyperactor_mesh::introspect::NodePayload {
+        hyperactor_mesh::introspect::NodePayload {
+            identity: hyperactor_mesh::introspect::NodeRef::Root,
+            properties: hyperactor_mesh::introspect::NodeProperties::Actor {
+                actor_status: "Running".to_string(),
+                actor_type: "Worker".to_string(),
+                instance_id: String::new(),
+                messages_processed: 0,
+                created_at: None,
+                last_message_handler: None,
+                total_processing_time_us: 0,
+                queue_depth: 0,
+                flight_recorder: None,
+                is_system: false,
+                inbound_ordering: None,
+                failure_info: None,
+                execution: None,
+            },
+            children: vec![],
+            parent: None,
+            as_of: std::time::SystemTime::UNIX_EPOCH,
+        }
+    }
+
+    #[test]
+    fn label_from_payload_actor_singleton_is_bare_name() {
+        let actor = test_proc_addr().actor_addr("worker");
+        let payload = actor_node_payload();
+        assert_eq!(
+            label_from_payload(
+                &hyperactor_mesh::introspect::NodeRef::Actor(actor),
+                &payload
+            ),
+            "worker"
+        );
+    }
+
+    #[test]
+    fn label_from_payload_actor_instance_keeps_disambiguator() {
+        let actor = test_proc_addr().actor_addr_uid(hyperactor::Uid::instance(
+            hyperactor::Label::strip("worker"),
+        ));
+        let payload = actor_node_payload();
+        let label = label_from_payload(
+            &hyperactor_mesh::introspect::NodeRef::Actor(actor),
+            &payload,
+        );
+        assert!(
+            label.starts_with("worker<") && label.ends_with('>'),
+            "instance must keep base58 disambiguator, got {label:?}"
+        );
     }
 }

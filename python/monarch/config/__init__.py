@@ -66,7 +66,6 @@ if TYPE_CHECKING:
             mesh_bootstrap_enable_pdeathsig: NotRequired[bool]
             mesh_terminate_concurrency: NotRequired[int]
             mesh_terminate_timeout: NotRequired[str]
-            shared_asyncio_runtime: NotRequired[bool]
             small_write_threshold: NotRequired[int]
             max_cast_dimension_size: NotRequired[int]
             remote_alloc_bind_to_inaddr_any: NotRequired[bool]
@@ -141,7 +140,6 @@ def configure(**kwargs: "ConfigureKwargsType") -> None:
             mesh_terminate_timeout: Timeout per child during graceful termination (humantime).
 
         Runtime and buffering:
-            shared_asyncio_runtime: Share asyncio runtime across actors.
             small_write_threshold: Threshold below which writes are copied (bytes).
 
         Mesh configuration:
@@ -298,7 +296,7 @@ def parametrize_config(
         >>>
         >>> @parametrize_config(
         ...     actor_queue_dispatch={True, False},
-        ...     shared_asyncio_runtime={True, False},
+        ...     prefix_with_rank={True, False},
         ... )
         ... async def test_actor_feature():
         ...     # Test runs 4 times: all combinations of the two bool options
@@ -388,12 +386,12 @@ def parametrize_config_pointwise(
         >>>
         >>> @parametrize_config_pointwise(
         ...     actor_queue_dispatch=[True, False],
-        ...     shared_asyncio_runtime=[True, False],
+        ...     prefix_with_rank=[True, False],
         ... )
         ... async def test_actor_feature():
         ...     # Runs 2 times:
-        ...     # (actor_queue_dispatch=True, shared_asyncio_runtime=True)
-        ...     # (actor_queue_dispatch=False, shared_asyncio_runtime=False)
+        ...     # (actor_queue_dispatch=True, prefix_with_rank=True)
+        ...     # (actor_queue_dispatch=False, prefix_with_rank=False)
         ...     pass
     """
     import asyncio

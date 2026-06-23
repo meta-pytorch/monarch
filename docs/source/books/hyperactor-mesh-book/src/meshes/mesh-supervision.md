@@ -167,7 +167,7 @@ impl<T> PortHandle<T> {
 
 With these primitives, we can flexibly support all of the above communication patterns. For example:
 1. Simple RPC: we simply link the recipient actor, which subsequently does not modify linkage.
-2. Multicast: we link the root of the tree. Each node in turn rewrites (through bind/unbind) the ports to maintain a hierarchy of links. Link failure propagates through the hierarchy.
+2. Multicast: we link the root of the tree. Each node in turn rewrites typed multipart port parts to maintain a hierarchy of links. Link failure propagates through the hierarchy.
 
 
 ## Implementation

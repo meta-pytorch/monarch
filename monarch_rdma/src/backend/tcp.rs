@@ -27,4 +27,5 @@ pub struct TcpOp {
     pub local_memory: KeepaliveLocalMemory,
     pub remote_tcp_manager: ActorRef<TcpManagerActor>,
     pub remote_buf_id: usize,
+    pub remote_size: usize,
 }

@@ -55,6 +55,7 @@ use hyperactor::mailbox::IntoBoxedMailboxSender;
 use hyperactor::mailbox::MailboxClient;
 use hyperactor::mailbox::MailboxServer;
 use hyperactor::proc::Proc;
+use hyperactor_cast::cast_actor::CAST_ACTOR_NAME;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::Attrs;
@@ -82,7 +83,6 @@ use crate::host::TerminateSummary;
 use crate::host::WaitError;
 use crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
 use crate::host_mesh::host_agent::HostAgent;
-use crate::host_mesh::host_agent::HostAgentMode;
 use crate::logging::OutputTarget;
 use crate::logging::StreamFwder;
 use crate::proc_agent::ProcAgent;
@@ -252,13 +252,12 @@ impl HostShutdownHandle {
 /// The caller passes the [`Gateway`] in — typically [`Gateway::new`],
 /// but it may have been pre-configured (e.g., via
 /// [`Gateway::serve_via`] or [`Gateway::attach`] to connect to
-/// another gateway) before this call. The host's `system_proc` and
-/// `local_proc` are registered with the gateway during construction
-/// — no special routing path; they share the gateway like any other
-/// local proc. If the gateway has a via prefix in its
-/// `default_location` at this point, every port bound on these
-/// procs inherits that prefix and is reachable from the attached
-/// peer through the via mechanism.
+/// another gateway) before this call. Host construction serves the
+/// gateway's backend and frontend endpoints, so the host's
+/// `system_proc`, `local_proc`, `HostAgent`, and handler ports
+/// snapshot the frontend location when minted. Any preconfigured
+/// `serve_via` session remains active as an outbound route and local
+/// delivery location.
 ///
 /// Returns `(host_mesh_agent, shutdown_handle)`:
 ///
@@ -268,7 +267,7 @@ impl HostShutdownHandle {
 /// - `shutdown_handle` joins the host's accept loop and runs the
 ///   drain protocol; see [`HostShutdownHandle`].
 ///
-/// - `addr`: the listening address of the host; this is used to bind the frontend address.
+/// - `addr`: the listening address of the host; this is used for the frontend server.
 /// - `command`: optional bootstrap command to spawn procs, otherwise [`BootstrapProcManager::current`].
 /// - `config`: optional runtime config overlay.
 /// - `exit_on_shutdown`: if true, [`HostShutdownHandle::join`] will call `process::exit` after draining.
@@ -299,21 +298,25 @@ pub async fn host(
     let host = Host::new_with_gateway(manager, addr, listener, gateway).await?;
     let addr = host.addr().clone();
 
-    // The ShutdownHost handler will call host.serve() inside
-    // HostAgent::init (after this.bind::<Self>(), so the handler port is bound
-    // before the frontend starts routing messages), then send the resulting
-    // GatewayServeHandle back here for draining.
+    // The ShutdownHost handler will send the gateway serve handle back here
+    // for draining. The frontend starts before HostAgent is spawned, and the
+    // host address is published only after HostAgent binds its handler.
     let (shutdown_tx, shutdown_rx) =
         tokio::sync::oneshot::channel::<hyperactor::gateway::GatewayServeHandle>();
 
     let system_proc = host.system_proc().clone();
     let host_mesh_agent = system_proc.spawn_with_uid(
         Uid::singleton(Label::new(HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
-        HostAgent::new(HostAgentMode::Process {
-            host,
-            shutdown_tx: Some(shutdown_tx),
-        }),
+        HostAgent::new_process(host, Some(shutdown_tx)),
     )?;
+    HostAgent::wait_initialized(&host_mesh_agent).await?;
+
+    let cast_handle = system_proc.spawn_with_uid(
+        Uid::singleton(Label::strip(CAST_ACTOR_NAME)),
+        hyperactor_cast::cast_actor::CastActor::default(),
+    )?;
+
+    cast_handle.bind::<hyperactor_cast::cast_actor::CastActor>();
 
     tracing::info!(
         "serving host at {}, agent: {}",

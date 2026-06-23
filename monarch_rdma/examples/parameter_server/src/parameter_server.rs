@@ -59,7 +59,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorRef;
-use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
 use hyperactor::Handler;
@@ -67,7 +66,6 @@ use hyperactor::Instance;
 use hyperactor::OncePortRef;
 use hyperactor::PortRef;
 use hyperactor::RemoteSpawn;
-use hyperactor::Unbind;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::context::Mailbox as _;
 use hyperactor::id::Label;
@@ -83,6 +81,7 @@ use monarch_rdma::IbvConfig;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
 use monarch_rdma::RdmaRemoteBuffer;
+use monarch_rdma::backend::ibverbs::device_selection::IbvDeviceTarget;
 use monarch_rdma::local_memory::Keepalive;
 use monarch_rdma::local_memory::KeepaliveLocalMemory;
 use ndslice::extent;
@@ -194,7 +193,7 @@ struct PsGetBuffers(
 struct PsUpdate(pub OncePortRef<bool>);
 
 // Message to log actors' weights and gradients.
-#[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
+#[derive(Debug, Serialize, Deserialize, Named, Clone)]
 struct Log;
 
 #[async_trait]
@@ -283,10 +282,10 @@ impl Handler<Log> for ParameterServerActor {
 #[hyperactor::spawnable]
 #[hyperactor::export(
     handlers = [
-        WorkerInit { cast = true },
-        WorkerStep { cast = true },
-        WorkerUpdate { cast = true },
-        Log { cast = true },
+        WorkerInit,
+        WorkerStep,
+        WorkerUpdate,
+        Log,
     ],
 )]
 pub struct WorkerActor {
@@ -331,22 +330,22 @@ impl RemoteSpawn for WorkerActor {
 // Message to initialize the worker.
 // This message is sent to workers to establish their connection with the parameter server
 // and obtain handles to the shared weights and gradient buffers.
-#[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
+#[derive(Debug, Serialize, Deserialize, Named, Clone)]
 pub struct WorkerInit(pub ActorRef<ParameterServerActor>);
 
 // Message to signal the worker to update its gradients and transmit them to the server.
 // The PortRef<bool> is used to notify the main process when the operation completes.
 // - Workers compute local gradients (weights + 1)
 // - Workers write these gradients to their assigned buffer on the parameter server using RDMA
-#[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
-pub struct WorkerStep(#[binding(include)] PortRef<bool>);
+#[derive(Debug, Serialize, Deserialize, Named, Clone)]
+pub struct WorkerStep(PortRef<bool>);
 
 // Message to signal the worker to pull updated weights from the parameter server.
 // The PortRef<bool> is used to notify the main process when the operation completes.
 // - Workers read the updated weights from the parameter server using RDMA
 // - This happens after the parameter server has applied all gradients to update the weights
-#[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
-pub struct WorkerUpdate(#[binding(include)] PortRef<bool>);
+#[derive(Debug, Serialize, Deserialize, Named, Clone)]
+pub struct WorkerUpdate(PortRef<bool>);
 
 #[async_trait]
 impl Handler<WorkerInit> for WorkerActor {
@@ -463,7 +462,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
         .with_max_level(tracing::Level::INFO)
         .init();
 
-    let devices = monarch_rdma::get_all_devices();
+    let devices = monarch_rdma::backend::ibverbs::device::list_all_devices();
 
     // In this example, the parameter server and workers all live on the same host.
     // Parameter server is assigned to its unique ibverbs device, and all workers
@@ -477,13 +476,13 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
     // Quick check for H100
     if devices.len() > 4 {
         ps_ibv_config = IbvConfig {
-            device: devices.clone().into_iter().next().unwrap(),
+            target: IbvDeviceTarget::nic(devices[0].name().clone()),
             ..Default::default()
         };
         // The second device used is the 3rd. Main reason is because 0 and 3 are both backend
         // devices on gtn H100 devices.
         worker_ibv_config = IbvConfig {
-            device: devices.clone().into_iter().nth(3).unwrap(),
+            target: IbvDeviceTarget::nic(devices[3].name().clone()),
             ..Default::default()
         };
     } else {

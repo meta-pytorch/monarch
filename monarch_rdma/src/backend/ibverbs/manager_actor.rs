@@ -18,6 +18,7 @@
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -46,9 +47,14 @@ use typeuri::Named;
 
 use super::IbvBuffer;
 use super::IbvOp;
+use super::device::IbvDevice;
+use super::device::IbvDeviceImpl;
+use super::device_selection::resolve_target;
 use super::domain::IbvDomain;
+use super::efa_device::EfaDevice;
+use super::mlx_device::MlxDevice;
 use super::primitives::IbvConfig;
-use super::primitives::IbvDevice;
+use super::primitives::IbvDeviceInfo;
 use super::primitives::IbvMemoryRegion;
 use super::primitives::IbvMemoryRegionView;
 use super::primitives::IbvQpInfo;
@@ -64,8 +70,8 @@ use crate::RdmaOp;
 use crate::RdmaTransportLevel;
 use crate::backend::RdmaBackend;
 use crate::local_memory::KeepaliveLocalMemory;
+use crate::nic::NicRemoteBackendContext;
 use crate::rdma_components::get_registered_cuda_segments;
-use crate::rdma_manager_actor::GetIbvActorRefClient;
 use crate::rdma_manager_actor::RdmaManagerActor;
 use crate::validate_execution_context;
 
@@ -87,7 +93,8 @@ pub(super) struct CreatePeerQueuePair<M: Referable> {
     /// One-shot reply carrying the peer's endpoint, or an error.
     pub(super) reply: OncePortRef<Result<IbvQpInfo, String>>,
 }
-wirevalue::register_type!(CreatePeerQueuePair<IbvManagerActor>);
+wirevalue::register_type!(CreatePeerQueuePair<IbvManagerActor<MlxDevice>>);
+wirevalue::register_type!(CreatePeerQueuePair<IbvManagerActor<EfaDevice>>);
 
 /// Local-only message: submit a batch of RDMA ops for end-to-end
 /// execution. The manager iterates the batch, resolves each op's
@@ -99,8 +106,8 @@ wirevalue::register_type!(CreatePeerQueuePair<IbvManagerActor>);
 ///
 /// Per-op completion notifications stream back on `reply` as
 /// [`OpResult`] values.
-pub(super) struct SubmitOps {
-    pub(super) ops: Vec<IbvOp<IbvManagerActor>>,
+pub(super) struct SubmitOps<I: IbvDeviceImpl> {
+    pub(super) ops: Vec<IbvOp<IbvManagerActor<I>>>,
     pub(super) reply: PortHandle<OpResult>,
 }
 
@@ -109,8 +116,8 @@ pub(super) struct SubmitOps {
 /// `peer_device`), and return the connected QP. Lets doorbell tests
 /// and the `cuda_ping_pong` example poke a real QP without going
 /// through [`QueuePairActor`].
-pub struct RawQueuePair {
-    pub peer: ActorRef<IbvManagerActor>,
+pub struct RawQueuePair<I: IbvDeviceImpl> {
+    pub peer: ActorRef<IbvManagerActor<I>>,
     pub self_device: String,
     pub peer_device: String,
     pub reply: OncePortHandle<Result<IbvQueuePair, String>>,
@@ -190,25 +197,33 @@ pub(super) struct SegmentInfo {
     pub(super) rkey: u32,
 }
 
+/// Default key used for the per-device protection domain inside
+/// each [`IbvDevice<I>`] entry of [`IbvManagerActor::devices`].
+const DEFAULT_DOMAIN: &str = "default";
+
 /// Manages all ibverbs-specific RDMA resources and operations.
 ///
 /// This struct handles memory registration, queue pair management,
 /// and connection establishment using the ibverbs API.
+///
+/// Generic over `I: IbvDeviceImpl` so the same actor implementation
+/// drives every concrete backend (`IbvManagerActor<MlxDevice>`,
+/// `IbvManagerActor<EfaDevice>`, ...).
 #[derive(Debug)]
 #[hyperactor::export(
     handlers = [
         IbvManagerMessage,
-        CreatePeerQueuePair<IbvManagerActor>,
+        CreatePeerQueuePair<IbvManagerActor<I>>,
     ],
 )]
-pub struct IbvManagerActor {
+pub struct IbvManagerActor<I: IbvDeviceImpl> {
     owner: OnceLock<ActorHandle<RdmaManagerActor>>,
 
     /// Active-side [`QueuePairActor`] children, keyed from this
     /// manager's perspective. Lazily populated on the first
     /// [`SubmitOps`] that targets a new `(self_device, peer,
     /// other_device)` triple.
-    qp_handles: HashMap<QpKey, ActorHandle<QueuePairActor<IbvManagerActor, IbvQueuePair>>>,
+    qp_handles: HashMap<QpKey, ActorHandle<QueuePairActor<IbvManagerActor<I>, IbvQueuePair>>>,
 
     /// Passive-side mirror QPs, created in response to a peer's
     /// [`CreatePeerQueuePair`]. The peer's [`QueuePairActor`] owns
@@ -217,14 +232,13 @@ pub struct IbvManagerActor {
     /// each QP via [`IbvQueuePair`]'s own `Drop`.
     peer_created_qps: HashMap<QpKey, IbvQueuePair>,
 
-    /// Map of RDMA device names to their domains and loopback QPs.
-    /// Created lazily when memory is registered for a specific
-    /// device. `Arc<IbvDomain>` so every `IbvMemoryRegionView`
-    /// registered against the domain can hold a clone and keep the
-    /// PD alive until the last MR is dereg'd. The loopback QP is
+    /// Map of RDMA device names to their opened [`IbvDevice<I>`]
+    /// (which owns the per-device `Arc<IbvContext>` and the
+    /// `DEFAULT_DOMAIN` `Arc<IbvDomain>`) and an optional loopback
+    /// QP used by the CUDA segment scanner. The loopback QP is
     /// owned by this map and destroyed via [`IbvQueuePair`]'s `Drop`
     /// when the entry is removed.
-    device_domains: HashMap<String, (Arc<IbvDomain>, Option<Arc<IbvQueuePair>>)>,
+    devices: HashMap<String, (IbvDevice<I>, Option<IbvQueuePair>)>,
 
     config: IbvConfig,
 
@@ -246,10 +260,12 @@ pub struct IbvManagerActor {
     /// resources are released by the `Arc`s' `Drop`s once no other
     /// holder of those views remains.
     buffer_registrations: HashMap<usize, (IbvBuffer, IbvMemoryRegionView)>,
+
+    _marker: PhantomData<I>,
 }
 
 #[async_trait]
-impl Actor for IbvManagerActor {
+impl<I: IbvDeviceImpl> Actor for IbvManagerActor<I> {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
         let owner = if let Some(owner) = this.parent_handle() {
             owner
@@ -263,7 +279,7 @@ impl Actor for IbvManagerActor {
     }
 }
 
-impl Drop for IbvManagerActor {
+impl<I: IbvDeviceImpl> Drop for IbvManagerActor<I> {
     fn drop(&mut self) {
         // Drain active-side QP actors. Each child owns its
         // `IbvQueuePair`; `drain_and_stop` schedules the actor to
@@ -274,28 +290,13 @@ impl Drop for IbvManagerActor {
         }
 
         // The remaining fields (`peer_created_qps`,
-        // `buffer_registrations`, `segments_mr`, `device_domains`)
+        // `buffer_registrations`, `segments_mr`, `devices`)
         // free their FFI resources through their elements' `Drop`s
         // when this struct is dropped.
     }
 }
 
-impl IbvManagerActor {
-    /// Construct an [`ActorHandle`] for the [`IbvManagerActor`] co-located
-    /// with the caller by querying the local [`RdmaManagerActor`].
-    pub async fn local_handle(
-        client: &(impl hyperactor::context::Actor + Send + Sync),
-    ) -> Result<ActorHandle<Self>, anyhow::Error> {
-        let rdma_handle = RdmaManagerActor::local_handle(client);
-        let ibv_ref: ActorRef<IbvManagerActor> = rdma_handle
-            .get_ibv_actor_ref(client)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("local RdmaManagerActor has no ibverbs backend"))?;
-        ibv_ref
-            .downcast_handle(client)
-            .ok_or_else(|| anyhow::anyhow!("IbvManagerActor is not in the local process"))
-    }
-
+impl<I: IbvDeviceImpl> IbvManagerActor<I> {
     /// Create a new IbvManagerActor with the given configuration.
     pub async fn new(params: Option<IbvConfig>) -> Result<Self, anyhow::Error> {
         if !ibverbs_supported() {
@@ -304,9 +305,17 @@ impl IbvManagerActor {
             ));
         }
 
-        // Use provided config or default if none provided
-        let mut config = params.unwrap_or_default();
-        tracing::debug!("rdma is enabled, config device hint: {}", config.device);
+        // Use the caller's config; when none is given, start from the
+        // defaults and let the backend seed its own.
+        let mut config = match params {
+            Some(config) => config,
+            None => {
+                let mut config = IbvConfig::default();
+                I::apply_config_defaults(&mut config);
+                config
+            }
+        };
+        tracing::debug!("rdma is enabled, config target: {:?}", config.target);
 
         let mlx5dv_enabled = resolve_qp_type(config.qp_type) == rdmaxcel_sys::RDMA_QP_TYPE_MLX5DV;
 
@@ -330,37 +339,39 @@ impl IbvManagerActor {
             owner: OnceLock::new(),
             qp_handles: HashMap::new(),
             peer_created_qps: HashMap::new(),
-            device_domains: HashMap::new(),
+            devices: HashMap::new(),
             config,
             mlx5dv_enabled,
             segments_mr: None,
             mrv_id: 0,
             buffer_registrations: HashMap::new(),
+            _marker: PhantomData,
         };
 
         Ok(actor)
     }
 
-    /// Get or create a domain (and its loopback QP, if mlx5dv is
-    /// supported) for the specified RDMA device. The loopback QP is
-    /// kept in [`Self::device_domains`] solely so the CUDA segment
-    /// scanner can hand its raw pointer to `register_segments`.
+    /// Get or create the default domain (and a loopback QP, if
+    /// mlx5dv is supported) for the named RDMA device. The
+    /// loopback QP is kept in [`Self::devices`] solely so
+    /// the CUDA segment scanner can hand its raw pointer to
+    /// `register_segments`.
     fn get_or_create_device_domain(
         &mut self,
         device_name: &str,
-        rdma_device: &IbvDevice,
     ) -> Result<Arc<IbvDomain>, anyhow::Error> {
-        if let Some((domain, _)) = self.device_domains.get(device_name) {
-            return Ok(Arc::clone(domain));
+        if let Some((device, _)) = self.devices.get_mut(device_name) {
+            return device.get_or_create_domain(DEFAULT_DOMAIN);
         }
 
-        // Create new domain for this device
-        let domain = Arc::new(IbvDomain::new(rdma_device.clone()).map_err(|e| {
-            anyhow::anyhow!("could not create domain for device {}: {}", device_name, e)
-        })?);
+        let mut device =
+            IbvDevice::<I>::open(device_name, self.config.clone()).ok_or_else(|| {
+                anyhow::anyhow!("{} does not advertise {}", I::backend_name(), device_name,)
+            })?;
+        let domain = device.get_or_create_domain(DEFAULT_DOMAIN)?;
 
         // Print device info if MONARCH_DEBUG_RDMA=1 is set (before initial QP creation)
-        crate::print_device_info_if_debug_enabled(domain.context);
+        crate::print_device_info_if_debug_enabled(domain.context.as_ptr());
 
         // Create loopback QP for this domain if mlx5dv is supported (needed for segment registration)
         // For EFA, we don't need a loopback QP for segment scanning
@@ -386,13 +397,12 @@ impl IbvManagerActor {
                 )
             })?;
 
-            Some(Arc::new(qp))
+            Some(qp)
         } else {
             None
         };
 
-        self.device_domains
-            .insert(device_name.to_string(), (Arc::clone(&domain), qp));
+        self.devices.insert(device_name.to_string(), (device, qp));
         Ok(domain)
     }
 
@@ -408,15 +418,19 @@ impl IbvManagerActor {
         let mut pds = Vec::with_capacity(cuda_map.len());
         let mut qps = Vec::with_capacity(cuda_map.len());
         for maybe_device in cuda_map {
-            if let Some(device) = maybe_device {
-                if let Some((domain, qp)) = self.device_domains.get(device.name()) {
-                    pds.push(domain.pd);
+            if let Some(info) = maybe_device {
+                if let Some((device, qp)) = self.devices.get(info.name()) {
+                    let pd = device
+                        .domain(DEFAULT_DOMAIN)
+                        .map(|d| d.as_ptr())
+                        .unwrap_or(std::ptr::null_mut());
+                    pds.push(pd);
                     qps.push(
                         qp.as_ref()
                             // SAFETY: the returned pointer is read by
                             // the segment-scan FFI under a separate
                             // call on this same `&self`; the QP lives
-                            // in `device_domains` for the lifetime of
+                            // in `devices` for the lifetime of
                             // this `IbvManagerActor`, so its `Drop`
                             // cannot run while these pointers are in
                             // use.
@@ -485,15 +499,16 @@ impl IbvManagerActor {
                 }
             }
 
-            // Determine the RDMA device to use
-            let rdma_device = if let Some(device) = selected_rdma_device {
-                device
+            // Determine the RDMA device name to use: CUDA-co-located
+            // NIC if available, otherwise the config fallback.
+            let device_name = if let Some(info) = selected_rdma_device {
+                info.name().clone()
             } else {
-                // Fallback to default device from config
-                self.config.device.clone()
+                resolve_target::<I>(&self.config.target)
+                    .unwrap_or_else(|| IbvDeviceInfo::default::<I>())
+                    .name()
+                    .clone()
             };
-
-            let device_name = rdma_device.name().clone();
             tracing::debug!(
                 "Using RDMA device: {} for memory at 0x{:x}",
                 device_name,
@@ -501,7 +516,7 @@ impl IbvManagerActor {
             );
 
             // Get or create domain and loopback QP for this device
-            let domain = self.get_or_create_device_domain(&device_name, &rdma_device)?;
+            let domain = self.get_or_create_device_domain(&device_name)?;
 
             let access = if crate::efa::is_efa_device() {
                 crate::efa::mr_access_flags()
@@ -519,7 +534,7 @@ impl IbvManagerActor {
                 let mut segment_info = None;
                 if self.mlx5dv_enabled {
                     // Try to find in already registered segments
-                    segment_info = self.find_cuda_segment_for_address(addr, size, domain.pd);
+                    segment_info = self.find_cuda_segment_for_address(addr, size, domain.as_ptr());
 
                     // If not found, trigger a re-sync with the allocator and retry
                     if segment_info.is_none() {
@@ -544,7 +559,7 @@ impl IbvManagerActor {
                             self.segments_mr
                                 .get_or_insert_with(|| Arc::new(IbvMemoryRegion::Segments));
                             segment_info =
-                                self.find_cuda_segment_for_address(addr, size, domain.pd);
+                                self.find_cuda_segment_for_address(addr, size, domain.as_ptr());
                         }
                     }
                 }
@@ -586,8 +601,14 @@ impl IbvManagerActor {
                             fd
                         ));
                     }
-                    let mr =
-                        rdmaxcel_sys::ibv_reg_dmabuf_mr(domain.pd, 0, size, 0, fd, access.0 as i32);
+                    let mr = rdmaxcel_sys::ibv_reg_dmabuf_mr(
+                        domain.as_ptr(),
+                        0,
+                        size,
+                        0,
+                        fd,
+                        access.0 as i32,
+                    );
                     if mr.is_null() {
                         return Err(anyhow::anyhow!("Failed to register dmabuf MR"));
                     }
@@ -610,7 +631,7 @@ impl IbvManagerActor {
             } else {
                 // CPU memory path
                 let mr = rdmaxcel_sys::ibv_reg_mr(
-                    domain.pd,
+                    domain.as_ptr(),
                     addr as *mut std::ffi::c_void,
                     size,
                     access.0 as i32,
@@ -655,11 +676,7 @@ impl IbvManagerActor {
             anyhow::bail!("peer queue pair already exists for {qp_key:?}");
         }
         let self_device = &qp_key.self_device;
-        let rdma_device = super::primitives::get_all_devices()
-            .into_iter()
-            .find(|d| d.name() == self_device)
-            .ok_or_else(|| anyhow::anyhow!("RDMA device '{}' not found", self_device))?;
-        let domain = self.get_or_create_device_domain(self_device, &rdma_device)?;
+        let domain = self.get_or_create_device_domain(self_device)?;
         let mut qp = IbvQueuePair::new(domain, self.config.clone())
             .map_err(|e| anyhow::anyhow!("could not create peer IbvQueuePair: {}", e))?;
         let local_info = qp
@@ -685,11 +702,7 @@ impl IbvManagerActor {
             return Ok(h.clone());
         }
         let self_device = &qp_key.self_device;
-        let rdma_device = super::primitives::get_all_devices()
-            .into_iter()
-            .find(|d| d.name() == self_device)
-            .ok_or_else(|| anyhow::anyhow!("RDMA device '{}' not found", self_device))?;
-        let domain = self.get_or_create_device_domain(self_device, &rdma_device)?;
+        let domain = self.get_or_create_device_domain(self_device)?;
         let qp = IbvQueuePair::new(domain, self.config.clone())
             .map_err(|e| anyhow::anyhow!("could not create IbvQueuePair for {qp_key:?}: {}", e))?;
         let local_manager: ActorRef<Self> = cx.bind();
@@ -710,8 +723,7 @@ impl IbvManagerActor {
 }
 
 #[async_trait]
-#[hyperactor::handle(IbvManagerMessage)]
-impl IbvManagerMessageHandler for IbvManagerActor {
+impl<I: IbvDeviceImpl> IbvManagerMessageHandler for IbvManagerActor<I> {
     async fn release_buffer(
         &mut self,
         _cx: &Context<Self>,
@@ -725,9 +737,23 @@ impl IbvManagerMessageHandler for IbvManagerActor {
     }
 }
 
+// `#[hyperactor::handle(IbvManagerMessage)]` would generate a
+// non-generic `impl Handler<...> for IbvManagerActor<I>` that
+// can't see `I`; we write the generic delegation by hand.
 #[async_trait]
-impl Handler<SubmitOps> for IbvManagerActor {
-    async fn handle(&mut self, cx: &Context<Self>, msg: SubmitOps) -> Result<(), anyhow::Error> {
+impl<I: IbvDeviceImpl> Handler<IbvManagerMessage> for IbvManagerActor<I> {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: IbvManagerMessage,
+    ) -> Result<(), anyhow::Error> {
+        <Self as IbvManagerMessageHandler>::handle(self, cx, message).await
+    }
+}
+
+#[async_trait]
+impl<I: IbvDeviceImpl> Handler<SubmitOps<I>> for IbvManagerActor<I> {
+    async fn handle(&mut self, cx: &Context<Self>, msg: SubmitOps<I>) -> Result<(), anyhow::Error> {
         let SubmitOps { ops, reply } = msg;
 
         // Interleave MR resolution with QP dispatch: as soon as op `i`'s
@@ -779,7 +805,7 @@ impl Handler<SubmitOps> for IbvManagerActor {
     }
 }
 
-impl IbvManagerActor {
+impl<I: IbvDeviceImpl> IbvManagerActor<I> {
     /// Synchronous portion of [`RawQueuePair`] handling: create the
     /// local QP, post `CreatePeerQueuePair` to `peer`, and return the
     /// in-flight reply receiver. The follow-up work (awaiting the
@@ -789,15 +815,11 @@ impl IbvManagerActor {
     fn raw_queue_pair_setup(
         &mut self,
         cx: &Context<'_, Self>,
-        peer: &ActorRef<IbvManagerActor>,
+        peer: &ActorRef<IbvManagerActor<I>>,
         self_device: String,
         peer_device: String,
     ) -> Result<(IbvQueuePair, OncePortReceiver<Result<IbvQpInfo, String>>), anyhow::Error> {
-        let rdma_device = super::primitives::get_all_devices()
-            .into_iter()
-            .find(|d| d.name() == &self_device)
-            .ok_or_else(|| anyhow::anyhow!("RDMA device '{self_device}' not found"))?;
-        let domain = self.get_or_create_device_domain(&self_device, &rdma_device)?;
+        let domain = self.get_or_create_device_domain(&self_device)?;
         let mut qp = IbvQueuePair::new(domain, self.config.clone())
             .map_err(|e| anyhow::anyhow!("could not create IbvQueuePair: {e}"))?;
         let sender_info = qp
@@ -806,7 +828,7 @@ impl IbvManagerActor {
         let (reply, rx) = Mailbox::mailbox(cx).open_once_port::<Result<IbvQpInfo, String>>();
         peer.post(
             cx,
-            CreatePeerQueuePair::<IbvManagerActor> {
+            CreatePeerQueuePair::<IbvManagerActor<I>> {
                 sender: cx.bind(),
                 sender_device: self_device,
                 receiver_device: peer_device,
@@ -819,8 +841,12 @@ impl IbvManagerActor {
 }
 
 #[async_trait]
-impl Handler<RawQueuePair> for IbvManagerActor {
-    async fn handle(&mut self, cx: &Context<Self>, msg: RawQueuePair) -> Result<(), anyhow::Error> {
+impl<I: IbvDeviceImpl> Handler<RawQueuePair<I>> for IbvManagerActor<I> {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        msg: RawQueuePair<I>,
+    ) -> Result<(), anyhow::Error> {
         let RawQueuePair {
             peer,
             self_device,
@@ -868,11 +894,11 @@ impl Handler<RawQueuePair> for IbvManagerActor {
 }
 
 #[async_trait]
-impl Handler<CreatePeerQueuePair<IbvManagerActor>> for IbvManagerActor {
+impl<I: IbvDeviceImpl> Handler<CreatePeerQueuePair<IbvManagerActor<I>>> for IbvManagerActor<I> {
     async fn handle(
         &mut self,
         cx: &Context<Self>,
-        msg: CreatePeerQueuePair<IbvManagerActor>,
+        msg: CreatePeerQueuePair<IbvManagerActor<I>>,
     ) -> Result<(), anyhow::Error> {
         let CreatePeerQueuePair {
             sender,
@@ -895,8 +921,7 @@ impl Handler<CreatePeerQueuePair<IbvManagerActor>> for IbvManagerActor {
 }
 
 #[async_trait]
-#[hyperactor::handle(IbvManagerLocalMessage)]
-impl IbvManagerLocalMessageHandler for IbvManagerActor {
+impl<I: IbvDeviceImpl> IbvManagerLocalMessageHandler for IbvManagerActor<I> {
     async fn register_remote_buffer(
         &mut self,
         _cx: &Context<Self>,
@@ -928,22 +953,70 @@ impl IbvManagerLocalMessageHandler for IbvManagerActor {
     }
 }
 
-/// Wrapper around [`ActorHandle<IbvManagerActor>`] that moves the RDMA
+// `#[hyperactor::handle(IbvManagerLocalMessage)]` analogue, written
+// generically; see the `IbvManagerMessage` block above.
+#[async_trait]
+impl<I: IbvDeviceImpl> Handler<IbvManagerLocalMessage> for IbvManagerActor<I> {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: IbvManagerLocalMessage,
+    ) -> Result<(), anyhow::Error> {
+        <Self as IbvManagerLocalMessageHandler>::handle(self, cx, message).await
+    }
+}
+
+/// Wrapper around [`ActorHandle<IbvManagerActor<I>>`] that moves the RDMA
 /// data-plane (post send/recv, poll CQ) off the actor loop while keeping
 /// state-mutating operations (MR registration/deregistration, QP management)
 /// serialized through actor messages.
-#[derive(Debug, Clone)]
-pub struct IbvBackend(pub ActorHandle<IbvManagerActor>);
+#[derive(Debug)]
+pub struct IbvBackend<I: IbvDeviceImpl>(pub ActorHandle<IbvManagerActor<I>>);
 
-impl std::ops::Deref for IbvBackend {
-    type Target = ActorHandle<IbvManagerActor>;
+impl<I: IbvDeviceImpl> Clone for IbvBackend<I> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<I: IbvDeviceImpl> std::ops::Deref for IbvBackend<I> {
+    type Target = ActorHandle<IbvManagerActor<I>>;
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
+/// Extracts the `(manager ref, buffer)` for device impl `I` from a
+/// remote backend context, or `None` if the context targets a
+/// different backend.
+trait ResolveIbv<I: IbvDeviceImpl> {
+    fn resolve(&self) -> Option<(ActorRef<IbvManagerActor<I>>, IbvBuffer)>;
+}
+
+impl ResolveIbv<MlxDevice> for NicRemoteBackendContext {
+    fn resolve(&self) -> Option<(ActorRef<IbvManagerActor<MlxDevice>>, IbvBuffer)> {
+        match self {
+            NicRemoteBackendContext::Mlx(mgr, buf) => Some((mgr.clone(), buf.clone())),
+            _ => None,
+        }
+    }
+}
+
+impl ResolveIbv<EfaDevice> for NicRemoteBackendContext {
+    fn resolve(&self) -> Option<(ActorRef<IbvManagerActor<EfaDevice>>, IbvBuffer)> {
+        match self {
+            NicRemoteBackendContext::Efa(mgr, buf) => Some((mgr.clone(), buf.clone())),
+            _ => None,
+        }
+    }
+}
+
 #[async_trait]
-impl RdmaBackend for IbvBackend {
+impl<I> RdmaBackend for IbvBackend<I>
+where
+    I: IbvDeviceImpl,
+    NicRemoteBackendContext: ResolveIbv<I>,
+{
     type TransportInfo = ();
 
     /// Submit a batch of RDMA operations.
@@ -966,9 +1039,13 @@ impl RdmaBackend for IbvBackend {
     ) -> Result<(), anyhow::Error> {
         let mut ibv_ops = Vec::with_capacity(ops.len());
         for op in ops {
-            let (remote_manager, remote_buffer) = op.remote.resolve_ibv().ok_or_else(|| {
-                anyhow::anyhow!("ibverbs backend not found for buffer: {:?}", op.remote)
-            })?;
+            let (remote_manager, remote_buffer) = op
+                .remote
+                .resolve_nic()
+                .and_then(|ctx| <NicRemoteBackendContext as ResolveIbv<I>>::resolve(&ctx))
+                .ok_or_else(|| {
+                    anyhow::anyhow!("no compatible NIC backend for buffer: {:?}", op.remote)
+                })?;
             ibv_ops.push(IbvOp {
                 op_type: op.op_type,
                 local_memory: op.local.clone(),
@@ -1085,20 +1162,17 @@ mod tests {
     use serde::Serialize;
     use typeuri::Named;
 
-    use super::IbvBackend;
-    use super::IbvManagerActor;
-    use super::IbvManagerLocalMessageClient;
     use crate::IbvConfig;
     use crate::RdmaManagerActor;
     use crate::RdmaManagerMessageClient;
     use crate::RdmaOp;
     use crate::RdmaOpType;
     use crate::RdmaRemoteBuffer;
-    use crate::backend::RdmaBackend;
     use crate::backend::cuda_test_utils::CudaAllocation;
     use crate::backend::cuda_test_utils::CudaAllocator;
+    use crate::backend::ibverbs::device::list_all_devices;
+    use crate::backend::ibverbs::device_selection::IbvDeviceTarget;
     use crate::backend::ibverbs::primitives::IbvQpType;
-    use crate::backend::ibverbs::primitives::get_all_devices;
     use crate::local_memory::KeepaliveLocalMemory;
 
     // ====================================================================
@@ -1286,9 +1360,11 @@ mod tests {
                     remote: op.remote_buf,
                 });
             }
-            let ibv_handle = IbvManagerActor::local_handle(cx).await?;
-            let mut backend = IbvBackend(ibv_handle);
-            let result = backend
+            let nic = RdmaManagerActor::local_handle(cx)
+                .get_nic_backend_handle(cx)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("no NIC backend on this proc"))?;
+            let result = nic
                 .submit(cx, rdma_ops, Duration::from_secs(timeout_secs))
                 .await;
             Ok(result.map_err(|e| format!("{e}")))
@@ -1564,7 +1640,7 @@ mod tests {
     // ====================================================================
 
     fn require_rdma() {
-        if get_all_devices().is_empty() {
+        if list_all_devices().is_empty() {
             panic!("SKIPPED: no RDMA devices available");
         }
     }
@@ -1586,18 +1662,19 @@ mod tests {
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_register_remote_buffer_fills_mr_slot() -> Result<(), anyhow::Error> {
         require_rdma();
-        let env = TestEnv::same_config(IbvConfig::targeting("cpu:0")).await?;
-        let ibv_handle = IbvManagerActor::local_handle(&env.client).await?;
+        let env = TestEnv::same_config(IbvConfig::targeting(IbvDeviceTarget::cpu(0))).await?;
+        let nic = RdmaManagerActor::local_handle(&env.client)
+            .get_nic_backend_handle(&env.client)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("no NIC backend on this proc"))?;
         let buf: Box<[u8]> = vec![0u8; 1024].into_boxed_slice();
         let local = KeepaliveLocalMemory::new(Arc::new(buf));
         assert!(
             local.mr_slot().get().is_none(),
             "MR slot should be empty before registration",
         );
-        ibv_handle
-            .register_remote_buffer(&env.client, 0, local.clone())
-            .await?
-            .map_err(|e| anyhow::anyhow!(e))?;
+        nic.register_remote_buffer(&env.client, 0, local.clone())
+            .await?;
         assert!(
             local.mr_slot().get().is_some(),
             "register_remote_buffer should populate the MR slot",
@@ -1612,7 +1689,7 @@ mod tests {
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_cross_actor_same_device_write() -> Result<(), anyhow::Error> {
         require_rdma();
-        let env = TestEnv::same_config(IbvConfig::targeting("cpu:0")).await?;
+        let env = TestEnv::same_config(IbvConfig::targeting(IbvDeviceTarget::cpu(0))).await?;
         run_cross_actor_write(&env, BufferDevice::Cpu, BufferDevice::Cpu, 32, 0xa5, 5).await?;
         env.shutdown().await
     }
@@ -1621,7 +1698,7 @@ mod tests {
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_cross_actor_same_device_read() -> Result<(), anyhow::Error> {
         require_rdma();
-        let env = TestEnv::same_config(IbvConfig::targeting("cpu:0")).await?;
+        let env = TestEnv::same_config(IbvConfig::targeting(IbvDeviceTarget::cpu(0))).await?;
         run_cross_actor_read(&env, BufferDevice::Cpu, BufferDevice::Cpu, 32, 0x3c, 5).await?;
         env.shutdown().await
     }
@@ -1633,7 +1710,7 @@ mod tests {
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_loopback_write() -> Result<(), anyhow::Error> {
         require_rdma();
-        let env = TestEnv::same_config(IbvConfig::targeting("cpu:0")).await?;
+        let env = TestEnv::same_config(IbvConfig::targeting(IbvDeviceTarget::cpu(0))).await?;
         run_true_loopback(&env, BufferDevice::Cpu, 32).await?;
         env.shutdown().await
     }
@@ -1642,8 +1719,11 @@ mod tests {
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_cross_device_write() -> Result<(), anyhow::Error> {
         require_rdma();
-        let env =
-            TestEnv::new(IbvConfig::targeting("cpu:0"), IbvConfig::targeting("cpu:1")).await?;
+        let env = TestEnv::new(
+            IbvConfig::targeting(IbvDeviceTarget::cpu(0)),
+            IbvConfig::targeting(IbvDeviceTarget::cpu(1)),
+        )
+        .await?;
         run_cross_actor_write(&env, BufferDevice::Cpu, BufferDevice::Cpu, 32, 0x77, 5).await?;
         env.shutdown().await
     }
@@ -1652,8 +1732,11 @@ mod tests {
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_cross_device_read() -> Result<(), anyhow::Error> {
         require_rdma();
-        let env =
-            TestEnv::new(IbvConfig::targeting("cpu:0"), IbvConfig::targeting("cpu:1")).await?;
+        let env = TestEnv::new(
+            IbvConfig::targeting(IbvDeviceTarget::cpu(0)),
+            IbvConfig::targeting(IbvDeviceTarget::cpu(1)),
+        )
+        .await?;
         run_cross_actor_read(&env, BufferDevice::Cpu, BufferDevice::Cpu, 32, 0x88, 5).await?;
         env.shutdown().await
     }
@@ -1664,7 +1747,7 @@ mod tests {
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_multi_op_same_qp_cpu() -> Result<(), anyhow::Error> {
         require_rdma();
-        let env = TestEnv::same_config(IbvConfig::targeting("cpu:0")).await?;
+        let env = TestEnv::same_config(IbvConfig::targeting(IbvDeviceTarget::cpu(0))).await?;
         run_multi_op_same_qp(&env, BufferDevice::Cpu, BufferDevice::Cpu, 64, 5).await?;
         env.shutdown().await
     }
@@ -1678,8 +1761,8 @@ mod tests {
         require_cuda();
         const SIZE: usize = 2 * 1024 * 1024;
         let env = TestEnv::new(
-            IbvConfig::targeting("cuda:0"),
-            IbvConfig::targeting("cuda:1"),
+            IbvConfig::targeting(IbvDeviceTarget::gpu(0)),
+            IbvConfig::targeting(IbvDeviceTarget::gpu(1)),
         )
         .await?;
         run_multi_op_same_qp(&env, BufferDevice::Cuda(0), BufferDevice::Cuda(1), SIZE, 10).await?;
@@ -1693,8 +1776,8 @@ mod tests {
         require_cuda();
         const SIZE: usize = 2 * 1024 * 1024;
         let env = TestEnv::new(
-            IbvConfig::targeting("cuda:0"),
-            IbvConfig::targeting("cpu:1"),
+            IbvConfig::targeting(IbvDeviceTarget::gpu(0)),
+            IbvConfig::targeting(IbvDeviceTarget::cpu(1)),
         )
         .await?;
         run_cross_actor_write(
@@ -1716,8 +1799,8 @@ mod tests {
         require_cuda();
         const SIZE: usize = 2 * 1024 * 1024;
         let env = TestEnv::new(
-            IbvConfig::targeting("cpu:0"),
-            IbvConfig::targeting("cuda:1"),
+            IbvConfig::targeting(IbvDeviceTarget::cpu(0)),
+            IbvConfig::targeting(IbvDeviceTarget::gpu(1)),
         )
         .await?;
         run_cross_actor_read(
@@ -1739,8 +1822,8 @@ mod tests {
         require_cuda();
         const SIZE: usize = 2 * 1024 * 1024;
         let env = TestEnv::new(
-            IbvConfig::targeting("cpu:0"),
-            IbvConfig::targeting("cuda:1"),
+            IbvConfig::targeting(IbvDeviceTarget::cpu(0)),
+            IbvConfig::targeting(IbvDeviceTarget::gpu(1)),
         )
         .await?;
         run_cross_actor_write(
@@ -1762,8 +1845,8 @@ mod tests {
         require_cuda();
         const SIZE: usize = 2 * 1024 * 1024;
         let env = TestEnv::new(
-            IbvConfig::targeting("cuda:0"),
-            IbvConfig::targeting("cpu:1"),
+            IbvConfig::targeting(IbvDeviceTarget::gpu(0)),
+            IbvConfig::targeting(IbvDeviceTarget::cpu(1)),
         )
         .await?;
         run_cross_actor_read(
@@ -1785,8 +1868,8 @@ mod tests {
         require_cuda();
         const SIZE: usize = 2 * 1024 * 1024;
         let env = TestEnv::new(
-            IbvConfig::targeting("cuda:0"),
-            IbvConfig::targeting("cuda:1"),
+            IbvConfig::targeting(IbvDeviceTarget::gpu(0)),
+            IbvConfig::targeting(IbvDeviceTarget::gpu(1)),
         )
         .await?;
         run_cross_actor_write(
@@ -1808,8 +1891,8 @@ mod tests {
         require_cuda();
         const SIZE: usize = 2 * 1024 * 1024;
         let env = TestEnv::new(
-            IbvConfig::targeting("cuda:0"),
-            IbvConfig::targeting("cuda:1"),
+            IbvConfig::targeting(IbvDeviceTarget::gpu(0)),
+            IbvConfig::targeting(IbvDeviceTarget::gpu(1)),
         )
         .await?;
         run_cross_actor_read(
@@ -1834,9 +1917,9 @@ mod tests {
         require_rdma();
         require_cuda();
         const SIZE: usize = 16 * 1024 * 1024;
-        let mut config_a = IbvConfig::targeting("cuda:0");
+        let mut config_a = IbvConfig::targeting(IbvDeviceTarget::gpu(0));
         config_a.qp_type = IbvQpType::Standard;
-        let mut config_b = IbvConfig::targeting("cuda:1");
+        let mut config_b = IbvConfig::targeting(IbvDeviceTarget::gpu(1));
         config_b.qp_type = IbvQpType::Standard;
         let env = TestEnv::new(config_a, config_b).await?;
         run_cross_actor_write(
@@ -1858,7 +1941,7 @@ mod tests {
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_multi_batch_same_qp() -> Result<(), anyhow::Error> {
         require_rdma();
-        let env = TestEnv::same_config(IbvConfig::targeting("cpu:0")).await?;
+        let env = TestEnv::same_config(IbvConfig::targeting(IbvDeviceTarget::cpu(0))).await?;
         let src1 = env
             .helper_a
             .allocate(&env.client, 32, BufferDevice::Cpu, 0xa1)
@@ -2018,7 +2101,7 @@ mod tests {
     async fn test_submit_timeout() -> Result<(), anyhow::Error> {
         require_rdma();
         const SIZE: usize = 1024 * 1024;
-        let env = TestEnv::same_config(IbvConfig::targeting("cpu:0")).await?;
+        let env = TestEnv::same_config(IbvConfig::targeting(IbvDeviceTarget::cpu(0))).await?;
         let src = env
             .helper_a
             .allocate(&env.client, SIZE, BufferDevice::Cpu, 0x77)
@@ -2058,11 +2141,12 @@ mod tests {
     /// transferred).
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_partial_failure_batch() -> Result<(), anyhow::Error> {
+        use super::NicRemoteBackendContext;
         use crate::backend::RdmaRemoteBackendContext;
 
         require_rdma();
         const SIZE: usize = 32;
-        let env = TestEnv::same_config(IbvConfig::targeting("cpu:0")).await?;
+        let env = TestEnv::same_config(IbvConfig::targeting(IbvDeviceTarget::cpu(0))).await?;
 
         const GOOD_PAT: u8 = 0xc3;
         const POST_FLUSH_PAT: u8 = 0xde;
@@ -2086,7 +2170,10 @@ mod tests {
             .await?;
         let mut bogus_remote = real_remote.clone();
         for backend in bogus_remote.backends.iter_mut() {
-            if let RdmaRemoteBackendContext::Ibverbs(_, buf) = backend {
+            if let RdmaRemoteBackendContext::Nic(
+                NicRemoteBackendContext::Mlx(_, buf) | NicRemoteBackendContext::Efa(_, buf),
+            ) = backend
+            {
                 buf.rkey = 0xdead_beef;
                 buf.addr = 0xdead_0000;
             }
@@ -2143,7 +2230,7 @@ mod tests {
             .find(|line| line.starts_with("op 1:"))
             .unwrap_or_else(|| panic!("expected op 1 line in error: {err}"));
         assert!(
-            op1.contains("Completion status not successful") && op1.contains(&rem_access),
+            op1.contains("completion failed") && op1.contains(&rem_access),
             "expected op 1 to fail with REM_ACCESS_ERR: {op1}",
         );
         let op2 = err
@@ -2151,7 +2238,7 @@ mod tests {
             .find(|line| line.starts_with("op 2:"))
             .unwrap_or_else(|| panic!("expected op 2 line in error: {err}"));
         assert!(
-            op2.contains("Completion status not successful") && op2.contains(&wr_flush),
+            op2.contains("completion failed") && op2.contains(&wr_flush),
             "expected op 2 to be flushed with WR_FLUSH_ERR: {op2}",
         );
 
