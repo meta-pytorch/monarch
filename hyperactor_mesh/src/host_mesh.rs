@@ -189,36 +189,6 @@ impl HostRef {
     fn service_proc(&self) -> ProcAddr {
         ResourceId::proc_addr_from_name(self.0.clone(), SERVICE_PROC_NAME)
     }
-
-    /// Request an orderly teardown of this host and all procs it spawned:
-    /// send `ShutdownHost` to the host's agent and wait for its single direct
-    /// rank ack. Used by the best-effort Drop-cleanup path; the mesh-wide path
-    /// is `HostMeshRef::cast_shutdown`.
-    pub(crate) async fn shutdown(
-        &self,
-        cx: &impl hyperactor::context::Actor,
-    ) -> anyhow::Result<()> {
-        let agent = self.mesh_agent();
-        let terminate_timeout =
-            hyperactor_config::global::get(crate::bootstrap::MESH_TERMINATE_TIMEOUT);
-        let max_in_flight =
-            hyperactor_config::global::get(crate::bootstrap::MESH_TERMINATE_CONCURRENCY);
-        let (ack, mut rx) = cx.mailbox().open_port::<usize>();
-
-        agent
-            .shutdown_host(
-                cx,
-                terminate_timeout,
-                max_in_flight.clamp(1, 256),
-                resource::Rank::new(0),
-                ack.bind(),
-            )
-            .await?;
-
-        rx.recv().await.map_err(anyhow::Error::from)?;
-
-        Ok(())
-    }
 }
 
 impl<'de> Deserialize<'de> for HostRef {
@@ -338,9 +308,8 @@ impl std::error::Error for ConfigPushError {
 pub struct HostMesh {
     id: HostMeshId,
     extent: Extent,
-    /// The hosts this `HostMesh` owns and is responsible for tearing
-    /// down on shutdown or drop.
-    owned_hosts: Vec<HostRef>,
+    /// Whether this `HostMesh` should best-effort shut down hosts on Drop.
+    cleanup_on_drop: bool,
     current_ref: HostMeshRef,
 }
 
@@ -581,17 +550,13 @@ impl HostMesh {
     /// responsibility for those hosts (i.e., will shut them down on
     /// Drop).
     pub fn take(mesh: HostMeshRef) -> Self {
-        let region = mesh.region().clone();
-        let hosts: Vec<HostRef> = mesh.values().collect();
-
-        let current_ref = HostMeshRef::new(mesh.id.clone(), region.clone(), hosts.clone())
-            .expect("region/hosts cardinality must match");
-
+        let id = mesh.id.clone();
+        let extent = mesh.region.extent().clone();
         let result = Self {
-            id: mesh.id,
-            extent: region.extent().clone(),
-            owned_hosts: hosts,
-            current_ref,
+            id,
+            extent,
+            cleanup_on_drop: true,
+            current_ref: mesh,
         };
         result.notify_created();
         result
@@ -709,7 +674,7 @@ impl HostMesh {
 
         // Defuse the Drop impl so it doesn't send ShutdownHost to hosts
         // we intentionally kept alive.
-        self.owned_hosts.clear();
+        self.cleanup_on_drop = false;
 
         Ok(())
     }
@@ -768,9 +733,10 @@ impl Drop for HostMeshShutdownGuard {
     /// When a `HostMesh` is dropped, it attempts to shut down all
     /// hosts it owns:
     /// - If a Tokio runtime is available, we spawn an ephemeral
-    ///   `Proc` + `Instance` and send `ShutdownHost` messages to each
-    ///   host. This ensures that the embedded `BootstrapProcManager`s
-    ///   are dropped, and all child procs they spawned are killed.
+    ///   `Proc` + `Instance` and best-effort cast `ShutdownHost`
+    ///   through the owned hosts. This ensures that the embedded
+    ///   `BootstrapProcManager`s are dropped, and all child procs they
+    ///   spawned are killed when the cast succeeds.
     /// - If no runtime is available, we cannot perform async cleanup
     ///   here; in that case we log a warning and rely on kernel-level
     ///   PDEATHSIG or the individual `BootstrapProcManager`'s `Drop`
@@ -786,16 +752,27 @@ impl Drop for HostMeshShutdownGuard {
             host_mesh = %self.0.id,
             status = "Dropping",
         );
-        // Snapshot the owned hosts we're responsible for.
-        let hosts: Vec<HostRef> = self.0.owned_hosts.clone();
+        let cleanup_on_drop = self.0.cleanup_on_drop;
+        let host_count = self.0.current_ref.hosts().len();
 
         // Best-effort only when a Tokio runtime is available.
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        if !cleanup_on_drop {
+            tracing::debug!(
+                host_mesh = %self.0.id,
+                "HostMesh drop cleanup skipped because host cleanup ownership was released"
+            );
+        } else if host_count == 0 {
+            tracing::debug!(
+                host_mesh = %self.0.id,
+                "HostMesh drop cleanup skipped because no owned hosts remain"
+            );
+        } else if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let mesh_id = self.0.id.clone();
+            let current_ref = self.0.current_ref.clone();
             let span = tracing::info_span!(
                 "hostmesh_drop_cleanup",
                 host_mesh = %mesh_id,
-                hosts = hosts.len(),
+                hosts = host_count,
             );
 
             handle.spawn(
@@ -815,26 +792,17 @@ impl Drop for HostMeshShutdownGuard {
                         }
                         Ok(proc) => {
                             let client = proc.client("drop");
-                            let mut attempted = 0usize;
-                            let mut ok = 0usize;
-                            let mut err = 0usize;
-
-                            for host in hosts {
-                                attempted += 1;
-                                tracing::debug!(host = %host, "drop-cleanup: shutdown start");
-                                match host.shutdown(&client).await {
-                                    Ok(()) => {
-                                        ok += 1;
-                                        tracing::debug!(host = %host, "drop-cleanup: shutdown ok");
-                                    }
-                                    Err(e) => {
-                                        err += 1;
-                                        tracing::warn!(host = %host, error = %e, "drop-cleanup: shutdown failed");
-                                    }
-                                }
+                            if let Err(e) = current_ref.cast_shutdown(&client).await {
+                                tracing::warn!(
+                                    error = %e,
+                                    "drop-cleanup: failed to cast ShutdownHost"
+                                );
+                            } else {
+                                tracing::info!(
+                                    hosts = host_count,
+                                    "hostmesh drop-cleanup shutdown barrier complete"
+                                );
                             }
-
-                            tracing::info!(attempted, ok, err, "hostmesh drop-cleanup summary");
                         }
                     }
                 }
@@ -845,7 +813,7 @@ impl Drop for HostMeshShutdownGuard {
             // last-resort safety net.
             tracing::warn!(
                 host_mesh = %self.0.id,
-                hosts = hosts.len(),
+                hosts = host_count,
                 "HostMesh dropped without a Tokio runtime; skipping \
                  best-effort shutdown. This indicates that .shutdown() \
                  on this mesh has not been called before program exit \
