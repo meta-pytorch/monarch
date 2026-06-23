@@ -65,9 +65,11 @@ use super::queue_pair::QueuePairActor;
 use crate::RdmaOp;
 use crate::RdmaTransportLevel;
 use crate::backend::RdmaBackend;
+use crate::backend::RdmaConfig;
+use crate::backend::ResolveRemoteBackendContext;
 use crate::local_memory::KeepaliveLocalMemory;
 use crate::local_memory::is_device_ptr;
-use crate::nic::NicRemoteBackendContext;
+use crate::rdma_components::RdmaRemoteBuffer;
 use crate::rdma_manager_actor::RdmaManagerActor;
 use crate::validate_execution_context;
 
@@ -674,71 +676,128 @@ impl<I: IbvDeviceImpl> std::ops::Deref for IbvBackend<I> {
     }
 }
 
-/// Extracts the `(manager ref, buffer)` for device impl `I` from a
-/// remote backend context, or `None` if the context targets a
-/// different backend.
-trait ResolveIbv<I: IbvDeviceImpl> {
-    fn resolve(&self) -> Option<(ActorRef<IbvManagerActor<I>>, IbvBuffer)>;
+/// Serializable per-buffer context for an ibverbs backend: the manager
+/// to route ops through and the wire description of the registered MR.
+#[derive(Serialize, Deserialize, Named)]
+#[serde(bound = "")]
+pub struct IbvRemoteBackendContext<I: IbvDeviceImpl> {
+    pub manager: ActorRef<IbvManagerActor<I>>,
+    pub buffer: IbvBuffer,
 }
 
-impl ResolveIbv<MlxDevice> for NicRemoteBackendContext {
-    fn resolve(&self) -> Option<(ActorRef<IbvManagerActor<MlxDevice>>, IbvBuffer)> {
-        match self {
-            NicRemoteBackendContext::Mlx(mgr, buf) => Some((mgr.clone(), buf.clone())),
-            _ => None,
+// `Clone` and `Debug` are hand-rolled to avoid the spurious `I: Clone`
+// and `I: Debug` bounds the derives would impose; neither field depends
+// on `I` implementing them.
+impl<I: IbvDeviceImpl> Clone for IbvRemoteBackendContext<I> {
+    fn clone(&self) -> Self {
+        Self {
+            manager: self.manager.clone(),
+            buffer: self.buffer.clone(),
         }
     }
 }
 
-impl ResolveIbv<EfaDevice> for NicRemoteBackendContext {
-    fn resolve(&self) -> Option<(ActorRef<IbvManagerActor<EfaDevice>>, IbvBuffer)> {
-        match self {
-            NicRemoteBackendContext::Efa(mgr, buf) => Some((mgr.clone(), buf.clone())),
-            _ => None,
-        }
+impl<I: IbvDeviceImpl> std::fmt::Debug for IbvRemoteBackendContext<I> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IbvRemoteBackendContext")
+            .field("manager", &self.manager)
+            .field("buffer", &self.buffer)
+            .finish()
     }
 }
 
 #[async_trait]
-impl<I> RdmaBackend for IbvBackend<I>
+impl<I: IbvDeviceImpl> RdmaBackend for IbvBackend<I>
 where
-    I: IbvDeviceImpl,
-    NicRemoteBackendContext: ResolveIbv<I>,
+    RdmaRemoteBuffer: ResolveRemoteBackendContext<IbvBackend<I>>,
 {
+    type RemoteBackendContext = IbvRemoteBackendContext<I>;
     type TransportInfo = ();
+
+    fn available() -> bool {
+        if IbvDevice::<I>::available() {
+            if hyperactor_config::global::get(crate::config::RDMA_DISABLE_IBVERBS) {
+                tracing::warn!(
+                    "ibverbs ({}) is available, but it was disabled by configuration (RDMA_DISABLE_IBVERBS=true)",
+                    I::backend_name()
+                );
+                return false;
+            }
+            return true;
+        }
+        false
+    }
+
+    fn transport_level(&self) -> RdmaTransportLevel {
+        RdmaTransportLevel::Nic
+    }
+
+    fn transport_info(&self) -> Option<Self::TransportInfo> {
+        None
+    }
+
+    async fn spawn(
+        cx: &(impl hyperactor::context::Actor + Send + Sync),
+        config: &RdmaConfig,
+    ) -> Result<Self> {
+        let actor = IbvManagerActor::<I>::new(config.ibv.clone()).await?;
+        Ok(IbvBackend(cx.spawn(actor)))
+    }
+
+    async fn register_remote_buffer(
+        &self,
+        cx: &(impl hyperactor::context::Actor + Send + Sync),
+        remote_buf_id: usize,
+        local: KeepaliveLocalMemory,
+    ) -> Result<IbvRemoteBackendContext<I>> {
+        let buffer = self
+            .0
+            .register_remote_buffer(cx, remote_buf_id, local)
+            .await?
+            .map_err(|e| anyhow::anyhow!(e))?;
+        Ok(IbvRemoteBackendContext {
+            manager: self.0.bind(),
+            buffer,
+        })
+    }
+
+    async fn release_buffer(
+        &self,
+        cx: &(impl hyperactor::context::Actor + Send + Sync),
+        remote_buf_id: usize,
+    ) -> Result<()> {
+        self.0.release_buffer(cx, remote_buf_id).await
+    }
 
     /// Submit a batch of RDMA operations.
     ///
-    /// Translates each `RdmaOp` to an `IbvOp`, then ships the whole
-    /// batch to [`IbvManagerActor`] via [`SubmitOps`]. The manager
-    /// interleaves local-MR resolution with per-op dispatch: each
-    /// op is sent to its [`QueuePairActor`] as a one-item
-    /// [`ProcessOps`] the moment its MR is ready, so QP work on
-    /// op `i` overlaps MR registration for op `i+1`.
+    /// Translates each op to an `IbvOp`, then ships the whole batch to
+    /// [`IbvManagerActor`] via [`SubmitOps`]. The manager interleaves
+    /// local-MR resolution with per-op dispatch: each op is sent to its
+    /// [`QueuePairActor`] as a one-item [`ProcessOps`] the moment its MR
+    /// is ready, so QP work on op `i` overlaps MR registration for op
+    /// `i+1`.
     ///
     /// Always waits for exactly `ops.len()` per-op replies before
     /// returning. Per-op failures are collected and formatted into a single
     /// multi-line `Err` listing each `op_idx` and its error message.
     async fn submit(
-        &mut self,
+        &self,
         cx: &(impl hyperactor::context::Actor + Send + Sync),
         ops: Vec<RdmaOp>,
         timeout: Duration,
     ) -> Result<(), anyhow::Error> {
         let mut ibv_ops = Vec::with_capacity(ops.len());
         for op in ops {
-            let (remote_manager, remote_buffer) = op
-                .remote
-                .resolve_nic()
-                .and_then(|ctx| <NicRemoteBackendContext as ResolveIbv<I>>::resolve(&ctx))
-                .ok_or_else(|| {
-                    anyhow::anyhow!("no compatible NIC backend for buffer: {:?}", op.remote)
-                })?;
+            let ctx = <RdmaRemoteBuffer as ResolveRemoteBackendContext<IbvBackend<I>>>::resolve(
+                &op.remote,
+            )
+            .expect("op routed to incompatible backend");
             ibv_ops.push(IbvOp {
                 op_type: op.op_type,
                 local_memory: op.local.clone(),
-                remote_buffer,
-                remote_manager,
+                remote_buffer: ctx.buffer,
+                remote_manager: ctx.manager,
             });
         }
         let n = ibv_ops.len();
@@ -799,14 +858,6 @@ where
         }
         Err(anyhow::anyhow!(msg))
     }
-
-    fn transport_level(&self) -> RdmaTransportLevel {
-        RdmaTransportLevel::Nic
-    }
-
-    fn transport_info(&self) -> Option<Self::TransportInfo> {
-        None
-    }
 }
 
 #[cfg(test)]
@@ -856,6 +907,7 @@ mod tests {
     use crate::RdmaOp;
     use crate::RdmaOpType;
     use crate::RdmaRemoteBuffer;
+    use crate::backend::RdmaBackendHandle;
     use crate::backend::cuda_test_utils::CudaAllocation;
     use crate::backend::cuda_test_utils::CudaAllocator;
     use crate::backend::ibverbs::device::list_all_devices;
@@ -944,7 +996,7 @@ mod tests {
         /// sample buffers too large to ship over a single actor
         /// message in one piece.
         ReadContents {
-            remote: RdmaRemoteBuffer,
+            remote: Box<RdmaRemoteBuffer>,
             offset: usize,
             len: usize,
             #[reply]
@@ -1049,8 +1101,10 @@ mod tests {
                 });
             }
             let nic = RdmaManagerActor::local_handle(cx)
-                .get_nic_backend_handle(cx)
+                .get_backend_handles(cx)
                 .await?
+                .into_iter()
+                .find(|h| !matches!(h, RdmaBackendHandle::Tcp(_)))
                 .ok_or_else(|| anyhow::anyhow!("no NIC backend on this proc"))?;
             let result = nic
                 .submit(cx, rdma_ops, Duration::from_secs(timeout_secs))
@@ -1075,11 +1129,11 @@ mod tests {
         async fn read_contents(
             &mut self,
             cx: &Context<Self>,
-            remote: RdmaRemoteBuffer,
+            remote: Box<RdmaRemoteBuffer>,
             offset: usize,
             len: usize,
         ) -> Result<Vec<u8>, anyhow::Error> {
-            self.read_contents_impl(cx, remote, offset, len).await
+            self.read_contents_impl(cx, *remote, offset, len).await
         }
 
         async fn submit(
@@ -1180,7 +1234,7 @@ mod tests {
         size: usize,
         pattern: u8,
     ) -> Result<(), anyhow::Error> {
-        let got = helper.read_contents(cx, remote, 0, size).await?;
+        let got = helper.read_contents(cx, Box::new(remote), 0, size).await?;
         assert_eq!(got, vec![pattern; size]);
         Ok(())
     }
@@ -1351,21 +1405,18 @@ mod tests {
     async fn test_register_remote_buffer_fills_mr_slot() -> Result<(), anyhow::Error> {
         require_rdma();
         let env = TestEnv::same_config(IbvConfig::targeting(IbvDeviceTarget::cpu(0))).await?;
-        let nic = RdmaManagerActor::local_handle(&env.client)
-            .get_nic_backend_handle(&env.client)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("no NIC backend on this proc"))?;
         let buf: Box<[u8]> = vec![0u8; 1024].into_boxed_slice();
         let local = KeepaliveLocalMemory::new(Arc::new(buf));
         assert!(
             local.mr_slot().get().is_none(),
             "MR slot should be empty before registration",
         );
-        nic.register_remote_buffer(&env.client, 0, local.clone())
+        RdmaManagerActor::local_handle(&env.client)
+            .request_buffer(&env.client, local.clone())
             .await?;
         assert!(
             local.mr_slot().get().is_some(),
-            "register_remote_buffer should populate the MR slot",
+            "registration should populate the MR slot",
         );
         env.shutdown().await
     }
@@ -1829,9 +1880,6 @@ mod tests {
     /// transferred).
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_partial_failure_batch() -> Result<(), anyhow::Error> {
-        use super::NicRemoteBackendContext;
-        use crate::backend::RdmaRemoteBackendContext;
-
         require_rdma();
         const SIZE: usize = 32;
         let env = TestEnv::same_config(IbvConfig::targeting(IbvDeviceTarget::cpu(0))).await?;
@@ -1857,14 +1905,21 @@ mod tests {
             .allocate(&env.client, SIZE, BufferDevice::Cpu, 0)
             .await?;
         let mut bogus_remote = real_remote.clone();
-        for backend in bogus_remote.backends.iter_mut() {
-            if let RdmaRemoteBackendContext::Nic(
-                NicRemoteBackendContext::Mlx(_, buf) | NicRemoteBackendContext::Efa(_, buf),
-            ) = backend
-            {
-                buf.rkey = 0xdead_beef;
-                buf.addr = 0xdead_0000;
-            }
+        let bufs = [
+            bogus_remote
+                .backends
+                .mlx
+                .as_mut()
+                .map(|ctx| &mut ctx.buffer),
+            bogus_remote
+                .backends
+                .efa
+                .as_mut()
+                .map(|ctx| &mut ctx.buffer),
+        ];
+        for buf in bufs.into_iter().flatten() {
+            buf.rkey = 0xdead_beef;
+            buf.addr = 0xdead_0000;
         }
 
         let post_flush_src = env

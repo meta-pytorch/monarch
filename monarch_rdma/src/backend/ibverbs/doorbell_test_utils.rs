@@ -709,16 +709,10 @@ impl DoorbellTestEnv {
             cuda_actor_2 = Some(cuda_actor_ref_2);
         }
 
-        let (ibv_actor_1, ibv_buffer_1) = rdma_handle_1
-            .resolve_nic()
-            .expect("buffer 1 has a NIC backend")
-            .into_mlx()
-            .expect("buffer 1 is Mellanox");
-        let (ibv_actor_2, ibv_buffer_2) = rdma_handle_2
-            .resolve_nic()
-            .expect("buffer 2 has a NIC backend")
-            .into_mlx()
-            .expect("buffer 2 is Mellanox");
+        let ctx_1 = rdma_handle_1.resolve_mlx().expect("buffer 1 is Mellanox");
+        let (ibv_actor_1, ibv_buffer_1) = (ctx_1.manager, ctx_1.buffer);
+        let ctx_2 = rdma_handle_2.resolve_mlx().expect("buffer 2 is Mellanox");
+        let (ibv_actor_2, ibv_buffer_2) = (ctx_2.manager, ctx_2.buffer);
         let ibv_handle_1: ActorHandle<IbvManagerActor<MlxDevice>> = ibv_actor_1
             .downcast_handle(&instance_1)
             .ok_or_else(|| anyhow::anyhow!("ibv_actor_1 is not in proc_1"))?;

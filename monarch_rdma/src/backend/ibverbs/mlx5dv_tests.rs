@@ -129,12 +129,8 @@ async fn test_indirect_mkey_read_at_large_offset() -> Result<(), anyhow::Error> 
 
 /// Extract the ibverbs `(lkey, rkey)` from a remote buffer.
 fn ibv_keys_of(remote: &crate::RdmaRemoteBuffer) -> Result<(u32, u32), anyhow::Error> {
-    let (_mgr, buf) = remote
-        .resolve_nic()
-        .expect("remote buffer has a NIC backend")
-        .into_mlx()
-        .expect("remote buffer is Mellanox");
-    Ok((buf.lkey, buf.rkey))
+    let ctx = remote.resolve_mlx().expect("remote buffer is Mellanox");
+    Ok((ctx.buffer.lkey, ctx.buffer.rkey))
 }
 
 /// Integration test for the indirect-mkey segment-growth path.
