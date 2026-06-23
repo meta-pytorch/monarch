@@ -84,10 +84,12 @@ rdmaxcel_qp_t* rdmaxcel_qp_create(
       (completion_cache_t*)calloc(1, sizeof(completion_cache_t));
 
   if (!qp->send_completion_cache || !qp->recv_completion_cache) {
-    if (qp->send_completion_cache)
+    if (qp->send_completion_cache) {
       free(qp->send_completion_cache);
-    if (qp->recv_completion_cache)
+    }
+    if (qp->recv_completion_cache) {
       free(qp->recv_completion_cache);
+    }
     ibv_destroy_qp(qp->ibv_qp);
     free(qp);
     fprintf(stderr, "ERROR: Failed to allocate completion caches\n");

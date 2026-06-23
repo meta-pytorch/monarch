@@ -10,21 +10,21 @@
 //!
 //! A remote supervision relationship is represented by one worker actor
 //! supervising one child actor on behalf of one supervisor. The supervisor
-//! initiates the relationship by sending [`Link`] to the worker. The
-//! `supervisor` port in [`Link`] identifies the session endpoint that the
-//! worker uses for all replies and supervision events. The `link` spec in
-//! [`Link`] identifies the implementation actor that the worker spawns as the
-//! session liveness mechanism. Later supervisor commands are sent to the worker
-//! as [`SupervisedWorker`] messages and carry the same `session_id`; the worker
-//! accepts only the active session.
+//! initiates the relationship by sending [`Supervise`] to the worker. The
+//! `supervisor` port in [`Supervise`] identifies the session endpoint that the
+//! worker uses for all replies and supervision events. The `liveness` spec in
+//! [`Supervise`] identifies the implementation actor that the worker spawns as
+//! the session liveness mechanism. Later supervisor commands are sent to the
+//! worker as [`WorkerCommand`] messages and carry the same `session_id`; the
+//! worker accepts only the active session.
 
 use hyperactor::ActorAddr;
-use hyperactor::Bind;
+use hyperactor::Data;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::PortRef;
 use hyperactor::RefClient;
-use hyperactor::Unbind;
+use hyperactor::RemoteSpawn;
 use hyperactor::actor::StopMode;
 use hyperactor::id::Uid;
 use hyperactor::supervision::ActorSupervisionEvent;
@@ -34,7 +34,72 @@ use typeuri::Named;
 
 use crate::link::LinkSpec;
 
-/// Initial request sent by a supervisor proxy to a worker actor.
+/// Global actor spawn (gspawn) specification.
+#[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Eq)]
+pub struct Gspawn {
+    actor_type: String,
+    uid: Uid,
+    params: Data,
+}
+wirevalue::register_type!(Gspawn);
+
+impl Gspawn {
+    /// Create a spawn specification for the registered actor type with a fresh uid.
+    pub fn for_actor<A>(params: A::Params) -> anyhow::Result<Self>
+    where
+        A: RemoteSpawn + Named,
+    {
+        Self::for_actor_uid::<A>(Uid::anonymous(), params)
+    }
+
+    /// Create a spawn specification for the registered actor type with an explicit uid.
+    pub fn for_actor_uid<A>(uid: Uid, params: A::Params) -> anyhow::Result<Self>
+    where
+        A: RemoteSpawn + Named,
+    {
+        Ok(Self::with_uid(
+            A::typename(),
+            uid,
+            bincode::serde::encode_to_vec(params, bincode::config::legacy())?,
+        ))
+    }
+
+    pub(crate) fn with_uid(actor_type: impl Into<String>, uid: Uid, params: Data) -> Self {
+        Self {
+            actor_type: actor_type.into(),
+            uid,
+            params,
+        }
+    }
+
+    /// Registered name of the actor to spawn.
+    pub fn actor_type(&self) -> &str {
+        &self.actor_type
+    }
+
+    /// The uid that will identify the spawned actor.
+    pub fn uid(&self) -> &Uid {
+        &self.uid
+    }
+
+    /// The serialized parameters passed to the actor.
+    pub fn params(&self) -> &[u8] {
+        &self.params
+    }
+
+    /// Spawn the actor as a supervised child of `parent`.
+    pub async fn spawn_child<C: hyperactor::context::Actor>(
+        self,
+        parent: &C,
+    ) -> anyhow::Result<hyperactor::AnyActorHandle> {
+        parent
+            .instance()
+            .gspawn_uid(&self.actor_type, self.uid, self.params)
+            .await
+    }
+}
+
+/// Request sent to a remote spawner to spawn and supervise one registered actor.
 #[derive(
     Clone,
     Debug,
@@ -43,28 +108,19 @@ use crate::link::LinkSpec;
     Named,
     PartialEq,
     Eq,
-    Bind,
-    Unbind,
     Handler,
     HandleClient,
     RefClient
 )]
-pub struct Link {
-    /// Unique identifier for this supervision session.
-    pub session_id: Uid,
-    /// Supervisor session port used by the worker to report outcomes.
-    #[binding(include)]
-    pub supervisor: PortRef<WorkerSupervisor>,
-    /// The actor that owns the supervisor proxy.
-    pub parent: ActorAddr,
-    /// Link implementation actor to spawn on the worker side.
-    pub link: LinkSpec,
-    /// Session policy requested by the supervisor.
-    pub options: LinkOptions,
+pub struct SpawnActor {
+    /// Registered actor spawn specification.
+    pub gspawn: Gspawn,
+    /// Supervise request to send back.
+    pub supervise: Supervise,
 }
-wirevalue::register_type!(Link);
+wirevalue::register_type!(SpawnActor);
 
-/// Options that govern a remote supervision session.
+/// Request sent by a supervisor proxy to a worker actor.
 #[derive(
     Clone,
     Debug,
@@ -73,16 +129,33 @@ wirevalue::register_type!(Link);
     Named,
     PartialEq,
     Eq,
-    Bind,
-    Unbind
+    Handler,
+    HandleClient,
+    RefClient
 )]
-pub struct LinkOptions {
+pub struct Supervise {
+    /// Unique identifier for this supervision session.
+    pub session_id: Uid,
+    /// Supervisor session port used by the worker to report outcomes.
+    pub supervisor: PortRef<SupervisorEvent>,
+    /// The actor that owns the supervisor proxy.
+    pub parent: ActorAddr,
+    /// Liveness implementation actor to spawn on the worker side.
+    pub liveness: LinkSpec,
+    /// Session policy requested by the supervisor.
+    pub options: SupervisionOptions,
+}
+wirevalue::register_type!(Supervise);
+
+/// Options that govern a remote supervision session.
+#[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Eq)]
+pub struct SupervisionOptions {
     /// Policy to apply when the supervisor session is unlinked or expires.
     pub orphan_policy: OrphanPolicy,
 }
-wirevalue::register_type!(LinkOptions);
+wirevalue::register_type!(SupervisionOptions);
 
-impl Default for LinkOptions {
+impl Default for SupervisionOptions {
     fn default() -> Self {
         Self {
             orphan_policy: OrphanPolicy::Stop,
@@ -91,18 +164,7 @@ impl Default for LinkOptions {
 }
 
 /// Worker behavior when its supervisor session is orphaned.
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Serialize,
-    Deserialize,
-    Named,
-    PartialEq,
-    Eq,
-    Bind,
-    Unbind
-)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Named, PartialEq, Eq)]
 pub enum OrphanPolicy {
     /// Stop the supervised child if the supervisor unlinks or expires.
     Stop,
@@ -120,13 +182,11 @@ wirevalue::register_type!(OrphanPolicy);
     Named,
     PartialEq,
     Eq,
-    Bind,
-    Unbind,
     Handler,
     HandleClient,
     RefClient
 )]
-pub enum SupervisedWorker {
+pub enum WorkerCommand {
     /// Stop the supervised child.
     Stop {
         /// Unique identifier for this supervision session.
@@ -144,35 +204,29 @@ pub enum SupervisedWorker {
         reason: String,
     },
 }
-wirevalue::register_type!(SupervisedWorker);
+wirevalue::register_type!(WorkerCommand);
+
+hyperactor::behavior!(WorkerLike, Supervise, WorkerCommand);
 
 /// Messages sent by the worker actor to the supervisor session port.
-#[derive(
-    Clone,
-    Debug,
-    Serialize,
-    Deserialize,
-    Named,
-    PartialEq,
-    Eq,
-    Bind,
-    Unbind
-)]
-pub enum WorkerSupervisor {
+#[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Eq)]
+pub enum SupervisorEvent {
     /// The worker accepted the session and identified its supervised child.
     Linked {
         /// Unique identifier for this supervision session.
         session_id: Uid,
+        /// Worker actor that owns the supervised child.
+        worker: PortRef<WorkerCommand>,
         /// Actor address for the supervised child.
         child: ActorAddr,
         /// Friendly display name for the supervised child, if available.
         display_name: Option<String>,
     },
-    /// The worker rejected the link request.
-    LinkRejected {
+    /// The worker rejected the supervise request.
+    SuperviseRejected {
         /// Unique identifier for this supervision session.
         session_id: Uid,
-        /// Reason the link request failed.
+        /// Reason the supervise request failed.
         reason: String,
     },
     /// A supervision event observed by, or synthesized for, the worker.
@@ -192,21 +246,10 @@ pub enum WorkerSupervisor {
         reason: String,
     },
 }
-wirevalue::register_type!(WorkerSupervisor);
+wirevalue::register_type!(SupervisorEvent);
 
 /// What a worker-side event establishes about the supervised child.
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Serialize,
-    Deserialize,
-    Named,
-    PartialEq,
-    Eq,
-    Bind,
-    Unbind
-)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Named, PartialEq, Eq)]
 pub enum RemoteActorDisposition {
     /// The supervised child reached a terminal local lifecycle state.
     Terminal,

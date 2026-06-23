@@ -6,391 +6,180 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! ibverbs-specific device selection logic that pairs compute devices
-//! with the best available RDMA NICs based on PCI topology distance.
+//! ibverbs-specific device selection: pairs a [`MemoryLocation`] with the
+//! RDMA NIC(s) that have the best PCIe path to it.
 
+use std::sync::LazyLock;
 use std::sync::OnceLock;
 
-use super::primitives::IbvDevice;
-use super::primitives::get_all_devices;
-use crate::device_selection::PCIDevice;
-use crate::device_selection::get_all_rdma_devices;
+use anyhow::Context;
+use anyhow::Result;
+use dashmap::DashMap;
+
+use super::device::IbvDevice;
+use super::device::IbvDeviceImpl;
+use super::mlx_device::MlxDevice;
+use super::primitives::IbvDeviceInfo;
+use crate::device_selection::MemoryLocation;
+use crate::device_selection::PCIAddress;
+use crate::device_selection::PciPath;
+use crate::device_selection::cpu_path;
 use crate::device_selection::get_cuda_pci_address;
-use crate::device_selection::get_numa_pci_address;
-use crate::device_selection::parse_device_string;
-use crate::device_selection::parse_pci_topology;
+use crate::device_selection::pci_path;
 
-/// Step 1: Parse device string into prefix and postfix
-/// Step 2: Get PCI address from compute device
-/// Step 3: Get PCI address for all RDMA NIC devices
-/// Step 4: Calculate PCI distances and return closest RDMA NIC device
-pub fn select_optimal_ibv_device(device_hint: Option<&str>) -> Option<IbvDevice> {
-    let device_hint = device_hint?;
+/// What an [`IbvConfig`](super::primitives::IbvConfig) targets: a memory
+/// location (whose best NIC is auto-selected) or an explicit NIC by name.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum IbvDeviceTarget {
+    /// Auto-select the best NIC for a CPU/GPU memory location.
+    MemoryLocation(MemoryLocation),
+    /// Use the NIC with this exact device name (e.g. `"mlx5_0"`).
+    Nic(String),
+}
 
-    let (prefix, postfix) = parse_device_string(device_hint)?;
+impl IbvDeviceTarget {
+    /// Target the best NIC for CPU memory on NUMA node `numa`.
+    pub fn cpu(numa: u32) -> Self {
+        Self::MemoryLocation(MemoryLocation::Cpu(Some(numa)))
+    }
 
-    match prefix.as_str() {
-        "nic" => {
-            let all_rdma_devices = get_all_devices();
-            all_rdma_devices
-                .into_iter()
-                .find(|dev| dev.name() == &postfix)
-        }
-        "cuda" | "cpu" => {
-            let source_pci_addr = match prefix.as_str() {
-                "cuda" => get_cuda_pci_address(&postfix)?,
-                "cpu" => get_numa_pci_address(&postfix)?,
-                _ => unreachable!(),
-            };
-            let rdma_devices = get_all_rdma_devices();
-            if rdma_devices.is_empty() {
-                return IbvDevice::first_available();
-            }
-            let pci_devices = parse_pci_topology().ok()?;
-            let source_device = pci_devices.get(&source_pci_addr)?;
+    /// Target the best NIC for GPU memory on CUDA ordinal `ordinal`.
+    pub fn gpu(ordinal: u32) -> Self {
+        Self::MemoryLocation(MemoryLocation::Gpu(Some(ordinal)))
+    }
 
-            let rdma_names: Vec<String> =
-                rdma_devices.iter().map(|(name, _)| name.clone()).collect();
-            let rdma_pci_devices: Vec<PCIDevice> = rdma_devices
-                .iter()
-                .filter_map(|(_, addr)| pci_devices.get(addr).cloned())
-                .collect();
-
-            if let Some(closest_idx) = source_device.find_closest(&rdma_pci_devices) {
-                if let Some(optimal_name) = rdma_names.get(closest_idx) {
-                    let all_rdma_devices = get_all_devices();
-                    for device in all_rdma_devices {
-                        if *device.name() == *optimal_name {
-                            return Some(device);
-                        }
-                    }
-                }
-            }
-
-            // Fallback
-            IbvDevice::first_available()
-        }
-        _ => {
-            // Direct device name lookup for backward compatibility
-            let rdma_devices = get_all_devices();
-            rdma_devices
-                .into_iter()
-                .find(|dev| dev.name() == device_hint)
-        }
+    /// Target the NIC with the given device name.
+    pub fn nic(name: impl Into<String>) -> Self {
+        Self::Nic(name.into())
     }
 }
 
-/// Returns a reference to the process-wide lazily-initialized Vec mapping
-/// CUDA device ordinal → optimal RDMA NIC (`None` if no NIC is mapped).
+/// The PCI address of an RDMA NIC, resolved from its sysfs device link
+/// (`/sys/class/infiniband/<name>/device`).
+pub fn get_pci_address(device: &IbvDeviceInfo) -> Result<PCIAddress> {
+    let link = format!("/sys/class/infiniband/{}/device", device.name());
+    let resolved =
+        std::fs::canonicalize(&link).with_context(|| format!("resolving sysfs link {link}"))?;
+    resolved
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(PCIAddress::parse)
+        .with_context(|| format!("no PCI address in resolved path {resolved:?}"))
+}
+
+/// The NIC(s) of backend `I` with the best path to `location`, ranked by
+/// [`PciPath::is_better_than`] (most local, then highest port-capped
+/// bandwidth) and returning all that tie for best.
 ///
-/// Computed at most once per process on the first RDMA operation involving
-/// CUDA memory. CPU-only workloads pay no initialization cost.
-pub fn get_cuda_device_to_ibv_device() -> &'static Vec<Option<IbvDevice>> {
-    static CUDA_DEVICE_TO_IBV: OnceLock<Vec<Option<IbvDevice>>> = OnceLock::new();
-    CUDA_DEVICE_TO_IBV.get_or_init(|| {
-        let count = unsafe {
-            let mut c: i32 = 0;
-            rdmaxcel_sys::rdmaxcel_cuDeviceGetCount(&mut c);
-            c.max(0) as usize
+/// A NIC's path bandwidth is the lesser of its PCIe-chain bottleneck and
+/// its RDMA port speed. Results are cached per `(backend, location)` since
+/// the PCI/NUMA topology is fixed for the process lifetime.
+pub fn select_optimal_ibv_devices<I: IbvDeviceImpl>(
+    location: MemoryLocation,
+) -> Vec<IbvDeviceInfo> {
+    static CACHE: LazyLock<DashMap<(&'static str, MemoryLocation), Vec<IbvDeviceInfo>>> =
+        LazyLock::new(DashMap::new);
+    let key = (I::typename(), location);
+    if let Some(cached) = CACHE.get(&key) {
+        return cached.value().clone();
+    }
+    let result = compute_optimal_ibv_devices::<I>(location);
+    CACHE.insert(key, result.clone());
+    result
+}
+
+/// Uncached core of [`select_optimal_ibv_devices`].
+fn compute_optimal_ibv_devices<I: IbvDeviceImpl>(location: MemoryLocation) -> Vec<IbvDeviceInfo> {
+    let mut best: Option<PciPath> = None;
+    let mut devices: Vec<IbvDeviceInfo> = Vec::new();
+    for nic in IbvDevice::<I>::list() {
+        let Some(path) = nic_path(&nic, location) else {
+            continue;
         };
-        (0..count)
-            .map(|ordinal| select_optimal_ibv_device(Some(&format!("cuda:{}", ordinal))))
+        match best {
+            Some(current) if current.is_better_than(&path) => continue,
+            Some(current) if path.is_better_than(&current) => devices.clear(),
+            _ => {}
+        }
+        best = Some(path);
+        devices.push(nic);
+    }
+    devices
+}
+
+/// The best [`PciPath`] from `location` to `nic`, capped by the NIC's RDMA
+/// port speed. `None` when the path can't be computed — e.g. the NIC's PCI
+/// address or a required GPU address can't be resolved.
+fn nic_path(nic: &IbvDeviceInfo, location: MemoryLocation) -> Option<PciPath> {
+    let nic_addr = get_pci_address(nic).ok()?;
+    let base = match location {
+        MemoryLocation::Cpu(numa) => cpu_path(&nic_addr, numa),
+        MemoryLocation::Gpu(Some(ordinal)) => pci_path(&get_cuda_pci_address(ordinal)?, &nic_addr),
+        MemoryLocation::Gpu(None) => best_gpu_path(&nic_addr)?,
+    };
+    Some(cap_by_port_speed(base, nic))
+}
+
+/// The best path from any visible CUDA device to `nic_addr`, or `None` if
+/// no GPU's PCI address resolves.
+fn best_gpu_path(nic_addr: &PCIAddress) -> Option<PciPath> {
+    (0..cuda_device_count())
+        .filter_map(|ordinal| get_cuda_pci_address(ordinal as u32))
+        .map(|gpu_addr| pci_path(&gpu_addr, nic_addr))
+        .reduce(|a, b| if b.is_better_than(&a) { b } else { a })
+}
+
+/// Caps `path`'s bottleneck at the NIC's RDMA port speed. A NIC with no
+/// ACTIVE port reports a port speed of 0 and is dragged to the worst
+/// case, like an unreadable PCIe link.
+fn cap_by_port_speed(path: PciPath, nic: &IbvDeviceInfo) -> PciPath {
+    PciPath {
+        bottleneck_mbytes_per_sec: path
+            .bottleneck_mbytes_per_sec
+            .min(nic.port_speed_mbytes_per_sec()),
+        ..path
+    }
+}
+
+/// Number of NVIDIA GPUs visible to the kernel driver, counted from the
+/// per-GPU directories under `/proc/driver/nvidia/gpus`. This reads kernel
+/// driver state, so unlike `cuDeviceGetCount` it needs no CUDA
+/// initialization; it returns 0 when the NVIDIA driver is absent (no GPU, or
+/// a non-NVIDIA platform).
+///
+/// TODO(slurye): Generalize this (and `get_cuda_pci_address`) to support AMD.
+pub(crate) fn cuda_device_count() -> i32 {
+    std::fs::read_dir("/proc/driver/nvidia/gpus")
+        .map(|entries| entries.flatten().count() as i32)
+        .unwrap_or(0)
+}
+
+/// Resolves an [`IbvDeviceTarget`] to a single NIC of backend `I`: the
+/// named device for [`IbvDeviceTarget::Nic`], or the best NIC for a memory
+/// location. Both arms are scoped to backend `I`, so a name belonging to a
+/// different backend resolves to `None`.
+pub fn resolve_target<I: IbvDeviceImpl>(target: &IbvDeviceTarget) -> Option<IbvDeviceInfo> {
+    match target {
+        IbvDeviceTarget::Nic(name) => IbvDevice::<I>::list()
+            .into_iter()
+            .find(|device| device.name() == name),
+        IbvDeviceTarget::MemoryLocation(location) => select_optimal_ibv_devices::<I>(*location)
+            .into_iter()
+            .next(),
+    }
+}
+
+/// Process-wide CUDA ordinal → optimal Mellanox NIC map, computed once on
+/// first use. CPU-only workloads pay no initialization cost.
+pub fn get_cuda_device_to_ibv_device() -> &'static Vec<Option<IbvDeviceInfo>> {
+    static CUDA_DEVICE_TO_IBV: OnceLock<Vec<Option<IbvDeviceInfo>>> = OnceLock::new();
+    CUDA_DEVICE_TO_IBV.get_or_init(|| {
+        (0..cuda_device_count())
+            .map(|ordinal| {
+                select_optimal_ibv_devices::<MlxDevice>(MemoryLocation::Gpu(Some(ordinal as u32)))
+                    .into_iter()
+                    .next()
+            })
             .collect()
     })
-}
-
-/// Resolves RDMA device using auto-detection logic when needed.
-///
-/// Applies auto-detection for default devices, but otherwise
-/// returns the device as-is.
-pub fn resolve_ibv_device(device: &IbvDevice) -> Option<IbvDevice> {
-    let device_name = device.name();
-
-    if device_name.starts_with("mlx") {
-        return Some(device.clone());
-    }
-
-    let all_devices = get_all_devices();
-    let is_likely_default = if let Some(first_device) = all_devices.first() {
-        device_name == first_device.name()
-    } else {
-        false
-    };
-
-    if is_likely_default {
-        select_optimal_ibv_device(Some("cpu:0"))
-    } else {
-        Some(device.clone())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Detect if we're running on GT20 hardware by checking for expected RDMA device configuration
-    fn is_gt20_hardware() -> bool {
-        let rdma_devices = get_all_rdma_devices();
-        let device_names: std::collections::HashSet<String> =
-            rdma_devices.iter().map(|(name, _)| name.clone()).collect();
-
-        // GT20 hardware should have these specific RDMA devices
-        let expected_gt20_devices = [
-            "mlx5_0", "mlx5_3", "mlx5_4", "mlx5_5", "mlx5_6", "mlx5_9", "mlx5_10", "mlx5_11",
-        ];
-
-        // Check if we have at least 8 GPUs (GT20 characteristic)
-        let gpu_count = (0..8)
-            .filter(|&i| get_cuda_pci_address(&i.to_string()).is_some())
-            .count();
-
-        // Must have expected RDMA devices AND 8 GPUs
-        let has_expected_rdma = expected_gt20_devices
-            .iter()
-            .all(|&device| device_names.contains(device));
-
-        has_expected_rdma && gpu_count == 8
-    }
-
-    /// Test each function step by step using the new simplified API - GT20 hardware only
-    #[test]
-    fn test_gt20_hardware() {
-        // Early exit if not on GT20 hardware
-        if !is_gt20_hardware() {
-            println!("⚠️  Skipping test_gt20_hardware: Not running on GT20 hardware");
-            return;
-        }
-
-        println!("✓ Detected GT20 hardware - running full validation test");
-        // Step 1: Test PCI topology parsing
-        println!("\n1. PCI TOPOLOGY PARSING");
-        let pci_devices = match parse_pci_topology() {
-            Ok(devices) => {
-                println!("✓ Found {} PCI devices", devices.len());
-                devices
-            }
-            Err(e) => {
-                println!("✗ Error: {}", e);
-                return;
-            }
-        };
-
-        // Step 2: Test unified RDMA device discovery
-        println!("\n2. RDMA DEVICE DISCOVERY");
-        let rdma_devices = get_all_rdma_devices();
-        println!("✓ Found {} RDMA devices", rdma_devices.len());
-        for (name, pci_addr) in &rdma_devices {
-            println!("  RDMA {}: {}", name, pci_addr);
-        }
-
-        // Step 3: Test device string parsing
-        println!("\n3. DEVICE STRING PARSING");
-        let test_strings = ["cuda:0", "cuda:1", "cpu:0", "cpu:1"];
-        for device_str in &test_strings {
-            if let Some((prefix, postfix)) = parse_device_string(device_str) {
-                println!(
-                    "  '{}' -> prefix: '{}', postfix: '{}'",
-                    device_str, prefix, postfix
-                );
-            } else {
-                println!("  '{}' -> PARSE FAILED", device_str);
-            }
-        }
-
-        // Step 4: Test CUDA PCI address resolution
-        println!("\n4. CUDA PCI ADDRESS RESOLUTION");
-        for gpu_idx in 0..8 {
-            let gpu_idx_str = gpu_idx.to_string();
-            match get_cuda_pci_address(&gpu_idx_str) {
-                Some(pci_addr) => {
-                    println!("  GPU {} -> PCI: {}", gpu_idx, pci_addr);
-                }
-                None => {
-                    println!("  GPU {} -> PCI: NOT FOUND", gpu_idx);
-                }
-            }
-        }
-
-        // Step 5: Test CPU/NUMA PCI address resolution
-        println!("\n5. CPU/NUMA PCI ADDRESS RESOLUTION");
-        for numa_node in 0..4 {
-            let numa_str = numa_node.to_string();
-            match get_numa_pci_address(&numa_str) {
-                Some(pci_addr) => {
-                    println!("  NUMA {} -> PCI: {}", numa_node, pci_addr);
-                }
-                None => {
-                    println!("  NUMA {} -> PCI: NOT FOUND", numa_node);
-                }
-            }
-        }
-
-        // Step 6: Test distance calculation for GPU 0
-        println!("\n6. DISTANCE CALCULATION TEST (GPU 0)");
-        if let Some(gpu0_pci_addr) = get_cuda_pci_address("0") {
-            if let Some(gpu0_device) = pci_devices.get(&gpu0_pci_addr) {
-                println!("GPU 0 PCI: {}", gpu0_pci_addr);
-                println!("GPU 0 path to root: {:?}", gpu0_device.get_path_to_root());
-
-                let mut all_distances = Vec::new();
-                for (nic_name, nic_pci_addr) in &rdma_devices {
-                    if let Some(nic_device) = pci_devices.get(nic_pci_addr) {
-                        let distance = gpu0_device.distance_to(nic_device);
-                        all_distances.push((distance, nic_name.clone(), nic_pci_addr.clone()));
-                        println!("  {} ({}): distance = {}", nic_name, nic_pci_addr, distance);
-                        println!("    NIC path to root: {:?}", nic_device.get_path_to_root());
-                    }
-                }
-
-                // Find the minimum distance
-                all_distances.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-                if let Some((min_dist, min_nic, min_addr)) = all_distances.first() {
-                    println!(
-                        "  → CLOSEST: {} ({}) with distance {}",
-                        min_nic, min_addr, min_dist
-                    );
-                }
-            }
-        }
-
-        // Step 7: Test unified device selection interface
-        println!("\n7. UNIFIED DEVICE SELECTION TEST");
-        let test_cases = [
-            ("cuda:0", "CUDA device 0"),
-            ("cuda:1", "CUDA device 1"),
-            ("cpu:0", "CPU/NUMA node 0"),
-            ("cpu:1", "CPU/NUMA node 1"),
-        ];
-
-        for (device_hint, description) in &test_cases {
-            let selected_device = select_optimal_ibv_device(Some(device_hint));
-            match selected_device {
-                Some(device) => {
-                    println!("  {} ({}) -> {}", device_hint, description, device.name());
-                }
-                None => {
-                    println!("  {} ({}) -> NOT FOUND", device_hint, description);
-                }
-            }
-        }
-
-        // Step 8: Test all 8 GPU mappings against expected GT20 hardware results
-        println!("\n8. GPU-TO-RDMA MAPPING VALIDATION (ALL 8 GPUs)");
-
-        // Expected results from original Python implementation on GT20 hardware
-        let python_expected = [
-            (0, "mlx5_0"),
-            (1, "mlx5_3"),
-            (2, "mlx5_4"),
-            (3, "mlx5_5"),
-            (4, "mlx5_6"),
-            (5, "mlx5_9"),
-            (6, "mlx5_10"),
-            (7, "mlx5_11"),
-        ];
-
-        let mut rust_results = std::collections::HashMap::new();
-        let mut all_match = true;
-
-        // Test all 8 GPU mappings using new unified API
-        for gpu_idx in 0..8 {
-            let cuda_hint = format!("cuda:{}", gpu_idx);
-            let selected_device = select_optimal_ibv_device(Some(&cuda_hint));
-
-            match selected_device {
-                Some(device) => {
-                    let device_name = device.name().to_string();
-                    rust_results.insert(gpu_idx, device_name.clone());
-                    println!("  GPU {} -> {}", gpu_idx, device_name);
-                }
-                None => {
-                    println!("  GPU {} -> NOT FOUND", gpu_idx);
-                    rust_results.insert(gpu_idx, "NOT_FOUND".to_string());
-                }
-            }
-        }
-
-        // Compare against expected results
-        println!("\n=== VALIDATION AGAINST EXPECTED RESULTS ===");
-        for (gpu_idx, expected_nic) in python_expected {
-            if let Some(actual_nic) = rust_results.get(&gpu_idx) {
-                let matches = actual_nic == expected_nic;
-                println!(
-                    "  GPU {} -> {} {} (expected {})",
-                    gpu_idx,
-                    actual_nic,
-                    if matches { "✓" } else { "✗" },
-                    expected_nic
-                );
-                all_match = all_match && matches;
-            } else {
-                println!(
-                    "  GPU {} -> NOT FOUND ✗ (expected {})",
-                    gpu_idx, expected_nic
-                );
-                all_match = false;
-            }
-        }
-
-        if all_match {
-            println!("\n🎉 SUCCESS: All GPU-NIC pairings match expected GT20 hardware results!");
-            println!("✓ New unified API produces identical results to proven algorithm");
-        } else {
-            println!("\n⚠️  WARNING: Some GPU-NIC pairings differ from expected results");
-            println!("   This could indicate:");
-            println!("   - Hardware configuration differences");
-            println!("   - Algorithm implementation differences");
-            println!("   - Environment setup differences");
-        }
-
-        // Step 9: Detailed CPU device selection analysis
-        println!("\n9. DETAILED CPU DEVICE SELECTION ANALYSIS");
-
-        // Check what representative PCI addresses we found for each NUMA node
-        if let Some(numa0_addr) = get_numa_pci_address("0") {
-            println!("  NUMA 0 representative PCI: {}", numa0_addr);
-        } else {
-            println!("  NUMA 0 representative PCI: NOT FOUND");
-        }
-
-        if let Some(numa1_addr) = get_numa_pci_address("1") {
-            println!("  NUMA 1 representative PCI: {}", numa1_addr);
-        } else {
-            println!("  NUMA 1 representative PCI: NOT FOUND");
-        }
-
-        // Now test the actual selections
-        let cpu0_device = select_optimal_ibv_device(Some("cpu:0"));
-        let cpu1_device = select_optimal_ibv_device(Some("cpu:1"));
-
-        match (
-            cpu0_device.as_ref().map(|d| d.name()),
-            cpu1_device.as_ref().map(|d| d.name()),
-        ) {
-            (Some(cpu0_name), Some(cpu1_name)) => {
-                println!("\n  FINAL SELECTIONS:");
-                println!("    CPU:0 -> {}", cpu0_name);
-                println!("    CPU:1 -> {}", cpu1_name);
-                if cpu0_name != cpu1_name {
-                    println!("    ✓ Different NUMA nodes select different RDMA devices");
-                } else {
-                    println!("    ⚠️  Same RDMA device selected for both NUMA nodes");
-                    println!("       This could indicate:");
-                    println!(
-                        "       - {} is genuinely closest to both NUMA nodes",
-                        cpu0_name
-                    );
-                    println!("       - NUMA topology detection issue");
-                    println!("       - Cross-NUMA penalty algorithm working correctly");
-                }
-            }
-            _ => {
-                println!("    ○ CPU device selection not available");
-            }
-        }
-
-        println!("\n✓ GT20 hardware test completed");
-
-        // we can't gaurantee that the test will always match given test infra but is good for diagnostic purposes / tracking.
-    }
 }

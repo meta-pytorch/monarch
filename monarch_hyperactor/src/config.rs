@@ -205,13 +205,6 @@ impl<'py> IntoPyObject<'py> for PyDuration {
 
 // Declare monarch-specific configuration keys
 declare_attrs! {
-    /// Use a single asyncio runtime for all Python actors, rather than one per actor
-    @meta(CONFIG = ConfigAttr::new(
-        Some("HYPERACTOR_SHARED_ASYNCIO_RUNTIME".to_string()),
-        Some("shared_asyncio_runtime".to_string()),
-    ))
-    pub attr SHARED_ASYNCIO_RUNTIME: bool = false;
-
     /// Use queue-based message dispatch for Python actors instead of direct dispatch
     @meta(CONFIG = ConfigAttr::new(
         Some("MONARCH_ACTOR_QUEUE_DISPATCH".to_string()),

@@ -23,7 +23,6 @@ use crate::ActorAddr;
 use crate::PortAddr;
 use crate::metrics::MESSAGE_LATENCY_MICROS;
 use crate::ordering::SeqInfo;
-use crate::ordering::is_bypass_workq_actor_port;
 
 declare_attrs! {
     /// Send timestamp for message latency tracking
@@ -32,7 +31,7 @@ declare_attrs! {
     /// The rust type of the message.
     pub attr RUST_MESSAGE_TYPE: String;
 
-    /// Hashed ActorAddr of the message sender, injected in post_unchecked().
+    /// Hashed ActorId of the message sender, injected in post_unchecked().
     pub attr SENDER_ACTOR_ID_HASH: u64;
 
     /// Full ActorAddr of the session owner — the actor whose Sequencer
@@ -55,7 +54,7 @@ declare_attrs! {
     pub attr TELEMETRY_MESSAGE_ID: u64;
 
     /// Port index the message was delivered to, injected in post_unchecked().
-    pub attr TELEMETRY_PORT_ID: u64;
+    pub attr TELEMETRY_PORT_INDEX: u64;
 
     // Operation-context headers (see `OPERATION_CONTEXT_HEADER` in
     // `hyperactor_config::attrs`). Carried from the caller's outgoing
@@ -118,10 +117,7 @@ pub fn stamp_sender_actor_id(
     if let SeqInfo::Session { seq, .. } = seq_info {
         let early_session = *seq <= 4;
         let caller_set_stale = headers.contains_key(SENDER_ACTOR_ID);
-        if (early_session || caller_set_stale)
-            && dest.is_handler_port()
-            && !is_bypass_workq_actor_port(dest.index())
-        {
+        if (early_session || caller_set_stale) && dest.is_handler_port() {
             headers.set(SENDER_ACTOR_ID, owner.clone());
         }
     }
@@ -136,7 +132,7 @@ pub(crate) fn stamp_sender_actor_id_fresh(
     dest: &PortAddr,
     owner: &ActorAddr,
 ) {
-    if seq <= 4 && dest.is_handler_port() && !is_bypass_workq_actor_port(dest.index()) {
+    if seq <= 4 && dest.is_handler_port() {
         headers.set(SENDER_ACTOR_ID, owner.clone());
     }
 }
@@ -170,11 +166,10 @@ pub fn log_message_latency_if_sampling(headers: &Flattrs, actor_id: String) {
 
 #[cfg(test)]
 mod tests {
-    use typeuri::Named;
     use uuid::Uuid;
 
     use super::*;
-    use crate::introspect::IntrospectMessage;
+    use crate::port::ControlPort;
     use crate::port::Port;
     use crate::testing::ids::test_actor_id;
 
@@ -187,17 +182,7 @@ mod tests {
 
     fn handler_port(actor_name: &str) -> (ActorAddr, PortAddr) {
         let addr: ActorAddr = test_actor_id(actor_name, "worker");
-        // Use a fabricated handler-port index (high bit set) by going through
-        // the existing IntrospectMessage::port() — it's a bypass port though,
-        // so for a NON-bypass handler port we'll use an explicit message
-        // type. Easier: spin up via Port::from of any u64 with the handler
-        // bit set. Since the test util test_actor_id already returns an
-        // ActorAddr, and the only requirement is that .is_handler_port() is
-        // true, we construct a PortAddr that points to a known handler port
-        // — for headers tests we can use IntrospectMessage::port() (a bypass
-        // handler port — gate should skip it) or a fabricated non-bypass
-        // handler. Use TestHandlerMsg below.
-        let port = addr.port_addr(Port::from(TestHandlerMsg::port()));
+        let port = addr.port_addr(Port::handler::<TestHandlerMsg>());
         (addr, port)
     }
 
@@ -210,9 +195,9 @@ mod tests {
         (addr, port)
     }
 
-    fn bypass_port(actor_name: &str) -> (ActorAddr, PortAddr) {
+    fn control_port(actor_name: &str) -> (ActorAddr, PortAddr) {
         let addr: ActorAddr = test_actor_id(actor_name, "worker");
-        let port = addr.port_addr(Port::from(IntrospectMessage::port()));
+        let port = addr.port_addr(Port::control(ControlPort::Introspect));
         (addr, port)
     }
 
@@ -264,8 +249,8 @@ mod tests {
     }
 
     #[test]
-    fn test_stamp_helper_skips_bypass_port() {
-        let (owner, dest) = bypass_port("test_0");
+    fn test_stamp_helper_skips_control_port() {
+        let (owner, dest) = control_port("test_0");
         let mut headers = Flattrs::new();
         stamp_sender_actor_id(&mut headers, &session(1), &dest, &owner);
         assert_eq!(headers.get(SENDER_ACTOR_ID), None);

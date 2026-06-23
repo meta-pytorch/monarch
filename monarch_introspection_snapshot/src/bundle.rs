@@ -8,7 +8,7 @@
 
 //! Durable snapshot bundle export and import.
 //!
-//! A snapshot bundle is a directory containing 11 Arrow IPC files (one
+//! A snapshot bundle is a directory containing 13 Arrow IPC files (one
 //! per table) and a JSON manifest. It represents exactly one snapshot
 //! and is the persistence mechanism for historical TUI debugging.
 //!
@@ -122,6 +122,8 @@ fn counts_from_batches(batches: &[NamedBatch]) -> NodeCounts {
         actor_failures: row_count("actor_failures"),
         actor_inbound_orderings: row_count("actor_inbound_orderings"),
         ordering_sessions: row_count("ordering_sessions"),
+        actor_executions: row_count("actor_executions"),
+        active_handlers: row_count("active_handlers"),
         resolution_errors: row_count("resolution_errors"),
     }
 }
@@ -146,6 +148,8 @@ fn counts_from_loaded(loaded: &[(&str, usize)]) -> NodeCounts {
         actor_failures: row_count("actor_failures"),
         actor_inbound_orderings: row_count("actor_inbound_orderings"),
         ordering_sessions: row_count("ordering_sessions"),
+        actor_executions: row_count("actor_executions"),
+        active_handlers: row_count("active_handlers"),
         resolution_errors: row_count("resolution_errors"),
     }
 }
@@ -365,6 +369,8 @@ mod tests {
             actor_failures: vec![],
             actor_inbound_orderings: vec![],
             ordering_sessions: vec![],
+            actor_executions: vec![],
+            active_handlers: vec![],
             resolution_errors: vec![],
         }
     }
@@ -469,6 +475,8 @@ mod tests {
             actor_failures: vec![],
             actor_inbound_orderings: vec![],
             ordering_sessions: vec![],
+            actor_executions: vec![],
+            active_handlers: vec![],
             resolution_errors: vec![],
         }
     }

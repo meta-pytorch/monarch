@@ -29,8 +29,10 @@ use hyperactor::channel::ChannelAddr;
 use hyperactor_config::Flattrs;
 
 use super::IbvBuffer;
+use super::device_selection::IbvDeviceTarget;
 use super::manager_actor::IbvManagerActor;
 use super::manager_actor::IbvManagerMessageClient;
+use super::mlx_device::MlxDevice;
 use super::queue_pair::IbvQueuePair;
 use super::queue_pair::PollTarget;
 use crate::IbvConfig;
@@ -93,6 +95,10 @@ impl RemoteSpawn for CudaActor {
 
     async fn new(device_id: i32, _environment: Flattrs) -> Result<Self, anyhow::Error> {
         unsafe {
+            // rdmaxcel only adopts an already-loaded driver, so load it first.
+            if rdmaxcel_sys::ensure_cuda_driver_loaded() != 0 {
+                anyhow::bail!("failed to load the CUDA driver");
+            }
             cu_check!(rdmaxcel_sys::rdmaxcel_cuInit(0));
             let mut device: rdmaxcel_sys::CUdevice = std::mem::zeroed();
             cu_check!(rdmaxcel_sys::rdmaxcel_cuDeviceGet(&mut device, device_id));
@@ -288,6 +294,14 @@ impl Handler<CudaActorMessage> for CudaActor {
 /// Polls `qp` until every wr in `expected_wr_ids` has completed or
 /// `timeout_secs` elapses. Used by the doorbell tests that drive raw
 /// QPs (see [`super::doorbell_tests`]).
+///
+/// # Warning
+///
+/// Each [`IbvQueuePair::poll_completion`] call consumes one completion
+/// from the CQ, so `expected_wr_ids` must equal the set of all wr_ids
+/// whose completions have not yet been observed. A completion observed for
+/// a wr_id outside that set has already been taken off the CQ and cannot
+/// be re-observed, so this function panics rather than lose it.
 pub async fn wait_for_completion(
     qp: &mut IbvQueuePair,
     poll_target: PollTarget,
@@ -304,17 +318,23 @@ pub async fn wait_for_completion(
             return Ok(true);
         }
 
-        match qp.poll_completion(poll_target, &remaining) {
-            Ok(completions) => {
-                for (wr_id, wc_result) in completions {
-                    if let Err(e) = wc_result {
-                        return Err(anyhow::anyhow!("WR {} completion failed: {}", wr_id, e));
-                    }
-                    remaining.remove(&wr_id);
-                }
-                if remaining.is_empty() {
-                    return Ok(true);
-                }
+        match qp.poll_completion(poll_target) {
+            Ok(Some(Ok(wc))) => {
+                let wr_id = wc.wr_id();
+                assert!(
+                    remaining.remove(&wr_id),
+                    "completion observed for wr_id={wr_id} not in expected_wr_ids; the work completion would be discarded without being observed",
+                );
+            }
+            Ok(Some(Err(e))) => {
+                let wr_id = e.wr_id;
+                assert!(
+                    remaining.contains(&wr_id),
+                    "completion observed for wr_id={wr_id} not in expected_wr_ids; the work completion would be discarded without being observed",
+                );
+                return Err(anyhow::anyhow!("WR completion failed: {}", e));
+            }
+            Ok(None) => {
                 tokio::time::sleep(Duration::from_millis(1)).await;
             }
             Err(e) => {
@@ -490,13 +510,13 @@ pub struct DoorbellTestEnv {
     pub client_2: hyperactor::Client,
     pub actor_1: ActorRef<RdmaManagerActor>,
     pub actor_2: ActorRef<RdmaManagerActor>,
-    pub ibv_actor_1: ActorRef<IbvManagerActor>,
-    pub ibv_actor_2: ActorRef<IbvManagerActor>,
+    pub ibv_actor_1: ActorRef<IbvManagerActor<MlxDevice>>,
+    pub ibv_actor_2: ActorRef<IbvManagerActor<MlxDevice>>,
     /// In-proc handles for the same actors as `ibv_actor_*`.
     /// Tests that need to call local-only messages such as
     /// `RawQueuePair` go through these.
-    pub ibv_handle_1: ActorHandle<IbvManagerActor>,
-    pub ibv_handle_2: ActorHandle<IbvManagerActor>,
+    pub ibv_handle_1: ActorHandle<IbvManagerActor<MlxDevice>>,
+    pub ibv_handle_2: ActorHandle<IbvManagerActor<MlxDevice>>,
     pub rdma_handle_1: RdmaRemoteBuffer,
     pub rdma_handle_2: RdmaRemoteBuffer,
     pub local_memory_1: KeepaliveLocalMemory,
@@ -515,6 +535,17 @@ pub struct Buffer {
     len: usize,
     #[allow(dead_code)]
     cpu_ref: Option<Box<[u8]>>,
+}
+
+/// Maps a test accelerator string (`"cpu:0"`, `"cuda:1"`, `"nic:mlx5_0"`)
+/// to an [`IbvDeviceTarget`].
+fn accel_target(accel: &str) -> IbvDeviceTarget {
+    let (backend, idx) = accel.split_once(':').unwrap();
+    match backend {
+        "cuda" => IbvDeviceTarget::gpu(idx.parse().unwrap()),
+        "nic" => IbvDeviceTarget::nic(idx),
+        _ => IbvDeviceTarget::cpu(idx.parse().unwrap()),
+    }
 }
 
 /// Helper function to parse accelerator strings
@@ -549,8 +580,8 @@ impl DoorbellTestEnv {
         accel2: &str,
         qp_type: super::primitives::IbvQpType,
     ) -> Result<Self, anyhow::Error> {
-        let mut config1 = IbvConfig::targeting(accel1);
-        let mut config2 = IbvConfig::targeting(accel2);
+        let mut config1 = IbvConfig::targeting(accel_target(accel1));
+        let mut config2 = IbvConfig::targeting(accel_target(accel2));
 
         config1.qp_type = qp_type;
         config2.qp_type = qp_type;
@@ -679,19 +710,21 @@ impl DoorbellTestEnv {
         }
 
         let (ibv_actor_1, ibv_buffer_1) = rdma_handle_1
-            .resolve_ibv()
-            .ok_or_else(|| anyhow::anyhow!("ibverbs backend not found for buffer 1"))?;
+            .resolve_nic()
+            .expect("buffer 1 has a NIC backend")
+            .into_mlx()
+            .expect("buffer 1 is Mellanox");
         let (ibv_actor_2, ibv_buffer_2) = rdma_handle_2
-            .resolve_ibv()
-            .ok_or_else(|| anyhow::anyhow!("ibverbs backend not found for buffer 2"))?;
-        let ibv_handle_1: ActorHandle<IbvManagerActor> =
-            ibv_actor_1
-                .downcast_handle(&instance_1)
-                .ok_or_else(|| anyhow::anyhow!("ibv_actor_1 is not in proc_1"))?;
-        let ibv_handle_2: ActorHandle<IbvManagerActor> =
-            ibv_actor_2
-                .downcast_handle(&instance_2)
-                .ok_or_else(|| anyhow::anyhow!("ibv_actor_2 is not in proc_2"))?;
+            .resolve_nic()
+            .expect("buffer 2 has a NIC backend")
+            .into_mlx()
+            .expect("buffer 2 is Mellanox");
+        let ibv_handle_1: ActorHandle<IbvManagerActor<MlxDevice>> = ibv_actor_1
+            .downcast_handle(&instance_1)
+            .ok_or_else(|| anyhow::anyhow!("ibv_actor_1 is not in proc_1"))?;
+        let ibv_handle_2: ActorHandle<IbvManagerActor<MlxDevice>> = ibv_actor_2
+            .downcast_handle(&instance_2)
+            .ok_or_else(|| anyhow::anyhow!("ibv_actor_2 is not in proc_2"))?;
 
         // Fill buffer1 with test data
         if parsed_accel1.0 == "cuda" {

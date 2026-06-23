@@ -6,6 +6,16 @@
 
 # pyre-strict
 
+# ``from __future__ import annotations`` turns every annotation in this file
+# into a string that's only evaluated by tools that ask for it (type checkers,
+# ``typing.get_type_hints``). That lets us reference ``Runner``,
+# ``AppDef``, ``ServerSpec``, etc. in signatures without paying the cost of
+# importing ``torchx`` or ``monarch.tools.mesh_spec`` at module-load time.
+# All runtime uses of those names are pushed inside the functions that need
+# them so ``from monarch._src.tools.commands import load_current_job`` (and
+# any other no-scheduler entry point) works without ``torchx`` installed.
+from __future__ import annotations
+
 import asyncio
 import getpass
 import logging
@@ -16,18 +26,16 @@ import tempfile
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Mapping, Optional, Union
+from typing import Any, Mapping, Optional, TYPE_CHECKING, Union
 
 from monarch.tools.colors import CYAN, ENDC
-from monarch.tools.config import (  # @manual=//monarch/python/monarch/tools/config/meta:defaults
-    Config,
-    defaults,
-)
-from monarch.tools.mesh_spec import mesh_spec_from_metadata, ServerSpec
 from monarch.tools.utils import MONARCH_HOME
-from torchx.runner import Runner  # @manual=//torchx/runner:lib_core
-from torchx.specs import AppDef, AppDryRunInfo, AppState, CfgVal, parse_app_handle
-from torchx.specs.api import is_terminal
+
+if TYPE_CHECKING:
+    from monarch.tools.config import Config
+    from monarch.tools.mesh_spec import ServerSpec
+    from torchx.runner import Runner
+    from torchx.specs import AppDryRunInfo
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -40,6 +48,11 @@ TIMEOUT_AFTER_KILL = 300  # 5 minutes
 
 
 def torchx_runner() -> Runner:
+    from monarch.tools.config import (  # @manual=//monarch/python/monarch/tools/config/meta:defaults
+        defaults,
+    )
+    from torchx.runner import Runner  # @manual=//torchx/runner:lib_core
+
     # namespace is currently unused so make it empty str
     # so that server handle is short (e.g. slurm:///job-id)
     _EMPTY_NS = ""
@@ -79,6 +92,11 @@ def create(
         scheduler_args: scheduler configs
         name: the name of the job. If none, a default job name will be created.
     """
+    from monarch.tools.config import (  # @manual=//monarch/python/monarch/tools/config/meta:defaults
+        defaults,
+    )
+    from torchx.specs import AppDef, AppDryRunInfo, CfgVal
+
     if name is None:
         name = _default_name()
     scheduler: str = config.scheduler
@@ -128,6 +146,9 @@ def info(server_handle: str) -> Optional[ServerSpec]:
     NOTE: This function can return non-empty info for jobs that have
     exited recently.
     """
+    from monarch.tools.mesh_spec import mesh_spec_from_metadata, ServerSpec
+    from torchx.specs import parse_app_handle
+
     with torchx_runner() as runner:
         status = runner.status(server_handle)
         if status is None:
@@ -197,6 +218,9 @@ async def server_ready(
                 print(f"Job in {server_info.state} state. Hostnames are not available")
 
     """
+
+    from torchx.specs import AppState
+    from torchx.specs.api import is_terminal
 
     check_interval_seconds = check_interval.total_seconds()
     start = datetime.now()
@@ -344,6 +368,8 @@ def kill_and_confirm(
     is actually terminated before returning to avoid the job still being around
     after cancel() completes.
     """
+    from torchx.specs import AppState
+
     with torchx_runner() as runner:
         runner.cancel(server_handle)
         start_time = time.time()

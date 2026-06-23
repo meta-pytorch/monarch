@@ -399,7 +399,10 @@ async fn query_introspect(
     timeout: Duration,
     err_ctx: &str,
 ) -> Result<IntrospectResult, anyhow::Error> {
-    let introspect_port = hyperactor::PortRef::<IntrospectMessage>::attest_handler_port(actor_id);
+    let introspect_port = hyperactor::PortRef::<IntrospectMessage>::attest_control_port(
+        actor_id,
+        hyperactor::ControlPort::Introspect,
+    );
     let (reply_handle, reply_rx) = open_once_port::<IntrospectResult>(cx);
     let mut reply_ref = reply_handle.bind();
     reply_ref.return_undeliverable(false);
@@ -424,7 +427,10 @@ async fn query_child_introspect(
     timeout: Duration,
     err_ctx: &str,
 ) -> Result<IntrospectResult, anyhow::Error> {
-    let introspect_port = hyperactor::PortRef::<IntrospectMessage>::attest_handler_port(actor_id);
+    let introspect_port = hyperactor::PortRef::<IntrospectMessage>::attest_control_port(
+        actor_id,
+        hyperactor::ControlPort::Introspect,
+    );
     let (reply_handle, reply_rx) = open_once_port::<IntrospectResult>(cx);
     let mut reply_ref = reply_handle.bind();
     reply_ref.return_undeliverable(false);
@@ -2118,7 +2124,10 @@ async fn probe_actor(
     cx: &Instance<()>,
     agent_id: &hyperactor::ActorAddr,
 ) -> Result<bool, ApiError> {
-    let port = hyperactor::PortRef::<IntrospectMessage>::attest_handler_port(agent_id);
+    let port = hyperactor::PortRef::<IntrospectMessage>::attest_control_port(
+        agent_id,
+        hyperactor::ControlPort::Introspect,
+    );
     let (handle, rx) = open_once_port::<IntrospectResult>(cx);
     port.post(
         cx,
@@ -3304,7 +3313,6 @@ mod tests {
 
         use crate::host::Host;
         use crate::host::LocalProcManager;
-        use crate::host_mesh::host_agent::HostAgentMode;
         use crate::host_mesh::host_agent::ProcManagerSpawnFn;
         use crate::proc_agent::ProcAgent;
 
@@ -3322,8 +3330,11 @@ mod tests {
         let system_proc = host.system_proc().clone();
         let host_agent_handle = system_proc.spawn_with_label(
             crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME,
-            HostAgent::new(HostAgentMode::Local(host)),
+            HostAgent::new_local(host),
         );
+        HostAgent::wait_initialized(&host_agent_handle)
+            .await
+            .unwrap();
         let host_agent_ref: ActorRef<HostAgent> = host_agent_handle.bind();
         let host_addr_str = host_addr.to_string();
 
@@ -3467,7 +3478,6 @@ mod tests {
 
         use crate::host::Host;
         use crate::host::LocalProcManager;
-        use crate::host_mesh::host_agent::HostAgentMode;
         use crate::host_mesh::host_agent::ProcManagerSpawnFn;
         use crate::proc_agent::ProcAgent;
         use crate::resource;
@@ -3488,8 +3498,11 @@ mod tests {
         let system_proc = host.system_proc().clone();
         let host_agent_handle = system_proc.spawn_with_label(
             crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME,
-            HostAgent::new(HostAgentMode::Local(host)),
+            HostAgent::new_local(host),
         );
+        HostAgent::wait_initialized(&host_agent_handle)
+            .await
+            .unwrap();
         let host_agent_ref: ActorRef<HostAgent> = host_agent_handle.bind();
         let host_addr_str = host_addr.to_string();
 
@@ -3616,7 +3629,6 @@ mod tests {
 
         use crate::host::Host;
         use crate::host::LocalProcManager;
-        use crate::host_mesh::host_agent::HostAgentMode;
         use crate::host_mesh::host_agent::ProcManagerSpawnFn;
         use crate::proc_agent::ProcAgent;
 
@@ -3632,7 +3644,7 @@ mod tests {
         let system_proc = host.system_proc().clone();
 
         // Spawn the root client on the host's local proc (before
-        // moving the host into HostAgentMode).
+        // moving the host into HostAgent).
         let local_proc = host.local_proc();
         let local_proc_id = local_proc.proc_addr().clone();
         let root_client_handle = local_proc.spawn_with_label("client", TestIntrospectableActor);
@@ -3641,8 +3653,11 @@ mod tests {
 
         let host_agent_handle = system_proc.spawn_with_label(
             crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME,
-            HostAgent::new(HostAgentMode::Local(host)),
+            HostAgent::new_local(host),
         );
+        HostAgent::wait_initialized(&host_agent_handle)
+            .await
+            .unwrap();
         let host_agent_ref: ActorRef<HostAgent> = host_agent_handle.bind();
         let host_addr_str = host_addr.to_string();
 
@@ -3778,7 +3793,6 @@ mod tests {
 
         use crate::host::Host;
         use crate::host::LocalProcManager;
-        use crate::host_mesh::host_agent::HostAgentMode;
         use crate::host_mesh::host_agent::ProcManagerSpawnFn;
         use crate::proc_agent::ProcAgent;
 
@@ -3794,8 +3808,11 @@ mod tests {
         let system_proc = host.system_proc().clone();
         let host_agent_handle = system_proc.spawn_with_label(
             crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME,
-            HostAgent::new(HostAgentMode::Local(host)),
+            HostAgent::new_local(host),
         );
+        HostAgent::wait_initialized(&host_agent_handle)
+            .await
+            .unwrap();
         let host_agent_ref: ActorRef<HostAgent> = host_agent_handle.bind();
         let host_addr_str = host_addr.to_string();
 
@@ -3877,7 +3894,6 @@ mod tests {
 
         use crate::host::Host;
         use crate::host::LocalProcManager;
-        use crate::host_mesh::host_agent::HostAgentMode;
         use crate::host_mesh::host_agent::ProcManagerSpawnFn;
         use crate::proc_agent::ProcAgent;
 
@@ -3894,8 +3910,11 @@ mod tests {
         let system_proc_id = system_proc.proc_addr().clone();
         let host_agent_handle = system_proc.spawn_with_label(
             crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME,
-            HostAgent::new(HostAgentMode::Local(host)),
+            HostAgent::new_local(host),
         );
+        HostAgent::wait_initialized(&host_agent_handle)
+            .await
+            .unwrap();
         let host_agent_ref: ActorRef<HostAgent> = host_agent_handle.bind();
         let host_addr_str = host_addr.to_string();
 
@@ -4190,7 +4209,6 @@ mod tests {
         use crate::host::LocalProcManager;
         use crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
         use crate::host_mesh::host_agent::HostAgent;
-        use crate::host_mesh::host_agent::HostAgentMode;
         use crate::host_mesh::host_agent::ProcManagerSpawnFn;
         use crate::proc_agent::PROC_AGENT_ACTOR_NAME;
         use crate::proc_agent::ProcAgent;
@@ -4210,10 +4228,11 @@ mod tests {
                 .await
                 .unwrap();
         let system_proc = host.system_proc().clone();
-        let host_agent_handle = system_proc.spawn_with_label(
-            HOST_MESH_AGENT_ACTOR_NAME,
-            HostAgent::new(HostAgentMode::Local(host)),
-        );
+        let host_agent_handle =
+            system_proc.spawn_with_label(HOST_MESH_AGENT_ACTOR_NAME, HostAgent::new_local(host));
+        HostAgent::wait_initialized(&host_agent_handle)
+            .await
+            .unwrap();
         let host_agent_ref: ActorRef<HostAgent> = host_agent_handle.bind();
 
         // User proc: own ephemeral Unix socket, own ProcAgent.

@@ -16,11 +16,9 @@ use futures::StreamExt;
 use futures::TryStreamExt;
 use hyperactor as reference;
 use hyperactor::Actor;
-use hyperactor::Bind;
 use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::Unbind;
 use hyperactor::context::Mailbox;
 use hyperactor_mesh::ActorMeshRef;
 use hyperactor_mesh::connect::Connect;
@@ -49,7 +47,7 @@ pub struct CondaSyncResult {
 }
 wirevalue::register_type!(CondaSyncResult);
 
-#[derive(Debug, Clone, Named, Serialize, Deserialize, Bind, Unbind)]
+#[derive(Debug, Clone, Named, Serialize, Deserialize)]
 pub struct CondaSyncMessage {
     /// The connect message to create a duplex bytestream with the client.
     pub connect: reference::PortRef<Connect>,
@@ -67,7 +65,7 @@ pub struct CondaSyncParams {}
 wirevalue::register_type!(CondaSyncParams);
 
 #[derive(Debug, Default)]
-#[hyperactor::export(handlers = [CondaSyncMessage { cast = true }])]
+#[hyperactor::export(handlers = [CondaSyncMessage])]
 #[hyperactor::spawnable]
 pub struct CondaSyncActor {}
 

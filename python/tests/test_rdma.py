@@ -259,6 +259,16 @@ async def test_rdma_buffer_drop():
             """Drop an RDMABuffer"""
             # pyrefly: ignore [missing-attribute]
             await self.buffer.drop()
+            # Dropping the buffer means that the RDMA manager no longer
+            # forcibly keeps the allocation alive, but as long as the original
+            # tensor is still alive, the memory registration remains valid.
+            # So operations on the buffer would technically continue to succeed
+            # until the original tensor is deleted.
+            del self.data
+
+            import gc
+
+            gc.collect()
 
     class ConsumerActor(Actor):
         def __init__(self):
@@ -302,6 +312,98 @@ async def test_rdma_buffer_drop():
     )
 
     print(f"✓ Buffer operations failed after drop as expected: {error_result}")
+
+
+@rdma_backends
+async def test_read_into_remote_smaller_than_local():
+    """read_into when the remote buffer is smaller than the local tensor.
+
+    The transfer copies the whole remote buffer into the leading bytes of the
+    local tensor and leaves the trailing bytes untouched.
+    """
+    remote_proc = this_host().spawn_procs(per_host={"processes": 1})
+    local_proc = this_host().spawn_procs(per_host={"processes": 1})
+
+    class RemoteActor(Actor):
+        def __init__(self):
+            # Four floats; smaller than the local tensor below.
+            self.data = torch.tensor([1.0, 2.0, 3.0, 4.0], dtype=torch.float32)
+
+        @endpoint
+        async def buffer(self) -> RDMABuffer:
+            byte_tensor = self.data.view(torch.uint8).flatten()
+            return RDMABuffer(byte_tensor)
+
+    class LocalActor(Actor):
+        def __init__(self):
+            # Eight floats; the -1.0 sentinel marks bytes that must stay
+            # untouched by the read.
+            self.local = torch.full((8,), -1.0, dtype=torch.float32)
+
+        @endpoint
+        async def read(self, buffer: RDMABuffer) -> torch.Tensor:
+            byte_tensor = self.local.view(torch.uint8).flatten()
+            await buffer.read_into(byte_tensor)
+            return self.local
+
+    remote = remote_proc.spawn("remote", RemoteActor)
+    local = local_proc.spawn("local", LocalActor)
+
+    buffer = await remote.buffer.call_one()
+    result = await local.read.call_one(buffer)
+
+    # The leading floats hold the remote buffer's contents ...
+    assert torch.equal(result[:4], torch.tensor([1.0, 2.0, 3.0, 4.0]))
+    # ... and the trailing floats keep their sentinel value.
+    assert torch.equal(result[4:], torch.full((4,), -1.0))
+
+
+@rdma_backends
+async def test_write_from_local_smaller_than_remote():
+    """write_from when the local tensor is smaller than the remote buffer.
+
+    The transfer copies the whole local tensor into the leading bytes of the
+    remote buffer and leaves the trailing bytes untouched.
+    """
+    remote_proc = this_host().spawn_procs(per_host={"processes": 1})
+    local_proc = this_host().spawn_procs(per_host={"processes": 1})
+
+    class RemoteActor(Actor):
+        def __init__(self):
+            # Eight floats; the -1.0 sentinel marks bytes that must stay
+            # untouched by the write.
+            self.data = torch.full((8,), -1.0, dtype=torch.float32)
+
+        @endpoint
+        async def buffer(self) -> RDMABuffer:
+            byte_tensor = self.data.view(torch.uint8).flatten()
+            return RDMABuffer(byte_tensor)
+
+        @endpoint
+        async def get_data(self) -> torch.Tensor:
+            return self.data
+
+    class LocalActor(Actor):
+        def __init__(self):
+            # Four floats; smaller than the remote buffer above.
+            self.local = torch.tensor([5.0, 6.0, 7.0, 8.0], dtype=torch.float32)
+
+        @endpoint
+        async def write(self, buffer: RDMABuffer) -> None:
+            byte_tensor = self.local.view(torch.uint8).flatten()
+            await buffer.write_from(byte_tensor)
+
+    remote = remote_proc.spawn("remote", RemoteActor)
+    local = local_proc.spawn("local", LocalActor)
+
+    buffer = await remote.buffer.call_one()
+    await local.write.call_one(buffer)
+    result = await remote.get_data.call_one()
+
+    # The leading floats hold the local tensor's contents ...
+    assert torch.equal(result[:4], torch.tensor([5.0, 6.0, 7.0, 8.0]))
+    # ... and the trailing floats keep their sentinel value.
+    assert torch.equal(result[4:], torch.full((4,), -1.0))
 
 
 class TrainerActor(Actor):

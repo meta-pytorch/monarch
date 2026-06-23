@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "torchtitan-mast"
+version = "0.0.1"
+description = "MAST + monarch torchtitan example (H100 x86, SimpleMAST, OSS-built monarch)."
+requires-python = ">=3.12"
+
+[tool.setuptools]
+py-modules = ["job", "train", "train_with_actors"]
+packages = ["simple_mast_job"]
+
+# Default workspace path used by job.py. Produced by setup_env.sh at this
+# location, so the default works without per-user editing. The TITAN_WORKSPACE
+# env var overrides per-call.
+[tool.torchtitan_mast.paths]
+workspace = "~/dev/titan_workspace"

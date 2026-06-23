@@ -31,7 +31,9 @@
 //!   [`NodeRow`], exactly one subtype-table row matching `kind_row`,
 //!   optionally one [`ActorFailureRow`], optionally one
 //!   [`ActorInboundOrderingRow`] (CV-8), all of its
-//!   [`OrderingSessionRow`]s (CV-9), and all of its [`ChildRow`]s.
+//!   [`OrderingSessionRow`]s (CV-9), optionally one
+//!   [`ActorExecutionRow`] (CV-10), all of its [`ActiveHandlerRow`]s
+//!   (CV-11), and all of its [`ChildRow`]s.
 //! - **CS-6 (resolution-error-boundary):** Resolver transport/query
 //!   failure aborts capture with `Err`. Only successfully resolved
 //!   payloads with `NodeProperties::Error` populate
@@ -55,6 +57,8 @@ use crate::convert::ConvertedNode;
 use crate::convert::NodeKindRow;
 use crate::convert::convert_node;
 use crate::convert::to_micros;
+use crate::schema::ActiveHandlerRow;
+use crate::schema::ActorExecutionRow;
 use crate::schema::ActorFailureRow;
 use crate::schema::ActorInboundOrderingRow;
 use crate::schema::ActorNodeRow;
@@ -95,6 +99,12 @@ pub struct SnapshotData {
     /// snapshot (CV-9). Skipped sessions are NOT enumerated; they
     /// appear only in the parent rollup's `skipped_session_count`.
     pub ordering_sessions: Vec<OrderingSessionRow>,
+    /// One row per actor with `execution: Some(…)` (CV-10).
+    pub actor_executions: Vec<ActorExecutionRow>,
+    /// One row per in-flight handler in any actor's execution snapshot
+    /// (CV-11). A prefix of the N oldest when truncated; empty when the
+    /// rollup's `complete == false`.
+    pub active_handlers: Vec<ActiveHandlerRow>,
     /// One row per successfully resolved `NodeProperties::Error`
     /// (CS-6: distinct from resolver transport failures).
     pub resolution_errors: Vec<ResolutionErrorRow>,
@@ -115,6 +125,10 @@ impl SnapshotData {
             self.actor_inbound_orderings.push(io);
         }
         self.ordering_sessions.extend(converted.ordering_sessions);
+        if let Some(e) = converted.actor_execution {
+            self.actor_executions.push(e);
+        }
+        self.active_handlers.extend(converted.active_handlers);
         match converted.kind_row {
             NodeKindRow::Root(r) => self.root_nodes.push(r),
             NodeKindRow::Host(h) => self.host_nodes.push(h),
@@ -154,6 +168,8 @@ where
         actor_failures: Vec::new(),
         actor_inbound_orderings: Vec::new(),
         ordering_sessions: Vec::new(),
+        actor_executions: Vec::new(),
+        active_handlers: Vec::new(),
         resolution_errors: Vec::new(),
     };
 
@@ -374,6 +390,7 @@ mod tests {
                         inbound_ordering: None,
                         is_system: false,
                         failure_info: None,
+                        execution: None,
                     },
                     vec![actor_b.clone()],
                 ),
@@ -395,6 +412,7 @@ mod tests {
                         inbound_ordering: None,
                         is_system: false,
                         failure_info: None,
+                        execution: None,
                     },
                     vec![],
                 ),
@@ -489,6 +507,7 @@ mod tests {
                         inbound_ordering: None,
                         is_system: false,
                         failure_info: None,
+                        execution: None,
                     },
                     vec![],
                 ),
@@ -510,6 +529,7 @@ mod tests {
                         inbound_ordering: None,
                         is_system: false,
                         failure_info: None,
+                        execution: None,
                     },
                     vec![],
                 ),
@@ -531,6 +551,7 @@ mod tests {
                         inbound_ordering: None,
                         is_system: false,
                         failure_info: None,
+                        execution: None,
                     },
                     vec![],
                 ),
@@ -627,6 +648,7 @@ mod tests {
                         inbound_ordering: None,
                         is_system: false,
                         failure_info: None,
+                        execution: None,
                     },
                     vec![actor_b.clone()],
                 ),
@@ -648,6 +670,7 @@ mod tests {
                         inbound_ordering: None,
                         is_system: false,
                         failure_info: None,
+                        execution: None,
                     },
                     vec![],
                 ),
@@ -710,6 +733,8 @@ mod tests {
                     actor_failure: None,
                     actor_inbound_ordering: None,
                     ordering_sessions: vec![],
+                    actor_execution: None,
+                    active_handlers: vec![],
                     children: vec![ChildRow {
                         snapshot_id: "s".to_owned(),
                         parent_id: "root".to_owned(),
@@ -733,6 +758,8 @@ mod tests {
                     actor_failure: None,
                     actor_inbound_ordering: None,
                     ordering_sessions: vec![],
+                    actor_execution: None,
+                    active_handlers: vec![],
                     children: vec![],
                 },
                 "Host",
@@ -752,6 +779,8 @@ mod tests {
                     actor_failure: None,
                     actor_inbound_ordering: None,
                     ordering_sessions: vec![],
+                    actor_execution: None,
+                    active_handlers: vec![],
                     children: vec![],
                 },
                 "Proc",
@@ -783,6 +812,8 @@ mod tests {
                     }),
                     actor_inbound_ordering: None,
                     ordering_sessions: vec![],
+                    actor_execution: None,
+                    active_handlers: vec![],
                     children: vec![],
                 },
                 "Actor",
@@ -799,6 +830,8 @@ mod tests {
                     actor_failure: None,
                     actor_inbound_ordering: None,
                     ordering_sessions: vec![],
+                    actor_execution: None,
+                    active_handlers: vec![],
                     children: vec![],
                 },
                 "ResolutionError",
@@ -819,6 +852,8 @@ mod tests {
             actor_failures: Vec::new(),
             actor_inbound_orderings: Vec::new(),
             ordering_sessions: Vec::new(),
+            actor_executions: Vec::new(),
+            active_handlers: Vec::new(),
             resolution_errors: Vec::new(),
         };
 

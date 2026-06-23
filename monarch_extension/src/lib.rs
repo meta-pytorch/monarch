@@ -130,7 +130,9 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
             "monarch_extension.mesh_controller",
         )?)?;
     }
-    #[cfg(feature = "tensor_engine_gpu")]
+    // rdma registers under the OSS slim wheel's `rdma` feature or, for internal
+    // (buck) builds, transitively via `tensor_engine_gpu`.
+    #[cfg(any(feature = "rdma", feature = "tensor_engine_gpu"))]
     {
         monarch_rdma_extension::register_python_bindings(&get_or_add_new_module(module, "rdma")?)?;
     }

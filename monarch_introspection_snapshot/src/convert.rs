@@ -47,18 +47,30 @@
 //!   Skipped sessions are reflected only via
 //!   `ActorInboundOrderingRow.skipped_session_count`; they are NOT
 //!   enumerated as `OrderingSessionRow`s.
+//! - **CV-10 (execution-conditional-row):**
+//!   `ConvertedNode::actor_execution` is `Some` iff
+//!   `NodeProperties::Actor { execution: Some(_) }`. Other
+//!   `NodeProperties` variants always emit `None`. Mirrors CV-8.
+//! - **CV-11 (active-handlers detail):**
+//!   `ConvertedNode::active_handlers` contains exactly the per-handler
+//!   rows in `Execution.active_handlers` — a prefix of the N oldest when
+//!   the rollup is `truncated`, empty when `complete == false`. The
+//!   rollup's `active_count` stays the authoritative total. Mirrors CV-9.
 
 use std::collections::HashSet;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 use anyhow::Context;
+use hyperactor_mesh::introspect::Execution;
 use hyperactor_mesh::introspect::FailureInfo;
 use hyperactor_mesh::introspect::InboundOrdering;
 use hyperactor_mesh::introspect::NodePayload;
 use hyperactor_mesh::introspect::NodeProperties;
 use hyperactor_mesh::introspect::NodeRef;
 
+use crate::schema::ActiveHandlerRow;
+use crate::schema::ActorExecutionRow;
 use crate::schema::ActorFailureRow;
 use crate::schema::ActorInboundOrderingRow;
 use crate::schema::ActorNodeRow;
@@ -91,6 +103,12 @@ pub struct ConvertedNode {
     /// Per-returned-session detail rows (CV-9). Empty for non-actor
     /// nodes and for actors with `inbound_ordering: None`.
     pub ordering_sessions: Vec<OrderingSessionRow>,
+    /// Execution rollup, present only for actor nodes with
+    /// `execution: Some(…)` (CV-10).
+    pub actor_execution: Option<ActorExecutionRow>,
+    /// Per-handler detail rows (CV-11). A prefix of the N oldest when the
+    /// rollup is `truncated`; empty when `complete == false`.
+    pub active_handlers: Vec<ActiveHandlerRow>,
     /// One [`ChildRow`] per entry in `payload.children`, in
     /// enumeration order (CV-4).
     pub children: Vec<ChildRow>,
@@ -235,114 +253,160 @@ pub fn convert_node(snapshot_id: &str, payload: &NodePayload) -> anyhow::Result<
     // Subtype row + optional failure + optional inbound-ordering rollup
     // + per-session detail. Done first because NodeRow.node_kind is
     // derived from the same match via kind_row.kind_str().
-    let (kind_row, actor_failure, actor_inbound_ordering, ordering_sessions) =
-        match &payload.properties {
-            NodeProperties::Root {
-                num_hosts,
-                started_at,
-                started_by,
-                ..
-            } => {
-                let row = RootNodeRow {
-                    snapshot_id: snapshot_id.to_owned(),
-                    node_id: node_id.clone(),
-                    num_hosts: i64::try_from(*num_hosts).context("num_hosts overflow i64")?,
-                    started_at: to_micros(*started_at)?,
-                    started_by: started_by.clone(),
-                };
-                (NodeKindRow::Root(row), None, None, Vec::new())
-            }
-            NodeProperties::Host {
-                addr, num_procs, ..
-            } => {
-                let row = HostNodeRow {
-                    snapshot_id: snapshot_id.to_owned(),
-                    node_id: node_id.clone(),
-                    addr: addr.clone(),
-                    host_num_procs: i64::try_from(*num_procs).context("num_procs overflow i64")?,
-                };
-                (NodeKindRow::Host(row), None, None, Vec::new())
-            }
-            NodeProperties::Proc {
-                proc_name,
-                num_actors,
-                stopped_retention_cap,
-                is_poisoned,
-                failed_actor_count,
-                ..
-            } => {
-                let row = ProcNodeRow {
-                    snapshot_id: snapshot_id.to_owned(),
-                    node_id: node_id.clone(),
-                    proc_name: proc_name.clone(),
-                    num_actors: i64::try_from(*num_actors).context("num_actors overflow i64")?,
-                    stopped_retention_cap: i64::try_from(*stopped_retention_cap)
-                        .context("stopped_retention_cap overflow i64")?,
-                    is_poisoned: *is_poisoned,
-                    failed_actor_count: i64::try_from(*failed_actor_count)
-                        .context("failed_actor_count overflow i64")?,
-                };
-                (NodeKindRow::Proc(row), None, None, Vec::new())
-            }
-            NodeProperties::Actor {
-                actor_status,
-                actor_type,
-                instance_id,
-                messages_processed,
-                created_at,
-                last_message_handler,
-                total_processing_time_us,
-                queue_depth,
-                is_system,
-                inbound_ordering,
-                failure_info,
-                ..
-            } => {
-                let actor_row = ActorNodeRow {
-                    snapshot_id: snapshot_id.to_owned(),
-                    node_id: node_id.clone(),
-                    actor_status: actor_status.clone(),
-                    actor_type: actor_type.clone(),
-                    instance_id: instance_id.clone(),
-                    messages_processed: i64::try_from(*messages_processed)
-                        .context("messages_processed overflow i64")?,
-                    created_at: to_opt_micros(*created_at)?,
-                    last_message_handler: last_message_handler.clone(),
-                    total_processing_time_us: i64::try_from(*total_processing_time_us)
-                        .context("total_processing_time_us overflow i64")?,
-                    queue_depth: to_i64("queue_depth", *queue_depth)?,
-                    is_system: *is_system,
-                };
-                let failure = failure_info
-                    .as_ref()
-                    .map(|fi| convert_failure(snapshot_id, &node_id, fi))
-                    .transpose()?;
-                let actor_inbound_ordering = inbound_ordering
-                    .as_deref()
-                    .map(|io| convert_inbound_ordering(snapshot_id, &node_id, io))
-                    .transpose()?;
-                let ordering_sessions = inbound_ordering
-                    .as_deref()
-                    .map(|io| convert_ordering_sessions(snapshot_id, &node_id, io))
-                    .transpose()?
-                    .unwrap_or_default();
-                (
-                    NodeKindRow::Actor(actor_row),
-                    failure,
-                    actor_inbound_ordering,
-                    ordering_sessions,
-                )
-            }
-            NodeProperties::Error { code, message } => {
-                let row = ResolutionErrorRow {
-                    snapshot_id: snapshot_id.to_owned(),
-                    node_id: node_id.clone(),
-                    error_code: code.clone(),
-                    error_message: message.clone(),
-                };
-                (NodeKindRow::ResolutionError(row), None, None, Vec::new())
-            }
-        };
+    let (
+        kind_row,
+        actor_failure,
+        actor_inbound_ordering,
+        ordering_sessions,
+        actor_execution,
+        active_handlers,
+    ) = match &payload.properties {
+        NodeProperties::Root {
+            num_hosts,
+            started_at,
+            started_by,
+            ..
+        } => {
+            let row = RootNodeRow {
+                snapshot_id: snapshot_id.to_owned(),
+                node_id: node_id.clone(),
+                num_hosts: i64::try_from(*num_hosts).context("num_hosts overflow i64")?,
+                started_at: to_micros(*started_at)?,
+                started_by: started_by.clone(),
+            };
+            (
+                NodeKindRow::Root(row),
+                None,
+                None,
+                Vec::new(),
+                None,
+                Vec::new(),
+            )
+        }
+        NodeProperties::Host {
+            addr, num_procs, ..
+        } => {
+            let row = HostNodeRow {
+                snapshot_id: snapshot_id.to_owned(),
+                node_id: node_id.clone(),
+                addr: addr.clone(),
+                host_num_procs: i64::try_from(*num_procs).context("num_procs overflow i64")?,
+            };
+            (
+                NodeKindRow::Host(row),
+                None,
+                None,
+                Vec::new(),
+                None,
+                Vec::new(),
+            )
+        }
+        NodeProperties::Proc {
+            proc_name,
+            num_actors,
+            stopped_retention_cap,
+            is_poisoned,
+            failed_actor_count,
+            ..
+        } => {
+            let row = ProcNodeRow {
+                snapshot_id: snapshot_id.to_owned(),
+                node_id: node_id.clone(),
+                proc_name: proc_name.clone(),
+                num_actors: i64::try_from(*num_actors).context("num_actors overflow i64")?,
+                stopped_retention_cap: i64::try_from(*stopped_retention_cap)
+                    .context("stopped_retention_cap overflow i64")?,
+                is_poisoned: *is_poisoned,
+                failed_actor_count: i64::try_from(*failed_actor_count)
+                    .context("failed_actor_count overflow i64")?,
+            };
+            (
+                NodeKindRow::Proc(row),
+                None,
+                None,
+                Vec::new(),
+                None,
+                Vec::new(),
+            )
+        }
+        NodeProperties::Actor {
+            actor_status,
+            actor_type,
+            instance_id,
+            messages_processed,
+            created_at,
+            last_message_handler,
+            total_processing_time_us,
+            queue_depth,
+            is_system,
+            inbound_ordering,
+            failure_info,
+            execution,
+            ..
+        } => {
+            let actor_row = ActorNodeRow {
+                snapshot_id: snapshot_id.to_owned(),
+                node_id: node_id.clone(),
+                actor_status: actor_status.clone(),
+                actor_type: actor_type.clone(),
+                instance_id: instance_id.clone(),
+                messages_processed: i64::try_from(*messages_processed)
+                    .context("messages_processed overflow i64")?,
+                created_at: to_opt_micros(*created_at)?,
+                last_message_handler: last_message_handler.clone(),
+                total_processing_time_us: i64::try_from(*total_processing_time_us)
+                    .context("total_processing_time_us overflow i64")?,
+                queue_depth: to_i64("queue_depth", *queue_depth)?,
+                is_system: *is_system,
+            };
+            let failure = failure_info
+                .as_ref()
+                .map(|fi| convert_failure(snapshot_id, &node_id, fi))
+                .transpose()?;
+            let actor_inbound_ordering = inbound_ordering
+                .as_deref()
+                .map(|io| convert_inbound_ordering(snapshot_id, &node_id, io))
+                .transpose()?;
+            let ordering_sessions = inbound_ordering
+                .as_deref()
+                .map(|io| convert_ordering_sessions(snapshot_id, &node_id, io))
+                .transpose()?
+                .unwrap_or_default();
+            let actor_execution = execution
+                .as_deref()
+                .map(|e| convert_execution(snapshot_id, &node_id, e))
+                .transpose()?;
+            let active_handlers = execution
+                .as_deref()
+                .map(|e| convert_active_handlers(snapshot_id, &node_id, e))
+                .transpose()?
+                .unwrap_or_default();
+            (
+                NodeKindRow::Actor(actor_row),
+                failure,
+                actor_inbound_ordering,
+                ordering_sessions,
+                actor_execution,
+                active_handlers,
+            )
+        }
+        NodeProperties::Error { code, message } => {
+            let row = ResolutionErrorRow {
+                snapshot_id: snapshot_id.to_owned(),
+                node_id: node_id.clone(),
+                error_code: code.clone(),
+                error_message: message.clone(),
+            };
+            (
+                NodeKindRow::ResolutionError(row),
+                None,
+                None,
+                Vec::new(),
+                None,
+                Vec::new(),
+            )
+        }
+    };
 
     let node = NodeRow {
         snapshot_id: snapshot_id.to_owned(),
@@ -361,6 +425,8 @@ pub fn convert_node(snapshot_id: &str, payload: &NodePayload) -> anyhow::Result<
         actor_failure,
         actor_inbound_ordering,
         ordering_sessions,
+        actor_execution,
+        active_handlers,
         children,
     })
 }
@@ -432,6 +498,39 @@ fn convert_ordering_sessions(
                     .newest_buffered_seq
                     .map(|v| to_i64("newest_buffered_seq", v))
                     .transpose()?,
+            })
+        })
+        .collect()
+}
+
+fn convert_execution(
+    snapshot_id: &str,
+    node_id: &str,
+    exec: &Execution,
+) -> anyhow::Result<ActorExecutionRow> {
+    Ok(ActorExecutionRow {
+        snapshot_id: snapshot_id.to_owned(),
+        node_id: node_id.to_owned(),
+        active_count: to_i64("active_count", exec.active_count)?,
+        complete: exec.complete,
+        truncated: exec.truncated,
+    })
+}
+
+fn convert_active_handlers(
+    snapshot_id: &str,
+    node_id: &str,
+    exec: &Execution,
+) -> anyhow::Result<Vec<ActiveHandlerRow>> {
+    exec.active_handlers
+        .iter()
+        .map(|h| {
+            Ok(ActiveHandlerRow {
+                snapshot_id: snapshot_id.to_owned(),
+                node_id: node_id.to_owned(),
+                name: h.name.clone(),
+                active_count: to_i64("active_count", h.active_count)?,
+                oldest_since: to_micros(h.oldest_since)?,
             })
         })
         .collect()
@@ -601,6 +700,7 @@ mod tests {
                 inbound_ordering: None,
                 is_system: false,
                 failure_info: None,
+                execution: None,
             },
             children: vec![],
             parent: Some(NodeRef::Proc(test_proc_id())),
@@ -682,6 +782,7 @@ mod tests {
                     ],
                 })),
                 failure_info: None,
+                execution: None,
             },
             children: vec![],
             parent: Some(NodeRef::Proc(test_proc_id())),
@@ -732,6 +833,118 @@ mod tests {
         assert_eq!(actor.queue_depth, 8);
     }
 
+    // CV-10 (Some case) and CV-11 (per-handler detail): Actor with
+    // `execution: Some(...)` emits one `ActorExecutionRow` and one
+    // `ActiveHandlerRow` per entry in `Execution.active_handlers`.
+    #[test]
+    fn test_convert_actor_with_execution() {
+        let payload = NodePayload {
+            identity: NodeRef::Actor(test_actor_id()),
+            properties: NodeProperties::Actor {
+                actor_status: "running".to_owned(),
+                actor_type: "MyActor".to_owned(),
+                messages_processed: 1,
+                created_at: None,
+                last_message_handler: None,
+                total_processing_time_us: 0,
+                flight_recorder: None,
+                instance_id: "019e5661-7d33-7380-9afe-699ffc567531".to_owned(),
+                queue_depth: 0,
+                is_system: false,
+                inbound_ordering: None,
+                failure_info: None,
+                execution: Some(Box::new(hyperactor_mesh::introspect::Execution {
+                    // EX-3: the rollup total is observational, not the
+                    // sum of the per-handler detail (2 + 1 = 3 here).
+                    active_count: 5,
+                    complete: true,
+                    truncated: false,
+                    active_handlers: vec![
+                        hyperactor_mesh::introspect::ActiveHandler {
+                            name: "endpoint_slow".to_owned(),
+                            active_count: 2,
+                            oldest_since: std::time::UNIX_EPOCH
+                                + std::time::Duration::from_micros(2),
+                        },
+                        hyperactor_mesh::introspect::ActiveHandler {
+                            name: "endpoint_fast".to_owned(),
+                            active_count: 1,
+                            oldest_since: std::time::UNIX_EPOCH
+                                + std::time::Duration::from_micros(6),
+                        },
+                    ],
+                })),
+            },
+            children: vec![],
+            parent: Some(NodeRef::Proc(test_proc_id())),
+            as_of: test_time(),
+        };
+
+        let result = convert_node("snap-1", &payload).unwrap();
+
+        // CV-10: Some-side emits exactly one rollup row carrying the
+        // observational total (EX-3), independent of the detail sum.
+        let exec = result
+            .actor_execution
+            .as_ref()
+            .expect("CV-10: Some-side must emit ActorExecutionRow");
+        assert_eq!(exec.active_count, 5);
+        assert!(exec.complete);
+        assert!(!exec.truncated);
+
+        // CV-11: one detail row per `Execution.active_handlers` entry;
+        // `oldest_since` carried through as micros-since-epoch.
+        assert_eq!(result.active_handlers.len(), 2);
+        let slow = result
+            .active_handlers
+            .iter()
+            .find(|h| h.name == "endpoint_slow")
+            .unwrap();
+        assert_eq!(slow.active_count, 2);
+        assert_eq!(slow.oldest_since, 2);
+        let fast = result
+            .active_handlers
+            .iter()
+            .find(|h| h.name == "endpoint_fast")
+            .unwrap();
+        assert_eq!(fast.active_count, 1);
+        assert_eq!(fast.oldest_since, 6);
+    }
+
+    // CV-10 (None case): Actor with `execution: None` emits no
+    // `ActorExecutionRow` and no `ActiveHandlerRow`s.
+    #[test]
+    fn test_convert_actor_without_execution() {
+        let payload = NodePayload {
+            identity: NodeRef::Actor(test_actor_id()),
+            properties: NodeProperties::Actor {
+                actor_status: "running".to_owned(),
+                actor_type: "MyActor".to_owned(),
+                messages_processed: 0,
+                created_at: None,
+                last_message_handler: None,
+                total_processing_time_us: 0,
+                flight_recorder: None,
+                instance_id: String::new(),
+                queue_depth: 0,
+                is_system: false,
+                inbound_ordering: None,
+                failure_info: None,
+                execution: None,
+            },
+            children: vec![],
+            parent: Some(NodeRef::Proc(test_proc_id())),
+            as_of: test_time(),
+        };
+
+        let result = convert_node("snap-1", &payload).unwrap();
+        assert!(
+            result.actor_execution.is_none(),
+            "CV-10: None-side must not emit ActorExecutionRow"
+        );
+        assert!(result.active_handlers.is_empty());
+    }
+
     // CV-1, CV-2, CV-3 (Some case), CV-6: Actor with failure.
     #[test]
     fn test_convert_actor_with_failure() {
@@ -756,6 +969,7 @@ mod tests {
                     occurred_at: test_time_2(),
                     is_propagated: true,
                 }),
+                execution: None,
             },
             children: vec![],
             parent: Some(NodeRef::Proc(test_proc_id())),
@@ -960,6 +1174,7 @@ mod tests {
                     inbound_ordering: None,
                     is_system: false,
                     failure_info: None,
+                    execution: None,
                 },
             ),
             (
@@ -1007,6 +1222,7 @@ mod tests {
                 inbound_ordering: None,
                 is_system: false,
                 failure_info: None,
+                execution: None,
             },
             children: vec![],
             parent,

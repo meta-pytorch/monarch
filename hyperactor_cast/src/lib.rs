@@ -15,3 +15,5 @@
 
 pub mod cast_actor;
 mod tile;
+
+pub use tile::TilingPolicy;

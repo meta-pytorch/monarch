@@ -172,11 +172,11 @@ async fn test_snapshot_sql_queries() -> Result<()> {
     let ctx = SessionContext::new();
     register_all(&table_store, &ctx).await?;
 
-    // PS-1: all eleven tables registered.
+    // PS-1: all thirteen tables registered.
     assert_eq!(
         table_store.table_names()?.len(),
-        11,
-        "PS-1: all eleven tables should be registered"
+        13,
+        "PS-1: all thirteen tables should be registered"
     );
 
     // PS-5: exactly one snapshot row.

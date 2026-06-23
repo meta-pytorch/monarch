@@ -25,6 +25,7 @@ use serde_multipart::Part;
 use crate::actor::PythonMessage;
 use crate::actor::PythonMessageKind;
 use crate::buffers::Buffer;
+use crate::pytokio::PyPythonTask;
 use crate::pytokio::PyShared;
 
 // Python helper used to reconstruct an object graph from a pickled
@@ -389,6 +390,13 @@ impl PendingMessage {
     #[getter]
     fn kind(&self) -> PythonMessageKind {
         self.kind.clone()
+    }
+
+    /// Resolve pending pickles and return a fully materialized PythonMessage.
+    #[pyo3(name = "resolve")]
+    fn py_resolve(&mut self) -> PyResult<PyPythonTask> {
+        let message = self.take()?;
+        PyPythonTask::new(async move { message.resolve().await })
     }
 }
 

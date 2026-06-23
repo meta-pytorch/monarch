@@ -6,11 +6,17 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::Debug;
 use std::future::pending;
 use std::ops::Deref;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering as AtomicOrdering;
+use std::time::SystemTime;
 
 use async_trait::async_trait;
 use hyperactor::Actor;
@@ -31,15 +37,14 @@ use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::mailbox::UndeliverableMessageError;
 use hyperactor::mailbox::UndeliverableReason;
-use hyperactor::message::Bind;
-use hyperactor::message::Bindings;
-use hyperactor::message::IndexedErasedUnbound;
-use hyperactor::message::Unbind;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::casting::update_undeliverable_envelope_for_casting;
 use hyperactor_mesh::comm::multicast::CAST_POINT;
 use hyperactor_mesh::comm::multicast::CastInfo;
+use hyperactor_mesh::introspect::ActiveHandler;
+use hyperactor_mesh::introspect::EXECUTION;
+use hyperactor_mesh::introspect::Execution;
 use hyperactor_mesh::supervision::MeshFailure;
 use hyperactor_mesh::transport::default_bind_spec;
 use hyperactor_mesh::value_mesh::ValueOverlay;
@@ -65,7 +70,6 @@ use typeuri::Named;
 
 use crate::buffers::FrozenBuffer;
 use crate::config::ACTOR_QUEUE_DISPATCH;
-use crate::config::SHARED_ASYNCIO_RUNTIME;
 use crate::context::PyInstance;
 use crate::local_state_broker::BrokerId;
 use crate::local_state_broker::LocalStateBrokerMessage;
@@ -79,6 +83,7 @@ use crate::metrics::ENDPOINT_ACTOR_PANIC;
 use crate::pickle::pickle_to_part;
 use crate::proc::PyActorAddr;
 use crate::pympsc;
+use crate::pytokio::PyPythonTask;
 use crate::pytokio::PythonTask;
 use crate::runtime::get_tokio_runtime;
 use crate::runtime::monarch_with_gil;
@@ -225,33 +230,6 @@ wirevalue::submit! {
             // SAFETY: ptr points to a PythonMessage.
             let msg = unsafe { &*(ptr as *const PythonMessage) };
             python_message_endpoint_name(msg)
-        },
-    }
-}
-
-// Cast messages arrive as IndexedErasedUnbound<PythonMessage>, which wraps a
-// serialized PythonMessage. This type has no `register_type!` by default (it
-// shares ErasedUnbound's wire format), so we register it explicitly. The
-// endpoint_name deserializes the inner payload to read the method name. This
-// costs one extra deserialization per message, but the Part payload uses
-// zero-copy Bytes refcounting, and Python actor throughput is GIL-bounded,
-// so the serde overhead is negligible relative to Python-side processing.
-wirevalue::submit! {
-    wirevalue::TypeInfo {
-        typename: <IndexedErasedUnbound<PythonMessage> as wirevalue::Named>::typename,
-        typehash: <IndexedErasedUnbound<PythonMessage> as wirevalue::Named>::typehash,
-        typeid: <IndexedErasedUnbound<PythonMessage> as wirevalue::Named>::typeid,
-        port: <IndexedErasedUnbound<PythonMessage> as wirevalue::Named>::port,
-        dump: None,
-        arm_unchecked: <IndexedErasedUnbound<PythonMessage> as wirevalue::Named>::arm_unchecked,
-        endpoint_name: |ptr| {
-            // SAFETY: ptr points to an IndexedErasedUnbound<PythonMessage>.
-            let erased = unsafe { &*(ptr as *const IndexedErasedUnbound<PythonMessage>) };
-            erased
-                .inner_any()
-                .deserialized_unchecked::<PythonMessage>()
-                .ok()
-                .and_then(|msg| python_message_endpoint_name(&msg))
         },
     }
 }
@@ -470,24 +448,6 @@ impl std::fmt::Debug for PythonMessage {
     }
 }
 
-impl Unbind for PythonMessage {
-    fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        match &self.kind {
-            PythonMessageKind::CallMethod { response_port, .. } => response_port.unbind(bindings),
-            _ => Ok(()),
-        }
-    }
-}
-
-impl Bind for PythonMessage {
-    fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        match &mut self.kind {
-            PythonMessageKind::CallMethod { response_port, .. } => response_port.bind(bindings),
-            _ => Ok(()),
-        }
-    }
-}
-
 #[pymethods]
 impl PythonMessage {
     #[new]
@@ -541,12 +501,283 @@ pub enum PythonActorDispatchMode {
     },
 }
 
+// In-flight handler execution tracking for a Python actor -- the producer
+// side of the mesh `execution` field. Per-actor Rust state, read GIL-free
+// by the introspect seam. Producer invariants (PE-*, monarch_hyperactor-
+// local; documented inline, no registry -- not our crate):
+//   PE-2: only the real user-method invocation is bracketed (in
+//         `_Actor.handle`), never Init/unpickling/plumbing.
+//   PE-3: the snapshot reads `Arc` state only (atomic load + `try_lock`);
+//         the `Mutex` is held only for an insert/remove, never across user
+//         code, so a handler wedged holding the GIL never blocks the
+//         snapshot and the read never touches the GIL.
+//   PE-4: tokens are >= 1; `0` is a reserved no-op sentinel (returned by
+//         the binding when an instance has no tracker), so the
+//         unconditional Python `finally` cannot collide it with a real
+//         token.
+
+/// EX-4 cap: at most this many distinct in-flight handler names are
+/// reported per snapshot; `truncated` is set when exceeded.
+const MAX_ACTIVE_HANDLERS: usize = 64;
+
+/// One in-flight handler invocation.
+#[derive(Debug)]
+struct ActiveEntry {
+    name: String,
+    started_at: SystemTime,
+}
+
+/// Per-actor in-flight handler tracker. Cheap to read concurrently: the
+/// count is a lock-free atomic and the per-handler detail sits behind a
+/// `try_lock` held only for an insert/remove (never across user code), so
+/// a wedged actor stays introspectable (PE-3).
+#[derive(Debug)]
+pub(crate) struct ExecutionTracker {
+    /// Lock-free count of in-flight invocations; always readable.
+    active_count: AtomicU64,
+    /// Monotonic token source, initialized to 1 so issued tokens are
+    /// `>= 1` and `0` stays reserved as the no-op sentinel (PE-4).
+    next_token: AtomicU64,
+    /// token -> entry for the in-flight invocations.
+    handlers: Mutex<HashMap<u64, ActiveEntry>>,
+}
+
+/// Aggregate raw in-flight entries into the reported per-handler view:
+/// grouped by handler name, oldest-first with a stable tie-break on
+/// `name`, capped at `max` (EX-4). Pure, so it can be unit-tested with
+/// explicit timestamps.
+fn aggregate_active(
+    handlers: &HashMap<u64, ActiveEntry>,
+    max: usize,
+) -> (Vec<ActiveHandler>, bool) {
+    let mut by_name: HashMap<&str, (u64, SystemTime)> = HashMap::new();
+    for entry in handlers.values() {
+        let slot = by_name
+            .entry(entry.name.as_str())
+            .or_insert((0, entry.started_at));
+        slot.0 += 1;
+        if entry.started_at < slot.1 {
+            slot.1 = entry.started_at;
+        }
+    }
+    let mut out: Vec<ActiveHandler> = by_name
+        .into_iter()
+        .map(|(name, (active_count, oldest_since))| ActiveHandler {
+            name: name.to_string(),
+            active_count,
+            oldest_since,
+        })
+        .collect();
+    // EX-4: oldest-first, stable tie-break on name.
+    out.sort_by(|a, b| {
+        a.oldest_since
+            .cmp(&b.oldest_since)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    let truncated = out.len() > max;
+    if truncated {
+        out.truncate(max);
+    }
+    (out, truncated)
+}
+
+impl ExecutionTracker {
+    pub(crate) fn new() -> Self {
+        Self {
+            active_count: AtomicU64::new(0),
+            next_token: AtomicU64::new(1),
+            handlers: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Record the start of a handler invocation; returns its token.
+    pub(crate) fn start(&self, name: String) -> u64 {
+        let token = self.next_token.fetch_add(1, AtomicOrdering::Relaxed);
+        self.handlers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(
+                token,
+                ActiveEntry {
+                    name,
+                    started_at: SystemTime::now(),
+                },
+            );
+        self.active_count.fetch_add(1, AtomicOrdering::Relaxed);
+        token
+    }
+
+    /// Record the end of a handler invocation. Idempotent (a token is
+    /// removed at most once) and a no-op for the `0` sentinel (PE-4).
+    pub(crate) fn finish(&self, token: u64) {
+        if token == 0 {
+            return;
+        }
+        let removed = self
+            .handlers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&token)
+            .is_some();
+        if removed {
+            self.active_count.fetch_sub(1, AtomicOrdering::Relaxed);
+        }
+    }
+
+    /// Point-in-time snapshot for the introspect seam. Never blocks: the
+    /// count is read lock-free and the per-handler detail is best-effort
+    /// behind `try_lock` (EX-2: a miss yields `complete: false`, it never
+    /// drops the field).
+    pub(crate) fn snapshot(&self) -> Execution {
+        let active_count = self.active_count.load(AtomicOrdering::Relaxed);
+        match self.handlers.try_lock() {
+            Ok(guard) => {
+                let (active_handlers, truncated) = aggregate_active(&guard, MAX_ACTIVE_HANDLERS);
+                Execution {
+                    active_count,
+                    active_handlers,
+                    complete: true,
+                    truncated,
+                }
+            }
+            Err(_) => Execution {
+                active_count,
+                active_handlers: Vec::new(),
+                complete: false,
+                truncated: false,
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod execution_tracker_tests {
+    use std::time::Duration;
+    use std::time::UNIX_EPOCH;
+
+    use super::*;
+
+    fn at(secs: u64) -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(secs)
+    }
+
+    #[test]
+    fn aggregates_by_name_oldest_first() {
+        let mut h = HashMap::new();
+        h.insert(
+            1,
+            ActiveEntry {
+                name: "b".to_string(),
+                started_at: at(10),
+            },
+        );
+        h.insert(
+            2,
+            ActiveEntry {
+                name: "a".to_string(),
+                started_at: at(20),
+            },
+        );
+        h.insert(
+            3,
+            ActiveEntry {
+                name: "a".to_string(),
+                started_at: at(30),
+            },
+        );
+        let (out, truncated) = aggregate_active(&h, MAX_ACTIVE_HANDLERS);
+        assert!(!truncated);
+        assert_eq!(out.len(), 2);
+        // Oldest-first: b (10) before a (20).
+        assert_eq!(out[0].name, "b");
+        assert_eq!(out[0].active_count, 1);
+        assert_eq!(out[0].oldest_since, at(10));
+        // "a" aggregates two invocations; oldest_since is the min (20).
+        assert_eq!(out[1].name, "a");
+        assert_eq!(out[1].active_count, 2);
+        assert_eq!(out[1].oldest_since, at(20));
+    }
+
+    #[test]
+    fn tie_break_on_name_when_same_oldest() {
+        let mut h = HashMap::new();
+        h.insert(
+            1,
+            ActiveEntry {
+                name: "zebra".to_string(),
+                started_at: at(5),
+            },
+        );
+        h.insert(
+            2,
+            ActiveEntry {
+                name: "alpha".to_string(),
+                started_at: at(5),
+            },
+        );
+        let (out, _) = aggregate_active(&h, MAX_ACTIVE_HANDLERS);
+        assert_eq!(out[0].name, "alpha");
+        assert_eq!(out[1].name, "zebra");
+    }
+
+    #[test]
+    fn truncates_to_n_oldest() {
+        let mut h = HashMap::new();
+        for i in 0..(MAX_ACTIVE_HANDLERS as u64 + 6) {
+            h.insert(
+                i,
+                ActiveEntry {
+                    name: format!("h{:03}", i),
+                    started_at: at(i),
+                },
+            );
+        }
+        let (out, truncated) = aggregate_active(&h, MAX_ACTIVE_HANDLERS);
+        assert!(truncated);
+        assert_eq!(out.len(), MAX_ACTIVE_HANDLERS);
+        // Prefix of the N oldest.
+        assert_eq!(out[0].name, "h000");
+        assert_eq!(
+            out[MAX_ACTIVE_HANDLERS - 1].name,
+            format!("h{:03}", MAX_ACTIVE_HANDLERS - 1)
+        );
+    }
+
+    #[test]
+    fn start_assigns_nonzero_distinct_tokens() {
+        let t = ExecutionTracker::new();
+        let a = t.start("a".to_string());
+        let b = t.start("b".to_string());
+        assert!(a >= 1);
+        assert!(b >= 1);
+        assert_ne!(a, b);
+        let snap = t.snapshot();
+        assert_eq!(snap.active_count, 2);
+        assert!(snap.complete);
+        assert_eq!(snap.active_handlers.len(), 2);
+    }
+
+    #[test]
+    fn finish_is_idempotent_and_zero_is_noop() {
+        let t = ExecutionTracker::new();
+        let tok = t.start("a".to_string());
+        t.finish(tok);
+        assert_eq!(t.snapshot().active_count, 0);
+        // Double-finish must not underflow the count.
+        t.finish(tok);
+        assert_eq!(t.snapshot().active_count, 0);
+        // The 0 sentinel is a no-op.
+        t.finish(0);
+        assert_eq!(t.snapshot().active_count, 0);
+    }
+}
+
 /// An actor for which message handlers are implemented in Python.
 #[derive(Debug)]
 #[hyperactor::export(
     handlers = [
-        PythonMessage { cast = true },
-        MeshFailure { cast = true },
+        PythonMessage,
+        MeshFailure,
     ],
 )]
 #[hyperactor::spawnable]
@@ -554,8 +785,7 @@ pub struct PythonActor {
     /// The Python object that we delegate message handling to.
     actor: Py<PyAny>,
     /// Stores a reference to the Python event loop to run Python coroutines on.
-    /// This is None when using single runtime mode, Some when using per-actor mode.
-    task_locals: Option<pyo3_async_runtimes::TaskLocals>,
+    task_locals: pyo3_async_runtimes::TaskLocals,
     /// Instance object that we keep across handle calls so that we can store
     /// information from the Init (spawn rank, controller) and provide it to other calls.
     instance: Option<Py<crate::context::PyInstance>>,
@@ -574,6 +804,12 @@ pub struct PythonActor {
     /// side channel; downstream code must not consume this field for
     /// any other purpose.
     mesh_base_name: Option<String>,
+
+    /// Per-actor in-flight handler tracker (producer of the mesh
+    /// `execution` field). Read GIL-free by the introspect seam; a clone
+    /// of this `Arc` is injected into the actor's `PyInstance` so
+    /// `_Actor.handle` can bracket each invocation.
+    execution_tracker: Arc<ExecutionTracker>,
 }
 
 impl PythonActor {
@@ -591,9 +827,7 @@ impl PythonActor {
                 let class_type: &Bound<'_, PyType> = unpickled.downcast()?;
                 let actor: Py<PyAny> = class_type.call0()?.into_py_any(py)?;
 
-                // Only create per-actor TaskLocals if not using shared runtime
-                let task_locals = (!hyperactor_config::global::get(SHARED_ASYNCIO_RUNTIME))
-                    .then(|| Python::detach(py, create_task_locals));
+                let task_locals = Python::detach(py, create_task_locals);
 
                 let dispatch_mode = if use_queue_dispatch {
                     let (sender, receiver) = pympsc::channel().map_err(|e| {
@@ -616,17 +850,66 @@ impl PythonActor {
                     spawn_point: OnceLock::from(spawn_point),
                     init_message,
                     mesh_base_name,
+                    execution_tracker: Arc::new(ExecutionTracker::new()),
                 })
             },
         )?)
     }
 
-    /// Get the TaskLocals to use for this actor.
-    /// Returns either the shared TaskLocals or this actor's own TaskLocals based on configuration.
-    fn get_task_locals(&self, py: Python) -> &pyo3_async_runtimes::TaskLocals {
-        self.task_locals
-            .as_ref()
-            .unwrap_or_else(|| shared_task_locals(py))
+    fn cancel_tasks_and_stop_python_loop(
+        py: Python<'_>,
+        task_locals: &pyo3_async_runtimes::TaskLocals,
+    ) -> PyResult<()> {
+        let asyncio = py.import("asyncio")?;
+        let event_loop = task_locals.event_loop(py);
+        let tasks = asyncio.call_method1("all_tasks", (&event_loop,))?;
+        let mut has_tasks = false;
+        for task in tasks.try_iter()? {
+            let task = task?;
+            let cancel = task.getattr("cancel")?;
+            event_loop.call_method1("call_soon_threadsafe", (cancel,))?;
+            has_tasks = true;
+        }
+        if has_tasks {
+            asyncio
+                .call_method1(
+                    "run_coroutine_threadsafe",
+                    (asyncio.call_method1("sleep", (0,))?, &event_loop),
+                )?
+                .call_method0("result")?;
+        }
+        let stop = event_loop.getattr("stop")?;
+        event_loop.call_method1("call_soon_threadsafe", (stop,))?;
+        Ok(())
+    }
+
+    fn cancel_pending_python_tasks_and_stop_loop(&self) -> anyhow::Result<()> {
+        let task_locals = &self.task_locals;
+        monarch_with_gil_blocking(|py| -> anyhow::Result<()> {
+            Self::cancel_tasks_and_stop_python_loop(py, task_locals)
+                .map_err(|err| anyhow::Error::from(SerializablePyErr::from(py, &err)))?;
+            Ok(())
+        })
+    }
+
+    /// Get-or-create the actor's cached `PyInstance`, injecting a clone of
+    /// the execution tracker (PE-1) so `_Actor.handle` can bracket each
+    /// invocation. All four `self.instance` creation sites route through
+    /// this so the tracker is never silently absent -- notably the
+    /// supervision path, which can run before the first endpoint.
+    fn ensure_py_instance(
+        &mut self,
+        py: Python<'_>,
+        src: impl Into<crate::context::PyInstance>,
+    ) -> Py<crate::context::PyInstance> {
+        let tracker = self.execution_tracker.clone();
+        self.instance
+            .get_or_insert_with(|| {
+                let mut inst: crate::context::PyInstance = src.into();
+                inst.set_execution_tracker(tracker);
+                inst.into_pyobject(py).unwrap().into()
+            })
+            .clone_ref(py)
     }
 
     /// Bootstrap the root client actor, creating a new proc for it.
@@ -894,30 +1177,31 @@ pub(crate) fn root_client_actor(py: Python<'_>) -> &'static Instance<PythonActor
 #[async_trait]
 impl Actor for PythonActor {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        // PE-1: install the read side eagerly so the actor reports
+        // `execution` from its first handled message. The callback runs on
+        // the introspect task (off the actor loop) and only reads `Arc`
+        // state (PE-3), so it is `Send + Sync`, non-blocking, and infallible.
+        let tracker = self.execution_tracker.clone();
+        this.set_attrs_snapshot(move || {
+            let mut attrs = hyperactor_config::Attrs::new();
+            attrs.set(EXECUTION, tracker.snapshot());
+            attrs
+        });
+
         if let PythonActorDispatchMode::Queue { receiver, .. } = &mut self.dispatch_mode {
             let receiver = receiver.take().unwrap();
 
             monarch_with_gil(|py| {
-                let self_instance = self
-                    .instance
-                    .get_or_insert_with(|| {
-                        let inst: crate::context::PyInstance = this.into();
-                        inst.into_pyobject(py).unwrap().into()
-                    })
-                    .clone_ref(py);
+                let self_instance = self.ensure_py_instance(py, this);
+                let actor_mesh_mod = py.import("monarch._src.actor.actor_mesh")?;
 
-                let tl = self
-                    .task_locals
-                    .as_ref()
-                    .unwrap_or_else(|| shared_task_locals(py));
-                let awaitable = self.actor.call_method(
-                    py,
+                let tl = &self.task_locals;
+                let awaitable = actor_mesh_mod.call_method(
                     "_dispatch_loop",
-                    (receiver, self_instance),
+                    (self.actor.clone_ref(py), receiver, self_instance),
                     None,
                 )?;
-                let future =
-                    pyo3_async_runtimes::into_future_with_locals(tl, awaitable.into_bound(py))?;
+                let future = pyo3_async_runtimes::into_future_with_locals(tl, awaitable)?;
                 tokio::spawn(async move {
                     if let Err(e) = future.await {
                         tracing::error!("message loop error: {}", e);
@@ -985,15 +1269,20 @@ impl Actor for PythonActor {
             if awaitable.is_none() {
                 Ok(None)
             } else {
-                pyo3_async_runtimes::into_future_with_locals(self.get_task_locals(py), awaitable)
+                pyo3_async_runtimes::into_future_with_locals(&self.task_locals, awaitable)
                     .map(Some)
                     .map_err(anyhow::Error::from)
             }
         })
-        .await?;
-        if let Some(future) = future {
-            future.await.map_err(anyhow::Error::from)?;
-        }
+        .await;
+        let cleanup_result = match future {
+            Ok(Some(future)) => future.await.map(|_| ()).map_err(anyhow::Error::from),
+            Ok(None) => Ok(()),
+            Err(err) => Err(err),
+        };
+        let loop_shutdown_result = self.cancel_pending_python_tasks_and_stop_loop();
+        cleanup_result?;
+        loop_shutdown_result?;
         Ok(())
     }
 
@@ -1182,12 +1471,6 @@ fn create_task_locals() -> pyo3_async_runtimes::TaskLocals {
     })
 }
 
-/// Get the shared TaskLocals, creating it if necessary.
-fn shared_task_locals(py: Python) -> &'static pyo3_async_runtimes::TaskLocals {
-    static SHARED_TASK_LOCALS: OnceLock<pyo3_async_runtimes::TaskLocals> = OnceLock::new();
-    Python::detach(py, || SHARED_TASK_LOCALS.get_or_init(create_task_locals))
-}
-
 // [Panics in async endpoints]
 // This class exists to solve a deadlock when an async endpoint calls into some
 // Rust code that panics.
@@ -1268,10 +1551,7 @@ impl PythonActor {
         let (sender, receiver) = oneshot::channel();
 
         let future = monarch_with_gil(|py| -> Result<_, SerializablePyErr> {
-            let inst = self.instance.get_or_insert_with(|| {
-                let inst: crate::context::PyInstance = cx.into();
-                inst.into_pyobject(py).unwrap().into()
-            });
+            let inst = self.ensure_py_instance(py, cx);
 
             let awaitable = self.actor.call_method(
                 py,
@@ -1291,13 +1571,11 @@ impl PythonActor {
                 None,
             )?;
 
-            let tl = self
-                .task_locals
-                .as_ref()
-                .unwrap_or_else(|| shared_task_locals(py));
-
-            pyo3_async_runtimes::into_future_with_locals(tl, awaitable.into_bound(py))
-                .map_err(|err| err.into())
+            pyo3_async_runtimes::into_future_with_locals(
+                &self.task_locals,
+                awaitable.into_bound(py),
+            )
+            .map_err(|err| err.into())
         })
         .await?;
 
@@ -1323,10 +1601,7 @@ impl PythonActor {
         let resolved = message.resolve_indirect_call(cx).await?;
 
         let queued_msg = monarch_with_gil(|py| -> anyhow::Result<QueuedMessage> {
-            let inst = self.instance.get_or_insert_with(|| {
-                let inst: crate::context::PyInstance = cx.into();
-                inst.into_pyobject(py).unwrap().into()
-            });
+            let inst = self.ensure_py_instance(py, cx);
 
             let py_context = crate::context::PyContext::new(cx, inst.clone_ref(py));
             let py_context_obj = Py::new(py, py_context)?;
@@ -1373,10 +1648,7 @@ impl Handler<MeshFailure> for PythonActor {
         // `__supervise__` is dispatched under `fake_sync_state` inside
         // `_Actor.__supervise__`, mirroring `__cleanup__`.
         let (display_name, fut) = monarch_with_gil(|py| {
-            let inst = self.instance.get_or_insert_with(|| {
-                let inst: crate::context::PyInstance = cx.into();
-                inst.into_pyobject(py).unwrap().into()
-            });
+            let inst = self.ensure_py_instance(py, cx);
             // Compute display_name here since we can't call self.display_name() due to borrow.
             let display_name: Option<String> = inst.bind(py).str().ok().map(|s| s.to_string());
             let actor_bound = self.actor.bind(py);
@@ -1396,8 +1668,7 @@ impl Handler<MeshFailure> for PythonActor {
                 ),
                 None,
             )?;
-            let fut =
-                pyo3_async_runtimes::into_future_with_locals(self.get_task_locals(py), awaitable)?;
+            let fut = pyo3_async_runtimes::into_future_with_locals(&self.task_locals, awaitable)?;
             anyhow::Ok((display_name, fut))
         })
         .await?;
@@ -1605,6 +1876,10 @@ impl LocalPort {
         port.post(self.instance.deref(), Ok(obj));
         Ok(())
     }
+    fn resolve_and_send(&mut self, obj: Py<PyAny>) -> PyResult<PyPythonTask> {
+        self.send(obj)?;
+        PyPythonTask::new(async { Ok(()) })
+    }
     fn exception(&mut self, e: Py<PyAny>) -> PyResult<()> {
         let port = self.inner.take().expect("use local port once");
         port.post(self.instance.deref(), Err(e));
@@ -1627,6 +1902,15 @@ impl DroppingPort {
     }
 
     fn send(&self, _obj: Py<PyAny>) -> PyResult<()> {
+        Ok(())
+    }
+
+    fn resolve_and_send(&self, obj: Py<PyAny>) -> PyResult<PyPythonTask> {
+        self.send(obj)?;
+        PyPythonTask::new(async { Ok(()) })
+    }
+
+    fn send_message(&self, _message: PythonMessage) -> PyResult<()> {
         Ok(())
     }
 
@@ -1709,6 +1993,12 @@ impl Port {
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 
+    fn send_message(&mut self, message: PythonMessage) -> PyResult<()> {
+        self.port_ref
+            .post_with_headers(&self.instance, self.reply_headers.clone(), message)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    }
+
     fn exception(&mut self, py: Python<'_>, e: Py<PyAny>) -> PyResult<()> {
         let message = PythonMessage::new_from_buf(
             PythonMessageKind::Exception { rank: self.rank },
@@ -1759,8 +2049,6 @@ mod tests {
     use hyperactor::accum::ReducerSpec;
     use hyperactor::accum::StreamingReducerOpts;
     use hyperactor::id::Label;
-    use hyperactor::message::ErasedUnbound;
-    use hyperactor::message::Unbound;
     use hyperactor::testing::ids::test_port_id;
     use hyperactor_mesh::Error as MeshError;
     use hyperactor_mesh::host_mesh::host_agent::ProcState;
@@ -1773,7 +2061,7 @@ mod tests {
     use crate::actor::to_py_error;
 
     #[test]
-    fn test_python_message_bind_unbind() {
+    fn test_python_message_part_codec() {
         let reducer_spec = ReducerSpec {
             typehash: 123,
             builder_params: Some(wirevalue::Any::serialize(&"abcdefg12345".to_string()).unwrap()),
@@ -1793,17 +2081,29 @@ mod tests {
             message: Part::from(vec![1, 2, 3]),
         };
         {
-            let mut erased = ErasedUnbound::try_from_message(message.clone()).unwrap();
-            let mut bindings = vec![];
-            erased
-                .visit_mut::<reference::UnboundPort>(|b| {
-                    bindings.push(b.clone());
+            let mut multipart_message =
+                wirevalue::Any::<wirevalue::encoding::Multipart>::serialize(&message).unwrap();
+            let mut ports = vec![];
+            multipart_message
+                .visit_multipart_parts_mut::<reference::PortRefRepr, anyhow::Error>(|b| {
+                    ports.push(b.clone());
                     Ok(())
                 })
                 .unwrap();
-            assert_eq!(bindings, vec![reference::UnboundPort::from(&port_ref)]);
-            let unbound = Unbound::try_from_message(message.clone()).unwrap();
-            assert_eq!(message, unbound.bind().unwrap());
+            assert_eq!(ports.len(), 1);
+            assert_eq!(ports[0].port_addr(), port_ref.port_addr());
+            assert_eq!(ports[0].reducer_spec(), port_ref.reducer_spec());
+            assert_eq!(
+                ports[0].get_return_undeliverable(),
+                port_ref.get_return_undeliverable()
+            );
+            assert!(!ports[0].unsplit());
+            assert_eq!(
+                message,
+                multipart_message
+                    .deserialized_unchecked::<PythonMessage>()
+                    .unwrap()
+            );
         }
 
         let no_port_message = PythonMessage {
@@ -1816,17 +2116,23 @@ mod tests {
             ..message
         };
         {
-            let mut erased = ErasedUnbound::try_from_message(no_port_message.clone()).unwrap();
-            let mut bindings = vec![];
-            erased
-                .visit_mut::<reference::UnboundPort>(|b| {
-                    bindings.push(b.clone());
+            let mut multipart_message =
+                wirevalue::Any::<wirevalue::encoding::Multipart>::serialize(&no_port_message)
+                    .unwrap();
+            let mut ports = vec![];
+            multipart_message
+                .visit_multipart_parts_mut::<reference::PortRefRepr, anyhow::Error>(|b| {
+                    ports.push(b.clone());
                     Ok(())
                 })
                 .unwrap();
-            assert_eq!(bindings.len(), 0);
-            let unbound = Unbound::try_from_message(no_port_message.clone()).unwrap();
-            assert_eq!(no_port_message, unbound.bind().unwrap());
+            assert_eq!(ports.len(), 0);
+            assert_eq!(
+                no_port_message,
+                multipart_message
+                    .deserialized_unchecked::<PythonMessage>()
+                    .unwrap()
+            );
         }
     }
 

@@ -21,11 +21,11 @@ use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Label;
+use hyperactor::OncePortRefRepr;
 use hyperactor::PortRef;
+use hyperactor::PortRefRepr;
 use hyperactor::RemoteEndpoint as _;
 use hyperactor::Uid;
-use hyperactor::UnboundPort;
-use hyperactor::UnboundPortKind;
 use hyperactor::accum::ReducerMode;
 use hyperactor::context;
 use hyperactor::mailbox::MailboxSender;
@@ -34,8 +34,6 @@ use hyperactor::mailbox::Undeliverable;
 use hyperactor::mailbox::UndeliverableMailboxSender;
 use hyperactor::mailbox::UndeliverableMessageError;
 use hyperactor::mailbox::monitored_return_handle;
-use hyperactor::message::ErasedUnbound;
-use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::ordering::SEQ_INFO;
 use hyperactor::ordering::SeqInfo;
 use hyperactor::port::Port;
@@ -52,7 +50,7 @@ use uuid::Uuid;
 
 use crate::tile::MaterializedTile;
 use crate::tile::Tile;
-use crate::tile::TilingPolicy;
+pub use crate::tile::TilingPolicy;
 
 hyperactor_config::declare_attrs! {
     /// Header stamped on each locally delivered message with the
@@ -82,6 +80,22 @@ hyperactor_config::declare_attrs! {
     /// recipient.
     pub attr CAST_LINEAGE: Vec<usize>;
 }
+
+/// Wire-compatible mirror of `hyperactor_mesh::resource::RankRepr`.
+///
+/// `hyperactor_cast` cannot depend on `hyperactor_mesh` without creating a
+/// crate cycle, but cast delivery still needs to stamp the rank multipart part
+/// for messages whose handlers read rank from the payload. The part is tagged
+/// with `RankRepr`'s typename, so this mirror must match it exactly.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ResourceRankRepr(Option<usize>);
+
+impl Named for ResourceRankRepr {
+    fn typename() -> &'static str {
+        "hyperactor_mesh::resource::RankRepr"
+    }
+}
+
 /// Pure, data-only identifier for a cast domain.
 ///
 /// This type contains no runtime references (e.g. `ActorRef`) and can
@@ -117,6 +131,7 @@ impl CastDomainId {
         members: HashMap<usize, ActorAddr>,
         region: Region,
         tiling_policy: TilingPolicy,
+        headers: Flattrs,
     ) -> anyhow::Result<CastDomainRef> {
         anyhow::ensure!(
             members.len() == region.num_ranks()
@@ -154,8 +169,9 @@ impl CastDomainId {
         let root_tile =
             MaterializedTile::from_value_mesh_with_tile(Tile::from_view(&region), member_mesh);
 
-        domain_ref.entry_point.post(
+        domain_ref.entry_point.port().post_with_headers(
             cx,
+            headers,
             CreateCastDomain {
                 cast_domain_id: self,
                 region,
@@ -269,15 +285,15 @@ impl CastDomainRef {
     /// `headers` are the destination envelope headers supplied by the caller.
     /// The cast layer stamps cast-owned fields on top before sending the
     /// [`CastMessage`] through the domain entry point.
-    pub fn cast<M: hyperactor::message::Unbind + Serialize + Named>(
+    pub fn cast<M: Serialize + Named>(
         &self,
         cx: &impl context::Actor,
         headers: Flattrs,
         message: M,
     ) -> anyhow::Result<()> {
-        let data = ErasedUnbound::try_from_message(message)?;
+        let data = wirevalue::Any::<wirevalue::encoding::Multipart>::serialize(&message)?;
         let sender = cx.mailbox().actor_addr().clone();
-        let dest_port = <IndexedErasedUnbound<M>>::port();
+        let dest_port = M::port();
         let (session_id, seqs) = self.seqs_for_cast(cx, dest_port)?;
 
         let cast_headers = headers.clone();
@@ -330,13 +346,17 @@ impl CastDomainRef {
         dest_port: u64,
     ) -> Result<(Uuid, ValueMesh<u64>)> {
         let sequencer = cx.instance().sequencer();
-        let seqs = self.members.as_ref().map_into(|member| {
-            let port = member.port_addr(Port::from(dest_port));
+
+        let mut seqs: ValueMesh<u64> = self.members.as_ref().map_into(|member| {
+            let port = member.port_addr(Port::handler_id(dest_port, None));
             let SeqInfo::Session { session_id: _, seq } = sequencer.assign_seq(&port) else {
                 unreachable!("assign_seq always returns SeqInfo::Session");
             };
             seq
         });
+
+        seqs.compress_adjacent_in_place();
+
         Ok((sequencer.session_id(), seqs))
     }
 }
@@ -376,7 +396,7 @@ fn next_tiles(
 ///
 /// One `CastActor` is expected to run on every proc under this name. Internal
 /// setup uses this known address to route setup commands to child tile roots.
-const CAST_ACTOR_NAME: &str = "cast";
+pub const CAST_ACTOR_NAME: &str = "cast";
 
 /// System actor that establishes casting domains.
 ///
@@ -619,7 +639,7 @@ impl Handler<CreateCastDomain> for CastActor {
     }
 }
 
-/// Rewrite reply ports in the message bindings so that downstream
+/// Rewrite reply port parts in the serialized message so that downstream
 /// actors reply through local proxy ports on this CastActor instead
 /// of directly to the original sender. Each proxy port reduces
 /// replies from downstream next hops plus the optional local delivery,
@@ -628,49 +648,58 @@ impl Handler<CreateCastDomain> for CastActor {
 /// Ported from `hyperactor_mesh::comm::split_ports`.
 fn split_ports(
     cx: &Context<'_, CastActor>,
-    data: &mut ErasedUnbound,
+    data: &mut wirevalue::Any<wirevalue::encoding::Multipart>,
     num_next_hops: usize,
     deliver_here: bool,
 ) -> Result<()> {
-    data.visit_mut::<UnboundPort>(
-        |UnboundPort(port_id, reducer_spec, return_undeliverable, kind, unsplit)| {
-            if *unsplit {
-                return Ok(());
-            }
+    data.visit_multipart_parts_mut::<PortRefRepr, anyhow::Error>(|port| {
+        if port.unsplit() {
+            return Ok(());
+        }
 
-            let reducer_mode = match kind {
-                UnboundPortKind::Streaming(opts) => {
-                    ReducerMode::Streaming(opts.clone().unwrap_or_default())
-                }
-                UnboundPortKind::Once if reducer_spec.is_none() => {
-                    // OncePorts without reducers cannot be split —
-                    // pass through as-is.  Using the port more than
-                    // once will cause a delivery error downstream.
-                    return Ok(());
-                }
-                UnboundPortKind::Once => {
-                    let peer_count = num_next_hops + if deliver_here { 1 } else { 0 };
-                    ReducerMode::Once(peer_count)
-                }
-            };
+        let split = port.port_addr().split(
+            cx,
+            port.reducer_spec().clone(),
+            ReducerMode::Streaming(port.streaming_opts().clone()),
+            port.get_return_undeliverable(),
+        )?;
 
-            let split = port_id.split(
-                cx,
-                reducer_spec.clone(),
-                reducer_mode,
-                *return_undeliverable,
-            )?;
+        #[cfg(test)]
+        {
+            tests::collect_split_port(port.port_addr(), &split, deliver_here);
+        }
 
-            #[cfg(test)]
-            {
-                tests::collect_split_port(port_id, &split, deliver_here);
-            }
+        port.update_port_addr(split);
+        Ok(())
+    })?;
 
-            *port_id = split;
-            Ok(())
-        },
-    )
+    data.visit_multipart_parts_mut::<OncePortRefRepr, anyhow::Error>(|port| {
+        if port.unsplit() || port.reducer_spec().is_none() {
+            // OncePorts without reducers cannot be split. Pass through as-is.
+            // Using the port more than once will cause a delivery error downstream.
+            return Ok(());
+        }
+
+        let peer_count = num_next_hops + if deliver_here { 1 } else { 0 };
+        let split = port.port_addr().split(
+            cx,
+            port.reducer_spec().clone(),
+            ReducerMode::Once(peer_count),
+            true,
+        )?;
+
+        #[cfg(test)]
+        {
+            tests::collect_split_port(port.port_addr(), &split, deliver_here);
+        }
+
+        port.update_port_addr(split);
+        Ok(())
+    })?;
+
+    Ok(())
 }
+
 /// Test-only forwarding path metadata.
 ///
 /// In production this is zero-sized and optimized away. In tests, each
@@ -738,7 +767,7 @@ struct CastMessage {
     /// The target port index on each destination actor.
     dest_port: u64,
     /// The serialized message data.
-    data: ErasedUnbound,
+    data: wirevalue::Any<wirevalue::encoding::Multipart>,
 }
 
 wirevalue::register_type!(CastMessage);
@@ -773,6 +802,17 @@ impl Handler<CastMessage> for CastActor {
 
         // Deliver to destination actor.
         {
+            let mut local_data = data.clone();
+
+            let rank = domain.point_in_domain.rank();
+
+            local_data.visit_multipart_parts_mut::<ResourceRankRepr, anyhow::Error>(
+                |ResourceRankRepr(resource_rank)| {
+                    *resource_rank = Some(rank);
+                    Ok(())
+                },
+            )?;
+
             let seq = *message
                 .seqs
                 .get_by_base_rank(domain.base_rank_in_domain)
@@ -794,14 +834,16 @@ impl Handler<CastMessage> for CastActor {
             #[cfg(test)]
             headers.set(CAST_LINEAGE, local_lineage.ranks());
 
-            let dest = domain.local_actor.port_addr(Port::from(message.dest_port));
+            let dest = domain
+                .local_actor
+                .port_addr(Port::handler_id(message.dest_port, None));
             hyperactor::mailbox::headers::stamp_sender_actor_id(
                 &mut headers,
                 &seq_info,
                 &dest,
                 &message.sender,
             );
-            cx.post_with_external_seq_info(dest, headers, wirevalue::Any::serialize(&data)?);
+            cx.post_with_external_seq_info(dest, headers, local_data.erase_encoding());
         }
 
         for next_hop in &domain.next_hops {
@@ -890,11 +932,9 @@ mod tests {
     use std::sync::OnceLock;
     use std::time::Duration;
 
-    use hyperactor::Bind;
     use hyperactor::Client;
     use hyperactor::PortAddr;
     use hyperactor::ProcAddr;
-    use hyperactor::Unbind;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::proc::Proc;
     use ndslice::Shape;
@@ -1071,8 +1111,8 @@ mod tests {
 
     // -- Integration test infrastructure --
 
-    /// A simple castable message type for testing delivery.
-    #[derive(Debug, Clone, Serialize, Deserialize, typeuri::Named, Bind, Unbind)]
+    /// A simple message type for testing cast delivery.
+    #[derive(Debug, Clone, Serialize, Deserialize, typeuri::Named)]
     struct TestDelivery {
         payload: String,
     }
@@ -1095,9 +1135,7 @@ mod tests {
         Eq,
         Serialize,
         Deserialize,
-        typeuri::Named,
-        Bind,
-        Unbind
+        typeuri::Named
     )]
     struct TestDeliveryHistories {
         by_proc: BTreeMap<String, Vec<TestDeliveryRecord>>,
@@ -1122,9 +1160,8 @@ mod tests {
         }
     }
 
-    #[derive(Debug, Serialize, Deserialize, typeuri::Named, Bind, Unbind)]
+    #[derive(Debug, Serialize, Deserialize, typeuri::Named)]
     struct GetHistory {
-        #[binding(include)]
         reply_to: hyperactor::OncePortRef<TestDeliveryHistories>,
     }
     wirevalue::register_type!(GetHistory);
@@ -1133,8 +1170,8 @@ mod tests {
     #[derive(Debug, Default)]
     #[hyperactor::export(
         handlers = [
-            TestDelivery { cast = true },
-            GetHistory { cast = true },
+            TestDelivery,
+            GetHistory,
         ],
     )]
     struct TestReceiver {
@@ -1329,6 +1366,7 @@ mod tests {
                     self.domain_members(),
                     region,
                     TilingPolicy::BlockPartitioning,
+                    Flattrs::new(),
                 )
                 .unwrap()
         }
@@ -1341,7 +1379,13 @@ mod tests {
 
         fn root_domain_with_policy(&self, region: Region, policy: TilingPolicy) -> CastDomainRef {
             CastDomainId::new()
-                .materialize(&self.client, self.member_ids.clone(), region, policy)
+                .materialize(
+                    &self.client,
+                    self.member_ids.clone(),
+                    region,
+                    policy,
+                    Flattrs::new(),
+                )
                 .unwrap()
         }
 
@@ -1728,8 +1772,8 @@ mod tests {
                 seqs: ValueMesh::new(Region::from(Shape::unity()), vec![1]).unwrap(),
                 lineage: Vec::new(),
                 headers: Flattrs::new(),
-                dest_port: <IndexedErasedUnbound<TestDelivery>>::port(),
-                data: ErasedUnbound::try_from_message(TestDelivery {
+                dest_port: TestDelivery::port(),
+                data: wirevalue::Any::<wirevalue::encoding::Multipart>::serialize(&TestDelivery {
                     payload: "hello".to_string(),
                 })
                 .unwrap(),
@@ -2031,9 +2075,7 @@ mod tests {
         Eq,
         Serialize,
         Deserialize,
-        typeuri::Named,
-        Bind,
-        Unbind
+        typeuri::Named
     )]
     struct TestReplyCounts {
         counts_by_proc: BTreeMap<String, u64>,
@@ -2096,11 +2138,10 @@ mod tests {
         }
     }
 
-    /// A castable message with a reply port for testing port splitting.
-    #[derive(Debug, Clone, Serialize, Deserialize, typeuri::Named, Bind, Unbind)]
+    /// A message with a reply port for testing port splitting.
+    #[derive(Debug, Clone, Serialize, Deserialize, typeuri::Named)]
     struct TestRequestWithReply {
         payload: String,
-        #[binding(include)]
         reply_to: hyperactor::OncePortRef<TestReplyCounts>,
     }
     wirevalue::register_type!(TestRequestWithReply);
@@ -2109,7 +2150,7 @@ mod tests {
     /// through the (potentially split) reply port.
     #[derive(Debug, Default)]
     #[hyperactor::export(
-        handlers = [TestRequestWithReply { cast = true }],
+        handlers = [TestRequestWithReply],
     )]
     struct SplitPortReceiver;
 

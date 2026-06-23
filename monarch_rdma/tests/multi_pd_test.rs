@@ -19,19 +19,18 @@ use monarch_rdma::backend::cuda_test_utils::ReceiverActor;
 use monarch_rdma::backend::cuda_test_utils::ReceiverMessageClient;
 use monarch_rdma::backend::cuda_test_utils::SenderActor;
 use monarch_rdma::backend::cuda_test_utils::SenderMessageClient;
-use monarch_rdma::backend::ibverbs::device_selection::select_optimal_ibv_device;
+use monarch_rdma::backend::ibverbs::device_selection::IbvDeviceTarget;
+use monarch_rdma::backend::ibverbs::device_selection::get_cuda_device_to_ibv_device;
 use ndslice::ViewExt;
 
 /// Finds two CUDA devices that map to different RDMA NICs via PCI topology.
 /// Returns `Some((device_a, device_b))` or `None` if all devices share one NIC.
 fn find_devices_on_different_nics() -> Option<(i32, i32)> {
-    let mut gpu_to_nic: Vec<(i32, String)> = Vec::new();
-    for gpu_idx in 0..8 {
-        let hint = format!("cuda:{gpu_idx}");
-        if let Some(device) = select_optimal_ibv_device(Some(&hint)) {
-            gpu_to_nic.push((gpu_idx, device.name().to_string()));
-        }
-    }
+    let gpu_to_nic: Vec<(i32, String)> = get_cuda_device_to_ibv_device()
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, nic)| nic.as_ref().map(|d| (idx as i32, d.name().to_string())))
+        .collect();
 
     for i in 0..gpu_to_nic.len() {
         for j in (i + 1)..gpu_to_nic.len() {
@@ -103,14 +102,14 @@ async fn test_multi_pd_segment_registration() -> Result<(), anyhow::Error> {
         .spawn_service(
             instance,
             "rdma_manager",
-            &Some(IbvConfig::targeting(&format!("cuda:{device_a}"))),
+            &Some(IbvConfig::targeting(IbvDeviceTarget::gpu(device_a as u32))),
         )
         .await?;
     let _rdma_recv_b: ActorMesh<RdmaManagerActor> = receiver_b_proc
         .spawn_service(
             instance,
             "rdma_manager",
-            &Some(IbvConfig::targeting(&format!("cuda:{device_b}"))),
+            &Some(IbvConfig::targeting(IbvDeviceTarget::gpu(device_b as u32))),
         )
         .await?;
 

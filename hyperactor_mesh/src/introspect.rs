@@ -117,19 +117,57 @@
 //! ## Derive invariants (DP-*)
 //!
 //! - **DP-1 (derive-precedence):** `derive_properties` dispatches
-//!   on `node_type` first, then falls back to `error_code`,
-//!   then `status`, then unknown. This order is the canonical
-//!   detection chain.
+//!   on `status` first (DP-5), then `node_type`, then `error_code`,
+//!   then unknown. This order is the canonical detection chain.
 //! - **DP-2 (derive-totality-on-parse-failure):**
 //!   `derive_properties` is total; malformed or incoherent attrs
 //!   never panic and map to `NodeProperties::Error` with detail.
 //! - **DP-3 (derive-precedence-stability):**
 //!   `derive_properties` detection order is stable and explicit:
-//!   `node_type` > `error_code` > `status` > unknown.
+//!   `status` > `node_type` > `error_code` > unknown.
 //! - **DP-4 (error-on-decode-failure):** Any view decode or
 //!   invariant failure maps to a deterministic
 //!   `NodeProperties::Error` with a `malformed_*` code family,
 //!   without panic.
+//! - **DP-5 (actor-view classification safety):** a payload
+//!   carrying the core `STATUS` key always decodes as `Actor`.
+//!   `STATUS` is set only by the blanket Actor builder
+//!   (`build_actor_attrs`) and is core-owned, so the actor-attrs
+//!   snapshot seam can neither remove nor override it (AS-2), and no
+//!   non-actor payload (root/host/proc/error) carries it. Therefore
+//!   an actor cannot inject `node_type`/`error_code` via the seam to
+//!   spoof a different node kind.
+//!
+//! ## Execution presentation (EX-*)
+//!
+//! These govern the `execution` field on `NodeProperties::Actor` — an
+//! actor's in-flight handler execution, reported through the generic
+//! actor-attrs snapshot seam (`AS-*` in `hyperactor::introspect`) and
+//! decoded from the `EXECUTION` attr in `derive_properties`.
+//!
+//! - **EX-1 (unsupported-vs-idle):** `execution: None` means the actor
+//!   does not report execution (no snapshot installed) -- *unsupported*,
+//!   not idle. A supported-but-idle actor is `Some` with
+//!   `active_count == 0`.
+//! - **EX-2 (partial-detail, never absence):** `complete == false`
+//!   means the per-handler detail was momentarily unavailable on that
+//!   read (e.g. a non-blocking tracker miss); `active_count` stays
+//!   authoritative and the field stays `Some` -- contention never
+//!   collapses `execution` to `None`.
+//! - **EX-3 (observational, not transactional):** `active_count` and
+//!   `active_handlers` are independent point-in-time reads;
+//!   `active_count` need not equal `sum(active_handlers[*].active_count)`
+//!   on a given poll (cf. IO-3). Consumers must not derive one from the
+//!   other.
+//! - **EX-4 (deterministic truncation):** `active_handlers` is ordered
+//!   oldest-first with a stable tie-break on `name`; `truncated == true`
+//!   means it is a prefix of the N oldest while `active_count` remains
+//!   the full total.
+//! - **EX-5 (post-mortem semantics):** a terminated actor's stored
+//!   snapshot persists its last `live_actor_payload`, so `execution`
+//!   reflects state *as of termination*. The producer drains in-flight
+//!   entries on stop (try/finally), so a stopped actor reports
+//!   `active_count == 0`.
 //!
 //! ## Inbound ordering presentation (IO-*)
 //!
@@ -302,6 +340,7 @@
 
 pub mod dto;
 
+use hyperactor_config::AttrValue;
 use hyperactor_config::Attrs;
 use hyperactor_config::INTROSPECT;
 use hyperactor_config::IntrospectAttr;
@@ -1005,6 +1044,9 @@ pub enum NodeProperties {
         is_system: bool,
         inbound_ordering: Option<Box<InboundOrdering>>,
         failure_info: Option<FailureInfo>,
+        /// In-flight handler execution (EX-*). `None` means the actor
+        /// does not report execution (unsupported), not idle.
+        execution: Option<Box<Execution>>,
     },
     /// Error sentinel returned when a child reference cannot be resolved.
     Error { code: String, message: String },
@@ -1105,6 +1147,68 @@ impl From<hyperactor::ordering::OrderingSnapshot> for InboundOrdering {
     }
 }
 
+/// One handler with in-flight invocations, aggregated by name (EX-4).
+// Serialize/Deserialize required for the `EXECUTION` attr and for
+// `wirevalue` messaging via the enclosing `Execution`. HTTP
+// serialization uses dto::ActiveHandlerDto, not these derives.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
+pub struct ActiveHandler {
+    /// Handler name (e.g. a Python endpoint method name).
+    pub name: String,
+    /// In-flight invocations of this handler.
+    pub active_count: u64,
+    /// Start time of the oldest in-flight invocation of this handler.
+    pub oldest_since: SystemTime,
+}
+
+/// An actor's in-flight handler execution, reported through the generic
+/// actor-attrs snapshot seam (`AS-*`). Carried both as the `EXECUTION`
+/// attr value and as the `NodeProperties::Actor.execution` field; core
+/// hyperactor does not interpret it. See EX-* in module doc.
+// Serialize/Deserialize required by wirevalue::register_type! and the
+// `EXECUTION` attr. HTTP serialization uses dto::ExecutionDto.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, AttrValue)]
+pub struct Execution {
+    /// EX-2/EX-3: handler invocations currently in flight. Lock-free
+    /// count, always present; need not equal
+    /// `sum(active_handlers[*].active_count)`.
+    pub active_count: u64,
+    /// EX-4: per-handler detail, oldest-first; a prefix of the N oldest
+    /// when `truncated`.
+    pub active_handlers: Vec<ActiveHandler>,
+    /// EX-2: `true` iff the per-handler detail was captured on this read.
+    pub complete: bool,
+    /// EX-4: `true` iff `active_handlers` is a prefix of the N oldest
+    /// (`active_count` stays the full total).
+    pub truncated: bool,
+}
+wirevalue::register_type!(Execution);
+
+impl fmt::Display for Execution {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", serde_json::to_string(self).unwrap())
+    }
+}
+
+impl FromStr for Execution {
+    type Err = serde_json::Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        serde_json::from_str(s)
+    }
+}
+
+// The mesh-owned `EXECUTION` attr. Populated by a runtime via the
+// generic seam (e.g. `monarch_hyperactor` for Python actors) and decoded
+// in `derive_properties`; core hyperactor never interprets it.
+declare_attrs! {
+    /// In-flight handler execution for an actor.
+    @meta(INTROSPECT = IntrospectAttr {
+        name: "execution".into(),
+        desc: "In-flight handler execution for an actor".into(),
+    })
+    pub attr EXECUTION: Execution;
+}
+
 /// Mesh-layer conversion from a typed attrs view to `NodeProperties`.
 ///
 /// Defined here so that `hyperactor` views (e.g. `ActorAttrsView`) can
@@ -1189,16 +1293,21 @@ impl IntoNodeProperties for hyperactor::introspect::ActorAttrsView {
                 .inbound_ordering
                 .map(|io| Box::new(InboundOrdering::from(io))),
             failure_info,
+            // `ActorAttrsView` (core) is execution-agnostic; the mesh
+            // decodes `execution` from the full attrs in
+            // `derive_properties` (the seam keystone). Default to None.
+            execution: None,
         }
     }
 }
 
 /// Derive `NodeProperties` from a JSON-serialized attrs string.
 ///
-/// Detection precedence (DP-1, DP-3):
-/// 1. `node_type` = "root" / "host" / "proc" → corresponding variant
-/// 2. `error_code` present → Error
-/// 3. `STATUS` key present → Actor
+/// Detection precedence (DP-1, DP-3, DP-5):
+/// 1. `STATUS` key present → Actor (DP-5: a STATUS-bearing payload always
+///    decodes as Actor, so the actor-attrs seam cannot spoof node kind)
+/// 2. `node_type` = "root" / "host" / "proc" → corresponding variant
+/// 3. `error_code` present → Error
 /// 4. none of the above → Error("unknown_node_type")
 ///
 /// DP-2 / DP-4: this function is total — malformed attrs never
@@ -1206,6 +1315,9 @@ impl IntoNodeProperties for hyperactor::introspect::ActorAttrsView {
 /// with a `malformed_*` code.
 /// AV-3 / IA-6: view decoders ignore unknown keys.
 pub fn derive_properties(attrs_json: &str) -> NodeProperties {
+    use hyperactor::introspect::ERROR_CODE;
+    use hyperactor::introspect::STATUS;
+
     let attrs: Attrs = match serde_json::from_str(attrs_json) {
         Ok(a) => a,
         Err(_) => {
@@ -1215,6 +1327,33 @@ pub fn derive_properties(attrs_json: &str) -> NodeProperties {
             };
         }
     };
+
+    // DP-5 (actor-view classification safety): the core `STATUS` key is set
+    // only by the blanket Actor builder (`build_actor_attrs`) and is
+    // core-owned, so the actor-attrs snapshot seam can neither remove nor
+    // override it (AS-2), and no non-actor payload carries it. Classifying
+    // STATUS-present as `Actor` *before* `node_type`/`error_code` means a
+    // snapshot-injected `node_type`/`error_code` cannot make a blanket actor
+    // decode as Root/Proc/Error.
+    if attrs.get(STATUS).is_some() {
+        return match hyperactor::introspect::ActorAttrsView::from_attrs(&attrs) {
+            Ok(v) => {
+                // Keystone: `ActorAttrsView` (core) ignores the
+                // mesh-owned `EXECUTION` key, so decode it here from the
+                // full attrs and layer it onto the Actor node (EX-1:
+                // absent → None).
+                let mut props = v.into_node_properties();
+                if let NodeProperties::Actor { execution, .. } = &mut props {
+                    *execution = attrs.get(EXECUTION).cloned().map(Box::new);
+                }
+                props
+            }
+            Err(e) => NodeProperties::Error {
+                code: "malformed_actor".into(),
+                message: e.to_string(),
+            },
+        };
+    }
 
     let node_type = attrs.get(NODE_TYPE).cloned().unwrap_or_default();
 
@@ -1241,11 +1380,8 @@ pub fn derive_properties(attrs_json: &str) -> NodeProperties {
             },
         },
         _ => {
-            // DP-1: error_code → Error, STATUS present → Actor,
-            // else → Error("unknown_node_type").
-            use hyperactor::introspect::ERROR_CODE;
-            use hyperactor::introspect::STATUS;
-
+            // STATUS-bearing payloads decoded as Actor above (DP-5), so
+            // here STATUS is absent: error_code → Error, else unknown.
             if attrs.get(ERROR_CODE).is_some() {
                 return match ErrorAttrsView::from_attrs(&attrs) {
                     Ok(v) => v.into_node_properties(),
@@ -1256,19 +1392,9 @@ pub fn derive_properties(attrs_json: &str) -> NodeProperties {
                 };
             }
 
-            if attrs.get(STATUS).is_none() {
-                return NodeProperties::Error {
-                    code: "unknown_node_type".into(),
-                    message: format!("unrecognized node_type: {:?}", node_type),
-                };
-            }
-
-            match hyperactor::introspect::ActorAttrsView::from_attrs(&attrs) {
-                Ok(v) => v.into_node_properties(),
-                Err(e) => NodeProperties::Error {
-                    code: "malformed_actor".into(),
-                    message: e.to_string(),
-                },
+            NodeProperties::Error {
+                code: "unknown_node_type".into(),
+                message: format!("unrecognized node_type: {:?}", node_type),
             }
         }
     }
@@ -1344,6 +1470,7 @@ mod tests {
                 "last_nonzero_queue_depth_age_ms",
                 LAST_NONZERO_QUEUE_DEPTH_AGE_MS.attrs(),
             ),
+            ("execution", EXECUTION.attrs()),
         ];
 
         for (expected_name, meta) in &cases {
@@ -1688,6 +1815,49 @@ mod tests {
         ));
     }
 
+    /// DP-5: a snapshot-injected `node_type` cannot make a STATUS-bearing
+    /// (blanket) actor decode as a non-Actor node.
+    #[test]
+    fn test_derive_properties_status_first_ignores_injected_node_type() {
+        use hyperactor::introspect::ACTOR_TYPE;
+        use hyperactor::introspect::INSTANCE_ID;
+        use hyperactor::introspect::STATUS;
+
+        let mut attrs = Attrs::new();
+        attrs.set(STATUS, "running".into());
+        attrs.set(ACTOR_TYPE, "TestActor".into());
+        attrs.set(INSTANCE_ID, "01900000-0000-7000-8000-000000000001".into());
+        // Hostile injection via the actor-attrs seam.
+        attrs.set(NODE_TYPE, "root".into());
+        let json = serde_json::to_string(&attrs).unwrap();
+        assert!(matches!(
+            derive_properties(&json),
+            NodeProperties::Actor { .. }
+        ));
+    }
+
+    /// DP-5: a snapshot-injected `error_code` cannot make a STATUS-bearing
+    /// actor decode as an Error node.
+    #[test]
+    fn test_derive_properties_status_first_ignores_injected_error_code() {
+        use hyperactor::introspect::ACTOR_TYPE;
+        use hyperactor::introspect::ERROR_CODE;
+        use hyperactor::introspect::INSTANCE_ID;
+        use hyperactor::introspect::STATUS;
+
+        let mut attrs = Attrs::new();
+        attrs.set(STATUS, "running".into());
+        attrs.set(ACTOR_TYPE, "TestActor".into());
+        attrs.set(INSTANCE_ID, "01900000-0000-7000-8000-000000000001".into());
+        // Hostile injection via the actor-attrs seam.
+        attrs.set(ERROR_CODE, "not_found".into());
+        let json = serde_json::to_string(&attrs).unwrap();
+        assert!(matches!(
+            derive_properties(&json),
+            NodeProperties::Actor { .. }
+        ));
+    }
+
     /// Injects an unknown key into serialized attrs JSON and
     /// verifies that derive_properties still decodes successfully.
     /// Exercises IA-6 (open-row-forward-compat) for each view.
@@ -1845,6 +2015,7 @@ mod tests {
                     is_system: false,
                     inbound_ordering: None,
                     failure_info: None,
+                    execution: None,
                 },
                 children: vec![],
                 parent: Some(NodeRef::Proc(proc_id.clone())),
