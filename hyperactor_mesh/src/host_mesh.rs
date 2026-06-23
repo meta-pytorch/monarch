@@ -53,6 +53,7 @@ use hyperactor::accum::StreamingReducerOpts;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::id::Label;
 use hyperactor::id::Uid;
+use hyperactor_cast::cast_actor::CastActor;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::declare_attrs;
@@ -75,6 +76,7 @@ use hyperactor::ActorAddr;
 use hyperactor::ProcAddr;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::context;
+use hyperactor_cast::cast_actor::CAST_ACTOR_NAME;
 use ndslice::Extent;
 use ndslice::Region;
 use ndslice::ViewExt;
@@ -87,6 +89,7 @@ use serde::Serialize;
 use tracing::Instrument;
 use typeuri::Named;
 
+use crate::ActorMeshRef;
 use crate::Bootstrap;
 use crate::ProcMesh;
 use crate::ValueMesh;
@@ -96,13 +99,13 @@ use crate::bootstrap::ProcBind;
 use crate::host::Host;
 use crate::host::LocalProcManager;
 use crate::host::SERVICE_PROC_NAME;
-use crate::host_mesh::host_agent::DrainHostClient;
 pub use crate::host_mesh::host_agent::HostAgent;
 use crate::host_mesh::host_agent::HostAgentMode;
 use crate::host_mesh::host_agent::ProcManagerSpawnFn;
 use crate::host_mesh::host_agent::ProcState;
 use crate::host_mesh::host_agent::ShutdownHostClient;
 use crate::mesh_controller::ProcMeshController;
+use crate::mesh_id::ActorMeshId;
 use crate::mesh_id::HostMeshId;
 use crate::mesh_id::ProcMeshId;
 use crate::mesh_id::ResourceId;
@@ -187,24 +190,10 @@ impl HostRef {
         ResourceId::proc_addr_from_name(self.0.clone(), SERVICE_PROC_NAME)
     }
 
-    /// Request an orderly teardown of this host and all procs it
-    /// spawned.
-    ///
-    /// This resolves the per-child grace **timeout** and the maximum
-    /// termination **concurrency** from config and sends a
-    /// [`ShutdownHost`] message to the host's agent. The agent then:
-    ///
-    /// 1) Performs a graceful termination pass over all tracked
-    ///    children (TERM → wait(`timeout`) → KILL), with at most
-    ///    `max_in_flight` running concurrently.
-    /// 2) After the pass completes, **drops the Host**, which also
-    ///    drops the embedded `BootstrapProcManager`. The manager's
-    ///    `Drop` serves as a last-resort safety net (it SIGKILLs
-    ///    anything that somehow remains).
-    ///
-    /// This call returns `Ok(()))` only after the agent has finished
-    /// the termination pass and released the host, so the host is no
-    /// longer reachable when this returns.
+    /// Request an orderly teardown of this host and all procs it spawned:
+    /// send `ShutdownHost` to the host's agent and wait for its single direct
+    /// rank ack. Used by the best-effort Drop-cleanup path; the mesh-wide path
+    /// is `HostMeshRef::cast_shutdown`.
     pub(crate) async fn shutdown(
         &self,
         cx: &impl hyperactor::context::Actor,
@@ -214,33 +203,20 @@ impl HostRef {
             hyperactor_config::global::get(crate::bootstrap::MESH_TERMINATE_TIMEOUT);
         let max_in_flight =
             hyperactor_config::global::get(crate::bootstrap::MESH_TERMINATE_CONCURRENCY);
-        agent
-            .shutdown_host(cx, terminate_timeout, max_in_flight.clamp(1, 256))
-            .await?;
-        Ok(())
-    }
+        let (ack, mut rx) = cx.mailbox().open_port::<usize>();
 
-    /// Drain all user procs on this host but keep the host, service
-    /// proc, and networking alive. Used during mesh stop/shutdown so
-    /// that forwarder flushes can still reach remote hosts.
-    pub(crate) async fn drain(
-        &self,
-        cx: &impl hyperactor::context::Actor,
-        host_mesh_id: Option<crate::mesh_id::HostMeshId>,
-    ) -> anyhow::Result<()> {
-        let agent = self.mesh_agent();
-        let terminate_timeout =
-            hyperactor_config::global::get(crate::bootstrap::MESH_TERMINATE_TIMEOUT);
-        let max_in_flight =
-            hyperactor_config::global::get(crate::bootstrap::MESH_TERMINATE_CONCURRENCY);
         agent
-            .drain_host(
+            .shutdown_host(
                 cx,
                 terminate_timeout,
                 max_in_flight.clamp(1, 256),
-                host_mesh_id,
+                resource::Rank::new(0),
+                ack.bind(),
             )
             .await?;
+
+        rx.recv().await.map_err(anyhow::Error::from)?;
+
         Ok(())
     }
 }
@@ -408,7 +384,7 @@ impl HostMesh {
     /// Emit a telemetry event for this host mesh creation.
     fn notify_created(&self) {
         let name_str = self.id.to_string();
-        let mesh_id_hash = hyperactor_telemetry::hash_to_u64(&name_str);
+        let mesh_id_hash = hyperactor_telemetry::hash_to_u64(&self.id);
 
         hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
             id: mesh_id_hash,
@@ -432,7 +408,7 @@ impl HostMesh {
         for (rank, host) in self.current_ref.hosts().iter().enumerate() {
             let actor = host.mesh_agent();
             hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
-                id: hyperactor_telemetry::hash_to_u64(&actor.actor_addr()),
+                id: hyperactor_telemetry::hash_to_u64(actor.actor_addr().id()),
                 timestamp: now,
                 mesh_id: mesh_id_hash,
                 rank: rank as u64,
@@ -505,6 +481,13 @@ impl HostMesh {
             )
             .map_err(crate::Error::SingletonActorSpawnError)?;
         host_mesh_agent.bind::<HostAgent>();
+        let cast_handle = system_proc
+            .spawn_with_uid(
+                Uid::singleton(Label::strip(CAST_ACTOR_NAME)),
+                CastActor::default(),
+            )
+            .map_err(crate::Error::SingletonActorSpawnError)?;
+        cast_handle.bind::<CastActor>();
 
         let host = HostRef::new(addr);
         let host_mesh_ref = HostMeshRef::new(
@@ -570,6 +553,16 @@ impl HostMesh {
             )
             .map_err(crate::Error::SingletonActorSpawnError)?;
         host_mesh_agent.bind::<HostAgent>();
+
+        let cast_handle = system_proc
+            .spawn_with_uid(
+                Uid::singleton(Label::strip(CAST_ACTOR_NAME)),
+                CastActor::default(),
+            )
+            .map_err(crate::Error::SingletonActorSpawnError)?;
+
+        cast_handle.bind::<CastActor>();
+
         Ok(HostRef::new(addr))
     }
 
@@ -668,76 +661,50 @@ impl HostMesh {
     /// `HostMesh`.
     ///
     /// Uses a two-phase approach:
-    /// 1. **Terminate children** on every host concurrently. Service
-    ///    infrastructure (host agent, comm proc, networking) stays
-    ///    alive so that forwarder flushes can still reach remote hosts.
-    /// 2. **Shut down hosts** concurrently. No user procs remain, so
-    ///    this is fast and cannot deadlock on cross-host flush
-    ///    timeouts.
+    /// 1. Cast `DrainHost` and wait for every host to finish draining
+    ///    its user procs while networking stays alive.
+    /// 2. Cast `ShutdownHost` and wait for every host to acknowledge
+    ///    that its local shutdown handler has completed.
     #[hyperactor::instrument(fields(host_mesh=self.id.to_string()))]
     pub async fn shutdown(&mut self, cx: &impl hyperactor::context::Actor) -> anyhow::Result<()> {
         let t0 = std::time::Instant::now();
         tracing::info!(name = "HostMeshStatus", status = "Shutdown::Attempt");
 
-        // Phase 1: terminate all user procs while service infrastructure
-        // stays alive so forwarder flushes can complete across hosts.
-        let results = futures::future::join_all(
-            self.current_ref
-                .values()
-                .map(|host| async move { host.drain(cx, None).await }),
-        )
-        .await;
-        let phase1_ms = t0.elapsed().as_millis();
-        for result in &results {
-            if let Err(e) = result {
-                tracing::warn!(
-                    name = "HostMeshStatus",
-                    status = "Shutdown::Drain::Failed",
-                    error = %e,
-                    "drain failed on a host"
-                );
-            }
+        // Phase 1: terminate all user procs while service infrastructure stays
+        // alive so forwarder flushes can complete across hosts.
+        if let Err(e) = self.current_ref.cast_drain(cx, None).await {
+            tracing::warn!(
+                name = "HostMeshStatus",
+                status = "Shutdown::Drain::Failed",
+                drain_ms = t0.elapsed().as_millis(),
+                error = %e,
+                "failed to cast DrainHost barrier"
+            );
         }
+        let drain_ms = t0.elapsed().as_millis();
 
-        // Phase 2: shut down hosts concurrently. No user procs remain.
+        // Phase 2: request host shutdown once the drain barrier has cleared.
         let t1 = std::time::Instant::now();
-        let results = futures::future::join_all(self.current_ref.values().map(|host| async move {
-            let result = host.shutdown(cx).await;
-            (host, result)
-        }))
-        .await;
-        let phase2_ms = t1.elapsed().as_millis();
+        let shutdown_result = self.current_ref.cast_shutdown(cx).await;
+        let shutdown_ack_ms = t1.elapsed().as_millis();
         let total_ms = t0.elapsed().as_millis();
-        let mut failed_hosts = vec![];
-        for (host, result) in &results {
-            if let Err(e) = result {
-                tracing::warn!(
-                    name = "HostMeshStatus",
-                    status = "Shutdown::Host::Failed",
-                    host = %host,
-                    error = %e,
-                    "host shutdown failed"
-                );
-                failed_hosts.push(host);
-            }
-        }
-        if failed_hosts.is_empty() {
+        if let Err(e) = shutdown_result {
+            tracing::warn!(
+                name = "HostMeshStatus",
+                status = "Shutdown::Ack::Failed",
+                drain_ms,
+                shutdown_ack_ms,
+                total_ms,
+                error = %e,
+                "failed waiting for ShutdownHost acknowledgment barrier"
+            );
+        } else {
             tracing::info!(
                 name = "HostMeshStatus",
                 status = "Shutdown::Success",
-                phase1_ms,
-                phase2_ms,
-                total_ms,
-            );
-        } else {
-            tracing::error!(
-                name = "HostMeshStatus",
-                status = "Shutdown::Failed",
-                phase1_ms,
-                phase2_ms,
-                total_ms,
-                "host mesh shutdown failed; check the logs of the failed hosts for details: {:?}",
-                failed_hosts
+                drain_ms,
+                shutdown_ack_ms,
+                total_ms
             );
         }
 
@@ -761,35 +728,19 @@ impl HostMesh {
         let t0 = std::time::Instant::now();
         tracing::info!(name = "HostMeshStatus", status = "Stop::Attempt");
 
-        let mesh_id = self.id.clone();
-        let results = futures::future::join_all(self.current_ref.values().map(|host| {
-            let mesh_id = Some(mesh_id.clone());
-            async move { host.drain(cx, mesh_id).await }
-        }))
-        .await;
+        let result = self.current_ref.cast_drain(cx, Some(self.id.clone())).await;
         let total_ms = t0.elapsed().as_millis();
-        let mut failed_hosts = vec![];
-        for (i, result) in results.iter().enumerate() {
-            if let Err(e) = result {
-                tracing::warn!(
-                    name = "HostMeshStatus",
-                    status = "Stop::Drain::Failed",
-                    error = %e,
-                    "drain failed on a host"
-                );
-                failed_hosts.push(i);
+        match result {
+            Ok(()) => {
+                tracing::info!(name = "HostMeshStatus", status = "Stop::Success", total_ms,);
             }
-        }
-        if failed_hosts.is_empty() {
-            tracing::info!(name = "HostMeshStatus", status = "Stop::Success", total_ms,);
-        } else {
-            tracing::error!(
+            Err(e) => tracing::warn!(
                 name = "HostMeshStatus",
-                status = "Stop::Failed",
+                status = "Stop::Drain::Failed",
                 total_ms,
-                "host mesh stop failed; check the logs of the failed hosts for details: {:?}",
-                failed_hosts
-            );
+                error = %e,
+                "failed waiting for DrainHost acknowledgment barrier"
+            ),
         }
 
         // Defuse the Drop impl so it doesn't send ShutdownHost to hosts
@@ -994,11 +945,12 @@ where
 /// Cloning this type does not confer ownership. If a corresponding
 /// owned [`HostMesh`] shuts down the hosts, operations via a cloned
 /// `HostMeshRef` may fail because the hosts are no longer running.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Named, Serialize, Deserialize)]
+#[derive(Debug, Clone, Named, Serialize, Deserialize)]
 pub struct HostMeshRef {
     id: HostMeshId,
     region: Region,
     ranks: Arc<Vec<HostRef>>,
+    host_agent_mesh: ActorMeshRef<HostAgent>,
     /// Uniform bootstrap command to use when spawning procs on this
     /// mesh. When `None`, each host agent uses its own default
     /// command. Per-proc overrides are supplied at spawn time via the
@@ -1013,6 +965,28 @@ pub struct HostMeshRef {
 /// aborts the spawn with that error surfaced as a configuration
 /// failure.
 pub type PerRankBootstrapFn = dyn Fn(view::Point) -> anyhow::Result<BootstrapCommand> + Send + Sync;
+// Cast-domain materialization state is derived from the host ids and is not
+// part of host mesh identity.
+impl PartialEq for HostMeshRef {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.region == other.region
+            && self.ranks == other.ranks
+            && self.bootstrap_command == other.bootstrap_command
+    }
+}
+
+impl Eq for HostMeshRef {}
+
+impl std::hash::Hash for HostMeshRef {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+        self.region.hash(state);
+        self.ranks.hash(state);
+        self.bootstrap_command.hash(state);
+    }
+}
+
 wirevalue::register_type!(HostMeshRef);
 
 impl HostMeshRef {
@@ -1026,10 +1000,12 @@ impl HostMeshRef {
                 actual: ranks.len(),
             });
         }
+        let host_agent_mesh = Self::host_agent_mesh_ref(&region, &ranks)?;
         Ok(Self {
             id,
             region,
             ranks: Arc::new(ranks),
+            host_agent_mesh,
             bootstrap_command: None,
         })
     }
@@ -1037,10 +1013,15 @@ impl HostMeshRef {
     /// Create a new HostMeshRef from an arbitrary set of hosts. This is meant to
     /// enable extrinsic bootstrapping.
     pub fn from_hosts(id: HostMeshId, hosts: Vec<ChannelAddr>) -> Self {
+        let region = extent!(hosts = hosts.len()).into();
+        let ranks: Vec<HostRef> = hosts.into_iter().map(HostRef::new).collect();
+        let host_agent_mesh = Self::host_agent_mesh_ref(&region, &ranks)
+            .expect("host rank cardinality must match generated region");
         Self {
             id,
-            region: extent!(hosts = hosts.len()).into(),
-            ranks: Arc::new(hosts.into_iter().map(HostRef::new).collect()),
+            region,
+            ranks: Arc::new(ranks),
+            host_agent_mesh,
             bootstrap_command: None,
         }
     }
@@ -1050,25 +1031,31 @@ impl HostMeshRef {
         id: HostMeshId,
         agents: Vec<ActorRef<HostAgent>>,
     ) -> crate::Result<Self> {
+        let region = extent!(hosts = agents.len()).into();
+        let ranks: Vec<HostRef> = agents
+            .into_iter()
+            .map(HostRef::try_from)
+            .collect::<crate::Result<_>>()?;
+        let host_agent_mesh = Self::host_agent_mesh_ref(&region, &ranks)?;
         Ok(Self {
             id,
-            region: extent!(hosts = agents.len()).into(),
-            ranks: Arc::new(
-                agents
-                    .into_iter()
-                    .map(HostRef::try_from)
-                    .collect::<crate::Result<_>>()?,
-            ),
+            region,
+            ranks: Arc::new(ranks),
+            host_agent_mesh,
             bootstrap_command: None,
         })
     }
 
     /// Create a unit HostMeshRef from a host mesh agent.
     pub fn from_host_agent(id: HostMeshId, agent: ActorRef<HostAgent>) -> crate::Result<Self> {
+        let region = Extent::unity().into();
+        let ranks = vec![HostRef::try_from(agent)?];
+        let host_agent_mesh = Self::host_agent_mesh_ref(&region, &ranks)?;
         Ok(Self {
             id,
-            region: Extent::unity().into(),
-            ranks: Arc::new(vec![HostRef::try_from(agent)?]),
+            region,
+            ranks: Arc::new(ranks),
+            host_agent_mesh,
             bootstrap_command: None,
         })
     }
@@ -1080,6 +1067,157 @@ impl HostMeshRef {
             bootstrap_command: Some(cmd),
             ..self
         }
+    }
+
+    fn host_agent_mesh_ref(
+        region: &Region,
+        ranks: &[HostRef],
+    ) -> crate::Result<ActorMeshRef<HostAgent>> {
+        let members = Arc::new(
+            ranks
+                .iter()
+                .map(|host| host.mesh_agent().actor_addr().clone())
+                .collect_mesh::<ValueMesh<_>>(region.clone())
+                .map_err(|error| crate::Error::ConfigurationError(error.into()))?,
+        );
+
+        Ok(ActorMeshRef::new(
+            ActorMeshId::singleton(Label::strip(host_agent::HOST_MESH_AGENT_ACTOR_NAME)),
+            // The host-agent mesh is not backed by a user proc mesh.
+            None,
+            region.clone(),
+            None,
+            members,
+        ))
+    }
+
+    async fn cast_drain(
+        &self,
+        cx: &impl context::Actor,
+        host_mesh_id: Option<HostMeshId>,
+    ) -> anyhow::Result<()> {
+        let region = self.region.clone();
+        let num_hosts = region.num_ranks();
+        if num_hosts == 0 {
+            return Ok(());
+        }
+
+        // Each host reports a single-rank `Stopped` overlay once it has
+        // drained; reduce them into a full StatusMesh so we can tell which
+        // hosts (if any) never acknowledged.
+        let (reply, rx) = cx.mailbox().open_accum_port_opts(
+            crate::StatusMesh::from_single(region.clone(), Status::NotExist),
+            StreamingReducerOpts {
+                max_update_interval: Some(std::time::Duration::from_millis(50)),
+                initial_update_interval: None,
+            },
+        );
+        let mut reply = reply.bind();
+        reply.return_undeliverable(false);
+
+        let terminate_timeout =
+            hyperactor_config::global::get(crate::bootstrap::MESH_TERMINATE_TIMEOUT);
+
+        self.host_agent_mesh.cast(
+            cx,
+            host_agent::DrainHost {
+                timeout: terminate_timeout,
+                max_in_flight: hyperactor_config::global::get(
+                    crate::bootstrap::MESH_TERMINATE_CONCURRENCY,
+                )
+                .clamp(1, 256),
+                host_mesh_id,
+                rank: Default::default(),
+                reply,
+            },
+        )?;
+
+        // Hosts only report after a (timeout-bounded) `terminate_children`, so
+        // the barrier's max-idle must exceed the per-host drain timeout.
+        let barrier_timeout = terminate_timeout.saturating_add(std::time::Duration::from_secs(30));
+
+        match GetRankStatus::wait(rx, num_hosts, barrier_timeout, region).await {
+            Ok(_) => Ok(()),
+            Err(partial) => {
+                let missing: Vec<usize> = partial
+                    .values()
+                    .enumerate()
+                    .filter(|(_, status)| status.is_not_exist())
+                    .map(|(rank, _)| rank)
+                    .collect();
+                anyhow::bail!(
+                    "DrainHost barrier timed out after {:?}; {} of {} hosts did not acknowledge (host ranks {:?})",
+                    barrier_timeout,
+                    missing.len(),
+                    num_hosts,
+                    missing,
+                )
+            }
+        }
+    }
+
+    async fn cast_shutdown(&self, cx: &impl context::Actor) -> anyhow::Result<()> {
+        let num_hosts = self.ranks.len();
+        if num_hosts == 0 {
+            return Ok(());
+        }
+
+        // Each host replies its own rank directly once shutdown work is done.
+        // `ShutdownHost` acks cannot be tree-reduced (hosts exit right after
+        // acking), so we collect one direct reply per host on a plain
+        // multi-receive port rather than a reduced barrier, and track which
+        // ranks acknowledged so we can report the hosts that didn't.
+        let (ack, mut rx) = cx.mailbox().open_port::<usize>();
+        // Bind `.unsplit()`: every `PortRef` becomes a multipart part the cast
+        // split loop would otherwise tree-reduce. `ShutdownHost` acks must reach
+        // the caller directly (hosts exit right after acking), so mark this port
+        // unsplit to keep it out of the reduction tree.
+        let mut ack = ack.bind().unsplit();
+        ack.return_undeliverable(false);
+
+        let terminate_timeout =
+            hyperactor_config::global::get(crate::bootstrap::MESH_TERMINATE_TIMEOUT);
+
+        self.host_agent_mesh.cast(
+            cx,
+            host_agent::ShutdownHost {
+                timeout: terminate_timeout,
+                max_in_flight: hyperactor_config::global::get(
+                    crate::bootstrap::MESH_TERMINATE_CONCURRENCY,
+                )
+                .clamp(1, 256),
+                rank: Default::default(),
+                ack,
+            },
+        )?;
+
+        // Hosts only reply after a (timeout-bounded) termination pass, so the
+        // per-reply wait must exceed the per-host terminate timeout.
+        let barrier_timeout = terminate_timeout.saturating_add(std::time::Duration::from_secs(30));
+
+        let mut acked = std::collections::HashSet::new();
+
+        while acked.len() < num_hosts {
+            match tokio::time::timeout(barrier_timeout, rx.recv()).await {
+                Ok(Ok(rank)) => {
+                    acked.insert(rank);
+                }
+                Ok(Err(err)) => return Err(anyhow::Error::from(err)),
+                Err(_) => {
+                    let missing: Vec<usize> =
+                        (0..num_hosts).filter(|r| !acked.contains(r)).collect();
+
+                    anyhow::bail!(
+                        "ShutdownHost barrier timed out after {:?}; {} of {} hosts did not acknowledge shutdown (host ranks {:?})",
+                        barrier_timeout,
+                        missing.len(),
+                        num_hosts,
+                        missing,
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Returns the host entries as `(addr_string, ActorRef<HostAgent>)` pairs.
@@ -1445,7 +1583,7 @@ impl HostMeshRef {
             }
         }
 
-        let mut mesh = ProcMesh::create(cx, proc_mesh_id, extent, self.clone(), procs).await;
+        let mut mesh = ProcMesh::create(proc_mesh_id, extent, self.clone(), procs);
         if let Ok(ref mut mesh) = mesh {
             // Spawn a unique mesh controller for each proc mesh, so the type of the
             // mesh can be preserved. Procs reached a non-terminating state above,
@@ -1944,6 +2082,8 @@ mod tests {
     use timed_test::assert_no_process_leak;
     #[cfg(fbcode_build)]
     use tokio::process::Command;
+    #[cfg(fbcode_build)]
+    use tracing_test::traced_test;
 
     use super::*;
     #[cfg(fbcode_build)]
@@ -2065,6 +2205,27 @@ mod tests {
         let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
         let _guard1 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
         execute_extrinsic_allocation(&config).await;
+    }
+
+    /// `HostMesh::shutdown` emits a `Shutdown::Success` status log once every
+    /// host tears down cleanly with no failed hosts (see the `tracing::info!`
+    /// in `HostMesh::shutdown`). Drive the full allocate-then-shutdown path and
+    /// assert that the success log fired.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "tracing-test's #[traced_test] enters a span whose Entered guard is held across awaits; this is inherent to the macro and harmless in a test"
+    )]
+    #[traced_test]
+    #[tokio::test]
+    #[cfg(fbcode_build)]
+    async fn test_shutdown_succeeds() {
+        let config = hyperactor_config::global::lock();
+        execute_extrinsic_allocation(&config).await;
+
+        assert!(
+            logs_contain("Shutdown::Success"),
+            "Shutdown::Success status log not found after shutting down host mesh"
+        );
     }
 
     #[tokio::test]

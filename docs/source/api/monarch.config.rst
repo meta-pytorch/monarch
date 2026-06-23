@@ -418,13 +418,6 @@ Mesh Bootstrap
 Runtime and Buffering
 ----------------------
 
-``shared_asyncio_runtime``
-    Share asyncio runtime across actors.
-
-    - **Type**: ``bool``
-    - **Default**: ``False``
-    - **Environment**: ``MONARCH_HYPERACTOR_SHARED_ASYNCIO_RUNTIME``
-
 ``small_write_threshold``
     Threshold below which writes are copied (in bytes).
 

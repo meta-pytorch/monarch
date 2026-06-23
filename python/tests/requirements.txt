@@ -4,3 +4,4 @@ pytest-timeout
 pytest-asyncio
 pytest-xdist
 pyright
+torchx-nightly

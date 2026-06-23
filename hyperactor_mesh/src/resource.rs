@@ -24,17 +24,12 @@ use std::ops::Range;
 use std::time::Duration;
 
 use enum_as_inner::EnumAsInner;
-use hyperactor::Bind;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::PortRef;
 use hyperactor::RefClient;
 use hyperactor::RemoteMessage;
-use hyperactor::Unbind;
 use hyperactor::mailbox::PortReceiver;
-use hyperactor::message::Bind;
-use hyperactor::message::Bindings;
-use hyperactor::message::Unbind;
 use hyperactor_config::attrs::Attrs;
 use ndslice::Region;
 use ndslice::ViewExt;
@@ -64,9 +59,7 @@ use crate::proc_agent::ActorState;
     Eq,
     Hash,
     EnumAsInner,
-    strum::Display,
-    Bind,
-    Unbind
+    strum::Display
 )]
 pub enum Status {
     /// The resource does not exist.
@@ -157,11 +150,38 @@ impl From<crate::host::LocalProcStatus> for Status {
 }
 
 /// Data type used to communicate ranks.
-/// Implements [`Bind`] and [`Unbind`]; the comm actor replaces
-/// instances with the delivered rank.
-#[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Eq, Default)]
+/// Serialized as a typed multipart part so comm actors can replace instances
+/// with the delivered rank while the message is in transit.
+#[derive(Clone, Debug, Named, PartialEq, Eq, Default)]
 pub struct Rank(pub Option<usize>);
 wirevalue::register_type!(Rank);
+
+/// Serialized representation for [`Rank`] multipart parts.
+#[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Eq)]
+pub struct RankRepr(pub Option<usize>);
+
+impl TryFrom<&Rank> for RankRepr {
+    type Error = serde_multipart::Error;
+
+    fn try_from(rank: &Rank) -> serde_multipart::Result<Self> {
+        Ok(Self(rank.0))
+    }
+}
+
+impl TryFrom<RankRepr> for Rank {
+    type Error = serde_multipart::Error;
+
+    fn try_from(repr: RankRepr) -> serde_multipart::Result<Self> {
+        Ok(Self(repr.0))
+    }
+}
+
+serde_multipart::part_codec! {
+    impl Rank
+    {
+        type Repr = RankRepr;
+    }
+}
 
 impl Rank {
     /// Create a new rank with the provided value.
@@ -172,20 +192,6 @@ impl Rank {
     /// Unwrap the rank; panics if not set.
     pub fn unwrap(&self) -> usize {
         self.0.unwrap()
-    }
-}
-
-impl Unbind for Rank {
-    fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        bindings.push_back(self)
-    }
-}
-
-impl Bind for Rank {
-    fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        let bound = bindings.try_pop_front::<Rank>()?;
-        self.0 = bound.0;
-        Ok(())
     }
 }
 
@@ -203,15 +209,12 @@ impl Bind for Rank {
     Named,
     Handler,
     HandleClient,
-    RefClient,
-    Bind,
-    Unbind
+    RefClient
 )]
 pub struct GetRankStatus {
     /// The resource identifier.
     pub id: ResourceId,
     /// Sparse status updates (overlays) from a rank.
-    #[binding(include)]
     pub reply: PortRef<StatusOverlay>,
 }
 
@@ -226,9 +229,7 @@ pub struct GetRankStatus {
     Named,
     Handler,
     HandleClient,
-    RefClient,
-    Bind,
-    Unbind
+    RefClient
 )]
 pub struct WaitRankStatus {
     /// The resource identifier.
@@ -238,7 +239,6 @@ pub struct WaitRankStatus {
     /// is >= this threshold.
     pub min_status: Status,
     /// Sparse status updates (overlays) from a rank.
-    #[binding(include)]
     pub reply: PortRef<StatusOverlay>,
 }
 
@@ -272,14 +272,15 @@ impl GetRankStatus {
 
             alarm.arm(max_idle_time);
 
-            // Completion: once every rank (among the first
-            // `num_ranks`) has reported at least something (i.e.
-            // moved off NotExist).
-            if snapshot
+            // Completion: once every expected rank has reported at least
+            // something (i.e. moved off NotExist). Sliced meshes may report at
+            // non-zero base ranks, so do not assume the relevant ranks occupy
+            // the first `num_ranks` dense slots.
+            let reported = snapshot
                 .values()
-                .take(num_ranks)
-                .all(|s| !matches!(s, crate::resource::Status::NotExist))
-            {
+                .filter(|s| !matches!(s, crate::resource::Status::NotExist))
+                .count();
+            if reported >= num_ranks {
                 break Ok(snapshot);
             }
         }
@@ -287,18 +288,7 @@ impl GetRankStatus {
 }
 
 /// The state of a resource.
-#[derive(
-    Clone,
-    Debug,
-    Serialize,
-    Deserialize,
-    Named,
-    PartialEq,
-    Eq,
-    Handler,
-    Bind,
-    Unbind
-)]
+#[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Eq, Handler)]
 pub struct State<S> {
     /// The resource identifier.
     pub id: ResourceId,
@@ -333,15 +323,12 @@ impl<S: Serialize> fmt::Display for State<S> {
     Named,
     Handler,
     HandleClient,
-    RefClient,
-    Bind,
-    Unbind
+    RefClient
 )]
 pub struct CreateOrUpdate<S> {
     /// The resource identifier.
     pub id: ResourceId,
     /// The rank of the resource, when available.
-    #[binding(include)]
     pub rank: Rank,
     /// The specification of the resource.
     pub spec: S,
@@ -358,9 +345,7 @@ wirevalue::register_type!(CreateOrUpdate<ActorSpec>);
     Named,
     Handler,
     HandleClient,
-    RefClient,
-    Bind,
-    Unbind
+    RefClient
 )]
 pub struct Stop {
     /// The resource identifier.
@@ -381,9 +366,7 @@ wirevalue::register_type!(Stop);
     Named,
     Handler,
     HandleClient,
-    RefClient,
-    Bind,
-    Unbind
+    RefClient
 )]
 pub struct StopAll {
     /// The reason for stopping.
@@ -393,6 +376,7 @@ wirevalue::register_type!(StopAll);
 
 /// Retrieve the current state of the resource.
 #[derive(Debug, Serialize, Deserialize, Named, Handler, HandleClient, RefClient)]
+#[serde(bound(serialize = "S: Named", deserialize = "S: Named"))]
 pub struct GetState<S> {
     /// The resource identifier.
     pub id: ResourceId,
@@ -402,27 +386,6 @@ pub struct GetState<S> {
 }
 wirevalue::register_type!(GetState<ProcState>);
 wirevalue::register_type!(GetState<ActorState>);
-
-// Cannot derive Bind and Unbind for this generic, implement manually.
-impl<S> Unbind for GetState<S>
-where
-    S: RemoteMessage,
-    S: Unbind,
-{
-    fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        self.reply.unbind(bindings)
-    }
-}
-
-impl<S> Bind for GetState<S>
-where
-    S: RemoteMessage,
-    S: Bind,
-{
-    fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        self.reply.bind(bindings)
-    }
-}
 
 impl<S> Clone for GetState<S>
 where
@@ -439,6 +402,7 @@ where
 /// Same as GetState, but additionally tells the receiver that the owner is still alive.
 /// If the receiver does not receive this message for a while, it might assume the owner is dead.
 #[derive(Debug, Serialize, Deserialize, Named, Handler, HandleClient, RefClient)]
+#[serde(bound(serialize = "S: Named", deserialize = "S: Named"))]
 pub struct KeepaliveGetState<S> {
     /// The time at which the actor should be considered expired if no further
     /// keepalive is received.
@@ -447,27 +411,6 @@ pub struct KeepaliveGetState<S> {
 }
 wirevalue::register_type!(KeepaliveGetState<ProcState>);
 wirevalue::register_type!(KeepaliveGetState<ActorState>);
-
-// Cannot derive Bind and Unbind for this generic, implement manually.
-impl<S> Unbind for KeepaliveGetState<S>
-where
-    S: RemoteMessage,
-    S: Unbind,
-{
-    fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        self.get_state.unbind(bindings)
-    }
-}
-
-impl<S> Bind for KeepaliveGetState<S>
-where
-    S: RemoteMessage,
-    S: Bind,
-{
-    fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        self.get_state.bind(bindings)
-    }
-}
 
 impl<S> Clone for KeepaliveGetState<S>
 where
@@ -485,6 +428,7 @@ where
 /// The subscriber port will receive `State<S>` whenever the resource's
 /// state changes. The current state is sent immediately upon subscription.
 #[derive(Debug, Serialize, Deserialize, Named, Handler, HandleClient, RefClient)]
+#[serde(bound(serialize = "S: Named", deserialize = "S: Named"))]
 pub struct StreamState<S> {
     /// The resource identifier.
     pub id: ResourceId,
@@ -493,27 +437,6 @@ pub struct StreamState<S> {
 }
 wirevalue::register_type!(StreamState<ActorState>);
 wirevalue::register_type!(StreamState<ProcState>);
-
-// Cannot derive Bind and Unbind for this generic, implement manually.
-impl<S> Unbind for StreamState<S>
-where
-    S: RemoteMessage,
-    S: Unbind,
-{
-    fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        self.subscriber.unbind(bindings)
-    }
-}
-
-impl<S> Bind for StreamState<S>
-where
-    S: RemoteMessage,
-    S: Bind,
-{
-    fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        self.subscriber.bind(bindings)
-    }
-}
 
 impl<S> Clone for StreamState<S>
 where
@@ -819,7 +742,17 @@ wirevalue::register_type!(ProcSpec);
 
 #[cfg(test)]
 mod tests {
+    use hyperactor::port::Port;
+
     use super::*;
+
+    #[test]
+    fn handler_ports_are_distinct_for_resource_messages() {
+        assert_ne!(
+            Port::handler::<CreateOrUpdate<ProcSpec>>(),
+            Port::handler::<Stop>(),
+        );
+    }
 
     #[test]
     fn test_ranked_values_merge() {

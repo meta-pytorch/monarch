@@ -61,14 +61,12 @@ use clap::Arg;
 use clap::Command as ClapCommand;
 use hyperactor::Actor;
 use hyperactor::ActorRef;
-use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::OncePortRef;
 use hyperactor::RemoteSpawn;
-use hyperactor::Unbind;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::context::Mailbox;
 use hyperactor::id::Label;
@@ -85,6 +83,7 @@ use monarch_rdma::IbvConfig;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
 use monarch_rdma::RdmaRemoteBuffer;
+use monarch_rdma::backend::ibverbs::device_selection::IbvDeviceTarget;
 use monarch_rdma::backend::ibverbs::manager_actor::RawQueuePair;
 use monarch_rdma::cu_check;
 use monarch_rdma::local_memory::Keepalive;
@@ -325,6 +324,10 @@ impl RemoteSpawn for CudaRdmaActor {
         // For this example, we'll use a regular Rust allocation as a placeholder
         // The actual CUDA allocation would be handled by the monarch_rdma library
         unsafe {
+            // rdmaxcel only adopts an already-loaded driver, so load it first.
+            if rdmaxcel_sys::ensure_cuda_driver_loaded() != 0 {
+                anyhow::bail!("failed to load the CUDA driver");
+            }
             cu_check!(rdmaxcel_sys::rdmaxcel_cuInit(0));
             let mut dptr: rdmaxcel_sys::CUdeviceptr = std::mem::zeroed();
             let mut handle: rdmaxcel_sys::CUmemGenericAllocationHandle = std::mem::zeroed();
@@ -531,13 +534,15 @@ impl Handler<PerformPingPong> for CudaRdmaActor {
             cu_check!(rdmaxcel_sys::rdmaxcel_cuCtxSetCurrent(context));
         }
 
-        // Extract IbvManagerActor refs and IbvBuffers from backends
+        // Extract IbvManagerActor refs and IbvBuffers from backends.
         let (local_ibv_manager, local_ibv) = local_buffer
-            .resolve_ibv()
-            .ok_or_else(|| anyhow::anyhow!("ibverbs backend not found for local buffer"))?;
+            .resolve_nic()
+            .and_then(|ctx| ctx.into_mlx().ok())
+            .ok_or_else(|| anyhow::anyhow!("Mellanox backend not found for local buffer"))?;
         let (remote_ibv_manager, remote_ibv) = remote_buffer
-            .resolve_ibv()
-            .ok_or_else(|| anyhow::anyhow!("ibverbs backend not found for remote buffer"))?;
+            .resolve_nic()
+            .and_then(|ctx| ctx.into_mlx().ok())
+            .ok_or_else(|| anyhow::anyhow!("Mellanox backend not found for remote buffer"))?;
 
         let local_ibv_manager_handle = local_ibv_manager
             .downcast_handle(cx)
@@ -699,8 +704,8 @@ impl Handler<VerifyBuffer> for CudaRdmaActor {
 }
 
 // Message to get the buffer handle from an actor
-#[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
-struct GetBufferHandle(#[binding(include)] pub OncePortRef<RdmaRemoteBuffer>);
+#[derive(Debug, Serialize, Deserialize, Named, Clone)]
+struct GetBufferHandle(pub OncePortRef<RdmaRemoteBuffer>);
 
 #[async_trait]
 impl Handler<GetBufferHandle> for CudaRdmaActor {
@@ -744,7 +749,7 @@ pub async fn run() -> Result<(), anyhow::Error> {
     let expected_data_values = expected_buffer[0..start].to_vec().into_boxed_slice();
 
     // Get all available RDMA devices
-    let devices = monarch_rdma::get_all_devices();
+    let devices = monarch_rdma::backend::ibverbs::device::list_all_devices();
     // Configure RDMA for the two actors
     // For H100 machines, we use different devices for better performance
     let device_1_ibv_config: IbvConfig;
@@ -754,13 +759,13 @@ pub async fn run() -> Result<(), anyhow::Error> {
     if devices.len() > 4 {
         // Use separate backend devices for H100 configuration
         device_1_ibv_config = IbvConfig {
-            device: devices.clone().into_iter().next().unwrap(),
+            target: IbvDeviceTarget::nic(devices[0].name().clone()),
             ..Default::default()
         };
         // The second device used is the 3rd. Main reason is because 0 and 3 are both backend
         // devices on gtn H100 devices.
         device_2_ibv_config = IbvConfig {
-            device: devices.clone().into_iter().nth(3).unwrap(),
+            target: IbvDeviceTarget::nic(devices[3].name().clone()),
             ..Default::default()
         };
     } else {

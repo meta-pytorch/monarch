@@ -17,6 +17,7 @@ use std::any::TypeId;
 use std::collections::HashMap;
 use std::fmt;
 use std::io::Cursor;
+use std::marker::PhantomData;
 use std::sync::LazyLock;
 
 use enum_as_inner::EnumAsInner;
@@ -24,6 +25,7 @@ use hyperactor_config::AttrValue;
 use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::ser::SerializeStruct;
 pub use typeuri::Named;
 pub use typeuri::intern_typename;
 
@@ -210,6 +212,65 @@ pub enum Encoding {
     Multipart,
 }
 
+/// Type-state markers for [`Any`] encodings.
+pub mod encoding {
+    /// Statically unconstrained encoding.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct AnyEncoding;
+
+    /// Bincode encoding.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Bincode;
+
+    /// JSON encoding.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Json;
+
+    /// Multipart encoding.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Multipart;
+}
+
+mod private {
+    pub trait Sealed {}
+}
+
+/// Marker trait for supported [`Any`] encoding type states.
+pub trait EncodingMarker: private::Sealed + Clone + Copy + fmt::Debug + PartialEq + Eq {
+    #[doc(hidden)]
+    const EXPECTED_ENCODING: Option<Encoding>;
+}
+
+/// Marker trait for statically known [`Any`] encodings.
+pub trait StaticEncoding: EncodingMarker {
+    #[doc(hidden)]
+    const ENCODING: Encoding;
+}
+
+impl private::Sealed for encoding::AnyEncoding {}
+
+impl EncodingMarker for encoding::AnyEncoding {
+    const EXPECTED_ENCODING: Option<Encoding> = None;
+}
+
+macro_rules! impl_static_encoding {
+    ($marker:ty, $encoding:expr) => {
+        impl private::Sealed for $marker {}
+
+        impl EncodingMarker for $marker {
+            const EXPECTED_ENCODING: Option<Encoding> = Some($encoding);
+        }
+
+        impl StaticEncoding for $marker {
+            const ENCODING: Encoding = $encoding;
+        }
+    };
+}
+
+impl_static_encoding!(encoding::Bincode, Encoding::Bincode);
+impl_static_encoding!(encoding::Json, Encoding::Json);
+impl_static_encoding!(encoding::Multipart, Encoding::Multipart);
+
 /// The encoding used for a serialized value.
 #[derive(Clone, Serialize, Deserialize, PartialEq, EnumAsInner)]
 enum Encoded {
@@ -257,6 +318,9 @@ impl Encoded {
                     hasher.update(fragment);
                 }
                 for part in message.parts() {
+                    if let Some(typehash) = part.typehash() {
+                        hasher.update(&typehash.to_be_bytes());
+                    }
                     for fragment in part.iter() {
                         hasher.update(fragment);
                     }
@@ -279,7 +343,17 @@ impl std::fmt::Debug for Encoded {
                     HexFmt(&message.body().to_bytes())
                 )?;
                 for (index, part) in message.parts().iter().enumerate() {
-                    write!(f, ", part[{}]={}", index, HexFmt(&part.to_bytes()))?;
+                    if let Some(typehash) = part.typehash() {
+                        write!(
+                            f,
+                            ", part[{}](typehash={})={}",
+                            index,
+                            typehash,
+                            HexFmt(&part.to_bytes())
+                        )?;
+                    } else {
+                        write!(f, ", part[{}]={}", index, HexFmt(&part.to_bytes()))?;
+                    }
                 }
                 write!(f, ")")
             }
@@ -337,18 +411,20 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// and deserialization details, while ensuring that we pass correctly-serialized
 /// message throughout the system.
 ///
-/// Currently, Any passes through to bincode, but in the future we may include
-/// content-encoding information to allow for other codecs as well.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct Any {
+/// The default [`Any`] spelling is encoding-agnostic. Use [`Any`] with an
+/// [`encoding`] marker, such as `Any<encoding::Multipart>`, when an API
+/// requires a specific encoding.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Any<E: EncodingMarker = encoding::AnyEncoding> {
     /// The encoded data
     encoded: Encoded,
     /// The typehash of the serialized value. This is used to provide
     /// typed introspection of the value.
     typehash: u64,
+    _encoding: PhantomData<E>,
 }
 
-impl std::fmt::Display for Any {
+impl<E: EncodingMarker> std::fmt::Display for Any<E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.dump() {
             Ok(value) => {
@@ -363,28 +439,62 @@ impl std::fmt::Display for Any {
     }
 }
 
+impl<E: EncodingMarker> Serialize for Any<E> {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_struct("Any", 2)?;
+        state.serialize_field("encoded", &self.encoded)?;
+        state.serialize_field("typehash", &self.typehash)?;
+        state.end()
+    }
+}
+
+#[derive(Deserialize)]
+struct AnyFields {
+    encoded: Encoded,
+    typehash: u64,
+}
+
+impl<'de, E: EncodingMarker> Deserialize<'de> for Any<E> {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let fields = AnyFields::deserialize(deserializer)?;
+        if let Some(expected) = E::EXPECTED_ENCODING {
+            let actual = fields.encoded.encoding();
+            if actual != expected {
+                return Err(serde::de::Error::custom(format!(
+                    "expected {} encoding, found {}",
+                    expected, actual
+                )));
+            }
+        }
+
+        Ok(Self {
+            encoded: fields.encoded,
+            typehash: fields.typehash,
+            _encoding: PhantomData,
+        })
+    }
+}
+
+fn encode_with_encoding<U: Serialize>(encoding: Encoding, value: &U) -> Result<Encoded> {
+    match encoding {
+        Encoding::Bincode => Ok(Encoded::Bincode(
+            bincode::serde::encode_to_vec(value, bincode::config::legacy())?.into(),
+        )),
+        Encoding::Json => Ok(Encoded::Json(serde_json::to_vec(value)?.into())),
+        Encoding::Multipart => Ok(Encoded::Multipart(
+            serde_multipart::serialize_bincode(value)
+                .map_err(|e| Error::InvalidEncoding(e.to_string()))?,
+        )),
+    }
+}
+
 impl Any {
-    /// Construct a new serialized value by serializing the provided T-typed value.
-    /// Serialize uses the default encoding defined by the configuration key
-    /// [`config::DEFAULT_ENCODING`] in the global configuration; use [`serialize_with_encoding`]
-    /// to serialize values with a specific encoding.
-    pub fn serialize<T: Serialize + Named>(value: &T) -> Result<Self> {
-        Self::serialize_with_encoding(
-            hyperactor_config::global::get(config::DEFAULT_ENCODING),
-            value,
-        )
-    }
-
-    /// Serialize U-typed value as a T-typed value. This should be used with care
-    /// (typically only in testing), as the value's representation may be illegally
-    /// coerced.
-    pub fn serialize_as<T: Named, U: Serialize>(value: &U) -> Result<Self> {
-        Self::serialize_with_encoding_as::<T, U>(
-            hyperactor_config::global::get(config::DEFAULT_ENCODING),
-            value,
-        )
-    }
-
     /// Serialize the value with the using the provided encoding.
     pub fn serialize_with_encoding<T: Serialize + Named>(
         encoding: Encoding,
@@ -401,17 +511,9 @@ impl Any {
         value: &U,
     ) -> Result<Self> {
         Ok(Self {
-            encoded: match encoding {
-                Encoding::Bincode => Encoded::Bincode(
-                    bincode::serde::encode_to_vec(value, bincode::config::legacy())?.into(),
-                ),
-                Encoding::Json => Encoded::Json(serde_json::to_vec(value)?.into()),
-                Encoding::Multipart => Encoded::Multipart(
-                    serde_multipart::serialize_bincode(value)
-                        .map_err(|e| Error::InvalidEncoding(e.to_string()))?,
-                ),
-            },
+            encoded: encode_with_encoding(encoding, value)?,
             typehash: T::typehash(),
+            _encoding: PhantomData,
         })
     }
 
@@ -421,6 +523,66 @@ impl Any {
         Self {
             encoded: Encoded::Bincode(bytes::Bytes::new()),
             typehash: BROKEN_TYPEHASH,
+            _encoding: PhantomData,
+        }
+    }
+
+    /// Statically constrain this value to the requested encoding.
+    pub fn try_into_static_encoding<E: StaticEncoding>(self) -> std::result::Result<Any<E>, Self> {
+        if self.encoding() == E::ENCODING {
+            Ok(Any {
+                encoded: self.encoded,
+                typehash: self.typehash,
+                _encoding: PhantomData,
+            })
+        } else {
+            Err(self)
+        }
+    }
+
+    /// Statically constrain this value to bincode encoding.
+    pub fn try_into_bincode(self) -> std::result::Result<Any<encoding::Bincode>, Self> {
+        self.try_into_static_encoding()
+    }
+
+    /// Statically constrain this value to JSON encoding.
+    pub fn try_into_json(self) -> std::result::Result<Any<encoding::Json>, Self> {
+        self.try_into_static_encoding()
+    }
+
+    /// Statically constrain this value to multipart encoding.
+    pub fn try_into_multipart(self) -> std::result::Result<Any<encoding::Multipart>, Self> {
+        self.try_into_static_encoding()
+    }
+}
+
+impl<E: EncodingMarker> Any<E> {
+    /// Construct a new serialized value.
+    ///
+    /// Encoding-agnostic [`Any`] uses [`config::DEFAULT_ENCODING`]. Statically
+    /// constrained values, such as `Any<encoding::Multipart>`, use their static
+    /// encoding.
+    pub fn serialize<T: Serialize + Named>(value: &T) -> Result<Self> {
+        Self::serialize_as::<T, T>(value)
+    }
+
+    /// Serialize U-typed value as a T-typed value.
+    pub fn serialize_as<T: Named, U: Serialize>(value: &U) -> Result<Self> {
+        let encoding = E::EXPECTED_ENCODING
+            .unwrap_or_else(|| hyperactor_config::global::get(config::DEFAULT_ENCODING));
+        Ok(Self {
+            encoded: encode_with_encoding(encoding, value)?,
+            typehash: T::typehash(),
+            _encoding: PhantomData,
+        })
+    }
+
+    /// Erase this value's static encoding marker.
+    pub fn erase_encoding(self) -> Any {
+        Any {
+            encoded: self.encoded,
+            typehash: self.typehash,
+            _encoding: PhantomData,
         }
     }
 
@@ -463,7 +625,7 @@ impl Any {
 
     /// Transcode the serialized value to JSON. This operation will succeed if the type hash
     /// is embedded in the value, and the corresponding type is available in this binary.
-    pub fn transcode_to_json(self) -> std::result::Result<Self, Self> {
+    pub fn transcode_to_json(self) -> std::result::Result<Any<encoding::Json>, Self> {
         match self.encoded {
             Encoded::Bincode(_) | Encoded::Multipart(_) => {
                 let json_value = match self.dump() {
@@ -474,12 +636,17 @@ impl Any {
                     Ok(json_data) => json_data,
                     Err(_) => return Err(self),
                 };
-                Ok(Self {
+                Ok(Any {
                     encoded: Encoded::Json(json_data.into()),
                     typehash: self.typehash,
+                    _encoding: PhantomData,
                 })
             }
-            Encoded::Json(_) => Ok(self),
+            Encoded::Json(_) => Ok(Any {
+                encoded: self.encoded,
+                typehash: self.typehash,
+                _encoding: PhantomData,
+            }),
         }
     }
 
@@ -491,7 +658,7 @@ impl Any {
                 let Some(typeinfo) = TYPE_INFO.get(&self.typehash) else {
                     return Err(Error::MissingTypeInfo(self.typehash));
                 };
-                typeinfo.dump(self.clone())
+                typeinfo.dump(self.clone().erase_encoding())
             }
             Encoded::Json(data) => Ok(serde_json::from_slice(data)?),
         }
@@ -572,6 +739,26 @@ impl Any {
     /// when type information is unavailable.
     pub fn is<M: Named>(&self) -> bool {
         self.typehash == M::typehash()
+    }
+}
+
+impl Any<encoding::Multipart> {
+    /// Visit typed multipart parts in this value.
+    pub fn visit_multipart_parts_mut<T, E>(
+        &mut self,
+        f: impl FnMut(&mut T) -> std::result::Result<(), E>,
+    ) -> std::result::Result<(), E>
+    where
+        T: Serialize + DeserializeOwned + Named,
+        E: From<serde_multipart::Error>,
+    {
+        let Encoded::Multipart(message) = &mut self.encoded else {
+            panic!(
+                "multipart Any contained {} encoding",
+                self.encoded.encoding()
+            );
+        };
+        message.visit_parts_mut(f)
     }
 }
 
@@ -697,7 +884,7 @@ mod tests {
     #[test]
     fn test_ports() {
         assert_eq!(String::typehash(), 3947244799002047352u64);
-        assert_eq!(String::port(), 13170616835856823160u64);
+        assert_eq!(String::port(), String::typehash());
         assert_ne!(
             Vec::<Vec::<Vec::<String>>>::typehash(),
             Vec::<Vec::<Vec::<Vec::<String>>>>::typehash(),
@@ -721,7 +908,7 @@ mod tests {
             c: Some(5678),
             d: None,
         };
-        let serialized = Any::serialize(&data).unwrap();
+        let serialized: Any = Any::serialize(&data).unwrap();
         let serialized_json = serialized.clone().transcode_to_json().unwrap();
 
         assert!(serialized.encoded.is_multipart());
@@ -735,7 +922,7 @@ mod tests {
             "{\"a\":\"hello\",\"b\":1234,\"c\":5678,\"d\":null}"
         );
 
-        for serialized in [serialized, serialized_json] {
+        for serialized in [serialized, serialized_json.erase_encoding()] {
             // Note, at this point, serialized has no knowledge other than its embedded typehash.
 
             assert_eq!(
@@ -772,7 +959,7 @@ mod tests {
             d: None,
         };
 
-        let mut ser = Any::serialize(&data).unwrap();
+        let mut ser: Any = Any::serialize(&data).unwrap();
         assert_eq!(ser.prefix::<String>().unwrap(), "hello".to_string());
 
         ser.emplace_prefix("hello, world, 123!".to_string())
@@ -929,13 +1116,46 @@ mod tests {
     }
 
     #[test]
+    fn test_static_multipart_any() {
+        let value = TestDumpStruct {
+            a: "hello, multipart".to_string(),
+            b: 456,
+            c: Some(654),
+            d: Some(Part::from("part")),
+        };
+
+        let multipart = Any::<encoding::Multipart>::serialize(&value).unwrap();
+        assert_eq!(multipart.encoding(), Encoding::Multipart);
+        assert_eq!(multipart.deserialized::<TestDumpStruct>().unwrap(), value);
+
+        let erased = multipart.erase_encoding();
+        let multipart = erased.try_into_multipart().unwrap();
+        assert_eq!(multipart.encoding(), Encoding::Multipart);
+    }
+
+    #[test]
+    fn test_static_encoding_deserialize_rejects_mismatch() {
+        let value = TestDumpStruct {
+            a: "hello, bincode".to_string(),
+            b: 789,
+            c: None,
+            d: None,
+        };
+        let bincode = Any::<encoding::Bincode>::serialize(&value).unwrap();
+        let serialized = serde_json::to_vec(&bincode.erase_encoding()).unwrap();
+
+        let err = serde_json::from_slice::<Any<encoding::Multipart>>(&serialized).unwrap_err();
+        assert!(err.to_string().contains("expected serde_multipart"));
+    }
+
+    #[test]
     fn test_broken_any() {
         let broken = Any::new_broken();
         assert!(broken.is_broken());
         assert_eq!(broken.typehash(), BROKEN_TYPEHASH);
 
         // Normal values are not broken
-        let normal = Any::serialize(&"hello".to_string()).unwrap();
+        let normal: Any = Any::serialize(&"hello".to_string()).unwrap();
         assert!(!normal.is_broken());
 
         // deserialized() should fail for broken values

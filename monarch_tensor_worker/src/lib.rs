@@ -6,7 +6,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-#![feature(assert_matches)]
 #![feature(duration_constructors)]
 #![feature(exit_status_error)]
 // NOTE: Until https://github.com/PyO3/pyo3/pull/4674, `pyo3::pymethods` trigger
@@ -53,10 +52,8 @@ use device_mesh::DeviceMesh;
 use futures::future::try_join_all;
 use hyperactor as reference;
 use hyperactor::Actor;
-use hyperactor::Bind;
 use hyperactor::Handler;
 use hyperactor::RemoteSpawn;
-use hyperactor::Unbind;
 use hyperactor::actor::ActorHandle;
 use hyperactor::context;
 use hyperactor_config::Flattrs;
@@ -145,8 +142,8 @@ enum Recording {
 #[hyperactor::spawnable]
 #[hyperactor::export(
     handlers = [
-        WorkerMessage {cast = true},
-        AssignRankMessage {cast = true},
+        WorkerMessage,
+        AssignRankMessage,
     ],
 )]
 pub struct WorkerActor {
@@ -294,7 +291,7 @@ impl Handler<AssignRankMessage> for WorkerActor {
 
 /// Worker messages. These define the observable behavior of the worker, so the
 /// documentations here
-#[derive(Handler, Clone, Serialize, Deserialize, Debug, Named, Bind, Unbind)]
+#[derive(Handler, Clone, Serialize, Deserialize, Debug, Named)]
 pub enum AssignRankMessage {
     AssignRank(),
 }

@@ -213,7 +213,11 @@ struct ProcStatusChanged {
 /// Not exported — delivered locally via PortHandle (no serialization).
 struct DrainComplete {
     host: HostAgentMode,
-    ack: PortRef<()>,
+    /// This host's ordinal within the drain cast region.
+    rank: usize,
+    /// Streaming status reply the parent posts the drained overlay to,
+    /// after restoring state.
+    reply: PortRef<crate::StatusOverlay>,
 }
 
 /// Child actor whose only job is to run `host.terminate_children()` in
@@ -225,7 +229,8 @@ struct DrainWorker {
     host: Option<HostAgentMode>,
     timeout: Duration,
     max_in_flight: usize,
-    ack: Option<PortRef<()>>,
+    rank: usize,
+    reply: Option<PortRef<crate::StatusOverlay>>,
     done_notify: PortHandle<DrainComplete>,
 }
 
@@ -250,10 +255,18 @@ impl Actor for DrainWorker {
             }
         }
 
-        // Bundle host + ack into DrainComplete so the parent sends the ack
-        // AFTER restoring state (prevents race with ShutdownHost).
-        if let (Some(host), Some(ack)) = (self.host.take(), self.ack.take()) {
-            let _ = self.done_notify.post(this, DrainComplete { host, ack });
+        // Bundle host + reply into DrainComplete so the parent reports the
+        // drained overlay AFTER restoring state (prevents race with
+        // ShutdownHost).
+        if let (Some(host), Some(reply)) = (self.host.take(), self.reply.take()) {
+            let _ = self.done_notify.post(
+                this,
+                DrainComplete {
+                    host,
+                    rank: self.rank,
+                    reply,
+                },
+            );
         }
 
         Ok(())
@@ -275,9 +288,9 @@ impl fmt::Debug for DrainWorker {
         resource::Stop,
         resource::GetState<ProcState>,
         resource::KeepaliveGetState<ProcState>,
-        resource::StreamState<ProcState> { cast = true },
-        resource::GetRankStatus { cast = true },
-        resource::WaitRankStatus { cast = true },
+        resource::StreamState<ProcState>,
+        resource::GetRankStatus,
+        resource::WaitRankStatus,
         resource::List,
         ShutdownHost,
         DrainHost,
@@ -1023,16 +1036,35 @@ fn start_proc_watch<S>(
     });
 }
 
-#[derive(Serialize, Deserialize, Debug, Named, Handler, RefClient, HandleClient)]
+#[derive(
+    Serialize,
+    Deserialize,
+    Clone,
+    Debug,
+    Named,
+    Handler,
+    RefClient,
+    HandleClient
+)]
 pub struct ShutdownHost {
     /// Grace window: send SIGTERM and wait this long before
     /// escalating.
     pub timeout: std::time::Duration,
     /// Max number of children to terminate concurrently on this host.
     pub max_in_flight: usize,
-    /// Ack that the agent finished shutdown work (best-effort).
-    #[reply]
-    pub ack: hyperactor::PortRef<()>,
+    /// This host's ordinal within the shutdown cast region, stamped by the
+    /// cast layer. The host echoes it back via `ack` so the caller can tell
+    /// exactly which hosts acknowledged shutdown.
+    pub rank: resource::Rank,
+    /// Direct reply carrying this host's rank once shutdown work is done.
+    ///
+    /// Intentionally must NOT be split/tree-reduced: `ShutdownHost` makes each
+    /// host exit right after acking, so a tree-reduced ack would stall — the
+    /// node that fans in peers' acks tears down before they arrive. Replying
+    /// directly to the caller survives the responders exiting. The caller binds
+    /// this port `.unsplit()` so the cast layer leaves it alone, and collects
+    /// one direct reply per host (see `HostMeshRef::cast_shutdown`).
+    pub ack: PortRef<usize>,
 }
 wirevalue::register_type!(ShutdownHost);
 
@@ -1043,24 +1075,46 @@ wirevalue::register_type!(ShutdownHost);
 /// If `host_mesh_id` is `Some`, only procs belonging to that mesh
 /// are stopped (selective drain). If `None`, all procs are
 /// terminated (full drain).
-#[derive(Serialize, Deserialize, Debug, Named, Handler, RefClient, HandleClient)]
+#[derive(
+    Serialize,
+    Deserialize,
+    Clone,
+    Debug,
+    Named,
+    Handler,
+    RefClient,
+    HandleClient
+)]
 pub struct DrainHost {
     pub timeout: std::time::Duration,
     pub max_in_flight: usize,
     pub host_mesh_id: Option<HostMeshId>,
-    #[reply]
-    pub ack: hyperactor::PortRef<()>,
+    /// The recipient's ordinal within the drain cast region, stamped by
+    /// the cast layer. Used to position this host's status overlay.
+    pub rank: resource::Rank,
+    /// Streaming status reply. Each host reports a single-rank `Stopped`
+    /// overlay once it has drained; the caller reduces these into a
+    /// `StatusMesh` barrier and can detect hosts that never reported.
+    pub reply: PortRef<crate::StatusOverlay>,
 }
 wirevalue::register_type!(DrainHost);
 
 #[async_trait]
 impl Handler<DrainHost> for HostAgent {
     async fn handle(&mut self, cx: &Context<Self>, msg: DrainHost) -> anyhow::Result<()> {
+        let rank = msg.rank.unwrap();
+        // This host's drain completion, as a single-rank `Stopped` overlay at
+        // its ordinal. The caller reduces these into a StatusMesh barrier.
+        let drained_overlay = || {
+            crate::StatusOverlay::try_from_runs(vec![(rank..(rank + 1), resource::Status::Stopped)])
+                .expect("valid single-run overlay")
+        };
+
         if msg.host_mesh_id.is_some() {
             // Selective drain: stop only procs belonging to the named mesh.
             self.drain_by_mesh_name(cx, msg.timeout, msg.host_mesh_id.as_ref())
                 .await;
-            msg.ack.post(cx, ());
+            msg.reply.post(cx, drained_overlay());
             return Ok(());
         }
 
@@ -1068,14 +1122,14 @@ impl Handler<DrainHost> for HostAgent {
         let host = match std::mem::replace(&mut self.state, HostAgentState::Draining) {
             HostAgentState::Attached(h) => h,
             other @ (HostAgentState::Detached(_) | HostAgentState::Draining) => {
-                // Nothing to drain — ack immediately.
+                // Nothing to drain — report immediately.
                 self.state = other;
-                msg.ack.post(cx, ());
+                msg.reply.post(cx, drained_overlay());
                 return Ok(());
             }
             HostAgentState::Shutdown => {
                 self.state = HostAgentState::Shutdown;
-                msg.ack.post(cx, ());
+                msg.reply.post(cx, drained_overlay());
                 return Ok(());
             }
         };
@@ -1096,7 +1150,8 @@ impl Handler<DrainHost> for HostAgent {
                 host: Some(host),
                 timeout: msg.timeout,
                 max_in_flight: msg.max_in_flight,
-                ack: Some(msg.ack),
+                rank,
+                reply: Some(msg.reply),
                 done_notify: done_port,
             },
         );
@@ -1110,7 +1165,12 @@ impl Handler<DrainComplete> for HostAgent {
     async fn handle(&mut self, cx: &Context<Self>, msg: DrainComplete) -> anyhow::Result<()> {
         self.state = HostAgentState::Detached(msg.host);
         self.created.clear();
-        msg.ack.post(cx, ());
+        let overlay = crate::StatusOverlay::try_from_runs(vec![(
+            msg.rank..(msg.rank + 1),
+            resource::Status::Stopped,
+        )])
+        .expect("valid single-run overlay");
+        msg.reply.post(cx, overlay);
         Ok(())
     }
 }
@@ -1118,6 +1178,7 @@ impl Handler<DrainComplete> for HostAgent {
 #[async_trait]
 impl Handler<ShutdownHost> for HostAgent {
     async fn handle(&mut self, cx: &Context<Self>, msg: ShutdownHost) -> anyhow::Result<()> {
+        let rank = msg.rank.unwrap();
         // Terminate children BEFORE acking, so the caller's networking
         // stays alive while children flush their forwarders during
         // teardown. If we ack first, the caller proceeds to tear down
@@ -1128,9 +1189,9 @@ impl Handler<ShutdownHost> for HostAgent {
             self.drain(cx, msg.timeout, msg.max_in_flight).await;
         }
 
-        // Ack after children are terminated so the caller does not
-        // tear down the host's networking prematurely.
-        msg.ack.post(cx, ());
+        // Reply this host's rank after children are terminated so the
+        // caller does not tear down the host's networking prematurely.
+        msg.ack.post(cx, rank);
 
         // Drop the host and signal the bootstrap loop to drain the
         // mailbox and exit.
@@ -1159,17 +1220,7 @@ impl Handler<ShutdownHost> for HostAgent {
     }
 }
 
-#[derive(
-    Debug,
-    Clone,
-    PartialEq,
-    Eq,
-    Named,
-    Serialize,
-    Deserialize,
-    hyperactor::Bind,
-    hyperactor::Unbind
-)]
+#[derive(Debug, Clone, PartialEq, Eq, Named, Serialize, Deserialize)]
 pub struct ProcState {
     pub proc_id: ProcAddr,
     pub create_rank: usize,
@@ -1801,10 +1852,20 @@ mod tests {
         );
 
         // Drain only mesh_a.
+        let (drain_reply, mut drain_rx) = client.open_port::<crate::StatusOverlay>();
         host_agent
-            .drain_host(&client, Duration::from_secs(5), 16, Some(mesh_a.clone()))
+            .drain_host(
+                &client,
+                Duration::from_secs(5),
+                16,
+                Some(mesh_a.clone()),
+                resource::Rank::new(0),
+                drain_reply.bind(),
+            )
             .await
             .unwrap();
+        // Wait for the host to report drained before asserting.
+        drain_rx.recv().await.unwrap();
 
         // proc_a should be gone (removed from created).
         assert_matches!(
@@ -1880,10 +1941,20 @@ mod tests {
             .unwrap();
 
         // Drain all (no filter).
+        let (drain_reply, mut drain_rx) = client.open_port::<crate::StatusOverlay>();
         host_agent
-            .drain_host(&client, Duration::from_secs(5), 16, None)
+            .drain_host(
+                &client,
+                Duration::from_secs(5),
+                16,
+                None,
+                resource::Rank::new(0),
+                drain_reply.bind(),
+            )
             .await
             .unwrap();
+        // Wait for the host to report drained before asserting.
+        drain_rx.recv().await.unwrap();
 
         // Both should be gone.
         assert_matches!(
@@ -1961,7 +2032,10 @@ mod tests {
             .proc_addr()
             .actor_addr(HOST_MESH_AGENT_ACTOR_NAME);
         let agent_id: ActorAddr = agent_ref;
-        let port = PortRef::<IntrospectMessage>::attest_handler_port(&agent_id);
+        let port = PortRef::<IntrospectMessage>::attest_control_port(
+            &agent_id,
+            hyperactor::ControlPort::Introspect,
+        );
 
         // Poll until we see non-zero watermark (evidence of queue
         // traffic since startup).

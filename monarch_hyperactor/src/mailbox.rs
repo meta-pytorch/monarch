@@ -27,9 +27,6 @@ use hyperactor::mailbox::OncePortReceiver;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::mailbox::monitored_return_handle;
-use hyperactor::message::Bind;
-use hyperactor::message::Bindings;
-use hyperactor::message::Unbind;
 use hyperactor_config::Flattrs;
 use monarch_types::PickledPyObject;
 use monarch_types::py_global;
@@ -117,7 +114,9 @@ impl PyMailbox {
     }
 
     pub(super) fn post(&self, dest: &PyActorAddr, message: &PythonMessage) -> PyResult<()> {
-        let port_id = dest.inner.port_addr(PythonMessage::port().into());
+        let port_id = dest
+            .inner
+            .port_addr(hyperactor::Port::handler::<PythonMessage>());
         let message = wirevalue::Any::serialize(message).map_err(|err| {
             PyRuntimeError::new_err(format!(
                 "failed to serialize message ({:?}) to Any: {}",
@@ -562,24 +561,6 @@ impl PythonOncePortReceiver {
 pub enum EitherPortRef {
     Unbounded(PythonPortRef),
     Once(PythonOncePortRef),
-}
-
-impl Unbind for EitherPortRef {
-    fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        match self {
-            EitherPortRef::Unbounded(port_ref) => port_ref.inner.unbind(bindings),
-            EitherPortRef::Once(once_port_ref) => once_port_ref.inner.unbind(bindings),
-        }
-    }
-}
-
-impl Bind for EitherPortRef {
-    fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        match self {
-            EitherPortRef::Unbounded(port_ref) => port_ref.inner.bind(bindings),
-            EitherPortRef::Once(once_port_ref) => once_port_ref.inner.bind(bindings),
-        }
-    }
 }
 
 impl EitherPortRef {

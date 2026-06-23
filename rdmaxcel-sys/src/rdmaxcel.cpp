@@ -9,6 +9,7 @@
 #include "rdmaxcel.h"
 #include <cuda.h>
 #include <unistd.h>
+#include <exception>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -219,6 +220,12 @@ int bind_mrs(
     const std::vector<ibv_mr*>& mrs,
     struct mlx5dv_mkey** mkey) {
   auto mrs_cnt = mrs.size();
+  // Defensive: these are passed across the C ABI from Rust; validate rather
+  // than relying on the caller. `qp` is dereferenced below (and via
+  // `ibv_qp_to_qp_ex`), `*mkey` is read, and `pd` feeds mkey creation.
+  if (!pd || !qp || !mkey) {
+    return RDMAXCEL_NULL_ARG;
+  }
   ibv_qp_ex* qpx = ibv_qp_to_qp_ex(qp);
   if (!qpx) {
     return RDMAXCEL_QP_EX_FAILED;
@@ -228,7 +235,24 @@ int bind_mrs(
     return RDMAXCEL_MLX5DV_QP_EX_FAILED;
   }
 
-  if (!*mkey) {
+  // Build the scatter/gather list first, so a bad MR is rejected before we
+  // allocate an mkey (and thus can't leak one).
+  std::vector<ibv_sge> sgl(mrs_cnt);
+  for (size_t i = 0; i < mrs_cnt; i++) {
+    if (!mrs[i]) {
+      return RDMAXCEL_NULL_ARG;
+    }
+    sgl[i].addr = reinterpret_cast<uintptr_t>(mrs[i]->addr);
+    // `ibv_sge.length` is 32-bit; an individual MR is capped well under 4 GiB
+    // (segments are split into <= MAX_MR_SIZE chunks), so this never truncates.
+    sgl[i].length = static_cast<uint32_t>(mrs[i]->length);
+    sgl[i].lkey = mrs[i]->lkey;
+  }
+
+  // Create the indirect mkey if the caller didn't supply one. Track that we
+  // own it so a failed bind below can destroy it rather than leak it.
+  const bool created_mkey_here = (*mkey == nullptr);
+  if (created_mkey_here) {
     struct mlx5dv_mkey_init_attr mkey_attr = {};
     mkey_attr.pd = pd;
     mkey_attr.create_flags = MLX5DV_MKEY_INIT_ATTR_FLAGS_INDIRECT;
@@ -240,12 +264,15 @@ int bind_mrs(
     *mkey = new_mkey;
   }
 
-  std::vector<ibv_sge> sgl(mrs_cnt);
-  for (size_t i = 0; i < mrs_cnt; i++) {
-    sgl[i].addr = reinterpret_cast<uintptr_t>(mrs[i]->addr);
-    sgl[i].length = mrs[i]->length;
-    sgl[i].lkey = mrs[i]->lkey;
-  }
+  // On failure, destroy the mkey we created (if any) so it doesn't leak, and
+  // clear the out-param; a caller-supplied mkey is left untouched.
+  auto fail = [&](int code) {
+    if (created_mkey_here && *mkey) {
+      mlx5dv_destroy_mkey(*mkey);
+      *mkey = nullptr;
+    }
+    return code;
+  };
 
   qpx->wr_flags = IBV_SEND_INLINE | IBV_SEND_SIGNALED;
   ibv_wr_start(qpx);
@@ -253,7 +280,7 @@ int bind_mrs(
   int ret = ibv_wr_complete(qpx);
 
   if (ret != 0) {
-    return RDMAXCEL_WR_COMPLETE_FAILED;
+    return fail(RDMAXCEL_WR_COMPLETE_FAILED);
   }
 
   struct ibv_wc wc{};
@@ -262,7 +289,7 @@ int bind_mrs(
   }
 
   if (wc.status != IBV_WC_SUCCESS) {
-    return RDMAXCEL_WC_STATUS_FAILED;
+    return fail(RDMAXCEL_WC_STATUS_FAILED);
   }
 
   qpx->wr_id += 1;
@@ -271,18 +298,49 @@ int bind_mrs(
   return 0;
 }
 
-// Clean up newly registered MRs and a newly created mkey on failure.
-static void cleanup_new_resources(
-    std::vector<ibv_mr*>& new_mrs,
-    struct mlx5dv_mkey* new_mkey) {
-  for (auto* mr : new_mrs) {
-    if (mr) {
-      ibv_dereg_mr(mr);
+// C-ABI wrapper over `bind_mrs` so Rust can drive the mlx5dv mkey binding
+// directly (the underlying WR-builder verbs are static-inline and not
+// reachable through bindgen).
+int rdmaxcel_bind_mr_list(
+    struct ibv_pd* pd,
+    struct ibv_qp* qp,
+    int access_flags,
+    struct ibv_mr** mrs,
+    size_t mrs_cnt,
+    struct mlx5dv_mkey** mkey) noexcept {
+  // The vector copy and `bind_mrs` allocate; catch every exception and return
+  // an error code so none unwinds across the C ABI into Rust (UB).
+  try {
+    // `mrs` is iterated below to build the vector; guard against a null array.
+    if (!mrs) {
+      return RDMAXCEL_NULL_ARG;
     }
+    std::vector<ibv_mr*> mr_vec(mrs, mrs + mrs_cnt);
+    // `bind_mrs` validates the remaining pointers and, on failure, cleans up
+    // any mkey it created.
+    return bind_mrs(pd, qp, access_flags, mr_vec, mkey);
+  } catch (const std::exception& e) {
+    fprintf(stderr, "[RdmaXcel] rdmaxcel_bind_mr_list failed: %s\n", e.what());
+    return RDMAXCEL_EXCEPTION;
+  } catch (...) {
+    fprintf(stderr, "[RdmaXcel] rdmaxcel_bind_mr_list failed: unknown\n");
+    return RDMAXCEL_EXCEPTION;
   }
-  if (new_mkey) {
-    mlx5dv_destroy_mkey(new_mkey);
+}
+
+int rdmaxcel_destroy_mkey(struct mlx5dv_mkey* mkey) {
+  if (mkey == nullptr) {
+    return RDMAXCEL_SUCCESS;
   }
+  // `mlx5dv_destroy_mkey` follows errno convention (0 / positive errno), unlike
+  // the rest of this API; map any failure into the negative error space so
+  // callers and `rdmaxcel_error_string` stay consistent.
+  const int err = mlx5dv_destroy_mkey(mkey);
+  if (err != 0) {
+    fprintf(stderr, "[RdmaXcel] mlx5dv_destroy_mkey failed: errno %d\n", err);
+    return RDMAXCEL_DESTROY_MKEY_FAILED;
+  }
+  return RDMAXCEL_SUCCESS;
 }
 
 // Compact multiple MRs into a single MR for a segment if SGE_MAX hit
@@ -391,6 +449,17 @@ int register_segments(
 
     std::vector<ibv_mr*> new_mrs;
 
+    // On failure, deregister the MRs we registered for this segment so they
+    // don't leak; any mkey is owned and cleaned up by `bind_mrs`.
+    auto fail = [&](int code) {
+      for (auto* mr : new_mrs) {
+        if (mr) {
+          ibv_dereg_mr(mr);
+        }
+      }
+      return code;
+    };
+
     auto mr_start = seg.phys_address + current_mr_size;
     auto mr_end = seg.phys_address + seg.phys_size;
     auto remaining_size = mr_end - mr_start;
@@ -407,8 +476,7 @@ int register_segments(
 
       // Validate that chunk_size is a multiple of 2MB
       if (chunk_size % MR_ALIGNMENT != 0) {
-        cleanup_new_resources(new_mrs, nullptr);
-        return RDMAXCEL_MR_REGISTRATION_FAILED;
+        return fail(RDMAXCEL_MR_REGISTRATION_FAILED);
       }
 
       int fd = -1;
@@ -420,8 +488,7 @@ int register_segments(
           0);
 
       if (cu_result != CUDA_SUCCESS || fd < 0) {
-        cleanup_new_resources(new_mrs, nullptr);
-        return RDMAXCEL_DMABUF_HANDLE_FAILED;
+        return fail(RDMAXCEL_DMABUF_HANDLE_FAILED);
       }
 
       // Register the dmabuf with fd, address is always 0.
@@ -429,8 +496,7 @@ int register_segments(
       close(fd);
 
       if (!mr) {
-        cleanup_new_resources(new_mrs, nullptr);
-        return RDMAXCEL_MR_REG_FAILED;
+        return fail(RDMAXCEL_MR_REG_FAILED);
       }
 
       new_mrs.push_back(mr);
@@ -442,8 +508,7 @@ int register_segments(
         // if (err != 0) {
         //   return err;
         // }
-        cleanup_new_resources(new_mrs, nullptr);
-        return RDMAXCEL_MKEY_REG_LIMIT;
+        return fail(RDMAXCEL_MKEY_REG_LIMIT);
       }
     }
 
@@ -454,15 +519,15 @@ int register_segments(
     }
     all_mrs.insert(all_mrs.end(), new_mrs.begin(), new_mrs.end());
 
-    // bind_mrs creates the mkey if null
     struct mlx5dv_mkey* mkey =
         seg.registration ? seg.registration->mkey : nullptr;
-    bool had_mkey = mkey != nullptr;
 
+    // bind_mrs creates the mkey when `mkey` is null and, on failure, destroys
+    // any mkey it created (clearing `mkey`), so we only clean up the MRs we
+    // registered here on failure.
     auto err = bind_mrs(pd, qp->ibv_qp, access_flags, all_mrs, &mkey);
     if (err != 0) {
-      cleanup_new_resources(new_mrs, had_mkey ? nullptr : mkey);
-      return err;
+      return fail(err);
     }
 
     // Everything succeeded: commit to the segment registration
@@ -578,7 +643,7 @@ void rdmaxcel_print_device_info(struct ibv_context* context) {
     return;
   }
 
-  struct ibv_device_attr dev_attr;
+  struct ibv_device_attr dev_attr{};
   if (ibv_query_device(context, &dev_attr) != 0) {
     fprintf(stderr, "[RdmaXcel] Error: Failed to query device attributes\n");
     return;
@@ -679,6 +744,12 @@ const char* rdmaxcel_error_string(int error_code) {
       return "[RdmaXcel] Address handle creation failed (ibv_create_ah)";
     case RDMAXCEL_UNSUPPORTED_OP:
       return "[RdmaXcel] Unsupported operation type";
+    case RDMAXCEL_EXCEPTION:
+      return "[RdmaXcel] C++ exception caught at the C-ABI boundary";
+    case RDMAXCEL_NULL_ARG:
+      return "[RdmaXcel] A required pointer argument was NULL";
+    case RDMAXCEL_DESTROY_MKEY_FAILED:
+      return "[RdmaXcel] mlx5dv_destroy_mkey failed";
     default:
       return "[RdmaXcel] Unknown error code";
   }

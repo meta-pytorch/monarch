@@ -25,7 +25,6 @@ use bytes::BytesMut;
 use dashmap::DashMap;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
-use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
 use hyperactor::HandleClient;
@@ -359,7 +358,7 @@ impl TcpManagerActor {
         client: &(impl context::Actor + Send + Sync),
     ) -> Result<ActorHandle<Self>, anyhow::Error> {
         let rdma_handle = RdmaManagerActor::local_handle(client);
-        let tcp_ref: ActorRef<TcpManagerActor> = rdma_handle.get_tcp_actor_ref(client).await?;
+        let tcp_ref = rdma_handle.get_tcp_actor_ref(client).await?;
         tcp_ref
             .downcast_handle(client)
             .ok_or_else(|| anyhow::anyhow!("TcpManagerActor is not in the local process"))
@@ -434,7 +433,7 @@ impl Actor for TcpManagerActor {
                     };
 
                     let mut write_offset = chunk.offset;
-                    let fragments = chunk.data.into_inner();
+                    let fragments = chunk.data.into_fragments();
                     let write_err = fragments.iter().find_map(|fragment| {
                         // SAFETY: the caller is responsible for ensuring that no other
                         // component reads or writes the target byte range concurrently.
@@ -670,6 +669,15 @@ impl TcpBackend {
         chunk_size: usize,
         deadline: Instant,
     ) -> Result<()> {
+        // A write transfers the whole local buffer into the remote prefix; the
+        // remote buffer may be larger, so its tail is left untouched.
+        if op.local_memory.size() > op.remote_size {
+            anyhow::bail!(
+                "remote buffer size ({}) is smaller than local buffer size ({})",
+                op.remote_size,
+                op.local_memory.size(),
+            );
+        }
         let size = op.local_memory.size();
         let total_chunks = size.div_ceil(chunk_size);
 
@@ -725,7 +733,16 @@ impl TcpBackend {
         chunk_size: usize,
         deadline: Instant,
     ) -> Result<()> {
-        let size = op.local_memory.size();
+        // A read transfers the whole remote buffer into the local prefix; the
+        // local buffer may be larger, so its tail is left untouched.
+        if op.remote_size > op.local_memory.size() {
+            anyhow::bail!(
+                "remote buffer size ({}) is larger than local buffer size ({})",
+                op.remote_size,
+                op.local_memory.size(),
+            );
+        }
+        let size = op.remote_size;
         let total_chunks = size.div_ceil(chunk_size);
 
         let (done_handle, done_rx) = hyperactor::mailbox::open_once_port::<Result<(), String>>(cx);
@@ -786,6 +803,15 @@ impl TcpBackend {
         chunk_size: usize,
         deadline: Instant,
     ) -> Result<()> {
+        // A write transfers the whole local buffer into the remote prefix; the
+        // remote buffer may be larger, so its tail is left untouched.
+        if op.local_memory.size() > op.remote_size {
+            anyhow::bail!(
+                "remote buffer size ({}) is smaller than local buffer size ({})",
+                op.remote_size,
+                op.local_memory.size(),
+            );
+        }
         let size = op.local_memory.size();
         let mut offset = 0;
 
@@ -828,7 +854,16 @@ impl TcpBackend {
         chunk_size: usize,
         deadline: Instant,
     ) -> Result<()> {
-        let size = op.local_memory.size();
+        // A read transfers the whole remote buffer into the local prefix; the
+        // local buffer may be larger, so its tail is left untouched.
+        if op.remote_size > op.local_memory.size() {
+            anyhow::bail!(
+                "remote buffer size ({}) is larger than local buffer size ({})",
+                op.remote_size,
+                op.local_memory.size(),
+            );
+        }
+        let size = op.remote_size;
         let mut offset = 0;
 
         while offset < size {
@@ -901,6 +936,7 @@ impl RdmaBackend for TcpBackend {
                 local_memory: op.local,
                 remote_tcp_manager: remote_tcp_mgr,
                 remote_buf_id,
+                remote_size: op.remote.size,
             };
 
             if parallelism > 1 {
@@ -1551,23 +1587,6 @@ mod tests {
 
         let mut envs = setup_same_proc_tcp_env(4096).await?;
         do_round_trip_test(&mut envs, 4096, Duration::from_secs(10)).await
-    }
-
-    /// When TCP fallback is disabled and ibverbs is unavailable,
-    /// RdmaManagerActor::new returns an error.
-    #[timed_test::async_timed_test(timeout_secs = 30)]
-    async fn test_tcp_fallback_disabled_fails() -> anyhow::Result<()> {
-        let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(crate::config::RDMA_ALLOW_TCP_FALLBACK, false);
-
-        let result = RdmaManagerActor::new(None, Flattrs::default()).await;
-        if crate::ibverbs_supported() {
-            assert!(result.is_ok());
-        } else {
-            assert!(result.is_err());
-        }
-
-        Ok(())
     }
 
     // --- Multi-GPU TCP fallback tests ---

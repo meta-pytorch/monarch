@@ -253,7 +253,7 @@ impl EntityBatchSink {
                     from_actor_id: event.from_actor_id,
                     to_actor_id: event.to_actor_id,
                     endpoint: event.endpoint,
-                    port_id: event.port_id,
+                    port_index: event.port_index,
                 });
                 inner.flush_messages_if_full()?;
             }

@@ -18,7 +18,7 @@
 //! # Snapshot integration invariants (SI-*)
 //!
 //! - **SI-1 (snapshot tables discoverable):** After
-//!   `register_snapshot_schemas`, the 11 snapshot table names appear
+//!   `register_snapshot_schemas`, the 13 snapshot table names appear
 //!   in `DatabaseScanner.table_names()` and are discoverable by
 //!   `QueryEngine.setup_tables()`.
 //! - **SI-2 (snapshot tables queryable):** After periodic capture
@@ -55,6 +55,8 @@ use hyperactor_mesh::mesh_admin::MeshAdminAgent;
 use monarch_distributed_telemetry::database_scanner::TableStore;
 use monarch_record_batch::RecordBatchBuffer;
 
+use crate::schema::ActiveHandlerRowBuffer;
+use crate::schema::ActorExecutionRowBuffer;
 use crate::schema::ActorFailureRowBuffer;
 use crate::schema::ActorInboundOrderingRowBuffer;
 use crate::schema::ActorNodeRowBuffer;
@@ -69,7 +71,7 @@ use crate::schema::SnapshotRowBuffer;
 use crate::service::CaptureSnapshot;
 use crate::service::SnapshotCaptureActor;
 
-/// Pre-register the 11 snapshot table schemas into `table_store`.
+/// Pre-register the 13 snapshot table schemas into `table_store`.
 ///
 /// Each table is registered with a zero-row `RecordBatch` carrying
 /// the correct Arrow schema. This must be called before the
@@ -81,6 +83,14 @@ use crate::service::SnapshotCaptureActor;
 pub async fn register_snapshot_schemas(table_store: &TableStore) -> anyhow::Result<()> {
     // Order matches SNAPSHOT_TABLE_NAMES (sorted).
     let batches = [
+        (
+            "active_handlers",
+            ActiveHandlerRowBuffer::default().drain_to_record_batch()?,
+        ),
+        (
+            "actor_executions",
+            ActorExecutionRowBuffer::default().drain_to_record_batch()?,
+        ),
         (
             "actor_failures",
             ActorFailureRowBuffer::default().drain_to_record_batch()?,
@@ -162,7 +172,7 @@ mod tests {
     use super::*;
     use crate::push::SNAPSHOT_TABLE_NAMES;
 
-    // SI-1: register_snapshot_schemas populates a TableStore with 11
+    // SI-1: register_snapshot_schemas populates a TableStore with 13
     // table names matching SNAPSHOT_TABLE_NAMES.
     #[tokio::test]
     async fn test_register_snapshot_schemas() {
@@ -170,7 +180,7 @@ mod tests {
         register_snapshot_schemas(&store).await.unwrap();
 
         let names = store.table_names().unwrap();
-        assert_eq!(names.len(), 11);
+        assert_eq!(names.len(), 13);
 
         let expected: Vec<String> = SNAPSHOT_TABLE_NAMES.iter().map(|s| s.to_string()).collect();
         assert_eq!(names, expected);

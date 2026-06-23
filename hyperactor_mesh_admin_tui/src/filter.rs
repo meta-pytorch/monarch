@@ -77,6 +77,7 @@ mod tests {
             is_system: false,
             inbound_ordering: None,
             failure_info: None,
+            execution: None,
         }
     }
 
@@ -155,6 +156,7 @@ mod tests {
                 occurred_at: SystemTime::UNIX_EPOCH,
                 is_propagated: false,
             }),
+            execution: None,
         };
         assert!(is_failed_node(&props));
     }

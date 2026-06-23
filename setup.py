@@ -163,13 +163,28 @@ if not gpu_platform and build_tensor_engine and cuda_home and rocm_home:
         "Both CUDA and ROCm detected. Set MONARCH_GPU_PLATFORM=cuda, =rocm, or =none."
     )
 
-build_cuda = build_tensor_engine and (
-    gpu_platform == "cuda" or (not gpu_platform and cuda_home)
-)
-build_rocm = build_tensor_engine and (
-    gpu_platform == "rocm" or (not gpu_platform and rocm_home)
-)
+# Two independent axes drive the cargo features below:
+#   * torch present?            -> build_tensor_engine ("tensor_engine")
+#   * CUDA/ROCm toolchain?      -> has_cuda / has_rocm
+# MONARCH_GPU_PLATFORM forces the platform ("cuda"/"rocm"/"none"); empty means
+# auto-detect. Invalid / forced-but-missing / both-installed cases already
+# errored out above, so here we just read the result.
+auto_detect = gpu_platform == ""
+has_cuda = gpu_platform == "cuda" or (auto_detect and cuda_home is not None)
+has_rocm = gpu_platform == "rocm" or (auto_detect and rocm_home is not None)
+
+# GPU tensor-engine build needs torch AND a toolchain -> "tensor_engine_gpu"
+# feature (which itself folds in "rdma", see monarch_extension/Cargo.toml).
+build_cuda = build_tensor_engine and has_cuda
+build_rocm = build_tensor_engine and has_rocm
 build_gpu = build_cuda or build_rocm
+
+# rdma needs only the toolchain, not torch, so it can ship in the no-torch
+# (USE_TENSOR_ENGINE=0) build too.
+# TODO: this coupling makes no sense and should be removed in a follow-up —
+# rdma (ibverbs) is a network transport with nothing to do with GPU compute;
+# it can't build today only because rdmaxcel-sys compiles device code.
+build_rdma = has_cuda or has_rocm
 
 print("=" * 80)
 if build_tensor_engine:
@@ -181,11 +196,15 @@ if build_tensor_engine:
         elif build_rocm:
             print(f"  - ROCm: {rocm_home}")
     else:
-        print("✓ Building WITH tensor_engine (CPU-only, no GPU/NCCL/RDMA)")
+        print("✓ Building WITH tensor_engine (CPU-only, no GPU/NCCL)")
         print(f"  - PyTorch: {torch_config['lib_path']}")
     print(f"  - C++11 ABI: {'enabled' if torch_config['cxx11_abi'] else 'disabled'}")
 else:
-    print("Building WITHOUT tensor_engine (actors only, no torch)")
+    print("Building WITHOUT tensor_engine (no torch)")
+if build_rdma:
+    print("  - RDMA: included")
+else:
+    print("  - RDMA: not included (no CUDA/ROCm toolchain found; see TODO in setup.py)")
 print("=" * 80)
 
 # Set PYO3_PYTHON for Rust binaries
@@ -363,10 +382,12 @@ rust_extensions = []
 
 # Main Python extension
 rust_features = ["extension-module", "distributed_sql_telemetry"]
+if build_rdma:
+    rust_features.append("rdma")
 if build_tensor_engine:
     rust_features.append("tensor_engine")
 if build_gpu:
-    rust_features.append("tensor_engine_gpu")
+    rust_features.append("tensor_engine_gpu")  # folds in "rdma" too
 
 rust_extensions.append(
     RustExtension(

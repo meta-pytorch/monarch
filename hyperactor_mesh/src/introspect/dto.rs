@@ -34,6 +34,8 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 
+use super::ActiveHandler;
+use super::Execution;
 use super::FailureInfo;
 use super::InboundOrdering;
 use super::NodePayload;
@@ -171,6 +173,10 @@ pub enum NodePropertiesDto {
         /// `hyperactor::introspect`.
         inbound_ordering: Option<Box<InboundOrderingDto>>,
         failure_info: Option<FailureInfoDto>,
+        /// In-flight handler execution. `null` means the actor does not
+        /// report execution (unsupported), not idle. See EX-* in
+        /// `hyperactor_mesh::introspect`.
+        execution: Option<Box<ExecutionDto>>,
     },
     /// Error sentinel returned when a child reference cannot be resolved.
     Error { code: String, message: String },
@@ -244,6 +250,38 @@ pub struct InboundOrderingDto {
     pub returned_max_buffered_count: usize,
     /// Per-session entries, sorted by `session_id`.
     pub sessions: Vec<OrderingSessionSnapshotDto>,
+}
+
+/// One handler with in-flight invocations, at the HTTP boundary.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(rename = "ActiveHandler")]
+pub struct ActiveHandlerDto {
+    /// Handler name (e.g. a Python endpoint method name).
+    pub name: String,
+    /// In-flight invocations of this handler.
+    pub active_count: u64,
+    /// Start time of the oldest in-flight invocation (ISO 8601 string).
+    pub oldest_since: String,
+}
+
+/// An actor's in-flight handler execution at the HTTP boundary.
+///
+/// `null` (absent) means the actor does not report execution
+/// (unsupported), not idle (EX-1). `complete == false` means the
+/// per-handler detail was momentarily unavailable on that read while
+/// `active_count` stays authoritative (EX-2).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(rename = "Execution")]
+pub struct ExecutionDto {
+    /// Handler invocations currently in flight (EX-2/EX-3).
+    pub active_count: u64,
+    /// Per-handler detail, oldest-first; a prefix of the N oldest when
+    /// `truncated` (EX-4).
+    pub active_handlers: Vec<ActiveHandlerDto>,
+    /// `true` iff the per-handler detail was captured on this read.
+    pub complete: bool,
+    /// `true` iff `active_handlers` is a prefix of the N oldest.
+    pub truncated: bool,
 }
 
 // Helpers
@@ -351,6 +389,7 @@ impl From<NodeProperties> for NodePropertiesDto {
                 is_system,
                 inbound_ordering,
                 failure_info,
+                execution,
             } => Self::Actor {
                 actor_status,
                 actor_type,
@@ -365,6 +404,7 @@ impl From<NodeProperties> for NodePropertiesDto {
                 inbound_ordering: inbound_ordering
                     .map(|io| Box::new(InboundOrderingDto::from(*io))),
                 failure_info: failure_info.map(Into::into),
+                execution: execution.map(|e| Box::new(ExecutionDto::from(*e))),
             },
             NodeProperties::Error { code, message } => Self::Error { code, message },
         }
@@ -408,6 +448,27 @@ impl From<InboundOrdering> for InboundOrderingDto {
             returned_buffered_message_count: o.returned_buffered_message_count,
             returned_max_buffered_count: o.returned_max_buffered_count,
             sessions: o.sessions.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<Execution> for ExecutionDto {
+    fn from(e: Execution) -> Self {
+        Self {
+            active_count: e.active_count,
+            active_handlers: e.active_handlers.into_iter().map(Into::into).collect(),
+            complete: e.complete,
+            truncated: e.truncated,
+        }
+    }
+}
+
+impl From<ActiveHandler> for ActiveHandlerDto {
+    fn from(h: ActiveHandler) -> Self {
+        Self {
+            name: h.name,
+            active_count: h.active_count,
+            oldest_since: format_time(&h.oldest_since),
         }
     }
 }
@@ -516,6 +577,7 @@ impl TryFrom<NodePropertiesDto> for NodeProperties {
                 is_system,
                 inbound_ordering,
                 failure_info,
+                execution,
             } => Self::Actor {
                 actor_status,
                 actor_type,
@@ -540,6 +602,10 @@ impl TryFrom<NodePropertiesDto> for NodeProperties {
                     .map(TryInto::try_into)
                     .transpose()
                     .context("failed to parse Actor.failure_info")?,
+                execution: execution
+                    .map(|dto| Execution::try_from(*dto).map(Box::new))
+                    .transpose()
+                    .context("failed to parse Actor.execution")?,
             },
             NodePropertiesDto::Error { code, message } => Self::Error { code, message },
         })
@@ -566,6 +632,40 @@ impl TryFrom<FailureInfoDto> for FailureInfo {
                 )
             })?,
             is_propagated: dto.is_propagated,
+        })
+    }
+}
+
+impl TryFrom<ExecutionDto> for Execution {
+    type Error = anyhow::Error;
+
+    fn try_from(dto: ExecutionDto) -> Result<Self, Self::Error> {
+        Ok(Self {
+            active_count: dto.active_count,
+            active_handlers: dto
+                .active_handlers
+                .into_iter()
+                .map(ActiveHandler::try_from)
+                .collect::<Result<Vec<_>, _>>()?,
+            complete: dto.complete,
+            truncated: dto.truncated,
+        })
+    }
+}
+
+impl TryFrom<ActiveHandlerDto> for ActiveHandler {
+    type Error = anyhow::Error;
+
+    fn try_from(dto: ActiveHandlerDto) -> Result<Self, Self::Error> {
+        Ok(Self {
+            name: dto.name,
+            active_count: dto.active_count,
+            oldest_since: humantime::parse_rfc3339(&dto.oldest_since).with_context(|| {
+                format!(
+                    "failed to parse ActiveHandler.oldest_since: {:?}",
+                    dto.oldest_since
+                )
+            })?,
         })
     }
 }
@@ -724,6 +824,7 @@ mod tests {
                 is_system: false,
                 inbound_ordering: None,
                 failure_info: None,
+                execution: None,
             },
             children: vec![],
             parent: Some(NodeRef::Proc(test_proc_id())),
@@ -753,6 +854,7 @@ mod tests {
                     occurred_at: test_time_2(),
                     is_propagated: true,
                 }),
+                execution: None,
             },
             children: vec![],
             parent: Some(NodeRef::Proc(test_proc_id())),
@@ -776,6 +878,7 @@ mod tests {
                 is_system: false,
                 inbound_ordering: None,
                 failure_info: None,
+                execution: None,
             },
             children: vec![],
             parent: Some(NodeRef::Proc(test_proc_id())),
@@ -835,6 +938,7 @@ mod tests {
                     ],
                 })),
                 failure_info: None,
+                execution: None,
             },
             children: vec![],
             parent: Some(NodeRef::Proc(test_proc_id())),
@@ -869,6 +973,7 @@ mod tests {
                     sessions: vec![make_ordering_session(uuid::Uuid::from_u128(7), 0, 4)],
                 })),
                 failure_info: None,
+                execution: None,
             },
             children: vec![],
             parent: Some(NodeRef::Proc(test_proc_id())),

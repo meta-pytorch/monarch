@@ -63,7 +63,6 @@ def configure(
     mesh_bootstrap_enable_pdeathsig: bool = ...,
     mesh_terminate_concurrency: int = ...,
     mesh_terminate_timeout: str = ...,
-    shared_asyncio_runtime: bool = ...,
     small_write_threshold: int = ...,
     max_cast_dimension_size: int = ...,
     remote_alloc_bind_to_inaddr_any: bool = ...,
@@ -97,7 +96,7 @@ def configure(
 
     For complete parameter documentation, see the Python wrapper
     `monarch.config.configure()` which provides the same interface
-    with detailed descriptions of all 37 configuration parameters
+    with detailed descriptions of all 36 configuration parameters
     organized into logical categories (transport, logging, message
     handling, mesh bootstrap, allocation, proc/host mesh timeouts,
     etc.).
@@ -142,7 +141,6 @@ def configure(
             during shutdown
         mesh_terminate_timeout: Timeout per child during graceful
             termination (humantime)
-        shared_asyncio_runtime: Share asyncio runtime across actors
         small_write_threshold: Threshold below which writes are copied
             (bytes)
         max_cast_dimension_size: Maximum dimension size for cast

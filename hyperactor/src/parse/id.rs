@@ -23,6 +23,7 @@ use crate::parse::lex::Lexer;
 use crate::parse::lex::Span;
 use crate::parse::lex::Token;
 use crate::parse::lex::TokenKind;
+use crate::port::ControlPort;
 use crate::port::Port;
 
 /// Flickr base58 alphabet.
@@ -74,12 +75,18 @@ pub(crate) fn parse_id_with_parser(parser: &mut Parser<'_>) -> Result<Id, ParseE
             parser.bump();
             let proc_id = parse_proc_id_with_parser(parser)?;
             let actor_id = ActorId::new(first, proc_id, None);
-            if parser.peek().kind == TokenKind::Colon {
-                parser.bump();
-                let port = parse_port(parser)?;
-                Ok(Id::Port(PortId::new(actor_id, port)))
-            } else {
-                Ok(Id::Actor(actor_id))
+            match parser.peek().kind {
+                TokenKind::Colon => {
+                    parser.bump();
+                    let port = parse_port(parser)?;
+                    Ok(Id::Port(PortId::new(actor_id, port)))
+                }
+                TokenKind::Bang => {
+                    parser.bump();
+                    let port = parse_control_port(parser)?;
+                    Ok(Id::Port(PortId::new(actor_id, port)))
+                }
+                _ => Ok(Id::Actor(actor_id)),
             }
         }
         _ => Ok(Id::Proc(ProcId::new(first, None))),
@@ -99,37 +106,63 @@ pub(crate) fn parse_actor_id_with_parser(parser: &mut Parser<'_>) -> Result<Acto
 
 pub(crate) fn parse_port_id_with_parser(parser: &mut Parser<'_>) -> Result<PortId, ParseError> {
     let actor_id = parse_actor_id_with_parser(parser)?;
-    parser.expect_kind(TokenKind::Colon)?;
-    let port = parse_port(parser)?;
+    let port = match parser.peek().kind {
+        TokenKind::Colon => {
+            parser.bump();
+            parse_port(parser)?
+        }
+        TokenKind::Bang => {
+            parser.bump();
+            parse_control_port(parser)?
+        }
+        _ => return Err(ParseError::expected(parser.peek(), "\":\" or \"!\"")),
+    };
     Ok(PortId::new(actor_id, port))
 }
 
 fn parse_port(parser: &mut Parser<'_>) -> Result<Port, ParseError> {
-    let port = parser.expect_text("decimal port")?;
-    if !port.text.bytes().all(|ch| ch.is_ascii_digit()) {
-        return Err(ParseError::invalid_port(port));
+    match parser.peek().kind {
+        TokenKind::Text => {
+            let port = parser.bump();
+            if port.text.bytes().all(|ch| ch.is_ascii_digit()) {
+                let port: u64 = port
+                    .text
+                    .parse()
+                    .map_err(|_| ParseError::invalid_port(port))?;
+                return Ok(Port::ephemeral(port));
+            }
+
+            let uid = parse_id_component_from_first_text(port, parser)?;
+            parse_handler_port(uid, port)
+        }
+        TokenKind::LessThan => {
+            let port = parser.peek();
+            parse_handler_port(parse_id_component(parser)?, port)
+        }
+        _ => Err(ParseError::expected(parser.peek(), "port")),
     }
-    let port: u64 = port
-        .text
-        .parse()
-        .map_err(|_| ParseError::invalid_port(port))?;
-    Ok(Port::from(port))
+}
+
+fn parse_handler_port(uid: Uid, token: Token<'_>) -> Result<Port, ParseError> {
+    match uid {
+        Uid::Instance(_, _) => Ok(Port::Handler(uid)),
+        Uid::Singleton(_) => Err(ParseError::invalid_port(token)),
+    }
+}
+
+fn parse_control_port(parser: &mut Parser<'_>) -> Result<Port, ParseError> {
+    let port = parser.expect_text("control port")?;
+    port.text
+        .parse::<ControlPort>()
+        .map(Port::control)
+        .map_err(|_| ParseError::invalid_port(port))
 }
 
 pub(crate) fn parse_id_component(parser: &mut Parser<'_>) -> Result<Uid, ParseError> {
     match parser.peek().kind {
         TokenKind::Text => {
             let label = parser.bump();
-            if parser.peek().kind == TokenKind::LessThan {
-                parser.bump();
-                let uid = parser.expect_text("uid text")?;
-                parser.expect_kind(TokenKind::GreaterThan)?;
-                let label = parse_label(label)?;
-                let uid = parse_base58_uid(uid)?;
-                Ok(Uid::Instance(uid, Some(label)))
-            } else {
-                Ok(Uid::Singleton(parse_label(label)?))
-            }
+            parse_id_component_from_first_text(label, parser)
         }
         TokenKind::LessThan => {
             parser.bump();
@@ -138,6 +171,22 @@ pub(crate) fn parse_id_component(parser: &mut Parser<'_>) -> Result<Uid, ParseEr
             Ok(Uid::Instance(parse_base58_uid(uid)?, None))
         }
         _ => Err(ParseError::expected(parser.bump(), "\"label\" or \"<\"")),
+    }
+}
+
+fn parse_id_component_from_first_text(
+    label: Token<'_>,
+    parser: &mut Parser<'_>,
+) -> Result<Uid, ParseError> {
+    if parser.peek().kind == TokenKind::LessThan {
+        parser.bump();
+        let uid = parser.expect_text("uid text")?;
+        parser.expect_kind(TokenKind::GreaterThan)?;
+        let label = parse_label(label)?;
+        let uid = parse_base58_uid(uid)?;
+        Ok(Uid::Instance(uid, Some(label)))
+    } else {
+        Ok(Uid::Singleton(parse_label(label)?))
     }
 }
 
@@ -297,6 +346,18 @@ mod tests {
             parse_port_id("controller.local:7").unwrap().to_string(),
             "controller.local:7"
         );
+        assert_eq!(
+            parse_port_id("controller.local:handler<2>")
+                .unwrap()
+                .to_string(),
+            "controller.local:handler<2>"
+        );
+        assert_eq!(
+            parse_port_id("controller.local!introspect")
+                .unwrap()
+                .to_string(),
+            "controller.local!introspect"
+        );
     }
 
     #[test]
@@ -350,7 +411,7 @@ mod tests {
     #[test]
     fn test_parse_port_id_reports_missing_port_token() {
         let err = parse_port_id("controller.local:@inproc://0").unwrap_err();
-        assert_eq!(err.to_string(), "expected decimal port, found \"@\"");
+        assert_eq!(err.to_string(), "expected port, found \"@\"");
         assert_eq!(err.span, Span::new(17, 18));
     }
 

@@ -358,6 +358,7 @@ class MemoryViewer:
             action: Literal["alloc", "free_requested"] = "free_requested"
 
         frames: List[Frame] = [
+            # pyrefly: ignore [bad-assignment]
             {"filename": frame.filename, "line": frame.lineno, "name": frame.name}
             for frame in _filter_traceback(traceback)
         ]

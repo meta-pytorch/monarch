@@ -9,7 +9,7 @@ license = "BSD-3-Clause"
 
 [dependencies]
 anyhow = "1.0.102"
-chrono = { version = "0.4.44", features = ["clock", "serde", "std"], default-features = false }
+chrono = { version = "0.4.45", features = ["clock", "serde", "std"], default-features = false }
 dashmap = { version = "6.2.1", features = ["rayon", "serde"] }
 erased-serde = "0.4.10"
 fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
@@ -22,14 +22,14 @@ monarch_telemetry_schema = { version = "0.0.0", path = "../monarch_telemetry_sch
 opentelemetry = "0.31"
 opentelemetry-otlp = { version = "0.31.1", features = ["grpc-tonic", "http-proto", "logs", "metrics", "reqwest-blocking-client", "trace", "zstd-tonic"], default-features = false }
 opentelemetry_sdk = { version = "0.31", features = ["experimental_metrics_custom_reader", "metrics", "rt-tokio"] }
-prost = { version = "0.14.3", default-features = false }
+prost = { version = "0.14.4", default-features = false }
 rand = "0.10.1"
 rusqlite = { version = "0.37.0", features = ["backup", "blob", "bundled", "column_decltype", "functions", "limits", "modern_sqlite", "serde_json"] }
 scuba = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 serde_rusqlite = "0.40.1"
-smallvec = { version = "1.15", features = ["impl_bincode", "serde", "specialization", "union", "write"] }
+smallvec = { version = "1.15.2", features = ["impl_bincode", "serde", "specialization", "union", "write"] }
 smol_str = "0.3.6"
 tokio = { version = "1.52.3", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
