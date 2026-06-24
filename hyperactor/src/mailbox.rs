@@ -485,6 +485,10 @@ pub struct MessageEnvelope {
     /// The destination of the message.
     dest: PortAddr,
 
+    /// The next hop used only for gateway routing.
+    #[serde(default)]
+    next_hop: Option<PortAddr>,
+
     /// The serialized message.
     data: wirevalue::Any,
 
@@ -519,6 +523,7 @@ impl MessageEnvelope {
         Self {
             sender,
             dest,
+            next_hop: None,
             data,
             delivery_failures: Vec::new(),
             headers,
@@ -545,16 +550,12 @@ impl MessageEnvelope {
         value: &T,
         headers: Flattrs,
     ) -> Result<Self, wirevalue::Error> {
-        Ok(Self {
+        Ok(Self::new(
+            source,
+            dest,
+            wirevalue::Any::serialize(value)?,
             headers,
-            data: wirevalue::Any::serialize(value)?,
-            sender: source.into(),
-            dest: dest.into(),
-            delivery_failures: Vec::new(),
-            ttl: hyperactor_config::global::get(crate::config::MESSAGE_TTL_DEFAULT),
-            // By default, all undeliverable messages should be returned to the sender.
-            return_undeliverable: true,
-        })
+        ))
     }
 
     /// Returns the remaining time-to-live (TTL) for this message.
@@ -612,9 +613,27 @@ impl MessageEnvelope {
         &self.dest
     }
 
+    /// The next hop that gateways use for routing.
+    pub(crate) fn next_hop(&self) -> &PortAddr {
+        self.next_hop.as_ref().unwrap_or(&self.dest)
+    }
+
+    /// Whether this envelope carries a next hop distinct from the
+    /// canonical destination.
+    pub(crate) fn has_next_hop(&self) -> bool {
+        self.next_hop.is_some()
+    }
+
     /// Return this envelope with its destination replaced by `dest`.
     pub fn with_dest(mut self, dest: PortAddr) -> Self {
         self.dest = dest;
+        self.next_hop = None;
+        self
+    }
+
+    /// Return this envelope with its next hop replaced by `dest`.
+    pub(crate) fn with_next_hop(mut self, dest: PortAddr) -> Self {
+        self.next_hop = if dest == self.dest { None } else { Some(dest) };
         self
     }
 
@@ -722,6 +741,7 @@ impl MessageEnvelope {
         let Self {
             sender,
             dest,
+            next_hop,
             data,
             delivery_failures,
             headers,
@@ -733,6 +753,7 @@ impl MessageEnvelope {
             MessageMetadata {
                 sender,
                 dest,
+                next_hop,
                 delivery_failures,
                 headers,
                 ttl,
@@ -746,6 +767,7 @@ impl MessageEnvelope {
         let MessageMetadata {
             sender,
             dest,
+            next_hop,
             delivery_failures,
             headers,
             ttl,
@@ -755,6 +777,7 @@ impl MessageEnvelope {
         Self {
             sender,
             dest,
+            next_hop,
             data,
             delivery_failures,
             headers,
@@ -795,6 +818,7 @@ impl fmt::Display for MessageEnvelope {
 pub struct MessageMetadata {
     sender: ActorAddr,
     dest: PortAddr,
+    next_hop: Option<PortAddr>,
     /// Structured delivery failures. The first entry is the root delivery
     /// failure; later entries record subsequent failures while returning or
     /// forwarding the same envelope.
@@ -2192,6 +2216,7 @@ impl MailboxSender for Mailbox {
             mut headers,
             sender,
             dest,
+            next_hop,
             delivery_failures,
             ttl,
             return_undeliverable,
@@ -2234,6 +2259,7 @@ impl MailboxSender for Mailbox {
                         headers,
                         sender,
                         dest,
+                        next_hop,
                         delivery_failures,
                         ttl,
                         return_undeliverable,
@@ -2254,6 +2280,7 @@ impl MailboxSender for Mailbox {
                         headers,
                         sender,
                         dest,
+                        next_hop,
                         delivery_failures,
                         ttl,
                         return_undeliverable,

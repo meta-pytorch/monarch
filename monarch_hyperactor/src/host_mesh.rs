@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -17,6 +18,7 @@ use hyperactor::Endpoint as _;
 use hyperactor::Gateway;
 use hyperactor::Instance;
 use hyperactor::Proc;
+use hyperactor::channel::ChannelAddr;
 use hyperactor::id::Label;
 use hyperactor_mesh::ProcMeshRef;
 use hyperactor_mesh::bootstrap::BootstrapCommand;
@@ -335,6 +337,54 @@ static HOST_SHUTDOWN_HANDLE: OnceLock<
     tokio::sync::Mutex<Option<hyperactor_mesh::bootstrap::HostShutdownHandle>>,
 > = OnceLock::new();
 
+enum ViaServeState {
+    Idle,
+    Starting,
+    Serving(Box<hyperactor::gateway::GatewayServeHandle>),
+}
+
+/// Handle for the via-mode duplex session opened by
+/// [`Gateway::serve_via`]. Kept until shutdown so the cluster-inbound
+/// serve and outbound duplex stay alive for the host's lifetime.
+static VIA_SERVE_HANDLE: OnceLock<Mutex<ViaServeState>> = OnceLock::new();
+
+async fn serve_global_gateway_via(addr: ChannelAddr) -> PyResult<()> {
+    let state = VIA_SERVE_HANDLE.get_or_init(|| Mutex::new(ViaServeState::Idle));
+    {
+        let mut state = state.lock().unwrap();
+        match &*state {
+            ViaServeState::Idle => {
+                *state = ViaServeState::Starting;
+            }
+            ViaServeState::Starting | ViaServeState::Serving(_) => {
+                return Err(PyException::new_err(
+                    "via serve handle is already initialized; \
+                     bootstrap_host called more than once with a via address",
+                ));
+            }
+        }
+    }
+
+    let result = Gateway::global().clone().serve_via(addr).await;
+    let mut state = state.lock().unwrap();
+    match result {
+        Ok(handle) => {
+            assert!(
+                matches!(&*state, ViaServeState::Starting),
+                "via serve state changed while initializing"
+            );
+            *state = ViaServeState::Serving(Box::new(handle));
+            Ok(())
+        }
+        Err(err) => {
+            if matches!(&*state, ViaServeState::Starting) {
+                *state = ViaServeState::Idle;
+            }
+            Err(PyException::new_err(err.to_string()))
+        }
+    }
+}
+
 /// Bootstrap the client host and root client actor.
 ///
 /// This creates a proper Host with BootstrapProcManager, spawns the root client
@@ -347,23 +397,51 @@ static HOST_SHUTDOWN_HANDLE: OnceLock<
 ///
 /// The HostMesh is served on the default transport.
 ///
+/// If ``via`` is set to a ZMQ-style address of a remote host's duplex
+/// server, the local host's gateway is attached to that remote
+/// gateway: outbound traffic to unknown destinations is forwarded over
+/// the duplex, and inbound traffic from the duplex is delivered to
+/// local procs by the gateway's routing. The local host still owns
+/// its own frontend address; ``via`` only adds a forwarding path. The
+/// returned ``PyHostMesh`` / ``PyProcMesh`` / ``PyInstance`` all live
+/// on the local host's procs.
+///
 /// This should be called only once, at process initialization.
 #[pyfunction]
-#[pyo3(signature = (bootstrap_cmd))]
-fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPythonTask> {
+#[pyo3(signature = (bootstrap_cmd, via=None))]
+fn bootstrap_host(
+    bootstrap_cmd: Option<PyBootstrapCommand>,
+    via: Option<&str>,
+) -> PyResult<PyPythonTask> {
     let bootstrap_cmd = match bootstrap_cmd {
         Some(cmd) => cmd.to_rust(),
         None => BootstrapCommand::current().map_err(|e| PyException::new_err(e.to_string()))?,
     };
+    let via_addr = via
+        .map(|s| {
+            ChannelAddr::from_zmq_url(s)
+                .map_err(|e| PyValueError::new_err(format!("via address: {}", e)))
+        })
+        .transpose()?;
 
     PyPythonTask::new(async move {
+        // Take the process-wide global gateway up front so `serve_via`
+        // installs the cluster route before host bootstrap creates any
+        // actors or ports. Host bootstrap will serve its own backend
+        // and frontend endpoints, while the via session remains active
+        // as an outbound route and local delivery location.
+        let gateway = Gateway::global().clone();
+        if let Some(addr) = via_addr {
+            serve_global_gateway_via(addr).await?;
+        }
+
         let (host_mesh_agent, shutdown_handle) = host(
             default_bind_spec().binding_addr(),
             Some(bootstrap_cmd),
             None,
             false,
             None,
-            Gateway::global().clone(),
+            gateway,
         )
         .await
         .map_err(|e| PyException::new_err(e.to_string()))?;
@@ -552,6 +630,18 @@ fn shutdown_local_host_mesh() -> PyResult<PyPythonTask> {
             && let Some(handle) = lock.lock().await.take()
         {
             handle.join().await;
+        }
+
+        let via_handle = VIA_SERVE_HANDLE.get().and_then(|lock| {
+            let mut state = lock.lock().unwrap();
+            match std::mem::replace(&mut *state, ViaServeState::Idle) {
+                ViaServeState::Serving(handle) => Some(*handle),
+                ViaServeState::Idle | ViaServeState::Starting => None,
+            }
+        });
+        if let Some(mut handle) = via_handle {
+            handle.stop("local host shutdown");
+            let _ = handle.join().await;
         }
 
         Ok(())

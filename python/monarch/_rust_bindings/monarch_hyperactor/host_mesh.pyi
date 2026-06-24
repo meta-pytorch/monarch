@@ -122,6 +122,7 @@ class BootstrapCommand:
 
 def bootstrap_host(
     bootstrap_cmd: BootstrapCommand | None,
+    via: str | None = None,
 ) -> PythonTask[tuple[HostMesh, ProcMesh, Instance]]:
     """
     Bootstrap a host mesh in this process, returning the host mesh,
@@ -129,6 +130,14 @@ def bootstrap_host(
 
     Arguments:
     - `bootstrap_cmd`: The bootstrap command to use to bootstrap the host.
+    - `via`: Optional ZMQ-style address of a remote host's duplex server.
+      When set, the local host's gateway is attached to that remote
+      gateway: outbound traffic to unknown destinations is forwarded over
+      the duplex, and inbound traffic from the duplex is delivered into
+      local procs. `this_host()` still names the current machine; `via`
+      only controls how this host's procs are reached. It must be supplied
+      before actor and port refs are minted, because those refs snapshot
+      their location. Supplied via the `attach` entrypoint.
     """
     ...
 

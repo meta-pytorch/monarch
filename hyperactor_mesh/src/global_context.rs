@@ -86,7 +86,6 @@ use crate::host::LocalProcManager;
 use crate::host_mesh::host_agent::GetLocalProcClient;
 use crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
 use crate::host_mesh::host_agent::HostAgent;
-use crate::host_mesh::host_agent::HostAgentMode;
 use crate::host_mesh::host_agent::ProcManagerSpawnFn;
 use crate::mesh_id::HostMeshId;
 use crate::mesh_id::ProcMeshId;
@@ -418,9 +417,12 @@ async fn bootstrap_host() -> GlobalState {
     let host_agent = system_proc
         .spawn_with_uid(
             Uid::singleton(Label::new(HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
-            HostAgent::new(HostAgentMode::Local(host)),
+            HostAgent::new_local(host),
         )
         .expect("failed to spawn host agent");
+    HostAgent::wait_initialized(&host_agent)
+        .await
+        .expect("failed to initialize host agent");
 
     let cast_handle = system_proc
         .spawn_with_uid(

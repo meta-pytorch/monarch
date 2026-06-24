@@ -8,9 +8,14 @@
 
 //! [`Proc`] is an addressable actor-runtime boundary.
 //!
-//! It owns actor lifecycle (spawn, run, terminate), routes messages
-//! to local actors, forwards messages for remote destinations, and
-//! hosts supervision state.
+//! It owns actor lifecycle (spawn, run, terminate), delivers messages
+//! to its local actors, and hosts supervision state. A proc is not a
+//! network endpoint by itself: it reaches—and is reached by—other procs
+//! through a [`Gateway`](crate::gateway::Gateway), its connectivity
+//! boundary (see [`Proc::gateway`]). Outbound messages for remote
+//! destinations flow through that gateway, which delivers locally,
+//! forwards to a known peer, or routes onward. A host attaches all of
+//! its procs to one shared gateway.
 //!
 //! It also stores bounded snapshots of terminated actors for
 //! post-mortem introspection.
@@ -1656,15 +1661,19 @@ impl Proc {
     }
 
     pub(crate) fn is_local_delivery_target(&self, dest_proc: &ProcAddr) -> bool {
-        let local_proc_id = self.proc_id();
-        if requires_location_for_local_delivery_identity(dest_proc.id()) {
-            // TODO: check all bound addresses for this proc, not only
-            // the current default advertised location.
-            return dest_proc.id() == local_proc_id
-                && dest_proc.location() == &self.default_location();
-        }
+        self.is_local_delivery_target_at(dest_proc, &[self.default_location()])
+    }
 
-        dest_proc.id() == local_proc_id
+    pub(crate) fn is_local_delivery_target_at(
+        &self,
+        dest_proc: &ProcAddr,
+        local_locations: &[Location],
+    ) -> bool {
+        dest_proc.id() == self.proc_id()
+            && (!requires_location_for_local_delivery_identity(dest_proc.id())
+                || local_locations
+                    .iter()
+                    .any(|location| dest_proc.location() == location))
     }
 }
 
@@ -1673,7 +1682,7 @@ fn requires_location_for_local_delivery_identity(proc_id: &ProcId) -> bool {
     // still creates a `service` proc and a `local` proc in every host
     // process, so those proc ids are not globally unique. Until those
     // construction paths are assigned instance ids, local delivery for
-    // those two ids must keep the old full-address comparison.
+    // those two ids also compares the terminal channel address.
     is_legacy_pseudo_singleton_proc_id(proc_id)
 }
 
@@ -1734,10 +1743,9 @@ impl MailboxSender for Proc {
         }
         // Route through the gateway as a [`MailboxSender`] (not its
         // raw forwarder) so peers sharing the same gateway —
-        // typically a host's `service_proc` / `local_proc` and any
-        // child procs attached via `gateway.attach_peer(child_uid,
-        // sender)` — are reached by an in-gateway lookup rather than
-        // bouncing out through the forwarder.
+        // typically a host's `service_proc` / `local_proc` — are
+        // reached by an in-gateway lookup rather than bouncing out
+        // through the forwarder.
         self.state().gateway.post(envelope, return_handle);
     }
 
@@ -5747,7 +5755,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_gateway_attach_peer_routes_through_sender() {
+    async fn test_gateway_attach_peer_routes_via_through_sender() {
         use tokio::sync::mpsc::UnboundedSender;
         use tokio::sync::mpsc::unbounded_channel;
 
@@ -5773,8 +5781,8 @@ mod tests {
         let proc = Proc::isolated();
         let gateway = proc.gateway();
 
-        // Advertise the remote proc with a `Via(remote_uid, ...)`
-        // prefix, mirroring the host-spawn convention so attach_peer
+        // Advertise the peer with a `Via(remote_uid, ...)` prefix,
+        // mirroring the host-spawn convention so the peer route
         // matches the outermost via hop.
         let remote_uid = Uid::Instance(0xabc123, Some(Label::strip("remote")));
         let remote_inner_addr = ChannelAddr::Local(1234);
@@ -5784,7 +5792,7 @@ mod tests {
         let remote_dest = remote_proc.actor_addr("worker").port_addr(Port::from(0));
 
         let (tx, mut rx) = unbounded_channel::<MessageEnvelope>();
-        let via_guard = gateway
+        let route_guard = gateway
             .attach_peer(remote_uid.clone(), MpscSender(tx).into_boxed())
             .unwrap();
 
@@ -5803,16 +5811,17 @@ mod tests {
             .await
             .expect("attach_peer did not route envelope before timeout")
             .expect("recording sender closed unexpectedly");
-        // The outer via is peeled before forwarding: dest id is
-        // preserved, but the location is rewritten to the inner.
-        assert_eq!(routed.dest().id(), remote_dest.id());
-        assert_eq!(routed.dest().location().addr(), &remote_inner_addr);
+        // The outer via is peeled from the next hop before
+        // forwarding; the canonical destination is preserved.
+        assert_eq!(routed.dest(), &remote_dest);
+        assert_eq!(routed.next_hop().id(), remote_dest.id());
+        assert_eq!(routed.next_hop().location().addr(), &remote_inner_addr);
         assert!(
-            routed.dest().location().as_via().is_none(),
-            "outer via hop must be peeled before forwarding"
+            !routed.next_hop().location().is_via(),
+            "outer via hop must be peeled from the next hop"
         );
 
-        drop(via_guard);
+        drop(route_guard);
 
         let client = proc.client("client");
         let (return_handle, mut undeliverable_rx) =

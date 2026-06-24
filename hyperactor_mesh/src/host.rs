@@ -6,47 +6,57 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! This module defines [`Host`], which represents all the procs running on a host.
-//! The procs themselves are managed by an implementation of [`ProcManager`], which may,
-//! for example, fork new processes for each proc, or spawn them in the same process
-//! for testing purposes.
+//! Host lifecycle management for procs running on one machine.
 //!
-//! The primary purpose of a host is to manage the lifecycle of these procs, and to
-//! serve as a single front-end for all the procs on a host, multiplexing network
-//! channels.
+//! A [`Host`] owns one [`Gateway`] and one [`ProcManager`]. The manager makes
+//! procs real, either by spawning them in-process for tests or by launching
+//! separate OS processes. The gateway owns connectivity: it serves the backend
+//! and frontend endpoints, multiplexes inbound traffic to in-process procs,
+//! and routes spawned child proc gateways through peer routes.
 //!
-//! ## Channel muxing
+//! Use [`Host::new`] or [`Host::new_with_gateway`] to construct a host, start
+//! its backend and frontend accept loops, then [`Host::spawn`] to create child procs.
+//! Spawned children are returned as [`ProcAddr`] values whose location is
+//! advertised through this host's gateway.
 //!
-//! A [`Host`] maintains a single frontend address, through which all procs are accessible
-//! through direct addressing: the id of each proc is the `ProcId(frontend_addr, proc_name)`.
-//! In the following, the frontend address is denoted by `*`. The host listens on `*` and
-//! multiplexes messages based on the proc name. When spawning procs, the host maintains
-//! backend channels with separate addresses. In the diagram `#` is the backend address of
-//! the host, while `#n` is the backend address for proc *n*. The host forwards messages
-//! to the appropriate backend channel, while procs forward messages to the host backend
-//! channel at `#`.
+//! ## Gateway topology
+//!
+//! A host gateway exposes a frontend endpoint `*` and serves a backend
+//! endpoint `#` for child proc gateways. Each spawned child has its own
+//! gateway endpoint (`#1`, `#2`, ...), uses `#` as its forwarder, and is
+//! advertised as `Via(child_uid, host_location)`. The `host_location` is the
+//! host gateway's advertised location: the newest active frontend serve or
+//! `serve_via` session.
+//!
+//! The host gateway keeps one peer route per child uid. When it receives a
+//! message for `Via(child_uid, host_location)`, it peels the child hop and
+//! forwards the envelope to the child's gateway. In-process service and local
+//! procs are delivered through the gateway's local proc table.
 //!
 //! ```text
-//!                      ┌────────────┐
-//!                  ┌───▶  proc *,1  │
-//!                  │ #1└────────────┘
-//!                  │
-//!  ┌──────────┐    │   ┌────────────┐
-//!  │   Host   │◀───┼───▶  proc *,2  │
-//! *└──────────┘#   │ #2└────────────┘
-//!                  │
-//!                  │   ┌────────────┐
-//!                  └───▶  proc *,3  │
-//!                    #3└────────────┘
+//! inbound to host_location
+//! (*, or Via(...) when attached)
+//!          |
+//!          v
+//!   +---------------+     peer child_uid_1 -> #1     +----------------------+
+//!   | Host Gateway  |------------------------------->| child gateway/proc 1 |
+//!   | local procs:  |                                | addr #1              |
+//!   | service/local |<-------------------------------| forwarder -> #       |
+//!   +---------------+          host backend #         +----------------------+
+//!          |
+//!          | peer child_uid_2 -> #2
+//!          v
+//!   +----------------------+
+//!   | child gateway/proc 2 |
+//!   | addr #2              |
+//!   | forwarder -> #       |
+//!   +----------------------+
 //! ```
 //!
-//! ## Local proc invariant (LP-*)
-//!
-//! - **LP-1 (lazy activation):** The local proc always exists as a
-//!   `ProcId::Direct(addr, LOCAL_PROC_NAME)` and is forwarded
-//!   in-process by the host's mailbox muxer. However it starts with
-//!   zero actors. A `ProcAgent` and root client actor are added only
-//!   when `HostMeshAgent::handle(GetLocalProc)` is first called.
+//! The built-in service and local procs are created during construction and
+//! run in-process on the host gateway. The local proc starts with no actors; a
+//! `ProcAgent` and root client actor are added lazily when
+//! `HostMeshAgent::handle(GetLocalProc)` first asks for it.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -64,7 +74,6 @@ use hyperactor::ActorAddr;
 use hyperactor::ActorHandle;
 use hyperactor::ActorRef;
 use hyperactor::Gateway;
-use hyperactor::Location;
 use hyperactor::Proc;
 use hyperactor::ProcAddr;
 use hyperactor::actor::Binds;
@@ -82,7 +91,6 @@ use hyperactor::gateway::PeerAttachGuard;
 use hyperactor::mailbox::IntoBoxedMailboxSender as _;
 use hyperactor::mailbox::MailboxClient;
 use hyperactor::mailbox::MailboxServer;
-use hyperactor::mailbox::MessageEnvelope;
 /// Name of the local client proc on a host.
 ///
 /// See LP-1 (lazy activation) in module doc.
@@ -113,10 +121,6 @@ pub enum HostError {
     #[error(transparent)]
     ServerError(#[from] ServerError),
 
-    /// [`Host::serve`] was called more than once.
-    #[error("host is already serving")]
-    AlreadyServing,
-
     /// The named proc already exists and cannot be spawned.
     #[error("proc '{0}' already exists")]
     ProcExists(String),
@@ -142,52 +146,40 @@ pub enum HostError {
     InvalidParameter(String, anyhow::Error),
 }
 
-/// A host, managing the lifecycle of several procs, and their backend
-/// routing, as described in this module's documentation.
+/// Lifecycle manager for the procs on one machine.
+///
+/// The host delegates all connectivity to its [`Gateway`]. It creates
+/// built-in service/local procs, asks its [`ProcManager`] to spawn children,
+/// and keeps the gateway peer registrations for those children alive.
 pub struct Host<M> {
-    /// Via-sender guards for spawned child procs, keyed by name. The
-    /// stored [`PeerAttachGuard`] keeps the gateway's via-sender entry
-    /// for the child alive; dropping it removes the entry (used by
+    /// Peer guards for spawned child procs, keyed by name. The stored
+    /// [`PeerAttachGuard`] keeps the gateway peer route for the child
+    /// alive; dropping it removes the entry (used by
     /// [`Host::terminate_children`] to free slots).
     procs: HashMap<String, PeerAttachGuard>,
     frontend_addr: ChannelAddr,
     backend_addr: ChannelAddr,
-    /// Routes incoming traffic addressed to this host. The host's
-    /// procs — `service_proc`, `local_proc`, and any spawned
-    /// children — all flow through this one gateway. `service_proc`
-    /// and `local_proc` are in-process and share this gateway, so
-    /// they are reached via the gateway's local delivery path (the
-    /// internal `locals` table populated by each proc's
-    /// construction). Spawned child procs run in separate processes
-    /// with their own gateways; they are advertised with a
-    /// `Via(child_uid, ...)` prefix and reached via
-    /// [`Gateway::attach_peer`] with a dial-based sender per child.
-    /// Unknown destinations fall through to the gateway's forwarder
-    /// (a [`DialMailboxRouter`] by default).
+    /// Connectivity for every proc owned by this host.
+    ///
+    /// The built-in procs share the gateway in-process. Spawned children have
+    /// their own gateways and are registered here with
+    /// [`Gateway::attach_peer`].
     gateway: Gateway,
+    frontend_handle: Option<GatewayServeHandle>,
+    backend_handle: Option<GatewayServeHandle>,
     manager: M,
     service_proc: Proc,
     local_proc: Proc,
-    /// Pre-bound frontend, consumed by [`Host::serve`].
-    frontend: Option<Frontend>,
-}
-
-/// Pre-bound frontend receiver the host hands to its gateway on
-/// [`Host::serve`]. The bound address is tracked separately as
-/// [`Host::frontend_addr`].
-struct Frontend {
-    rx: hyperactor::channel::ChannelRx<MessageEnvelope>,
 }
 
 impl<M: ProcManager> Host<M> {
-    /// Serve a host using the provided ProcManager, on the provided `addr`.
-    /// On success, the host will multiplex messages for procs on the host
-    /// on the address of the host.
+    /// Construct a host and start its gateway frontend server on `addr`.
     pub async fn new(manager: M, addr: ChannelAddr) -> Result<Self, HostError> {
         Self::new_with_default(manager, addr, None).await
     }
 
-    /// Like [`new`], serves a host using the provided ProcManager, on the provided `addr`.
+    /// Like [`new`], but optionally uses an already-bound listener.
+    ///
     /// When `listener` is `Some`, it is used as the frontend listening socket
     /// instead of binding a new one.
     pub async fn new_with_default(
@@ -205,10 +197,13 @@ impl<M: ProcManager> Host<M> {
     /// Like [`new_with_default`], but uses a caller-provided
     /// [`Gateway`] instead of creating one internally.
     ///
-    /// The host's frontend address is determined here (`addr` or the
-    /// bound `listener`). The gateway's default location is updated
-    /// to match so the legacy pseudo-singleton proc ids (system,
-    /// local) carry it and remote hosts can reach them by name.
+    /// Serving the backend and frontend endpoints, choosing the frontend
+    /// transport, and adopting the frontend address as the gateway's
+    /// advertised location are all owned by the gateway. The host operates on
+    /// a vanilla gateway: it never inspects the transport nor rewrites the
+    /// gateway's location. Adopting the bound frontend address makes the
+    /// legacy pseudo-singleton proc ids (system, local) carry it so remote
+    /// hosts can reach them by name.
     #[hyperactor::instrument(fields(addr=addr.to_string()))]
     pub async fn new_with_gateway(
         manager: M,
@@ -216,23 +211,28 @@ impl<M: ProcManager> Host<M> {
         listener: Option<std::net::TcpListener>,
         gateway: Gateway,
     ) -> Result<Self, HostError> {
-        // Bind the host's frontend eagerly so we know its address;
-        // hand the bound receiver to the gateway on `serve()`.
-        let (frontend_addr, rx) = channel::serve_with_listener(addr, listener)?;
-        let frontend = Frontend { rx };
-        // Adopt the local frontend address as the gateway's default
-        // so the legacy pseudo-singleton procs (service, local) carry
-        // it.
-        gateway.set_default_location(Location::from(frontend_addr.clone()));
+        let mut backend_handle = Gateway::serve(&gateway, ChannelAddr::any(manager.transport()))?;
+        let backend_addr = gateway.default_location().addr().clone();
 
-        // Establish a backend channel on the preferred transport.
-        let (backend_addr, backend_rx) = channel::serve(ChannelAddr::any(manager.transport()))?;
+        let frontend_handle = match gateway.serve_with_listener(addr, listener) {
+            Ok(handle) => handle,
+            Err(error) => {
+                backend_handle.stop("host setup failed");
+                if let Err(join_error) = backend_handle.join().await {
+                    tracing::warn!(
+                        error = %join_error,
+                        "failed to join backend server after host setup error"
+                    );
+                }
+                return Err(error.into());
+            }
+        };
+        let frontend_addr = gateway.default_location().addr().clone();
 
-        // Set up the system proc and the local client proc. They
-        // share the host's gateway just like spawned children would
-        // — no special routing path. Their bound port addresses are
-        // derived dynamically from the gateway's `default_location`
-        // at bind time.
+        // Set up the system proc and the local client proc after the
+        // gateway servers are live. The HostAgent is published only
+        // after it binds its handler, so the brief unroutable window is
+        // before normal clients can discover this host.
         let service_proc = Proc::legacy_service_pseudo_singleton_on_gateway(gateway.clone());
         let local_proc = Proc::legacy_local_pseudo_singleton_on_gateway(gateway.clone());
         let service_proc_id = service_proc.proc_addr().clone();
@@ -246,41 +246,17 @@ impl<M: ProcManager> Host<M> {
             "serving host"
         );
 
-        let host = Host {
+        Ok(Host {
             procs: HashMap::new(),
             frontend_addr,
             backend_addr,
             gateway,
+            frontend_handle: Some(frontend_handle),
+            backend_handle: Some(backend_handle),
             manager,
             service_proc,
             local_proc,
-            frontend: Some(frontend),
-        };
-
-        // Serve the gateway on the backend address. We don't ever need
-        // to join this handle because the server is used only to receive
-        // messages from procs spawned by this host -- if the host is shutting down,
-        // then all its procs should have shut down first, and we don't have to worry
-        // about any unacked messages.
-        let _backend_handle = host.gateway.clone().serve(backend_rx);
-
-        Ok(host)
-    }
-
-    /// Start serving the frontend accept loop.
-    ///
-    /// Returns a [`GatewayServeHandle`] on first invocation and
-    /// [`HostError::AlreadyServing`] on subsequent invocations.
-    /// Callers should retain the handle and join it as part of
-    /// orderly shutdown so pending messages flush correctly:
-    /// `stop(reason)` signals the accept loop, which cancels
-    /// per-connection tasks and waits for them before the handle
-    /// resolves.
-    pub fn serve(&mut self) -> Result<GatewayServeHandle, HostError> {
-        let frontend = self.frontend.take().ok_or(HostError::AlreadyServing)?;
-        use hyperactor::mailbox::MailboxServer as _;
-        let raw = self.gateway.clone().serve(frontend.rx);
-        Ok(GatewayServeHandle::from_simplex(self.gateway.clone(), raw))
+        })
     }
 
     /// The underlying proc manager.
@@ -307,10 +283,12 @@ impl<M: ProcManager> Host<M> {
         &self.local_proc
     }
 
-    /// Spawn a new process with the given `name`. On success, the
-    /// proc has been spawned, and is reachable through the returned
-    /// proc address. Its id derives from `name`; its location carries
-    /// a via hop that routes through this host's frontend.
+    /// Spawn a child proc with the given `name`.
+    ///
+    /// On success, the proc is ready and reachable through the returned
+    /// [`ProcAddr`]. The proc id is derived from `name`; its location is
+    /// advertised through this host's frontend gateway using a `Via(child_uid,
+    /// host_location)` source route.
     pub async fn spawn(
         &mut self,
         name: String,
@@ -320,13 +298,16 @@ impl<M: ProcManager> Host<M> {
             return Err(HostError::ProcExists(name));
         }
 
-        // Advertise the child with a `Via(child_uid, Addr(frontend_addr))`
+        // Advertise the child with a `Via(child_uid, host_location)`
         // location so peers source-route through this host: the outer
-        // hop matches the via-sender entry installed below, and gets
-        // peeled to deliver to the child's gateway.
+        // hop matches the peer entry installed below, and gets peeled
+        // to deliver to the child's gateway. The host location comes
+        // from the gateway's active routing state, so a later
+        // `serve`/`serve_via` controls newly spawned child refs.
         let resource_id = ResourceId::from_name(&name);
         let proc_uid = resource_id.uid().clone();
-        let location = Location::from(self.frontend_addr.clone()).with_via(proc_uid.clone());
+        let host_location = self.gateway.default_location();
+        let location = host_location.with_via(proc_uid.clone());
         let proc_id = resource_id.proc_addr(location);
         let handle = self
             .manager
@@ -354,8 +335,8 @@ impl<M: ProcManager> Host<M> {
                 anyhow::anyhow!("failed to dial spawned proc at {}: {}", ready.addr(), e),
             )
         })?;
-        // The proc uid derives from `name`, and we rejected a
-        // duplicate `name` above, so this via uid is unique.
+        // The proc id derives from `name`, and we rejected a duplicate
+        // `name` above, so this peer uid is unique.
         let guard = self
             .gateway
             .attach_peer(proc_uid, child_sender.into_boxed())
@@ -368,10 +349,30 @@ impl<M: ProcManager> Host<M> {
     /// The host's [`Gateway`]. All incoming traffic addressed to this
     /// host's procs is routed through the gateway: in-process procs
     /// via the gateway's local delivery path, and spawned child
-    /// procs through per-child via-sender entries registered with
+    /// proc gateways through peer routes registered with
     /// [`Gateway::attach_peer`].
     pub fn gateway(&self) -> &Gateway {
         &self.gateway
+    }
+
+    /// Take ownership of the frontend server handle.
+    ///
+    /// This is only used by bootstrap shutdown: the host is dropped after
+    /// taking the handle, and the bootstrap join path stops and drains the
+    /// frontend server explicitly.
+    pub(crate) fn take_frontend_handle(&mut self) -> Option<GatewayServeHandle> {
+        self.frontend_handle.take()
+    }
+}
+
+impl<M> Drop for Host<M> {
+    fn drop(&mut self) {
+        if let Some(mut handle) = self.frontend_handle.take() {
+            handle.stop("host dropped");
+        }
+        if let Some(mut handle) = self.backend_handle.take() {
+            handle.stop("host dropped");
+        }
     }
 }
 
@@ -504,10 +505,8 @@ impl fmt::Display for TerminateSummary {
 pub trait SingleTerminate: Send + Sync {
     /// Gracefully terminate the given proc.
     ///
-    /// Initiates a polite shutdown for each child, waits up to
-    /// `timeout` for completion, then escalates to a forceful stop
-    /// The returned [`TerminateSummary`] reports how
-    /// many children were attempted, succeeded, and failed.
+    /// Initiates a polite shutdown for the child, waits up to `timeout` for
+    /// completion, then escalates to a forceful stop.
     ///
     /// Implementation notes:
     /// - "Polite shutdown" and "forceful stop" are intentionally
@@ -794,10 +793,9 @@ pub trait ProcManager {
     /// processes.
     fn transport(&self) -> ChannelTransport;
 
-    /// Spawn a new proc with the provided proc id. The proc
-    /// should use the provided forwarder address for messages
-    /// destined outside of the proc. The returned address accepts
-    /// messages destined for the proc.
+    /// Spawn a new proc with the provided proc address. The proc should use
+    /// `forwarder_addr` for messages destined outside of itself. The returned
+    /// handle exposes the address that accepts messages for the proc.
     ///
     /// An agent actor is also spawned, and the corresponding actor
     /// ref is returned.
@@ -1488,12 +1486,16 @@ mod tests {
 
     use hyperactor::Addr;
     use hyperactor::Endpoint as _;
+    use hyperactor::Label;
+    use hyperactor::Location;
     use hyperactor::OncePortRef;
+    use hyperactor::Uid;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::channel::Tx;
     use hyperactor::channel::TxStatus;
     use hyperactor::context::Mailbox;
     use hyperactor::mailbox::DialMailboxRouter;
+    use hyperactor::mailbox::MessageEnvelope;
     use hyperactor::port::Port;
 
     use super::testing::EchoActor;
@@ -1579,10 +1581,6 @@ mod tests {
         let mut host = Host::new(process_manager, ChannelAddr::any(ChannelTransport::Unix))
             .await
             .unwrap();
-
-        // Manually serve this: the agent isn't actually doing anything in this case,
-        // but we are testing connectivity.
-        host.serve().unwrap();
 
         // (1) Spawn and check invariants.
         assert!(matches!(host.addr().transport(), ChannelTransport::Unix));
@@ -1681,6 +1679,7 @@ mod tests {
     #[derive(Debug, Clone, Copy)]
     enum ReadyMode {
         OkAfter(Duration),
+        Pending,
         ErrTerminal,
         ErrChannelClosed,
     }
@@ -1728,6 +1727,7 @@ mod tests {
                     }
                     Ok(())
                 }
+                ReadyMode::Pending => std::future::pending().await,
                 ReadyMode::ErrTerminal => Err(ReadyError::Terminal(())),
                 ReadyMode::ErrChannelClosed => Err(ReadyError::ChannelClosed),
             }
@@ -1807,7 +1807,7 @@ mod tests {
         );
 
         let mut host = Host::new(
-            TestManager::local(ReadyMode::OkAfter(Duration::from_millis(50))),
+            TestManager::local(ReadyMode::Pending),
             ChannelAddr::any(ChannelTransport::Local),
         )
         .await
@@ -1923,7 +1923,7 @@ mod tests {
             Host::new_with_default(proc_manager, ChannelAddr::any(ChannelTransport::Unix), None)
                 .await
                 .unwrap();
-        let mut serve_handle = host.serve().unwrap();
+        let mut serve_handle = host.take_frontend_handle().unwrap();
 
         // Spawn an EchoActor and send a request from a simplex client.
         let echo_handle = host.system_proc().spawn(EchoActor);
@@ -2015,7 +2015,7 @@ mod tests {
             Host::new_with_default(proc_manager, ChannelAddr::any(ChannelTransport::Unix), None)
                 .await
                 .unwrap();
-        let mut serve_handle = host.serve().unwrap();
+        let mut serve_handle = host.take_frontend_handle().unwrap();
 
         let echo_handle = host.system_proc().spawn(EchoActor);
         let echo_ref = echo_handle.bind::<EchoActor>();
@@ -2082,11 +2082,10 @@ mod tests {
         let proc_manager = LocalProcManager::new(|proc: Proc| async move {
             Ok(proc.spawn_with_label::<EchoActor>("host_agent", EchoActor))
         });
-        let mut host =
+        let host =
             Host::new_with_default(proc_manager, ChannelAddr::any(ChannelTransport::Unix), None)
                 .await
                 .unwrap();
-        let _serve_handle = host.serve().unwrap();
 
         // Spawn an EchoActor on the host's system_proc.
         let echo_handle = host.system_proc().spawn(EchoActor);
@@ -2124,5 +2123,70 @@ mod tests {
             .expect("timed out waiting for reply")
             .expect("recv failed");
         assert_eq!(received, *echo_ref.actor_addr());
+    }
+
+    #[tokio::test]
+    async fn test_spawn_uses_latest_serve_location_after_prior_default_override() {
+        let proc_manager = LocalProcManager::new(|proc: Proc| async move {
+            Ok(proc.spawn_with_label::<()>("host_agent", ()))
+        });
+        let gateway = Gateway::new();
+        let attached_host_addr: ChannelAddr = "tcp:10.0.159.108:26600".parse().unwrap();
+        let attached_uid = Uid::instance(Label::strip("attached"));
+        let attached_location = Location::from(attached_host_addr).with_via(attached_uid);
+        gateway.set_default_location(attached_location.clone());
+
+        let mut host = Host::new_with_gateway(
+            proc_manager,
+            ChannelAddr::any(ChannelTransport::Unix),
+            None,
+            gateway,
+        )
+        .await
+        .unwrap();
+
+        let (proc_id, _agent) = host.spawn("proc1".to_string(), ()).await.unwrap();
+        let (proc_uid, host_location) = proc_id
+            .location()
+            .as_via()
+            .expect("spawned proc must carry child via");
+
+        assert_eq!(proc_uid, proc_id.id().uid());
+        assert_eq!(host_location.as_ref(), &Location::from(host.addr().clone()));
+        assert_ne!(host_location.as_ref(), &attached_location);
+    }
+
+    #[tokio::test]
+    async fn test_spawn_uses_latest_direct_gateway_serve_location() {
+        let proc_manager = LocalProcManager::new(|proc: Proc| async move {
+            Ok(proc.spawn_with_label::<()>("host_agent", ()))
+        });
+
+        let mut host = Host::new_with_gateway(
+            proc_manager,
+            ChannelAddr::any(ChannelTransport::Unix),
+            None,
+            Gateway::new(),
+        )
+        .await
+        .unwrap();
+        let mut later_frontend = host
+            .gateway()
+            .serve_with_listener(ChannelAddr::any(ChannelTransport::Unix), None)
+            .unwrap();
+        let later_location = host.gateway().default_location();
+        assert_ne!(later_location.addr(), host.addr());
+
+        let (proc_id, _agent) = host.spawn("proc1".to_string(), ()).await.unwrap();
+        let (proc_uid, host_location) = proc_id
+            .location()
+            .as_via()
+            .expect("spawned proc must carry child via");
+
+        assert_eq!(proc_uid, proc_id.id().uid());
+        assert_eq!(host_location.as_ref(), &later_location);
+
+        later_frontend.stop("test cleanup");
+        later_frontend.join().await.unwrap();
     }
 }

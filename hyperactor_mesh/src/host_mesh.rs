@@ -100,7 +100,6 @@ use crate::host::Host;
 use crate::host::LocalProcManager;
 use crate::host::SERVICE_PROC_NAME;
 pub use crate::host_mesh::host_agent::HostAgent;
-use crate::host_mesh::host_agent::HostAgentMode;
 use crate::host_mesh::host_agent::ProcManagerSpawnFn;
 use crate::host_mesh::host_agent::ProcState;
 use crate::host_mesh::host_agent::ShutdownHostClient;
@@ -177,9 +176,9 @@ impl HostRef {
     ///
     /// Mirrors the convention of `Host::spawn`: a spawned child proc is
     /// advertised at `Via(proc_uid, host_addr)` so the host's gateway
-    /// peels the outer hop via [`Gateway::attach_peer`] and forwards to
-    /// the child's serving address. Without the via prefix the host
-    /// would bounce the envelope as a self-loop.
+    /// peels the outer hop via its peer table and forwards to the
+    /// child's gateway. Without the via prefix the host would bounce
+    /// the envelope as a self-loop.
     fn named_proc(&self, id: &ResourceId) -> ProcAddr {
         let location = hyperactor::Location::from(self.0.clone()).with_via(id.uid().clone());
         ProcAddr::new(id.proc_id(), location)
@@ -407,12 +406,10 @@ impl HostMesh {
         let host_mesh_agent = system_proc
             .spawn_with_uid(
                 Uid::singleton(Label::new(host_agent::HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
-                HostAgent::new(HostAgentMode::Process {
-                    host,
-                    shutdown_tx: None,
-                }),
+                HostAgent::new_process(host, None),
             )
             .map_err(crate::Error::SingletonActorSpawnError)?;
+        HostAgent::wait_initialized(&host_mesh_agent).await?;
         host_mesh_agent.bind::<HostAgent>();
         let cast_handle = system_proc
             .spawn_with_uid(
@@ -482,9 +479,10 @@ impl HostMesh {
         let host_mesh_agent = system_proc
             .spawn_with_uid(
                 Uid::singleton(Label::new(host_agent::HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
-                HostAgent::new(HostAgentMode::Local(host)),
+                HostAgent::new_local(host),
             )
             .map_err(crate::Error::SingletonActorSpawnError)?;
+        HostAgent::wait_initialized(&host_mesh_agent).await?;
         host_mesh_agent.bind::<HostAgent>();
 
         let cast_handle = system_proc
