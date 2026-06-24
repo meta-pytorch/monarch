@@ -26,6 +26,7 @@ from monarch._rust_bindings.monarch_hyperactor.host_mesh import PyMeshAdminRef
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.actor.host_mesh import _spawn_admin
 from monarch._src.actor.sync_state import fake_sync_state
+from monarch._src.job._batch_env import in_batch_job, MONARCH_BATCH_JOB_ENV
 from monarch._src.job.job_sidecar import stop_job_sidecar
 from monarch._src.job.mount_config import Mounts
 from monarch._src.job.telemetry_config import TelemetryConfig
@@ -1116,9 +1117,9 @@ class LocalJob(JobTrait):
         stdout_log = os.path.join(log_dir, "stdout.log")
         stderr_log = os.path.join(log_dir, "stderr.log")
 
-        # Create environment with MONARCH_BATCH_JOB=1
+        # Create environment with the batch-mode marker set.
         env = os.environ.copy()
-        env["MONARCH_BATCH_JOB"] = "1"
+        env[MONARCH_BATCH_JOB_ENV] = "1"
 
         # Open log files
         with open(stdout_log, "w") as stdout_file, open(stderr_log, "w") as stderr_file:
@@ -1155,7 +1156,7 @@ class BatchJob(JobTrait):
         self._job = job
 
     def can_run(self, spec: JobTrait):
-        if "MONARCH_BATCH_JOB" in os.environ:
+        if in_batch_job():
             import atexit
 
             atexit.register(self._kill)
