@@ -15,7 +15,6 @@ erased-serde = "0.4.10"
 fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 hdrhistogram = "7.5"
 hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
-lazy_static = "1.5"
 libc = "0.2.186"
 monarch_record_batch = { version = "0.0.0", path = "../monarch_record_batch" }
 monarch_telemetry_schema = { version = "0.0.0", path = "../monarch_telemetry_schema" }

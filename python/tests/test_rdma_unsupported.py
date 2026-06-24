@@ -84,6 +84,6 @@ async def test_rdma_manager_creation_fails_when_unsupported() -> None:
 
     assert len(faults) >= 1, "Expected a supervision fault, got none"
     failure_message = str(faults[0])
-    assert (
-        "no RDMA NIC backend available and TCP fallback is disabled" in failure_message
-    ), f"Expected specific failure message not found. Actual fault: {failure_message}"
+    assert "no RDMA backend available" in failure_message, (
+        f"Expected specific failure message not found. Actual fault: {failure_message}"
+    )

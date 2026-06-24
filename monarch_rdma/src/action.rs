@@ -22,11 +22,8 @@ use crate::RdmaManagerActor;
 use crate::RdmaManagerMessageClient;
 use crate::RdmaOp;
 use crate::RdmaOpType;
-use crate::backend::RdmaBackend;
-use crate::backend::tcp::manager_actor::TcpBackend;
-use crate::backend::tcp::manager_actor::TcpManagerActor;
+use crate::backend::RdmaBackendHandle;
 use crate::local_memory::KeepaliveLocalMemory;
-use crate::nic::NicBackendHandle;
 use crate::rdma_components::RdmaRemoteBuffer;
 
 /// A batch of RDMA operations submitted as a single unit.
@@ -154,10 +151,9 @@ impl RdmaAction {
         Ok(())
     }
 
-    /// Submit all queued ops. Ops are grouped by their local backend
-    /// (NIC or TCP); each group is submitted in parallel. Safe to
-    /// call more than once on the same action — the queued ops and
-    /// overlap claims are left intact.
+    /// Submit all queued ops. Ops are grouped by backend and each group
+    /// is submitted in parallel. Safe to call more than once on the same
+    /// action — the queued ops and overlap claims are left intact.
     ///
     /// Takes `&mut self` so the borrow checker prevents two submit
     /// futures from being alive on the same action simultaneously;
@@ -168,83 +164,59 @@ impl RdmaAction {
         client: &(impl context::Actor + Send + Sync),
         timeout: Duration,
     ) -> Result<(), anyhow::Error> {
-        // The nic cell's inner `Option` distinguishes "lookup tried and
-        // failed" (`Some(None)`) from "never tried" (cell unset), so the
-        // lookup doesn't repeat when the local proc lacks a NIC.
-        let nic_cell: tokio::sync::OnceCell<Option<NicBackendHandle>> =
-            tokio::sync::OnceCell::new();
-        // The tcp cell needs no such sentinel: the init closure either
-        // caches a handle or bails.
-        let tcp_cell: tokio::sync::OnceCell<hyperactor::ActorHandle<TcpManagerActor>> =
-            tokio::sync::OnceCell::new();
+        if self.entries.is_empty() {
+            return Ok(());
+        }
 
-        let mut nic_ops: Vec<RdmaOp> = Vec::new();
-        let mut tcp_ops: Vec<RdmaOp> = Vec::new();
+        // This proc's spawned backends, in priority order.
+        let handles = RdmaManagerActor::local_handle(client)
+            .get_backend_handles(client)
+            .await?;
+        let mut buckets: Vec<(RdmaBackendHandle, Vec<RdmaOp>)> =
+            handles.into_iter().map(|h| (h, Vec::new())).collect();
 
+        // Route each op to the first backend the local proc runs that the
+        // remote buffer also advertises.
         for entry in &self.entries {
             let op = RdmaOp {
                 op_type: entry.op_type,
                 local: entry.local.clone(),
                 remote: entry.remote.clone(),
             };
-            // Route over the NIC only when the remote advertises a NIC
-            // backend and the local proc runs a compatible one.
-            if let Some(backend_ctx) = entry.remote.resolve_nic() {
-                let nic = nic_cell
-                    .get_or_init(|| async {
-                        RdmaManagerActor::local_handle(client)
-                            .get_nic_backend_handle(client)
-                            .await
-                            .ok()
-                            .flatten()
-                    })
-                    .await;
-                if nic
-                    .as_ref()
-                    .is_some_and(|h| backend_ctx.is_compatible_with(h))
-                {
-                    nic_ops.push(op);
-                    continue;
-                }
+            match buckets
+                .iter_mut()
+                .find(|(handle, _)| entry.remote.is_compatible_with(handle))
+            {
+                Some((_, ops)) => ops.push(op),
+                None => anyhow::bail!("no compatible RDMA backend for buffer: {:?}", entry.remote),
             }
-            // Fall back to TCP — refusing if fallback is disabled.
-            tcp_cell
-                .get_or_try_init(|| async {
-                    if !hyperactor_config::global::get(crate::config::RDMA_ALLOW_TCP_FALLBACK) {
-                        anyhow::bail!(
-                            "no usable NIC backend, and TCP fallback is disabled; \
-                             enable it with monarch.configure(rdma_allow_tcp_fallback=True)"
-                        );
-                    }
-                    tracing::warn!("falling back to TCP transport (no usable NIC backend)");
-                    TcpManagerActor::local_handle(client).await
-                })
-                .await?;
-            tcp_ops.push(op);
         }
 
-        let nic_fut = async {
-            match nic_cell.into_inner().flatten() {
-                Some(h) => h.submit(client, nic_ops, timeout).await,
-                None => {
-                    assert!(nic_ops.is_empty());
-                    Ok(())
-                }
-            }
-        };
-        let tcp_fut = async {
-            match tcp_cell.into_inner() {
-                Some(h) => TcpBackend(h).submit(client, tcp_ops, timeout).await,
-                None => {
-                    assert!(tcp_ops.is_empty());
-                    Ok(())
-                }
-            }
-        };
-        let (nic_res, tcp_res) = tokio::join!(nic_fut, tcp_fut);
-        nic_res?;
-        tcp_res?;
-        Ok(())
+        // Submit each non-empty backend group in parallel, waiting for all
+        // groups to finish and accumulating every failure.
+        let pending = buckets.into_iter().filter(|(_, ops)| !ops.is_empty()).map(
+            |(handle, ops)| async move {
+                let name = handle.backend_name();
+                handle
+                    .submit(client, ops, timeout)
+                    .await
+                    .map_err(|e| format!("({name}) {e}"))
+            },
+        );
+        let errors: Vec<String> = futures::future::join_all(pending)
+            .await
+            .into_iter()
+            .filter_map(Result::err)
+            .collect();
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            anyhow::bail!(
+                "RDMA submit failed on {} backend(s):\n{}",
+                errors.len(),
+                errors.join("\n")
+            )
+        }
     }
 }
 

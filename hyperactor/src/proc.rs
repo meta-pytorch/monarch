@@ -4689,7 +4689,7 @@ mod tests {
 
     async fn get_status(client: &Client, actor_addr: &ActorAddr) -> Option<ActorStatus> {
         let (reply_port, reply_rx) = client.open_once_port::<Option<ActorStatus>>();
-        PortRef::<StatusMessage>::attest_control_port(actor_addr, crate::ControlPort::Status).post(
+        actor_addr.status_port().post(
             client,
             StatusMessage::GetStatus {
                 reply: reply_port.bind(),

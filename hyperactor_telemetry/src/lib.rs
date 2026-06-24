@@ -77,6 +77,7 @@ use std::hash::Hash;
 use std::hash::Hasher;
 use std::io::Write;
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -84,7 +85,6 @@ use std::sync::mpsc;
 use std::time::Instant;
 use std::time::SystemTime;
 
-use lazy_static::lazy_static;
 pub use opentelemetry;
 pub use opentelemetry::Key;
 pub use opentelemetry::KeyValue;
@@ -217,37 +217,36 @@ fn writer() -> Box<dyn Write + Send> {
     }
 }
 
-lazy_static! {
-    static ref TELEMETRY_CLOCK: Arc<Mutex<Box<dyn TelemetryClock + Send>>> =
-        Arc::new(Mutex::new(Box::new(DefaultTelemetryClock {})));
-    /// Global sender into the active `TraceEventDispatcher` queue.
-    ///
-    /// This is for `TraceEvent`s synthesized outside normal `tracing` subscriber callbacks,
-    /// such as Python user spans. Once telemetry initializes and constructs the dispatcher,
-    /// we stash its sender here so those synthetic events flow through the same sink fan-out
-    /// path as native Rust tracing events.
-    static ref SYNTHETIC_TRACE_EVENT_SENDER: Mutex<Option<mpsc::SyncSender<TraceEvent>>> =
-        Mutex::new(None);
-    /// Global control channel for sink registration.
-    /// Created upfront so sinks can be registered at any time (before or after telemetry init).
-    /// The receiver is taken once when the TraceEventDispatcher is created.
-    static ref SINK_CONTROL_CHANNEL: (
-        mpsc::Sender<DispatcherControl>,
-        Mutex<Option<mpsc::Receiver<DispatcherControl>>>
-    ) = {
-        let (sender, receiver) = mpsc::channel();
-        (sender, Mutex::new(Some(receiver)))
-    };
-    /// Short bootstrap buffer for entity events that fire before the current
-    /// in-process entity materializer has registered as a `TraceEventSink`.
-    ///
-    /// Sidecar sinks receive live `TraceEvent::Entity` events directly through
-    /// the dispatcher. This buffer only preserves legacy in-process scanner
-    /// visibility until that path is removed.
-    static ref ENTITY_EVENT_BUFFER: Mutex<EntityEventBuffer> = Mutex::new(
-        EntityEventBuffer::default()
-    );
-}
+static TELEMETRY_CLOCK: LazyLock<Arc<Mutex<Box<dyn TelemetryClock + Send>>>> =
+    LazyLock::new(|| Arc::new(Mutex::new(Box::new(DefaultTelemetryClock {}))));
+
+/// Global sender into the active `TraceEventDispatcher` queue.
+///
+/// This is for `TraceEvent`s synthesized outside normal `tracing` subscriber callbacks,
+/// such as Python user spans. Once telemetry initializes and constructs the dispatcher,
+/// we stash its sender here so those synthetic events flow through the same sink fan-out
+/// path as native Rust tracing events.
+static SYNTHETIC_TRACE_EVENT_SENDER: Mutex<Option<mpsc::SyncSender<TraceEvent>>> = Mutex::new(None);
+
+/// Global control channel for sink registration.
+/// Created upfront so sinks can be registered at any time (before or after telemetry init).
+/// The receiver is taken once when the TraceEventDispatcher is created.
+static SINK_CONTROL_CHANNEL: LazyLock<(
+    mpsc::Sender<DispatcherControl>,
+    Mutex<Option<mpsc::Receiver<DispatcherControl>>>,
+)> = LazyLock::new(|| {
+    let (sender, receiver) = mpsc::channel();
+    (sender, Mutex::new(Some(receiver)))
+});
+
+/// Short bootstrap buffer for entity events that fire before the current
+/// in-process entity materializer has registered as a `TraceEventSink`.
+///
+/// Sidecar sinks receive live `TraceEvent::Entity` events directly through
+/// the dispatcher. This buffer only preserves legacy in-process scanner
+/// visibility until that path is removed.
+static ENTITY_EVENT_BUFFER: LazyLock<Mutex<EntityEventBuffer>> =
+    LazyLock::new(|| Mutex::new(EntityEventBuffer::default()));
 
 const SYNTHETIC_USER_SPAN_ID_BASE: u64 = 1 << 63;
 static USER_SPAN_SEQ: AtomicU64 = AtomicU64::new(SYNTHETIC_USER_SPAN_ID_BASE);

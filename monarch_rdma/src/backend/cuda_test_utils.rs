@@ -28,9 +28,10 @@ use hyperactor_config::Flattrs;
 use crate::RdmaManagerActor;
 use crate::RdmaManagerMessageClient;
 use crate::RdmaRemoteBuffer;
+use crate::ScannedSegment;
 use crate::local_memory::Keepalive;
 use crate::local_memory::KeepaliveLocalMemory;
-use crate::register_segment_scanner;
+use crate::register_cuda_segment_scanner;
 
 /// One physical chunk mapped into an expandable segment's VA
 /// reservation. Owns a single `cuMemCreate` handle.
@@ -188,6 +189,24 @@ impl CudaAllocation {
             state.mapped_size = new_total;
         }
         Ok(new_total)
+    }
+
+    /// A [`KeepaliveLocalMemory`] over the sub-range
+    /// `[ptr + offset, ptr + offset + size)` of this allocation. The handle
+    /// keeps the whole allocation mapped for its lifetime.
+    ///
+    /// Panics if the sub-range does not fit within the currently mapped extent.
+    pub fn keepalive_slice(&self, offset: usize, size: usize) -> KeepaliveLocalMemory {
+        let mapped = self.size();
+        assert!(
+            offset.checked_add(size).is_some_and(|end| end <= mapped),
+            "slice [0x{offset:x}, 0x{offset:x}+{size}) exceeds mapped allocation size {mapped}",
+        );
+        KeepaliveLocalMemory::new(Arc::new(CudaAllocationSlice {
+            alloc: self.clone(),
+            offset,
+            size,
+        }))
     }
 
     /// Try to free the backing CUDA memory. Returns `true` if the
@@ -442,38 +461,27 @@ pub(crate) fn cuda_device_count() -> i32 {
     }
 }
 
-/// Segment scanner callback compatible with `rdmaxcel_segment_scanner_fn`.
-/// Reports all allocations tracked by `CudaAllocator`.
-pub unsafe extern "C" fn cuda_allocator_scanner(
-    out: *mut rdmaxcel_sys::rdmaxcel_scanned_segment_t,
-    max: usize,
-) -> usize {
+/// CUDA segment scanner reporting all allocations tracked by `CudaAllocator`.
+fn cuda_allocator_segments() -> Vec<ScannedSegment> {
     let Some(allocator) = CUDA_ALLOCATOR.get() else {
-        return 0;
+        return Vec::new();
     };
     let allocs = allocator.allocations.lock().unwrap();
-    let mut written = 0;
-    for weak in allocs.values() {
-        let Some(inner) = weak.upgrade() else {
-            continue;
-        };
-        // Report the *currently mapped* extent, not the reserved
-        // VA. Expandable segments grow this on each `expand` call.
-        let mapped_size = inner.state.lock().unwrap().mapped_size;
-        if !out.is_null() && written < max {
-            // SAFETY: caller guarantees `out` points to a buffer of at least `max` entries.
-            unsafe {
-                *out.add(written) = rdmaxcel_sys::rdmaxcel_scanned_segment_t {
-                    address: inner.ptr,
-                    size: mapped_size,
-                    device: inner.device,
-                    is_expandable: 1,
-                };
+    allocs
+        .values()
+        .filter_map(|weak| weak.upgrade())
+        .map(|inner| {
+            // Report the *currently mapped* extent, not the reserved VA.
+            // Expandable segments grow this on each `expand` call.
+            let mapped_size = inner.state.lock().unwrap().mapped_size;
+            ScannedSegment {
+                address: inner.ptr,
+                size: mapped_size,
+                cuda_ordinal: inner.device,
+                is_expandable: true,
             }
-        }
-        written += 1;
-    }
-    written
+        })
+        .collect()
 }
 
 /// Runs in the sender's child process. Allocates GPU memory via CudaAllocator,
@@ -496,7 +504,7 @@ impl RemoteSpawn for SenderActor {
     type Params = i32;
 
     async fn new(device_id: i32, _env: Flattrs) -> Result<Self, anyhow::Error> {
-        register_segment_scanner(Some(cuda_allocator_scanner));
+        register_cuda_segment_scanner(Arc::new(cuda_allocator_segments));
         Ok(Self {
             device: device_id,
             allocations: Vec::new(),
@@ -614,11 +622,7 @@ impl SenderMessageHandler for SenderActor {
 
         let mut remotes = Vec::with_capacity(buffers.len());
         for &(offset, size) in &buffers {
-            let local = KeepaliveLocalMemory::new(Arc::new(CudaAllocationSlice {
-                alloc: alloc.clone(),
-                offset,
-                size,
-            }));
+            let local = alloc.keepalive_slice(offset, size);
             // Pre-fill so reads return a known sequence; write_at
             // routes to the GPU path for CUDA-backed memory.
             let fill = vec![pattern; size];

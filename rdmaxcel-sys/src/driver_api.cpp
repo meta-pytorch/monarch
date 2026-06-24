@@ -21,6 +21,7 @@
 // Symbol name macros - platform-specific function names for dlsym lookup
 #ifdef USE_ROCM
 #define SYM_MEM_GET_HANDLE_FOR_ADDRESS_RANGE hipMemGetHandleForAddressRange
+#define SYM_MEM_GET_ADDRESS_RANGE hipMemGetAddressRange
 #define SYM_MEM_GET_ALLOCATION_GRANULARITY hipMemGetAllocationGranularity
 #define SYM_MEM_CREATE hipMemCreate
 #define SYM_MEM_ADDRESS_RESERVE hipMemAddressReserve
@@ -48,6 +49,7 @@
 #define RDMAXCEL_DRIVER_LIB "libamdhip64.so"
 #else
 #define SYM_MEM_GET_HANDLE_FOR_ADDRESS_RANGE cuMemGetHandleForAddressRange
+#define SYM_MEM_GET_ADDRESS_RANGE cuMemGetAddressRange_v2
 #define SYM_MEM_GET_ALLOCATION_GRANULARITY cuMemGetAllocationGranularity
 #define SYM_MEM_CREATE cuMemCreate
 #define SYM_MEM_ADDRESS_RESERVE cuMemAddressReserve
@@ -88,6 +90,7 @@ cuCtxCreate_v2(CUcontext* pctx, unsigned int flags, CUdevice dev);
 // The symbolName is the platform-specific function looked up via dlsym
 #define RDMAXCEL_CUDA_DRIVER_API(_)                                    \
   _(memGetHandleForAddressRange, SYM_MEM_GET_HANDLE_FOR_ADDRESS_RANGE) \
+  _(memGetAddressRange, SYM_MEM_GET_ADDRESS_RANGE)                     \
   _(memGetAllocationGranularity, SYM_MEM_GET_ALLOCATION_GRANULARITY)   \
   _(memCreate, SYM_MEM_CREATE)                                         \
   _(memAddressReserve, SYM_MEM_ADDRESS_RESERVE)                        \
@@ -368,6 +371,14 @@ CUresult rdmaxcel_cuMemGetHandleForAddressRange(
   ENSURE_ACTIVE_DRIVER(api);
   return api->memGetHandleForAddressRange_(
       handle, dptr, size, handleType, flags);
+}
+
+CUresult rdmaxcel_cuMemGetAddressRange(
+    CUdeviceptr* base,
+    size_t* size,
+    CUdeviceptr dptr) noexcept {
+  ENSURE_ACTIVE_DRIVER(api);
+  return api->memGetAddressRange_(base, size, dptr);
 }
 
 CUresult rdmaxcel_cuMemGetAllocationGranularity(

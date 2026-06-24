@@ -21,13 +21,14 @@ use monarch_rdma::RdmaAction;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
 use monarch_rdma::RdmaRemoteBuffer;
+use monarch_rdma::ScannedSegment;
 use monarch_rdma::ibverbs_supported;
 use monarch_rdma::local_memory::Keepalive;
 use monarch_rdma::local_memory::KeepaliveLocalMemory;
 use monarch_rdma::local_memory::WeakKeepalive;
 use monarch_rdma::local_memory::WeakLocalMemory;
 use monarch_rdma::rdma_supported;
-use monarch_rdma::register_segment_scanner;
+use monarch_rdma::register_cuda_segment_scanner;
 use monarch_types::py_global;
 use monarch_types::py_module_add_function;
 use pyo3::IntoPyObjectExt;
@@ -42,88 +43,58 @@ use pyo3::types::PyTuple;
 use pyo3::types::PyType;
 use typeuri::Named;
 
-/// Segment scanner callback that uses PyTorch's memory snapshot API.
+/// CUDA segment scanner backed by PyTorch's memory snapshot API.
 ///
-/// This function calls torch.cuda.memory._snapshot() to get CUDA memory segments
-/// and fills the provided buffer with segment information.
-///
-/// # Safety
-/// This function is called from C code as a callback.
-unsafe extern "C" fn pytorch_segment_scanner(
-    segments_out: *mut monarch_rdma::rdmaxcel_sys::rdmaxcel_scanned_segment_t,
-    max_segments: usize,
-) -> usize {
-    // Acquire the GIL to call Python code
-    // Note: We use Python::attach here instead of monarch_with_gil_blocking because
-    // the raw pointer segments_out is not Sync and monarch_with_gil_blocking requires Send.
-    let result = Python::attach(|py| -> PyResult<usize> {
-        // Check if torch is already imported - don't import it ourselves
+/// Enumerates the live CUDA caching-allocator segments via
+/// `torch.cuda.memory._snapshot()`. Returns an empty list when torch is not
+/// imported, CUDA is unavailable, or the snapshot fails — so the mlx5dv
+/// segment binder simply falls back to per-buffer dmabuf MRs rather than
+/// erroring.
+fn pytorch_cuda_segments() -> Vec<ScannedSegment> {
+    // Acquire the GIL to call Python code.
+    let result = monarch_with_gil_blocking(|py| -> PyResult<Vec<ScannedSegment>> {
+        // Check if torch is already imported - don't import it ourselves.
         let sys = py.import("sys")?;
         let modules = sys.getattr("modules")?;
-
-        // Try to get torch from sys.modules
         let torch = match modules.get_item("torch") {
             Ok(torch_module) => torch_module,
-            Err(_) => {
-                // torch not imported yet, return 0 segments
-                return Ok(0);
-            }
+            Err(_) => return Ok(Vec::new()),
         };
 
-        // Check if CUDA is available
         let cuda_available: bool = torch
             .getattr("cuda")?
             .getattr("is_available")?
             .call0()?
             .extract()?;
-
         if !cuda_available {
-            return Ok(0);
+            return Ok(Vec::new());
         }
 
-        // Call torch.cuda.memory._snapshot()
         let snapshot = torch
             .getattr("cuda")?
             .getattr("memory")?
             .getattr("_snapshot")?
             .call0()?;
-
-        // Get the segments list from the snapshot dict
         let segments = snapshot.get_item("segments")?;
         let segments_list: Vec<Bound<'_, PyAny>> = segments.extract()?;
 
-        let num_segments = segments_list.len();
-
-        // Fill the output buffer with as many segments as will fit
-        let segments_to_write = num_segments.min(max_segments);
-
-        for (i, segment) in segments_list.iter().take(segments_to_write).enumerate() {
-            // Extract fields from the segment dict
-            let address: u64 = segment.get_item("address")?.extract()?;
-            let total_size: usize = segment.get_item("total_size")?.extract()?;
-            let device: i32 = segment.get_item("device")?.extract()?;
-            let is_expandable: bool = segment.get_item("is_expandable")?.extract()?;
-
-            // Write to the output buffer - only the fields the scanner needs to provide
-            let seg_info = &mut *segments_out.add(i);
-            seg_info.address = address as usize;
-            seg_info.size = total_size;
-            seg_info.device = device;
-            seg_info.is_expandable = if is_expandable { 1 } else { 0 };
-        }
-
-        // Return total number of segments found (may be > max_segments)
-        Ok(num_segments)
+        segments_list
+            .iter()
+            .map(|segment| {
+                Ok(ScannedSegment {
+                    address: segment.get_item("address")?.extract::<u64>()? as usize,
+                    size: segment.get_item("total_size")?.extract()?,
+                    cuda_ordinal: segment.get_item("device")?.extract()?,
+                    is_expandable: segment.get_item("is_expandable")?.extract()?,
+                })
+            })
+            .collect()
     });
 
-    match result {
-        Ok(count) => count,
-        Err(e) => {
-            // Log the specific error for debugging
-            eprintln!("[monarch_rdma] pytorch_segment_scanner failed: {}", e);
-            0
-        }
-    }
+    result.unwrap_or_else(|e| {
+        tracing::error!("pytorch_cuda_segments failed: {}", e);
+        Vec::new()
+    })
 }
 
 /// Resolve a Python `weakref.ref` to a strong [`Py<PyAny>`], or
@@ -627,9 +598,9 @@ async fn create_rdma_buffer(
 #[pymethods]
 impl PyRdmaBuffer {
     #[classmethod]
-    fn create_rdma_buffer_nonblocking<'py>(
+    fn create_rdma_buffer_nonblocking(
         _cls: &Bound<'_, PyType>,
-        _py: Python<'py>,
+        _py: Python<'_>,
         local: PyLocalMemoryHandle,
         client: PyInstance,
     ) -> PyResult<PyPythonTask> {
@@ -640,9 +611,9 @@ impl PyRdmaBuffer {
     }
 
     #[classmethod]
-    fn create_rdma_buffer_blocking<'py>(
+    fn create_rdma_buffer_blocking(
         _cls: &Bound<'_, PyType>,
-        py: Python<'py>,
+        py: Python<'_>,
         local: PyLocalMemoryHandle,
         client: PyInstance,
     ) -> PyResult<PyRdmaBuffer> {
@@ -663,9 +634,9 @@ impl PyRdmaBuffer {
     /// * `dst` - Local memory region to read into
     /// * `client` - The actor performing the read
     /// * `timeout` - Maximum time in seconds to wait for the operation
-    fn read_into<'py>(
+    fn read_into(
         &self,
-        _py: Python<'py>,
+        _py: Python<'_>,
         dst: PyLocalMemoryHandle,
         client: PyInstance,
         timeout: u64,
@@ -693,9 +664,9 @@ impl PyRdmaBuffer {
     /// * `src` - Local memory region to write from
     /// * `client` - The actor performing the write
     /// * `timeout` - Maximum time in seconds to wait for the operation
-    fn write_from<'py>(
+    fn write_from(
         &self,
-        _py: Python<'py>,
+        _py: Python<'_>,
         src: PyLocalMemoryHandle,
         client: PyInstance,
         timeout: u64,
@@ -740,7 +711,7 @@ impl PyRdmaBuffer {
         Ok(PyRdmaBuffer { buffer })
     }
 
-    fn drop<'py>(&self, _py: Python<'py>, client: PyInstance) -> PyResult<PyPythonTask> {
+    fn drop(&self, _py: Python<'_>, client: PyInstance) -> PyResult<PyPythonTask> {
         let buffer = self.buffer.clone();
         PyPythonTask::new(async move {
             buffer
@@ -816,9 +787,10 @@ fn rdma_supported_py() -> bool {
 }
 
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    // Register the PyTorch segment scanner callback.
-    // This calls torch.cuda.memory._snapshot() to get CUDA memory segments.
-    register_segment_scanner(Some(pytorch_segment_scanner));
+    // Install the process-wide CUDA segment scanner, backed by
+    // torch.cuda.memory._snapshot(). The mlx5dv segment binder consults it to
+    // map whole allocator segments to a single indirect mkey.
+    register_cuda_segment_scanner(Arc::new(pytorch_cuda_segments));
 
     module.add_class::<PyLocalMemoryHandle>()?;
     module.add_class::<PyWeakLocalMemoryHandle>()?;

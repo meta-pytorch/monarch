@@ -21,12 +21,13 @@ use monarch_rdma::backend::cuda_test_utils::SenderActor;
 use monarch_rdma::backend::cuda_test_utils::SenderMessageClient;
 use monarch_rdma::backend::ibverbs::device_selection::IbvDeviceTarget;
 use monarch_rdma::backend::ibverbs::device_selection::get_cuda_device_to_ibv_device;
+use monarch_rdma::backend::ibverbs::mlx_device::MlxDevice;
 use ndslice::ViewExt;
 
 /// Finds two CUDA devices that map to different RDMA NICs via PCI topology.
 /// Returns `Some((device_a, device_b))` or `None` if all devices share one NIC.
 fn find_devices_on_different_nics() -> Option<(i32, i32)> {
-    let gpu_to_nic: Vec<(i32, String)> = get_cuda_device_to_ibv_device()
+    let gpu_to_nic: Vec<(i32, String)> = get_cuda_device_to_ibv_device::<MlxDevice>()
         .iter()
         .enumerate()
         .filter_map(|(idx, nic)| nic.as_ref().map(|d| (idx as i32, d.name().to_string())))
