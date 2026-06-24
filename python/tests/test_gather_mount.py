@@ -16,22 +16,40 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 import tempfile
 import time
 import unittest
 
 
-def _skip_if_no_fuse() -> None:
-    """Skip the test if FUSE is unavailable in the current environment."""
-    if shutil.which("fusermount3") is None and shutil.which("fusermount") is None:
-        raise unittest.SkipTest("fusermount / fusermount3 not found on PATH")
+def _require_fuse() -> None:
+    """Fail loudly if FUSE is unavailable on a platform that supports it.
+
+    FUSE is Linux-only, so on non-Linux (e.g. the macOS CI runner) these tests
+    are skipped. On Linux FUSE is expected to be available (internal CI runs on
+    a Sandcastle host, and the OSS Linux lanes install fuse3 and provide
+    /dev/fuse), so a missing FUSE is an environment regression we surface as a
+    failure rather than a silent skip; it doubles as a canary for devservers.
+    """
+    if sys.platform != "linux":
+        raise unittest.SkipTest(f"FUSE is Linux-only; skipping on {sys.platform}")
+    fuse_ok = (
+        shutil.which("fusermount3") is not None
+        or shutil.which("fusermount") is not None
+    ) and os.path.exists("/dev/fuse")
+    if not fuse_ok:
+        raise AssertionError(
+            "FUSE expected on Linux but unavailable (missing fusermount/"
+            "fusermount3 or /dev/fuse). This is an environment regression, "
+            "not a test bug."
+        )
 
 
 class GatherMountBasicTest(unittest.TestCase):
     """Basic correctness tests for gather_mount running entirely on localhost."""
 
     def setUp(self) -> None:
-        _skip_if_no_fuse()
+        _require_fuse()
         self._cleanup: list[str] = []
 
     def tearDown(self) -> None:
@@ -293,7 +311,7 @@ class GatherMountProcessJobTest(unittest.TestCase):
     """Multi-host gather_mount tests using ProcessJob for fake local hosts."""
 
     def setUp(self) -> None:
-        _skip_if_no_fuse()
+        _require_fuse()
         self._cleanup: list[str] = []
 
     def tearDown(self) -> None:

@@ -50,14 +50,16 @@ import os
 import stat as _stat
 import struct
 import time
-from collections.abc import Mapping
+from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass
 from itertools import product
+from typing import TypeVar
 
 from monarch._rust_bindings.monarch_extension.readonly_fuse import (  # pyre-ignore[21]
     mount_read_only_filesystem,
 )
-from monarch.actor import Actor, context, endpoint, HostMesh, this_proc
+from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
+from monarch.actor import Actor, context, endpoint, HostMesh, MeshFailure, this_proc
 from monarch.remotemount.remotemount import prepare_mount_point
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -78,6 +80,12 @@ _IN_CLOEXEC: int = 0o02000000
 _WATCH_MASK: int = _IN_MODIFY | _IN_CLOSE_WRITE | _IN_ATTRIB
 _INOTIFY_EVENT_FMT: str = "iIII"
 _INOTIFY_EVENT_SIZE: int = struct.calcsize(_INOTIFY_EVENT_FMT)
+
+# Per-FUSE-op timeout on remote source calls. This is load-bearing -- see
+# ``_bounded`` for exactly why a timeout (not just supervision) is required.
+_SOURCE_TIMEOUT_S: float = float(os.environ.get("MONARCH_GATHER_MOUNT_TIMEOUT_S", "10"))
+
+_T = TypeVar("_T")
 
 
 # ── inotify wrapper ───────────────────────────────────────────────────────────
@@ -286,6 +294,34 @@ class _CacheEntry:
         return self.offset + len(self.data)
 
 
+async def _bounded(awaitable: Awaitable[_T]) -> _T:
+    """Bound a remote ``GatherSourceActor`` call so a stuck source can't wedge
+    the mount. This per-op timeout is load-bearing -- here is exactly why.
+
+    Every FUSE op calls a source actor on the worker mesh, synchronously from the
+    kernel FUSE thread. Two layers you'd hope would bound it do not:
+
+    * The Rust read-only FUSE layer (``readonly_fuse``) has **no timeout** -- it
+      awaits the Python endpoint indefinitely. (It does map a raised exception to
+      ``errno.EIO``, so we don't need to catch one for cleanliness -- but it never
+      gives up on a call that simply never returns.)
+    * Monarch **supervision** only fires when a source *process* dies (then the
+      call raises ``SupervisionError`` on its own, ~9-60s later, which is fine).
+      It does **not** fire when the source process is *alive and healthy* but one
+      call hangs -- e.g. a hung source-side ``stat``/``read`` on a wedged disk or
+      NFS, or a deadlocked endpoint. To supervision the source looks fine, so no
+      error is ever raised.
+
+    In that alive-but-stuck case the call never resolves and no signal arrives, so
+    without this timeout the kernel FUSE thread parks in uninterruptible D-state
+    **forever**, wedging every process that touches the mount until the FUSE
+    connection is force-aborted (``/sys/fs/fuse/connections/<minor>/abort``) -- an
+    unrecoverable state. ``asyncio.wait_for`` turns that into a bounded
+    ``TimeoutError``, which the FUSE endpoints return as ``errno.EIO``.
+    """
+    return await asyncio.wait_for(awaitable, _SOURCE_TIMEOUT_S)
+
+
 class GatherClientActor(Actor):
     """Local actor: owns the stat/file caches and handles all client-side logic.
 
@@ -295,7 +331,36 @@ class GatherClientActor(Actor):
     synchronous ``.call_one(...).get()`` calls from the FUSE threads.
     """
 
-    def __init__(self, actors: object) -> None:
+    def __init__(self, host_mesh: HostMesh, remote_mount_point: str) -> None:
+        # The client SPAWNS + OWNS the source mesh (in ``setup``) so a source
+        # death's supervision fault routes to *this* actor's ``__supervise__`` and
+        # is contained there. If the sources were spawned by the caller and merely
+        # passed in by reference, their fault would route to the caller (the mount
+        # sidecar = the FUSE-serving proc) and an uncaught one would ``sys.exit``
+        # it -- killing the FUSE daemon and wedging the mount in D-state until the
+        # connection is aborted.
+        self._host_mesh: HostMesh = host_mesh
+        self._remote_mount_point: str = remote_mount_point
+        self._actors: object = None
+        self._key_to_point: dict[str, dict[str, int]] = {}
+        # (shard_key, rel_path) → _CacheEntry; evicted by invalidate()
+        self._cache: dict[tuple[str, str], _CacheEntry] = {}
+
+    @endpoint
+    async def setup(self, self_ref: object) -> None:
+        """Spawn + own the source mesh, derive shard points, and wire inotify.
+
+        Spawning the sources here (in the client's own context) makes the client
+        their supervision owner, so ``__supervise__`` receives their failures.
+        ``self_ref`` is this actor's own mesh handle, handed to the sources for
+        the ``invalidate`` callback. ``init_watch`` is bounded and catches a
+        source that dies during setup, so the mount degrades to stale/EIO rather
+        than failing (or crashing) the whole mount.
+        """
+        procs = self._host_mesh.spawn_procs(name="gather_mount")
+        actors = procs.spawn(
+            "GatherSourceActor", GatherSourceActor, self._remote_mount_point
+        )
         self._actors = actors
         extent: dict[str, int] = dict(actors.extent)  # pyre-ignore[16]
         if not extent:
@@ -306,11 +371,25 @@ class GatherClientActor(Actor):
                 dict(zip([n for n, _ in dims], indices))
                 for indices in product(*(range(s) for _, s in dims))
             ]
-        self._key_to_point: dict[str, dict[str, int]] = {
-            _point_to_key(p): p for p in shard_points
-        }
-        # (shard_key, rel_path) → _CacheEntry; evicted by invalidate()
-        self._cache: dict[tuple[str, str], _CacheEntry] = {}
+        self._key_to_point = {_point_to_key(p): p for p in shard_points}
+        try:
+            # pyre-ignore[16]
+            await _bounded(actors.init_watch.call(self_ref))
+        except (asyncio.TimeoutError, SupervisionError):
+            logger.warning(
+                "gather_mount: init_watch did not complete (source slow/dead); "
+                "serving with degraded cache invalidation"
+            )
+
+    def __supervise__(self, failure: MeshFailure) -> bool:
+        # Contain source-mesh supervision faults. This actor owns ONLY the source
+        # mesh, so every fault it receives is a dead/preempted source -- which the
+        # FUSE endpoints already degrade to EIO via the per-call timeout. Returning True
+        # stops propagation to the root client (whose unhandled_fault_hook would
+        # ``sys.exit`` this FUSE-serving proc and wedge the mount). The result is
+        # a *dead* mount (EIO), never a *stuck* one.
+        logger.warning("gather_mount: contained source supervision fault: %s", failure)
+        return True
 
     @endpoint
     async def invalidate(self, shard_key: str, paths: list[str]) -> None:
@@ -340,7 +419,10 @@ class GatherClientActor(Actor):
         assert rel_path is not None
         cache_key = (_point_to_key(point), rel_path)
         cached = cache_key in self._cache
-        entry = await self._ensure_cached(point, rel_path)
+        try:
+            entry = await self._ensure_cached(point, rel_path)
+        except (asyncio.TimeoutError, SupervisionError):
+            return errno.EIO
         if entry is None:
             return errno.ENOENT
         logger.debug(
@@ -362,8 +444,11 @@ class GatherClientActor(Actor):
         if point is None:
             return list(self._key_to_point.keys())
         logger.debug("LISTDIR path=%r", path)
-        # pyre-ignore[16]
-        return await self._actor_for(point).listdir.call_one(rel_path)
+        try:
+            # pyre-ignore[16]
+            return await _bounded(self._actor_for(point).listdir.call_one(rel_path))
+        except (asyncio.TimeoutError, SupervisionError):
+            return errno.EIO
 
     @endpoint
     async def read_path(self, path: str, size: int, offset: int) -> bytes | int:
@@ -378,35 +463,38 @@ class GatherClientActor(Actor):
 
         cache_key = (_point_to_key(point), rel_path)
         stat_cached = cache_key in self._cache
-        entry = await self._ensure_cached(point, rel_path)
-        if entry is None:
-            return errno.ENOENT
-        if _stat.S_ISDIR(entry.mode):
-            return errno.EISDIR
+        try:
+            entry = await self._ensure_cached(point, rel_path)
+            if entry is None:
+                return errno.ENOENT
+            if _stat.S_ISDIR(entry.mode):
+                return errno.EISDIR
 
-        # Fetch prefix if the read starts before the cached window.
-        if offset < entry.offset:
-            fetch_len = entry.offset - offset
-            logger.debug(
-                "READ path=%r offset=%d size=%d → fetch [%d, %d) (stat=%s)",
-                path,
-                offset,
-                size,
-                offset,
-                entry.offset,
-                "MISS→rpc" if not stat_cached else "HIT",
-            )
-            prefix = await self._fetch_range(point, rel_path, offset, fetch_len)
-            entry.data = bytearray(prefix) + entry.data
-            entry.offset = offset
-        else:
-            logger.debug(
-                "READ path=%r offset=%d size=%d → cache HIT (stat=%s)",
-                path,
-                offset,
-                size,
-                "MISS→rpc" if not stat_cached else "HIT",
-            )
+            # Fetch prefix if the read starts before the cached window.
+            if offset < entry.offset:
+                fetch_len = entry.offset - offset
+                logger.debug(
+                    "READ path=%r offset=%d size=%d → fetch [%d, %d) (stat=%s)",
+                    path,
+                    offset,
+                    size,
+                    offset,
+                    entry.offset,
+                    "MISS→rpc" if not stat_cached else "HIT",
+                )
+                prefix = await self._fetch_range(point, rel_path, offset, fetch_len)
+                entry.data = bytearray(prefix) + entry.data
+                entry.offset = offset
+            else:
+                logger.debug(
+                    "READ path=%r offset=%d size=%d → cache HIT (stat=%s)",
+                    path,
+                    offset,
+                    size,
+                    "MISS→rpc" if not stat_cached else "HIT",
+                )
+        except (asyncio.TimeoutError, SupervisionError):
+            return errno.EIO
 
         data_start = offset - entry.offset
         return bytes(entry.data[data_start : data_start + size])
@@ -453,10 +541,9 @@ class GatherClientActor(Actor):
         entry = self._cache.get(cache_key)
         if entry is not None:
             return entry
-        # pyre-ignore[16]
-        raw: tuple[int, int, int] | None = await self._actor_for(
-            point
-        ).stat_and_watch.call_one(rel_path)
+        raw: tuple[int, int, int] | None = await _bounded(
+            self._actor_for(point).stat_and_watch.call_one(rel_path)  # pyre-ignore[16]
+        )
         if raw is None:
             return None
         mtime_ns, size, mode = raw
@@ -472,11 +559,10 @@ class GatherClientActor(Actor):
         actor = self._actor_for(point)
         if length < _RDMA_THRESHOLD:
             # pyre-ignore[16]
-            return await actor.read_bytes.call_one(rel_path, offset, length)
+            return await _bounded(actor.read_bytes.call_one(rel_path, offset, length))
         # RDMA path
-        # pyre-ignore[16]
-        token, rdma_buf, actual_len = await actor.prepare_rdma.call_one(
-            rel_path, offset, length
+        token, rdma_buf, actual_len = await _bounded(
+            actor.prepare_rdma.call_one(rel_path, offset, length)  # pyre-ignore[16]
         )
         if actual_len == 0 or rdma_buf is None:
             return b""
@@ -484,7 +570,8 @@ class GatherClientActor(Actor):
         try:
             # pyrefly: ignore [bad-assignment]
             mv: memoryview[bytes] = memoryview(mm)[:actual_len]
-            await rdma_buf.read_into(mv)
+            # pyre-ignore[16]
+            await _bounded(rdma_buf.read_into(mv))
             data = bytes(mv)
             mv.release()
         finally:
@@ -553,16 +640,20 @@ class GatherMount:
         self._local_mount_point = local_mount_point
         self._mounted: bool = False
 
-        procs = host_mesh.spawn_procs(name="gather_mount")
-
-        actors = procs.spawn("GatherSourceActor", GatherSourceActor, remote_mount_point)
-        client_actor = this_proc().spawn("GatherClientActor", GatherClientActor, actors)
+        # The client spawns + OWNS the source mesh (in setup) so a source death's
+        # supervision fault is contained by GatherClientActor.__supervise__ and
+        # cannot sys.exit this FUSE-serving proc (which would wedge the mount in
+        # D-state until the connection is aborted). See GatherClientActor.
+        client_actor = this_proc().spawn(
+            "GatherClientActor", GatherClientActor, host_mesh, remote_mount_point
+        )
 
         prepare_mount_point(local_mount_point)
 
-        # Call init_watch on all source actors and wait for completion before
-        # mounting — ensures inotify is ready before the first FUSE operation.
-        actors.init_watch.call(client_actor).get()
+        # setup() spawns the (client-owned) sources, derives shard points, and
+        # wires inotify before the first FUSE op; we pass the client its own ref
+        # so the sources can call back ``invalidate``.
+        client_actor.setup.call(client_actor).get()
 
         # The Rust FUSE session runs on the shared Tokio runtime; it calls
         # back into client_actor for every filesystem operation.

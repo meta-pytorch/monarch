@@ -292,8 +292,12 @@ run_test_groups() {
   export LD_PRELOAD="${CONDA_LIBSTDCPP}${LD_PRELOAD:+:$LD_PRELOAD}"
   export RUST_BACKTRACE=1
   mkdir -p "$test_results_dir"
+  # test_gather_mount.py needs a real FUSE mount (/dev/fuse), which this
+  # linux_job_v2 container does not provide; those tests run in the dedicated
+  # test-fuse-python (ubuntu-latest) lane instead.
   LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip" \
       --ignore-glob="**/meta/**" \
+      --ignore=python/tests/test_gather_mount.py \
       --crash-recovery \
       --max-crashes=10 \
       --max-leaked-procs=16 \
