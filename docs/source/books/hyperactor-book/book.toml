@@ -6,4 +6,4 @@ title = "Hyperactor Book"
 
 [output.html]
 git-repository-url = "https://github.com/meta-pytorch/monarch"
-edit-url-template = "https://github.com/meta-pytorch/monarch/edit/main/books/hyperactor-book/src/{path}"
+edit-url-template = "https://github.com/meta-pytorch/monarch/edit/main/docs/source/books/hyperactor-book/src/{path}"

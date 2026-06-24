@@ -6,14 +6,16 @@ References in Hyperactor follow a uniform concrete syntax that can be written as
 
 The canonical string syntax supports hierarchical references, from procs down to ports:
 ```text
-location   := zmq URL
+location   := via* zmq-url
+via        := uid "."
 label      := lowercase letter, then lowercase letters, digits, `-`, or `_`,
               ending in a lowercase letter or digit
 uid58      := base58(u64) using the Flickr alphabet:
               123456789abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ
+uid        := label | "<" uid58 ">" | label "<" uid58 ">"
 
-proc-id    := label | "<" uid58 ">" | label "<" uid58 ">"
-actor-part := label | "<" uid58 ">" | label "<" uid58 ">"
+proc-id    := uid
+actor-part := uid
 actor-id   := actor-part "." proc-id
 port-id    := actor-id ":" decimal-port
 
@@ -22,9 +24,7 @@ actor-ref  := actor-id "@" location
 port-ref   := port-id "@" location
 ```
 
-Singletons are self-documenting and therefore use the bare `label` form.
-Instance ids use `<uid58>`, with an optional semantic label outside the brackets:
-`label<uid58>`.
+Singletons are self-documenting and therefore use the bare `label` form. Instance ids use `<uid58>`, with an optional semantic label outside the brackets: `label<uid58>`. A `Location` can also carry one or more `Via` hops before the terminal ZMQ-style URL, such as `client.host<7PDmJtQJB5S>.tcp://[::1]:1234`.
 
 These forms can be used wherever a reference is accepted as a string, such as
 command-line arguments, config files, and logs.
@@ -41,14 +41,14 @@ The parser is robust and fails clearly on invalid syntax.
 
 ## Runtime Parsing
 
-The `Reference` type implements `FromStr`, so you can parse strings into references:
+The `Addr` type implements `FromStr`, so you can parse strings into references:
 
 ```rust
-use hyperactor::reference::Reference;
+use hyperactor::Addr;
 
-let r: Reference = "worker.controller<2MuAHeDjLCEd>@tcp://[::1]:1234"
+let r: Addr = "worker.controller<2MuAHeDjLCEd>@tcp://[::1]:1234"
     .parse()
     .unwrap();
 ```
 
-It returns a strongly typed enum: `Reference::Proc`, `Reference::Actor`, `Reference::Port`.
+It returns a strongly typed enum: `Addr::Proc`, `Addr::Actor`, or `Addr::Port`.

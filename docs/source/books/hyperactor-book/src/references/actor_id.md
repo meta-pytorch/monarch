@@ -19,7 +19,7 @@ pub struct ActorId {
 Fields are private; use named constructors:
 
 ```rust
-use hyperactor::id::{ActorId, Label, ProcId};
+use hyperactor::{ActorId, Label, ProcId};
 
 let proc = ProcId::instance(Label::new("myproc").unwrap());
 let anonymous = ActorId::anonymous(proc.clone());
