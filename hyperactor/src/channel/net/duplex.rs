@@ -86,8 +86,16 @@ impl<In: RemoteMessage, Out: RemoteMessage> DuplexServer<In, Out> {
     /// Gracefully shut down the duplex server. Cancels the listener
     /// and awaits its task; structured concurrency in
     /// [`dispatch_duplex_stream`] guarantees every in-flight session
-    /// has finished its terminal cleanup (final ack flush + `Closed`
-    /// emit) before this returns.
+    /// has finished its terminal cleanup (graceful outbound drain,
+    /// final ack flush, `Closed` emit) before this returns. Sends
+    /// queued via [`DuplexTx::post`] before `join` is called are
+    /// drained to the peer (bounded by `MESSAGE_DELIVERY_TIMEOUT`
+    /// for unresponsive peers and by Io errors for disconnected
+    /// peers); messages the peer ultimately could not accept get
+    /// explicit [`SendError`] on their return channels rather than
+    /// being silently dropped. Sends posted after `join` fires the
+    /// cancel observe `ChannelError::Closed` on their return channel
+    /// via the underlying mpsc close.
     pub async fn join(mut self) {
         self.handle.stop(&format!(
             "DuplexServer joined; channel address: {}",
@@ -157,11 +165,17 @@ impl<Out: RemoteMessage, In: RemoteMessage> DuplexClient<Out, In> {
     /// Gracefully shut down the duplex client session. Cancels the
     /// recv/send loop's cancellation token (which the spawned task
     /// observes in its `select!`s) and awaits the spawned task. On
-    /// return, the task has finished its terminal cleanup (final
-    /// ack flush on `ACCEPTOR_TO_INITIATOR`) and dropped its
+    /// return, the task has drained queued outbound sends to the
+    /// wire (bounded by `MESSAGE_DELIVERY_TIMEOUT` for unresponsive
+    /// peers and by Io errors for disconnected peers), finished its
+    /// terminal cleanup (final ack flush on `ACCEPTOR_TO_INITIATOR`,
+    /// `Closed` emit), and dropped its
     /// [`inbound_tx`](super::session) / outbound receiver halves —
     /// so any in-progress [`DuplexRx::recv`](super::Rx::recv) on
     /// the receiver half resolves with [`ChannelError::Closed`].
+    /// Any messages that the peer ultimately could not accept get
+    /// explicit [`SendError`] on their return channels rather than
+    /// being silently dropped.
     pub async fn join(self) {
         self.cancel_token.cancel();
         let _ = self.join_handle.await;
@@ -485,23 +499,69 @@ async fn dispatch_duplex_stream<In: RemoteMessage, Out: RemoteMessage>(
             Err(_) => break,
         };
         deliveries.requeue_unacked();
-        let result = {
-            let recv_stream = connected.stream(super::INITIATOR_TO_ACCEPTOR);
-            let send_stream = connected.stream(super::ACCEPTOR_TO_INITIATOR);
-            tokio::select! {
-                r = session::recv_connected::<In, _, _>(
-                    &recv_stream,
-                    &inbound_tx,
-                    &mut recv_next,
-                ) => r.map_err(Either::Recv),
-                r = session::send_connected(
-                    &send_stream,
-                    &mut deliveries,
-                    &mut outbound_rx,
-                ) => r.map_err(Either::Send),
-                _ = session_ct.cancelled() => Err(Either::Recv(session::RecvLoopError::Cancelled)),
-            }
+        let recv_stream = connected.stream(super::INITIATOR_TO_ACCEPTOR);
+        let send_stream = connected.stream(super::ACCEPTOR_TO_INITIATOR);
+        let result = tokio::select! {
+            r = session::recv_connected::<In, _, _>(
+                &recv_stream,
+                &inbound_tx,
+                &mut recv_next,
+            ) => r.map_err(Either::Recv),
+            r = session::send_connected(
+                &send_stream,
+                &mut deliveries,
+                &mut outbound_rx,
+            ) => r.map_err(Either::Send),
+            _ = session_ct.cancelled() => Err(Either::Recv(session::RecvLoopError::Cancelled)),
         };
+
+        // On cancel, run a graceful drain so `DuplexServer::join`
+        // actually delivers in-flight sends rather than racing the
+        // listener cancel against `send_connected`'s mid-write
+        // progress. Closing `outbound_rx` makes `DuplexTx::do_post`
+        // start erroring for new posts (existing `mpsc::SendError`
+        // path) and lets `send_connected` reach natural `AppClosed`
+        // termination once the queued sends have been written.
+        // `send_connected`'s own `MESSAGE_DELIVERY_TIMEOUT` bounds
+        // the wait when the peer is unresponsive; an Io error
+        // bounds it when the peer disconnects. Messages that the
+        // protocol ultimately could not deliver are surfaced as
+        // explicit `SendError` rather than silently dropped at
+        // function exit.
+        if matches!(result, Err(Either::Recv(session::RecvLoopError::Cancelled))) {
+            outbound_rx.close();
+            let drain =
+                session::send_connected(&send_stream, &mut deliveries, &mut outbound_rx).await;
+            match &drain {
+                Ok(()) | Err(session::SendLoopError::AppClosed) => {
+                    // Drained: outbound_rx and outbox are both
+                    // empty. Anything in unacked was written, and
+                    // its ambiguous fate is left to the existing
+                    // drop-on-exit contract.
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        session_id = session_id.0,
+                        error = %e,
+                        "duplex server: drain ended with send error; \
+                         reporting unsent messages as undeliverable",
+                    );
+                    let reason = format!("duplex drain ended with: {}", e);
+                    while let Ok((msg, return_channel, _)) = outbound_rx.try_recv() {
+                        let _ = return_channel.send(SendError {
+                            error: ChannelError::Closed,
+                            message: msg,
+                            reason: Some(reason.clone()),
+                        });
+                    }
+                    deliveries
+                        .outbox
+                        .deque
+                        .drain(..)
+                        .for_each(|queued| queued.try_return(Some(reason.clone())));
+                }
+            }
+        }
 
         let terminal = match &result {
             Ok(()) => {
@@ -678,19 +738,59 @@ pub(crate) fn spawn<Out: RemoteMessage, In: RemoteMessage>(
             link_status.connected();
             let connected_at = tokio::time::Instant::now();
 
-            let result = {
-                let send_stream = connected.stream(super::INITIATOR_TO_ACCEPTOR);
-                let recv_stream = connected.stream(super::ACCEPTOR_TO_INITIATOR);
-                tokio::select! {
-                    r = session::send_connected(
-                        &send_stream, &mut deliveries, &mut outbound_rx,
-                    ) => r.map_err(Either::Send),
-                    r = session::recv_connected::<In, _, _>(
-                        &recv_stream, &inbound_tx, &mut recv_next,
-                    ) => r.map_err(Either::Recv),
-                    _ = task_cancel.cancelled() => Err(Either::Recv(session::RecvLoopError::Cancelled)),
-                }
+            let send_stream = connected.stream(super::INITIATOR_TO_ACCEPTOR);
+            let recv_stream = connected.stream(super::ACCEPTOR_TO_INITIATOR);
+            let result = tokio::select! {
+                r = session::send_connected(
+                    &send_stream, &mut deliveries, &mut outbound_rx,
+                ) => r.map_err(Either::Send),
+                r = session::recv_connected::<In, _, _>(
+                    &recv_stream, &inbound_tx, &mut recv_next,
+                ) => r.map_err(Either::Recv),
+                _ = task_cancel.cancelled() => Err(Either::Recv(session::RecvLoopError::Cancelled)),
             };
+
+            // Mirror of the acceptor-side drain in
+            // `dispatch_duplex_stream`: on cancel, close the
+            // receiver so `DuplexTx::do_post` starts erroring for
+            // new posts, then run `send_connected` to natural
+            // `AppClosed` completion so sends queued before
+            // `DuplexClient::join` reach the peer.
+            // `send_connected`'s `MESSAGE_DELIVERY_TIMEOUT` bounds
+            // the wait when the peer is unresponsive. Undelivered
+            // messages are surfaced as explicit `SendError` on
+            // their return channels.
+            if matches!(result, Err(Either::Recv(session::RecvLoopError::Cancelled))) {
+                outbound_rx.close();
+                let drain =
+                    session::send_connected(&send_stream, &mut deliveries, &mut outbound_rx)
+                        .await;
+                match &drain {
+                    Ok(()) | Err(session::SendLoopError::AppClosed) => {}
+                    Err(e) => {
+                        tracing::warn!(
+                            dest = %dest,
+                            session_id = session_id.0,
+                            error = %e,
+                            "duplex client: drain ended with send error; \
+                             reporting unsent messages as undeliverable",
+                        );
+                        let reason = format!("duplex drain ended with: {}", e);
+                        while let Ok((msg, return_channel, _)) = outbound_rx.try_recv() {
+                            let _ = return_channel.send(SendError {
+                                error: ChannelError::Closed,
+                                message: msg,
+                                reason: Some(reason.clone()),
+                            });
+                        }
+                        deliveries
+                            .outbox
+                            .deque
+                            .drain(..)
+                            .for_each(|queued| queued.try_return(Some(reason.clone())));
+                    }
+                }
+            }
 
             link_status.disconnected();
 
@@ -970,5 +1070,136 @@ mod tests {
             .await
             .unwrap();
         println!("Unix duplex: 100 round-trips in {elapsed:?}");
+    }
+
+    /// Single-message regression for the post-then-join race. The
+    /// application posts a final message and immediately calls
+    /// [`DuplexServer::join`]; the cancel cascade fired by `join`
+    /// must not race the in-flight `post(99)` to the wire. Without
+    /// the drain in [`dispatch_duplex_stream`], this test fails
+    /// deterministically — the per-session `select!`'s cancel
+    /// branch wins against `send_connected`'s in-flight progress
+    /// and the message stays unsent in `outbound_rx`.
+    ///
+    /// The 100 ms sleep widens the window where the bug would race
+    /// the listener cancel ahead of the post.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_duplex_server_join_drains_post_before_cancel() {
+        let server = serve::<u64, u64>(ChannelAddr::any(ChannelTransport::Unix), None).unwrap();
+        let addr = server.addr().clone();
+
+        let mut client = dial::<u64, u64>(addr).unwrap();
+        let mut client_rx = client.take_rx().unwrap();
+
+        let server_task = tokio::spawn(async move {
+            let mut server = server;
+            let (_server_rx, server_tx) = server.accept().await.unwrap();
+            // Sleep widens the bug window: gives the listener
+            // cancel a chance to race ahead of the post.
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            server_tx.post(99);
+            server.join().await;
+        });
+
+        server_task.await.unwrap();
+
+        let got = tokio::time::timeout(Duration::from_secs(5), client_rx.recv())
+            .await
+            .expect("client did not receive duplex cleanup message")
+            .expect("client_rx closed before cleanup message");
+        assert_eq!(got, 99);
+
+        client.join().await;
+    }
+
+    /// Stress regression for the graceful drain in
+    /// [`dispatch_duplex_stream`] (acceptor) and the initiator's
+    /// [`spawn`] loop. The application pattern is `post(...)` immediately
+    /// followed by `join().await` — a known-racy production shape where
+    /// `join` fires the cancel cascade while messages are still queued
+    /// in `outbound_rx`. Without the drain block, the per-session
+    /// `select!`'s cancel branch wins against `send_connected`'s
+    /// in-flight progress and a fraction of each burst is lost. The
+    /// single-message regression
+    /// (`test_duplex_server_join_drains_post_before_cancel` above)
+    /// uses a 100 ms widening sleep; this test runs many tight
+    /// iterations with multi-message bursts on both directions, so
+    /// any residual flakiness from cancel-vs-`send_connected`
+    /// scheduling shows up deterministically.
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_duplex_join_drains_burst_under_stress() {
+        const ITERS: usize = 20;
+        const BURST: u64 = 8;
+
+        // Acceptor side: server posts a burst, then `server.join()`
+        // fires the listener cancel. All `BURST` messages must reach
+        // the client before the dispatch task exits.
+        for iter in 0..ITERS {
+            let mut server =
+                serve::<u64, u64>(ChannelAddr::any(ChannelTransport::Unix), None).unwrap();
+            let addr = server.addr().clone();
+            let mut client = dial::<u64, u64>(addr).unwrap();
+            let mut client_rx = client.take_rx().unwrap();
+
+            let (_server_rx, server_tx) = server.accept().await.unwrap();
+            for i in 0..BURST {
+                server_tx.post(i);
+            }
+            // No sleep — race the cancel cascade against the in-flight
+            // sends. `join` must wait for the drain to complete.
+            server.join().await;
+
+            for i in 0..BURST {
+                let got = tokio::time::timeout(Duration::from_secs(5), client_rx.recv())
+                    .await
+                    .unwrap_or_else(|_| {
+                        panic!("acceptor iter {iter} msg {i}: client recv timed out")
+                    })
+                    .unwrap_or_else(|e| {
+                        panic!("acceptor iter {iter} msg {i}: client_rx error: {e:?}")
+                    });
+                assert_eq!(
+                    got, i,
+                    "acceptor iter {iter}: expected {i}, got {got} (drain lost or reordered)"
+                );
+            }
+
+            client.join().await;
+        }
+
+        // Initiator side: client posts a burst, then `client.join()`
+        // fires `cancel_token`. All `BURST` messages must reach the
+        // server before the spawn task exits.
+        for iter in 0..ITERS {
+            let mut server =
+                serve::<u64, u64>(ChannelAddr::any(ChannelTransport::Unix), None).unwrap();
+            let addr = server.addr().clone();
+
+            let client = dial::<u64, u64>(addr).unwrap();
+            let client_tx = client.tx();
+
+            let (mut server_rx, _server_tx) = server.accept().await.unwrap();
+            for i in 0..BURST {
+                client_tx.post(i);
+            }
+            client.join().await;
+
+            for i in 0..BURST {
+                let got = tokio::time::timeout(Duration::from_secs(5), server_rx.recv())
+                    .await
+                    .unwrap_or_else(|_| {
+                        panic!("initiator iter {iter} msg {i}: server recv timed out")
+                    })
+                    .unwrap_or_else(|e| {
+                        panic!("initiator iter {iter} msg {i}: server_rx error: {e:?}")
+                    });
+                assert_eq!(
+                    got, i,
+                    "initiator iter {iter}: expected {i}, got {got} (drain lost or reordered)"
+                );
+            }
+
+            server.join().await;
+        }
     }
 }
