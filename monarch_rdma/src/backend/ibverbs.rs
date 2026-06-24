@@ -46,7 +46,6 @@ use crate::local_memory::KeepaliveLocalMemory;
 /// [`IbvManagerMessage::RequestBuffer`].
 #[derive(Debug, Clone, Serialize, Deserialize, Named)]
 pub struct IbvBuffer {
-    pub mr_id: usize,
     pub lkey: u32,
     pub rkey: u32,
     /// RDMA address (may differ from virtual address for CUDA memory).
@@ -54,6 +53,20 @@ pub struct IbvBuffer {
     pub size: usize,
     /// Name of the RDMA device this buffer is associated with (e.g., "mlx5_0").
     pub device_name: String,
+}
+
+impl From<&memory_region::IbvMemoryRegionView> for IbvBuffer {
+    /// The wire transport details are fully derived from the registered MR
+    /// view: the keys, the RDMA address, the size, and the device name.
+    fn from(view: &memory_region::IbvMemoryRegionView) -> Self {
+        Self {
+            lkey: view.lkey,
+            rkey: view.rkey,
+            addr: view.rdma_addr,
+            size: view.size,
+            device_name: view.device_name.clone(),
+        }
+    }
 }
 
 /// A single RDMA op for the [`IbvBackend`](manager_actor::IbvBackend).

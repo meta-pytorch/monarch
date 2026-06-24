@@ -40,7 +40,6 @@ use crate::mailbox::DeliveryFailureReport;
 use crate::mailbox::MailboxSenderError;
 use crate::mailbox::MailboxSenderErrorKind;
 use crate::mailbox::PortSink;
-use crate::port::ControlPort;
 use crate::port::Port;
 
 /// ActorRefs are typed references to actors.
@@ -350,12 +349,6 @@ impl<M: RemoteMessage> PortRef<M> {
     /// port for message type `M`.
     pub fn attest_handler_port(actor: &ActorAddr) -> Self {
         PortRef::<M>::attest(actor.port_addr(Port::handler::<M>()))
-    }
-
-    /// The caller attests that the provided actor exposes a reachable control
-    /// port for message type `M`.
-    pub fn attest_control_port(actor: &ActorAddr, port: ControlPort) -> Self {
-        PortRef::<M>::attest(actor.port_addr(Port::control(port)))
     }
 
     /// The typehash of this port's reducer, if any. Reducers

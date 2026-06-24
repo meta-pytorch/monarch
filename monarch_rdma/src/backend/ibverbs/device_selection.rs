@@ -10,7 +10,6 @@
 //! RDMA NIC(s) that have the best PCIe path to it.
 
 use std::sync::LazyLock;
-use std::sync::OnceLock;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -18,7 +17,6 @@ use dashmap::DashMap;
 
 use super::device::IbvDevice;
 use super::device::IbvDeviceImpl;
-use super::mlx_device::MlxDevice;
 use super::primitives::IbvDeviceInfo;
 use crate::device_selection::MemoryLocation;
 use crate::device_selection::PCIAddress;
@@ -169,17 +167,23 @@ pub fn resolve_target<I: IbvDeviceImpl>(target: &IbvDeviceTarget) -> Option<IbvD
     }
 }
 
-/// Process-wide CUDA ordinal → optimal Mellanox NIC map, computed once on
-/// first use. CPU-only workloads pay no initialization cost.
-pub fn get_cuda_device_to_ibv_device() -> &'static Vec<Option<IbvDeviceInfo>> {
-    static CUDA_DEVICE_TO_IBV: OnceLock<Vec<Option<IbvDeviceInfo>>> = OnceLock::new();
-    CUDA_DEVICE_TO_IBV.get_or_init(|| {
-        (0..cuda_device_count())
+/// Process-wide CUDA ordinal → optimal NIC map, computed once per backend and
+/// cached. CPU-only workloads pay no initialization cost.
+pub fn get_cuda_device_to_ibv_device<I: IbvDeviceImpl>() -> &'static Vec<Option<IbvDeviceInfo>> {
+    // A function-local `static` in a generic fn is one cell shared across every
+    // `I`, so the cache must be keyed per backend; `I::typename()` selects it.
+    // Each backend's map is `Box::leak`ed once so the cache stores (and returns) a
+    // `&'static`.
+    static CACHE: LazyLock<DashMap<&'static str, &'static Vec<Option<IbvDeviceInfo>>>> =
+        LazyLock::new(DashMap::new);
+    *CACHE.entry(I::typename()).or_insert_with(|| {
+        let result: Vec<Option<IbvDeviceInfo>> = (0..cuda_device_count())
             .map(|ordinal| {
-                select_optimal_ibv_devices::<MlxDevice>(MemoryLocation::Gpu(Some(ordinal as u32)))
+                select_optimal_ibv_devices::<I>(MemoryLocation::Gpu(Some(ordinal as u32)))
                     .into_iter()
                     .next()
             })
-            .collect()
+            .collect();
+        Box::leak(Box::new(result))
     })
 }

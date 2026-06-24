@@ -25,6 +25,7 @@ use bytes::BytesMut;
 use dashmap::DashMap;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
+use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
 use hyperactor::HandleClient;
@@ -55,6 +56,7 @@ use crate::RdmaOp;
 use crate::RdmaOpType;
 use crate::RdmaTransportLevel;
 use crate::backend::RdmaBackend;
+use crate::backend::RdmaConfig;
 use crate::local_memory::KeepaliveLocalMemory;
 use crate::rdma_manager_actor::GetTcpActorRefClient;
 use crate::rdma_manager_actor::RdmaManagerActor;
@@ -905,15 +907,50 @@ impl TcpBackend {
 
 #[async_trait]
 impl RdmaBackend for TcpBackend {
+    type RemoteBackendContext = ActorRef<TcpManagerActor>;
     type TransportInfo = ();
+
+    /// TCP is available when fallback is enabled.
+    fn available() -> bool {
+        hyperactor_config::global::get(crate::config::RDMA_ALLOW_TCP_FALLBACK)
+    }
+
+    fn transport_level(&self) -> RdmaTransportLevel {
+        RdmaTransportLevel::Tcp
+    }
+
+    fn transport_info(&self) -> Option<Self::TransportInfo> {
+        None
+    }
+
+    async fn spawn(cx: &(impl context::Actor + Send + Sync), _config: &RdmaConfig) -> Result<Self> {
+        Ok(TcpBackend(cx.spawn(TcpManagerActor::new())))
+    }
+
+    /// TCP needs no per-buffer registration.
+    async fn register_remote_buffer(
+        &self,
+        _cx: &(impl context::Actor + Send + Sync),
+        _remote_buf_id: usize,
+        _local: KeepaliveLocalMemory,
+    ) -> Result<ActorRef<TcpManagerActor>> {
+        Ok(self.0.bind())
+    }
+
+    async fn release_buffer(
+        &self,
+        _cx: &(impl context::Actor + Send + Sync),
+        _remote_buf_id: usize,
+    ) -> Result<()> {
+        Ok(())
+    }
 
     /// Submit a batch of RDMA operations over TCP.
     ///
-    /// Each operation's remote buffer is resolved to its TCP backend
-    /// context, then executed directly — sending chunked write/read
-    /// messages to the remote [`TcpManagerActor`].
+    /// Each op is executed directly — sending chunked write/read messages
+    /// to the remote [`TcpManagerActor`].
     async fn submit(
-        &mut self,
+        &self,
         cx: &(impl context::Actor + Send + Sync),
         ops: Vec<RdmaOp>,
         timeout: Duration,
@@ -930,13 +967,16 @@ impl RdmaBackend for TcpBackend {
                 anyhow::bail!("tcp submit timed out");
             }
 
-            let (remote_tcp_mgr, remote_buf_id) = op.remote.resolve_tcp()?;
+            let remote_tcp_manager = op
+                .remote
+                .resolve_tcp()
+                .expect("op routed to incompatible backend");
             let tcp_op = TcpOp {
                 op_type: op.op_type,
-                local_memory: op.local,
-                remote_tcp_manager: remote_tcp_mgr,
-                remote_buf_id,
+                remote_buf_id: op.remote.id,
                 remote_size: op.remote.size,
+                local_memory: op.local,
+                remote_tcp_manager,
             };
 
             if parallelism > 1 {
@@ -964,14 +1004,6 @@ impl RdmaBackend for TcpBackend {
         }
 
         Ok(())
-    }
-
-    fn transport_level(&self) -> RdmaTransportLevel {
-        RdmaTransportLevel::Tcp
-    }
-
-    fn transport_info(&self) -> Option<Self::TransportInfo> {
-        None
     }
 }
 
@@ -1453,8 +1485,10 @@ mod tests {
         let envs = setup_tcp_env(64).await?;
 
         for (i, env) in envs.iter().enumerate() {
-            let (tcp_ref, id) = env.rdma_remote_buf.resolve_tcp()?;
-            assert_eq!(id, env.rdma_remote_buf.id, "buf id mismatch for env {i}");
+            let tcp_ref = env
+                .rdma_remote_buf
+                .resolve_tcp()
+                .unwrap_or_else(|| panic!("tcp backend not found for env {i}"));
             let expected: hyperactor::ActorRef<TcpManagerActor> = env.tcp_backend.bind();
             assert_eq!(tcp_ref.actor_addr(), expected.actor_addr());
         }
@@ -1826,8 +1860,8 @@ mod tests {
         // Pair 1: envs[0] -> envs[1], Pair 2: envs[2] -> envs[3].
         let remote_1 = envs[1].rdma_remote_buf.clone();
         let remote_3 = envs[3].rdma_remote_buf.clone();
-        let mut h0 = envs[0].tcp_backend.clone();
-        let mut h2 = envs[2].tcp_backend.clone();
+        let h0 = envs[0].tcp_backend.clone();
+        let h2 = envs[2].tcp_backend.clone();
         let inst_0 = &envs[0].instance;
         let inst_2 = &envs[2].instance;
         let mem_0 = envs[0].local_memory.clone();
@@ -1899,8 +1933,8 @@ mod tests {
         // Pair 1: envs[0] <- envs[1], Pair 2: envs[2] <- envs[3].
         let remote_1 = envs[1].rdma_remote_buf.clone();
         let remote_3 = envs[3].rdma_remote_buf.clone();
-        let mut h0 = envs[0].tcp_backend.clone();
-        let mut h2 = envs[2].tcp_backend.clone();
+        let h0 = envs[0].tcp_backend.clone();
+        let h2 = envs[2].tcp_backend.clone();
         let inst_0 = &envs[0].instance;
         let inst_2 = &envs[2].instance;
         let mem_0 = envs[0].local_memory.clone();
@@ -1976,8 +2010,8 @@ mod tests {
         // Write envs[0] -> envs[1], read envs[2] <- envs[3] concurrently.
         let remote_1 = envs[1].rdma_remote_buf.clone();
         let remote_3 = envs[3].rdma_remote_buf.clone();
-        let mut h0 = envs[0].tcp_backend.clone();
-        let mut h2 = envs[2].tcp_backend.clone();
+        let h0 = envs[0].tcp_backend.clone();
+        let h2 = envs[2].tcp_backend.clone();
         let inst_0 = &envs[0].instance;
         let inst_2 = &envs[2].instance;
         let mem_0 = envs[0].local_memory.clone();
