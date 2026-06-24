@@ -418,7 +418,10 @@ pub(super) unsafe fn register_dmabuf_mr(
 
     // Resolve the base and size of the allocation containing `addr`; the dmabuf
     // handle and MR cover the whole allocation.
-    let mut base: rdmaxcel_sys::CUdeviceptr = 0;
+    // `CUdeviceptr` is an integer on CUDA but a raw pointer (`hipDeviceptr_t`)
+    // on ROCm, so initialize portably with `zeroed` (0 / null); the value is
+    // overwritten by `rdmaxcel_cuMemGetAddressRange` below before it is read.
+    let mut base: rdmaxcel_sys::CUdeviceptr = unsafe { std::mem::zeroed() };
     let mut alloc_size: usize = 0;
     // SAFETY: `rdmaxcel_cuMemGetAddressRange` writes the allocation's base and
     // size into the out-params and touches no other Rust memory; it reports
