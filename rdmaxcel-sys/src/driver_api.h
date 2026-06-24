@@ -43,6 +43,12 @@ CUresult rdmaxcel_cuMemGetHandleForAddressRange(
     CUmemRangeHandleType handleType,
     unsigned long long flags) RDMAXCEL_NOEXCEPT;
 
+// Query the base address and size of the allocation containing `dptr`.
+CUresult rdmaxcel_cuMemGetAddressRange(
+    CUdeviceptr* base,
+    size_t* size,
+    CUdeviceptr dptr) RDMAXCEL_NOEXCEPT;
+
 CUresult rdmaxcel_cuMemGetAllocationGranularity(
     size_t* granularity,
     const CUmemAllocationProp* prop,

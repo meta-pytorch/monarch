@@ -54,10 +54,8 @@ use typeuri::Named;
 use crate::RdmaAction;
 use crate::RdmaManagerActor;
 use crate::ReleaseBufferClient;
-use crate::backend::RdmaRemoteBackendContext;
-use crate::backend::tcp::manager_actor::TcpManagerActor;
+use crate::backend::RdmaRemoteBackends;
 use crate::local_memory::KeepaliveLocalMemory;
-use crate::nic::NicRemoteBackendContext;
 
 /// Lightweight handle representing a registered RDMA buffer.
 ///
@@ -69,7 +67,7 @@ pub struct RdmaRemoteBuffer {
     pub id: usize,
     pub size: usize,
     pub owner: ActorRef<RdmaManagerActor>,
-    pub backends: Vec<RdmaRemoteBackendContext>,
+    pub(crate) backends: RdmaRemoteBackends,
 }
 wirevalue::register_type!(RdmaRemoteBuffer);
 
@@ -105,25 +103,6 @@ impl RdmaRemoteBuffer {
         tracing::debug!("[buffer] dropping buffer id={}", self.id);
         self.owner.release_buffer(client, self.id).await?;
         Ok(())
-    }
-
-    /// NIC backend context for this buffer, if any.
-    pub fn resolve_nic(&self) -> Option<NicRemoteBackendContext> {
-        self.backends.iter().find_map(|b| match b {
-            RdmaRemoteBackendContext::Nic(ctx) => Some(ctx.clone()),
-            _ => None,
-        })
-    }
-
-    /// Extract the TCP backend context from this buffer.
-    pub fn resolve_tcp(&self) -> Result<(ActorRef<TcpManagerActor>, usize), anyhow::Error> {
-        self.backends
-            .iter()
-            .find_map(|b| match b {
-                RdmaRemoteBackendContext::Tcp(tcp_ref) => Some((tcp_ref.clone(), self.id)),
-                _ => None,
-            })
-            .ok_or_else(|| anyhow::anyhow!("tcp backend not found for buffer: {:?}", self))
     }
 }
 

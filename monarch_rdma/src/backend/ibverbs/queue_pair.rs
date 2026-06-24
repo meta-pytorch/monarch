@@ -46,10 +46,12 @@ use typeuri::Named;
 use super::IbvBuffer;
 use super::IbvOp;
 use super::domain::IbvDomain;
+use super::domain::IbvDomainImpl;
+use super::domain::IbvDomainKeepalive;
 use super::manager_actor::CreatePeerQueuePair;
+use super::memory_region::IbvMemoryRegionView;
 use super::primitives::Gid;
 use super::primitives::IbvConfig;
-use super::primitives::IbvMemoryRegionView;
 use super::primitives::IbvOperation;
 use super::primitives::IbvQpInfo;
 use super::primitives::IbvWc;
@@ -173,7 +175,7 @@ pub struct IbvQueuePair {
     // Keepalive for the domain whose `context`/`pd` this QP was built
     // against, so it outlives the QP regardless of other owners (the
     // manager, registered MRs, etc.). Never read directly.
-    _domain: Arc<IbvDomain>,
+    _domain: Arc<dyn IbvDomainKeepalive>,
 }
 
 impl Drop for IbvQueuePair {
@@ -260,7 +262,10 @@ impl IbvQueuePair {
     /// # Errors
     ///
     /// Returns errors if CQ or QP creation fails.
-    pub fn new(domain: Arc<IbvDomain>, config: IbvConfig) -> Result<Self, anyhow::Error> {
+    pub fn new<I: IbvDomainImpl>(
+        domain: Arc<IbvDomain<I>>,
+        config: IbvConfig,
+    ) -> Result<Self, anyhow::Error> {
         tracing::debug!("creating an IbvQueuePair from config {}", config);
         let context = domain.context.as_ptr();
         let pd = domain.as_ptr();
@@ -1413,7 +1418,6 @@ impl<M: Manager, Qp: QueuePair> QueuePairActor<M, Qp> {
         } = pending;
 
         let local_buf = IbvBuffer {
-            mr_id: mrv.id,
             lkey: mrv.lkey,
             rkey: mrv.rkey,
             addr: mrv.rdma_addr,
@@ -1728,6 +1732,7 @@ mod tests {
     use crate::backend::ibverbs::device::list_all_devices;
     use crate::backend::ibverbs::device_selection::resolve_target;
     use crate::backend::ibverbs::domain::IbvDomain;
+    use crate::backend::ibverbs::efa_domain::EfaDomain;
     use crate::backend::ibverbs::mlx_device::MlxDevice;
     use crate::backend::ibverbs::primitives::IbvConfig;
 
@@ -2354,25 +2359,26 @@ mod tests {
     // =================================================================
 
     use crate::backend::ibverbs::device::IbvContext;
+    use crate::backend::ibverbs::memory_region::IbvMemoryRegion;
     use crate::backend::ibverbs::primitives::IbvDeviceInfo;
-    use crate::backend::ibverbs::primitives::IbvMemoryRegion;
     use crate::local_memory::Keepalive;
     use crate::local_memory::KeepaliveLocalMemory;
 
     /// A throwaway [`IbvDomain`] with null `context`/`pd`, used as the
     /// `_domain` keepalive of [`fake_mrv`]'s region; its `Drop` deallocs
     /// nothing (null `pd`).
-    fn null_domain() -> Arc<IbvDomain> {
+    fn null_domain() -> Arc<IbvDomain<EfaDomain>> {
         // SAFETY: a null `ibv_context*` is explicitly allowed — `IbvContext`'s
         // `Drop` is a no-op for null, so nothing is ever closed.
         let context = Arc::new(unsafe { IbvContext::new(std::ptr::null_mut()) });
         // SAFETY: a null `pd` is allowed — `IbvDomain`'s `Drop` skips
         // `ibv_dealloc_pd` for null, so nothing is ever freed.
         Arc::new(unsafe {
-            IbvDomain::from_parts(
+            IbvDomain::for_test(
                 context,
                 std::ptr::null_mut(),
                 IbvDeviceInfo::for_test_named("null_domain"),
+                EfaDomain,
             )
         })
     }
@@ -2396,16 +2402,15 @@ mod tests {
         KeepaliveLocalMemory::new(Arc::new(FakeKeepalive { addr, size }))
     }
 
-    fn fake_mrv(id: usize, addr: usize, size: usize) -> IbvMemoryRegionView {
+    fn fake_mrv(addr: usize, size: usize) -> IbvMemoryRegionView {
         IbvMemoryRegionView::new(
-            id,
             addr,
             addr,
             size,
             0x1234,
             0x5678,
             "dev0".to_string(),
-            Arc::new(IbvMemoryRegion::Direct {
+            Arc::new(IbvMemoryRegion {
                 mr: std::ptr::null_mut(),
                 _domain: null_domain(),
             }),
@@ -2431,7 +2436,6 @@ mod tests {
             op_type,
             local_memory: fake_local_memory(addr, size),
             remote_buffer: IbvBuffer {
-                mr_id: 1,
                 lkey: 0,
                 rkey: 0,
                 addr: 0x4000_0000,
@@ -2572,7 +2576,7 @@ mod tests {
         let items = vec![(
             7usize,
             make_op(RdmaOpType::WriteFromLocal, 0x1000, 4096),
-            fake_mrv(1, 0x1000, 4096),
+            fake_mrv(0x1000, 4096),
         )];
         let mut rx = submit_ops(&harness, &actor, items)?;
 
@@ -2605,7 +2609,7 @@ mod tests {
         let items = vec![(
             11usize,
             make_op(RdmaOpType::WriteFromLocal, 0x1000, 3 * MAX_RDMA_MSG_SIZE),
-            fake_mrv(1, 0x1000, 3 * MAX_RDMA_MSG_SIZE),
+            fake_mrv(0x1000, 3 * MAX_RDMA_MSG_SIZE),
         )];
         let mut rx = submit_ops(&harness, &actor, items)?;
 
@@ -2641,7 +2645,7 @@ mod tests {
         let items = vec![(
             42usize,
             make_op(RdmaOpType::WriteFromLocal, 0x1000, 3 * MAX_RDMA_MSG_SIZE),
-            fake_mrv(1, 0x1000, 3 * MAX_RDMA_MSG_SIZE),
+            fake_mrv(0x1000, 3 * MAX_RDMA_MSG_SIZE),
         )];
         let mut rx = submit_ops(&harness, &actor, items)?;
 
@@ -2689,12 +2693,12 @@ mod tests {
             (
                 0usize,
                 make_op(RdmaOpType::WriteFromLocal, 0x1000, 3 * MAX_RDMA_MSG_SIZE),
-                fake_mrv(1, 0x1000, 3 * MAX_RDMA_MSG_SIZE),
+                fake_mrv(0x1000, 3 * MAX_RDMA_MSG_SIZE),
             ),
             (
                 1usize,
                 make_op(RdmaOpType::WriteFromLocal, 0x2000, 4096),
-                fake_mrv(2, 0x2000, 4096),
+                fake_mrv(0x2000, 4096),
             ),
         ];
         let mut rx = submit_ops(&harness, &actor, items)?;
@@ -2739,7 +2743,7 @@ mod tests {
                 (
                     i,
                     make_op(RdmaOpType::ReadIntoLocal, 0x1000 + i * 0x1000, 4096),
-                    fake_mrv(i + 1, 0x1000 + i * 0x1000, 4096),
+                    fake_mrv(0x1000 + i * 0x1000, 4096),
                 )
             })
             .collect();
@@ -2777,7 +2781,7 @@ mod tests {
                 (
                     i,
                     make_op(RdmaOpType::WriteFromLocal, 0x1000 + i * 0x1000, 4096),
-                    fake_mrv(i + 1, 0x1000 + i * 0x1000, 4096),
+                    fake_mrv(0x1000 + i * 0x1000, 4096),
                 )
             })
             .collect();
@@ -2824,27 +2828,27 @@ mod tests {
             (
                 0usize,
                 make_op(RdmaOpType::ReadIntoLocal, 0x1000, 4096),
-                fake_mrv(1, 0x1000, 4096),
+                fake_mrv(0x1000, 4096),
             ),
             (
                 1usize,
                 make_op(RdmaOpType::WriteFromLocal, 0x2000, 4096),
-                fake_mrv(2, 0x2000, 4096),
+                fake_mrv(0x2000, 4096),
             ),
             (
                 2usize,
                 make_op(RdmaOpType::WriteFromLocal, 0x3000, 4096),
-                fake_mrv(3, 0x3000, 4096),
+                fake_mrv(0x3000, 4096),
             ),
             (
                 3usize,
                 make_op(RdmaOpType::WriteFromLocal, 0x4000, 4096),
-                fake_mrv(4, 0x4000, 4096),
+                fake_mrv(0x4000, 4096),
             ),
             (
                 4usize,
                 make_op(RdmaOpType::ReadIntoLocal, 0x5000, 2 * MAX_RDMA_MSG_SIZE),
-                fake_mrv(5, 0x5000, 2 * MAX_RDMA_MSG_SIZE),
+                fake_mrv(0x5000, 2 * MAX_RDMA_MSG_SIZE),
             ),
         ];
         let mut rx = submit_ops(&harness, &actor, items)?;
@@ -2897,12 +2901,12 @@ mod tests {
             (
                 10usize,
                 make_op(RdmaOpType::WriteFromLocal, 0x1000, 4096),
-                fake_mrv(1, 0x1000, 4096),
+                fake_mrv(0x1000, 4096),
             ),
             (
                 11usize,
                 make_op(RdmaOpType::WriteFromLocal, 0x2000, 4096),
-                fake_mrv(2, 0x2000, 4096),
+                fake_mrv(0x2000, 4096),
             ),
         ];
         let mut rx_a = submit_ops(&harness, &actor, batch_a)?;
@@ -2913,12 +2917,12 @@ mod tests {
             (
                 20usize,
                 make_op(RdmaOpType::WriteFromLocal, 0x3000, 4096),
-                fake_mrv(3, 0x3000, 4096),
+                fake_mrv(0x3000, 4096),
             ),
             (
                 21usize,
                 make_op(RdmaOpType::WriteFromLocal, 0x4000, 4096),
-                fake_mrv(4, 0x4000, 4096),
+                fake_mrv(0x4000, 4096),
             ),
         ];
         let mut rx_b = submit_ops(&harness, &actor, batch_b)?;
@@ -2951,12 +2955,12 @@ mod tests {
             (
                 0usize,
                 make_op(RdmaOpType::WriteFromLocal, 0x1000, 2 * MAX_RDMA_MSG_SIZE),
-                fake_mrv(1, 0x1000, 2 * MAX_RDMA_MSG_SIZE),
+                fake_mrv(0x1000, 2 * MAX_RDMA_MSG_SIZE),
             ),
             (
                 1usize,
                 make_op(RdmaOpType::WriteFromLocal, 0x2000, 4096),
-                fake_mrv(2, 0x2000, 4096),
+                fake_mrv(0x2000, 4096),
             ),
         ];
         let mut rx = submit_ops(&harness, &actor, items)?;
@@ -2989,7 +2993,7 @@ mod tests {
         let items = vec![(
             0usize,
             make_op(RdmaOpType::WriteFromLocal, 0x1000, 4096),
-            fake_mrv(1, 0x1000, 4096),
+            fake_mrv(0x1000, 4096),
         )];
         let _rx = submit_ops(&harness, &actor, items)?;
         let _ = recv_posted(&mut posted_rx).await;
@@ -3019,7 +3023,7 @@ mod tests {
         let items = vec![(
             0usize,
             make_op(RdmaOpType::WriteFromLocal, 0x1000, 4096),
-            fake_mrv(1, 0x1000, 4096),
+            fake_mrv(0x1000, 4096),
         )];
         let _rx = submit_ops(&harness, &actor, items)?;
 

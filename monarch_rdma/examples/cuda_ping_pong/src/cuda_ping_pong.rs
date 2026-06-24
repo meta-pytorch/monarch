@@ -535,14 +535,14 @@ impl Handler<PerformPingPong> for CudaRdmaActor {
         }
 
         // Extract IbvManagerActor refs and IbvBuffers from backends.
-        let (local_ibv_manager, local_ibv) = local_buffer
-            .resolve_nic()
-            .and_then(|ctx| ctx.into_mlx().ok())
+        let local_ctx = local_buffer
+            .resolve_mlx()
             .ok_or_else(|| anyhow::anyhow!("Mellanox backend not found for local buffer"))?;
-        let (remote_ibv_manager, remote_ibv) = remote_buffer
-            .resolve_nic()
-            .and_then(|ctx| ctx.into_mlx().ok())
+        let (local_ibv_manager, local_ibv) = (local_ctx.manager, local_ctx.buffer);
+        let remote_ctx = remote_buffer
+            .resolve_mlx()
             .ok_or_else(|| anyhow::anyhow!("Mellanox backend not found for remote buffer"))?;
+        let (remote_ibv_manager, remote_ibv) = (remote_ctx.manager, remote_ctx.buffer);
 
         let local_ibv_manager_handle = local_ibv_manager
             .downcast_handle(cx)
