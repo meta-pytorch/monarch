@@ -48,9 +48,12 @@ use crate::id::Label;
 use crate::id::PortId;
 use crate::id::ProcId;
 use crate::id::Uid;
+use crate::introspect::IntrospectMessage;
 use crate::parse;
 use crate::port::ControlPort;
 use crate::port::Port;
+use crate::proc::StatusMessage;
+use crate::ref_::PortRef;
 
 /// A network location.
 ///
@@ -359,6 +362,16 @@ impl ActorAddr {
             id::PortId::new(self.id.clone(), port),
             self.location.clone(),
         )
+    }
+
+    /// The actor's introspection control port.
+    pub fn introspect_port(&self) -> PortRef<IntrospectMessage> {
+        PortRef::attest(self.port_addr(Port::control(ControlPort::Introspect)))
+    }
+
+    /// The actor's lifecycle status control port.
+    pub fn status_port(&self) -> PortRef<StatusMessage> {
+        PortRef::attest(self.port_addr(Port::control(ControlPort::Status)))
     }
 
     /// Create an ActorAddr for a root actor on a proc.

@@ -13,12 +13,14 @@ async-trait = "0.1.86"
 backoff = { version = "0.4.0", features = ["futures", "tokio"] }
 bytes = { version = "1.11.1", features = ["serde"] }
 dashmap = { version = "6.2.1", features = ["rayon", "serde"] }
-enum-as-inner = "0.6.1"
 erased-serde = "0.4.10"
+futures = { version = "0.3.31", features = ["async-await", "compat"] }
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
 hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }
 inventory = "0.3.24"
+libc = "0.2.186"
+paste = "1.0.14"
 rand = "0.10.1"
 rdmaxcel-sys = { path = "../rdmaxcel-sys" }
 regex = "1.12.4"

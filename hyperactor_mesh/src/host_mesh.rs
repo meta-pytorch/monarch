@@ -189,36 +189,6 @@ impl HostRef {
     fn service_proc(&self) -> ProcAddr {
         ResourceId::proc_addr_from_name(self.0.clone(), SERVICE_PROC_NAME)
     }
-
-    /// Request an orderly teardown of this host and all procs it spawned:
-    /// send `ShutdownHost` to the host's agent and wait for its single direct
-    /// rank ack. Used by the best-effort Drop-cleanup path; the mesh-wide path
-    /// is `HostMeshRef::cast_shutdown`.
-    pub(crate) async fn shutdown(
-        &self,
-        cx: &impl hyperactor::context::Actor,
-    ) -> anyhow::Result<()> {
-        let agent = self.mesh_agent();
-        let terminate_timeout =
-            hyperactor_config::global::get(crate::bootstrap::MESH_TERMINATE_TIMEOUT);
-        let max_in_flight =
-            hyperactor_config::global::get(crate::bootstrap::MESH_TERMINATE_CONCURRENCY);
-        let (ack, mut rx) = cx.mailbox().open_port::<usize>();
-
-        agent
-            .shutdown_host(
-                cx,
-                terminate_timeout,
-                max_in_flight.clamp(1, 256),
-                resource::Rank::new(0),
-                ack.bind(),
-            )
-            .await?;
-
-        rx.recv().await.map_err(anyhow::Error::from)?;
-
-        Ok(())
-    }
 }
 
 impl<'de> Deserialize<'de> for HostRef {
@@ -268,6 +238,11 @@ pub enum ConfigPushFailure {
     /// post). The error is preserved for triage.
     #[error("send failed: {0}")]
     SendFailed(#[source] Box<hyperactor::mailbox::MailboxSenderError>),
+
+    /// The collective cast failed before the caller observed the
+    /// acknowledgement barrier.
+    #[error("cast failed: {0}")]
+    CastFailed(String),
 
     /// The awaited reply did not arrive within
     /// `MESH_ATTACH_CONFIG_TIMEOUT`. With request-bounce suppression
@@ -320,47 +295,6 @@ impl std::error::Error for ConfigPushError {
     }
 }
 
-/// Push the propagatable client config to a single host, awaiting
-/// the host's installation acknowledgement.
-///
-/// HM-3 mechanism: the outbound request envelope is constructed
-/// manually (rather than via the `RefClient`-derived
-/// `set_client_config` shortcut) so the per-call
-/// `return_undeliverable(false)` setter can suppress the request
-/// bounce. With suppression, the only failure surface is the awaited
-/// reply path — exactly what `push_config()` wants in-band.
-async fn push_config_to_host(
-    cx: &impl context::Actor,
-    host: &HostRef,
-    attrs: hyperactor_config::attrs::Attrs,
-    per_host_timeout: Duration,
-) -> Result<(), ConfigPushFailure> {
-    use crate::host_mesh::host_agent::SetClientConfig;
-
-    let (reply_handle, mut reply_receiver) = hyperactor::mailbox::open_port::<()>(cx);
-    let reply_ref = reply_handle.bind();
-    let msg = SetClientConfig {
-        attrs,
-        done: reply_ref,
-    };
-
-    let mut request_port = host.mesh_agent().port::<SetClientConfig>();
-    // HM-3: bypass the default `return_undeliverable: true` from
-    // `PortRef::attest`. Without this, a transient session failure
-    // (e.g. "never connected") would bounce the request back through
-    // the caller's `Undeliverable<MessageEnvelope>` handler — the
-    // exact bypass HM-3 prohibits.
-    request_port.return_undeliverable(false);
-
-    request_port.post(cx, msg);
-
-    match tokio::time::timeout(per_host_timeout, reply_receiver.recv()).await {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(_recv_err)) => Err(ConfigPushFailure::ReplyChannelClosed),
-        Err(_elapsed) => Err(ConfigPushFailure::ReplyTimedOut),
-    }
-}
-
 /// An owned mesh of hosts.
 ///
 /// # Lifecycle
@@ -374,9 +308,8 @@ async fn push_config_to_host(
 pub struct HostMesh {
     id: HostMeshId,
     extent: Extent,
-    /// The hosts this `HostMesh` owns and is responsible for tearing
-    /// down on shutdown or drop.
-    owned_hosts: Vec<HostRef>,
+    /// Whether this `HostMesh` should best-effort shut down hosts on Drop.
+    cleanup_on_drop: bool,
     current_ref: HostMeshRef,
 }
 
@@ -617,17 +550,13 @@ impl HostMesh {
     /// responsibility for those hosts (i.e., will shut them down on
     /// Drop).
     pub fn take(mesh: HostMeshRef) -> Self {
-        let region = mesh.region().clone();
-        let hosts: Vec<HostRef> = mesh.values().collect();
-
-        let current_ref = HostMeshRef::new(mesh.id.clone(), region.clone(), hosts.clone())
-            .expect("region/hosts cardinality must match");
-
+        let id = mesh.id.clone();
+        let extent = mesh.region.extent().clone();
         let result = Self {
-            id: mesh.id,
-            extent: region.extent().clone(),
-            owned_hosts: hosts,
-            current_ref,
+            id,
+            extent,
+            cleanup_on_drop: true,
+            current_ref: mesh,
         };
         result.notify_created();
         result
@@ -745,7 +674,7 @@ impl HostMesh {
 
         // Defuse the Drop impl so it doesn't send ShutdownHost to hosts
         // we intentionally kept alive.
-        self.owned_hosts.clear();
+        self.cleanup_on_drop = false;
 
         Ok(())
     }
@@ -804,9 +733,10 @@ impl Drop for HostMeshShutdownGuard {
     /// When a `HostMesh` is dropped, it attempts to shut down all
     /// hosts it owns:
     /// - If a Tokio runtime is available, we spawn an ephemeral
-    ///   `Proc` + `Instance` and send `ShutdownHost` messages to each
-    ///   host. This ensures that the embedded `BootstrapProcManager`s
-    ///   are dropped, and all child procs they spawned are killed.
+    ///   `Proc` + `Instance` and best-effort cast `ShutdownHost`
+    ///   through the owned hosts. This ensures that the embedded
+    ///   `BootstrapProcManager`s are dropped, and all child procs they
+    ///   spawned are killed when the cast succeeds.
     /// - If no runtime is available, we cannot perform async cleanup
     ///   here; in that case we log a warning and rely on kernel-level
     ///   PDEATHSIG or the individual `BootstrapProcManager`'s `Drop`
@@ -822,16 +752,27 @@ impl Drop for HostMeshShutdownGuard {
             host_mesh = %self.0.id,
             status = "Dropping",
         );
-        // Snapshot the owned hosts we're responsible for.
-        let hosts: Vec<HostRef> = self.0.owned_hosts.clone();
+        let cleanup_on_drop = self.0.cleanup_on_drop;
+        let host_count = self.0.current_ref.hosts().len();
 
         // Best-effort only when a Tokio runtime is available.
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        if !cleanup_on_drop {
+            tracing::debug!(
+                host_mesh = %self.0.id,
+                "HostMesh drop cleanup skipped because host cleanup ownership was released"
+            );
+        } else if host_count == 0 {
+            tracing::debug!(
+                host_mesh = %self.0.id,
+                "HostMesh drop cleanup skipped because no owned hosts remain"
+            );
+        } else if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let mesh_id = self.0.id.clone();
+            let current_ref = self.0.current_ref.clone();
             let span = tracing::info_span!(
                 "hostmesh_drop_cleanup",
                 host_mesh = %mesh_id,
-                hosts = hosts.len(),
+                hosts = host_count,
             );
 
             handle.spawn(
@@ -851,26 +792,17 @@ impl Drop for HostMeshShutdownGuard {
                         }
                         Ok(proc) => {
                             let client = proc.client("drop");
-                            let mut attempted = 0usize;
-                            let mut ok = 0usize;
-                            let mut err = 0usize;
-
-                            for host in hosts {
-                                attempted += 1;
-                                tracing::debug!(host = %host, "drop-cleanup: shutdown start");
-                                match host.shutdown(&client).await {
-                                    Ok(()) => {
-                                        ok += 1;
-                                        tracing::debug!(host = %host, "drop-cleanup: shutdown ok");
-                                    }
-                                    Err(e) => {
-                                        err += 1;
-                                        tracing::warn!(host = %host, error = %e, "drop-cleanup: shutdown failed");
-                                    }
-                                }
+                            if let Err(e) = current_ref.cast_shutdown(&client).await {
+                                tracing::warn!(
+                                    error = %e,
+                                    "drop-cleanup: failed to cast ShutdownHost"
+                                );
+                            } else {
+                                tracing::info!(
+                                    hosts = host_count,
+                                    "hostmesh drop-cleanup shutdown barrier complete"
+                                );
                             }
-
-                            tracing::info!(attempted, ok, err, "hostmesh drop-cleanup summary");
                         }
                     }
                 }
@@ -881,7 +813,7 @@ impl Drop for HostMeshShutdownGuard {
             // last-resort safety net.
             tracing::warn!(
                 host_mesh = %self.0.id,
-                hosts = hosts.len(),
+                hosts = host_count,
                 "HostMesh dropped without a Tokio runtime; skipping \
                  best-effort shutdown. This indicates that .shutdown() \
                  on this mesh has not been called before program exit \
@@ -1230,17 +1162,17 @@ impl HostMeshRef {
             .collect()
     }
 
-    /// Push client config to all host agents in this mesh, in parallel.
+    /// Push client config to all host agents in this mesh via the HostAgent
+    /// actor mesh.
     ///
     /// Each host installs the attrs as `Source::ClientOverride`.
     /// Idempotent: sending the same attrs twice replaces the layer.
     ///
-    /// Implements HM-1, HM-2, HM-3, and HM-4 (see module docs):
-    /// returns `Err(ConfigPushError)` if any host's push didn't
-    /// succeed, naming each failing host individually. The outbound
-    /// request envelope is sent with `return_undeliverable: false` to
-    /// keep failure in-band on the awaited reply (HM-3 mechanism);
-    /// per-host wait is bounded by `MESH_ATTACH_CONFIG_TIMEOUT`.
+    /// Implements HM-1, HM-2, HM-3, and HM-4 (see module docs): returns
+    /// `Err(ConfigPushError)` if the acknowledgement barrier does not complete.
+    /// Each host acks its own ordinal via a reduced status barrier, so a
+    /// timeout names exactly the hosts that did not install. Only a synchronous
+    /// failure to initiate the cast at all is reported mesh-wide.
     pub(crate) async fn push_config(
         &self,
         cx: &impl context::Actor,
@@ -1248,44 +1180,91 @@ impl HostMeshRef {
     ) -> Result<(), ConfigPushError> {
         let timeout = hyperactor_config::global::get(crate::config::MESH_ATTACH_CONFIG_TIMEOUT);
         let hosts: Vec<_> = self.values().collect();
+        let num_hosts = hosts.len();
 
-        let per_host = hosts.into_iter().map(|host| {
-            let attrs = attrs.clone();
-            async move {
-                (
-                    host.clone(),
-                    push_config_to_host(cx, &host, attrs, timeout).await,
-                )
-            }
-        });
+        if num_hosts == 0 {
+            tracing::info!(success = 0, "push_config complete");
+            return Ok(());
+        }
 
-        let results = futures::future::join_all(per_host).await;
-
-        let mut failures = Vec::new();
-        let mut success = 0_usize;
-        for (host, outcome) in results {
-            match outcome {
-                Ok(()) => {
-                    success += 1;
-                    tracing::debug!(host = %host, "host agent config installed");
-                }
-                Err(failure) => {
-                    tracing::warn!(host = %host, error = %failure, "config push failed");
-                    failures.push((host, failure));
-                }
+        fn failures_for_hosts(
+            hosts: &[HostRef],
+            mut make_failure: impl FnMut() -> ConfigPushFailure,
+        ) -> ConfigPushError {
+            ConfigPushError {
+                failures: hosts
+                    .iter()
+                    .cloned()
+                    .map(|host| (host, make_failure()))
+                    .collect(),
             }
         }
 
-        if failures.is_empty() {
-            tracing::info!(success, "push_config complete");
-            Ok(())
-        } else {
-            tracing::info!(
-                success,
-                failed = failures.len(),
-                "push_config complete with failures",
-            );
-            Err(ConfigPushError { failures })
+        let region = self.region.clone();
+
+        // Each host posts a single-rank `Running` overlay at its ordinal once
+        // it has installed the config; reduce them into a StatusMesh barrier so
+        // a timeout names exactly which hosts (if any) never acknowledged.
+        let (reply, rx) = cx.mailbox().open_accum_port_opts(
+            crate::StatusMesh::from_single(region.clone(), Status::NotExist),
+            StreamingReducerOpts {
+                max_update_interval: Some(std::time::Duration::from_millis(50)),
+                initial_update_interval: None,
+            },
+        );
+        let mut reply = reply.bind();
+        reply.return_undeliverable(false);
+
+        // HM-3: an unreachable host does not bounce the outbound request into
+        // the caller's `Undeliverable<MessageEnvelope>` handler — it surfaces as
+        // a channel-level `BrokenLink` (logged at debug), and the missing ack is
+        // detected by the barrier timeout below. `return_undeliverable(false)`
+        // above covers the ack direction. Covered by
+        // `test_attach_fails_closed_on_unreachable_host`.
+        if let Err(err) = self.host_agent_mesh.cast(
+            cx,
+            host_agent::SetClientConfig {
+                attrs,
+                rank: Default::default(),
+                reply,
+            },
+        ) {
+            let error = err.to_string();
+
+            tracing::warn!(error = %error, "config push cast failed");
+
+            // The collective cast could not be initiated at all (a synchronous
+            // send failure, before any host was contacted) — genuinely
+            // mesh-wide, so report every host.
+            return Err(failures_for_hosts(&hosts, || {
+                ConfigPushFailure::CastFailed(error.clone())
+            }));
+        }
+
+        match GetRankStatus::wait(rx, num_hosts, timeout, region).await {
+            Ok(_) => {
+                tracing::info!(success = num_hosts, "push_config complete");
+                Ok(())
+            }
+            Err(partial) => {
+                // Ranks still at `NotExist` never acknowledged within the
+                // timeout (or the reply channel closed). Report exactly those
+                // hosts, preserving per-host identity (HM-4).
+                let failures: Vec<(HostRef, ConfigPushFailure)> = partial
+                    .values()
+                    .enumerate()
+                    .filter(|(_, status)| status.is_not_exist())
+                    .map(|(rank, _)| (hosts[rank].clone(), ConfigPushFailure::ReplyTimedOut))
+                    .collect();
+
+                tracing::info!(
+                    success = num_hosts - failures.len(),
+                    failed = failures.len(),
+                    "push_config complete with failures"
+                );
+
+                Err(ConfigPushError { failures })
+            }
         }
     }
 

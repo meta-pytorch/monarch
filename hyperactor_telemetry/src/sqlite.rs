@@ -11,11 +11,11 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::sync::Mutex;
 
 use anyhow::Result;
 use anyhow::anyhow;
-use lazy_static::lazy_static;
 use rusqlite::Connection;
 use rusqlite::functions::FunctionFlags;
 use serde::Serialize;
@@ -30,12 +30,10 @@ use tracing_subscriber::reload;
 
 pub type SqliteReloadHandle = reload::Handle<Option<SqliteLayer>, Registry>;
 
-lazy_static! {
-    // Reload handle allows us to include a no-op layer during init, but load
-    // the layer dynamically during tests.
-    static ref RELOAD_HANDLE: Mutex<Option<SqliteReloadHandle>> =
-        Mutex::new(None);
-}
+// Reload handle allows us to include a no-op layer during init, but load
+// the layer dynamically during tests.
+static RELOAD_HANDLE: Mutex<Option<SqliteReloadHandle>> = Mutex::new(None);
+
 pub trait TableDef {
     fn name(&self) -> &'static str;
     fn columns(&self) -> &'static [&'static str];
@@ -118,8 +116,8 @@ impl TableName {
     }
 }
 
-lazy_static! {
-    static ref ACTOR_LIFECYCLE: Table = (
+static ACTOR_LIFECYCLE: LazyLock<Table> = LazyLock::new(|| {
+    (
         TableName::ActorLifecycle.as_str(),
         [
             "actor_id",
@@ -131,10 +129,13 @@ lazy_static! {
             "line",
             "file",
         ]
-        .as_slice()
+        .as_slice(),
     )
-        .into();
-    static ref MESSAGES: Table = (
+        .into()
+});
+
+static MESSAGES: LazyLock<Table> = LazyLock::new(|| {
+    (
         TableName::Messages.as_str(),
         [
             "span_id",
@@ -146,10 +147,13 @@ lazy_static! {
             "line",
             "file",
         ]
-        .as_slice()
+        .as_slice(),
     )
-        .into();
-    static ref LOG_EVENTS: Table = (
+        .into()
+});
+
+static LOG_EVENTS: LazyLock<Table> = LazyLock::new(|| {
+    (
         TableName::LogEvents.as_str(),
         [
             "span_id",
@@ -162,15 +166,18 @@ lazy_static! {
             "file",
             "module_path",
         ]
-        .as_slice()
+        .as_slice(),
     )
-        .into();
-    pub static ref ALL_TABLES: Vec<Table> = vec![
+        .into()
+});
+
+pub static ALL_TABLES: LazyLock<Vec<Table>> = LazyLock::new(|| {
+    vec![
         ACTOR_LIFECYCLE.clone(),
         MESSAGES.clone(),
-        LOG_EVENTS.clone()
-    ];
-}
+        LOG_EVENTS.clone(),
+    ]
+});
 
 pub struct SqliteLayer {
     conn: Arc<Mutex<Connection>>,

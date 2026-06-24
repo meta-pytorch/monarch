@@ -1445,17 +1445,35 @@ impl Handler<resource::StreamState<ProcState>> for HostAgent {
 /// is installed. The fatal-on-failure / best-effort policy is the
 /// caller's contract, not this message's; for the canonical
 /// attach-time contract see the HM-* invariants in `host_mesh.rs`.
-#[derive(Debug, Named, Handler, RefClient, HandleClient, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Named,
+    Handler,
+    RefClient,
+    HandleClient,
+    Serialize,
+    Deserialize
+)]
 pub struct SetClientConfig {
     pub attrs: Attrs,
-    #[reply]
-    pub done: PortRef<()>,
+    /// This host's ordinal within the config-push cast region, stamped by the
+    /// cast layer. Used to position this host's install ack overlay.
+    pub rank: resource::Rank,
+    /// Streaming install ack. Each host posts a single-rank overlay at its
+    /// ordinal once it has installed the config; the caller reduces these into
+    /// a `StatusMesh` barrier and can name exactly which hosts (if any) never
+    /// acknowledged (HM-4). `StatusMesh` is used here only as a per-rank
+    /// presence/ack barrier — the status value itself is not meaningful (see
+    /// the handler).
+    pub reply: PortRef<crate::StatusOverlay>,
 }
 wirevalue::register_type!(SetClientConfig);
 
 #[async_trait]
 impl Handler<SetClientConfig> for HostAgent {
     async fn handle(&mut self, cx: &Context<Self>, msg: SetClientConfig) -> anyhow::Result<()> {
+        let rank = msg.rank.0.expect("rank should be stamped before delivery");
         // Use `set` (not `create_or_merge`) because `push_config` always
         // sends a complete `propagatable_attrs()` snapshot. Replacing the
         // layer wholesale is intentional and idempotent.
@@ -1464,7 +1482,21 @@ impl Handler<SetClientConfig> for HostAgent {
             msg.attrs,
         );
         tracing::debug!("installed client config override on host agent");
-        msg.done.post(cx, ());
+        // Ack as a single-rank overlay at this host's ordinal. `StatusMesh` is
+        // reused here purely as a per-rank presence/ack barrier, not as a
+        // lifecycle signal: there is no "config installed" status, so we pick
+        // `Running` only because the barrier just needs any value distinct from
+        // the `NotExist` seed to mark this host as having acknowledged. A
+        // purpose-built `ValueMesh<2-state>` would model this more honestly;
+        // this reuses the already-registered `StatusMesh` reducer instead.
+        let installed_overlay = crate::StatusOverlay::try_from_runs(vec![(
+            rank..(rank + 1),
+            resource::Status::Running,
+        )])
+        .expect("valid single-run overlay");
+
+        msg.reply.post(cx, installed_overlay);
+
         Ok(())
     }
 }
@@ -2032,10 +2064,7 @@ mod tests {
             .proc_addr()
             .actor_addr(HOST_MESH_AGENT_ACTOR_NAME);
         let agent_id: ActorAddr = agent_ref;
-        let port = PortRef::<IntrospectMessage>::attest_control_port(
-            &agent_id,
-            hyperactor::ControlPort::Introspect,
-        );
+        let port = agent_id.introspect_port();
 
         // Poll until we see non-zero watermark (evidence of queue
         // traffic since startup).

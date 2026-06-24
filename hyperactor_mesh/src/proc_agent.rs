@@ -1302,10 +1302,7 @@ mod tests {
         let client = client_proc.client("client");
 
         let agent_id: ActorAddr = proc.proc_addr().actor_addr(PROC_AGENT_ACTOR_NAME);
-        let port = PortRef::<IntrospectMessage>::attest_control_port(
-            &agent_id,
-            hyperactor::ControlPort::Introspect,
-        );
+        let port = agent_id.introspect_port();
 
         // Helper: send QueryChild(Proc) and return the payload with a
         // timeout so a misrouted reply fails fast rather than hanging.
@@ -1410,10 +1407,7 @@ mod tests {
         let client = client_proc.client("client");
 
         let agent_id: ActorAddr = proc.proc_addr().actor_addr(PROC_AGENT_ACTOR_NAME);
-        let port = PortRef::<IntrospectMessage>::attest_control_port(
-            &agent_id,
-            hyperactor::ControlPort::Introspect,
-        );
+        let port = agent_id.introspect_port();
 
         // Concurrent query task: send QueryChild(Proc) every 10ms.
         let query_client_proc =
@@ -1725,10 +1719,7 @@ mod tests {
         // QueryChild(Proc) — same aggregation logic as mesh-admin
         // resolution.
         let agent_id: ActorAddr = proc.proc_addr().actor_addr(PROC_AGENT_ACTOR_NAME);
-        let port = PortRef::<IntrospectMessage>::attest_control_port(
-            &agent_id,
-            hyperactor::ControlPort::Introspect,
-        );
+        let port = agent_id.introspect_port();
 
         // Poll until queue stats are non-zero.
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);

@@ -399,10 +399,7 @@ async fn query_introspect(
     timeout: Duration,
     err_ctx: &str,
 ) -> Result<IntrospectResult, anyhow::Error> {
-    let introspect_port = hyperactor::PortRef::<IntrospectMessage>::attest_control_port(
-        actor_id,
-        hyperactor::ControlPort::Introspect,
-    );
+    let introspect_port = actor_id.introspect_port();
     let (reply_handle, reply_rx) = open_once_port::<IntrospectResult>(cx);
     let mut reply_ref = reply_handle.bind();
     reply_ref.return_undeliverable(false);
@@ -427,10 +424,7 @@ async fn query_child_introspect(
     timeout: Duration,
     err_ctx: &str,
 ) -> Result<IntrospectResult, anyhow::Error> {
-    let introspect_port = hyperactor::PortRef::<IntrospectMessage>::attest_control_port(
-        actor_id,
-        hyperactor::ControlPort::Introspect,
-    );
+    let introspect_port = actor_id.introspect_port();
     let (reply_handle, reply_rx) = open_once_port::<IntrospectResult>(cx);
     let mut reply_ref = reply_handle.bind();
     reply_ref.return_undeliverable(false);
@@ -2124,10 +2118,7 @@ async fn probe_actor(
     cx: &Instance<()>,
     agent_id: &hyperactor::ActorAddr,
 ) -> Result<bool, ApiError> {
-    let port = hyperactor::PortRef::<IntrospectMessage>::attest_control_port(
-        agent_id,
-        hyperactor::ControlPort::Introspect,
-    );
+    let port = agent_id.introspect_port();
     let (handle, rx) = open_once_port::<IntrospectResult>(cx);
     port.post(
         cx,
