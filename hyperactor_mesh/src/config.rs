@@ -166,7 +166,7 @@ declare_attrs! {
         Some("HYPERACTOR_MESH_ATTACH_CONFIG_TIMEOUT".to_string()),
         Some("mesh_attach_config_timeout".to_string()),
     ))
-    pub attr MESH_ATTACH_CONFIG_TIMEOUT: Duration = Duration::from_secs(10);
+    pub attr MESH_ATTACH_CONFIG_TIMEOUT: Duration = Duration::from_secs(60);
 
     /// Timeout for targeted introspection queries that hit a single,
     /// specific host. Kept short so a slow or dying actor cannot block
