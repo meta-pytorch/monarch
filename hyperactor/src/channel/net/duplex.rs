@@ -97,6 +97,15 @@ impl<In: RemoteMessage, Out: RemoteMessage> DuplexServer<In, Out> {
     }
 }
 
+impl<In: RemoteMessage, Out: RemoteMessage> Drop for DuplexServer<In, Out> {
+    fn drop(&mut self) {
+        self.handle.stop(&format!(
+            "DuplexServer dropped; channel address: {}",
+            self.addr
+        ));
+    }
+}
+
 /// Receiver half of a duplex channel.
 pub struct DuplexRx<M: RemoteMessage>(mpsc::Receiver<M>, ChannelAddr);
 
@@ -841,6 +850,7 @@ pub(crate) fn spawn<Out: RemoteMessage, In: RemoteMessage>(
 pub fn dial<Out: RemoteMessage, In: RemoteMessage>(
     addr: ChannelAddr,
 ) -> Result<DuplexClient<Out, In>, ClientError> {
+    let addr = addr.into_dial_addr();
     Ok(spawn(super::link(addr, super::SessionId::random(), 0)?))
 }
 

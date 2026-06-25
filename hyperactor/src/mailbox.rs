@@ -3940,6 +3940,7 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
     use std::time::Duration;
 
+    use async_trait::async_trait;
     use timed_test::async_timed_test;
 
     use super::*;
@@ -3987,6 +3988,45 @@ mod tests {
             panic!("expected invalid reference, got {root_failure}");
         };
         invalid_reference
+    }
+
+    struct ClosedChannelTx {
+        addr: ChannelAddr,
+        status: watch::Receiver<TxStatus>,
+    }
+
+    impl ClosedChannelTx {
+        fn new(addr: ChannelAddr) -> Self {
+            let (_sender, status) = watch::channel(TxStatus::Closed(CloseReason::Other(
+                "test channel closed".into(),
+            )));
+            Self { addr, status }
+        }
+    }
+
+    #[async_trait]
+    impl channel::Tx<MessageEnvelope> for ClosedChannelTx {
+        fn do_post(
+            &self,
+            message: MessageEnvelope,
+            return_channel: Option<oneshot::Sender<SendError<MessageEnvelope>>>,
+        ) {
+            if let Some(return_channel) = return_channel {
+                let _ = return_channel.send(SendError {
+                    error: ChannelError::Closed,
+                    message,
+                    reason: None,
+                });
+            }
+        }
+
+        fn addr(&self) -> ChannelAddr {
+            self.addr.clone()
+        }
+
+        fn status(&self) -> &watch::Receiver<TxStatus> {
+            &self.status
+        }
     }
 
     #[test]
@@ -4600,7 +4640,9 @@ mod tests {
     #[tokio::test]
     async fn test_local_client_server() {
         let mbox = Mailbox::new(test_actor_id("0", "actor0"));
-        let (tx, rx) = channel::local::new();
+        let (addr, rx) =
+            channel::serve(ChannelAddr::any(ChannelTransport::Local)).expect("serve local");
+        let tx = channel::dial(addr).expect("dial local");
         let serve_handle = mbox.clone().serve(rx);
         let client = MailboxClient::new(tx);
 
@@ -4618,9 +4660,7 @@ mod tests {
     #[tokio::test]
     async fn test_mailbox_client_records_channel_closed_failure() {
         let mbox = Mailbox::new(test_actor_id("0", "actor0"));
-        let (tx, rx) = channel::local::new();
-        drop(rx);
-        let client = MailboxClient::new(tx);
+        let client = MailboxClient::new(ClosedChannelTx::new(ChannelAddr::Local(0)));
         let addr = client.addr.clone();
 
         let (port, _receiver) = mbox.open_once_port::<u64>();
@@ -4990,9 +5030,8 @@ mod tests {
         let client1 = router.dial(&addr, mbox.actor_addr()).unwrap();
         let mut status = client1.tx_status().clone();
 
-        // LocalRx::drop closes the watcher with a non-stale reason — the
-        // string never contains "out-of-sequence message", so it must not
-        // trigger eviction.
+        // Tearing down the local server closes the watcher with a non-stale
+        // reason, so it must not trigger eviction.
         h.stop("test teardown");
         let _ = h.await;
         while !status.borrow_and_update().is_closed() {

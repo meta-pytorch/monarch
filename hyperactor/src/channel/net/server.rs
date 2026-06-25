@@ -32,8 +32,8 @@ use super::session::Next;
 use super::session::Session;
 use crate::RemoteMessage;
 use crate::channel::ChannelAddr;
+use crate::channel::ChannelRx;
 use crate::channel::ChannelTransport;
-use crate::channel::net::NetRx;
 use crate::channel::net::ServerError;
 use crate::channel::net::Stream;
 use crate::channel::net::meta;
@@ -390,7 +390,7 @@ async fn dispatch_multi_stream<M: RemoteMessage, S: Stream>(
         };
 
         // Each stream emits the cumulative watermark on its own wire
-        // so the peer's per-wire NetTx sees an ack for messages it
+        // so the peer's per-wire ChannelTx sees an ack for messages it
         // sent on this connection.
         let pending_ack = shared_state
             .ack_watermark
@@ -636,7 +636,7 @@ impl Future for ServerHandle {
 pub(in crate::channel) fn serve<M: RemoteMessage>(
     addr: ChannelAddr,
     prebound_listener: Option<std::net::TcpListener>,
-) -> Result<(ChannelAddr, NetRx<M>), ServerError> {
+) -> Result<(ChannelAddr, ChannelRx<M>), ServerError> {
     let (mut listener, channel_addr) = super::listen_with_prebound(addr, prebound_listener)?;
 
     metrics::CHANNEL_CONNECTIONS.add(
@@ -725,7 +725,11 @@ pub(in crate::channel) fn serve<M: RemoteMessage>(
 
     Ok((
         server_handle.channel_addr.clone(),
-        NetRx(rx, channel_addr, server_handle),
+        ChannelRx {
+            receiver: rx,
+            dest: channel_addr,
+            server: server_handle,
+        },
     ))
 }
 
@@ -735,7 +739,7 @@ pub(in crate::channel) fn serve<M: RemoteMessage>(
 pub(super) fn serve_with_listener<M, L>(
     mut listener: L,
     channel_addr: ChannelAddr,
-) -> Result<(ChannelAddr, NetRx<M>), ServerError>
+) -> Result<(ChannelAddr, ChannelRx<M>), ServerError>
 where
     M: RemoteMessage,
     L: super::Listener + 'static,
@@ -797,6 +801,10 @@ where
 
     Ok((
         server_handle.channel_addr.clone(),
-        NetRx(rx, channel_addr, server_handle),
+        ChannelRx {
+            receiver: rx,
+            dest: channel_addr,
+            server: server_handle,
+        },
     ))
 }

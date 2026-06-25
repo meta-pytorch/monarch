@@ -29,6 +29,7 @@ use serde::Serialize;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
+use tokio::time::Instant;
 
 use crate as hyperactor;
 use crate::RemoteMessage;
@@ -250,97 +251,6 @@ pub trait Rx<M: RemoteMessage> {
         Self: Sized;
 }
 
-#[allow(dead_code)] // Not used outside tests.
-struct MpscTx<M: RemoteMessage> {
-    tx: mpsc::UnboundedSender<M>,
-    addr: ChannelAddr,
-    status: watch::Receiver<TxStatus>,
-}
-
-impl<M: RemoteMessage> MpscTx<M> {
-    #[allow(dead_code)] // Not used outside tests.
-    pub fn new(tx: mpsc::UnboundedSender<M>, addr: ChannelAddr) -> (Self, watch::Sender<TxStatus>) {
-        let (sender, receiver) = watch::channel(TxStatus::Active);
-        (
-            Self {
-                tx,
-                addr,
-                status: receiver,
-            },
-            sender,
-        )
-    }
-}
-
-#[async_trait]
-impl<M: RemoteMessage> Tx<M> for MpscTx<M> {
-    fn do_post(&self, message: M, return_channel: Option<oneshot::Sender<SendError<M>>>) {
-        if let Err(mpsc::error::SendError(message)) = self.tx.send(message)
-            && let Some(return_channel) = return_channel
-        {
-            return_channel
-                .send(SendError {
-                    error: ChannelError::Closed,
-                    message,
-                    reason: None,
-                })
-                .unwrap_or_else(|m| tracing::warn!("failed to deliver SendError: {}", m));
-        }
-    }
-
-    fn addr(&self) -> ChannelAddr {
-        self.addr.clone()
-    }
-
-    fn status(&self) -> &watch::Receiver<TxStatus> {
-        &self.status
-    }
-}
-
-#[allow(dead_code)] // Not used outside tests.
-struct MpscRx<M: RemoteMessage> {
-    rx: mpsc::UnboundedReceiver<M>,
-    addr: ChannelAddr,
-    // Used to report the status to the Tx side.
-    status_sender: watch::Sender<TxStatus>,
-}
-
-impl<M: RemoteMessage> MpscRx<M> {
-    #[allow(dead_code)] // Not used outside tests.
-    pub fn new(
-        rx: mpsc::UnboundedReceiver<M>,
-        addr: ChannelAddr,
-        status_sender: watch::Sender<TxStatus>,
-    ) -> Self {
-        Self {
-            rx,
-            addr,
-            status_sender,
-        }
-    }
-}
-
-impl<M: RemoteMessage> Drop for MpscRx<M> {
-    fn drop(&mut self) {
-        let _ = self.status_sender.send(TxStatus::Closed(CloseReason::Other(
-            "receiver dropped".into(),
-        )));
-    }
-}
-
-#[async_trait]
-impl<M: RemoteMessage> Rx<M> for MpscRx<M> {
-    async fn recv(&mut self) -> Result<M, ChannelError> {
-        self.rx.recv().await.ok_or(ChannelError::Closed)
-    }
-
-    fn addr(&self) -> ChannelAddr {
-        self.addr.clone()
-    }
-
-    async fn join(self) {}
-}
-
 /// The hostname to use for TLS connections.
 #[derive(
     Clone,
@@ -468,7 +378,8 @@ pub enum ChannelTransport {
     /// Transport over a QUIC connection with TLS support within Meta.
     MetaQuic(TlsMode),
 
-    /// Local transports uses an in-process registry and mpsc channels.
+    /// Local transports use a process-local registry and private Unix socket
+    /// pairs.
     Local,
 
     /// Transport over unix domain socket.
@@ -553,9 +464,7 @@ impl ChannelTransport {
     }
 
     /// Returns true if this transport can carry the duplex byte-stream
-    /// protocol (see [`crate::channel::net::duplex`]). In-process
-    /// transports cannot carry a duplex wire protocol and must fall
-    /// back to a simplex channel.
+    /// protocol (see [`crate::channel::net::duplex`]).
     pub fn supports_duplex(&self) -> bool {
         match self {
             ChannelTransport::Tcp(_) => true,
@@ -565,7 +474,7 @@ impl ChannelTransport {
             ChannelTransport::Quic => false,
             ChannelTransport::MetaQuic(_) => false,
             ChannelTransport::Unix => true,
-            ChannelTransport::Local => false,
+            ChannelTransport::Local => true,
         }
     }
 }
@@ -1157,9 +1066,12 @@ impl ChannelAddr {
     }
 }
 
-/// Universal channel transmitter.
+/// Universal channel transmitter. Manages the link state, reconnections,
+/// etc. on top of a [`net::Link`].
 pub struct ChannelTx<M: RemoteMessage> {
-    inner: ChannelTxKind<M>,
+    sender: mpsc::UnboundedSender<(M, oneshot::Sender<SendError<M>>, Instant)>,
+    dest: ChannelAddr,
+    status: watch::Receiver<TxStatus>,
 }
 
 impl<M: RemoteMessage> fmt::Debug for ChannelTx<M> {
@@ -1170,39 +1082,46 @@ impl<M: RemoteMessage> fmt::Debug for ChannelTx<M> {
     }
 }
 
-/// Universal channel transmitter.
-enum ChannelTxKind<M: RemoteMessage> {
-    Local(local::LocalTx<M>),
-    Net(net::NetTx<M>),
-}
-
 #[async_trait]
 impl<M: RemoteMessage> Tx<M> for ChannelTx<M> {
     fn do_post(&self, message: M, return_channel: Option<oneshot::Sender<SendError<M>>>) {
-        match &self.inner {
-            ChannelTxKind::Local(tx) => tx.do_post(message, return_channel),
-            ChannelTxKind::Net(tx) => tx.do_post(message, return_channel),
+        tracing::trace!(
+            name = "post",
+            dest = %self.dest,
+            "sending message"
+        );
+
+        let return_channel = return_channel.unwrap_or_else(|| oneshot::channel().0);
+        if let Err(mpsc::error::SendError((message, return_channel, _))) =
+            self.sender.send((message, return_channel, Instant::now()))
+        {
+            let reason = self
+                .status
+                .borrow()
+                .as_closed()
+                .map(|r| SendErrorReason::Other(r.to_string()));
+            let _ = return_channel.send(SendError {
+                error: ChannelError::Closed,
+                message,
+                reason,
+            });
         }
     }
 
     fn addr(&self) -> ChannelAddr {
-        match &self.inner {
-            ChannelTxKind::Local(tx) => tx.addr(),
-            ChannelTxKind::Net(tx) => Tx::<M>::addr(tx),
-        }
+        self.dest.clone()
     }
 
     fn status(&self) -> &watch::Receiver<TxStatus> {
-        match &self.inner {
-            ChannelTxKind::Local(tx) => tx.status(),
-            ChannelTxKind::Net(tx) => tx.status(),
-        }
+        &self.status
     }
 }
 
 /// Universal channel receiver.
 pub struct ChannelRx<M: RemoteMessage> {
-    inner: ChannelRxKind<M>,
+    receiver: mpsc::Receiver<M>,
+    dest: ChannelAddr,
+    server: net::ServerHandle,
 }
 
 impl<M: RemoteMessage> fmt::Debug for ChannelRx<M> {
@@ -1213,34 +1132,44 @@ impl<M: RemoteMessage> fmt::Debug for ChannelRx<M> {
     }
 }
 
-/// Universal channel receiver.
-enum ChannelRxKind<M: RemoteMessage> {
-    Local(local::LocalRx<M>),
-    Net(net::NetRx<M>),
+impl<M: RemoteMessage> ChannelRx<M> {
+    /// Stop the channel server, tagging the log with what triggered shutdown.
+    fn stop(&self, trigger: &str) {
+        self.server.stop(&format!(
+            "ChannelRx {trigger}; channel address: {}",
+            self.dest
+        ));
+    }
 }
 
 #[async_trait]
 impl<M: RemoteMessage> Rx<M> for ChannelRx<M> {
     #[tracing::instrument(level = "debug", skip_all)]
     async fn recv(&mut self) -> Result<M, ChannelError> {
-        match &mut self.inner {
-            ChannelRxKind::Local(rx) => rx.recv().await,
-            ChannelRxKind::Net(rx) => rx.recv().await,
-        }
+        tracing::trace!(
+            name = "recv",
+            dest = %self.dest,
+            "receiving message"
+        );
+        self.receiver.recv().await.ok_or(ChannelError::Closed)
     }
 
     fn addr(&self) -> ChannelAddr {
-        match &self.inner {
-            ChannelRxKind::Local(rx) => rx.addr(),
-            ChannelRxKind::Net(rx) => rx.addr(),
-        }
+        self.dest.clone()
     }
 
-    async fn join(self) {
-        match self.inner {
-            ChannelRxKind::Local(rx) => rx.join().await,
-            ChannelRxKind::Net(rx) => rx.join().await,
-        }
+    /// Gracefully shut down the channel server, waiting for pending
+    /// acks to be flushed before returning.
+    async fn join(mut self) {
+        self.stop("joined");
+        let _ = (&mut self.server).await;
+        // Drop will call stop() again which is harmless (token already cancelled).
+    }
+}
+
+impl<M: RemoteMessage> Drop for ChannelRx<M> {
+    fn drop(&mut self) {
+        self.stop("dropped");
     }
 }
 
@@ -1252,19 +1181,11 @@ impl<M: RemoteMessage> Rx<M> for ChannelRx<M> {
 pub fn dial<M: RemoteMessage>(addr: ChannelAddr) -> Result<ChannelTx<M>, ChannelError> {
     let addr = addr.into_dial_addr();
     tracing::debug!(name = "dial", caller = %Location::caller(), %addr, "dialing channel {}", addr);
-    let inner = match addr {
-        ChannelAddr::Local(port) => ChannelTxKind::Local(local::dial(port)?),
-        ChannelAddr::Tcp(_)
-        | ChannelAddr::Unix(_)
-        | ChannelAddr::Tls(_)
-        | ChannelAddr::MetaTls(_)
-        | ChannelAddr::Quic(_)
-        | ChannelAddr::MetaQuic(_) => {
-            ChannelTxKind::Net(net::spawn(net::link(addr, net::SessionId::random(), 0)?))
-        }
-        ChannelAddr::Alias { .. } => unreachable!("aliases are canonicalized before dialing"),
-    };
-    Ok(ChannelTx { inner })
+    Ok(net::spawn::<M>(net::link(
+        addr,
+        net::SessionId::random(),
+        0,
+    )?))
 }
 
 /// Channels that may deliver messages out of send order.
@@ -1327,8 +1248,7 @@ pub mod unordered {
         let links: Vec<net::NetLink> = (1..=num_streams)
             .map(|i| net::link(addr.clone(), session_id, i as u8))
             .collect::<Result<_, _>>()?;
-        let inner = ChannelTxKind::Net(net::spawn_unordered(links));
-        Ok(ChannelTx { inner })
+        Ok(net::spawn_unordered::<M>(links))
     }
 
     /// Serve a receiver that accepts unordered senders.
@@ -1374,20 +1294,20 @@ pub fn serve_with_listener<M: RemoteMessage>(
     listener: Option<std::net::TcpListener>,
 ) -> Result<(ChannelAddr, ChannelRx<M>), ChannelError> {
     let caller = Location::caller();
-    serve_inner(addr, listener).map(|(addr, inner)| {
+    serve_inner(addr, listener).map(|(addr, rx)| {
         tracing::debug!(
             name = "serve",
             %addr,
             %caller,
         );
-        (addr, ChannelRx { inner })
+        (addr, rx)
     })
 }
 
 fn serve_inner<M: RemoteMessage>(
     addr: ChannelAddr,
     listener: Option<std::net::TcpListener>,
-) -> Result<(ChannelAddr, ChannelRxKind<M>), ChannelError> {
+) -> Result<(ChannelAddr, ChannelRx<M>), ChannelError> {
     match addr {
         ChannelAddr::Unix(_) => {
             assert!(
@@ -1395,9 +1315,10 @@ fn serve_inner<M: RemoteMessage>(
                 "pre-opened listener not supported for Unix transport"
             );
             let (addr, rx) = net::server::serve::<M>(addr, listener)?;
-            Ok((addr, ChannelRxKind::Net(rx)))
+            Ok((addr, rx))
         }
         ChannelAddr::Tcp(_)
+        | ChannelAddr::Local(_)
         | ChannelAddr::Tls(_)
         | ChannelAddr::MetaTls(_)
         | ChannelAddr::Quic(_)
@@ -1407,43 +1328,25 @@ fn serve_inner<M: RemoteMessage>(
         // the same net serve path as the other TCP-based transports.
         | ChannelAddr::Alias { .. } => {
             let (addr, rx) = net::server::serve::<M>(addr, listener)?;
-            Ok((addr, ChannelRxKind::Net(rx)))
+            Ok((addr, rx))
         }
-        ChannelAddr::Local(0) => {
-            assert!(
-                listener.is_none(),
-                "pre-opened listener not supported for Local transport"
-            );
-            let (port, rx) = local::serve::<M>();
-            Ok((ChannelAddr::Local(port), ChannelRxKind::Local(rx)))
-        }
-        ChannelAddr::Local(a) => Ok((
-            ChannelAddr::Local(a),
-            ChannelRxKind::Local(local::bind::<M>(a)?),
-        )),
     }
 }
 
 /// Serve on the local address. The server is turned down
 /// when the returned Rx is dropped.
 pub fn serve_local<M: RemoteMessage>() -> (ChannelAddr, ChannelRx<M>) {
-    let (port, rx) = local::serve::<M>();
-    (
-        ChannelAddr::Local(port),
-        ChannelRx {
-            inner: ChannelRxKind::Local(rx),
-        },
-    )
+    serve::<M>(ChannelAddr::Local(0)).expect("fresh local stream port must bind")
 }
 
 /// Reserve a local channel address that can be served later.
 ///
-/// Local channels are backed by an in-process port registry, so reserving a
-/// concrete address is a synchronous allocation that does not require a Tokio
-/// runtime or an OS listener. Gateways use this to have a stable advertised
-/// local location immediately, including when the process-wide gateway is
-/// initialized from a [`std::sync::OnceLock`]. Serving is a separate step that
-/// binds the reserved port to a receiver.
+/// Local channels are backed by a process-local port registry, so reserving a
+/// concrete address is a synchronous allocation that does not bind an OS
+/// listener. Gateways use this to have a stable advertised local location
+/// immediately, including when the process-wide gateway is initialized from a
+/// [`std::sync::OnceLock`]. Serving is a separate step that binds the reserved
+/// port to a receiver.
 ///
 /// Network transports do not have an equivalent reservation API here: their
 /// concrete addresses come from binding sockets and starting the corresponding
@@ -1665,7 +1568,7 @@ mod tests {
         let tx = dial::<u64>(addr.clone()).unwrap();
         tx.post(123);
         assert_eq!(rx.recv().await.unwrap(), 123);
-        drop(rx);
+        rx.join().await;
 
         let (rebound_addr, _rx) = serve::<u64>(addr.clone()).unwrap();
         assert_eq!(rebound_addr, addr);
