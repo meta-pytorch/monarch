@@ -9,9 +9,9 @@
 import asyncio
 import functools
 import inspect
-import logging
 import weakref
 from dataclasses import dataclass, field
+from traceback import TracebackException
 from typing import Any, Awaitable, Callable, cast
 
 from monarch._rust_bindings.monarch_hyperactor.logging import log_endpoint_exception
@@ -21,7 +21,6 @@ from monarch._src.actor.telemetry import span
 
 _WRAPPER_ATTR = "_monarch_concurrent_endpoint_wrapper"
 _CLEANUP_WRAPPER_ATTR = "_monarch_concurrent_endpoint_cleanup_wrapper"
-logger: logging.Logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -52,15 +51,20 @@ def _send_exception(port: Any, actor_error: ActorError) -> None:
         pass
 
 
-def _log_explicit_response_port_exception(
-    actor_name: str, method_name: str, exception: BaseException
-) -> None:
-    logger.warning(
-        "concurrent explicit response-port endpoint raised without forwarding its own exception: %s.%s",
-        actor_name,
-        method_name,
-        exc_info=(type(exception), exception, exception.__traceback__),
-    )
+def _cancelled_for_cleanup(record: _TaskRecord | None) -> bool:
+    # True when cleanup cancelled this task because the actor is stopping;
+    # callers skip failing the actor so a graceful stop is not escalated.
+    return record is not None and record.cancel_for_cleanup
+
+
+def _fail_actor(actor_instance: Any, exception: BaseException) -> None:
+    reason = "".join(TracebackException.from_exception(exception).format())
+    try:
+        actor_instance.kill(reason)
+    except Exception:
+        # The actor's signal channel may already be closed if it has finished
+        # stopping; there is then nothing left to fail.
+        pass
 
 
 async def _run_endpoint(
@@ -84,7 +88,7 @@ async def _run_endpoint(
             else:
                 await call()
         except asyncio.CancelledError as e:
-            if record is not None and record.cancel_for_cleanup:
+            if _cancelled_for_cleanup(record):
                 return
             if forwards_exception:
                 actor_error = ActorError(
@@ -94,24 +98,24 @@ async def _run_endpoint(
                 _send_exception(port, actor_error)
             raise
         except Exception as e:
+            log_endpoint_exception(e, method_name, actor_id)
             if forwards_exception:
-                log_endpoint_exception(e, method_name, actor_id)
                 actor_error = ActorError(
                     e,
                     f"Actor call {actor_name}.{method_name} failed.",
                 )
                 _send_exception(port, actor_error)
-            else:
-                _log_explicit_response_port_exception(actor_name, method_name, e)
+            elif not _cancelled_for_cleanup(record):
+                _fail_actor(actor_instance, e)
         except BaseException as e:  # noqa: B036
-            actor_error = ActorError(
-                e,
-                f"Actor call {actor_name}.{method_name} failed with BaseException.",
-            )
             if forwards_exception:
+                actor_error = ActorError(
+                    e,
+                    f"Actor call {actor_name}.{method_name} failed with BaseException.",
+                )
                 _send_exception(port, actor_error)
-            else:
-                _log_explicit_response_port_exception(actor_name, method_name, e)
+            elif not _cancelled_for_cleanup(record):
+                _fail_actor(actor_instance, e)
     finally:
         actor_instance._execution_finish(token)
 
@@ -303,6 +307,13 @@ def concurrent_endpoint(
     lifecycle before these tasks are cancelled. General pending tasks on the
     actor's asyncio loop are cancelled later, after user ``__cleanup__``
     completes.
+
+    If the endpoint body raises an exception that it does not forward through
+    its response port, the actor fails with a supervision error, just as an
+    exception escaping an ``@endpoint(explicit_response_port=True)`` method
+    does. This follows the principle of no silent errors. To report an error to
+    the caller without failing the actor, forward it through the port (for
+    example, ``port.exception(e)``); to recover, catch it inside the endpoint.
 
     More complex protocols can still use ``@endpoint(explicit_response_port=True)``
     and manage response ports manually.

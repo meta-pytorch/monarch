@@ -845,9 +845,10 @@ Pass endpoint options directly to `@concurrent_endpoint(...)`, such as
 
 There is nothing special about `@concurrent_endpoint`: it packages the
 `explicit_response_port=True` pattern with `asyncio.create_task`, result
-forwarding for non-explicit endpoints, warning logs for escaped explicit-port
-exceptions, and cleanup-time cancellation of the tasks it starts. You can write
-the simple version yourself when you want full control:
+forwarding for non-explicit endpoints, failing the actor when an explicit-port
+endpoint lets an exception escape the function, and cleanup-time cancellation of
+the tasks it starts. You can write the simple version yourself when you want full
+control:
 
 ```python
 import asyncio
@@ -872,9 +873,11 @@ class ManualGate(Actor):
 ```
 
 This manual form intentionally has no extra task tracking; the task lifetime is
-part of the endpoint protocol you are writing. If an explicit-port endpoint lets
-an exception escape before sending a response, the caller will keep waiting until
-it times out or is cancelled.
+part of the endpoint protocol you are writing. Because the body runs in a
+detached task that you own, an exception escaping it before a response is sent
+leaves the caller waiting until it times out or is cancelled, while the actor
+survives. By contrast, `@concurrent_endpoint` fails the actor with a supervision
+error in that case, following the principle of no silent errors.
 
 `@concurrent_endpoint` works on individual endpoints, including inherited
 endpoints, so an actor can mix concurrent and sequential endpoints. For protocols
