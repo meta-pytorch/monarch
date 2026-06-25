@@ -102,7 +102,6 @@ use crate::host::SERVICE_PROC_NAME;
 pub use crate::host_mesh::host_agent::HostAgent;
 use crate::host_mesh::host_agent::ProcManagerSpawnFn;
 use crate::host_mesh::host_agent::ProcState;
-use crate::host_mesh::host_agent::ShutdownHostClient;
 use crate::mesh_controller::ProcMeshController;
 use crate::mesh_id::ActorMeshId;
 use crate::mesh_id::HostMeshId;
