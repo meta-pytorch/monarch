@@ -104,6 +104,15 @@ class SlurmJob(JobTrait):
         self._all_hostnames: List[str] = []
         super().__init__()
 
+    def __setstate__(self, state: Dict[str, Any]) -> None:
+        # In batch mode the in-allocation client rehydrates this object via
+        # pickle.load (job_load), which bypasses __init__. Re-apply the
+        # transport config here so the client's host_agent serves on a TCP
+        # address remote workers can dial back, instead of an abstract unix
+        # socket whose namespace is local to the original (head) node.
+        self.__dict__.update(state)
+        configure(default_transport=ChannelTransport.TcpWithHostname)
+
     def add_mesh(self, name: str, num_nodes: int) -> None:
         self._meshes[name] = num_nodes
 
