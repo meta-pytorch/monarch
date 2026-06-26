@@ -301,7 +301,7 @@ def test_integer_params(param_name, test_value, default_value):
         ("force_file_log", False),
         ("prefix_with_rank", True),
         # Actor queue dispatch
-        ("actor_queue_dispatch", False),
+        ("actor_queue_dispatch", True),
     ],
 )
 def test_boolean_params(param_name, default_value):
@@ -408,7 +408,7 @@ def test_all_params_together():
         proc_stop_max_idle="45s",
         get_proc_state_max_idle="90s",
         # Actor queue dispatch
-        actor_queue_dispatch=True,
+        actor_queue_dispatch=False,
         # Mesh attach
         mesh_attach_config_timeout="20s",
         # Mesh admin
@@ -440,7 +440,7 @@ def test_all_params_together():
         assert config["supervision_watchdog_timeout"] == "1m 30s"
         assert config["proc_stop_max_idle"] == "45s"
         assert config["get_proc_state_max_idle"] == "1m 30s"
-        assert config["actor_queue_dispatch"] is True
+        assert config["actor_queue_dispatch"] is False
         assert config["mesh_attach_config_timeout"] == "20s"
         assert config["mesh_admin_addr"] == "[::]:8080"
 
@@ -471,7 +471,7 @@ def test_all_params_together():
     assert config["supervision_watchdog_timeout"] == "2m"
     assert config["proc_stop_max_idle"] == "30s"
     assert config["get_proc_state_max_idle"] == "1m"
-    assert config["actor_queue_dispatch"] is False
+    assert config["actor_queue_dispatch"] is True
     assert config["mesh_attach_config_timeout"] == "10s"
     assert config["mesh_admin_addr"] == "[::]:1729"
 

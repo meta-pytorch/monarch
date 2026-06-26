@@ -1860,6 +1860,7 @@ async def test_actor_abort(reason) -> None:
 
 
 @pytest.mark.timeout(500)
+@parametrize_config(actor_queue_dispatch={False})
 @isolate_in_subprocess
 async def test_gil_stall():
     """Test that many concurrent actor calls don't cause GIL stall issues.

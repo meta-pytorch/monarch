@@ -859,6 +859,7 @@ mod tests {
     use super::*;
     use crate::actor::PythonActor;
     use crate::actor::PythonActorParams;
+    use crate::config::ACTOR_QUEUE_DISPATCH;
 
     /// Minimal root-client actor for test infrastructure.
     /// Handles MeshFailure by panicking (test failure).
@@ -964,14 +965,15 @@ mod tests {
             .unwrap()
         });
 
+        let actor_params = PythonActorParams::new(pickled_type, None, None);
+        let config_lock = hyperactor_config::global::lock();
+        let _queue_dispatch_guard = config_lock.override_key(ACTOR_QUEUE_DISPATCH, false);
         let actor_mesh = proc_mesh
-            .spawn::<PythonActor, _>(
-                instance,
-                "test_actors",
-                &PythonActorParams::new(pickled_type, None, None),
-            )
+            .spawn::<PythonActor, _>(instance, "test_actors", &actor_params)
             .await
             .unwrap();
+        drop(_queue_dispatch_guard);
+        drop(config_lock);
 
         let controller = actor_mesh.controller().as_ref().unwrap().clone();
 
