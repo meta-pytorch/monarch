@@ -16,6 +16,7 @@ use super::device::IbvContext;
 use super::device::IbvDeviceImpl;
 use super::mlx_domain::MlxDomain;
 use super::primitives::IbvConfig;
+use super::roce_gid;
 use crate::register_ibv_device_impl;
 
 /// PCI vendor ID for Mellanox Technologies.
@@ -42,7 +43,9 @@ impl IbvDeviceImpl for MlxDevice {
         queried && attr.vendor_id == MELLANOX_VENDOR_ID
     }
 
-    fn apply_config_defaults(_config: &mut IbvConfig) {}
+    fn apply_config_defaults(config: &mut IbvConfig) {
+        config.gid_index = roce_gid::select_roce_v2_gid_index();
+    }
 }
 
 register_ibv_device_impl!(MlxDevice);
