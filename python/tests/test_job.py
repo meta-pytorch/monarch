@@ -22,6 +22,7 @@ import pytest
 
 # Import directly from _src since job module isn't properly exposed
 from monarch._src.job.job import (
+    BatchJob,
     job_load,
     job_loads,
     JobState,
@@ -30,6 +31,7 @@ from monarch._src.job.job import (
     MeshAdminConfig,
     TelemetryConfig,
 )
+from monarch._src.job.job_components import JobComponent, JobComponents, MountComponent
 from monarch._src.job.mount_config import Mounts
 from monarch._src.job.process_guard import _Shutdown, _wait_for_socket
 from monarch.actor import HostMesh
@@ -513,7 +515,7 @@ def test_state_query_engine_none_without_telemetry():
     assert state.telemetry_url is None
 
 
-@patch("monarch._src.job.job.start_telemetry")
+@patch("monarch._src.job.job_components.start_telemetry")
 def test_state_query_engine_set_with_telemetry(mock_start):
     """Test that query_engine is set when telemetry is configured."""
     mock_engine = MagicMock()
@@ -528,19 +530,258 @@ def test_state_query_engine_set_with_telemetry(mock_start):
     assert state.telemetry_url == mock_url
 
 
-@patch("monarch._src.job.job.start_telemetry")
-def test_telemetry_started_only_once(mock_start):
-    """Test that telemetry is not restarted on subsequent state() calls."""
+@patch("monarch._src.job.job_components.start_telemetry")
+def test_component_configuration_after_apply_adds_telemetry(mock_start):
+    mock_engine = MagicMock()
+    mock_url = "http://localhost:8265"
+    mock_start.return_value = (mock_engine, mock_url, MagicMock())
+
+    job = MockJobTrait()
+    job.apply()
+    components = job._components
+    assert components is not None
+    assert components.telemetry is None
+
+    job.enable_telemetry(TelemetryConfig())
+    state = job.state(cached_path=None)
+
+    assert job._components is components
+    assert components.telemetry is not None
+    assert state.query_engine is mock_engine
+    assert state.telemetry_url == mock_url
+
+
+def test_mount_configuration_after_apply_reuses_mount_component_on_connect():
+    job = MockJobTrait()
+    job.apply()
+    components = job._components
+    assert components is not None
+    mount_component = components.mounts
+
+    job.remote_mount("/source", python_exe=None)
+    job.gather_mount("/worker/path", "/local/path")
+    with patch("monarch._src.job.mount_config.Mounts.ensure_open") as ensure_open:
+        job.state(cached_path=None)
+
+    assert job._components is components
+    assert components.mounts is mount_component
+    ensure_open.assert_called_once()
+
+
+@patch("monarch._src.job.job_components.start_telemetry")
+def test_telemetry_config_change_restarts_telemetry_runtime(mock_start):
+    mock_start.return_value = (MagicMock(), "http://localhost:8265", MagicMock())
+
+    job = MockJobTrait().enable_telemetry(TelemetryConfig(batch_size=1))
+    job.state(cached_path=None)
+    components = job._components
+    assert components is not None
+    mount_component = components.mounts
+    telemetry_component = components.telemetry
+    assert telemetry_component is not None
+
+    job.enable_telemetry(TelemetryConfig(batch_size=2))
+    job.state(cached_path=None)
+
+    assert job._components is components
+    assert components.mounts is mount_component
+    assert components.telemetry is telemetry_component
+    assert mock_start.call_count == 2
+
+
+@patch("monarch._src.job.job_components.start_telemetry")
+def test_cached_running_job_uses_current_component_configuration(mock_start):
+    mock_engine = MagicMock()
+    mock_url = "http://current-telemetry"
+    mock_start.return_value = (mock_engine, mock_url, MagicMock())
+
+    cached_job = MockJobTrait(host_names=["cached"]).enable_telemetry(
+        TelemetryConfig(batch_size=1)
+    )
+    cached_job.apply()
+
+    with tempfile.NamedTemporaryFile(delete=False) as tmp:
+        cache_path = tmp.name
+
+    try:
+        cached_job.dump(cache_path)
+
+        new_job = MockJobTrait(host_names=["new"]).enable_telemetry(
+            TelemetryConfig(batch_size=2)
+        )
+        state = new_job.state(cached_path=cache_path)
+
+        assert not new_job.create_called
+        assert state.cached.name == "cached"
+        assert state.query_engine is mock_engine
+        assert state.telemetry_url == mock_url
+        mock_start.assert_called_once_with(
+            batch_size=2,
+            retention_secs=600,
+            include_dashboard=False,
+            dashboard_port=8265,
+        )
+    finally:
+        if os.path.exists(cache_path):
+            os.unlink(cache_path)
+
+
+@patch("monarch._src.job.job_components.start_telemetry")
+def test_unpickled_running_job_accepts_component_configuration(mock_start):
+    mock_engine = MagicMock()
+    mock_url = "http://localhost:8265"
+    mock_start.return_value = (mock_engine, mock_url, MagicMock())
+
+    original_job = MockJobTrait()
+    original_job.apply()
+    loaded_job = job_loads(original_job.dumps())
+
+    loaded_job.enable_telemetry(TelemetryConfig())
+    state = loaded_job.state(cached_path=None)
+
+    mock_start.assert_called_once()
+    assert state.query_engine is mock_engine
+    assert state.telemetry_url == mock_url
+
+
+def test_lifecycle_component_hooks_use_job_context():
+    class FinalHost:
+        name = "final"
+
+    class ProbeComponent(JobComponent):
+        def __init__(self):
+            self.jobs = []
+            self.events = []
+
+        def before_connect(self, job: JobTrait) -> None:
+            self.jobs.append(job)
+            self.events.append(
+                (
+                    "before_connect",
+                    job.apply_id is not None,
+                    job._running is job,
+                )
+            )
+
+        def connect(
+            self, job: JobTrait, host_meshes: Dict[str, HostMesh]
+        ) -> Dict[str, HostMesh]:
+            self.jobs.append(job)
+            self.events.append(
+                (
+                    "connect",
+                    job.apply_id is not None,
+                    job._running is job,
+                    tuple(sorted(host_meshes)),
+                )
+            )
+            return {"final": cast(HostMesh, FinalHost())}
+
+        def state(self, job: JobTrait, job_state: JobState) -> None:
+            self.jobs.append(job)
+            self.events.append(
+                (
+                    "state",
+                    job.apply_id is not None,
+                    job._running is job,
+                    tuple(sorted(job_state._hosts)),
+                    job_state.final is job_state._hosts["final"],
+                )
+            )
+
+        def reset_runtime(self) -> None:
+            self.events.append(("reset_runtime",))
+
+    probe = ProbeComponent()
+    job = MockJobTrait(host_names=("raw",))
+    job._components = JobComponents(cast(MountComponent, probe))
+    state = job.state(cached_path=None)
+
+    assert state.final.name == "final"
+    assert all(seen_job is job for seen_job in probe.jobs)
+    assert probe.events == [
+        ("before_connect", True, True),
+        ("connect", True, True, ("raw",)),
+        ("state", True, True, ("final",), True),
+    ]
+
+    state = job.state(cached_path=None)
+
+    assert state.final.name == "final"
+    assert probe.events == [
+        ("before_connect", True, True),
+        ("connect", True, True, ("raw",)),
+        ("state", True, True, ("final",), True),
+        ("before_connect", True, True),
+        ("connect", True, True, ("raw",)),
+        ("state", True, True, ("final",), True),
+    ]
+
+    with patch("monarch._src.job.job.stop_job_sidecar"):
+        job.kill()
+
+    assert probe.events[-1] == ("reset_runtime",)
+
+
+def test_batch_job_runs_component_lifecycle_on_wrapped_job():
+    class ProbeComponent(JobComponent):
+        def __init__(self):
+            self.jobs = []
+            self.events = []
+
+        def before_connect(self, job: JobTrait) -> None:
+            self.jobs.append(job)
+            self.events.append("before_connect")
+
+        def connect(
+            self, job: JobTrait, host_meshes: Dict[str, HostMesh]
+        ) -> Dict[str, HostMesh]:
+            self.jobs.append(job)
+            self.events.append("connect")
+            return host_meshes
+
+        def state(self, job: JobTrait, job_state: JobState) -> None:
+            self.jobs.append(job)
+            self.events.append("state")
+
+    probe = ProbeComponent()
+    job = MockJobTrait(host_names=("raw",))
+    job._components = JobComponents(cast(MountComponent, probe))
+    batch = BatchJob(job)
+
+    state = batch.state(cached_path=None)
+
+    assert state.raw.name == "raw"
+    assert all(seen_job is job for seen_job in probe.jobs)
+    assert probe.events == ["before_connect", "connect", "state"]
+
+
+@patch("monarch._src.job.job_components.start_telemetry")
+def test_lifecycle_component_runtime_reset_on_job_teardown(mock_start):
+    """Job teardown resets component runtime while preserving config."""
     mock_start.return_value = (MagicMock(), "http://localhost:8265", MagicMock())
 
     job = MockJobTrait().enable_telemetry(TelemetryConfig())
     job.state(cached_path=None)
-    job.state(cached_path=None)
+    components = job._components
+    apply_id = job.apply_id
 
+    job.state(cached_path=None)
+    assert job._components is components
     mock_start.assert_called_once()
 
+    with patch("monarch._src.job.job.stop_job_sidecar") as stop_sidecar:
+        job.kill()
 
-@patch("monarch._src.job.job.start_telemetry")
+    stop_sidecar.assert_called_once_with(apply_id)
+    assert job._components is components
+
+    job.state(cached_path=None)
+    assert job._components is components
+    assert mock_start.call_count == 2
+
+
+@patch("monarch._src.job.job_components.start_telemetry")
 def test_telemetry_dropped_on_pickle(mock_start):
     """Test that query_engine is dropped during pickling and restored after."""
     mock_start.return_value = (MagicMock(), "http://localhost:8265", MagicMock())
@@ -549,10 +790,9 @@ def test_telemetry_dropped_on_pickle(mock_start):
     job.state(cached_path=None)
     assert mock_start.call_count == 1
 
-    # Serialize and deserialize — query_engine should be dropped
+    # Serialize and deserialize — live handles should be dropped
     loaded_job = job_loads(job.dumps())
-    assert loaded_job._query_engine is None
-    assert loaded_job._telemetry_url is None
+    assert loaded_job._components.telemetry is not None
 
     # Getting state again should re-initialize telemetry
     state = loaded_job.state(cached_path=None)
@@ -567,7 +807,7 @@ def test_state_admin_url_none_without_mesh_admin():
     assert state.admin_url is None
 
 
-@patch("monarch._src.job.job._spawn_admin")
+@patch("monarch._src.job.job_components._spawn_admin")
 def test_state_admin_url_set_with_mesh_admin(mock_spawn):
     """Test that admin_url is available on the first state() call."""
     mock_future = MagicMock()
@@ -582,7 +822,7 @@ def test_state_admin_url_set_with_mesh_admin(mock_spawn):
     assert state.admin_url == "http://localhost:1729"
 
 
-@patch("monarch._src.job.job._spawn_admin")
+@patch("monarch._src.job.job_components._spawn_admin")
 def test_mesh_admin_started_only_once(mock_spawn):
     """Test that mesh admin is not restarted on subsequent state() calls."""
     mock_future = MagicMock()
@@ -597,7 +837,7 @@ def test_mesh_admin_started_only_once(mock_spawn):
     mock_spawn.assert_called_once()
 
 
-@patch("monarch._src.job.job._spawn_admin")
+@patch("monarch._src.job.job_components._spawn_admin")
 def test_mesh_admin_dropped_on_pickle(mock_spawn):
     """Test that admin_url is dropped during pickling and restored after."""
     mock_future = MagicMock()
@@ -609,9 +849,9 @@ def test_mesh_admin_dropped_on_pickle(mock_spawn):
     job.state(cached_path=None)
     assert mock_spawn.call_count == 1
 
-    # Serialize and deserialize — admin_url should be dropped
+    # Serialize and deserialize — live handles should be dropped
     loaded_job = job_loads(job.dumps())
-    assert loaded_job._admin_url is None
+    assert loaded_job._components.admin is not None
 
     # Getting state again should re-spawn admin
     state = loaded_job.state(cached_path=None)
@@ -619,7 +859,7 @@ def test_mesh_admin_dropped_on_pickle(mock_spawn):
     assert state.admin_url is not None
 
 
-@patch("monarch._src.job.job._spawn_admin")
+@patch("monarch._src.job.job_components._spawn_admin")
 def test_mesh_admin_receives_custom_addr(mock_spawn):
     """Test that MeshAdminConfig.admin_addr is forwarded to _spawn_admin."""
     mock_future = MagicMock()
@@ -632,6 +872,138 @@ def test_mesh_admin_receives_custom_addr(mock_spawn):
 
     _, kwargs = mock_spawn.call_args
     assert kwargs.get("admin_addr") == "myhost:9999"
+
+
+@patch("monarch._src.job.job_components._spawn_admin")
+@patch("monarch._src.job.job_components.start_telemetry")
+def test_mesh_admin_receives_telemetry_url(mock_start, mock_spawn):
+    """Test that admin links to telemetry when both are configured."""
+    mock_engine = MagicMock()
+    mock_scanner = MagicMock()
+    mock_start.return_value = (mock_engine, "http://localhost:8265", mock_scanner)
+
+    mock_future = MagicMock()
+    mock_admin_ref = MagicMock()
+    mock_future.get.return_value = ("http://localhost:1729", mock_admin_ref)
+    mock_spawn.return_value = mock_future
+
+    job = (
+        MockJobTrait()
+        .enable_telemetry(TelemetryConfig())
+        .enable_admin(MeshAdminConfig())
+    )
+    state = job.state(cached_path=None)
+
+    _, kwargs = mock_spawn.call_args
+    assert kwargs.get("telemetry_url") == "http://localhost:8265"
+    assert state.telemetry_url == "http://localhost:8265"
+    assert state.admin_url == "http://localhost:1729"
+
+
+@patch("monarch._src.job.job_components._spawn_admin")
+@patch("monarch._src.job.job_components.start_telemetry")
+def test_mesh_admin_restarts_when_telemetry_config_changes(mock_start, mock_spawn):
+    mock_start.side_effect = [
+        (MagicMock(), "http://telemetry-one", MagicMock()),
+        (MagicMock(), "http://telemetry-two", MagicMock()),
+    ]
+
+    mock_future = MagicMock()
+    mock_admin_ref = MagicMock()
+    mock_future.get.side_effect = [
+        ("http://admin-one", mock_admin_ref),
+        ("http://admin-two", mock_admin_ref),
+    ]
+    mock_spawn.return_value = mock_future
+
+    job = (
+        MockJobTrait()
+        .enable_telemetry(TelemetryConfig(batch_size=1))
+        .enable_admin(MeshAdminConfig())
+    )
+    state = job.state(cached_path=None)
+    assert state.telemetry_url == "http://telemetry-one"
+    assert state.admin_url == "http://admin-one"
+
+    job.enable_telemetry(TelemetryConfig(batch_size=2))
+    state = job.state(cached_path=None)
+
+    assert state.telemetry_url == "http://telemetry-two"
+    assert state.admin_url == "http://admin-two"
+    assert mock_start.call_count == 2
+    assert mock_spawn.call_count == 2
+    assert [call.kwargs["telemetry_url"] for call in mock_spawn.call_args_list] == [
+        "http://telemetry-one",
+        "http://telemetry-two",
+    ]
+
+
+@patch(
+    "monarch._rust_bindings.monarch_extension.snapshot_integration._start_periodic_snapshots"
+)
+@patch("monarch.actor.context")
+@patch("monarch._src.job.job_components._spawn_admin")
+@patch("monarch._src.job.job_components.start_telemetry")
+def test_snapshot_component_starts_once_after_telemetry_and_admin(
+    mock_start,
+    mock_spawn,
+    mock_context,
+    mock_start_snapshots,
+):
+    mock_scanner = MagicMock()
+    mock_admin_ref = MagicMock()
+    mock_instance = MagicMock()
+    mock_start.return_value = (MagicMock(), "http://localhost:8265", mock_scanner)
+    mock_future = MagicMock()
+    mock_future.get.return_value = ("http://localhost:1729", mock_admin_ref)
+    mock_spawn.return_value = mock_future
+    mock_context.return_value.actor_instance._as_rust.return_value = mock_instance
+
+    job = (
+        MockJobTrait()
+        .enable_telemetry(TelemetryConfig(snapshot_interval_secs=5.0))
+        .enable_admin(MeshAdminConfig())
+    )
+    job.state(cached_path=None)
+    job.state(cached_path=None)
+
+    mock_start_snapshots.assert_called_once_with(
+        scanner=mock_scanner,
+        admin_ref=mock_admin_ref,
+        instance=mock_instance,
+        interval_secs=5.0,
+    )
+
+
+@patch("monarch._src.job.job_components._spawn_admin")
+@patch("monarch._src.job.job_components.start_telemetry")
+def test_batch_job_shares_component_runtime_with_wrapped_job(mock_start, mock_spawn):
+    mock_engine = MagicMock()
+    mock_scanner = MagicMock()
+    mock_start.return_value = (mock_engine, "http://localhost:8265", mock_scanner)
+
+    mock_future = MagicMock()
+    mock_admin_ref = MagicMock()
+    mock_future.get.return_value = ("http://localhost:1729", mock_admin_ref)
+    mock_spawn.return_value = mock_future
+
+    job = (
+        MockJobTrait(host_names=["hosts"])
+        .enable_telemetry(TelemetryConfig())
+        .enable_admin(MeshAdminConfig())
+    )
+    batch = BatchJob(job)
+    batch_state = batch.state(cached_path=None)
+    job_state = job.state(cached_path=None)
+
+    assert batch_state.query_engine is mock_engine
+    assert batch_state.telemetry_url == "http://localhost:8265"
+    assert batch_state.admin_url == "http://localhost:1729"
+    assert job_state.query_engine is mock_engine
+    assert job_state.telemetry_url == "http://localhost:8265"
+    assert job_state.admin_url == "http://localhost:1729"
+    mock_start.assert_called_once()
+    mock_spawn.assert_called_once()
 
 
 # Tests for LocalJob implementation

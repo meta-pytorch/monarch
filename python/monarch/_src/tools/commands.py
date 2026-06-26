@@ -589,7 +589,7 @@ def _output_dir_for_job(job: "Any") -> tuple[str, str]:
     import uuid as _uuid
 
     run_id = _uuid.uuid4().hex[:8]
-    entries = job._mounts._gather_entries
+    entries = job._components.mounts._mounts._gather_entries
     if entries:
         entry = entries[0]
         remote = entry.remote_mount_point
@@ -683,7 +683,7 @@ def exec_on_job(
         # If a python_exe was set for this mesh's remote mount, prepend its
         # directory to PATH so commands like "python" resolve to the right one.
         mesh_env = dict(env_dict)
-        exe = job._python_executables.get(name, job._default_python_exe)
+        exe = job._components.mounts.python_executable_for_mesh(name)
         if exe is not None:
             bin_dir = os.path.dirname(exe)
             existing_path = mesh_env.get("PATH", os.environ.get("PATH", ""))

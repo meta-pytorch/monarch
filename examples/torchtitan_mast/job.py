@@ -186,7 +186,7 @@ def _make_job() -> SimpleMastJob:
     # Pass python_exe (above) for the mount layer, but do NOT let it become the
     # proc-bootstrap interpreter -- see the comment above. Workers boot on the
     # bootstrap-fbpkg python; torch/torchtitan come from the mount via PYTHONPATH.
-    job._default_python_exe = None
+    job._components.mounts._default_python_exe = None
 
     # The workspace's ``torchtitan/`` is a symlink to your local checkout
     # (resolved above into ``torchtitan_source``). The FUSE mount serves the

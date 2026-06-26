@@ -66,8 +66,8 @@ logger: logging.Logger = logging.getLogger(__name__)
 class TelemetryConfig:
     """Configuration for automatic telemetry startup.
 
-    When passed to a job constructor, telemetry (and optionally a dashboard)
-    is started automatically when ``state()`` is called.
+    When configured via ``JobTrait.enable_telemetry``, telemetry
+    (and optionally a dashboard) is started when ``state()`` is called.
 
     Args:
         batch_size: Number of rows to buffer before flushing to a RecordBatch.
