@@ -5030,8 +5030,23 @@ mod tests {
         let client1 = router.dial(&addr, mbox.actor_addr()).unwrap();
         let mut status = client1.tx_status().clone();
 
-        // Tearing down the local server closes the watcher with a non-stale
-        // reason, so it must not trigger eviction.
+        // Local transport behaves like a socket: the dialer connects lazily
+        // on the first send and only observes peer teardown over an
+        // established connection. Post a message (routed through client1) and
+        // confirm receipt so the session actually connects, then drain acks so
+        // no unacked messages remain — this makes the post-teardown close take
+        // the fast connect-failure path rather than the delivery-timeout path.
+        let (port, receiver) = mbox.open_once_port::<u64>();
+        let port = port.bind();
+        router
+            .serialize_and_send_once(port, 67u64, monitored_return_handle())
+            .unwrap();
+        assert_eq!(receiver.recv().await.unwrap(), 67u64);
+        client1.flush().await.unwrap();
+
+        // Tearing down the local server breaks the established connection; the
+        // next reconnect fails (port freed) and the session closes with a
+        // non-stale reason, so it must not trigger eviction.
         h.stop("test teardown");
         let _ = h.await;
         while !status.borrow_and_update().is_closed() {
