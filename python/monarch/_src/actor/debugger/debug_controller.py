@@ -10,6 +10,7 @@ import functools
 from typing import Dict, List, Optional, Tuple
 
 from monarch._src.actor.actor_mesh import Actor
+from monarch._src.actor.concurrent import concurrent_endpoint
 from monarch._src.actor.debugger.debug_command import (
     Attach,
     Cast,
@@ -97,7 +98,7 @@ class DebugController(Actor):
             self._debug_io = DebugCliIO(reader, writer)
             self._task = asyncio.create_task(self._enter())
 
-    @endpoint
+    @concurrent_endpoint
     async def wait_pending_session(self) -> None:
         while len(self.sessions) == 0:
             await asyncio.sleep(1)
@@ -203,7 +204,7 @@ class DebugController(Actor):
     #
     # These endpoints are called by the remote debuggers to establish sessions
     # and communicate with them.
-    @endpoint
+    @concurrent_endpoint
     async def debugger_session_start(
         self, rank: int, coords: Dict[str, int], hostname: str, actor_name: str
     ) -> None:
@@ -218,19 +219,19 @@ class DebugController(Actor):
         if (actor_name, rank) not in self.sessions:
             self.sessions.insert(DebugSession(rank, coords, hostname, actor_name))
 
-    @endpoint
+    @concurrent_endpoint
     async def debugger_session_end(self, actor_name: str, rank: int) -> None:
         """Detach from the current debug session."""
         await self.sessions.remove(actor_name, rank).detach()
 
-    @endpoint
+    @concurrent_endpoint
     async def debugger_read(
         self, actor_name: str, rank: int, size: int
     ) -> DebuggerWrite | str:
         """Read from the debug session for the given rank."""
         return await self.sessions.get(actor_name, rank).debugger_read(size)
 
-    @endpoint
+    @concurrent_endpoint
     async def debugger_write(
         self, actor_name: str, rank: int, write: DebuggerWrite
     ) -> None:
