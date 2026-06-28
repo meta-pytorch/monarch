@@ -240,7 +240,7 @@ def test_duration_config_multiple() -> None:
         ("proc_stop_max_idle", "45s", "45s", "30s"),
         ("get_proc_state_max_idle", "90s", "1m 30s", "1m"),
         # Mesh attach
-        ("mesh_attach_config_timeout", "20s", "20s", "10s"),
+        ("mesh_attach_config_timeout", "20s", "20s", "1m"),
     ],
 )
 def test_duration_params(param_name, test_value, expected_value, default_value):
@@ -472,7 +472,7 @@ def test_all_params_together():
     assert config["proc_stop_max_idle"] == "30s"
     assert config["get_proc_state_max_idle"] == "1m"
     assert config["actor_queue_dispatch"] is True
-    assert config["mesh_attach_config_timeout"] == "10s"
+    assert config["mesh_attach_config_timeout"] == "1m"
     assert config["mesh_admin_addr"] == "[::]:1729"
 
 
