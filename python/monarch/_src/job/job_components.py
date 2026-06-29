@@ -225,6 +225,7 @@ class SidecarTelemetryComponent(JobComponent):
     def __init__(self, config: TelemetryConfig) -> None:
         self._config = config
         self._telemetry_url: Optional[str] = None
+        self._dashboard_url: Optional[str] = None
         self._query_engine_client: Optional[QueryEngineClient] = None
 
     def reset_runtime(self) -> None:
@@ -246,12 +247,17 @@ class SidecarTelemetryComponent(JobComponent):
         try:
             response = Telemetry(self._config).ensure_open(apply_id, host_meshes={})
             telemetry_url = response.get("telemetry_url")
+            dashboard_url = response.get("dashboard_url")
             socket_path = response.get("socket_path")
             if not isinstance(telemetry_url, str) or not isinstance(socket_path, str):
                 raise RuntimeError(
                     f"invalid job sidecar telemetry response: {response!r}"
                 )
             self._telemetry_url = telemetry_url
+            if isinstance(dashboard_url, str):
+                self._dashboard_url = dashboard_url
+                if self._config.include_dashboard:
+                    print(f"Monarch Dashboard: {dashboard_url}", flush=True)
             self._query_engine_client = QueryEngineClient(telemetry_url)
             install_sidecar_socket_sink(socket_path)
         except Exception:
@@ -259,6 +265,7 @@ class SidecarTelemetryComponent(JobComponent):
             # fan-out no-ops and `state` exposes no query client.
             self._query_engine_client = None
             self._telemetry_url = None
+            self._dashboard_url = None
             logger.warning(
                 "job sidecar telemetry bootstrap failed; telemetry disabled for this job",
                 exc_info=True,
@@ -273,8 +280,9 @@ class SidecarTelemetryComponent(JobComponent):
         if apply_id is None:
             return host_meshes
         try:
-            # `_telemetry_url` is already set by `before_connect`; this call only
-            # triggers worker fan-out, so its response is intentionally ignored.
+            # `_telemetry_url`/`_dashboard_url` are already set by
+            # `before_connect`; this call only triggers worker fan-out, so its
+            # response is intentionally ignored.
             Telemetry(self._config).ensure_open(apply_id, host_meshes=host_meshes)
         except Exception:
             logger.warning(
@@ -287,6 +295,7 @@ class SidecarTelemetryComponent(JobComponent):
         if self._query_engine_client is not None:
             job_state.query_engine_client = self._query_engine_client
             job_state.telemetry_url = self._telemetry_url
+            job_state.dashboard_url = self._dashboard_url
 
 
 class AdminComponent(JobComponent):
