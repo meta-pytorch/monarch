@@ -26,6 +26,7 @@
 //! - `IbvWc`: Wrapper around ibverbs work completion structure, used to track the status of RDMA operations.
 use std::ffi::CStr;
 use std::fmt;
+use std::io::Error;
 use std::sync::OnceLock;
 
 use serde::Deserialize;
@@ -917,6 +918,151 @@ impl IbvWc {
             slid: 0,
             sl: 0,
             dlid_path_bits: 0,
+        }
+    }
+}
+
+/// Owns an `ibv_cq`, destroying it on drop (a no-op if null). Lets callers
+/// create completion queues without hand-rolling cleanup on the error or drop
+/// paths.
+#[derive(Debug)]
+pub(super) struct IbvCq(*mut rdmaxcel_sys::ibv_cq);
+
+// SAFETY: the only field is the raw `ibv_cq` pointer. The ibverbs CQ it names is
+// not thread-affine — it may be created on one thread and used or destroyed on
+// another (`Send`) — and `IbvCq` exposes no operation that mutates the CQ through
+// a shared `&` (`as_ptr` only hands back the pointer value), so sharing a
+// `&IbvCq` cannot race (`Sync`).
+unsafe impl Send for IbvCq {}
+// SAFETY: as for `Send` above.
+unsafe impl Sync for IbvCq {}
+
+#[expect(
+    dead_code,
+    reason = "consumed by RCQueuePair, added in the next commit of this stack"
+)]
+impl IbvCq {
+    /// Creates a completion queue with `cq_entries` entries on `context`.
+    ///
+    /// # Safety
+    ///
+    /// `context`, if non-null, must be a live `ibv_context`; a null `context`
+    /// yields `Err`.
+    pub(super) unsafe fn create(
+        context: *mut rdmaxcel_sys::ibv_context,
+        cq_entries: i32,
+    ) -> Result<Self, anyhow::Error> {
+        if context.is_null() {
+            anyhow::bail!("cannot create a completion queue on a null context");
+        }
+        // SAFETY: `context` is non-null (checked above) and live (caller
+        // contract); `ibv_create_cq` returns null on failure.
+        let cq = unsafe {
+            rdmaxcel_sys::ibv_create_cq(
+                context,
+                cq_entries,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if cq.is_null() {
+            anyhow::bail!(
+                "failed to create completion queue: {}",
+                Error::last_os_error()
+            );
+        }
+        Ok(Self(cq))
+    }
+
+    /// The raw `ibv_cq`; null for a placeholder that holds no queue.
+    pub(super) fn as_ptr(&self) -> *mut rdmaxcel_sys::ibv_cq {
+        self.0
+    }
+
+    /// A placeholder holding no completion queue: `as_ptr` returns null and
+    /// `Drop` is a no-op.
+    #[cfg(test)]
+    pub(super) fn null() -> Self {
+        Self(std::ptr::null_mut())
+    }
+}
+
+impl Drop for IbvCq {
+    fn drop(&mut self) {
+        if self.0.is_null() {
+            return;
+        }
+        // SAFETY: a non-null `self.0` was returned by `ibv_create_cq` and, since
+        // `IbvCq` is not `Clone`, is destroyed exactly once.
+        let ret = unsafe { rdmaxcel_sys::ibv_destroy_cq(self.0) };
+        if ret != 0 {
+            tracing::error!(
+                "failed to destroy completion queue {:p}: error code {}",
+                self.0,
+                ret
+            );
+        }
+    }
+}
+
+/// Owns an `ibv_qp`, destroying it on drop (a no-op if null), so a queue pair is
+/// carried by value rather than as a raw pointer and its destruction runs even
+/// on an early return or panic.
+#[derive(Debug)]
+pub(super) struct IbvQp(*mut rdmaxcel_sys::ibv_qp);
+
+// SAFETY: the only field is the raw `ibv_qp` pointer. The ibverbs QP it names is
+// not thread-affine — it may be created on one thread and used or destroyed on
+// another (`Send`) — and `IbvQp` exposes no operation that mutates the QP through
+// a shared `&` (`as_ptr` only hands back the pointer value), so sharing a
+// `&IbvQp` cannot race (`Sync`).
+unsafe impl Send for IbvQp {}
+// SAFETY: as for `Send` above.
+unsafe impl Sync for IbvQp {}
+
+#[expect(
+    dead_code,
+    reason = "consumed by RCQueuePair, added in the next commit of this stack"
+)]
+impl IbvQp {
+    /// Takes ownership of a raw `ibv_qp`, destroying it on drop.
+    ///
+    /// # Safety
+    ///
+    /// `qp`, if non-null, must be a live `ibv_qp` owned solely by the returned
+    /// value (its `Drop` calls `ibv_destroy_qp` once).
+    pub(super) unsafe fn from_raw(qp: *mut rdmaxcel_sys::ibv_qp) -> Self {
+        Self(qp)
+    }
+
+    /// The raw `ibv_qp`; null for a placeholder that holds no queue pair.
+    pub(super) fn as_ptr(&self) -> *mut rdmaxcel_sys::ibv_qp {
+        self.0
+    }
+
+    /// A placeholder holding no queue pair: `as_ptr` returns null and `Drop` is
+    /// a no-op.
+    #[cfg(test)]
+    pub(super) fn null() -> Self {
+        Self(std::ptr::null_mut())
+    }
+}
+
+impl Drop for IbvQp {
+    fn drop(&mut self) {
+        if self.0.is_null() {
+            return;
+        }
+        // SAFETY: a non-null `self.0` was handed to `from_raw` as a live `ibv_qp`
+        // and, since `IbvQp` is not `Clone`, is destroyed exactly once.
+        let ret = unsafe { rdmaxcel_sys::ibv_destroy_qp(self.0) };
+        if ret != 0 {
+            tracing::error!(
+                "failed to destroy queue pair {:p}: error code {}",
+                self.0,
+                ret
+            );
         }
     }
 }

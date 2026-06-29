@@ -141,9 +141,8 @@ pub enum PollTarget {
     Recv,
 }
 
-/// The legacy single-type queue pair, retained here while the backends migrate
-/// onto the [`IbvQueuePair`] trait. Both the mlx5 and EFA domains build this
-/// type today; it will eventually split into per-backend queue pairs.
+/// The legacy single-type queue pair, retained while the backends migrate onto
+/// the [`IbvQueuePair`] trait.
 pub mod legacy;
 
 /// Identifies a per-peer queue pair held by one
@@ -172,9 +171,8 @@ pub(super) struct QpKey {
 /// A NIC-backend queue pair: the unit of RDMA communication between two
 /// endpoints, and the operations a [`QueuePairActor`] performs on it. Each
 /// [`IbvDomainImpl`] names its concrete queue-pair type via
-/// [`IbvDomainImpl::QueuePair`](super::domain::IbvDomainImpl::QueuePair) and builds it through
-/// [`Self::new`]. Implemented on [`legacy::IbvQueuePair`] and on mocks in
-/// `#[cfg(test)]` code.
+/// [`IbvDomainImpl::QueuePair`](super::domain::IbvDomainImpl::QueuePair) and builds
+/// it through [`Self::new`].
 pub trait IbvQueuePair: std::fmt::Debug + Send + Sync + 'static + Sized {
     /// Creates a queue pair against `domain` in the RESET state;
     /// [`Self::connect`] transitions it to RTS before use.
@@ -276,6 +274,192 @@ impl IbvQueuePair for legacy::IbvQueuePair {
     ) -> Result<Option<Result<IbvWc, WorkRequestError>>, PollCompletionError> {
         legacy::IbvQueuePair::poll_completion(self, target)
     }
+}
+
+/// Queries the local endpoint info for `qp`, whose device `context` and the QP
+/// `config` (port, GID index, PSN) describe the connection.
+///
+/// # Safety
+///
+/// `qp` must be a live `ibv_qp` (non-null) and `context` must be its live device
+/// context.
+pub(super) unsafe fn get_qp_info(
+    qp: *mut rdmaxcel_sys::ibv_qp,
+    context: *mut rdmaxcel_sys::ibv_context,
+    config: &IbvConfig,
+) -> Result<IbvQpInfo, anyhow::Error> {
+    let mut port_attr = rdmaxcel_sys::ibv_port_attr::default();
+    // SAFETY: `context` is a live device context (caller contract); the
+    // out-param is a writable, properly aligned `ibv_port_attr`. `ibv_query_port`
+    // returns the errno on failure.
+    let errno = unsafe {
+        rdmaxcel_sys::ibv_query_port(
+            context,
+            config.port_num,
+            &mut port_attr as *mut rdmaxcel_sys::ibv_port_attr as *mut _,
+        )
+    };
+    if errno != 0 {
+        return Err(anyhow::anyhow!(
+            "failed to query port attributes: {}",
+            Error::from_raw_os_error(errno)
+        ));
+    }
+
+    let mut gid = Gid::default();
+    // SAFETY: `context` is live (caller contract); `gid.as_mut()` is a writable,
+    // properly aligned `ibv_gid`.
+    let ret = unsafe {
+        rdmaxcel_sys::ibv_query_gid(
+            context,
+            config.port_num,
+            i32::from(config.gid_index),
+            gid.as_mut(),
+        )
+    };
+    if ret != 0 {
+        // `ibv_query_gid` returns -1 (not the errno) and sets `errno`, unlike
+        // the other verbs here, so report `last_os_error`.
+        return Err(anyhow::anyhow!(
+            "failed to query GID: {}",
+            Error::last_os_error()
+        ));
+    }
+
+    // SAFETY: `qp` is a live `ibv_qp` (caller contract).
+    let qp_num = unsafe { (*qp).qp_num };
+    Ok(IbvQpInfo {
+        qp_num,
+        lid: port_attr.lid,
+        gid: Some(gid),
+        psn: config.psn,
+    })
+}
+
+/// Returns the current `ibv_qp_state` of `qp`.
+///
+/// # Safety
+///
+/// `qp` must be a live `ibv_qp` (non-null).
+unsafe fn state(qp: *mut rdmaxcel_sys::ibv_qp) -> Result<u32, anyhow::Error> {
+    let mut qp_attr = rdmaxcel_sys::ibv_qp_attr::default();
+    let mut qp_init_attr = rdmaxcel_sys::ibv_qp_init_attr::default();
+    let mask = rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_STATE;
+    // SAFETY: `qp` wraps a live `ibv_qp` (caller contract); the out-params are
+    // writable, properly aligned attr structs. `ibv_query_qp` returns the errno.
+    let errno =
+        unsafe { rdmaxcel_sys::ibv_query_qp(qp, &mut qp_attr, mask.0 as i32, &mut qp_init_attr) };
+    if errno != 0 {
+        return Err(anyhow::anyhow!(
+            "failed to query QP state: {}",
+            Error::from_raw_os_error(errno)
+        ));
+    }
+    Ok(qp_attr.qp_state)
+}
+
+/// Transitions `qp` through `INIT -> RTR -> RTS`, connected to `info`, granting
+/// remote peers `access_flags` and using the connection parameters in `config`.
+///
+/// # Safety
+///
+/// `qp` must be a live `ibv_qp` (non-null).
+pub(super) unsafe fn connect(
+    qp: *mut rdmaxcel_sys::ibv_qp,
+    config: &IbvConfig,
+    access_flags: i32,
+    info: &IbvQpInfo,
+) -> Result<(), anyhow::Error> {
+    // Transition to INIT.
+    let mut qp_attr = rdmaxcel_sys::ibv_qp_attr {
+        qp_state: rdmaxcel_sys::ibv_qp_state::IBV_QPS_INIT,
+        qp_access_flags: access_flags as u32,
+        pkey_index: config.pkey_index,
+        port_num: config.port_num,
+        ..Default::default()
+    };
+    let mask = rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_STATE
+        | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_PKEY_INDEX
+        | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_PORT
+        | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_ACCESS_FLAGS;
+    // SAFETY: `qp` is a live `ibv_qp` (caller contract); `qp_attr` is a valid
+    // `ibv_qp_attr` whose populated fields match `mask`. `ibv_modify_qp` returns
+    // the errno.
+    let errno = unsafe { rdmaxcel_sys::ibv_modify_qp(qp, &mut qp_attr, mask.0 as i32) };
+    if errno != 0 {
+        return Err(anyhow::anyhow!(
+            "failed to transition QP to INIT: {}",
+            Error::from_raw_os_error(errno)
+        ));
+    }
+
+    // Transition to RTR (Ready to Receive).
+    let mut qp_attr = rdmaxcel_sys::ibv_qp_attr {
+        qp_state: rdmaxcel_sys::ibv_qp_state::IBV_QPS_RTR,
+        path_mtu: config.path_mtu,
+        dest_qp_num: info.qp_num,
+        rq_psn: info.psn,
+        max_dest_rd_atomic: config.max_dest_rd_atomic,
+        min_rnr_timer: config.min_rnr_timer,
+        ah_attr: rdmaxcel_sys::ibv_ah_attr {
+            dlid: info.lid,
+            sl: 0,
+            src_path_bits: 0,
+            port_num: config.port_num,
+            grh: Default::default(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    if let Some(gid) = info.gid {
+        qp_attr.ah_attr.is_global = 1;
+        qp_attr.ah_attr.grh.dgid = rdmaxcel_sys::ibv_gid::from(gid);
+        qp_attr.ah_attr.grh.hop_limit = 0xff;
+        qp_attr.ah_attr.grh.sgid_index = config.gid_index;
+    } else {
+        qp_attr.ah_attr.is_global = 0;
+    }
+    let mask = rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_STATE
+        | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_AV
+        | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_PATH_MTU
+        | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_DEST_QPN
+        | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_RQ_PSN
+        | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_MAX_DEST_RD_ATOMIC
+        | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_MIN_RNR_TIMER;
+    // SAFETY: as for the INIT transition above.
+    let errno = unsafe { rdmaxcel_sys::ibv_modify_qp(qp, &mut qp_attr, mask.0 as i32) };
+    if errno != 0 {
+        return Err(anyhow::anyhow!(
+            "failed to transition QP to RTR: {}",
+            Error::from_raw_os_error(errno)
+        ));
+    }
+
+    // Transition to RTS (Ready to Send).
+    let mut qp_attr = rdmaxcel_sys::ibv_qp_attr {
+        qp_state: rdmaxcel_sys::ibv_qp_state::IBV_QPS_RTS,
+        sq_psn: config.psn,
+        max_rd_atomic: config.max_rd_atomic,
+        retry_cnt: config.retry_cnt,
+        rnr_retry: config.rnr_retry,
+        timeout: config.qp_timeout,
+        ..Default::default()
+    };
+    let mask = rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_STATE
+        | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_TIMEOUT
+        | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_RETRY_CNT
+        | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_SQ_PSN
+        | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_RNR_RETRY
+        | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_MAX_QP_RD_ATOMIC;
+    // SAFETY: as for the INIT transition above.
+    let errno = unsafe { rdmaxcel_sys::ibv_modify_qp(qp, &mut qp_attr, mask.0 as i32) };
+    if errno != 0 {
+        return Err(anyhow::anyhow!(
+            "failed to transition QP to RTS: {}",
+            Error::from_raw_os_error(errno)
+        ));
+    }
+    Ok(())
 }
 
 /// Adaptive backoff for the scheduler's `Tick` self-message. Use
