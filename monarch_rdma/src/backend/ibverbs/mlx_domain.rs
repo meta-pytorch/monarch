@@ -35,9 +35,13 @@ use super::domain::register_dmabuf_range;
 use super::domain::register_host_or_dmabuf_mr;
 use super::memory_region::IbvMemoryRegionKeepalive;
 use super::memory_region::IbvMemoryRegionView;
+use super::mlx_queue_pair::MlxQueuePair;
 use super::primitives::IbvConfig;
 use super::primitives::IbvDeviceInfo;
-use super::queue_pair::legacy::IbvQueuePair;
+use super::primitives::IbvQp;
+use super::queue_pair::QpParts;
+use super::queue_pair::connect;
+use super::queue_pair::get_qp_info;
 use crate::backend::ibverbs::mlx_device::MlxDevice;
 use crate::local_memory::KeepaliveLocalMemory;
 use crate::local_memory::is_device_ptr;
@@ -137,24 +141,19 @@ pub(super) trait MlxDomainOps: Send + Sync + 'static {
     /// has not already been deregistered.
     unsafe fn dereg_mr(&self, mr: *mut rdmaxcel_sys::ibv_mr);
 
-    /// Create and connect a fresh loopback queue pair against `domain`'s PD,
-    /// returning the raw `rdmaxcel_qp` pointer. The caller ([`MlxDomain`])
-    /// caches it and is responsible for destroying it via
-    /// [`Self::destroy_loopback_qp`]. We manage the raw pointer directly since
-    /// we only ever use it for indirect mkey binding.
-    fn create_loopback_qp(
-        &self,
-        domain: Arc<IbvDomain<MlxDomain>>,
-        config: &IbvConfig,
-    ) -> anyhow::Result<*mut rdmaxcel_sys::rdmaxcel_qp>;
-
-    /// Destroy a loopback QP returned by [`Self::create_loopback_qp`].
+    /// Creates a loopback-connected queue pair against `domain`'s PD, returning
+    /// it and the two completion queues backing it bundled in a [`QpParts`]. The
+    /// caller stores the bundle for the domain's lifetime.
     ///
     /// # Safety
     ///
-    /// `qp` must be null or a queue pair returned by [`Self::create_loopback_qp`]
-    /// that has not already been destroyed.
-    unsafe fn destroy_loopback_qp(&self, qp: *mut rdmaxcel_sys::rdmaxcel_qp);
+    /// `domain`'s context and PD, if non-null, must be live. A null context or
+    /// PD yields `Err`.
+    unsafe fn create_loopback_qp_parts(
+        &self,
+        domain: Arc<IbvDomain<MlxDomain>>,
+        config: &IbvConfig,
+    ) -> anyhow::Result<QpParts>;
 
     /// Bind `mrs` to a freshly created indirect key using `qp`'s work-request
     /// builder, returning the new key.
@@ -166,7 +165,7 @@ pub(super) trait MlxDomainOps: Send + Sync + 'static {
     unsafe fn bind_mr_list(
         &self,
         pd: *mut rdmaxcel_sys::ibv_pd,
-        qp: *mut rdmaxcel_sys::rdmaxcel_qp,
+        qp: &IbvQp,
         access: i32,
         mrs: &[*mut rdmaxcel_sys::ibv_mr],
     ) -> anyhow::Result<*mut rdmaxcel_sys::mlx5dv_mkey>;
@@ -266,57 +265,52 @@ impl MlxDomainOps for ProdMlxDomainOps {
         }
     }
 
-    fn create_loopback_qp(
+    unsafe fn create_loopback_qp_parts(
         &self,
         domain: Arc<IbvDomain<MlxDomain>>,
         config: &IbvConfig,
-    ) -> anyhow::Result<*mut rdmaxcel_sys::rdmaxcel_qp> {
-        // Build a full queue pair (QP + mlx5dv structures) and connect it to
-        // its own endpoint (loopback) so it can post the key-binding work
-        // request, then take ownership of the raw pointer: MlxDomain manages
-        // the QP directly and destroys it via destroy_loopback_qp.
-        let mut qp = IbvQueuePair::new(domain, config.clone())
+    ) -> anyhow::Result<QpParts> {
+        // Kept bundled in the `QpParts` (rather than split into locals) across
+        // the fallible connect below, so an early return or panic still tears it
+        // down in the right order.
+        let parts = MlxQueuePair::create_raw_parts(&domain, config)
             .context("could not create loopback QP for mkey binding")?;
-        let info = qp
-            .get_qp_info()
-            .context("could not query loopback QP info for mkey binding")?;
-        qp.connect(&info)
-            .context("could not connect loopback QP for mkey binding")?;
-        Ok(qp.take_ptr())
-    }
+        let context = domain.context.as_ptr();
+        let access_flags = domain.access_flags();
 
-    unsafe fn destroy_loopback_qp(&self, qp: *mut rdmaxcel_sys::rdmaxcel_qp) {
-        if qp.is_null() {
-            return;
-        }
-        // SAFETY: `qp` is non-null (checked above), was returned by
-        // `create_loopback_qp`'s `rdmaxcel_qp_create`, and is destroyed exactly
-        // once.
-        unsafe { rdmaxcel_sys::rdmaxcel_qp_destroy(qp) };
+        // Connect the QP to itself (loopback) so it reaches RTS, the state
+        // required to post work requests.
+        // SAFETY: `parts.qp` wraps the live QP just created above and `context`
+        // is its live device context.
+        let info = unsafe { get_qp_info(parts.qp.as_ptr(), context, config) }
+            .context("could not query loopback QP info for mkey binding")?;
+        // SAFETY: as above.
+        unsafe { connect(parts.qp.as_ptr(), config, access_flags, &info) }
+            .context("could not connect loopback QP for mkey binding")?;
+
+        Ok(parts)
     }
 
     unsafe fn bind_mr_list(
         &self,
         pd: *mut rdmaxcel_sys::ibv_pd,
-        qp: *mut rdmaxcel_sys::rdmaxcel_qp,
+        qp: &IbvQp,
         access: i32,
         mrs: &[*mut rdmaxcel_sys::ibv_mr],
     ) -> anyhow::Result<*mut rdmaxcel_sys::mlx5dv_mkey> {
-        if pd.is_null() || qp.is_null() {
+        if pd.is_null() || qp.as_ptr().is_null() {
             anyhow::bail!("bind_mr_list called with a null protection domain or queue pair");
         }
         // `rdmaxcel_bind_mr_list` creates the indirect key in place when the
         // `mkey` out-param starts null, which it always does here.
         let mut mkey: *mut rdmaxcel_sys::mlx5dv_mkey = std::ptr::null_mut();
-        // SAFETY: `pd` and `qp` are non-null (checked above), so reading `qp`'s
-        // `ibv_qp` field is sound; `mrs` is a contiguous array of `mrs.len()`
-        // non-null MRs; `mkey` is created in place. `rdmaxcel_bind_mr_list`
-        // reports any failure via its return code.
+        // SAFETY: `pd` and `qp` are non-null (checked above) and valid; `mrs` is
+        // a contiguous array of `mrs.len()` non-null MRs; `mkey` is created in
+        // place. `rdmaxcel_bind_mr_list` reports any failure via its return code.
         let ret = unsafe {
-            let ibv_qp = (*qp).ibv_qp;
             rdmaxcel_sys::rdmaxcel_bind_mr_list(
                 pd,
-                ibv_qp,
+                qp.as_ptr(),
                 access,
                 mrs.as_ptr() as *mut *mut rdmaxcel_sys::ibv_mr,
                 mrs.len(),
@@ -471,7 +465,7 @@ impl RegisteredSegment {
     unsafe fn grow(
         &self,
         pd: *mut rdmaxcel_sys::ibv_pd,
-        qp: *mut rdmaxcel_sys::rdmaxcel_qp,
+        qp: &IbvQp,
         access: i32,
         scanned_seg: &ScannedSegment,
     ) -> anyhow::Result<()> {
@@ -650,10 +644,9 @@ pub struct MlxDomain {
     /// CUDA ordinals whose optimal NIC is this device. Only segments on
     /// these ordinals are bound here.
     cuda_ordinals: Vec<i32>,
-    /// Lazily-created loopback QP used to post key-binding work requests,
-    /// held as a raw `rdmaxcel_qp` pointer (stored as `usize` for `Send`)
-    /// owned by this domain and destroyed in [`Drop`].
-    loopback_qp: OnceLock<usize>,
+    /// Lazily-created loopback QP (with its completion queues) used to post
+    /// key-binding work requests, destroyed when this domain drops.
+    loopback: OnceLock<QpParts>,
     /// Currently-bound segments, keyed by `(base address, CUDA ordinal)`. Each
     /// grows in place (reusing its MRs, retiring superseded keys internally);
     /// a key whose base vanishes from the scan is dropped (a live view keeps
@@ -670,19 +663,6 @@ impl std::fmt::Debug for MlxDomain {
     }
 }
 
-impl Drop for MlxDomain {
-    fn drop(&mut self) {
-        if let Some(&qp) = self.loopback_qp.get() {
-            // SAFETY: `qp` was returned by `create_loopback_qp` and is destroyed
-            // exactly once, here, at the end of this domain's life.
-            unsafe {
-                self.ops
-                    .destroy_loopback_qp(qp as *mut rdmaxcel_sys::rdmaxcel_qp);
-            }
-        }
-    }
-}
-
 impl MlxDomain {
     /// Build a domain over the given ops, deriving mlx5dv support and the
     /// served CUDA ordinals from them.
@@ -694,30 +674,27 @@ impl MlxDomain {
             config,
             mlx5dv_enabled,
             cuda_ordinals,
-            loopback_qp: OnceLock::new(),
+            loopback: OnceLock::new(),
             segments: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Get-or-create the loopback QP and return its raw `rdmaxcel_qp`
-    /// pointer.
-    fn loopback_qp_ptr(
-        &self,
-        domain: &Arc<IbvDomain<MlxDomain>>,
-    ) -> anyhow::Result<*mut rdmaxcel_sys::rdmaxcel_qp> {
+    /// Get-or-create the loopback QP.
+    fn loopback_qp_ptr(&self, domain: &Arc<IbvDomain<MlxDomain>>) -> anyhow::Result<&IbvQp> {
         // `OnceLock::get_or_try_init` would fit here but is still unstable
         // (`once_cell_try`); calls are serialized under the `segments` lock,
         // so this check-then-set is race-free.
-        if let Some(&qp) = self.loopback_qp.get() {
-            return Ok(qp as *mut rdmaxcel_sys::rdmaxcel_qp);
+        if let Some(parts) = self.loopback.get() {
+            return Ok(&parts.qp);
         }
-        let qp = self
-            .ops
-            .create_loopback_qp(Arc::clone(domain), &self.config)?;
-        self.loopback_qp
-            .set(qp as usize)
-            .expect("loopback qp already initialized");
-        Ok(qp)
+        // SAFETY: an `IbvDomain` guarantees its context and PD are null or live;
+        // `create_loopback_qp_parts` rejects null.
+        let parts = unsafe {
+            self.ops
+                .create_loopback_qp_parts(Arc::clone(domain), &self.config)
+        }?;
+        let _ = self.loopback.set(parts);
+        Ok(&self.loopback.get().expect("loopback just set").qp)
     }
 
     /// Bind CUDA `[addr, addr + size)` via an indirect mlx5dv key. Scans for
@@ -805,7 +782,7 @@ impl MlxDomain {
 }
 
 impl IbvDomainImpl for MlxDomain {
-    type QueuePair = IbvQueuePair;
+    type QueuePair = MlxQueuePair;
 
     unsafe fn new(context: &IbvContext, device_info: &IbvDeviceInfo, config: &IbvConfig) -> Self {
         Self::new_with_ops(
@@ -820,15 +797,6 @@ impl IbvDomainImpl for MlxDomain {
             | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_READ
             | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC)
             .0 as i32
-    }
-
-    fn create_queue_pair(
-        domain: Arc<IbvDomain<Self>>,
-        config: &IbvConfig,
-    ) -> anyhow::Result<Self::QueuePair> {
-        // mlx5 builds the legacy single-type queue pair for now; it will
-        // become an mlx5-specific queue pair.
-        IbvQueuePair::new(domain, config.clone())
     }
 
     unsafe fn register_mr(
@@ -859,6 +827,7 @@ mod tests {
     use std::sync::Mutex;
     use std::sync::MutexGuard;
 
+    use super::super::primitives::IbvCq;
     use super::super::primitives::IbvDeviceInfo;
     use super::*;
 
@@ -903,9 +872,10 @@ mod tests {
         next_handle: usize,
         live_mrs: HashSet<usize>,
         live_mkeys: HashSet<usize>,
-        live_loopback_qps: HashSet<usize>,
-        /// Every loopback QP handle passed to `destroy_loopback_qp`, in order.
-        destroyed_loopback_qps: Vec<usize>,
+        /// Number of `create_loopback_qp_parts` calls. The mock returns a null
+        /// [`IbvQp`] (RAII destruction is type-guaranteed, not observable here),
+        /// so this counter is how tests check the QP is created once and reused.
+        loopback_created: usize,
         fail_dmabuf_after: Option<usize>,
         fail_bind: bool,
         scan_calls: usize,
@@ -1009,28 +979,25 @@ mod tests {
             }
         }
 
-        fn create_loopback_qp(
+        unsafe fn create_loopback_qp_parts(
             &self,
             _domain: Arc<IbvDomain<MlxDomain>>,
             _config: &IbvConfig,
-        ) -> anyhow::Result<*mut rdmaxcel_sys::rdmaxcel_qp> {
-            let mut s = self.lock();
-            let h = s.mint();
-            s.live_loopback_qps.insert(h);
-            Ok(h as *mut rdmaxcel_sys::rdmaxcel_qp)
-        }
-
-        unsafe fn destroy_loopback_qp(&self, qp: *mut rdmaxcel_sys::rdmaxcel_qp) {
-            let mut s = self.lock();
-            let v = qp as usize;
-            s.live_loopback_qps.remove(&v);
-            s.destroyed_loopback_qps.push(v);
+        ) -> anyhow::Result<QpParts> {
+            // The mock has no live context to back a real QP or CQs, so it
+            // returns null placeholders and just counts the call.
+            self.lock().loopback_created += 1;
+            Ok(QpParts {
+                qp: IbvQp::null(),
+                send_cq: IbvCq::null(),
+                recv_cq: IbvCq::null(),
+            })
         }
 
         unsafe fn bind_mr_list(
             &self,
             _pd: *mut rdmaxcel_sys::ibv_pd,
-            _qp: *mut rdmaxcel_sys::rdmaxcel_qp,
+            _qp: &IbvQp,
             _access: i32,
             mrs: &[*mut rdmaxcel_sys::ibv_mr],
         ) -> anyhow::Result<*mut rdmaxcel_sys::mlx5dv_mkey> {
@@ -1102,8 +1069,8 @@ mod tests {
         std::ptr::null_mut()
     }
 
-    fn null_qp() -> *mut rdmaxcel_sys::rdmaxcel_qp {
-        std::ptr::null_mut()
+    fn null_qp() -> IbvQp {
+        IbvQp::null()
     }
 
     /// Upcast the mock to the `Arc<dyn MlxDomainOps>` `RegisteredSegment` takes.
@@ -1115,7 +1082,7 @@ mod tests {
     fn bind_fresh(ops: &Arc<MockOps>, base: usize, size: usize) -> Arc<RegisteredSegment> {
         let segment = Arc::new(RegisteredSegment::empty(dyn_ops(ops), base));
         // SAFETY: `MockOps` ignores the raw `pd`/`qp`; the nulls are never deref'd.
-        unsafe { segment.grow(null_pd(), null_qp(), 0, &seg(base, size, 0)) }
+        unsafe { segment.grow(null_pd(), &null_qp(), 0, &seg(base, size, 0)) }
             .expect("fresh bind should succeed");
         segment
     }
@@ -1204,7 +1171,7 @@ mod tests {
         let mr_a = ops.lock().bind_calls[0].mrs[0];
 
         // SAFETY: `MockOps` ignores the raw `pd`/`qp`; the nulls are never deref'd.
-        unsafe { rs.grow(null_pd(), null_qp(), 0, &seg(base, 2 * MIB2, 0)) }
+        unsafe { rs.grow(null_pd(), &null_qp(), 0, &seg(base, 2 * MIB2, 0)) }
             .expect("growth should succeed");
 
         assert_eq!(rs.size(), 2 * MIB2);
@@ -1276,7 +1243,7 @@ mod tests {
         let result = unsafe {
             rs.grow(
                 null_pd(),
-                null_qp(),
+                &null_qp(),
                 0,
                 &seg(base, MAX_MR_SIZE + 2 * MIB2, 0),
             )
@@ -1318,7 +1285,7 @@ mod tests {
 
         // A scan reporting the same size must be a no-op rather than re-binding.
         // SAFETY: `MockOps` ignores the raw `pd`/`qp`; the nulls are never deref'd.
-        unsafe { rs.grow(null_pd(), null_qp(), 0, &seg(base, 2 * MIB2, 0)) }
+        unsafe { rs.grow(null_pd(), &null_qp(), 0, &seg(base, 2 * MIB2, 0)) }
             .expect("equal-size grow is a no-op");
 
         assert_eq!(rs.size(), 2 * MIB2, "size is unchanged");
@@ -1365,7 +1332,7 @@ mod tests {
         // Two chunks; the second dmabuf registration fails.
         // SAFETY: `MockOps` ignores the raw `pd`/`qp`; the nulls are never deref'd.
         let result =
-            unsafe { segment.grow(null_pd(), null_qp(), 0, &seg(base, MAX_MR_SIZE + MIB2, 0)) };
+            unsafe { segment.grow(null_pd(), &null_qp(), 0, &seg(base, MAX_MR_SIZE + MIB2, 0)) };
         assert!(
             result.is_err(),
             "the first bind fails when a chunk registration fails"
@@ -1386,7 +1353,7 @@ mod tests {
         let segment = RegisteredSegment::empty(dyn_ops(&ops), base);
 
         // SAFETY: `MockOps` ignores the raw `pd`/`qp`; the nulls are never deref'd.
-        let result = unsafe { segment.grow(null_pd(), null_qp(), 0, &seg(base, MIB2, 0)) };
+        let result = unsafe { segment.grow(null_pd(), &null_qp(), 0, &seg(base, MIB2, 0)) };
         assert!(result.is_err(), "the bind fails when bind_mr_list fails");
         assert_eq!(segment.size(), 0, "the segment is left empty");
         let s = ops.lock();
@@ -1407,7 +1374,7 @@ mod tests {
         // Grow once so the segment carries a parked (stale) key plus its
         // current key, and two MRs.
         // SAFETY: `MockOps` ignores the raw `pd`/`qp`; the nulls are never deref'd.
-        unsafe { rs.grow(null_pd(), null_qp(), 0, &seg(base, 2 * MIB2, 0)) }
+        unsafe { rs.grow(null_pd(), &null_qp(), 0, &seg(base, 2 * MIB2, 0)) }
             .expect("growth should succeed");
         assert_eq!(ops.lock().live_mrs.len(), 2);
         assert_eq!(ops.lock().live_mkeys.len(), 2);
@@ -1551,7 +1518,7 @@ mod tests {
     }
 
     #[test]
-    fn test_drop_frees_segment_keys_and_loopback_qp() {
+    fn test_drop_frees_segment_keys() {
         let base = 0x10_0000_0000;
         let mock = MockOps::new(SERVED_NIC, true, &[0]);
         mock.lock().scan = vec![seg(base, MIB2, 0)];
@@ -1565,11 +1532,6 @@ mod tests {
 
         assert_eq!(mock.lock().live_mrs.len(), 2);
         assert_eq!(mock.lock().live_mkeys.len(), 2, "current + retired key");
-        assert_eq!(
-            mock.lock().live_loopback_qps.len(),
-            1,
-            "the loopback binding QP was created"
-        );
 
         drop(domain);
 
@@ -1582,10 +1544,6 @@ mod tests {
             s.live_mkeys.is_empty(),
             "dropping the domain destroys the current + retired keys"
         );
-        assert!(
-            s.live_loopback_qps.is_empty(),
-            "dropping the domain destroys its loopback QP"
-        );
     }
 
     #[test]
@@ -1597,41 +1555,30 @@ mod tests {
         let domain = domain(mock.clone());
 
         // The first binding creates the loopback QP used to post key-binding
-        // work requests; capture its handle.
+        // work requests.
         register_cuda(&domain, base, 4096).unwrap();
-        let qp = {
-            let s = mock.lock();
-            assert_eq!(
-                s.live_loopback_qps.len(),
-                1,
-                "the first binding creates the loopback QP"
-            );
-            *s.live_loopback_qps.iter().next().unwrap()
-        };
+        assert_eq!(
+            mock.lock().loopback_created,
+            1,
+            "the first binding creates the loopback QP"
+        );
 
         // Later scans — a growth, then a brand-new segment — each consult the
-        // loopback QP, but must reuse the very same cached one. After each, the
-        // single live QP is unchanged (same handle), never recreated.
+        // loopback QP, but must reuse the cached one rather than create another.
         mock.lock().scan = vec![seg(base, 2 * MIB2, 0)];
         register_cuda(&domain, base + MIB2, 4096).unwrap();
         assert_eq!(
-            mock.lock().live_loopback_qps,
-            HashSet::from([qp]),
-            "growth reuses the same loopback QP handle"
+            mock.lock().loopback_created,
+            1,
+            "growth reuses the cached loopback QP"
         );
 
         mock.lock().scan = vec![seg(base, 2 * MIB2, 0), seg(other, MIB2, 0)];
         register_cuda(&domain, other, 4096).unwrap();
         assert_eq!(
-            mock.lock().live_loopback_qps,
-            HashSet::from([qp]),
-            "binding a new segment reuses the same loopback QP handle"
-        );
-
-        // No loopback QP was ever destroyed across the domain's lifetime.
-        assert!(
-            mock.lock().destroyed_loopback_qps.is_empty(),
-            "no loopback QP is destroyed while the domain lives"
+            mock.lock().loopback_created,
+            1,
+            "binding a new segment reuses the cached loopback QP"
         );
     }
 

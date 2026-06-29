@@ -26,7 +26,6 @@ use anyhow::Result;
 use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
-use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
@@ -38,8 +37,6 @@ use hyperactor::OncePortRef;
 use hyperactor::PortHandle;
 use hyperactor::RefClient;
 use hyperactor::actor::Referable;
-use hyperactor::context::Mailbox;
-use hyperactor::mailbox::OncePortReceiver;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -63,6 +60,7 @@ use super::queue_pair::OpResult;
 use super::queue_pair::ProcessOps;
 use super::queue_pair::QpKey;
 use super::queue_pair::QueuePairActor;
+use super::queue_pair::legacy;
 use crate::RdmaOp;
 use crate::RdmaTransportLevel;
 use crate::backend::RdmaBackend;
@@ -110,16 +108,17 @@ pub(super) struct SubmitOps<I: IbvDeviceImpl> {
     pub(super) reply: PortHandle<OpResult>,
 }
 
-/// Local-only message: create an [`IbvQueuePair`] on `self_device`,
-/// drive a handshake with `peer` (whose mirror QP lands on
-/// `peer_device`), and return the connected QP. Lets doorbell tests
-/// and the `cuda_ping_pong` example poke a real QP without going
-/// through [`QueuePairActor`].
-pub struct RawQueuePair<I: IbvDeviceImpl> {
-    pub peer: ActorRef<IbvManagerActor<I>>,
+/// Local-only message: create a fresh, unconnected legacy
+/// [`legacy::IbvQueuePair`] on `self_device` and return it. The caller drives
+/// the connection itself — exchange [`IbvQpInfo`] with the other endpoint's QP
+/// and call `connect` on each side. Lets doorbell tests and the
+/// `cuda_ping_pong` example poke a real QP without going through
+/// [`QueuePairActor`]; both want the legacy queue pair for its direct
+/// device-doorbell data path, independent of the backend's production
+/// [`IbvDomainImpl::QueuePair`].
+pub struct RawQueuePair {
     pub self_device: String,
-    pub peer_device: String,
-    pub reply: OncePortHandle<Result<<I::Domain as IbvDomainImpl>::QueuePair, String>>,
+    pub reply: OncePortHandle<Result<legacy::IbvQueuePair, String>>,
 }
 
 /// Cross-proc messages handled by [`IbvManagerActor`].
@@ -520,97 +519,17 @@ impl<I: IbvDeviceImpl> Handler<SubmitOps<I>> for IbvManagerActor<I> {
     }
 }
 
-impl<I: IbvDeviceImpl> IbvManagerActor<I> {
-    /// Synchronous portion of [`RawQueuePair`] handling: create the
-    /// local QP, post `CreatePeerQueuePair` to `peer`, and return the
-    /// in-flight reply receiver. The follow-up work (awaiting the
-    /// peer's reply and connecting the QP) runs in a tokio task off
-    /// the manager's mailbox; see [`Self::raw_queue_pair_impl`]'s
-    /// rewrite into [`Handler<RawQueuePair>`].
-    fn raw_queue_pair_setup(
-        &mut self,
-        cx: &Context<'_, Self>,
-        peer: &ActorRef<IbvManagerActor<I>>,
-        self_device: String,
-        peer_device: String,
-    ) -> Result<
-        (
-            <I::Domain as IbvDomainImpl>::QueuePair,
-            OncePortReceiver<Result<IbvQpInfo, String>>,
-        ),
-        anyhow::Error,
-    > {
-        let domain = self.get_or_create_device_domain(&self_device)?;
-        let mut qp = domain
-            .create_queue_pair(&self.config)
-            .map_err(|e| anyhow::anyhow!("could not create IbvQueuePair: {e}"))?;
-        let sender_info = qp
-            .get_qp_info()
-            .map_err(|e| anyhow::anyhow!("could not extract QP info: {e}"))?;
-        let (reply, rx) = Mailbox::mailbox(cx).open_once_port::<Result<IbvQpInfo, String>>();
-        peer.post(
-            cx,
-            CreatePeerQueuePair::<IbvManagerActor<I>> {
-                sender: cx.bind(),
-                sender_device: self_device,
-                receiver_device: peer_device,
-                sender_info,
-                reply: reply.bind(),
-            },
-        );
-        Ok((qp, rx))
-    }
-}
-
 #[async_trait]
-impl<I: IbvDeviceImpl> Handler<RawQueuePair<I>> for IbvManagerActor<I> {
-    async fn handle(
-        &mut self,
-        cx: &Context<Self>,
-        msg: RawQueuePair<I>,
-    ) -> Result<(), anyhow::Error> {
-        let RawQueuePair {
-            peer,
-            self_device,
-            peer_device,
-            reply,
-        } = msg;
-
-        // Do the sync setup (QP create + peer dispatch) while we
-        // still own the manager's actor loop.
-        let setup = self.raw_queue_pair_setup(cx, &peer, self_device, peer_device);
-        let (mut qp, rx) = match setup {
-            Ok(state) => state,
-            Err(e) => {
-                let _ = reply.try_post(cx, Err(e.to_string()));
-                return Ok(());
-            }
-        };
-
-        // Hand off the wait to a tokio task using a freshly-minted
-        // `Proc::client` as the posting context. Without this hop the
-        // handler would park on `rx.recv()` while still holding the
-        // manager's mailbox; a symmetric `RawQueuePair` from the peer
-        // would then queue a `CreatePeerQueuePair` we can't dispatch,
-        // and both managers deadlock until timeout.
-        let client_name = ActorId::anonymous(cx.proc().proc_id().clone()).to_string();
-        let client = cx.proc().client(&client_name);
-        let timeout = hyperactor_config::global::get(crate::config::RDMA_QP_INIT_TIMEOUT);
-
-        tokio::spawn(async move {
-            let result: Result<<I::Domain as IbvDomainImpl>::QueuePair, String> = async {
-                let peer_info_result = tokio::time::timeout(timeout, rx.recv())
-                    .await
-                    .map_err(|_| format!("RawQueuePair init timed out after {timeout:?}"))?
-                    .map_err(|e| format!("RawQueuePair reply port closed: {e}"))?;
-                let peer_info = peer_info_result?;
-                qp.connect(&peer_info)
-                    .map_err(|e| format!("could not connect QP: {e}"))?;
-                Ok(qp)
-            }
-            .await;
-            let _ = reply.try_post(&client, result);
-        });
+impl<I: IbvDeviceImpl> Handler<RawQueuePair> for IbvManagerActor<I> {
+    async fn handle(&mut self, cx: &Context<Self>, msg: RawQueuePair) -> Result<(), anyhow::Error> {
+        let RawQueuePair { self_device, reply } = msg;
+        // Build a fresh, unconnected legacy QP on `self_device` and hand it
+        // back; the caller exchanges endpoint info and connects it.
+        let result = self
+            .get_or_create_device_domain(&self_device)
+            .and_then(|domain| legacy::IbvQueuePair::new(domain, self.config.clone()))
+            .map_err(|e| e.to_string());
+        let _ = reply.try_post(cx, result);
         Ok(())
     }
 }

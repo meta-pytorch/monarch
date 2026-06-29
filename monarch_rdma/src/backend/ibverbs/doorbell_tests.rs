@@ -16,7 +16,6 @@
 #[cfg(test)]
 mod tests {
     use hyperactor::ActorHandle;
-    use hyperactor::ActorRef;
     use hyperactor::context::Mailbox;
 
     use super::super::PollTarget;
@@ -29,29 +28,51 @@ mod tests {
     use super::super::queue_pair::legacy::IbvQueuePair;
     use crate::rdma_components::validate_execution_context;
 
-    /// Opens a one-shot reply port and posts [`RawQueuePair`] to bring up
-    /// a queue pair via the legacy test path. Replaces the old
-    /// `manager_actor::request_queue_pair` helper.
+    /// Opens a one-shot reply port and posts [`RawQueuePair`] to bring up a
+    /// fresh, unconnected legacy queue pair on `self_device`. The caller
+    /// connects it to its peer; see [`connect_pair`] / [`connected_pair`].
     async fn request_queue_pair(
         actor: &ActorHandle<IbvManagerActor<MlxDevice>>,
         cx: &(impl hyperactor::context::Actor + Send + Sync),
-        other: ActorRef<IbvManagerActor<MlxDevice>>,
         self_device: String,
-        other_device: String,
     ) -> Result<Result<IbvQueuePair, String>, anyhow::Error> {
         let (reply, rx) = Mailbox::mailbox(cx).open_once_port::<Result<IbvQueuePair, String>>();
-        actor.try_post(
-            cx,
-            RawQueuePair::<MlxDevice> {
-                peer: other,
-                self_device,
-                peer_device: other_device,
-                reply,
-            },
-        )?;
+        actor.try_post(cx, RawQueuePair { self_device, reply })?;
         rx.recv()
             .await
             .map_err(|e| anyhow::anyhow!("RawQueuePair port closed: {e}"))
+    }
+
+    /// Connects two freshly-created queue pairs to each other.
+    fn connect_pair(qp_a: &mut IbvQueuePair, qp_b: &mut IbvQueuePair) -> Result<(), anyhow::Error> {
+        let info_a = qp_a.get_qp_info()?;
+        let info_b = qp_b.get_qp_info()?;
+        qp_a.connect(&info_b)?;
+        qp_b.connect(&info_a)?;
+        Ok(())
+    }
+
+    /// Brings up a connected legacy QP pair: `qp_1` on `ibv_buffer_1`'s device
+    /// (via `ibv_handle_1`), `qp_2` on `ibv_buffer_2`'s device.
+    async fn connected_pair(
+        env: &DoorbellTestEnv,
+    ) -> Result<(IbvQueuePair, IbvQueuePair), anyhow::Error> {
+        let mut qp_1 = request_queue_pair(
+            &env.ibv_handle_1,
+            &env.client_1,
+            env.ibv_buffer_1.device_name.clone(),
+        )
+        .await?
+        .map_err(|e| anyhow::anyhow!(e))?;
+        let mut qp_2 = request_queue_pair(
+            &env.ibv_handle_2,
+            &env.client_2,
+            env.ibv_buffer_2.device_name.clone(),
+        )
+        .await?
+        .map_err(|e| anyhow::anyhow!(e))?;
+        connect_pair(&mut qp_1, &mut qp_2)?;
+        Ok((qp_1, qp_2))
     }
 
     fn is_cpu_only_mode() -> bool {
@@ -76,15 +97,7 @@ mod tests {
             return Ok(());
         }
         let env = DoorbellTestEnv::setup(BSIZE, "cpu:0", "cpu:0").await?;
-        let mut qp_1 = request_queue_pair(
-            &env.ibv_handle_1,
-            &env.client_1,
-            env.ibv_actor_2.clone(),
-            env.ibv_buffer_1.device_name.clone(),
-            env.ibv_buffer_2.device_name.clone(),
-        )
-        .await?
-        .map_err(|e| anyhow::anyhow!(e))?;
+        let (mut qp_1, _qp_2) = connected_pair(&env).await?;
         let wr_id = qp_1.enqueue_put(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
         qp_1.ring_doorbell()?;
         wait_for_completion(&mut qp_1, PollTarget::Send, &wr_id, 5).await?;
@@ -108,15 +121,7 @@ mod tests {
             return Ok(());
         }
         let env = DoorbellTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
-        let mut qp_2 = request_queue_pair(
-            &env.ibv_handle_2,
-            &env.client_2,
-            env.ibv_actor_1.clone(),
-            env.ibv_buffer_2.device_name.clone(),
-            env.ibv_buffer_1.device_name.clone(),
-        )
-        .await?
-        .map_err(|e| anyhow::anyhow!(e))?;
+        let (_qp_1, mut qp_2) = connected_pair(&env).await?;
         let wr_id = qp_2.enqueue_get(env.ibv_buffer_2.clone(), env.ibv_buffer_1.clone())?;
         qp_2.ring_doorbell()?;
         wait_for_completion(&mut qp_2, PollTarget::Send, &wr_id, 5).await?;
@@ -145,15 +150,7 @@ mod tests {
             return Ok(());
         }
         let env = DoorbellTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
-        let mut qp_1 = request_queue_pair(
-            &env.ibv_handle_1,
-            &env.client_1,
-            env.ibv_actor_2.clone(),
-            env.ibv_buffer_1.device_name.clone(),
-            env.ibv_buffer_2.device_name.clone(),
-        )
-        .await?
-        .map_err(|e| anyhow::anyhow!(e))?;
+        let (mut qp_1, _qp_2) = connected_pair(&env).await?;
         qp_1.enqueue_put(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
         ring_db_gpu(&qp_1).await?;
         wait_for_completion_gpu(&mut qp_1, PollTarget::Send, 5).await?;
@@ -185,15 +182,7 @@ mod tests {
             return Ok(());
         }
         let env = DoorbellTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
-        let mut qp_1 = request_queue_pair(
-            &env.ibv_handle_1,
-            &env.client_1,
-            env.ibv_actor_2.clone(),
-            env.ibv_buffer_1.device_name.clone(),
-            env.ibv_buffer_2.device_name.clone(),
-        )
-        .await?
-        .map_err(|e| anyhow::anyhow!(e))?;
+        let (mut qp_1, _qp_2) = connected_pair(&env).await?;
         qp_1.enqueue_get(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
         ring_db_gpu(&qp_1).await?;
         wait_for_completion_gpu(&mut qp_1, PollTarget::Send, 5).await?;
@@ -225,24 +214,7 @@ mod tests {
             return Ok(());
         }
         let env = DoorbellTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
-        let mut qp_1 = request_queue_pair(
-            &env.ibv_handle_1,
-            &env.client_1,
-            env.ibv_actor_2.clone(),
-            env.ibv_buffer_1.device_name.clone(),
-            env.ibv_buffer_2.device_name.clone(),
-        )
-        .await?
-        .map_err(|e| anyhow::anyhow!(e))?;
-        let mut qp_2 = request_queue_pair(
-            &env.ibv_handle_2,
-            &env.client_2,
-            env.ibv_actor_1.clone(),
-            env.ibv_buffer_2.device_name.clone(),
-            env.ibv_buffer_1.device_name.clone(),
-        )
-        .await?
-        .map_err(|e| anyhow::anyhow!(e))?;
+        let (mut qp_1, mut qp_2) = connected_pair(&env).await?;
         recv_wqe_gpu(
             &mut qp_1,
             &env.ibv_buffer_1,
