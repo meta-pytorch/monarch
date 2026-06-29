@@ -549,7 +549,7 @@ impl Handler<PerformPingPong> for CudaRdmaActor {
             .ok_or_else(|| anyhow::anyhow!("local IbvManagerActor is not in this process"))?;
         let (reply_handle, reply_rx) = cx
             .mailbox()
-            .open_once_port::<Result<monarch_rdma::backend::ibverbs::queue_pair::IbvQueuePair, String>>();
+            .open_once_port::<Result<monarch_rdma::backend::ibverbs::queue_pair::legacy::IbvQueuePair, String>>();
         local_ibv_manager_handle.try_post(
             cx,
             RawQueuePair {

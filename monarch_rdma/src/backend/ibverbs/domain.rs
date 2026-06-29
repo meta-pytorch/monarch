@@ -26,7 +26,7 @@ use super::memory_region::IbvMemoryRegion;
 use super::memory_region::IbvMemoryRegionView;
 use super::primitives::IbvConfig;
 use super::primitives::IbvDeviceInfo;
-use super::queue_pair::IbvQueuePair;
+use super::queue_pair::legacy::IbvQueuePair;
 use crate::local_memory::KeepaliveLocalMemory;
 use crate::local_memory::is_device_ptr;
 

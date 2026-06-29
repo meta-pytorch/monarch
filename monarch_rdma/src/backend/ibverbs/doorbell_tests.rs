@@ -19,7 +19,6 @@ mod tests {
     use hyperactor::ActorRef;
     use hyperactor::context::Mailbox;
 
-    use super::super::IbvQueuePair;
     use super::super::PollTarget;
     use super::super::device::list_all_devices;
     use super::super::doorbell_test_utils::DoorbellTestEnv;
@@ -27,6 +26,7 @@ mod tests {
     use super::super::manager_actor::IbvManagerActor;
     use super::super::manager_actor::RawQueuePair;
     use super::super::mlx_device::MlxDevice;
+    use super::super::queue_pair::legacy::IbvQueuePair;
     use crate::rdma_components::validate_execution_context;
 
     /// Opens a one-shot reply port and posts [`RawQueuePair`] to bring up

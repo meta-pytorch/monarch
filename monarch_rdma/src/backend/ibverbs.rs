@@ -28,8 +28,8 @@ pub mod queue_pair;
 
 use manager_actor::IbvManagerActor;
 use mlx_device::MlxDevice;
-pub use queue_pair::IbvQueuePair;
 pub use queue_pair::PollTarget;
+pub use queue_pair::legacy::IbvQueuePair;
 
 #[cfg(test)]
 mod doorbell_test_utils;
