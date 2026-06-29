@@ -16,6 +16,7 @@ use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
+use anyhow::Context;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::MemTable;
@@ -29,6 +30,7 @@ use monarch_hyperactor::context::PyInstance;
 use monarch_hyperactor::mailbox::PyPortId;
 use monarch_hyperactor::runtime::get_tokio_runtime;
 use monarch_record_batch::RecordBatchBuffer;
+use monarch_telemetry_schema::deserialize_one_batch;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -414,6 +416,14 @@ impl DatabaseScanner {
         pyspy_result_json: &str,
     ) -> PyResult<()> {
         self.store_pyspy_dump(dump_id, proc_ref, pyspy_result_json)
+            .map_err(|e| PyException::new_err(e.to_string()))
+    }
+
+    /// Decode one snapshot Arrow IPC stream and append it to a registered table.
+    fn ingest_snapshot_batch(&self, table_name: &str, arrow_ipc_bytes: &[u8]) -> PyResult<()> {
+        let batch = decode_snapshot_batch(table_name, arrow_ipc_bytes)
+            .map_err(|e| PyException::new_err(e.to_string()))?;
+        self.push_to_registered_blocking(table_name, batch)
             .map_err(|e| PyException::new_err(e.to_string()))
     }
 
@@ -995,6 +1005,13 @@ impl Drop for DatabaseScanner {
     }
 }
 
+fn decode_snapshot_batch(table_name: &str, payload: &[u8]) -> anyhow::Result<RecordBatch> {
+    // Snapshot batches permit zero rows, unlike the socket-ingest frame path;
+    // `deserialize_one_batch` already enforces the one-batch-per-stream contract.
+    deserialize_one_batch(payload)
+        .with_context(|| format!("decoding snapshot batch for table {table_name}"))
+}
+
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<DatabaseScanner>()?;
     Ok(())
@@ -1013,6 +1030,7 @@ mod tests {
     use datafusion::arrow::datatypes::DataType;
     use datafusion::arrow::datatypes::Field;
     use datafusion::arrow::datatypes::Schema;
+    use datafusion::arrow::ipc::writer::StreamWriter;
     use datafusion::arrow::record_batch::RecordBatch;
     use monarch_telemetry_schema::entity_tables::ACTORS;
     use monarch_telemetry_schema::entity_tables::Actor;
@@ -1039,6 +1057,16 @@ mod tests {
         let schema = Arc::new(Schema::new(vec![Field::new("y", DataType::Int64, false)]));
         let col = Int64Array::from(values.to_vec());
         RecordBatch::try_new(schema, vec![Arc::new(col)]).unwrap()
+    }
+
+    fn serialize_batches(batches: &[RecordBatch]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        let mut writer = StreamWriter::try_new(&mut buf, &batches[0].schema()).unwrap();
+        for batch in batches {
+            writer.write(batch).unwrap();
+        }
+        writer.finish().unwrap();
+        buf
     }
 
     async fn row_count(table: &LiveTableData) -> usize {
@@ -1236,6 +1264,66 @@ mod tests {
                 .contains("schema mismatch for registered table t"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn test_ingest_snapshot_batch_accepts_zero_rows() {
+        let scanner = test_scanner(0);
+        scanner
+            .register_table("t", make_batch(&[]).schema())
+            .unwrap();
+        let payload = crate::serialize_batch(&make_batch(&[])).unwrap();
+
+        scanner
+            .ingest_snapshot_batch("t", &payload)
+            .expect("zero-row snapshot batches are valid");
+
+        assert_eq!(table_row_count(&scanner, "t"), 0);
+    }
+
+    #[test]
+    fn test_ingest_snapshot_batch_appends_registered_table() {
+        let scanner = test_scanner(0);
+        scanner
+            .register_table("t", make_batch(&[]).schema())
+            .unwrap();
+        let payload = crate::serialize_batch(&make_batch(&[1, 2, 3])).unwrap();
+
+        scanner.ingest_snapshot_batch("t", &payload).unwrap();
+
+        assert_eq!(table_row_count(&scanner, "t"), 3);
+    }
+
+    #[test]
+    fn test_ingest_snapshot_batch_rejects_schema_mismatch() {
+        let scanner = test_scanner(0);
+        scanner
+            .register_table("t", make_batch(&[]).schema())
+            .unwrap();
+        let payload = crate::serialize_batch(&make_other_batch(&[1])).unwrap();
+
+        assert!(scanner.ingest_snapshot_batch("t", &payload).is_err());
+        assert_eq!(table_row_count(&scanner, "t"), 0);
+    }
+
+    #[test]
+    fn test_ingest_snapshot_batch_rejects_multiple_batches() {
+        let scanner = test_scanner(0);
+        scanner
+            .register_table("t", make_batch(&[]).schema())
+            .unwrap();
+        let payload = serialize_batches(&[make_batch(&[1]), make_batch(&[2])]);
+
+        let err = decode_snapshot_batch("t", &payload).unwrap_err();
+
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("snapshot batch for table t")
+                && chain.contains("multiple record batches"),
+            "unexpected error: {chain}"
+        );
+        assert!(scanner.ingest_snapshot_batch("t", &payload).is_err());
+        assert_eq!(table_row_count(&scanner, "t"), 0);
     }
 
     #[tokio::test]
