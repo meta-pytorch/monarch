@@ -173,20 +173,20 @@ def test_open_or_refresh_raises_when_not_open() -> None:
 
 
 def test_open_or_refresh_spawns_telemetry_actors_once_with_no_active_workers() -> None:
-    sidecar = tc._TelemetryHandle("apply")
+    handle = tc._TelemetryHandle("apply")
 
     def fake_bootstrap(config) -> None:
-        sidecar._dashboard_info = {"local_url": "http://local", "url": "http://ext"}
+        handle._dashboard_info = {"local_url": "http://local", "url": "http://ext"}
 
     with (
-        patch.object(sidecar, "_bootstrap", side_effect=fake_bootstrap),
-        patch.object(sidecar, "_spawn_telemetry_actors", return_value=[]) as spawn,
+        patch.object(handle, "_bootstrap", side_effect=fake_bootstrap),
+        patch.object(handle, "_spawn_telemetry_actors", return_value=[]) as spawn,
     ):
-        sidecar.open_or_refresh({"hosts": MagicMock()}, _cfg_dict())
-        sidecar.open_or_refresh({"hosts": MagicMock()}, _cfg_dict())
+        handle.open_or_refresh({"hosts": MagicMock()}, _cfg_dict())
+        handle.open_or_refresh({"hosts": MagicMock()}, _cfg_dict())
 
     spawn.assert_called_once()
-    assert sidecar._worker_proc_meshes == []
+    assert handle._worker_proc_meshes == []
 
 
 def test_spawn_telemetry_actors_registers_workers_and_stops_on_shutdown() -> None:
@@ -196,14 +196,14 @@ def test_spawn_telemetry_actors_registers_workers_and_stops_on_shutdown() -> Non
     proc_mesh = MagicMock()
     host_mesh = MagicMock()
     client_actor = MagicMock()
-    sidecar = tc._TelemetryHandle("fanout_test")
-    sidecar._client_actor = client_actor
+    handle = tc._TelemetryHandle("fanout_test")
+    handle._client_actor = client_actor
 
     proc_mesh.spawn.return_value = actor_mesh
     host_mesh.spawn_procs.return_value = proc_mesh
     actor_mesh.activate.call.return_value.get.return_value = [(0, True)]
 
-    worker_proc_meshes = sidecar._spawn_telemetry_actors(
+    worker_proc_meshes = handle._spawn_telemetry_actors(
         {
             "hosts": host_mesh,
         },
@@ -228,9 +228,9 @@ def test_spawn_telemetry_actors_registers_workers_and_stops_on_shutdown() -> Non
     client_actor.set_worker_collector_meshes.call_one.return_value.get.assert_called_once_with()
 
     assert worker_proc_meshes == [proc_mesh]
-    sidecar._worker_proc_meshes = worker_proc_meshes
+    handle._worker_proc_meshes = worker_proc_meshes
     with patch.object(tc, "shutdown_context") as shutdown_context:
-        sidecar.shutdown()
+        handle.shutdown()
     proc_mesh.stop.assert_called_once_with("telemetry shutdown")
     proc_mesh.stop.return_value.get.assert_called_once_with()
     shutdown_context.return_value.get.assert_called_once_with(timeout=5.0)
@@ -241,14 +241,14 @@ def test_spawn_telemetry_actors_drops_inactive_worker_collectors() -> None:
     proc_mesh = MagicMock()
     host_mesh = MagicMock()
     client_actor = MagicMock()
-    sidecar = tc._TelemetryHandle("fanout_test")
-    sidecar._client_actor = client_actor
+    handle = tc._TelemetryHandle("fanout_test")
+    handle._client_actor = client_actor
 
     proc_mesh.spawn.return_value = actor_mesh
     host_mesh.spawn_procs.return_value = proc_mesh
     actor_mesh.activate.call.return_value.get.return_value = [(0, False)]
 
-    worker_proc_meshes = sidecar._spawn_telemetry_actors(
+    worker_proc_meshes = handle._spawn_telemetry_actors(
         {
             "hosts": host_mesh,
         },
@@ -268,12 +268,12 @@ def test_spawn_telemetry_actors_drops_inactive_worker_collectors() -> None:
 def test_spawn_telemetry_actors_noops_when_setup_raises() -> None:
     host_mesh = MagicMock()
     client_actor = MagicMock()
-    sidecar = tc._TelemetryHandle("fanout_test")
-    sidecar._client_actor = client_actor
+    handle = tc._TelemetryHandle("fanout_test")
+    handle._client_actor = client_actor
 
     host_mesh.spawn_procs.side_effect = RuntimeError("boom")
 
-    worker_proc_meshes = sidecar._spawn_telemetry_actors(
+    worker_proc_meshes = handle._spawn_telemetry_actors(
         {
             "hosts": host_mesh,
         },

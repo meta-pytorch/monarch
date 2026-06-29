@@ -55,3 +55,23 @@ class QueryEngineClient:
                 error.headers,
                 error.fp,
             ) from error
+
+    def store_pyspy_dump(
+        self, dump_id: str, proc_ref: str, pyspy_result_json: str
+    ) -> dict[str, Any]:
+        """Store a py-spy dump through the sidecar API."""
+        payload = json.dumps(
+            {
+                "dump_id": dump_id,
+                "proc_ref": proc_ref,
+                "pyspy_result_json": pyspy_result_json,
+            }
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self._base_url}/api/pyspy_dump",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with self._opener.open(request, timeout=self._timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
