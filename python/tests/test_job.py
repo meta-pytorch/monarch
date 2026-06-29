@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import cast, Dict, Optional, Sequence
 from unittest.mock import MagicMock, patch
 
+import monarch._src.job._job_sidecar_worker as js_worker
 import monarch._src.job.job_sidecar as js
 import pytest
 
@@ -45,11 +46,6 @@ def _append_line(path: str, line: str) -> None:
 
 
 @dataclass
-class _RecordingJob:
-    name: str
-
-
-@dataclass
 class _RecordingMountHandle:
     name: str
     log_path: str
@@ -66,8 +62,8 @@ class _RecordingMounts:
     name: str
     log_path: str
 
-    def open(self, job: _RecordingJob) -> _RecordingMountHandle:
-        _append_line(self.log_path, f"open:{self.name}:{job.name}")
+    def open(self, host_meshes: dict[str, object]) -> _RecordingMountHandle:
+        _append_line(self.log_path, f"open:{self.name}:{','.join(host_meshes)}")
         return _RecordingMountHandle(self.name, self.log_path)
 
 
@@ -173,6 +169,31 @@ def test_spawn_module_uses_module_command_outside_par():
     assert create.call_args.kwargs == {"env": None}
 
 
+def test_spawn_module_passes_transport_arg_outside_par():
+    with (
+        patch.object(js, "_IN_PAR", False),
+        patch("monarch._src.job.process_guard.ProcessGuard.create") as create,
+    ):
+        js.spawn_module(
+            "lock",
+            "key",
+            "monarch.fake_module",
+            runtime_transport="metatls",
+        )
+
+    lock_path, config_key, command = create.call_args.args
+    assert lock_path == "lock"
+    assert config_key == "key"
+    assert command == [
+        sys.executable,
+        "-m",
+        "monarch.fake_module",
+        "--runtime-transport",
+        "metatls",
+    ]
+    assert create.call_args.kwargs == {"env": None}
+
+
 def test_spawn_module_reenters_parent_binary_inside_par():
     with (
         patch.object(js, "_IN_PAR", True),
@@ -191,13 +212,17 @@ def test_spawn_module_reenters_parent_binary_inside_par():
 
 
 def test_create_job_sidecar_spawns_job_sidecar_worker_module():
-    with patch.object(js, "spawn_module") as spawn_module:
+    with (
+        patch.object(js, "sidecar_transport_from_runtime", return_value="metatls"),
+        patch.object(js, "spawn_module") as spawn_module,
+    ):
         js.create_job_sidecar("apply_id")
 
     spawn_module.assert_called_once_with(
         js.job_sidecar_lock_path("apply_id"),
         "apply_id",
         "monarch._src.job._job_sidecar_worker",
+        runtime_transport="metatls",
     )
 
 
@@ -229,6 +254,43 @@ def test_mounts_ensure_open_does_not_create_sidecar_when_empty():
     create_sidecar.assert_not_called()
 
 
+def test_mounts_ensure_open_sends_mounts_request():
+    mounts = Mounts()
+    mounts.remote_mount("/tmp/source")
+    guard = MagicMock()
+
+    with patch(
+        "monarch._src.job.mount_config.create_job_sidecar",
+        return_value=guard,
+    ) as create_sidecar:
+        mounts.ensure_open("apply_id", {})
+
+    create_sidecar.assert_called_once_with("apply_id")
+    request = guard.send.call_args.args[0]
+    assert isinstance(request, js.MountsRequest)
+    guard.send.return_value.get.assert_called_once_with()
+
+
+def test_job_sidecar_worker_passes_transport_arg_to_server():
+    with (
+        patch.object(
+            sys,
+            "argv",
+            [
+                "worker",
+                "--runtime-transport",
+                "metatls",
+                "/tmp/socket",
+                "123",
+            ],
+        ),
+        patch("monarch._src.job.job_sidecar._run_job_sidecar") as run_sidecar,
+    ):
+        js_worker.main()
+
+    run_sidecar.assert_called_once_with("/tmp/socket", runtime_transport="metatls")
+
+
 def test_run_job_sidecar_manages_mount_lifecycle():
     """Mount requests open once, refresh unchanged config, replace drift, and
     clear stale state."""
@@ -246,25 +308,25 @@ def test_run_job_sidecar_manages_mount_lifecycle():
             _wait_for_socket(socket_path, timeout=10.0)
 
         try:
-            job = _RecordingJob("job")
+            host_meshes = {"job": "mesh"}
             assert (
                 _send_sidecar_request(
                     socket_path,
-                    js.MountsRequest(_RecordingMounts("one", log_path), job),
+                    js.MountsRequest(_RecordingMounts("one", log_path), host_meshes),
                 )
                 == "ok"
             )
             assert (
                 _send_sidecar_request(
                     socket_path,
-                    js.MountsRequest(_RecordingMounts("one", log_path), job),
+                    js.MountsRequest(_RecordingMounts("one", log_path), host_meshes),
                 )
                 == "ok"
             )
             assert (
                 _send_sidecar_request(
                     socket_path,
-                    js.MountsRequest(_RecordingMounts("two", log_path), job),
+                    js.MountsRequest(_RecordingMounts("two", log_path), host_meshes),
                 )
                 == "ok"
             )
