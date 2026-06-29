@@ -805,6 +805,8 @@ impl MlxDomain {
 }
 
 impl IbvDomainImpl for MlxDomain {
+    type QueuePair = IbvQueuePair;
+
     unsafe fn new(context: &IbvContext, device_info: &IbvDeviceInfo, config: &IbvConfig) -> Self {
         Self::new_with_ops(
             Arc::new(ProdMlxDomainOps::new(context, device_info)),
@@ -818,6 +820,15 @@ impl IbvDomainImpl for MlxDomain {
             | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_READ
             | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC)
             .0 as i32
+    }
+
+    fn create_queue_pair(
+        domain: Arc<IbvDomain<Self>>,
+        config: &IbvConfig,
+    ) -> anyhow::Result<Self::QueuePair> {
+        // mlx5 builds the legacy single-type queue pair for now; it will
+        // become an mlx5-specific queue pair.
+        IbvQueuePair::new(domain, config.clone())
     }
 
     unsafe fn register_mr(

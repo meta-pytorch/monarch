@@ -50,6 +50,7 @@ use super::device::IbvDevice;
 use super::device::IbvDeviceImpl;
 use super::device_selection::resolve_target;
 use super::domain::IbvDomain;
+use super::domain::IbvDomainImpl;
 use super::efa_device::EfaDevice;
 use super::memory_region::IbvMemoryRegionView;
 use super::mlx_device::MlxDevice;
@@ -57,11 +58,11 @@ use super::primitives::IbvConfig;
 use super::primitives::IbvDeviceInfo;
 use super::primitives::IbvQpInfo;
 use super::primitives::ibverbs_supported;
+use super::queue_pair::IbvQueuePair;
 use super::queue_pair::OpResult;
 use super::queue_pair::ProcessOps;
 use super::queue_pair::QpKey;
 use super::queue_pair::QueuePairActor;
-use super::queue_pair::legacy::IbvQueuePair;
 use crate::RdmaOp;
 use crate::RdmaTransportLevel;
 use crate::backend::RdmaBackend;
@@ -118,7 +119,7 @@ pub struct RawQueuePair<I: IbvDeviceImpl> {
     pub peer: ActorRef<IbvManagerActor<I>>,
     pub self_device: String,
     pub peer_device: String,
-    pub reply: OncePortHandle<Result<IbvQueuePair, String>>,
+    pub reply: OncePortHandle<Result<<I::Domain as IbvDomainImpl>::QueuePair, String>>,
 }
 
 /// Cross-proc messages handled by [`IbvManagerActor`].
@@ -174,14 +175,17 @@ pub struct IbvManagerActor<I: IbvDeviceImpl> {
     /// manager's perspective. Lazily populated on the first
     /// [`SubmitOps`] that targets a new `(self_device, peer,
     /// other_device)` triple.
-    qp_handles: HashMap<QpKey, ActorHandle<QueuePairActor<IbvManagerActor<I>, IbvQueuePair>>>,
+    qp_handles: HashMap<
+        QpKey,
+        ActorHandle<QueuePairActor<IbvManagerActor<I>, <I::Domain as IbvDomainImpl>::QueuePair>>,
+    >,
 
     /// Passive-side mirror QPs, created in response to a peer's
     /// [`CreatePeerQueuePair`]. The peer's [`QueuePairActor`] owns
     /// the active side; we hold the connected mirror here so the
     /// peer can read/write our memory. The map's `Drop` destroys
-    /// each QP via [`IbvQueuePair`]'s own `Drop`.
-    peer_created_qps: HashMap<QpKey, IbvQueuePair>,
+    /// each QP via its own `Drop`.
+    peer_created_qps: HashMap<QpKey, <I::Domain as IbvDomainImpl>::QueuePair>,
 
     /// Map of RDMA device names to their opened [`IbvDevice<I>`], each of
     /// which owns the per-device `Arc<IbvContext>` and the `DEFAULT_DOMAIN`
@@ -294,7 +298,7 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
     fn get_or_create_device_domain(
         &mut self,
         device_name: &str,
-    ) -> Result<Arc<IbvDomain<I::IbvDomainImpl>>, anyhow::Error> {
+    ) -> Result<Arc<IbvDomain<I::Domain>>, anyhow::Error> {
         if let Some(device) = self.devices.get_mut(device_name) {
             return device.get_or_create_domain(DEFAULT_DOMAIN);
         }
@@ -404,7 +408,10 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
         cx: &Context<'_, Self>,
         qp_key: &QpKey,
         peer_manager: ActorRef<Self>,
-    ) -> Result<ActorHandle<QueuePairActor<Self, IbvQueuePair>>, anyhow::Error> {
+    ) -> Result<
+        ActorHandle<QueuePairActor<Self, <I::Domain as IbvDomainImpl>::QueuePair>>,
+        anyhow::Error,
+    > {
         if let Some(h) = self.qp_handles.get(qp_key) {
             return Ok(h.clone());
         }
@@ -526,7 +533,13 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
         peer: &ActorRef<IbvManagerActor<I>>,
         self_device: String,
         peer_device: String,
-    ) -> Result<(IbvQueuePair, OncePortReceiver<Result<IbvQpInfo, String>>), anyhow::Error> {
+    ) -> Result<
+        (
+            <I::Domain as IbvDomainImpl>::QueuePair,
+            OncePortReceiver<Result<IbvQpInfo, String>>,
+        ),
+        anyhow::Error,
+    > {
         let domain = self.get_or_create_device_domain(&self_device)?;
         let mut qp = domain
             .create_queue_pair(&self.config)
@@ -585,7 +598,7 @@ impl<I: IbvDeviceImpl> Handler<RawQueuePair<I>> for IbvManagerActor<I> {
         let timeout = hyperactor_config::global::get(crate::config::RDMA_QP_INIT_TIMEOUT);
 
         tokio::spawn(async move {
-            let result: Result<IbvQueuePair, String> = async {
+            let result: Result<<I::Domain as IbvDomainImpl>::QueuePair, String> = async {
                 let peer_info_result = tokio::time::timeout(timeout, rx.recv())
                     .await
                     .map_err(|_| format!("RawQueuePair init timed out after {timeout:?}"))?

@@ -8,10 +8,14 @@
 
 //! EFA domain strategy for [`IbvDomainImpl`].
 
+use std::sync::Arc;
+
 use super::device::IbvContext;
+use super::domain::IbvDomain;
 use super::domain::IbvDomainImpl;
 use super::primitives::IbvConfig;
 use super::primitives::IbvDeviceInfo;
+use super::queue_pair::legacy::IbvQueuePair;
 
 /// EFA [`IbvDomainImpl`]. Uses the default host/dmabuf MR registration;
 /// EFA has no device-specific memory-key binding to add.
@@ -19,6 +23,8 @@ use super::primitives::IbvDeviceInfo;
 pub struct EfaDomain;
 
 impl IbvDomainImpl for EfaDomain {
+    type QueuePair = IbvQueuePair;
+
     unsafe fn new(
         _context: &IbvContext,
         _device_info: &IbvDeviceInfo,
@@ -35,6 +41,12 @@ impl IbvDomainImpl for EfaDomain {
             .0 as i32
     }
 
-    // TODO: add a custom `create_queue_pair` implementation for EFA's
-    // queue pairs.
+    fn create_queue_pair(
+        domain: Arc<IbvDomain<Self>>,
+        config: &IbvConfig,
+    ) -> anyhow::Result<Self::QueuePair> {
+        // EFA builds the legacy single-type queue pair for now; it will
+        // become an EFA-specific queue pair.
+        IbvQueuePair::new(domain, config.clone())
+    }
 }
