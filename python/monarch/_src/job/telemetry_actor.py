@@ -155,6 +155,12 @@ class TelemetryActor(Actor):
         return True
 
     @endpoint
+    def ingest_snapshot_batch(self, table_name: str, arrow_ipc_bytes: bytes) -> bool:
+        """Store one snapshot Arrow IPC batch in a local registered table."""
+        self._scanner_or_raise().ingest_snapshot_batch(table_name, arrow_ipc_bytes)
+        return True
+
+    @endpoint
     def scan(
         self,
         dest: PortId,
