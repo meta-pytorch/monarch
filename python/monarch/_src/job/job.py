@@ -315,12 +315,14 @@ class JobState:
         query_engine: Optional[QueryEngine] = None,
         query_engine_client: Optional[QueryEngineClient] = None,
         telemetry_url: Optional[str] = None,
+        dashboard_url: Optional[str] = None,
         admin_url: Optional[str] = None,
     ):
         self._hosts = hosts
         self.query_engine = query_engine
         self.query_engine_client = query_engine_client
         self.telemetry_url = telemetry_url
+        self.dashboard_url = dashboard_url
         self.admin_url = admin_url
 
     def __getattr__(self, attr: str) -> HostMesh:

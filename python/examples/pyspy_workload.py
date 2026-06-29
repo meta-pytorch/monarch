@@ -138,7 +138,13 @@ async def async_main() -> None:
 
     job = (
         ProcessJob({"hosts": 1})
-        .enable_telemetry(TelemetryConfig(snapshot_interval_secs=30.0))
+        .enable_telemetry(
+            TelemetryConfig(
+                dashboard_port=0,
+                snapshot_interval_secs=30.0,
+                use_sidecar=True,
+            )
+        )
         .enable_admin()
     )
     state = job.state(cached_path=None)

@@ -1028,6 +1028,7 @@ def _patched_sidecar(ensure_open_side_effect=None, ensure_open_return=None):
         else:
             ensure_open.return_value = ensure_open_return or {
                 "telemetry_url": "http://sidecar",
+                "dashboard_url": "http://dashboard",
                 "socket_path": "/tmp/telemetry.sock",
             }
         yield types.SimpleNamespace(
@@ -1077,6 +1078,7 @@ def test_sidecar_replaces_legacy_when_opted_in():
     assert state.query_engine is None
     assert state.query_engine_client is m.query_engine_client_cls.return_value
     assert state.telemetry_url == "http://sidecar"
+    assert state.dashboard_url == "http://dashboard"
     m.query_engine_client_cls.assert_called_once_with("http://sidecar")
     m.install_sink.assert_called_once_with("/tmp/telemetry.sock")
 
@@ -1129,7 +1131,11 @@ def test_sidecar_bootstrap_failure_is_isolated():
 def test_sidecar_worker_fanout_failure_is_isolated():
     """A fan-out failure after a successful bootstrap is swallowed; the client
     from bootstrap stays exposed."""
-    good = {"telemetry_url": "http://sidecar", "socket_path": "/tmp/telemetry.sock"}
+    good = {
+        "telemetry_url": "http://sidecar",
+        "dashboard_url": "http://dashboard",
+        "socket_path": "/tmp/telemetry.sock",
+    }
     with _patched_sidecar(
         ensure_open_side_effect=[good, RuntimeError("fanout boom")]
     ) as m:

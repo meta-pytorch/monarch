@@ -167,18 +167,25 @@ NUM_PHILOSOPHERS = 5
 
 async def async_main(
     dashboard: bool = False,
-    dashboard_port: int = 8265,
+    dashboard_port: int | None = None,
     kill_waiter_after: float | None = None,
+    telemetry: bool = True,
 ) -> None:
     job = ProcessJob({"hosts": 1})
     job.enable_admin()
-    job.enable_telemetry(
-        TelemetryConfig(
-            include_dashboard=dashboard,
-            dashboard_port=dashboard_port,
-            snapshot_interval_secs=30.0,
+    if telemetry:
+        resolved_dashboard_port = dashboard_port
+        if resolved_dashboard_port is None:
+            resolved_dashboard_port = 8265 if dashboard else 0
+
+        job.enable_telemetry(
+            TelemetryConfig(
+                include_dashboard=dashboard,
+                dashboard_port=resolved_dashboard_port,
+                snapshot_interval_secs=30.0,
+                use_sidecar=True,
+            )
         )
-    )
     state = job.state(cached_path=None)
     host = state.hosts
 
@@ -240,8 +247,13 @@ def main() -> None:
     parser.add_argument(
         "--dashboard-port",
         type=int,
-        default=8265,
-        help="Dashboard port (default: 8265)",
+        default=None,
+        help="Dashboard port (default: 8265 with --dashboard, ephemeral otherwise)",
+    )
+    parser.add_argument(
+        "--no-telemetry",
+        action="store_true",
+        help="Disable telemetry and mesh-admin query proxy support",
     )
     parser.add_argument(
         "--kill-waiter-after",
@@ -257,6 +269,7 @@ def main() -> None:
                 dashboard=args.dashboard,
                 dashboard_port=args.dashboard_port,
                 kill_waiter_after=args.kill_waiter_after,
+                telemetry=not args.no_telemetry,
             )
         )
     except KeyboardInterrupt:
