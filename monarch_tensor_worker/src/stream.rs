@@ -1975,7 +1975,7 @@ mod tests {
                 proc.attach_actor::<ControllerActor, ControllerMessage>("controller")?;
             let client = proc.client("client");
             let (supervision_tx, supervision_rx) = client.open_port();
-            proc.set_supervision_coordinator(supervision_tx)?;
+            proc.set_supervision_coordinator(supervision_tx.bind())?;
             let stream_actor = proc.spawn(StreamActor::new(StreamParams {
                 world_size,
                 rank: 0,

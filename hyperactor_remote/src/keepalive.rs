@@ -86,6 +86,13 @@ impl KeepaliveParams {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeepaliveLink(KeepaliveParams);
 
+impl Default for KeepaliveLink {
+    /// A 60-second keepalive interval and 60-second timeout.
+    fn default() -> Self {
+        Self::new(Duration::from_secs(60), Duration::from_secs(60))
+    }
+}
+
 impl KeepaliveLink {
     /// Create a keepalive link configuration.
     ///

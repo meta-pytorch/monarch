@@ -8,16 +8,16 @@
 
 //! Actor interface for remotely spawning actors.
 //!
-//! [`RemoteSpawner`] is a spawn factory actor. A proc that wants to accept
-//! dynamic actor spawns runs a `RemoteSpawner` locally and exposes an
-//! [`ActorRef<RemoteSpawner>`] to callers, for example through a token
+//! [`ActorSpawner`] is a spawn factory actor. A proc that wants to accept
+//! dynamic actor spawns runs an `ActorSpawner` locally and exposes an
+//! [`ActorRef<ActorSpawner>`] to callers, for example through a token
 //! rendezvous. A caller can post [`SpawnActor`] directly, but most callers
-//! should use [`RemoteSpawnerEndpoint`]. The extension trait builds the spawn
+//! should use [`ActorSpawnerEndpoint`]. The extension trait builds the spawn
 //! request, starts the local supervisor that owns the remote actor lifetime,
 //! and returns the [`ActorRef`] for the actor that will be created on the
 //! remote proc.
 //!
-//! Spawning through [`RemoteSpawnerEndpoint`] makes the spawning actor the
+//! Spawning through [`ActorSpawnerEndpoint`] makes the spawning actor the
 //! supervisor of the spawned remote actor. Logically, the remote actor becomes
 //! part of the spawner's supervision tree even though it runs on another proc:
 //!
@@ -25,7 +25,7 @@
 //! caller proc                         remote proc
 //!
 //! caller actor
-//! `- spawned actor A  -------- runs on -------->  RemoteSpawner's proc
+//! `- spawned actor A  -------- runs on -------->  ActorSpawner's proc
 //! ```
 //!
 //! The implementation realizes that logical edge with a caller-side supervisor,
@@ -36,7 +36,7 @@
 //! caller proc                                      remote proc
 //!
 //! caller actor
-//! `- [Supervisor] -- SpawnActor ---------------->  [RemoteSpawner]
+//! `- [Supervisor] -- SpawnActor ---------------->  [ActorSpawner]
 //!                                                `- [Worker]
 //!                                                   `- [spawned actor A]
 //!
@@ -45,7 +45,7 @@
 //!
 //! The caller-side [`Supervisor`] is spawned as a child of the actor that
 //! requested the remote spawn. Its bootstrap posts [`SpawnActor`] to the remote
-//! [`RemoteSpawner`]. The remote [`RemoteSpawner`] spawns a [`Worker`] child and asks it
+//! [`ActorSpawner`]. The remote [`ActorSpawner`] spawns a [`Worker`] child and asks it
 //! to deserialize the [`Gspawn`] specification, spawn the requested actor as its
 //! own child, and attach it to the caller-side supervisor. The caller-side
 //! supervisor also owns the private liveness machinery that lets either proc
@@ -59,7 +59,10 @@
 //! that into a terminal supervision event instead of leaving an orphaned remote
 //! actor.
 //!
-//! A typical caller only needs the extension trait:
+//! A typical caller only needs the extension trait. The returned [`ActorRef`]
+//! names where the actor will run, but the remote proc has to spawn and link it
+//! before it can route — messages sent earlier are dropped. Spawn with a
+//! readiness port and wait for the signal before messaging the actor:
 //!
 //! ```rust,ignore
 //! use hyperactor::ActorRef;
@@ -68,21 +71,26 @@
 //! use hyperactor::Label;
 //! use hyperactor::RemoteSpawn;
 //! use hyperactor::Uid;
-//! use hyperactor_remote::RemoteSpawner;
-//! use hyperactor_remote::RemoteSpawnerEndpoint;
+//! use hyperactor_remote::ActorSpawner;
+//! use hyperactor_remote::ActorSpawnerEndpoint;
 //!
 //! struct Driver {
-//!     remote_spawner: ActorRef<RemoteSpawner>,
+//!     actor_spawner: ActorRef<ActorSpawner>,
 //! }
 //!
 //! impl Handler<Start> for Driver {
 //!     async fn handle(&mut self, cx: &Context<Self>, _start: Start) -> anyhow::Result<()> {
-//!         let calculator: ActorRef<Calculator> = self.remote_spawner.spawn_uid::<Calculator>(
+//!         let (ready, ready_rx) = cx.open_once_port::<()>();
+//!         let calculator = self.actor_spawner.spawn_uid_with_ready::<Calculator>(
 //!             cx,
 //!             Uid::instance(Label::new("calculator").unwrap()),
 //!             CalculatorParams { initial_value: 0 },
+//!             ready,
 //!         )?;
-//!
+//!         // The returned ref names the calculator, but it cannot route until
+//!         // the remote proc spawns and links it. Wait for the readiness signal
+//!         // first, then message the actor we already hold a ref to.
+//!         ready_rx.recv().await?;
 //!         calculator.post(cx, Add { lhs: 40, rhs: 2 });
 //!         Ok(())
 //!     }
@@ -102,52 +110,61 @@
 //! # }
 //! ```
 
-use std::time::Duration;
-
 use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::Endpoint;
 use hyperactor::Handler;
+use hyperactor::OncePortHandle;
 use hyperactor::RemoteSpawn;
 use hyperactor::Uid;
 use hyperactor::context;
 
 use crate::Gspawn;
 use crate::KeepaliveLink;
-use crate::SpawnActor;
+use crate::SpawnActor as SpawnActorMessage;
 use crate::SupervisionOptions;
 use crate::Supervisor;
 use crate::Worker;
 use crate::supervision::GspawnAndSupervise;
 
+// Actor-spawn interface exposed by an actor spawner.
+hyperactor::behavior!(SpawnActor, SpawnActorMessage);
+
 /// Remote actor that accepts dynamic remote spawn requests.
 #[derive(Debug, Default)]
-#[hyperactor::export(SpawnActor)]
-pub struct RemoteSpawner;
+#[hyperactor::export(SpawnActorMessage)]
+#[hyperactor::spawnable]
+pub struct ActorSpawner;
 
 #[async_trait]
-impl Actor for RemoteSpawner {}
+impl Actor for ActorSpawner {}
 
 #[async_trait]
-impl Handler<SpawnActor> for RemoteSpawner {
-    async fn handle(&mut self, cx: &Context<Self>, message: SpawnActor) -> anyhow::Result<()> {
-        let SpawnActor { gspawn, supervise } = message;
+impl Handler<SpawnActorMessage> for ActorSpawner {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: SpawnActorMessage,
+    ) -> anyhow::Result<()> {
+        let SpawnActorMessage { gspawn, supervise } = message;
         let worker = context::Actor::instance(cx).spawn(Worker::new());
         worker.post(cx, GspawnAndSupervise::new(gspawn, supervise));
         Ok(())
     }
 }
 
+hyperactor::assert_behaves!(ActorSpawner as SpawnActor);
+
 /// Convenience methods for endpoints that accept [`SpawnActor`] requests.
-pub trait RemoteSpawnerEndpoint {
+pub trait ActorSpawnerEndpoint {
     /// Spawn a registered actor with a fresh actor uid.
     fn spawn<A>(&self, cx: &impl context::Actor, params: A::Params) -> anyhow::Result<ActorRef<A>>
     where
         A: RemoteSpawn,
         Self: Clone + Send + 'static,
-        for<'a> &'a Self: Endpoint<SpawnActor>,
+        for<'a> &'a Self: Endpoint<SpawnActorMessage>,
     {
         self.spawn_uid::<A>(cx, Uid::anonymous(), params)
     }
@@ -162,13 +179,37 @@ pub trait RemoteSpawnerEndpoint {
     where
         A: RemoteSpawn,
         Self: Clone + Send + 'static,
-        for<'a> &'a Self: Endpoint<SpawnActor>,
+        for<'a> &'a Self: Endpoint<SpawnActorMessage>,
     {
-        self.spawn_uid_with_link::<A>(
+        self.spawn_uid_with_link::<A>(cx, uid, params, KeepaliveLink::default())
+    }
+
+    /// Spawn a registered actor and report when it becomes reachable.
+    ///
+    /// The returned [`ActorRef`] names where the actor will run, but the remote
+    /// proc has to spawn and link it before it can route — messages sent earlier
+    /// are dropped. A bare readiness signal is posted to `ready` once the actor
+    /// has linked, so callers that need to message it can wait for that signal
+    /// instead of guessing with a delay. The address is already known from the
+    /// synchronously returned [`ActorRef`], so `ready` carries no payload.
+    fn spawn_uid_with_ready<A>(
+        &self,
+        cx: &impl context::Actor,
+        uid: Uid,
+        params: A::Params,
+        ready: OncePortHandle<()>,
+    ) -> anyhow::Result<ActorRef<A>>
+    where
+        A: RemoteSpawn,
+        Self: Clone + Send + 'static,
+        for<'a> &'a Self: Endpoint<SpawnActorMessage>,
+    {
+        self.spawn_uid_with_link_and_ready::<A>(
             cx,
             uid,
             params,
-            KeepaliveLink::new(Duration::from_secs(60), Duration::from_secs(60)),
+            KeepaliveLink::default(),
+            Some(ready),
         )
     }
 
@@ -183,14 +224,34 @@ pub trait RemoteSpawnerEndpoint {
     where
         A: RemoteSpawn,
         Self: Clone + Send + 'static,
-        for<'a> &'a Self: Endpoint<SpawnActor>,
+        for<'a> &'a Self: Endpoint<SpawnActorMessage>,
+    {
+        self.spawn_uid_with_link_and_ready::<A>(cx, uid, params, liveness, None)
+    }
+
+    /// Spawn a registered actor with an explicit actor uid, liveness link, and
+    /// optional readiness port. This is the general form behind the other
+    /// `spawn*` methods; see [`spawn_uid_with_ready`](Self::spawn_uid_with_ready)
+    /// for the readiness semantics.
+    fn spawn_uid_with_link_and_ready<A>(
+        &self,
+        cx: &impl context::Actor,
+        uid: Uid,
+        params: A::Params,
+        liveness: KeepaliveLink,
+        ready: Option<OncePortHandle<()>>,
+    ) -> anyhow::Result<ActorRef<A>>
+    where
+        A: RemoteSpawn,
+        Self: Clone + Send + 'static,
+        for<'a> &'a Self: Endpoint<SpawnActorMessage>,
     {
         // We can safely compute the resulting actor ref: by definition it
-        // will be on the same proc as the remote spawner itself, and we use a
+        // will be on the same proc as the actor spawner itself, and we use a
         // Uid to identify it.
         anyhow::ensure!(
             uid.is_instance(),
-            "RemoteSpawner-spawned actors cannot be singletons"
+            "ActorSpawner-spawned actors cannot be singletons"
         );
         let actor_ref = ActorRef::attest(
             self.endpoint_location()
@@ -198,15 +259,16 @@ pub trait RemoteSpawnerEndpoint {
                 .proc_addr()
                 .actor_addr_uid(uid.clone()),
         );
-        let remote_spawner = self.clone();
+        let actor_spawner = self.clone();
         let gspawn = Gspawn::for_actor_uid::<A>(uid, params)?;
         cx.instance().spawn(Supervisor::bootstrap_uid(
             liveness,
             SupervisionOptions::default(),
             Uid::anonymous(),
             actor_ref.actor_addr().clone(),
+            ready,
             move |cx, supervise| {
-                remote_spawner.post(cx, SpawnActor { gspawn, supervise });
+                actor_spawner.post(cx, SpawnActorMessage { gspawn, supervise });
                 Ok(())
             },
         ));
@@ -214,7 +276,7 @@ pub trait RemoteSpawnerEndpoint {
     }
 }
 
-impl<T> RemoteSpawnerEndpoint for T where for<'a> &'a T: Endpoint<SpawnActor> {}
+impl<T> ActorSpawnerEndpoint for T where for<'a> &'a T: Endpoint<SpawnActorMessage> {}
 
 #[cfg(test)]
 mod tests {
@@ -229,6 +291,7 @@ mod tests {
     use hyperactor::Handler;
     use hyperactor::Instance;
     use hyperactor::Label;
+    use hyperactor::OncePortHandle;
     use hyperactor::PortRef;
     use hyperactor::Proc;
     use hyperactor::RemoteSpawn;
@@ -300,7 +363,7 @@ mod tests {
 
     #[derive(Debug)]
     struct PlainSpawner {
-        remote_spawner: ActorHandle<RemoteSpawner>,
+        actor_spawner: ActorHandle<ActorSpawner>,
         spawned: PortRef<ActorAddr>,
         events: PortRef<ActorSupervisionEvent>,
     }
@@ -308,7 +371,7 @@ mod tests {
     #[async_trait]
     impl Actor for PlainSpawner {
         async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
-            let actor_ref = self.remote_spawner.spawn_uid::<FailingChild>(
+            let actor_ref = self.actor_spawner.spawn_uid::<FailingChild>(
                 this,
                 Uid::instance(Label::new("failing_child").unwrap()),
                 (),
@@ -328,12 +391,43 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct ReadySpawner {
+        actor_spawner: ActorHandle<ActorSpawner>,
+        spawned: PortRef<ActorAddr>,
+        ready: Option<OncePortHandle<()>>,
+    }
+
+    #[async_trait]
+    impl Actor for ReadySpawner {
+        async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
+            let ready = self.ready.take().expect("ready spawner initialized once");
+            let actor_ref = self.actor_spawner.spawn_uid_with_ready::<TestChild>(
+                this,
+                Uid::instance(Label::new("ready_child").unwrap()),
+                (),
+                ready,
+            )?;
+            self.spawned.post(this, actor_ref.actor_addr().clone());
+            Ok(())
+        }
+
+        async fn handle_supervision_event(
+            &mut self,
+            _this: &Instance<Self>,
+            event: &ActorSupervisionEvent,
+        ) -> anyhow::Result<bool> {
+            // Absorb teardown events so cleanup doesn't surface as a root failure.
+            Ok(!event.is_error())
+        }
+    }
+
     fn encoded_unit() -> Vec<u8> {
         bincode::serde::encode_to_vec((), bincode::config::legacy()).unwrap()
     }
 
     async fn spawn_test_child(
-        remote_spawner: &ActorHandle<RemoteSpawner>,
+        actor_spawner: &ActorHandle<ActorSpawner>,
         client: &hyperactor::Client,
         supervisor: PortRef<SupervisorEvent>,
         session_id: Uid,
@@ -342,9 +436,9 @@ mod tests {
             KeepaliveLink::new(Duration::from_secs(60), Duration::from_secs(60))
                 .spawn_supervisor(client)
                 .unwrap();
-        remote_spawner.post(
+        actor_spawner.post(
             client,
-            SpawnActor {
+            SpawnActorMessage {
                 gspawn: Gspawn::for_actor_uid::<TestChild>(
                     Uid::instance(Label::new("test_child").unwrap()),
                     (),
@@ -365,11 +459,11 @@ mod tests {
     async fn test_spawn_actor_endpoint_works_from_plain_actor() {
         let proc = Proc::isolated();
         let client = proc.client("client");
-        let remote_spawner = proc.spawn(RemoteSpawner);
+        let actor_spawner = proc.spawn(ActorSpawner);
         let (spawned, mut spawned_rx) = client.open_port::<ActorAddr>();
         let (events, mut events_rx) = client.open_port::<ActorSupervisionEvent>();
         let spawner = proc.spawn(PlainSpawner {
-            remote_spawner: remote_spawner.clone(),
+            actor_spawner: actor_spawner.clone(),
             spawned: spawned.bind(),
             events: events.bind(),
         });
@@ -385,25 +479,60 @@ mod tests {
         assert!(event.is_error());
         assert_eq!(event.actor_id, spawned_actor);
 
-        remote_spawner.stop("test").unwrap();
+        actor_spawner.stop("test").unwrap();
         tokio::time::timeout(Duration::from_secs(5), spawner)
             .await
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(5), remote_spawner)
+        tokio::time::timeout(Duration::from_secs(5), actor_spawner)
             .await
             .unwrap();
     }
 
     #[tokio::test]
-    async fn test_remote_spawner_worker_reports_child_failure() {
+    async fn test_spawn_uid_with_ready_signals_when_child_links() {
         let proc = Proc::isolated();
         let client = proc.client("client");
-        let remote_spawner = proc.spawn(RemoteSpawner);
+        let actor_spawner = proc.spawn(ActorSpawner);
+        let (spawned, mut spawned_rx) = client.open_port::<ActorAddr>();
+        let (ready, ready_rx) = client.open_once_port::<()>();
+        let spawner = proc.spawn(ReadySpawner {
+            actor_spawner: actor_spawner.clone(),
+            spawned: spawned.bind(),
+            ready: Some(ready),
+        });
+
+        let _attested = tokio::time::timeout(Duration::from_secs(5), spawned_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        // The readiness port fires once the child links and becomes reachable.
+        // It carries no payload — the caller already holds the address from the
+        // synchronously returned ref — so receiving it is the reachability signal.
+        tokio::time::timeout(Duration::from_secs(5), ready_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        spawner.stop("test").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), spawner)
+            .await
+            .unwrap();
+        actor_spawner.stop("test").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), actor_spawner)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_actor_spawner_worker_reports_child_failure() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let actor_spawner = proc.spawn(ActorSpawner);
         let (supervisor, mut supervisor_rx) = client.open_port::<SupervisorEvent>();
         let session_id = Uid::instance(Label::new("session").unwrap());
 
         spawn_test_child(
-            &remote_spawner,
+            &actor_spawner,
             &client,
             supervisor.bind(),
             session_id.clone(),
@@ -434,17 +563,17 @@ mod tests {
             message => panic!("expected terminal supervision event, got {:?}", message),
         }
 
-        remote_spawner.stop("test").unwrap();
-        tokio::time::timeout(Duration::from_secs(5), remote_spawner)
+        actor_spawner.stop("test").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), actor_spawner)
             .await
             .unwrap();
     }
 
     #[tokio::test]
-    async fn test_remote_spawner_rejects_unknown_actor_type() {
+    async fn test_actor_spawner_rejects_unknown_actor_type() {
         let proc = Proc::isolated();
         let client = proc.client("client");
-        let remote_spawner = proc.spawn(RemoteSpawner);
+        let actor_spawner = proc.spawn(ActorSpawner);
         let (supervisor, mut supervisor_rx) = client.open_port::<SupervisorEvent>();
         let (_link_handle, liveness) =
             KeepaliveLink::new(Duration::from_secs(60), Duration::from_secs(60))
@@ -452,9 +581,9 @@ mod tests {
                 .unwrap();
         let session_id = Uid::instance(Label::new("session").unwrap());
 
-        remote_spawner.post(
+        actor_spawner.post(
             &client,
-            SpawnActor {
+            SpawnActorMessage {
                 gspawn: Gspawn::with_uid("unknown::Actor", Uid::anonymous(), encoded_unit()),
                 supervise: Supervise {
                     session_id: session_id.clone(),
@@ -479,8 +608,8 @@ mod tests {
             message => panic!("expected supervise rejection, got {:?}", message),
         }
 
-        remote_spawner.stop("test").unwrap();
-        tokio::time::timeout(Duration::from_secs(5), remote_spawner)
+        actor_spawner.stop("test").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), actor_spawner)
             .await
             .unwrap();
     }

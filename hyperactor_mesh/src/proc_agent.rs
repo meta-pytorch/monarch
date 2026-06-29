@@ -502,7 +502,7 @@ impl ProcAgent {
 impl Actor for ProcAgent {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
         this.set_system();
-        self.proc.set_supervision_coordinator(this.port())?;
+        self.proc.set_supervision_coordinator(this.port().bind())?;
         let _ = self.publish_introspect_properties(this);
 
         // Resolve terminated actor snapshots via QueryChild so that
