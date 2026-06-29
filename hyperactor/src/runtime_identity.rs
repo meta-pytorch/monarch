@@ -17,15 +17,15 @@
 //! So data-plane work runs on its own runtime, and control-plane GIL use is
 //! kept to brief, sanctioned sites. This module records a thread's
 //! [`RuntimeKind`] (stamped at thread start via `on_thread_start`, read via
-//! [`current_runtime_kind`]) so GIL-entry sites can tell the two apart.
+//! [`current_runtime_kind`]) so GIL-entry sites can tell the two apart. An
+//! unstamped thread is not owned by a Monarch runtime and reads as `None`.
 //!
 //! # Invariants (RI-*)
 //!
-//! - **RI-1 (unstamped-is-foreign):** [`current_runtime_kind`] returns `Foreign`
-//!   on any thread no runtime builder has tagged. Enforced by the
-//!   `const { Cell::new(Foreign) }` thread-local init.
-//! - **RI-2 (tagging-is-thread-local):** [`tag_current_thread`] sets only the
-//!   current OS thread's marker.
+//! - **RI-1 (unstamped-is-none):** [`current_runtime_kind`] returns `None` on
+//!   any thread no runtime builder has tagged.
+//! - **RI-2 (tagging-is-thread-local-and-once):** [`tag_current_thread`] sets
+//!   only the current OS thread's marker, and only once.
 //! - **RI-3 (data-plane-workers-tagged):** [`build_data_plane_runtime`] stamps
 //!   every worker thread of the runtime it returns `DataPlane(label)`, via the
 //!   builder's `on_thread_start`.
@@ -45,7 +45,7 @@
 //!   down by [`shutdown_data_plane_runtimes`]. The pyo3 layer calls that at
 //!   Python teardown before `Py_Finalize`; this crate stays Python-free.
 
-use std::cell::Cell;
+use std::cell::OnceCell;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -59,26 +59,23 @@ pub enum RuntimeKind {
     /// not drive actor dispatch (the tensor streams; the RDMA managers during
     /// buffer registration).
     DataPlane(&'static str),
-    /// A thread not stamped by any monarch runtime (e.g. a Python-owned thread).
-    Foreign,
 }
 
 thread_local! {
-    // Default `Foreign`: a thread is unstamped until a runtime builder's
-    // `on_thread_start` tags it, so non-runtime threads (e.g. Python-owned
-    // asyncio threads) read as `Foreign`.
-    static KIND: Cell<RuntimeKind> = const { Cell::new(RuntimeKind::Foreign) };
+    // A thread is unstamped until a runtime builder's `on_thread_start` tags it,
+    // so non-runtime threads (e.g. Python-owned asyncio threads) read as `None`.
+    static KIND: OnceCell<RuntimeKind> = const { OnceCell::new() };
 }
 
 /// Stamp the current thread with `kind`. Call from a runtime builder's
 /// `on_thread_start` so every worker of that runtime carries the marker.
 pub fn tag_current_thread(kind: RuntimeKind) {
-    KIND.with(|k| k.set(kind));
+    KIND.with(|k| k.set(kind).expect("runtime kind already tagged"));
 }
 
-/// The [`RuntimeKind`] of the current thread (`Foreign` if unstamped).
-pub fn current_runtime_kind() -> RuntimeKind {
-    KIND.with(|k| k.get())
+/// The [`RuntimeKind`] of the current thread, if it is stamped.
+pub fn current_runtime_kind() -> Option<RuntimeKind> {
+    KIND.with(|k| k.get().copied())
 }
 
 /// Data-plane runtimes built by [`build_data_plane_runtime`], retained so they
@@ -153,8 +150,9 @@ mod tests {
     use super::*;
 
     // RI invariant coverage:
-    // RI-1 (unstamped-is-foreign): tag_and_read_round_trip; build_data_plane_runtime_tags_workers.
-    // RI-2 (tagging-is-thread-local): tag_and_read_round_trip.
+    // RI-1 (unstamped-is-none): tag_and_read_round_trip; build_data_plane_runtime_tags_workers.
+    // RI-2 (tagging-is-thread-local-and-once): tag_and_read_round_trip;
+    //   tag_current_thread_panics_when_retagged.
     // RI-3 (data-plane-workers-tagged): build_data_plane_runtime_tags_workers.
     // RI-4 (tagging-does-not-leak): build_data_plane_runtime_tags_workers.
     // RI-5 (process-lifetime-runtime): structural (the registry keeps it alive;
@@ -164,20 +162,27 @@ mod tests {
     //   shutdown_runtimes_empty_is_noop. (the global registry drain is a thin
     //   Vec::drain wrapper, exercised structurally.)
 
-    // RI-1/RI-2: a fresh thread is Foreign; tagging then reads back on that thread.
+    // RI-1/RI-2: a fresh thread is unstamped; tagging then reads back on that thread.
     #[test]
     fn tag_and_read_round_trip() {
         // A fresh thread is unstamped.
-        assert_eq!(current_runtime_kind(), RuntimeKind::Foreign);
+        assert_eq!(current_runtime_kind(), None);
         tag_current_thread(RuntimeKind::ControlPlane);
-        assert_eq!(current_runtime_kind(), RuntimeKind::ControlPlane);
+        assert_eq!(current_runtime_kind(), Some(RuntimeKind::ControlPlane));
     }
 
-    // RI-3/RI-4: workers are stamped DataPlane(label) while the caller stays Foreign.
+    #[test]
+    #[should_panic(expected = "runtime kind already tagged")]
+    fn tag_current_thread_panics_when_retagged() {
+        tag_current_thread(RuntimeKind::ControlPlane);
+        tag_current_thread(RuntimeKind::DataPlane("test-dp"));
+    }
+
+    // RI-3/RI-4: workers are stamped DataPlane(label) while the caller stays unstamped.
     #[test]
     fn build_data_plane_runtime_tags_workers() {
         // The calling (test) thread is unstamped.
-        assert_eq!(current_runtime_kind(), RuntimeKind::Foreign);
+        assert_eq!(current_runtime_kind(), None);
 
         let handle = build_data_plane_runtime("test-dp", 1);
         let (tx, rx) = std::sync::mpsc::channel();
@@ -186,15 +191,15 @@ mod tests {
         });
 
         // A task on the data-plane runtime observes its DataPlane stamp,
-        assert_eq!(rx.recv().unwrap(), RuntimeKind::DataPlane("test-dp"));
+        assert_eq!(rx.recv().unwrap(), Some(RuntimeKind::DataPlane("test-dp")));
         // while the stamp stays confined to that runtime's worker threads.
-        assert_eq!(current_runtime_kind(), RuntimeKind::Foreign);
+        assert_eq!(current_runtime_kind(), None);
     }
 
     // RI-6 (block-on-host-tagged): `rt.block_on` drives its future on the CALLING
     // thread, which is not a runtime worker, so `on_thread_start` does not cover
     // it. A thread that runs work via `block_on` (the StreamActor pattern) must
-    // tag itself explicitly; the `on_thread_start` tag alone leaves it `Foreign`.
+    // tag itself explicitly; the `on_thread_start` tag alone leaves it unstamped.
     #[test]
     fn on_thread_start_does_not_tag_the_block_on_thread() {
         let (tx, rx) = std::sync::mpsc::channel();
@@ -206,7 +211,7 @@ mod tests {
                 .build()
                 .unwrap();
             // block_on runs on this (the calling) thread, which on_thread_start
-            // does not tag -> still Foreign.
+            // does not tag -> still unstamped.
             let on_caller = rt.block_on(async { current_runtime_kind() });
             // a spawned task runs on a worker -> DataPlane.
             let on_worker = rt.block_on(async {
@@ -217,8 +222,8 @@ mod tests {
             let _ = tx.send((on_caller, on_worker));
         });
         let (on_caller, on_worker) = rx.recv().unwrap();
-        assert_eq!(on_caller, RuntimeKind::Foreign);
-        assert_eq!(on_worker, RuntimeKind::DataPlane("x"));
+        assert_eq!(on_caller, None);
+        assert_eq!(on_worker, Some(RuntimeKind::DataPlane("x")));
     }
 
     // RI-7: shut down a runtime with an in-flight task, and confirm the task is

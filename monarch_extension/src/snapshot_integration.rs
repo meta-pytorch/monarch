@@ -32,8 +32,8 @@ fn pre_register_snapshot_schemas_py(py: Python<'_>, scanner: &DatabaseScanner) -
     let table_store = scanner.table_store();
     // This is the pyo3-async-runtimes library's own tokio runtime, not monarch's
     // control-plane runtime (`get_tokio_runtime()`); monarch does not tag it with
-    // a `RuntimeKind` (see `hyperactor::runtime_identity`), so GIL work here would
-    // not be classified by the runtime-identity net. Safe today only because this
+    // a `RuntimeKind` (see `hyperactor::runtime_identity`), so it is classified
+    // as `None`. Safe today only because this
     // work is GIL-free: the GIL is released (`py.detach`) before `block_on` and
     // `register_snapshot_schemas` is pure Arrow. If GIL work is ever needed here,
     // route it through `get_tokio_runtime()` (or another tagged runtime).

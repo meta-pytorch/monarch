@@ -24,7 +24,7 @@
 //!   acquisition under a sanctioned entry is attributed to that entry, not checked
 //!   on its own.
 //! - **GIL-2 (off-control-plane-exempt):** `check_gil_site` is a no-op on
-//!   `DataPlane`/`Foreign` threads; only `RuntimeKind::ControlPlane` is policed.
+//!   `DataPlane` and unstamped threads; only `RuntimeKind::ControlPlane` is policed.
 //! - **GIL-3 (allowlist-exhaustive):** `is_control_plane_allowed` is a wildcard-free
 //!   `match` over `GilSite`, so a new variant cannot compile until it is classified,
 //!   and `GilSite` has no catch-all variant.
@@ -210,7 +210,7 @@ fn check_gil_site(site: GilSite) {
     if is_reentrant() {
         return;
     }
-    if current_runtime_kind() != RuntimeKind::ControlPlane {
+    if current_runtime_kind() != Some(RuntimeKind::ControlPlane) {
         return;
     }
     if is_control_plane_allowed(site) {
@@ -370,7 +370,7 @@ mod tests {
 
     // An allowlisted site on a control-plane thread is a no-op: the counter does
     // not move and `check_gil_site` does not trip the debug_assert. Run on a
-    // freshly tagged thread (the test thread itself is Foreign) and assert a
+    // freshly tagged thread (the test thread itself is unstamped) and assert a
     // delta so concurrent tests on the global counter do not interfere.
     // GIL-4:
     #[test]
@@ -411,7 +411,7 @@ mod tests {
     fn unsanctioned_site_off_control_plane_is_silent() {
         let before = GIL_ON_CONTROL_PLANE.load(Ordering::Relaxed);
 
-        // The test thread is Foreign.
+        // The test thread is unstamped.
         check_gil_site(GilSite::Rdma);
 
         // A DataPlane-tagged thread is likewise exempt.

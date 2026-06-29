@@ -90,7 +90,7 @@ mod tests {
         let _join = spawn_on_rdma_runtime(async move {
             let _ = tx.send(current_runtime_kind());
         });
-        assert_eq!(rx.recv().unwrap(), RuntimeKind::DataPlane("rdma"));
+        assert_eq!(rx.recv().unwrap(), Some(RuntimeKind::DataPlane("rdma")));
     }
 
     // RR-2: RdmaManagerActor's spawn_server_task override routes onto the rdma
@@ -101,7 +101,7 @@ mod tests {
         let _join = <RdmaManagerActor as Actor>::spawn_server_task(async move {
             let _ = tx.send(current_runtime_kind());
         });
-        assert_eq!(rx.recv().unwrap(), RuntimeKind::DataPlane("rdma"));
+        assert_eq!(rx.recv().unwrap(), Some(RuntimeKind::DataPlane("rdma")));
     }
 
     // RR-5: the rdma-runtime JoinHandle is awaitable from a different runtime.

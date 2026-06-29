@@ -345,7 +345,7 @@ mod tests {
                 .await
                 .unwrap()
         });
-        assert_eq!(kind, RuntimeKind::ControlPlane);
+        assert_eq!(kind, Some(RuntimeKind::ControlPlane));
     }
 
     // on_thread_start also reaches the blocking pool, so GIL work on a
@@ -357,6 +357,6 @@ mod tests {
                 .await
                 .unwrap()
         });
-        assert_eq!(kind, RuntimeKind::ControlPlane);
+        assert_eq!(kind, Some(RuntimeKind::ControlPlane));
     }
 }
