@@ -179,11 +179,15 @@ def test_open_or_refresh_bootstraps_once_and_ignores_drift() -> None:
 
     def fake_bootstrap(config) -> None:
         bootstrap_calls.append(config)
-        handle._dashboard_info = {"local_url": "http://local", "url": "http://ext"}
+        handle._dashboard_info = {
+            "api_url": "http://api",
+            "local_url": "http://local",
+            "url": "http://ext",
+        }
 
     with patch.object(handle, "_bootstrap", side_effect=fake_bootstrap):
         expected = {
-            "telemetry_url": "http://local",
+            "telemetry_url": "http://api",
             "dashboard_url": "http://ext",
             "socket_path": telemetry_socket_path("apply"),
         }
@@ -216,7 +220,11 @@ def test_open_or_refresh_spawns_telemetry_actors_once_with_no_active_workers() -
     handle = tc._TelemetryHandle("apply")
 
     def fake_bootstrap(config) -> None:
-        handle._dashboard_info = {"local_url": "http://local", "url": "http://ext"}
+        handle._dashboard_info = {
+            "api_url": "http://api",
+            "local_url": "http://local",
+            "url": "http://ext",
+        }
 
     with (
         patch.object(handle, "_bootstrap", side_effect=fake_bootstrap),

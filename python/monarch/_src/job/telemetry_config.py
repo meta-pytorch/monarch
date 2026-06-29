@@ -258,12 +258,12 @@ class _TelemetryHandle:
         dashboard_info = self._dashboard_info
         if dashboard_info is None:
             raise RuntimeError("telemetry handle is not open")
-        local_url = dashboard_info["local_url"]
+        api_url = dashboard_info["api_url"]
         url = dashboard_info["url"]
-        if not isinstance(local_url, str) or not isinstance(url, str):
+        if not isinstance(api_url, str) or not isinstance(url, str):
             raise RuntimeError(f"invalid dashboard info: {dashboard_info!r}")
         return {
-            "telemetry_url": local_url,
+            "telemetry_url": api_url,
             "dashboard_url": url,
             "socket_path": self.client_socket_path,
         }
