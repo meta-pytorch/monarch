@@ -1923,6 +1923,11 @@ struct InstanceState<A: Actor> {
     instance_locals: ActorLocalStorage,
 }
 
+struct ActorStopped {
+    reason: String,
+    stop_mode: StopMode,
+}
+
 type DelayedPost<A> = Box<dyn FnOnce(&Instance<A>) + Send>;
 
 trait PostAfterEndpoint<A: Actor, M: Message>: Send {
@@ -3089,11 +3094,16 @@ impl<A: Actor> Instance<A> {
         // After this point, we know we won't spawn any more children,
         // so we can safely read the current child keys.
         let mut to_unlink = Vec::new();
+        let stop_mode = match &result {
+            Ok(stopped) => stopped.stop_mode,
+            Err(_) => StopMode::Stop,
+        };
+        let child_signal = match stop_mode {
+            StopMode::DrainAndStop => Signal::DrainAndStop("parent draining".to_string()),
+            StopMode::Stop => Signal::Stop("parent stopping".to_string()),
+        };
         for child in self.inner.cell.child_iter() {
-            if let Err(err) = child
-                .value()
-                .signal(Signal::Stop("parent stopping".to_string()))
-            {
+            if let Err(err) = child.value().signal(child_signal.clone()) {
                 tracing::error!(
                     "{}: failed to send stop signal to child pid {}: {:?}",
                     self.self_addr(),
@@ -3178,12 +3188,12 @@ impl<A: Actor> Instance<A> {
         }
         // If the original exit was not an error, let cleanup errors be
         // surfaced.
-        result.and_then(|reason| cleanup_result.map(|_| reason))
+        result.and_then(|stopped| cleanup_result.map(|_| stopped.reason))
     }
 
     /// Initialize and run the actor until it fails or is stopped. On success,
-    /// returns the reason why the actor stopped. On failure, returns the error
-    /// that caused the failure.
+    /// returns why the actor stopped and the mode that child actors inherit.
+    /// On failure, returns the error that caused the failure.
     async fn run(
         &mut self,
         actor: &mut A,
@@ -3192,8 +3202,9 @@ impl<A: Actor> Instance<A> {
             mpsc::UnboundedReceiver<ActorSupervisionEvent>,
         ),
         work_rx: &mut ActorWorkReceiver<A>,
-    ) -> Result<String, ActorError> {
+    ) -> Result<ActorStopped, ActorError> {
         let (signal_receiver, supervision_event_receiver) = actor_loop_receivers;
+        let mut stop_mode = StopMode::Stop;
 
         self.change_status(ActorStatus::Initializing);
         self.inner
@@ -3217,6 +3228,7 @@ impl<A: Actor> Instance<A> {
                     tracing::debug!("received signal {signal:?}");
                     match signal {
                         Signal::Stop(reason) => {
+                            stop_mode = StopMode::Stop;
                             self.change_status(ActorStatus::Stopping);
                             self.inner
                                 .proc
@@ -3225,6 +3237,7 @@ impl<A: Actor> Instance<A> {
                                 .map_err(|err| ActorError::new(self.self_addr(), ActorErrorKind::processing(err)))?;
                         },
                         Signal::DrainAndStop(reason) => {
+                            stop_mode = StopMode::DrainAndStop;
                             self.change_status(ActorStatus::Stopping);
                             self.inner
                                 .proc
@@ -3289,7 +3302,10 @@ impl<A: Actor> Instance<A> {
             reason = stop_reason,
             "exited actor loop",
         );
-        Ok(stop_reason)
+        Ok(ActorStopped {
+            reason: stop_reason,
+            stop_mode,
+        })
     }
 
     /// Handle a supervision event using the provided actor.
@@ -6025,8 +6041,133 @@ mod tests {
                     .try_post(&client, TestActorMessage::Noop())
                     .is_err()
             );
-            assert_matches!(actor.await, ActorStatus::Stopped(reason) if reason == "parent stopping");
+            assert_matches!(actor.await, ActorStatus::Stopped(reason) if reason == "parent draining");
         }
+    }
+
+    #[derive(Debug)]
+    struct DrainCountingActor {
+        handled: Arc<AtomicUsize>,
+    }
+
+    impl Actor for DrainCountingActor {}
+
+    #[derive(Handler, Debug)]
+    enum DrainCountingMessage {
+        Block(oneshot::Sender<()>, oneshot::Receiver<()>),
+        Count(),
+    }
+
+    #[async_trait]
+    #[crate::handle(DrainCountingMessage)]
+    impl DrainCountingMessageHandler for DrainCountingActor {
+        async fn block(
+            &mut self,
+            _cx: &crate::Context<Self>,
+            entered: oneshot::Sender<()>,
+            release: oneshot::Receiver<()>,
+        ) -> Result<(), anyhow::Error> {
+            entered.send(()).unwrap();
+            release.await.unwrap();
+            Ok(())
+        }
+
+        async fn count(&mut self, _cx: &crate::Context<Self>) -> Result<(), anyhow::Error> {
+            self.handled.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    async fn block_and_queue_counts(
+        client: &Client,
+        handle: &ActorHandle<DrainCountingActor>,
+        count: usize,
+    ) -> oneshot::Sender<()> {
+        let (entered_tx, entered_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        handle.post(client, DrainCountingMessage::Block(entered_tx, release_rx));
+        entered_rx.await.unwrap();
+        for _ in 0..count {
+            handle.post(client, DrainCountingMessage::Count());
+        }
+        release_tx
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn child_inherits_drain_mode() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let parent = proc.spawn(TestActor);
+        let handled = Arc::new(AtomicUsize::new(0));
+        let child = proc.spawn_child(
+            parent.cell().clone(),
+            DrainCountingActor {
+                handled: handled.clone(),
+            },
+        );
+        let release = block_and_queue_counts(&client, &child, 5).await;
+
+        parent.drain_and_stop("test").unwrap();
+        release.send(()).unwrap();
+
+        assert_matches!(parent.await, ActorStatus::Stopped(reason) if reason == "test");
+        assert_matches!(child.await, ActorStatus::Stopped(reason) if reason == "parent draining");
+        assert_eq!(handled.load(Ordering::SeqCst), 5);
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn tree_inherits_drain_mode() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let grandparent = proc.spawn(TestActor);
+        let parent = proc.spawn_child(grandparent.cell().clone(), TestActor);
+        let handled = Arc::new(AtomicUsize::new(0));
+        let grandchild = proc.spawn_child(
+            parent.cell().clone(),
+            DrainCountingActor {
+                handled: handled.clone(),
+            },
+        );
+        let release = block_and_queue_counts(&client, &grandchild, 7).await;
+
+        grandparent.drain_and_stop("test").unwrap();
+        release.send(()).unwrap();
+
+        assert_matches!(grandparent.await, ActorStatus::Stopped(reason) if reason == "test");
+        assert_matches!(parent.await, ActorStatus::Stopped(reason) if reason == "parent draining");
+        assert_matches!(grandchild.await, ActorStatus::Stopped(reason) if reason == "parent draining");
+        assert_eq!(handled.load(Ordering::SeqCst), 7);
+    }
+
+    #[derive(Debug)]
+    struct StopFailingActor;
+
+    #[async_trait]
+    impl Actor for StopFailingActor {
+        async fn handle_stop(
+            &mut self,
+            _this: &Instance<Self>,
+            _mode: StopMode,
+            _reason: &str,
+        ) -> Result<(), anyhow::Error> {
+            Err(anyhow::anyhow!("stop failed"))
+        }
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn failed_drain_stop_stops_children_immediately() {
+        let proc = Proc::isolated();
+        let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
+        let parent = proc.spawn(StopFailingActor);
+        let child = proc.spawn_child(parent.cell().clone(), TestActor);
+
+        parent.drain_and_stop("test").unwrap();
+
+        assert_matches!(child.await, ActorStatus::Stopped(reason) if reason == "parent stopping");
+        assert_matches!(
+            parent.await,
+            ActorStatus::Failed(err) if err.to_string().contains("stop failed")
+        );
     }
 
     #[derive(Debug)]
