@@ -85,6 +85,8 @@ use fuse3::Result as FuseResult;
 use fuse3::path::prelude::*;
 use futures::Future;
 use futures::stream;
+use monarch_gil::GilSite;
+use monarch_gil::monarch_with_gil_blocking;
 use monarch_hyperactor::pytokio::PyPythonTask;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -204,17 +206,27 @@ fn py_err_to_fuse(e: PyErr) -> Errno {
 }
 
 async fn do_getattr(actor: &Arc<Py<PyAny>>, path: String) -> FuseResult<FileAttr> {
-    let fut = Python::attach(|py| start_actor_call(actor.bind(py), "getattr_path", (&path,)))
-        .map_err(py_err_to_fuse)?;
+    let fut = monarch_with_gil_blocking(GilSite::EndpointDispatch, |py| {
+        start_actor_call(actor.bind(py), "getattr_path", (&path,))
+    })
+    .map_err(py_err_to_fuse)?;
     let raw = fut.await.map_err(py_err_to_fuse)?;
-    Python::attach(|py| decode_getattr(raw.bind(py).clone())).map_err(py_err_to_fuse)?
+    monarch_with_gil_blocking(GilSite::ReplyConvert, |py| {
+        decode_getattr(raw.bind(py).clone())
+    })
+    .map_err(py_err_to_fuse)?
 }
 
 async fn do_readdir(actor: &Arc<Py<PyAny>>, path: String) -> FuseResult<Vec<String>> {
-    let fut = Python::attach(|py| start_actor_call(actor.bind(py), "readdir_path", (&path,)))
-        .map_err(py_err_to_fuse)?;
+    let fut = monarch_with_gil_blocking(GilSite::EndpointDispatch, |py| {
+        start_actor_call(actor.bind(py), "readdir_path", (&path,))
+    })
+    .map_err(py_err_to_fuse)?;
     let raw = fut.await.map_err(py_err_to_fuse)?;
-    Python::attach(|py| decode_readdir(raw.bind(py).clone())).map_err(py_err_to_fuse)?
+    monarch_with_gil_blocking(GilSite::ReplyConvert, |py| {
+        decode_readdir(raw.bind(py).clone())
+    })
+    .map_err(py_err_to_fuse)?
 }
 
 async fn do_read(
@@ -223,11 +235,15 @@ async fn do_read(
     size: u32,
     offset: u64,
 ) -> FuseResult<Bytes> {
-    let fut =
-        Python::attach(|py| start_actor_call(actor.bind(py), "read_path", (&path, size, offset)))
-            .map_err(py_err_to_fuse)?;
+    let fut = monarch_with_gil_blocking(GilSite::EndpointDispatch, |py| {
+        start_actor_call(actor.bind(py), "read_path", (&path, size, offset))
+    })
+    .map_err(py_err_to_fuse)?;
     let raw = fut.await.map_err(py_err_to_fuse)?;
-    Python::attach(|py| decode_read(raw.bind(py).clone())).map_err(py_err_to_fuse)?
+    monarch_with_gil_blocking(GilSite::ReplyConvert, |py| {
+        decode_read(raw.bind(py).clone())
+    })
+    .map_err(py_err_to_fuse)?
 }
 
 // ── Path utilities ─────────────────────────────────────────────────────────────

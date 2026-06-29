@@ -6,6 +6,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#![deny(clippy::disallowed_methods)]
+
 //! Control-plane GIL accounting.
 //!
 //! The GIL wrappers (`monarch_with_gil` / `monarch_with_gil_blocking`) route every
@@ -148,6 +150,11 @@ pub enum GilSite {
     CodeSync,
     /// Register or operate RDMA buffers (runs on the data plane).
     Rdma,
+    /// Worker-process startup: torch import, env init. Runs on the
+    /// control-plane runtime (the `WorkerActor` has no data-plane override).
+    WorkerInit,
+    /// Tensor/Python work on the `StreamActor` data-plane runtime.
+    StreamCompute,
     /// Test-only GIL use.
     Test,
 }
@@ -184,9 +191,13 @@ fn is_control_plane_allowed(site: GilSite) -> bool {
         GilSite::Debugger | GilSite::Logging | GilSite::CodeSync => true,
         // Tests run their GIL work on control-plane-tagged threads.
         GilSite::Test => true,
-        // RDMA buffer registration runs on its own data-plane runtime; a
-        // control-plane Rdma grab is the regression this net catches.
-        GilSite::Rdma => false,
+        // Worker-process startup runs on the control-plane runtime (the
+        // WorkerActor has no data-plane override); sanctioned one-time setup.
+        GilSite::WorkerInit => true,
+        // Data-plane subsystems own a runtime and must never take the GIL on
+        // the control plane; a control-plane grab here is the regression this
+        // net catches.
+        GilSite::Rdma | GilSite::StreamCompute => false,
     }
 }
 
@@ -252,6 +263,7 @@ fn check_gil_site(site: GilSite) {
 /// ```
 // No `#[track_caller]` (unlike the blocking wrapper): it does not propagate through
 // `async fn`, so the logged `GilSite` is the diagnostic for async sites.
+#[allow(clippy::disallowed_methods)]
 pub async fn monarch_with_gil<F, R>(site: GilSite, f: F) -> R
 where
     F: for<'py> FnOnce(Python<'py>) -> R + Send,
@@ -289,9 +301,12 @@ where
 /// })?;
 /// ```
 #[track_caller]
+#[allow(clippy::disallowed_methods)]
 pub fn monarch_with_gil_blocking<F, R>(site: GilSite, f: F) -> R
 where
-    F: for<'py> FnOnce(Python<'py>) -> R + Send,
+    // No `Send` bound (unlike `monarch_with_gil`): the closure runs on the
+    // current thread and never crosses a thread boundary.
+    F: for<'py> FnOnce(Python<'py>) -> R,
 {
     check_gil_site(site);
 
@@ -312,6 +327,22 @@ pub fn get_gil_on_control_plane() -> u64 {
 #[pyo3(name = "_reset_gil_on_control_plane")]
 pub fn reset_gil_on_control_plane() {
     GIL_ON_CONTROL_PLANE.store(0, Ordering::Relaxed);
+}
+
+/// Force one unsanctioned control-plane GIL acquisition and count it, for the
+/// negative fitness test. Runs on a freshly `ControlPlane`-tagged thread and
+/// routes through `check_gil_site` so the real gating is exercised; the
+/// debug-build `debug_assert` panic is swallowed so the increment sticks (in
+/// release builds there is no assert and the counter bumps directly).
+#[pyfunction]
+#[pyo3(name = "_force_unsanctioned_gil_on_control_plane")]
+pub fn force_unsanctioned_gil_on_control_plane() {
+    std::thread::spawn(|| {
+        hyperactor::runtime_identity::tag_current_thread(RuntimeKind::ControlPlane);
+        let _ = std::panic::catch_unwind(|| check_gil_site(GilSite::Rdma));
+    })
+    .join()
+    .unwrap();
 }
 
 #[cfg(test)]

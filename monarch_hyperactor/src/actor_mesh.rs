@@ -803,7 +803,7 @@ pub fn hold_gil_for_test(delay_secs: f64, hold_secs: f64) {
         // Wait before grabbing the GIL (blocking sleep is fine here, we're in a spawned thread)
         thread::sleep(Duration::from_secs_f64(delay_secs));
         // Acquire and hold the GIL - MUST use blocking sleep to keep GIL held
-        Python::attach(|_py| {
+        monarch_with_gil_blocking(GilSite::Test, |_py| {
             tracing::info!("start holding the gil...");
             thread::sleep(Duration::from_secs_f64(hold_secs));
             tracing::info!("end holding the gil...");
@@ -855,7 +855,6 @@ mod tests {
     use hyperactor_mesh::supervision::MeshFailure;
     use monarch_types::PickledPyObject;
     use ndslice::extent;
-    use pyo3::Python;
     use tokio::sync::mpsc;
 
     use super::*;
@@ -955,7 +954,7 @@ mod tests {
         // Create a minimal Python class and pickle it so we can spawn
         // PythonActor instances (mirroring PyProcMesh::spawn_async).
         // The class must live in __main__'s globals for pickle to find it.
-        let pickled_type = Python::attach(|py| {
+        let pickled_type = monarch_with_gil_blocking(GilSite::Test, |py| {
             py.run(c"class MinimalActor: pass", None, None).unwrap();
 
             PickledPyObject::pickle(

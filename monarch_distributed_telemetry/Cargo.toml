@@ -14,6 +14,7 @@ datafusion = "52.5.0"
 futures = { version = "0.3.31", features = ["async-await", "compat"] }
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_telemetry = { version = "0.0.0", path = "../hyperactor_telemetry" }
+monarch_gil = { version = "0.0.0", path = "../monarch_gil" }
 monarch_hyperactor = { version = "0.0.0", path = "../monarch_hyperactor" }
 monarch_record_batch = { version = "0.0.0", path = "../monarch_record_batch" }
 monarch_telemetry_schema = { version = "0.0.0", path = "../monarch_telemetry_schema" }

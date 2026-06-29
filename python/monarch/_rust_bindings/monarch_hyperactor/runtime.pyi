@@ -33,3 +33,10 @@ def _reset_gil_on_control_plane() -> None:
     Reset the unsanctioned control-plane GIL counter to zero. For tests.
     """
     ...
+
+def _force_unsanctioned_gil_on_control_plane() -> None:
+    """
+    Force one unsanctioned control-plane GIL acquisition and count it. For the
+    negative fitness test.
+    """
+    ...

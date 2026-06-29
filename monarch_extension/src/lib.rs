@@ -7,6 +7,7 @@
  */
 
 #![allow(unsafe_op_in_unsafe_fn)]
+#![deny(clippy::disallowed_methods)]
 
 #[cfg(feature = "tensor_engine")]
 mod client;

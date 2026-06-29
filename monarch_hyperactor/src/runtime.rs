@@ -20,6 +20,7 @@ use hyperactor::runtime_identity::RuntimeKind;
 use hyperactor::runtime_identity::shutdown_data_plane_runtimes;
 use hyperactor::runtime_identity::tag_current_thread;
 pub use monarch_gil::GilSite;
+pub use monarch_gil::force_unsanctioned_gil_on_control_plane;
 pub use monarch_gil::get_gil_on_control_plane;
 pub use monarch_gil::monarch_with_gil;
 pub use monarch_gil::monarch_with_gil_blocking;
@@ -113,7 +114,7 @@ static MAIN_THREAD_NATIVE_ID: OnceLock<i64> = OnceLock::new();
 /// On first call, looks it up via `threading.main_thread().native_id`.
 fn get_main_thread_native_id() -> i64 {
     *MAIN_THREAD_NATIVE_ID.get_or_init(|| {
-        Python::attach(|py| {
+        monarch_with_gil_blocking(GilSite::Bootstrap, |py| {
             let threading = py.import("threading").expect("failed to import threading");
             let main_thread = threading
                 .call_method0("main_thread")
@@ -210,7 +211,7 @@ where
                         loop {
                             // Acquiring the GIL in a loop is sad, hopefully once
                             // every 100ms is fine.
-                            Python::attach(|py| py.check_signals())?;
+                            monarch_with_gil_blocking(GilSite::AwaitDrive, |py| py.check_signals())?;
                             tokio::time::sleep(sleep_for).await;
                         }
                     } => signal
@@ -267,6 +268,14 @@ pub fn register_python_bindings(runtime_mod: &Bound<'_, PyModule>) -> PyResult<(
         "monarch._rust_bindings.monarch_hyperactor.runtime",
     )?;
     runtime_mod.add_function(reset_gil_on_control_plane_fn)?;
+
+    let force_unsanctioned_gil_on_control_plane_fn =
+        wrap_pyfunction!(force_unsanctioned_gil_on_control_plane, runtime_mod.py())?;
+    force_unsanctioned_gil_on_control_plane_fn.setattr(
+        "__module__",
+        "monarch._rust_bindings.monarch_hyperactor.runtime",
+    )?;
+    runtime_mod.add_function(force_unsanctioned_gil_on_control_plane_fn)?;
 
     Ok(())
 }

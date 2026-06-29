@@ -62,6 +62,8 @@ use crate::pickle::PendingMessage;
 use crate::pickle::unpickle;
 use crate::pytokio::PyPythonTask;
 use crate::pytokio::PythonTask;
+use crate::runtime::GilSite;
+use crate::runtime::monarch_with_gil_blocking;
 use crate::shape::PyExtent;
 use crate::shape::PyShape;
 use crate::supervision::Supervisable;
@@ -275,9 +277,9 @@ impl Drop for SpanGuard {
 
 fn supervision_error_to_pyerr(err: PyErr, qualified_endpoint_name: &Option<String>) -> PyErr {
     match qualified_endpoint_name {
-        Some(endpoint) => {
-            Python::attach(|py| SupervisionError::set_endpoint_on_err(py, err, endpoint.clone()))
-        }
+        Some(endpoint) => monarch_with_gil_blocking(GilSite::Supervise, |py| {
+            SupervisionError::set_endpoint_on_err(py, err, endpoint.clone())
+        }),
         None => err,
     }
 }
@@ -329,7 +331,9 @@ async fn collect_value(
             match kind {
                 PythonMessageKind::Result { rank, .. } => Ok((message, rank)),
                 PythonMessageKind::Exception { .. } => {
-                    Python::attach(|py| Err(PyErr::from_value(unpickle_from_part(py, message)?)))
+                    monarch_with_gil_blocking(GilSite::Traceback, |py| {
+                        Err(PyErr::from_value(unpickle_from_part(py, message)?))
+                    })
                 }
                 other => Err(pyo3::exceptions::PyValueError::new_err(format!(
                     "unexpected message kind {:?}",
@@ -406,7 +410,7 @@ async fn collect_valuemesh(
                     "failed to extract overlay from collected responses: {e}"
                 ))
             })?;
-            Python::attach(|py| {
+            monarch_with_gil_blocking(GilSite::ReplyConvert, |py| {
                 Ok(PyValueMesh::build_from_parts(
                     &extent,
                     overlay.runs().try_fold(
@@ -418,7 +422,7 @@ async fn collect_valuemesh(
                             }
                             PythonResponseMessage::Exception(part) => {
                                 record_guard.mark_error();
-                                Python::attach(|py| {
+                                monarch_with_gil_blocking(GilSite::Traceback, |py| {
                                     Err(PyErr::from_value(unpickle_from_part(py, part.clone())?))
                                 })
                             }
@@ -467,9 +471,9 @@ fn value_collector(
         )
         .await
         {
-            Ok((message, _)) => {
-                Python::attach(|py| unpickle_from_part(py, message).map(|obj| obj.unbind()))
-            }
+            Ok((message, _)) => monarch_with_gil_blocking(GilSite::ReplyConvert, |py| {
+                unpickle_from_part(py, message).map(|obj| obj.unbind())
+            }),
             Err(e) => {
                 record_guard.mark_error();
                 Err(e)
@@ -535,9 +539,9 @@ impl PyValueStream {
             )
             .await
             {
-                Ok((message, _)) => {
-                    Python::attach(|py| unpickle_from_part(py, message).map(|obj| obj.unbind()))
-                }
+                Ok((message, _)) => monarch_with_gil_blocking(GilSite::ReplyConvert, |py| {
+                    unpickle_from_part(py, message).map(|obj| obj.unbind())
+                }),
                 Err(e) => {
                     record_guard.mark_error();
                     Err(e)
@@ -1209,7 +1213,7 @@ impl Endpoint for Remote {
     }
 
     fn enter_endpoint_span(&self, adverb: EndpointAdverb, actor_id: &ActorAddr) -> SpanGuard {
-        let call_name = Python::attach(|py| {
+        let call_name = monarch_with_gil_blocking(GilSite::DisplayName, |py| {
             self.inner
                 .call_method0(py, "_call_name")
                 .ok()

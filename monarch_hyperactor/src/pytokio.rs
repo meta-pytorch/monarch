@@ -875,7 +875,7 @@ impl PyShared {
         let r = b.as_ref();
         match r {
             None => Ok(None),
-            Some(r) => Python::attach(|py| match r {
+            Some(r) => monarch_with_gil_blocking(GilSite::Convert, |py| match r {
                 Ok(v) => Ok(Some(v.clone_ref(py))),
                 Err(err) => Err(err.clone_ref(py)),
             }),

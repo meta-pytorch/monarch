@@ -36,6 +36,8 @@ use datafusion::sql::unparser::expr_to_sql;
 use hyperactor::Instance;
 use hyperactor::context::Mailbox as MailboxTrait;
 use hyperactor::mailbox::PortReceiver;
+use monarch_gil::GilSite;
+use monarch_gil::monarch_with_gil_blocking;
 use monarch_hyperactor::actor::PythonActor;
 use monarch_hyperactor::context::PyInstance;
 use monarch_hyperactor::mailbox::PyPortId;
@@ -110,7 +112,7 @@ where
                         Ok(py_result) => {
                             // Extract the batch count from the Python result
                             // Result is a ValueMesh which is iterable, yielding (rank_dict, count) tuples
-                            let count = Python::attach(|py| {
+                            let count = monarch_with_gil_blocking(GilSite::Convert, |py| {
                                 let bound = py_result.bind(py);
                                 let mut total: usize = 0;
                                 // Iterate the ValueMesh
@@ -261,8 +263,9 @@ impl TableProvider for DistributedTableProvider {
         };
 
         // Clone actor and instance for the execution plan
-        let (actor, instance) =
-            Python::attach(|py| (self.actor.clone_ref(py), self.instance.clone_for_py()));
+        let (actor, instance) = monarch_with_gil_blocking(GilSite::Convert, |py| {
+            (self.actor.clone_ref(py), self.instance.clone_for_py())
+        });
 
         Ok(Arc::new(DistributedExec {
             table_name: self.table_name.clone(),
@@ -339,7 +342,8 @@ impl ExecutionPlan for DistributedExec {
         let dest_port_ref = handle.bind();
 
         // Start the distributed scan
-        let completion_future = Python::attach(
+        let completion_future = monarch_with_gil_blocking(
+            GilSite::EndpointDispatch,
             |py| -> anyhow::Result<
                 std::pin::Pin<
                     Box<dyn std::future::Future<Output = PyResult<Py<PyAny>>> + Send + 'static>,

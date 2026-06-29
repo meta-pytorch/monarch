@@ -6,6 +6,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#![deny(clippy::disallowed_methods)]
+
 //! Distributed Telemetry - Three-component architecture
 //!
 //! 1. DatabaseScanner (Rust): Local MemTable operations, scans with child stream merging

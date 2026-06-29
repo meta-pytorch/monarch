@@ -9,6 +9,8 @@
 use std::io::IsTerminal;
 
 use anyhow::Result;
+use monarch_gil::GilSite;
+use monarch_gil::monarch_with_gil_blocking;
 use pyo3::Python;
 use pyo3::ffi::c_str;
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -49,7 +51,9 @@ pub fn test_setup() -> Result<()> {
 
     // We need to load torch to initialize some internal structures used by
     // the FFI funcs we use to convert ivalues to/from py objects.
-    Python::attach(|py| py.run(c_str!("import torch"), None, None))?;
+    monarch_with_gil_blocking(GilSite::Test, |py| {
+        py.run(c_str!("import torch"), None, None)
+    })?;
 
     Ok(())
 }

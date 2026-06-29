@@ -12,6 +12,7 @@ anyhow = "1.0.102"
 derive_more = { version = "1.0.0", features = ["full"] }
 enum-as-inner = "0.6.1"
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
+monarch_gil = { version = "0.0.0", path = "../monarch_gil" }
 monarch_types = { version = "0.0.0", path = "../monarch_types" }
 ndslice = { version = "0.0.0", path = "../ndslice" }
 pyo3 = { version = "0.26", features = ["anyhow", "multiple-pymethods", "py-clone"] }
