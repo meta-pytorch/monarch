@@ -220,66 +220,18 @@ impl IbvQueuePair {
 
     /// Returns the connection info needed by a remote peer to connect to this QP.
     pub fn get_qp_info(&mut self) -> Result<IbvQpInfo, anyhow::Error> {
-        unsafe {
-            let context = self.context as *mut rdmaxcel_sys::ibv_context;
-            let qp = self.qp as *mut rdmaxcel_sys::rdmaxcel_qp;
-            let mut port_attr = rdmaxcel_sys::ibv_port_attr::default();
-            let errno = rdmaxcel_sys::ibv_query_port(
-                context,
-                self.config.port_num,
-                &mut port_attr as *mut rdmaxcel_sys::ibv_port_attr as *mut _,
-            );
-            if errno != 0 {
-                let os_error = Error::last_os_error();
-                return Err(anyhow::anyhow!(
-                    "Failed to query port attributes: {}",
-                    os_error
-                ));
-            }
-
-            let mut gid = Gid::default();
-            let ret = rdmaxcel_sys::ibv_query_gid(
-                context,
-                self.config.port_num,
-                i32::from(self.config.gid_index),
-                gid.as_mut(),
-            );
-            if ret != 0 {
-                return Err(anyhow::anyhow!("Failed to query GID"));
-            }
-
-            Ok(IbvQpInfo {
-                qp_num: (*(*qp).ibv_qp).qp_num,
-                lid: port_attr.lid,
-                gid: Some(gid),
-                psn: self.config.psn,
-            })
-        }
+        let context = self.context as *mut rdmaxcel_sys::ibv_context;
+        let qp = self.qp as *mut rdmaxcel_sys::rdmaxcel_qp;
+        // SAFETY: `(*qp).ibv_qp` is the live `ibv_qp` owned by this `rdmaxcel_qp`,
+        // and `context` is its live device context.
+        unsafe { super::get_qp_info((*qp).ibv_qp, context, &self.config) }
     }
 
     /// Returns the current state of the QP.
     pub fn state(&mut self) -> Result<u32, anyhow::Error> {
-        unsafe {
-            let qp = self.qp as *mut rdmaxcel_sys::rdmaxcel_qp;
-            let mut qp_attr = rdmaxcel_sys::ibv_qp_attr {
-                ..Default::default()
-            };
-            let mut qp_init_attr = rdmaxcel_sys::ibv_qp_init_attr {
-                ..Default::default()
-            };
-            let mask = rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_STATE;
-            let errno = rdmaxcel_sys::ibv_query_qp(
-                (*qp).ibv_qp,
-                &mut qp_attr,
-                mask.0 as i32,
-                &mut qp_init_attr,
-            );
-            if errno != 0 {
-                let os_error = Error::last_os_error();
-                return Err(anyhow::anyhow!("failed to query QP state: {}", os_error));
-            }
-            Ok(qp_attr.qp_state)
-        }
+        let qp = self.qp as *mut rdmaxcel_sys::rdmaxcel_qp;
+        // SAFETY: `(*qp).ibv_qp` is the live `ibv_qp` owned by this `rdmaxcel_qp`.
+        unsafe { super::state((*qp).ibv_qp) }
     }
 
     /// Transitions the QP through INIT -> RTR -> RTS to establish a connection.
@@ -293,121 +245,29 @@ impl IbvQueuePair {
             return self.efa_connect(connection_info);
         }
 
-        unsafe {
-            let qp = self.qp as *mut rdmaxcel_sys::rdmaxcel_qp;
+        let access_flags = (rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
+            | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
+            | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_READ
+            | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC)
+            .0 as i32;
+        let qp = self.qp as *mut rdmaxcel_sys::rdmaxcel_qp;
+        // SAFETY: `(*qp).ibv_qp` is the live `ibv_qp` owned by this `rdmaxcel_qp`.
+        unsafe { super::connect((*qp).ibv_qp, &self.config, access_flags, connection_info) }?;
 
-            let qp_access_flags = rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
-                | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
-                | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_READ
-                | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC;
+        tracing::debug!(
+            "connection sequence has successfully completed (qp: {:?})",
+            qp
+        );
 
-            // Transition to INIT
-            let mut qp_attr = rdmaxcel_sys::ibv_qp_attr {
-                qp_state: rdmaxcel_sys::ibv_qp_state::IBV_QPS_INIT,
-                qp_access_flags: qp_access_flags.0,
-                pkey_index: self.config.pkey_index,
-                port_num: self.config.port_num,
-                ..Default::default()
-            };
-
-            let mask = rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_STATE
-                | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_PKEY_INDEX
-                | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_PORT
-                | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_ACCESS_FLAGS;
-
-            let errno = rdmaxcel_sys::ibv_modify_qp((*qp).ibv_qp, &mut qp_attr, mask.0 as i32);
-            if errno != 0 {
-                let os_error = Error::last_os_error();
-                return Err(anyhow::anyhow!(
-                    "failed to transition QP to INIT: {}",
-                    os_error
-                ));
-            }
-
-            // Transition to RTR (Ready to Receive)
-            let mut qp_attr = rdmaxcel_sys::ibv_qp_attr {
-                qp_state: rdmaxcel_sys::ibv_qp_state::IBV_QPS_RTR,
-                path_mtu: self.config.path_mtu,
-                dest_qp_num: connection_info.qp_num,
-                rq_psn: connection_info.psn,
-                max_dest_rd_atomic: self.config.max_dest_rd_atomic,
-                min_rnr_timer: self.config.min_rnr_timer,
-                ah_attr: rdmaxcel_sys::ibv_ah_attr {
-                    dlid: connection_info.lid,
-                    sl: 0,
-                    src_path_bits: 0,
-                    port_num: self.config.port_num,
-                    grh: Default::default(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            };
-
-            if let Some(gid) = connection_info.gid {
-                qp_attr.ah_attr.is_global = 1;
-                qp_attr.ah_attr.grh.dgid = rdmaxcel_sys::ibv_gid::from(gid);
-                qp_attr.ah_attr.grh.hop_limit = 0xff;
-                qp_attr.ah_attr.grh.sgid_index = self.config.gid_index;
-            } else {
-                qp_attr.ah_attr.is_global = 0;
-            }
-
-            let mask = rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_STATE
-                | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_AV
-                | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_PATH_MTU
-                | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_DEST_QPN
-                | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_RQ_PSN
-                | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_MAX_DEST_RD_ATOMIC
-                | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_MIN_RNR_TIMER;
-
-            let errno = rdmaxcel_sys::ibv_modify_qp((*qp).ibv_qp, &mut qp_attr, mask.0 as i32);
-            if errno != 0 {
-                let os_error = Error::last_os_error();
-                return Err(anyhow::anyhow!(
-                    "failed to transition QP to RTR: {}",
-                    os_error
-                ));
-            }
-
-            // Transition to RTS (Ready to Send)
-            let mut qp_attr = rdmaxcel_sys::ibv_qp_attr {
-                qp_state: rdmaxcel_sys::ibv_qp_state::IBV_QPS_RTS,
-                sq_psn: self.config.psn,
-                max_rd_atomic: self.config.max_rd_atomic,
-                retry_cnt: self.config.retry_cnt,
-                rnr_retry: self.config.rnr_retry,
-                timeout: self.config.qp_timeout,
-                ..Default::default()
-            };
-
-            let mask = rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_STATE
-                | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_TIMEOUT
-                | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_RETRY_CNT
-                | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_SQ_PSN
-                | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_RNR_RETRY
-                | rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_MAX_QP_RD_ATOMIC;
-
-            let errno = rdmaxcel_sys::ibv_modify_qp((*qp).ibv_qp, &mut qp_attr, mask.0 as i32);
-            if errno != 0 {
-                let os_error = Error::last_os_error();
-                return Err(anyhow::anyhow!(
-                    "failed to transition QP to RTS: {}",
-                    os_error
-                ));
-            }
-            tracing::debug!(
-                "connection sequence has successfully completed (qp: {:?})",
-                qp
-            );
-
-            let rts_timestamp_nanos = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos() as u64;
-            rdmaxcel_sys::rdmaxcel_qp_store_rts_timestamp(qp, rts_timestamp_nanos);
-
-            Ok(())
-        }
+        // Record the RTS timestamp so the first posted op can apply the hardware
+        // init delay; specific to the legacy `rdmaxcel_qp` doorbell path.
+        let rts_timestamp_nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+        // SAFETY: `qp` is the live `rdmaxcel_qp`.
+        unsafe { rdmaxcel_sys::rdmaxcel_qp_store_rts_timestamp(qp, rts_timestamp_nanos) };
+        Ok(())
     }
 
     /// Connects via the EFA-specific C function for QP state transitions.
