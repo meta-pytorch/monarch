@@ -17,7 +17,7 @@ import threading
 import urllib.request
 import uuid
 from typing import cast
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import monarch._src.job.job_sidecar as js
 import monarch._src.job.telemetry_config as tc
@@ -172,7 +172,161 @@ def test_open_or_refresh_raises_when_not_open() -> None:
             handle.open_or_refresh({}, _cfg_dict())
 
 
-# ── Telemetry.ensure_open ─────────────────────────────────────────────────────
+def test_open_or_refresh_spawns_telemetry_actors_once_with_no_active_workers() -> None:
+    sidecar = tc._TelemetryHandle("apply")
+
+    def fake_bootstrap(config) -> None:
+        sidecar._dashboard_info = {"local_url": "http://local", "url": "http://ext"}
+
+    with (
+        patch.object(sidecar, "_bootstrap", side_effect=fake_bootstrap),
+        patch.object(sidecar, "_spawn_telemetry_actors", return_value=[]) as spawn,
+    ):
+        sidecar.open_or_refresh({"hosts": MagicMock()}, _cfg_dict())
+        sidecar.open_or_refresh({"hosts": MagicMock()}, _cfg_dict())
+
+    spawn.assert_called_once()
+    assert sidecar._worker_proc_meshes == []
+
+
+def test_spawn_telemetry_actors_registers_workers_and_stops_on_shutdown() -> None:
+    """Spawning creates a collector mesh, registers it with the client
+    collector, retains it, and stops its proc mesh on shutdown."""
+    actor_mesh = MagicMock()
+    proc_mesh = MagicMock()
+    host_mesh = MagicMock()
+    client_actor = MagicMock()
+    sidecar = tc._TelemetryHandle("fanout_test")
+    sidecar._client_actor = client_actor
+
+    proc_mesh.spawn.return_value = actor_mesh
+    host_mesh.spawn_procs.return_value = proc_mesh
+    actor_mesh.activate.call.return_value.get.return_value = [(0, True)]
+
+    worker_proc_meshes = sidecar._spawn_telemetry_actors(
+        {
+            "hosts": host_mesh,
+        },
+        TelemetryConfig(
+            retention_secs=0,
+            include_dashboard=False,
+            dashboard_port=0,
+        ),
+    )
+
+    host_mesh.spawn_procs.assert_called_once_with(name="telemetry_hosts")
+    proc_mesh.spawn.assert_called_once_with(
+        "TelemetryActor",
+        tc.TelemetryActor,
+        "fanout_test",
+        0,
+    )
+    actor_mesh.activate.call.return_value.get.assert_called_once_with()
+    client_actor.set_worker_collector_meshes.call_one.assert_called_once_with(
+        [actor_mesh]
+    )
+    client_actor.set_worker_collector_meshes.call_one.return_value.get.assert_called_once_with()
+
+    assert worker_proc_meshes == [proc_mesh]
+    sidecar._worker_proc_meshes = worker_proc_meshes
+    with patch.object(tc, "shutdown_context") as shutdown_context:
+        sidecar.shutdown()
+    proc_mesh.stop.assert_called_once_with("telemetry shutdown")
+    proc_mesh.stop.return_value.get.assert_called_once_with()
+    shutdown_context.return_value.get.assert_called_once_with(timeout=5.0)
+
+
+def test_spawn_telemetry_actors_drops_inactive_worker_collectors() -> None:
+    actor_mesh = MagicMock()
+    proc_mesh = MagicMock()
+    host_mesh = MagicMock()
+    client_actor = MagicMock()
+    sidecar = tc._TelemetryHandle("fanout_test")
+    sidecar._client_actor = client_actor
+
+    proc_mesh.spawn.return_value = actor_mesh
+    host_mesh.spawn_procs.return_value = proc_mesh
+    actor_mesh.activate.call.return_value.get.return_value = [(0, False)]
+
+    worker_proc_meshes = sidecar._spawn_telemetry_actors(
+        {
+            "hosts": host_mesh,
+        },
+        TelemetryConfig(
+            retention_secs=0,
+            include_dashboard=False,
+            dashboard_port=0,
+        ),
+    )
+
+    client_actor.set_worker_collector_meshes.call_one.assert_called_once_with([])
+    assert worker_proc_meshes == []
+    proc_mesh.stop.assert_called_once_with("telemetry collector inactive")
+    proc_mesh.stop.return_value.get.assert_called_once_with()
+
+
+def test_spawn_telemetry_actors_noops_when_setup_raises() -> None:
+    host_mesh = MagicMock()
+    client_actor = MagicMock()
+    sidecar = tc._TelemetryHandle("fanout_test")
+    sidecar._client_actor = client_actor
+
+    host_mesh.spawn_procs.side_effect = RuntimeError("boom")
+
+    worker_proc_meshes = sidecar._spawn_telemetry_actors(
+        {
+            "hosts": host_mesh,
+        },
+        TelemetryConfig(
+            retention_secs=0,
+            include_dashboard=False,
+            dashboard_port=0,
+        ),
+    )
+
+    host_mesh.spawn_procs.assert_called_once_with(name="telemetry_hosts")
+    client_actor.set_worker_collector_meshes.call_one.assert_called_once_with([])
+    client_actor.set_worker_collector_meshes.call_one.return_value.get.assert_called_once_with()
+    assert worker_proc_meshes == []
+
+
+@pytest.mark.parametrize("failure_point", ["spawn", "activate"])
+def test_spawn_telemetry_actors_stops_partially_started_proc_mesh(
+    failure_point: str,
+) -> None:
+    actor_mesh = MagicMock()
+    proc_mesh = MagicMock()
+    host_mesh = MagicMock()
+    client_actor = MagicMock()
+    sidecar = tc._TelemetryHandle("fanout_test")
+    sidecar._client_actor = client_actor
+
+    host_mesh.spawn_procs.return_value = proc_mesh
+    if failure_point == "spawn":
+        proc_mesh.spawn.side_effect = RuntimeError("spawn boom")
+    else:
+        proc_mesh.spawn.return_value = actor_mesh
+        actor_mesh.activate.call.return_value.get.side_effect = RuntimeError(
+            "activate boom"
+        )
+
+    worker_proc_meshes = sidecar._spawn_telemetry_actors(
+        {
+            "hosts": host_mesh,
+        },
+        TelemetryConfig(
+            retention_secs=0,
+            include_dashboard=False,
+            dashboard_port=0,
+        ),
+    )
+
+    host_mesh.spawn_procs.assert_called_once_with(name="telemetry_hosts")
+    client_actor.set_worker_collector_meshes.call_one.assert_called_once_with([])
+    client_actor.set_worker_collector_meshes.call_one.return_value.get.assert_called_once_with()
+    assert worker_proc_meshes == []
+    proc_mesh.stop.assert_called_once_with("telemetry collector startup failed")
+    proc_mesh.stop.return_value.get.assert_called_once_with()
 
 
 def test_ensure_open_requires_apply_id() -> None:

@@ -37,8 +37,13 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from monarch._rust_bindings.monarch_hyperactor.host_mesh import PyMeshAdminRef
 from monarch._src.actor.host_mesh import _spawn_admin
 from monarch._src.actor.sync_state import fake_sync_state
+from monarch._src.job._telemetry_query_client import QueryEngineClient
 from monarch._src.job.mount_config import Mounts
-from monarch._src.job.telemetry_config import TelemetryConfig
+from monarch._src.job.telemetry_config import (
+    install_sidecar_socket_sink,
+    Telemetry,
+    TelemetryConfig,
+)
 from monarch.actor import HostMesh
 from monarch.distributed_telemetry.actor import start_telemetry
 from monarch.distributed_telemetry.engine import QueryEngine
@@ -205,6 +210,85 @@ class TelemetryComponent(JobComponent):
         job_state.telemetry_url = self._telemetry_url
 
 
+class SidecarTelemetryComponent(JobComponent):
+    """Host telemetry in the job sidecar instead of in-process.
+
+    Opted into via ``TelemetryConfig.use_sidecar``; mutually exclusive with
+    ``TelemetryComponent``. ``before_connect`` opens the sidecar's
+    telemetry handle and installs the client-process Unix socket sink *before*
+    raw host meshes are materialized so host-mesh creation events are captured.
+    ``connect`` asks the sidecar to fan worker collectors out across the
+    materialized host meshes. Telemetry is best-effort: any failure is logged
+    and leaves telemetry disabled for this job rather than failing ``state()``.
+    """
+
+    def __init__(self, config: TelemetryConfig) -> None:
+        self._config = config
+        self._telemetry_url: Optional[str] = None
+        self._query_engine_client: Optional[QueryEngineClient] = None
+
+    def reset_runtime(self) -> None:
+        self._query_engine_client = None
+        self._telemetry_url = None
+
+    def __getstate__(self) -> Dict[str, Any]:
+        state = self.__dict__.copy()
+        state["_query_engine_client"] = None
+        state["_telemetry_url"] = None
+        return state
+
+    def before_connect(self, job: "JobTrait") -> None:
+        if self._query_engine_client is not None:
+            return
+        apply_id = job.apply_id
+        if apply_id is None:
+            return
+        try:
+            response = Telemetry(self._config).ensure_open(apply_id, host_meshes={})
+            telemetry_url = response.get("telemetry_url")
+            socket_path = response.get("socket_path")
+            if not isinstance(telemetry_url, str) or not isinstance(socket_path, str):
+                raise RuntimeError(
+                    f"invalid job sidecar telemetry response: {response!r}"
+                )
+            self._telemetry_url = telemetry_url
+            self._query_engine_client = QueryEngineClient(telemetry_url)
+            install_sidecar_socket_sink(socket_path)
+        except Exception:
+            # Reset so a partial bootstrap leaves a clean "disabled" state:
+            # fan-out no-ops and `state` exposes no query client.
+            self._query_engine_client = None
+            self._telemetry_url = None
+            logger.warning(
+                "job sidecar telemetry bootstrap failed; telemetry disabled for this job",
+                exc_info=True,
+            )
+
+    def connect(
+        self, job: "JobTrait", host_meshes: Dict[str, HostMesh]
+    ) -> Dict[str, HostMesh]:
+        if self._query_engine_client is None:
+            return host_meshes
+        apply_id = job.apply_id
+        if apply_id is None:
+            return host_meshes
+        try:
+            # `_telemetry_url` is already set by `before_connect`; this call only
+            # triggers worker fan-out, so its response is intentionally ignored.
+            Telemetry(self._config).ensure_open(apply_id, host_meshes=host_meshes)
+        except Exception:
+            logger.warning(
+                "job sidecar telemetry worker fan-out failed",
+                exc_info=True,
+            )
+        return host_meshes
+
+    def state(self, job: "JobTrait", job_state: "JobState") -> None:
+        if self._query_engine_client is not None:
+            job_state.query_engine_client = self._query_engine_client
+            job_state.telemetry_url = self._telemetry_url
+
+
 class AdminComponent(JobComponent):
     """Start the mesh admin agent once per allocation.
 
@@ -217,7 +301,7 @@ class AdminComponent(JobComponent):
     def __init__(
         self,
         config: MeshAdminConfig,
-        telemetry: Optional[TelemetryComponent],
+        telemetry: Optional[TelemetryComponent | SidecarTelemetryComponent],
     ) -> None:
         self._config = config
         self._telemetry = telemetry
@@ -317,7 +401,7 @@ class JobComponents:
     """
 
     mounts: MountComponent = field(default_factory=MountComponent)
-    telemetry: Optional[TelemetryComponent] = None
+    telemetry: Optional[TelemetryComponent | SidecarTelemetryComponent] = None
     admin: Optional[AdminComponent] = None
     snapshot: Optional[SnapshotComponent] = None
 
@@ -351,15 +435,21 @@ class JobComponents:
             component.reset_runtime()
 
     def configure_telemetry(self, config: TelemetryConfig) -> None:
-        if self.telemetry is None:
-            self.telemetry = TelemetryComponent(config)
+        target_cls = (
+            SidecarTelemetryComponent if config.use_sidecar else TelemetryComponent
+        )
+        if not isinstance(self.telemetry, target_cls):
+            if self.telemetry is not None:
+                self.telemetry.reset_runtime()
+            self.telemetry = target_cls(config)
             telemetry_changed = True
         else:
             telemetry_changed = self.telemetry._config != config
             if telemetry_changed:
                 self.telemetry.reset_runtime()
-                self._warn_if_snapshot_stale()
             self.telemetry._config = config
+        if telemetry_changed:
+            self._warn_if_snapshot_stale()
         if self.admin is not None:
             if telemetry_changed:
                 self.admin.reset_runtime()
@@ -402,7 +492,7 @@ class JobComponents:
             )
 
     def _configure_snapshot(self) -> None:
-        if self.telemetry is not None and self.admin is not None:
+        if isinstance(self.telemetry, TelemetryComponent) and self.admin is not None:
             if self.snapshot is None:
                 self.snapshot = SnapshotComponent(self.telemetry, self.admin)
             else:

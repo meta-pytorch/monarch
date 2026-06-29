@@ -6,6 +6,7 @@
 
 # pyre-unsafe
 
+import contextlib
 import os
 import pickle
 import socket
@@ -13,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import types
 from dataclasses import dataclass
 from typing import cast, Dict, Optional, Sequence
 from unittest.mock import MagicMock, patch
@@ -118,17 +120,20 @@ class MockJobTrait(JobTrait):
 
     def _state(self) -> JobState:
         """Return a mock job state with fake host meshes."""
-        # Create a mock host mesh for each host name
         mock_hosts: Dict[str, HostMesh] = {}
+
+        class MockHostMesh:
+            def __init__(self, name, python_executable=None):
+                self.name = name
+                self.python_executable = python_executable
+
+            def __repr__(self):
+                return f"MockHostMesh({self.name})"
+
+            def with_python_executable(self, python_executable):
+                return MockHostMesh(self.name, python_executable)
+
         for name in self._host_names:
-            # Using a simple object that mimics HostMesh for testing
-            class MockHostMesh:
-                def __init__(self, name):
-                    self.name = name
-
-                def __repr__(self):
-                    return f"MockHostMesh({self.name})"
-
             mock_hosts[name] = cast("HostMesh", MockHostMesh(name))
 
         return JobState(mock_hosts)
@@ -1004,6 +1009,170 @@ def test_batch_job_shares_component_runtime_with_wrapped_job(mock_start, mock_sp
     assert job_state.admin_url == "http://localhost:1729"
     mock_start.assert_called_once()
     mock_spawn.assert_called_once()
+
+
+@contextlib.contextmanager
+def _patched_sidecar(ensure_open_side_effect=None, ensure_open_return=None):
+    with (
+        patch("monarch._src.job.job_components.Telemetry") as telemetry_cls,
+        patch(
+            "monarch._src.job.job_components.install_sidecar_socket_sink"
+        ) as install_sink,
+        patch("monarch._src.job.job_components.QueryEngineClient") as qec_cls,
+        patch("monarch._src.job.job_components.start_telemetry") as start_legacy,
+    ):
+        start_legacy.return_value = (MagicMock(), "http://legacy", MagicMock())
+        ensure_open = telemetry_cls.return_value.ensure_open
+        if ensure_open_side_effect is not None:
+            ensure_open.side_effect = ensure_open_side_effect
+        else:
+            ensure_open.return_value = ensure_open_return or {
+                "telemetry_url": "http://sidecar",
+                "socket_path": "/tmp/telemetry.sock",
+            }
+        yield types.SimpleNamespace(
+            ensure_open=ensure_open,
+            install_sink=install_sink,
+            query_engine_client_cls=qec_cls,
+            start_legacy=start_legacy,
+        )
+
+
+def test_mesh_admin_receives_sidecar_telemetry_url():
+    """Admin links to sidecar telemetry when the sidecar path is configured."""
+    with (
+        _patched_sidecar() as m,
+        patch("monarch._src.job.job_components._spawn_admin") as mock_spawn,
+    ):
+        mock_future = MagicMock()
+        mock_admin_ref = MagicMock()
+        mock_future.get.return_value = ("http://localhost:1729", mock_admin_ref)
+        mock_spawn.return_value = mock_future
+
+        job = (
+            MockJobTrait(host_names=["hosts"])
+            .enable_telemetry(TelemetryConfig(use_sidecar=True))
+            .enable_admin(MeshAdminConfig())
+        )
+        state = job.state(cached_path=None)
+
+    m.start_legacy.assert_not_called()
+    _, kwargs = mock_spawn.call_args
+    assert kwargs.get("telemetry_url") == "http://sidecar"
+    assert state.telemetry_url == "http://sidecar"
+    assert state.admin_url == "http://localhost:1729"
+
+
+def test_sidecar_replaces_legacy_when_opted_in():
+    """use_sidecar=True exposes the sidecar query client and skips the legacy
+    in-process collector (the two are mutually exclusive)."""
+    with _patched_sidecar() as m:
+        job = MockJobTrait(host_names=["hosts"]).enable_telemetry(
+            TelemetryConfig(use_sidecar=True)
+        )
+        state = job.state(cached_path=None)
+
+    # Legacy path skipped; sidecar client exposed instead.
+    m.start_legacy.assert_not_called()
+    assert state.query_engine is None
+    assert state.query_engine_client is m.query_engine_client_cls.return_value
+    assert state.telemetry_url == "http://sidecar"
+    m.query_engine_client_cls.assert_called_once_with("http://sidecar")
+    m.install_sink.assert_called_once_with("/tmp/telemetry.sock")
+
+
+def test_sidecar_bootstrap_then_fanout_carry_host_meshes():
+    """state() bootstraps the sidecar with empty host_meshes, then fans out
+    workers with the materialized host meshes."""
+    with _patched_sidecar() as m:
+        job = MockJobTrait(host_names=["hosts"]).enable_telemetry(
+            TelemetryConfig(use_sidecar=True)
+        )
+        job.state(cached_path=None)
+
+    assert m.ensure_open.call_count == 2
+    bootstrap_kwargs = m.ensure_open.call_args_list[0].kwargs
+    fanout_kwargs = m.ensure_open.call_args_list[1].kwargs
+    assert bootstrap_kwargs["host_meshes"] == {}
+    assert set(fanout_kwargs["host_meshes"].keys()) == {"hosts"}
+
+
+def test_sidecar_worker_fanout_uses_configured_host_meshes():
+    """Worker fan-out should spawn telemetry collectors from the same host
+    mesh configuration that state() returns to user code."""
+    python_exe = "/mnt/app/.venv/bin/python"
+    with _patched_sidecar() as m:
+        job = MockJobTrait(host_names=["hosts"]).enable_telemetry(
+            TelemetryConfig(use_sidecar=True)
+        )
+        job._components.mounts._default_python_exe = python_exe
+        state = job.state(cached_path=None)
+
+    fanout_hosts = m.ensure_open.call_args_list[1].kwargs["host_meshes"]
+    assert fanout_hosts["hosts"].python_executable == python_exe
+    assert state.hosts.python_executable == python_exe
+
+
+def test_sidecar_bootstrap_failure_is_isolated():
+    """A sidecar bootstrap failure disables telemetry and never fails state()."""
+    with _patched_sidecar(ensure_open_side_effect=RuntimeError("boom")) as m:
+        job = MockJobTrait(host_names=["hosts"]).enable_telemetry(
+            TelemetryConfig(use_sidecar=True)
+        )
+        state = job.state(cached_path=None)  # must not raise
+
+    assert state.query_engine_client is None
+    assert state.query_engine is None  # legacy stays skipped under use_sidecar
+    m.query_engine_client_cls.assert_not_called()
+
+
+def test_sidecar_worker_fanout_failure_is_isolated():
+    """A fan-out failure after a successful bootstrap is swallowed; the client
+    from bootstrap stays exposed."""
+    good = {"telemetry_url": "http://sidecar", "socket_path": "/tmp/telemetry.sock"}
+    with _patched_sidecar(
+        ensure_open_side_effect=[good, RuntimeError("fanout boom")]
+    ) as m:
+        job = MockJobTrait(host_names=["hosts"]).enable_telemetry(
+            TelemetryConfig(use_sidecar=True)
+        )
+        state = job.state(cached_path=None)  # must not raise
+
+    assert m.ensure_open.call_count == 2
+    assert state.query_engine_client is m.query_engine_client_cls.return_value
+
+
+def test_sidecar_not_bootstrapped_without_opt_in():
+    """Default (use_sidecar=False) never touches the sidecar; legacy runs."""
+    with _patched_sidecar() as m:
+        job = MockJobTrait(host_names=["hosts"]).enable_telemetry(TelemetryConfig())
+        state = job.state(cached_path=None)
+
+    m.ensure_open.assert_not_called()
+    m.query_engine_client_cls.assert_not_called()
+    assert state.query_engine_client is None
+    m.start_legacy.assert_called_once()  # legacy collector ran instead
+    assert state.query_engine is not None
+
+
+def test_sidecar_query_client_dropped_on_pickle():
+    """The sidecar query client is dropped on pickle and re-bootstrapped on the
+    next state() (mirrors the legacy query_engine behavior)."""
+    with _patched_sidecar() as m:
+        job = MockJobTrait(host_names=["hosts"]).enable_telemetry(
+            TelemetryConfig(use_sidecar=True)
+        )
+        state = job.state(cached_path=None)
+        assert state.query_engine_client is m.query_engine_client_cls.return_value
+
+        # __getstate__ drops live handles; the deserialized job is clean.
+        loaded = job_loads(job.dumps())
+        assert loaded._components.telemetry is not None
+        assert loaded._components.telemetry._telemetry_url is None
+
+        # Next state() re-bootstraps the sidecar.
+        state = loaded.state(cached_path=None)
+        assert state.query_engine_client is m.query_engine_client_cls.return_value
 
 
 # Tests for LocalJob implementation
