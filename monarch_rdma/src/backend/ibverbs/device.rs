@@ -45,7 +45,7 @@ pub trait IbvDeviceImpl: Named + std::fmt::Debug + Send + Sync + 'static {
     /// The per-domain strategy used by this backend (how memory regions
     /// are registered and queue pairs built against a PD). [`IbvDomain`] is
     /// generic over this.
-    type IbvDomainImpl: IbvDomainImpl;
+    type Domain: IbvDomainImpl;
 
     /// Human-readable display name for the backend this impl
     /// drives (e.g., `"mellanox"`, `"efa"`). Surfaced in
@@ -270,7 +270,7 @@ impl Drop for IbvContext {
 /// reference closes the context.
 #[derive(Debug)]
 pub(crate) struct IbvDevice<I: IbvDeviceImpl> {
-    domains: HashMap<String, Arc<IbvDomain<I::IbvDomainImpl>>>,
+    domains: HashMap<String, Arc<IbvDomain<I::Domain>>>,
     device_info: IbvDeviceInfo,
     config: IbvConfig,
     context: Arc<IbvContext>,
@@ -407,7 +407,7 @@ impl<I: IbvDeviceImpl> IbvDevice<I> {
     /// Returns the `Arc<IbvDomain>` registered under `name`, if
     /// one has already been created. Read-only lookup; use
     /// [`Self::get_or_create_domain`] to create on demand.
-    pub fn domain(&self, name: &str) -> Option<&Arc<IbvDomain<I::IbvDomainImpl>>> {
+    pub fn domain(&self, name: &str) -> Option<&Arc<IbvDomain<I::Domain>>> {
         self.domains.get(name)
     }
 
@@ -416,14 +416,14 @@ impl<I: IbvDeviceImpl> IbvDevice<I> {
     pub fn get_or_create_domain(
         &mut self,
         name: &str,
-    ) -> anyhow::Result<Arc<IbvDomain<I::IbvDomainImpl>>> {
+    ) -> anyhow::Result<Arc<IbvDomain<I::Domain>>> {
         if let Some(domain) = self.domains.get(name) {
             return Ok(Arc::clone(domain));
         }
         // SAFETY: `self.context` wraps the live `ibv_context` opened by
         // `IbvDevice::open`, valid for this device's lifetime.
         let domain = Arc::new(unsafe {
-            IbvDomain::<I::IbvDomainImpl>::new(
+            IbvDomain::<I::Domain>::new(
                 Arc::clone(&self.context),
                 self.device_info.clone(),
                 &self.config,

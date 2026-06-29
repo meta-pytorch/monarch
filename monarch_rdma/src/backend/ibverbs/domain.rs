@@ -26,7 +26,7 @@ use super::memory_region::IbvMemoryRegion;
 use super::memory_region::IbvMemoryRegionView;
 use super::primitives::IbvConfig;
 use super::primitives::IbvDeviceInfo;
-use super::queue_pair::legacy::IbvQueuePair;
+use super::queue_pair::IbvQueuePair;
 use crate::local_memory::KeepaliveLocalMemory;
 use crate::local_memory::is_device_ptr;
 
@@ -233,7 +233,7 @@ impl<I: IbvDomainImpl> IbvDomain<I> {
 
     /// Create a queue pair against this domain, dispatching to the backend
     /// [`IbvDomainImpl`] strategy.
-    pub fn create_queue_pair(self: Arc<Self>, config: &IbvConfig) -> anyhow::Result<IbvQueuePair> {
+    pub fn create_queue_pair(self: Arc<Self>, config: &IbvConfig) -> anyhow::Result<I::QueuePair> {
         I::create_queue_pair(self, config)
     }
 }
@@ -247,6 +247,9 @@ impl<I: IbvDomainImpl> IbvDomain<I> {
 /// methods are associated functions taking the owning `Arc<IbvDomain<Self>>`
 /// and reach the strategy itself through [`IbvDomain::domain_impl`].
 pub trait IbvDomainImpl: std::fmt::Debug + Send + Sync + 'static + Sized {
+    /// The concrete queue-pair type built against this domain's PD.
+    type QueuePair: IbvQueuePair;
+
     /// Build the strategy for the device behind `context` (whose queried
     /// metadata is `device_info`), using `config` for any setup it performs.
     ///
@@ -282,12 +285,15 @@ pub trait IbvDomainImpl: std::fmt::Debug + Send + Sync + 'static + Sized {
         unsafe { register_host_or_dmabuf_mr(domain, mem) }
     }
 
-    /// Create a queue pair against `domain`.
+    /// Create a queue pair against `domain`. The default builds [`Self::QueuePair`]
+    /// directly; backends override to construct their own queue-pair type.
     fn create_queue_pair(
         domain: Arc<IbvDomain<Self>>,
         config: &IbvConfig,
-    ) -> anyhow::Result<IbvQueuePair> {
-        IbvQueuePair::new(domain, config.clone())
+    ) -> anyhow::Result<Self::QueuePair> {
+        // SAFETY: a fully-constructed `IbvDomain` holds a null-or-live PD per
+        // its construction contract, which is what `IbvQueuePair::new` requires.
+        unsafe { Self::QueuePair::new(domain, config.clone()) }
     }
 }
 

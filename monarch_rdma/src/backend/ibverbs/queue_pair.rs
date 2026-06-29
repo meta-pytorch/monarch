@@ -8,7 +8,7 @@
 
 //! ibverbs queue pair, doorbell, and completion polling.
 //!
-//! An [`legacy::IbvQueuePair`] encapsulates the send and receive queues, completion
+//! An [`IbvQueuePair`] encapsulates the send and receive queues, completion
 //! queues, and other resources needed for RDMA communication. It provides
 //! methods for establishing connections and performing RDMA operations.
 
@@ -98,7 +98,7 @@ impl WorkRequestError {
     }
 }
 
-/// A CQ-level poll failure from [`legacy::IbvQueuePair::poll_completion`]:
+/// A CQ-level poll failure from [`IbvQueuePair::poll_completion`]:
 /// `ibv_poll_cq` itself failed and the completion queue is no longer
 /// usable. The owning QP should be treated as poisoned.
 #[derive(Debug)]
@@ -141,8 +141,9 @@ pub enum PollTarget {
     Recv,
 }
 
-/// The single-type queue pair, moved into this `legacy` module ahead of the
-/// per-backend queue-pair trait.
+/// The legacy single-type queue pair, retained here while the backends migrate
+/// onto the [`IbvQueuePair`] trait. Both the mlx5 and EFA domains build this
+/// type today; it will eventually split into per-backend queue pairs.
 pub mod legacy;
 
 /// Identifies a per-peer queue pair held by one
@@ -168,47 +169,107 @@ pub(super) struct QpKey {
 // peer later wants to RDMA us, it spawns its own `QueuePairActor`
 // locally, which creates a fresh pair the same way.
 
-/// Operations a [`QueuePairActor`] performs on its QP. Implemented
-/// on the real [`legacy::IbvQueuePair`] and on mocks in `#[cfg(test)]` code.
-pub(super) trait QueuePair: std::fmt::Debug + Send + Sync + 'static {
-    /// Returns the local endpoint other peers need in order to
-    /// connect to this QP.
-    fn get_qp_info(&mut self) -> Result<IbvQpInfo, anyhow::Error>;
+/// A NIC-backend queue pair: the unit of RDMA communication between two
+/// endpoints, and the operations a [`QueuePairActor`] performs on it. Each
+/// [`IbvDomainImpl`] names its concrete queue-pair type via
+/// [`IbvDomainImpl::QueuePair`](super::domain::IbvDomainImpl::QueuePair) and builds it through
+/// [`Self::new`]. Implemented on [`legacy::IbvQueuePair`] and on mocks in
+/// `#[cfg(test)]` code.
+pub trait IbvQueuePair: std::fmt::Debug + Send + Sync + 'static + Sized {
+    /// Creates a queue pair against `domain` in the RESET state;
+    /// [`Self::connect`] transitions it to RTS before use.
+    ///
+    /// # Safety
+    ///
+    /// `domain`'s PD (`domain.as_ptr()`) must be null or a valid protection
+    /// domain. Callers must ensure the PD outlives the QP; the easiest way to
+    /// do this is for implementers to store the value of `domain` inside the
+    /// QP.
+    unsafe fn new<I: IbvDomainImpl<QueuePair = Self>>(
+        domain: Arc<IbvDomain<I>>,
+        config: IbvConfig,
+    ) -> Result<Self, anyhow::Error>;
 
-    /// Transitions the QP through `INIT -> RTR -> RTS`, connected to
-    /// `info`.
+    /// Transitions the QP through `INIT -> RTR -> RTS`, connected to `info`.
     fn connect(&mut self, info: &IbvQpInfo) -> Result<(), anyhow::Error>;
 
-    /// Post an RDMA WRITE from `lhandle` to `rhandle`. Returns one
-    /// wr_id per `MAX_RDMA_MSG_SIZE` chunk the QP issues.
-    fn put(&mut self, lhandle: IbvBuffer, rhandle: IbvBuffer) -> Result<Vec<u64>, anyhow::Error>;
+    /// Returns the local endpoint other peers need in order to connect to this
+    /// QP.
+    fn get_qp_info(&mut self) -> Result<IbvQpInfo, anyhow::Error>;
 
-    /// Post an RDMA READ from `rhandle` into `lhandle`. Returns one
-    /// wr_id per chunk.
-    fn get(&mut self, lhandle: IbvBuffer, rhandle: IbvBuffer) -> Result<Vec<u64>, anyhow::Error>;
+    /// Returns the current `ibv_qp_state` of the QP.
+    fn state(&mut self) -> Result<u32, anyhow::Error>;
 
-    /// Poll for the next available work completion. See
-    /// [`legacy::IbvQueuePair::poll_completion`] for the outer/inner `Result`
-    /// semantics.
+    /// Post an RDMA WRITE of `local_src` into `remote_dst`. The request may
+    /// be chunked into multiple WRs. This method returns the list of WR ids
+    /// that were posted.
+    fn put(
+        &mut self,
+        remote_dst: IbvBuffer,
+        local_src: IbvBuffer,
+    ) -> Result<Vec<u64>, anyhow::Error>;
+
+    /// Post an RDMA READ of `remote_src` into `local_dst`. The request may
+    /// be chunked into multiple WRs. This method returns the list of WR ids
+    /// that were posted.
+    fn get(
+        &mut self,
+        local_dst: IbvBuffer,
+        remote_src: IbvBuffer,
+    ) -> Result<Vec<u64>, anyhow::Error>;
+
+    /// Poll `target`'s completion queue for a single work completion.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(None)` — the CQ is currently empty.
+    /// * `Ok(Some(Ok(wc)))` — a completion landed with success status.
+    /// * `Ok(Some(Err(_)))` — a completion landed with a non-success
+    ///   status; the [`WorkRequestError`] names the failed request.
+    /// * `Err(_)` — `ibv_poll_cq` itself failed; the QP should be treated
+    ///   as poisoned.
     fn poll_completion(
         &mut self,
         target: PollTarget,
     ) -> Result<Option<Result<IbvWc, WorkRequestError>>, PollCompletionError>;
 }
 
-impl QueuePair for legacy::IbvQueuePair {
-    fn get_qp_info(&mut self) -> Result<IbvQpInfo, anyhow::Error> {
-        legacy::IbvQueuePair::get_qp_info(self)
+impl IbvQueuePair for legacy::IbvQueuePair {
+    unsafe fn new<I: IbvDomainImpl<QueuePair = Self>>(
+        domain: Arc<IbvDomain<I>>,
+        config: IbvConfig,
+    ) -> Result<Self, anyhow::Error> {
+        legacy::IbvQueuePair::new(domain, config)
     }
+
     fn connect(&mut self, info: &IbvQpInfo) -> Result<(), anyhow::Error> {
         legacy::IbvQueuePair::connect(self, info)
     }
-    fn put(&mut self, lhandle: IbvBuffer, rhandle: IbvBuffer) -> Result<Vec<u64>, anyhow::Error> {
-        legacy::IbvQueuePair::put(self, lhandle, rhandle)
+
+    fn get_qp_info(&mut self) -> Result<IbvQpInfo, anyhow::Error> {
+        legacy::IbvQueuePair::get_qp_info(self)
     }
-    fn get(&mut self, lhandle: IbvBuffer, rhandle: IbvBuffer) -> Result<Vec<u64>, anyhow::Error> {
-        legacy::IbvQueuePair::get(self, lhandle, rhandle)
+
+    fn state(&mut self) -> Result<u32, anyhow::Error> {
+        legacy::IbvQueuePair::state(self)
     }
+
+    fn put(
+        &mut self,
+        remote_dst: IbvBuffer,
+        local_src: IbvBuffer,
+    ) -> Result<Vec<u64>, anyhow::Error> {
+        legacy::IbvQueuePair::put(self, local_src, remote_dst)
+    }
+
+    fn get(
+        &mut self,
+        local_dst: IbvBuffer,
+        remote_src: IbvBuffer,
+    ) -> Result<Vec<u64>, anyhow::Error> {
+        legacy::IbvQueuePair::get(self, local_dst, remote_src)
+    }
+
     fn poll_completion(
         &mut self,
         target: PollTarget,
@@ -358,7 +419,7 @@ struct PostedOpEntry {
 /// and handed in as a spawn param; the actor owns it for life and
 /// drops it when the actor stops.
 #[derive(Debug)]
-pub(super) struct QueuePairActor<M: Manager, Qp: QueuePair> {
+pub(super) struct QueuePairActor<M: Manager, Qp: IbvQueuePair> {
     qp_key: QpKey,
     /// Filled into [`CreatePeerQueuePair::sender`] so the peer can
     /// build its own [`QpKey`] from our identity.
@@ -399,7 +460,7 @@ pub(super) struct QueuePairActor<M: Manager, Qp: QueuePair> {
     poll_policy: PollSleepPolicy,
 }
 
-impl<M: Manager, Qp: QueuePair> QueuePairActor<M, Qp> {
+impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
     pub(super) fn new(
         qp_key: QpKey,
         local_manager: ActorRef<M>,
@@ -518,7 +579,7 @@ impl<M: Manager, Qp: QueuePair> QueuePairActor<M, Qp> {
 
         // 3. Post.
         let post_result = match op.op_type {
-            RdmaOpType::WriteFromLocal => self.qp.put(local_buf.clone(), op.remote_buffer.clone()),
+            RdmaOpType::WriteFromLocal => self.qp.put(op.remote_buffer.clone(), local_buf.clone()),
             RdmaOpType::ReadIntoLocal => self.qp.get(local_buf.clone(), op.remote_buffer.clone()),
         };
         let wr_ids = post_result.map_err(|e| {
@@ -649,7 +710,7 @@ impl<M: Manager, Qp: QueuePair> QueuePairActor<M, Qp> {
 }
 
 #[async_trait]
-impl<M: Manager, Qp: QueuePair> Actor for QueuePairActor<M, Qp> {
+impl<M: Manager, Qp: IbvQueuePair> Actor for QueuePairActor<M, Qp> {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
         let local_info = self.qp.get_qp_info().map_err(|e| {
             tracing::error!(qp_key = ?self.qp_key, error = %e, "QueuePairActor init: get_qp_info failed");
@@ -732,7 +793,7 @@ impl<M: Manager, Qp: QueuePair> Actor for QueuePairActor<M, Qp> {
 }
 
 #[async_trait]
-impl<M: Manager, Qp: QueuePair> Handler<ProcessOps<M>> for QueuePairActor<M, Qp> {
+impl<M: Manager, Qp: IbvQueuePair> Handler<ProcessOps<M>> for QueuePairActor<M, Qp> {
     async fn handle(
         &mut self,
         cx: &Context<Self>,
@@ -760,7 +821,7 @@ impl<M: Manager, Qp: QueuePair> Handler<ProcessOps<M>> for QueuePairActor<M, Qp>
 }
 
 #[async_trait]
-impl<M: Manager, Qp: QueuePair> Handler<Tick> for QueuePairActor<M, Qp> {
+impl<M: Manager, Qp: IbvQueuePair> Handler<Tick> for QueuePairActor<M, Qp> {
     async fn handle(&mut self, cx: &Context<Self>, _msg: Tick) -> Result<(), anyhow::Error> {
         self.tick_armed = false;
         self.advance(cx)?;
@@ -973,13 +1034,13 @@ mod tests {
     #[derive(Debug)]
     enum PostedOp {
         Put {
-            lhandle: IbvBuffer,
-            rhandle: IbvBuffer,
+            remote_dst: IbvBuffer,
+            local_src: IbvBuffer,
             wr_ids: Vec<u64>,
         },
         Get {
-            lhandle: IbvBuffer,
-            rhandle: IbvBuffer,
+            local_dst: IbvBuffer,
+            remote_src: IbvBuffer,
             wr_ids: Vec<u64>,
         },
     }
@@ -1001,7 +1062,7 @@ mod tests {
         post_error: Option<String>,
     }
 
-    /// `QueuePair` mock used by `QueuePairActor` tests. Cloning is
+    /// `IbvQueuePair` mock used by `QueuePairActor` tests. Cloning is
     /// cheap (shared `Arc<Mutex<...>>`); the test typically holds
     /// one clone while handing another to the actor.
     #[derive(Debug, Clone)]
@@ -1072,9 +1133,14 @@ mod tests {
         }
     }
 
-    impl QueuePair for MockQp {
-        fn get_qp_info(&mut self) -> Result<IbvQpInfo> {
-            Ok(self.info.clone())
+    impl IbvQueuePair for MockQp {
+        unsafe fn new<I: IbvDomainImpl<QueuePair = Self>>(
+            _domain: Arc<IbvDomain<I>>,
+            _config: IbvConfig,
+        ) -> Result<Self> {
+            // No `IbvDomainImpl` sets `Q = MockQp`, so this is never reached;
+            // the mock is built directly via `MockQp::new`.
+            unreachable!("MockQp is constructed directly, not from a domain")
         }
 
         fn connect(&mut self, info: &IbvQpInfo) -> Result<()> {
@@ -1082,39 +1148,47 @@ mod tests {
             Ok(())
         }
 
-        fn put(&mut self, lhandle: IbvBuffer, rhandle: IbvBuffer) -> Result<Vec<u64>> {
+        fn get_qp_info(&mut self) -> Result<IbvQpInfo> {
+            Ok(self.info.clone())
+        }
+
+        fn state(&mut self) -> Result<u32> {
+            Ok(rdmaxcel_sys::ibv_qp_state::IBV_QPS_RTS)
+        }
+
+        fn put(&mut self, remote_dst: IbvBuffer, local_src: IbvBuffer) -> Result<Vec<u64>> {
             let mut inner = self.inner.lock().unwrap();
             if let Some(msg) = inner.post_error.take() {
                 return Err(anyhow::anyhow!(msg));
             }
-            let wrs = lhandle.size.div_ceil(MAX_RDMA_MSG_SIZE).max(1);
+            let wrs = local_src.size.div_ceil(MAX_RDMA_MSG_SIZE).max(1);
             let mut wr_ids = Vec::with_capacity(wrs);
             for _ in 0..wrs {
                 wr_ids.push(inner.next_wr_id);
                 inner.next_wr_id += 1;
             }
             let _ = inner.posted_tx.send(PostedOp::Put {
-                lhandle,
-                rhandle,
+                remote_dst,
+                local_src,
                 wr_ids: wr_ids.clone(),
             });
             Ok(wr_ids)
         }
 
-        fn get(&mut self, lhandle: IbvBuffer, rhandle: IbvBuffer) -> Result<Vec<u64>> {
+        fn get(&mut self, local_dst: IbvBuffer, remote_src: IbvBuffer) -> Result<Vec<u64>> {
             let mut inner = self.inner.lock().unwrap();
             if let Some(msg) = inner.post_error.take() {
                 return Err(anyhow::anyhow!(msg));
             }
-            let wrs = lhandle.size.div_ceil(MAX_RDMA_MSG_SIZE).max(1);
+            let wrs = local_dst.size.div_ceil(MAX_RDMA_MSG_SIZE).max(1);
             let mut wr_ids = Vec::with_capacity(wrs);
             for _ in 0..wrs {
                 wr_ids.push(inner.next_wr_id);
                 inner.next_wr_id += 1;
             }
             let _ = inner.posted_tx.send(PostedOp::Get {
-                lhandle,
-                rhandle,
+                local_dst,
+                remote_src,
                 wr_ids: wr_ids.clone(),
             });
             Ok(wr_ids)
@@ -1562,10 +1636,10 @@ mod tests {
     fn expect_put(p: PostedOp) -> (IbvBuffer, IbvBuffer, Vec<u64>) {
         match p {
             PostedOp::Put {
-                lhandle,
-                rhandle,
+                remote_dst,
+                local_src,
                 wr_ids,
-            } => (lhandle, rhandle, wr_ids),
+            } => (local_src, remote_dst, wr_ids),
             other => panic!("expected Put, got {other:?}"),
         }
     }
@@ -1573,10 +1647,10 @@ mod tests {
     fn expect_get(p: PostedOp) -> (IbvBuffer, IbvBuffer, Vec<u64>) {
         match p {
             PostedOp::Get {
-                lhandle,
-                rhandle,
+                local_dst,
+                remote_src,
                 wr_ids,
-            } => (lhandle, rhandle, wr_ids),
+            } => (local_dst, remote_src, wr_ids),
             other => panic!("expected Get, got {other:?}"),
         }
     }

@@ -23,7 +23,7 @@ use crate::register_ibv_device_impl;
 pub struct EfaDevice;
 
 impl IbvDeviceImpl for EfaDevice {
-    type IbvDomainImpl = EfaDomain;
+    type Domain = EfaDomain;
 
     fn backend_name() -> &'static str {
         "efa"
