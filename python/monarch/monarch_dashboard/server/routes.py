@@ -14,6 +14,9 @@ JSON and uses standard HTTP status codes (200, 404).
 from typing import Any
 
 from flask import Blueprint, jsonify, request
+from monarch._rust_bindings.monarch_extension.snapshot_integration import (
+    _snapshot_table_names,
+)
 
 from . import db
 from .admin_dag import build_admin_dag
@@ -21,6 +24,9 @@ from .cache import cached
 from .system_actors import get_system_actor_names
 
 api = Blueprint("api", __name__, url_prefix="/api")
+
+_SNAPSHOT_TABLE_NAMES = tuple(_snapshot_table_names())
+_SNAPSHOT_TABLE_NAME_SET = frozenset(_SNAPSHOT_TABLE_NAMES)
 
 # Monarch uses 64-bit IDs which can exceed JavaScript's Number.MAX_SAFE_INTEGER.
 # We always serialize ID fields as strings for type consistency on the frontend.
@@ -287,6 +293,24 @@ def pyspy_dump():
         ), 400
     try:
         db.store_pyspy_dump(dump_id, proc_ref, pyspy_result_json)
+        return jsonify({"status": "ok"})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Snapshot ingest
+# ---------------------------------------------------------------------------
+
+
+@api.route("/ingest_snapshot/<table_name>", methods=["POST"])
+def ingest_snapshot(table_name: str):
+    """Store one snapshot Arrow IPC stream in the sidecar collector."""
+    if table_name not in _SNAPSHOT_TABLE_NAME_SET:
+        return jsonify({"error": f"not a snapshot table: {table_name}"}), 400
+
+    try:
+        db.ingest_snapshot_batch(table_name, request.get_data())
         return jsonify({"status": "ok"})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500

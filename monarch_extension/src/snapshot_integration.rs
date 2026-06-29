@@ -19,7 +19,15 @@ use monarch_hyperactor::context::PyInstance;
 use monarch_hyperactor::host_mesh::PyMeshAdminRef;
 use monarch_introspection_snapshot::integration::register_snapshot_schemas;
 use monarch_introspection_snapshot::integration::start_periodic_snapshots;
+use monarch_introspection_snapshot::push::SNAPSHOT_TABLE_NAMES;
 use pyo3::prelude::*;
+
+/// Return the canonical snapshot table names in ingestion order.
+#[pyfunction]
+#[pyo3(name = "_snapshot_table_names")]
+fn snapshot_table_names_py() -> Vec<&'static str> {
+    SNAPSHOT_TABLE_NAMES.to_vec()
+}
 
 /// Pre-register the 13 snapshot table schemas in a `DatabaseScanner`.
 ///
@@ -77,6 +85,7 @@ fn start_periodic_snapshots_py(
 }
 
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(wrap_pyfunction!(snapshot_table_names_py, module)?)?;
     module.add_function(wrap_pyfunction!(pre_register_snapshot_schemas_py, module)?)?;
     module.add_function(wrap_pyfunction!(start_periodic_snapshots_py, module)?)?;
     Ok(())

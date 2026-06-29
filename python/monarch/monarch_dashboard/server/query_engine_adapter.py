@@ -52,3 +52,9 @@ class QueryEngineAdapter(DBAdapter):
         self._engine._actor.store_pyspy_dump.call_one(
             dump_id, proc_ref, pyspy_result_json
         ).get()
+
+    def ingest_snapshot_batch(self, table_name: str, arrow_ipc_bytes: bytes) -> None:
+        """Store one snapshot Arrow IPC stream in the DataFusion snapshot tables."""
+        self._engine._actor.ingest_snapshot_batch.call_one(
+            table_name, arrow_ipc_bytes
+        ).get()

@@ -54,6 +54,10 @@ class DBAdapter(ABC):
         """Store a py-spy dump result. No-op by default."""
         pass
 
+    def ingest_snapshot_batch(self, table_name: str, arrow_ipc_bytes: bytes) -> None:
+        """Store one snapshot Arrow IPC stream. Unsupported by default."""
+        raise NotImplementedError("snapshot ingest unavailable")
+
 
 # ---------------------------------------------------------------------------
 # SQLite adapter — local dev/testing
@@ -125,6 +129,11 @@ def raw_query(sql: str) -> list[dict[str, Any]]:
 def store_pyspy_dump(dump_id: str, proc_ref: str, pyspy_result_json: str) -> None:
     """Store a py-spy dump result via the current adapter."""
     _get_adapter().store_pyspy_dump(dump_id, proc_ref, pyspy_result_json)
+
+
+def ingest_snapshot_batch(table_name: str, arrow_ipc_bytes: bytes) -> None:
+    """Store one snapshot Arrow IPC stream via the current adapter."""
+    _get_adapter().ingest_snapshot_batch(table_name, arrow_ipc_bytes)
 
 
 def _sql_literal(value: Any) -> str:

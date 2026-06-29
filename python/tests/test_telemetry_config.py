@@ -14,6 +14,7 @@ import pickle
 import shutil
 import socket
 import threading
+import urllib.error
 import urllib.request
 import uuid
 from typing import cast
@@ -44,6 +45,44 @@ def _post_json(url: str, payload: dict[str, object]) -> dict[str, object]:
     )
     with urllib.request.urlopen(request, timeout=10.0) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def _post_bytes(
+    url: str,
+    payload: bytes,
+    content_type: str = "application/octet-stream",
+) -> dict[str, object]:
+    request = urllib.request.Request(
+        url,
+        data=payload,
+        headers={"Content-Type": content_type},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=10.0) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _snapshot_ipc(snapshot_id: str) -> bytes:
+    import pyarrow as pa
+    import pyarrow.ipc as ipc
+
+    schema = pa.schema(
+        [
+            pa.field("snapshot_id", pa.string(), nullable=False),
+            pa.field("snapshot_ts", pa.int64(), nullable=False),
+        ]
+    )
+    batch = pa.record_batch(
+        [
+            pa.array([snapshot_id], type=pa.string()),
+            pa.array([123456], type=pa.int64()),
+        ],
+        schema=schema,
+    )
+    sink = pa.BufferOutputStream()
+    with ipc.new_stream(sink, schema) as writer:
+        writer.write_batch(batch)
+    return sink.getvalue().to_pybytes()
 
 
 def _cfg_dict(**overrides):
@@ -388,6 +427,32 @@ def test_job_sidecar_hosts_telemetry_query_api() -> None:
             {"sql": "SELECT COUNT(*) AS count FROM spans"},
         )
         assert "rows" in query_response
+
+        snapshot_id = f"snapshot_{uuid.uuid4().hex}"
+        ingest_response = _post_bytes(
+            f"{telemetry_url}/api/ingest_snapshot/snapshots",
+            _snapshot_ipc(snapshot_id),
+            "application/vnd.apache.arrow.stream",
+        )
+        assert ingest_response == {"status": "ok"}
+        snapshot_response = _post_json(
+            f"{telemetry_url}/api/query",
+            {
+                "sql": (
+                    "SELECT snapshot_id FROM snapshots "
+                    f"WHERE snapshot_id = '{snapshot_id}'"
+                )
+            },
+        )
+        assert snapshot_response["rows"] == [{"snapshot_id": snapshot_id}]
+
+        with pytest.raises(urllib.error.HTTPError) as error:
+            _post_bytes(
+                f"{telemetry_url}/api/ingest_snapshot/spans",
+                b"not-arrow",
+                "application/vnd.apache.arrow.stream",
+            )
+        assert error.value.code == 400
     finally:
         js.stop_job_sidecar(apply_id)
         _remove_socket_dir(apply_id)

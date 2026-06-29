@@ -13,10 +13,12 @@ JSON structure, filtering, and 404 behaviour.
 import os
 import tempfile
 import unittest
+from typing import Any
 
 from monarch.monarch_dashboard.fake_data.generate import generate
 from monarch.monarch_dashboard.server.app import create_app
-from monarch.monarch_dashboard.server.db import SQLiteAdapter
+from monarch.monarch_dashboard.server.db import DBAdapter, SQLiteAdapter
+from monarch.monarch_dashboard.server.routes import _SNAPSHOT_TABLE_NAMES
 
 
 class _RouteTestBase(unittest.TestCase):
@@ -381,6 +383,59 @@ class QueryRouteTest(_RouteTestBase):
     def test_query_invalid_sql(self):
         resp = self.client.post("/api/query", json={"sql": "NOT VALID SQL"})
         self.assertEqual(resp.status_code, 400)
+
+
+# ---------------------------------------------------------------------------
+# Snapshot ingest
+# ---------------------------------------------------------------------------
+
+
+class _SnapshotIngestAdapter(DBAdapter):
+    def __init__(self):
+        self.calls = []
+
+    def query(self, sql: str) -> list[dict[str, Any]]:
+        return []
+
+    def table_names(self) -> list[str]:
+        return []
+
+    def ingest_snapshot_batch(self, table_name: str, arrow_ipc_bytes: bytes) -> None:
+        self.calls.append((table_name, arrow_ipc_bytes))
+
+
+class SnapshotIngestRouteTest(unittest.TestCase):
+    def setUp(self):
+        self.adapter = _SnapshotIngestAdapter()
+        self.app = create_app(self.adapter)
+        self.app.config["TESTING"] = True
+        self.client = self.app.test_client()
+
+    def test_ingest_snapshot_accepts_all_snapshot_tables(self):
+        for table_name in _SNAPSHOT_TABLE_NAMES:
+            with self.subTest(table_name=table_name):
+                resp = self.client.post(
+                    f"/api/ingest_snapshot/{table_name}",
+                    data=b"arrow-ipc",
+                    content_type="application/vnd.apache.arrow.stream",
+                )
+                self.assertEqual(resp.status_code, 200)
+                self.assertEqual(resp.get_json()["status"], "ok")
+
+        self.assertEqual(
+            self.adapter.calls,
+            [(table_name, b"arrow-ipc") for table_name in _SNAPSHOT_TABLE_NAMES],
+        )
+
+    def test_ingest_snapshot_rejects_non_snapshot_table(self):
+        resp = self.client.post(
+            "/api/ingest_snapshot/spans",
+            data=b"arrow-ipc",
+            content_type="application/vnd.apache.arrow.stream",
+        )
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(self.adapter.calls, [])
 
 
 # ---------------------------------------------------------------------------
