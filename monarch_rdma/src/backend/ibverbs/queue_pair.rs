@@ -45,6 +45,7 @@ use typeuri::Named;
 
 use super::IbvBuffer;
 use super::IbvOp;
+use super::device::IbvContext;
 use super::domain::IbvDomain;
 use super::domain::IbvDomainImpl;
 use super::domain::IbvDomainKeepalive;
@@ -52,7 +53,9 @@ use super::manager_actor::CreatePeerQueuePair;
 use super::memory_region::IbvMemoryRegionView;
 use super::primitives::Gid;
 use super::primitives::IbvConfig;
+use super::primitives::IbvCq;
 use super::primitives::IbvOperation;
+use super::primitives::IbvQp;
 use super::primitives::IbvQpInfo;
 use super::primitives::IbvWc;
 use super::primitives::resolve_qp_type;
@@ -460,6 +463,345 @@ pub(super) unsafe fn connect(
         ));
     }
     Ok(())
+}
+
+/// The owned ibverbs handles backing a queue pair: the queue pair and its two
+/// completion queues.
+///
+/// `qp` is declared before the CQs so it is destroyed first whenever a
+/// `QpParts` is dropped — a CQ cannot be destroyed while a queue pair still
+/// references it. Because struct fields drop in declaration order, this holds
+/// however the value is moved, stored, or unwound; keep the parts bundled in
+/// this struct across any fallible step rather than splitting them into
+/// separate locals (whose drop order would not be guaranteed).
+pub(super) struct QpParts {
+    pub(super) qp: IbvQp,
+    pub(super) send_cq: IbvCq,
+    pub(super) recv_cq: IbvCq,
+}
+
+/// An RDMA reliable-connected (RC) queue pair built on plain ibverbs
+/// (`ibv_post_send`), independent of any device-specific verbs.
+///
+/// Single-owner: it owns the QP and its two completion queues and destroys them
+/// on drop, so the type is intentionally `!Clone`. Its fields are declared
+/// QP-before-CQs (see [`QpParts`]). The device context comes from the held
+/// `Arc<IbvContext>`.
+#[derive(Debug)]
+pub struct RCQueuePair {
+    qp: IbvQp,
+    send_cq: IbvCq,
+    recv_cq: IbvCq,
+    /// The device context, used for the data-path verbs.
+    context: Arc<IbvContext>,
+    config: IbvConfig,
+    /// Remote-access flags granted to peers at connect time, taken from the
+    /// owning domain at construction.
+    access_flags: i32,
+    /// Monotonic work-request id, handed out one per posted WR. Standard
+    /// ibverbs carries no internal counter, so the QP tracks its own.
+    next_wr_id: u64,
+    /// The domain this QP was built against, kept alive so its PD outlives the
+    /// QP. Never read directly.
+    _domain: Arc<dyn IbvDomainKeepalive>,
+}
+
+impl RCQueuePair {
+    /// Assembles an `RCQueuePair` that owns the already-created queue pair and
+    /// completion queues in `parts`. `access_flags` is granted to peers at
+    /// [`Self::connect`]; it is taken from the owning domain by the caller.
+    ///
+    /// # Safety
+    ///
+    /// `context` must wrap a non-null, live `ibv_context` (the data-path verbs
+    /// invoke it without re-checking). `parts.qp` must wrap a live RC `ibv_qp`
+    /// created against that context's device and `domain`'s protection domain,
+    /// with `parts.send_cq`/`parts.recv_cq` as its completion queues.
+    pub(super) unsafe fn from_parts(
+        parts: QpParts,
+        context: Arc<IbvContext>,
+        config: IbvConfig,
+        access_flags: i32,
+        domain: Arc<dyn IbvDomainKeepalive>,
+    ) -> Self {
+        let QpParts {
+            qp,
+            send_cq,
+            recv_cq,
+        } = parts;
+        RCQueuePair {
+            qp,
+            send_cq,
+            recv_cq,
+            context,
+            config,
+            access_flags,
+            next_wr_id: 0,
+            _domain: domain,
+        }
+    }
+
+    /// Posts `op` over `[laddr, laddr + total_size)` to `[raddr, ...)`,
+    /// splitting into `MAX_RDMA_MSG_SIZE`-bound chunks and returning one wr_id
+    /// per chunk.
+    fn post_chunked(
+        &mut self,
+        op: IbvOperation,
+        laddr: usize,
+        lkey: u32,
+        raddr: usize,
+        rkey: u32,
+        total_size: usize,
+    ) -> Result<Vec<u64>, anyhow::Error> {
+        let mut remaining = total_size;
+        let mut offset = 0;
+        let mut wr_ids = Vec::new();
+        while remaining > 0 {
+            let chunk = std::cmp::min(remaining, MAX_RDMA_MSG_SIZE);
+            let wr_id = self.next_wr_id;
+            self.next_wr_id += 1;
+            self.post_one(op, laddr + offset, lkey, chunk, raddr + offset, rkey, wr_id)?;
+            wr_ids.push(wr_id);
+            remaining -= chunk;
+            offset += chunk;
+        }
+        Ok(wr_ids)
+    }
+
+    /// Posts a single signaled RDMA `op` work request via `ibv_post_send`.
+    fn post_one(
+        &self,
+        op: IbvOperation,
+        laddr: usize,
+        lkey: u32,
+        length: usize,
+        raddr: usize,
+        rkey: u32,
+        wr_id: u64,
+    ) -> Result<(), anyhow::Error> {
+        let qp = self.qp.as_ptr();
+        let context = self.context.as_ptr();
+        let mut sge = rdmaxcel_sys::ibv_sge {
+            addr: laddr as u64,
+            length: length as u32,
+            lkey,
+        };
+        let mut wr = rdmaxcel_sys::ibv_send_wr {
+            wr_id,
+            next: std::ptr::null_mut(),
+            sg_list: &mut sge as *mut _,
+            num_sge: 1,
+            opcode: op.into(),
+            send_flags: rdmaxcel_sys::ibv_send_flags::IBV_SEND_SIGNALED.0,
+            wr: Default::default(),
+            qp_type: Default::default(),
+            __bindgen_anon_1: Default::default(),
+            __bindgen_anon_2: Default::default(),
+        };
+        // Set the RDMA target. Writing through a union field is safe; the device
+        // reads the `rdma` member for the RDMA_WRITE/RDMA_READ opcodes set above.
+        wr.wr.rdma.remote_addr = raddr as u64;
+        wr.wr.rdma.rkey = rkey;
+        let mut bad_wr: *mut rdmaxcel_sys::ibv_send_wr = std::ptr::null_mut();
+        // SAFETY: `context` is the QP's live device context, non-null per
+        // `from_parts`'s contract; we invoke its `post_send` verb through the ops
+        // table. `qp` is live and `wr`/`sge`/`bad_wr` are valid for the duration
+        // of the call.
+        let errno = unsafe {
+            let post_send = (*context)
+                .ops
+                .post_send
+                .expect("post_send verb missing from ibv_context ops");
+            post_send(qp, &mut wr as *mut _, &mut bad_wr)
+        };
+        if errno != 0 {
+            return Err(anyhow::anyhow!(
+                "failed to post {:?} request: {}",
+                op,
+                Error::from_raw_os_error(errno)
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl IbvQueuePair for RCQueuePair {
+    unsafe fn new<I: IbvDomainImpl<QueuePair = Self>>(
+        domain: Arc<IbvDomain<I>>,
+        config: IbvConfig,
+    ) -> Result<Self, anyhow::Error> {
+        tracing::debug!("creating an RCQueuePair from config {}", config);
+        let context = domain.context.clone();
+        let context_ptr = context.as_ptr();
+        // `IbvDomain`'s `pd` accessor permits null (e.g. a test domain); a real
+        // QP needs one, so reject null up front (`IbvCq::create` likewise rejects
+        // a null context).
+        let pd = domain.as_ptr();
+        if pd.is_null() {
+            anyhow::bail!("cannot create an RCQueuePair on a null protection domain");
+        }
+
+        // Separate send/recv completion queues. Each `IbvCq` destroys its queue
+        // on drop, so an early return below (or a panic) cleans them up.
+        // SAFETY: `context_ptr`, if non-null, is live (kept alive by `context`);
+        // `IbvCq::create` rejects a null context.
+        let send_cq = unsafe { IbvCq::create(context_ptr, config.cq_entries) }?;
+        // SAFETY: as for `send_cq` above.
+        let recv_cq = unsafe { IbvCq::create(context_ptr, config.cq_entries) }?;
+
+        // A standard RC QP with the caps from `config`.
+        let mut init_attr = rdmaxcel_sys::ibv_qp_init_attr {
+            send_cq: send_cq.as_ptr(),
+            recv_cq: recv_cq.as_ptr(),
+            cap: rdmaxcel_sys::ibv_qp_cap {
+                max_send_wr: config.max_send_wr,
+                max_recv_wr: config.max_recv_wr,
+                max_send_sge: config.max_send_sge,
+                max_recv_sge: config.max_recv_sge,
+                max_inline_data: 0,
+            },
+            qp_type: rdmaxcel_sys::ibv_qp_type::IBV_QPT_RC,
+            sq_sig_all: 0,
+            ..Default::default()
+        };
+        // SAFETY: `pd` is non-null (checked above) and live per `IbvDomain`'s
+        // construction contract; `init_attr` is a fully initialized
+        // `ibv_qp_init_attr`. `ibv_create_qp` returns null on failure.
+        let qp = unsafe { rdmaxcel_sys::ibv_create_qp(pd, &mut init_attr) };
+        if qp.is_null() {
+            // `send_cq`/`recv_cq` drop here, destroying the CQs.
+            anyhow::bail!(
+                "failed to create queue pair (QP): {}",
+                Error::last_os_error()
+            );
+        }
+        // SAFETY: `qp` is a live RC QP just created above; `IbvQp` takes
+        // ownership and destroys it on drop.
+        let qp = unsafe { IbvQp::from_raw(qp) };
+        let parts = QpParts {
+            qp,
+            send_cq,
+            recv_cq,
+        };
+        let access_flags = domain.access_flags();
+
+        // SAFETY: `parts` wraps a live RC QP just created against `pd`/`context`
+        // with its completion queues; ownership transfers to the returned value.
+        Ok(unsafe { Self::from_parts(parts, context, config, access_flags, domain) })
+    }
+
+    fn connect(&mut self, info: &IbvQpInfo) -> Result<(), anyhow::Error> {
+        // SAFETY: `self.qp` is the live QP, kept alive for `self`'s lifetime.
+        unsafe { connect(self.qp.as_ptr(), &self.config, self.access_flags, info) }
+    }
+
+    fn get_qp_info(&mut self) -> Result<IbvQpInfo, anyhow::Error> {
+        let context = self.context.as_ptr();
+        // SAFETY: `self.qp` is the live QP and `context` its non-null device
+        // context (validated inside `new`), both valid for `self`'s lifetime.
+        unsafe { get_qp_info(self.qp.as_ptr(), context, &self.config) }
+    }
+
+    fn state(&mut self) -> Result<u32, anyhow::Error> {
+        // SAFETY: `self.qp` is the live QP, kept alive for `self`'s lifetime.
+        unsafe { state(self.qp.as_ptr()) }
+    }
+
+    fn put(
+        &mut self,
+        remote_dst: IbvBuffer,
+        local_src: IbvBuffer,
+    ) -> Result<Vec<u64>, anyhow::Error> {
+        if remote_dst.size < local_src.size {
+            return Err(anyhow::anyhow!(
+                "remote buffer size ({}) is smaller than local buffer size ({})",
+                remote_dst.size,
+                local_src.size
+            ));
+        }
+        self.post_chunked(
+            IbvOperation::Write,
+            local_src.addr,
+            local_src.lkey,
+            remote_dst.addr,
+            remote_dst.rkey,
+            local_src.size,
+        )
+    }
+
+    fn get(
+        &mut self,
+        local_dst: IbvBuffer,
+        remote_src: IbvBuffer,
+    ) -> Result<Vec<u64>, anyhow::Error> {
+        if local_dst.size < remote_src.size {
+            return Err(anyhow::anyhow!(
+                "local buffer size ({}) is smaller than remote buffer size ({})",
+                local_dst.size,
+                remote_src.size
+            ));
+        }
+        self.post_chunked(
+            IbvOperation::Read,
+            local_dst.addr,
+            local_dst.lkey,
+            remote_src.addr,
+            remote_src.rkey,
+            remote_src.size,
+        )
+    }
+
+    fn poll_completion(
+        &mut self,
+        target: PollTarget,
+    ) -> Result<Option<Result<IbvWc, WorkRequestError>>, PollCompletionError> {
+        let (cq, cq_type) = match target {
+            PollTarget::Send => (self.send_cq.as_ptr(), "send"),
+            PollTarget::Recv => (self.recv_cq.as_ptr(), "recv"),
+        };
+        let context = self.context.as_ptr();
+        // SAFETY: `context` is non-null (per `from_parts`'s contract) and the
+        // QP's live device context; we invoke its `poll_cq` verb through the ops
+        // table.
+        let poll_cq = unsafe {
+            (*context)
+                .ops
+                .poll_cq
+                .expect("poll_cq verb missing from ibv_context ops")
+        };
+        let mut wc = rdmaxcel_sys::ibv_wc::default();
+        // SAFETY: `cq` is a live `ibv_cq` belonging to this QP; `&mut wc` has
+        // room for the single entry requested, and `poll_cq` overwrites it
+        // whenever it returns a completion (`ret >= 1`).
+        let ret = unsafe { poll_cq(cq, 1, &mut wc) };
+
+        if ret < 0 {
+            return Err(PollCompletionError {
+                message: format!("{} CQ poll failed (ibv_poll_cq returned {})", cq_type, ret),
+            });
+        }
+        if ret == 0 {
+            return Ok(None);
+        }
+
+        // `ret >= 1`: a single entry was requested, so `wc` holds one completion.
+        // `error()` is `Some` exactly when the status is not `IBV_WC_SUCCESS`.
+        if let Some((status, vendor_err)) = wc.error() {
+            return Ok(Some(Err(WorkRequestError {
+                wr_id: wc.wr_id(),
+                status,
+                vendor_err,
+                message: format!(
+                    "{} completion failed for wr_id={}: status={:?}, vendor_err={}",
+                    cq_type,
+                    wc.wr_id(),
+                    status,
+                    vendor_err,
+                ),
+            })));
+        }
+        Ok(Some(Ok(IbvWc::from(wc))))
+    }
 }
 
 /// Adaptive backoff for the scheduler's `Tick` self-message. Use

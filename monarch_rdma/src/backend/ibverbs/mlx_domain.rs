@@ -737,7 +737,7 @@ impl MlxDomain {
         size: usize,
     ) -> anyhow::Result<IbvMemoryRegionView> {
         let pd = domain.as_ptr();
-        let access = self.mr_access_flags();
+        let access = self.access_flags();
         let mut segments = self
             .segments
             .lock()
@@ -814,7 +814,7 @@ impl IbvDomainImpl for MlxDomain {
         )
     }
 
-    fn mr_access_flags(&self) -> i32 {
+    fn access_flags(&self) -> i32 {
         (rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
             | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
             | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_READ
@@ -1648,7 +1648,7 @@ mod tests {
         let domain = domain(mock.clone());
         // The registration path registers MRs with the domain's own access
         // flags; capture them to assert the dmabuf registration arguments.
-        let access = domain.domain_impl().mr_access_flags();
+        let access = domain.domain_impl().access_flags();
 
         // Validate every field of a returned view: its address fields, its
         // size, the serving NIC's name, and the keys. The mock's `mkey_keys`
