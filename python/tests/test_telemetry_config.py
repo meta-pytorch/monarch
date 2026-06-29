@@ -25,6 +25,7 @@ import monarch._src.job.telemetry_config as tc
 import pytest
 from monarch._src.job.process_guard import _Shutdown, _wait_for_socket
 from monarch._src.job.telemetry_actor import telemetry_socket_dir, telemetry_socket_path
+from monarch.config import ChannelTransport, configured
 from monarch.job import TelemetryConfig
 
 
@@ -386,6 +387,39 @@ def test_ensure_open_reraises_sidecar_error() -> None:
                 tel.ensure_open(apply_id)
     finally:
         _remove_socket_dir(apply_id)
+
+
+@pytest.mark.parametrize(
+    ("transport", "expected"),
+    [
+        (ChannelTransport.MetaTlsWithIpV6, "metatls(IpV6)"),
+        (ChannelTransport.MetaTlsWithHostname, "metatls(Hostname)"),
+        ("unix", "unix"),
+        ("tcp://127.0.0.1:1234", "tcp://127.0.0.1:1234"),
+    ],
+)
+def test_sidecar_transport_from_runtime_serializes_config_transport(
+    transport: object,
+    expected: str,
+) -> None:
+    with patch.object(
+        js,
+        "get_runtime_config",
+        return_value={"default_transport": transport},
+    ):
+        assert js.sidecar_transport_from_runtime() == expected
+
+
+def test_sidecar_transport_from_runtime_reads_configured_bind_spec() -> None:
+    with configured(default_transport=ChannelTransport.MetaTlsWithIpV6):
+        assert js.sidecar_transport_from_runtime() == "metatls(IpV6)"
+
+
+def test_configure_sidecar_transport_enables_parent_transport() -> None:
+    with patch.object(js, "enable_transport") as enable_transport:
+        js.configure_sidecar_transport("metatls")
+
+    enable_transport.assert_called_once_with("metatls")
 
 
 # ── End-to-end: real job sidecar subprocess ───────────────────────────────────
