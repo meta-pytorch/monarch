@@ -120,6 +120,11 @@ CUresult rdmaxcel_cuPointerGetAttribute(
 // succeed for the lifetime of the process.
 int ensure_cuda_driver_loaded(void) RDMAXCEL_NOEXCEPT;
 
+// Returns nonzero if the GPU runtime is initialized such that a device
+// pointer could exist. On ROCm, returns nonzero only when some device's
+// primary context is active; on CUDA it always returns nonzero.
+int rdmaxcel_cuPrimaryCtxActive(void);
+
 // Device management
 CUresult rdmaxcel_cuInit(unsigned int Flags) RDMAXCEL_NOEXCEPT;
 
