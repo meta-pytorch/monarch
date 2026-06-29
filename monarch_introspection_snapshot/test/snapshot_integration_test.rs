@@ -39,6 +39,7 @@ use monarch_introspection_snapshot::capture::capture_snapshot;
 use monarch_introspection_snapshot::integration::register_snapshot_schemas;
 use monarch_introspection_snapshot::integration::start_periodic_snapshots;
 use monarch_introspection_snapshot::push::push_snapshot;
+use monarch_introspection_snapshot::service::SnapshotSink;
 use ndslice::extent;
 use ndslice::view::Ranked;
 
@@ -444,7 +445,12 @@ async fn test_pt1_rejects_zero_interval() -> Result<()> {
     let admin_ref = spawn_admin([&host_mesh], &instance, Some("[::]:0".parse()?), None).await?;
     let table_store = TableStore::new_empty();
 
-    let err = start_periodic_snapshots(&instance, table_store, admin_ref.clone(), Duration::ZERO);
+    let err = start_periodic_snapshots(
+        &instance,
+        SnapshotSink::table_store(table_store),
+        admin_ref.clone(),
+        Duration::ZERO,
+    );
     assert!(err.is_err(), "PT-1: zero interval must be rejected");
     assert!(
         err.unwrap_err().to_string().contains("non-zero"),
@@ -470,7 +476,7 @@ async fn test_pt3_immediate_first_capture() -> Result<()> {
     // Use a long interval so only the initial immediate capture fires.
     start_periodic_snapshots(
         &instance,
-        table_store.clone(),
+        SnapshotSink::table_store(table_store.clone()),
         admin_ref.clone(),
         Duration::from_secs(600),
     )?;
@@ -515,7 +521,7 @@ async fn test_pt5_drain_halts_future_captures() -> Result<()> {
     // Start periodic capture with a short interval.
     start_periodic_snapshots(
         &instance,
-        table_store.clone(),
+        SnapshotSink::table_store(table_store.clone()),
         admin_ref.clone(),
         Duration::from_millis(200),
     )?;
