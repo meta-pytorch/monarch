@@ -213,10 +213,10 @@ impl<I: IbvDomainImpl> IbvDomain<I> {
         &self.device_info
     }
 
-    /// Access flags used when registering memory regions on this domain,
-    /// from the backend [`IbvDomainImpl`] strategy.
-    pub fn mr_access_flags(&self) -> i32 {
-        self.domain_impl().mr_access_flags()
+    /// Access flags used when registering memory regions and creating queue pairs
+    /// on this domain, from the backend [`IbvDomainImpl`] strategy.
+    pub fn access_flags(&self) -> i32 {
+        self.domain_impl().access_flags()
     }
 
     /// Register `mem` against this domain's PD, dispatching to the backend
@@ -259,8 +259,9 @@ pub trait IbvDomainImpl: std::fmt::Debug + Send + Sync + 'static + Sized {
     /// implementations may query the device behind it.
     unsafe fn new(context: &IbvContext, device_info: &IbvDeviceInfo, config: &IbvConfig) -> Self;
 
-    /// Access flags used when registering memory regions on this domain.
-    fn mr_access_flags(&self) -> i32;
+    /// Access flags used when registering memory regions and creating queue
+    /// pairs on this domain.
+    fn access_flags(&self) -> i32;
 
     /// Register `mem` against `domain`'s PD and return a view of the
     /// resulting memory region.
@@ -469,7 +470,7 @@ pub(super) unsafe fn register_host_or_dmabuf_mr<I: IbvDomainImpl>(
 ) -> anyhow::Result<IbvMemoryRegionView> {
     let addr = mem.addr();
     let size = mem.size();
-    let access_flags = domain.mr_access_flags();
+    let access_flags = domain.access_flags();
     // `mr_offset` is the offset of `addr` within the MR. For device memory the
     // MR covers the whole allocation, so the requested range starts partway in;
     // for host memory the MR is the requested range itself, so the offset is 0.
@@ -569,7 +570,7 @@ mod tests {
     fn register_dmabuf_mr_covers_whole_allocation() {
         let domain = open_domain_for_cuda_device(0);
         let pd = domain.as_ptr();
-        let access = domain.mr_access_flags();
+        let access = domain.access_flags();
         let alloc = committed_allocation();
         let alloc_size = alloc.size();
 
@@ -614,7 +615,7 @@ mod tests {
     fn register_dmabuf_range_registers_exact_range() {
         let domain = open_domain_for_cuda_device(0);
         let pd = domain.as_ptr();
-        let access = domain.mr_access_flags();
+        let access = domain.access_flags();
         let alloc = committed_allocation();
 
         let offset = 2 * host_page_size();
@@ -640,7 +641,7 @@ mod tests {
     fn register_dmabuf_range_rejects_unaligned_addr() {
         let domain = open_domain_for_cuda_device(0);
         let pd = domain.as_ptr();
-        let access = domain.mr_access_flags();
+        let access = domain.access_flags();
         let alloc = committed_allocation();
 
         // One byte past the (aligned) base is not host-page aligned.
@@ -660,7 +661,7 @@ mod tests {
     fn register_dmabuf_range_rejects_unaligned_size() {
         let domain = open_domain_for_cuda_device(0);
         let pd = domain.as_ptr();
-        let access = domain.mr_access_flags();
+        let access = domain.access_flags();
         let alloc = committed_allocation();
 
         // A size that is not a multiple of the host page size.

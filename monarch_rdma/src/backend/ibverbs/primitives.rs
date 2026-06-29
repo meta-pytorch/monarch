@@ -937,10 +937,6 @@ unsafe impl Send for IbvCq {}
 // SAFETY: as for `Send` above.
 unsafe impl Sync for IbvCq {}
 
-#[expect(
-    dead_code,
-    reason = "consumed by RCQueuePair, added in the next commit of this stack"
-)]
 impl IbvCq {
     /// Creates a completion queue with `cq_entries` entries on `context`.
     ///
@@ -983,6 +979,10 @@ impl IbvCq {
     /// A placeholder holding no completion queue: `as_ptr` returns null and
     /// `Drop` is a no-op.
     #[cfg(test)]
+    #[expect(
+        dead_code,
+        reason = "consumed by MlxQueuePair's tests, added in the next commit of this stack"
+    )]
     pub(super) fn null() -> Self {
         Self(std::ptr::null_mut())
     }
@@ -1021,10 +1021,6 @@ unsafe impl Send for IbvQp {}
 // SAFETY: as for `Send` above.
 unsafe impl Sync for IbvQp {}
 
-#[expect(
-    dead_code,
-    reason = "consumed by RCQueuePair, added in the next commit of this stack"
-)]
 impl IbvQp {
     /// Takes ownership of a raw `ibv_qp`, destroying it on drop.
     ///
@@ -1044,6 +1040,10 @@ impl IbvQp {
     /// A placeholder holding no queue pair: `as_ptr` returns null and `Drop` is
     /// a no-op.
     #[cfg(test)]
+    #[expect(
+        dead_code,
+        reason = "consumed by MlxQueuePair's tests, added in the next commit of this stack"
+    )]
     pub(super) fn null() -> Self {
         Self(std::ptr::null_mut())
     }

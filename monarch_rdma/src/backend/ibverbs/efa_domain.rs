@@ -33,7 +33,7 @@ impl IbvDomainImpl for EfaDomain {
         EfaDomain
     }
 
-    fn mr_access_flags(&self) -> i32 {
+    fn access_flags(&self) -> i32 {
         // EFA does not support `IBV_ACCESS_REMOTE_ATOMIC`.
         (rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
             | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
