@@ -20,6 +20,7 @@ use monarch_hyperactor::host_mesh::PyMeshAdminRef;
 use monarch_introspection_snapshot::integration::register_snapshot_schemas;
 use monarch_introspection_snapshot::integration::start_periodic_snapshots;
 use monarch_introspection_snapshot::push::SNAPSHOT_TABLE_NAMES;
+use monarch_introspection_snapshot::service::SnapshotSink;
 use pyo3::prelude::*;
 
 /// Return the canonical snapshot table names in ingestion order.
@@ -80,13 +81,48 @@ fn start_periodic_snapshots_py(
     // this enters that same library runtime, which monarch does not tag. The work
     // here only spawns a Rust actor and takes no GIL; keep it that way.
     let _guard = pyo3_async_runtimes::tokio::get_runtime().enter();
-    start_periodic_snapshots(&**instance, table_store, admin_ref, interval)
-        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{:#}", e)))
+    start_periodic_snapshots(
+        &**instance,
+        SnapshotSink::table_store(table_store),
+        admin_ref,
+        interval,
+    )
+    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{:#}", e)))
+}
+
+/// Spawn periodic snapshot capture that publishes to the telemetry HTTP API.
+#[pyfunction]
+#[pyo3(name = "_start_periodic_snapshots_http")]
+fn start_periodic_snapshots_http_py(
+    base_url: &str,
+    admin_ref: &PyMeshAdminRef,
+    instance: &PyInstance,
+    interval_secs: f64,
+) -> PyResult<()> {
+    let admin_ref = admin_ref.actor_ref();
+
+    if interval_secs <= 0.0 || !interval_secs.is_finite() {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "interval_secs must be a positive finite number, got {}",
+            interval_secs,
+        )));
+    }
+    let interval = Duration::from_secs_f64(interval_secs);
+
+    let _guard = pyo3_async_runtimes::tokio::get_runtime().enter();
+    start_periodic_snapshots(
+        &**instance,
+        SnapshotSink::http(base_url),
+        admin_ref,
+        interval,
+    )
+    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{:#}", e)))
 }
 
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(snapshot_table_names_py, module)?)?;
     module.add_function(wrap_pyfunction!(pre_register_snapshot_schemas_py, module)?)?;
     module.add_function(wrap_pyfunction!(start_periodic_snapshots_py, module)?)?;
+    module.add_function(wrap_pyfunction!(start_periodic_snapshots_http_py, module)?)?;
     Ok(())
 }

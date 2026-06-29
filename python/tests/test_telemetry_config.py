@@ -299,9 +299,9 @@ def test_spawn_telemetry_actors_drops_inactive_worker_collectors() -> None:
     )
 
     client_actor.set_worker_collector_meshes.call_one.assert_called_once_with([])
-    assert worker_proc_meshes == []
-    proc_mesh.stop.assert_called_once_with("telemetry collector inactive")
-    proc_mesh.stop.return_value.get.assert_called_once_with()
+    assert worker_proc_meshes == [proc_mesh]
+    actor_mesh.stop.assert_called_once_with("telemetry collector inactive")
+    actor_mesh.stop.return_value.get.assert_called_once_with()
 
 
 def test_spawn_telemetry_actors_noops_when_setup_raises() -> None:

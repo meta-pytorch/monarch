@@ -70,6 +70,7 @@ use crate::schema::RootNodeRowBuffer;
 use crate::schema::SnapshotRowBuffer;
 use crate::service::CaptureSnapshot;
 use crate::service::SnapshotCaptureActor;
+use crate::service::SnapshotSink;
 
 /// Pre-register the 13 snapshot table schemas into `table_store`.
 ///
@@ -151,8 +152,17 @@ pub async fn register_snapshot_schemas(table_store: &TableStore) -> anyhow::Resu
 /// `CaptureSnapshot` message to the spawned actor.
 pub fn start_periodic_snapshots(
     cx: &impl hyperactor::context::Actor,
-    table_store: TableStore,
+    sink: SnapshotSink,
     admin_ref: hyperactor::ActorRef<MeshAdminAgent>,
+    interval: Duration,
+) -> anyhow::Result<()> {
+    let actor = SnapshotCaptureActor::new(sink, admin_ref, interval);
+    start_periodic_snapshot_actor(cx, actor, interval)
+}
+
+fn start_periodic_snapshot_actor(
+    cx: &impl hyperactor::context::Actor,
+    actor: SnapshotCaptureActor,
     interval: Duration,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(
@@ -160,7 +170,6 @@ pub fn start_periodic_snapshots(
         "periodic capture interval must be non-zero"
     );
     let proc = cx.instance().proc();
-    let actor = SnapshotCaptureActor::new(table_store, admin_ref, interval);
     let handle = proc.spawn_with_uid(Uid::singleton(Label::strip("snapshot_capture")), actor)?;
     // PT-3: first capture fires at spawn time.
     handle.post(cx, CaptureSnapshot);

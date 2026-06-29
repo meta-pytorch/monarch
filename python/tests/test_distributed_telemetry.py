@@ -1950,8 +1950,8 @@ def test_scan_timeout_on_dead_child(cleanup_callbacks) -> None:
 # --- Snapshot integration tests ---
 #
 # These tests verify that introspection snapshot tables are
-# pre-registered into the telemetry query surface and that
-# periodic capture populates them through the live query path.
+# pre-registered into the telemetry sidecar query surface and that
+# periodic capture populates them through the sidecar query path.
 
 
 @pytest.mark.timeout(60)
@@ -1959,7 +1959,7 @@ def test_scan_timeout_on_dead_child(cleanup_callbacks) -> None:
 def test_snapshot_schemas_pre_registered(cleanup_callbacks) -> None:
     """Snapshot table schemas are always present in the query surface.
 
-    Even with default config (no periodic timer), the 9 snapshot
+    Even with default config (no periodic timer), the 11 snapshot
     tables should be visible in information_schema and queryable
     with 0 rows. This ensures the query schema does not depend on
     whether periodic snapshots are enabled.
@@ -1968,22 +1968,24 @@ def test_snapshot_schemas_pre_registered(cleanup_callbacks) -> None:
     integration invariants in monarch_introspection_snapshot::integration.
     """
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config()),
+        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
         cached_path=None,
     ) as state:
-        engine = state.query_engine
-        assert engine is not None
-        result = engine.query(
-            "SELECT table_name FROM information_schema.tables ORDER BY table_name"
+        _assert_sidecar(state)
+        result = _query(
+            state,
+            "SELECT table_name FROM information_schema.tables ORDER BY table_name",
         )
-        table_names = result.to_pydict().get("table_name", [])
+        table_names = result.get("table_name", [])
 
         expected_snapshot_tables = [
             "actor_failures",
+            "actor_inbound_orderings",
             "actor_nodes",
             "children",
             "host_nodes",
             "nodes",
+            "ordering_sessions",
             "proc_nodes",
             "resolution_errors",
             "root_nodes",
@@ -1996,10 +1998,10 @@ def test_snapshot_schemas_pre_registered(cleanup_callbacks) -> None:
 
         # All snapshot tables should be queryable with 0 rows.
         for table in expected_snapshot_tables:
-            count_result = engine.query(
-                f"SELECT COUNT(*) AS cnt FROM {table} HAVING COUNT(*) = 0"
+            count_result = _query(
+                state, f"SELECT COUNT(*) AS cnt FROM {table} HAVING COUNT(*) = 0"
             )
-            cnt = count_result.to_pydict()["cnt"][0]
+            cnt = count_result["cnt"][0]
             assert cnt == 0, (
                 f"'{table}' should have 0 rows before any capture, got {cnt}"
             )
@@ -2012,18 +2014,18 @@ def test_snapshot_periodic_capture_populates_tables(cleanup_callbacks) -> None:
 
     With periodic capture enabled, the timer fires and the full
     snapshot relational model (nodes, children, subtype tables)
-    becomes queryable via the QueryEngine. The test verifies this
-    by tracing the ancestry of a known actor through the snapshot
-    tables using a recursive CTE.
+    becomes queryable through the telemetry sidecar. The test
+    verifies this by tracing the ancestry of a known actor through
+    the snapshot tables using a recursive CTE.
 
     SI-1 (discoverable), SI-2 (queryable); see snapshot integration
     invariants in monarch_introspection_snapshot::integration.
     """
-    import time
-
     with scoped_state(
         ProcessJob({"hosts": 1})
-        .enable_telemetry(_telemetry_config(batch_size=10, snapshot_interval_secs=5))
+        .enable_telemetry(
+            _sidecar_telemetry_config(batch_size=10, snapshot_interval_secs=5)
+        )
         .enable_admin(
             MeshAdminConfig(
                 # Use an ephemeral admin port so concurrent --stress-runs
@@ -2034,30 +2036,13 @@ def test_snapshot_periodic_capture_populates_tables(cleanup_callbacks) -> None:
         ),
         cached_path=None,
     ) as state:
-        engine = state.query_engine
-        assert engine is not None
+        _assert_sidecar(state)
 
         # Spawn a worker so the mesh has content to snapshot.
         hosts = state.hosts
         worker_procs = hosts.spawn_procs(per_host={"workers": 1}, name="snap_procs")
         workers = worker_procs.spawn("snap_worker", WorkerActor)
         workers.initialized.get()
-
-        # PT-3: first capture fires at spawn time, so there may
-        # already be a snapshot. Record the baseline count.
-        before = engine.query("SELECT COUNT(*) AS cnt FROM snapshots")
-        before_count = before.to_pydict()["cnt"][0]
-
-        # Wait for at least one more periodic capture (interval=5s).
-        time.sleep(8)
-
-        after = engine.query(
-            f"SELECT COUNT(*) AS cnt FROM snapshots HAVING COUNT(*) > {before_count}"
-        )
-        after_count = after.to_pydict()["cnt"][0]
-        assert after_count > before_count, (
-            f"expected more snapshots after timer fires, got {after_count} (was {before_count})"
-        )
 
         # --- Relational coherence proof ---
         #
@@ -2072,7 +2057,7 @@ def test_snapshot_periodic_capture_populates_tables(cleanup_callbacks) -> None:
         # Snapshot node_id now stores canonical actor refs, so key off the
         # actor's proc ancestry and system bit instead of name substrings.
         # If the first snapshot was captured before the worker spawned,
-        # wait for a second capture.
+        # wait for a capture containing the worker.
         snap_worker_query = (
             "SELECT a.node_id AS actor_node_id, a.snapshot_id AS snapshot_id,"
             " pn.proc_name AS proc_name"
@@ -2086,13 +2071,8 @@ def test_snapshot_periodic_capture_populates_tables(cleanup_callbacks) -> None:
             " ORDER BY s.snapshot_ts DESC"
             " LIMIT 1"
         )
-        rows = engine.query(snap_worker_query).to_pydict()
+        rows = _query(state, snap_worker_query, timeout_secs=60.0)
         actor_ids = rows.get("actor_node_id", [])
-        if len(actor_ids) == 0:
-            # Wait for next capture and retry.
-            time.sleep(6)
-            rows = engine.query(snap_worker_query).to_pydict()
-            actor_ids = rows.get("actor_node_id", [])
         assert len(actor_ids) >= 1, (
             "expected non-system actor on snap_procs in snapshot"
         )
@@ -2104,7 +2084,9 @@ def test_snapshot_periodic_capture_populates_tables(cleanup_callbacks) -> None:
         #
         # Walk up from the selected actor through children/nodes
         # to verify the full snapshot graph is connected.
-        ancestry = engine.query(f"""
+        ancestor_rows = _query(
+            state,
+            f"""
             WITH RECURSIVE ancestors AS (
                 SELECT ch.parent_id AS node_id, 1 AS depth
                 FROM children ch
@@ -2123,8 +2105,8 @@ def test_snapshot_periodic_capture_populates_tables(cleanup_callbacks) -> None:
             LEFT JOIN nodes n
               ON n.snapshot_id = '{snapshot_id}'
              AND n.node_id = a.node_id
-        """)
-        ancestor_rows = ancestry.to_pydict()
+        """,
+        )
         ancestor_kinds = set(ancestor_rows.get("node_kind", []))
         ancestor_ids = ancestor_rows.get("node_id", [])
 

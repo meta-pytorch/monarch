@@ -20,3 +20,9 @@ def _start_periodic_snapshots(
     instance: Instance,
     interval_secs: float,
 ) -> None: ...
+def _start_periodic_snapshots_http(
+    base_url: str,
+    admin_ref: PyMeshAdminRef,
+    instance: Instance,
+    interval_secs: float,
+) -> None: ...

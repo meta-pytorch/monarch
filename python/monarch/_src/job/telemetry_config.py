@@ -316,18 +316,21 @@ class _TelemetryHandle:
         worker_collector_meshes: list[Any] = []
         for host_mesh in host_meshes.values():
             try:
-                worker = self._start_worker_telemetry_collector(host_mesh, config)
+                proc_mesh, worker_collector_mesh = (
+                    self._start_worker_telemetry_collector(
+                        host_mesh,
+                        config,
+                    )
+                )
             except Exception:
                 logger.warning(
                     "failed to start worker telemetry collector",
                     exc_info=True,
                 )
                 continue
-            if worker is None:
-                continue
-            proc_mesh, worker_collector_mesh = worker
             worker_proc_meshes.append(proc_mesh)
-            worker_collector_meshes.append(worker_collector_mesh)
+            if worker_collector_mesh is not None:
+                worker_collector_meshes.append(worker_collector_mesh)
 
         client_actor.set_worker_collector_meshes.call_one(worker_collector_meshes).get()
         return worker_proc_meshes
@@ -336,7 +339,7 @@ class _TelemetryHandle:
         self,
         host_mesh: HostMesh,
         config: TelemetryConfig,
-    ) -> tuple[ProcMesh, Any] | None:
+    ) -> tuple[ProcMesh, Any | None]:
         proc_mesh = host_mesh.spawn_procs(name="telemetry_hosts")
         try:
             worker_collector_mesh = proc_mesh.spawn(
@@ -349,7 +352,7 @@ class _TelemetryHandle:
                 active for _rank, active in worker_collector_mesh.activate.call().get()
             )
         except Exception:
-            self._stop_worker_proc_mesh(
+            self._stop_worker_mesh(
                 proc_mesh,
                 "telemetry collector startup failed",
                 "failed to stop failed telemetry worker proc mesh",
@@ -359,21 +362,25 @@ class _TelemetryHandle:
         if active:
             return proc_mesh, worker_collector_mesh
 
-        self._stop_worker_proc_mesh(
-            proc_mesh,
+        # TODO: avoid spawning the local worker collector when the root
+        # collector already owns the socket. Until then, keep the proc alive so
+        # mesh-admin snapshots can still resolve it, but stop the inactive
+        # collector actor so queries do not fan out to it.
+        self._stop_worker_mesh(
+            worker_collector_mesh,
             "telemetry collector inactive",
-            "failed to stop inactive telemetry worker proc mesh",
+            "failed to stop inactive telemetry worker collector",
         )
-        return None
+        return proc_mesh, None
 
-    def _stop_worker_proc_mesh(
+    def _stop_worker_mesh(
         self,
-        proc_mesh: ProcMesh,
+        mesh: Any,
         reason: str,
         log_message: str,
     ) -> None:
         try:
-            proc_mesh.stop(reason).get()
+            mesh.stop(reason).get()
         except Exception:
             logger.info(log_message, exc_info=True)
 

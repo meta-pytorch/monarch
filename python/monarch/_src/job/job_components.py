@@ -352,7 +352,7 @@ class SnapshotComponent(JobComponent):
 
     def __init__(
         self,
-        telemetry: TelemetryComponent,
+        telemetry: TelemetryComponent | SidecarTelemetryComponent,
         admin: AdminComponent,
     ) -> None:
         self._telemetry = telemetry
@@ -370,23 +370,46 @@ class SnapshotComponent(JobComponent):
     def state(self, job: "JobTrait", job_state: "JobState") -> None:
         if self._started:
             return
-        scanner = self._telemetry._scanner
         admin_ref = self._admin._admin_ref
-        if scanner is None or admin_ref is None:
+        if admin_ref is None:
             return
         snapshot_interval_secs = self._telemetry._config.snapshot_interval_secs
         if snapshot_interval_secs <= 0:
             return
 
+        from monarch.actor import context
+
+        instance = context().actor_instance._as_rust()
+        if isinstance(self._telemetry, SidecarTelemetryComponent):
+            # Sidecar telemetry has no in-process scanner; publish snapshots to
+            # the sidecar over HTTP instead.
+            telemetry_url = self._telemetry._telemetry_url
+            if telemetry_url is None:
+                return
+            from monarch._rust_bindings.monarch_extension.snapshot_integration import (
+                _start_periodic_snapshots_http,
+            )
+
+            _start_periodic_snapshots_http(
+                base_url=telemetry_url,
+                admin_ref=admin_ref,
+                instance=instance,
+                interval_secs=snapshot_interval_secs,
+            )
+            self._started = True
+            return
+
+        scanner = self._telemetry._scanner
+        if scanner is None:
+            return
         from monarch._rust_bindings.monarch_extension.snapshot_integration import (
             _start_periodic_snapshots,
         )
-        from monarch.actor import context
 
         _start_periodic_snapshots(
             scanner=scanner,
             admin_ref=admin_ref,
-            instance=context().actor_instance._as_rust(),
+            instance=instance,
             interval_secs=snapshot_interval_secs,
         )
         self._started = True
@@ -492,7 +515,7 @@ class JobComponents:
             )
 
     def _configure_snapshot(self) -> None:
-        if isinstance(self.telemetry, TelemetryComponent) and self.admin is not None:
+        if self.telemetry is not None and self.admin is not None:
             if self.snapshot is None:
                 self.snapshot = SnapshotComponent(self.telemetry, self.admin)
             else:
