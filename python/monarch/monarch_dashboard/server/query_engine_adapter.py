@@ -11,6 +11,7 @@ to the live telemetry engine attached to a job state. The QueryEngine
 uses DataFusion as its SQL planner/executor and returns pyarrow Tables.
 """
 
+import threading
 from typing import Any
 
 from monarch.distributed_telemetry.engine import QueryEngine
@@ -35,11 +36,14 @@ class QueryEngineAdapter(DBAdapter):
 
     def __init__(self, engine: QueryEngine) -> None:
         self._engine = engine
+        self._query_lock = threading.Lock()
 
     def query(self, sql: str) -> list[dict[str, Any]]:
         """Execute a SQL query and return rows as list of dicts."""
-        table = self._engine.query(sql)
-        return table.to_pylist()
+        # Flask serves dashboard requests concurrently, but the live query
+        # engine path is not reentrant.
+        with self._query_lock:
+            return self._engine.query(sql).to_pylist()
 
     def table_names(self) -> list[str]:
         """Return available table names from the telemetry engine."""
