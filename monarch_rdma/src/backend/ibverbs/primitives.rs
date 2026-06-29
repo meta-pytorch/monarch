@@ -32,6 +32,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
+use crate::backend::ibverbs::device::IbvDevice;
 use crate::backend::ibverbs::device::IbvDeviceImpl;
 use crate::backend::ibverbs::device::list_all_devices;
 use crate::backend::ibverbs::device_selection::IbvDeviceTarget;
@@ -64,7 +65,160 @@ impl Gid {
     fn interface_id(&self) -> u64 {
         u64::from_be_bytes(self.raw[8..].try_into().unwrap())
     }
+
+    /// The GID-table index of the first RoCE v2 GID of `gid_type` on any device
+    /// of backend `I`, or `None` if none is present.
+    ///
+    /// Reads the kernel's GID table from sysfs
+    /// (`/sys/class/infiniband/<dev>/ports/<p>/gid_attrs/types/<i>` and
+    /// `gids/<i>`) rather than `ibv_query_gid*`: on some mlx5 / RoCE stacks the
+    /// verbs GID table reports stale entries at indices the kernel treats as
+    /// empty, and a QP built on such an index fails to reach RTR. sysfs is the
+    /// table the kernel and the QP actually use.
+    ///
+    /// A slot matches when its type is exactly `"RoCE v2"` (only RoCE v2 is
+    /// IP-routable) and its address has scope `gid_type` ([`GidType::type_of`]).
+    /// Devices are scanned in [`IbvDevice::list`] order, ports and indices in
+    /// ascending order, so the choice is deterministic; identical HCAs on a node
+    /// expose the routable GID at the same index. Used by the mlx5 backend to
+    /// auto-detect the routable [`GidType::Global`] GID, which on RoCE v2 rarely
+    /// sits at rdma-core's default index.
+    pub(super) fn index_of<I: IbvDeviceImpl>(gid_type: GidType) -> Option<u8> {
+        for device_info in IbvDevice::<I>::list() {
+            let ports_dir = std::path::Path::new(IB_SYSFS_ROOT)
+                .join(device_info.name())
+                .join("ports");
+            let Ok(ports) = std::fs::read_dir(&ports_dir) else {
+                continue;
+            };
+            for port in ports.flatten() {
+                if let Some(index) = first_roce_v2_gid_in_port(&port.path(), gid_type) {
+                    return Some(index);
+                }
+            }
+        }
+        None
+    }
 }
+
+/// Scope of an IPv6-form GID, as classified from its address by its `type_of`
+/// classifier. RoCE encodes the source GID as an IPv6 address, so the
+/// usual IPv6 scopes apply; [`Global`](GidType::Global) is the only one routable
+/// off-subnet and so the one auto-detection selects.
+///
+/// Scopes follow the *InfiniBand Architecture Specification, Volume 1, Release
+/// 1.2.1* (Nov 2007) section 4.1.1 "GID Usage and Properties":
+/// - [`Loopback`](GidType::Loopback) — `::1`, the loopback GID (item 7).
+/// - [`LinkLocal`](GidType::LinkLocal) — `fe80::/10`, not forwarded off the
+///   local subnet (item 12a). This is the default GID prefix.
+/// - [`SiteLocal`](GidType::SiteLocal) — `fec0::/10`, not forwarded off the site
+///   (item 12b); deprecated by [RFC 3879] but filtered for completeness.
+/// - [`Global`](GidType::Global) — everything else: IPv4-mapped GIDs
+///   (`::ffff:a.b.c.d`) and global / ULA IPv6, which RoCE L3 routes like any
+///   global address.
+///
+/// The reserved all-zero GID `::` (item 6; also an unused/empty GID-table slot,
+/// which mlx5 leaves all-zero) is not a scope and classifies as `None`.
+///
+/// [RFC 3879]: https://datatracker.ietf.org/doc/html/rfc3879
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GidType {
+    /// Loopback GID `::1`.
+    Loopback,
+    /// Link-local GID `fe80::/10`.
+    LinkLocal,
+    /// Site-local GID `fec0::/10`.
+    SiteLocal,
+    /// Globally routable GID (IPv4-mapped or global / ULA IPv6).
+    Global,
+}
+
+impl GidType {
+    /// Classify a GID string, or `None` for the reserved all-zero GID / unused
+    /// slot (and any empty or unparseable input).
+    ///
+    /// Expects sysfs's fully-expanded 8-group GID format (no `::` compression),
+    /// which is what [`format_gid`] emits.
+    fn type_of(maybe_gid: &str) -> Option<Self> {
+        let g = maybe_gid.trim();
+        if g.is_empty() {
+            return None;
+        }
+        let segs: Vec<&str> = g.split(':').collect();
+
+        // Reserved all-zero (`::`) and loopback (`::1`): every group is zero,
+        // except that loopback's final group is `1`. `trim_matches('0')` reduces
+        // "0000" -> "" so the leading groups collapse to empty; the final group
+        // is parsed so that only an exact `1` matches (not e.g. "0010").
+        let leading_all_zero = segs
+            .iter()
+            .take(segs.len().saturating_sub(1))
+            .all(|seg| seg.trim_matches('0').is_empty());
+        if leading_all_zero {
+            match segs.last() {
+                // `::` — Reserved GID / empty slot.
+                Some(last) if last.trim_matches('0').is_empty() => return None,
+                // `::1` — loopback GID.
+                Some(last) if u16::from_str_radix(last, 16) == Ok(1) => {
+                    return Some(GidType::Loopback);
+                }
+                _ => {}
+            }
+        }
+
+        // Link-local (`fe80::/10`) and site-local (`fec0::/10`) share the top 10
+        // bits `1111111010` / `1111111011`; masking with 0xffc0 isolates them as
+        // 0xfe80 / 0xfec0.
+        let lead = u16::from_str_radix(segs.first().unwrap_or(&""), 16).unwrap_or(0);
+        match lead & 0xffc0 {
+            0xfe80 => Some(GidType::LinkLocal),
+            0xfec0 => Some(GidType::SiteLocal),
+            _ => Some(GidType::Global),
+        }
+    }
+}
+
+/// Root of the InfiniBand sysfs tree, scanned by [`Gid::index_of`] for per-port
+/// GID values and RoCE types.
+const IB_SYSFS_ROOT: &str = "/sys/class/infiniband";
+
+/// The lowest GID index on `port_dir` (a `…/ports/<p>` sysfs directory) whose
+/// type is `"RoCE v2"` and whose address has scope `gid_type`, or `None`.
+///
+/// The GID table is exposed as parallel files `gid_attrs/types/<i>` (the RoCE
+/// type) and `gids/<i>` (the address). Indices are scanned in ascending order so
+/// the choice is deterministic (`read_dir` order is unspecified).
+fn first_roce_v2_gid_in_port(port_dir: &std::path::Path, gid_type: GidType) -> Option<u8> {
+    let types_dir = port_dir.join("gid_attrs").join("types");
+    let gids_dir = port_dir.join("gids");
+
+    let mut indices: Vec<u8> = std::fs::read_dir(&types_dir)
+        .ok()?
+        .flatten()
+        .filter_map(|e| e.file_name().to_str().and_then(|s| s.parse::<u8>().ok()))
+        .collect();
+    indices.sort_unstable();
+
+    for i in indices {
+        if read_trimmed(&types_dir.join(i.to_string())).as_deref() != Some("RoCE v2") {
+            continue;
+        }
+        if let Some(gid) = read_trimmed(&gids_dir.join(i.to_string()))
+            && GidType::type_of(&gid) == Some(gid_type)
+        {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// Read a sysfs scalar file and trim trailing whitespace/newline.
+fn read_trimmed(path: &std::path::Path) -> Option<String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_string())
+}
+
 impl From<rdmaxcel_sys::ibv_gid> for Gid {
     fn from(gid: rdmaxcel_sys::ibv_gid) -> Self {
         Self {
@@ -191,7 +345,11 @@ impl Default for IbvConfig {
             target: IbvDeviceTarget::MemoryLocation(MemoryLocation::Cpu(Some(0))),
             cq_entries: 1024,
             port_num: 1,
-            gid_index: 3,
+            // The default GID index (`RDMA_IBV_DEFAULT_GID_INDEX`, else 3);
+            // `MlxDevice::apply_config_defaults` overrides it with the
+            // auto-detected routable RoCE v2 GID when one is found.
+            gid_index: hyperactor_config::global::get(crate::config::RDMA_IBV_DEFAULT_GID_INDEX)
+                .unwrap_or(3),
             max_send_wr: 512,
             max_recv_wr: 512,
             max_send_sge: 30,
@@ -924,6 +1082,47 @@ impl IbvWc {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gid_type_classifies_scopes() {
+        // All-zero (reserved GID / unused slot) -> not a scope.
+        assert_eq!(
+            GidType::type_of("0000:0000:0000:0000:0000:0000:0000:0000"),
+            None
+        );
+        // Loopback ::1.
+        assert_eq!(
+            GidType::type_of("0000:0000:0000:0000:0000:0000:0000:0001"),
+            Some(GidType::Loopback)
+        );
+        // ::10 is not loopback — only an exact ::1 matches.
+        assert_eq!(
+            GidType::type_of("0000:0000:0000:0000:0000:0000:0000:0010"),
+            Some(GidType::Global)
+        );
+        // Link-local fe80::/10.
+        assert_eq!(
+            GidType::type_of("fe80:0000:0000:0000:0a00:27ff:fe00:0001"),
+            Some(GidType::LinkLocal)
+        );
+        // Site-local fec0::/10 (deprecated, but not globally routable).
+        assert_eq!(
+            GidType::type_of("fec0:0000:0000:0000:0a00:27ff:fe00:0001"),
+            Some(GidType::SiteLocal)
+        );
+        // IPv4-mapped RoCE v2 (global / routable).
+        assert_eq!(
+            GidType::type_of("0000:0000:0000:0000:0000:ffff:c0a8:0101"),
+            Some(GidType::Global)
+        );
+        // Global / ULA IPv6 fd00::/8 (routable).
+        assert_eq!(
+            GidType::type_of("fd02:0000:0000:0000:0000:0000:0000:0007"),
+            Some(GidType::Global)
+        );
+        // Empty / unparseable.
+        assert_eq!(GidType::type_of(""), None);
+    }
 
     #[test]
     fn test_list_all_devices() {

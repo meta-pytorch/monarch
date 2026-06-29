@@ -25,7 +25,6 @@ pub mod mlx_device;
 pub mod mlx_domain;
 pub mod primitives;
 pub mod queue_pair;
-pub mod roce_gid;
 
 use manager_actor::IbvManagerActor;
 use mlx_device::MlxDevice;

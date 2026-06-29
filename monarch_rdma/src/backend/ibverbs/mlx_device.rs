@@ -15,8 +15,9 @@ use typeuri::Named;
 use super::device::IbvContext;
 use super::device::IbvDeviceImpl;
 use super::mlx_domain::MlxDomain;
+use super::primitives::Gid;
+use super::primitives::GidType;
 use super::primitives::IbvConfig;
-use super::roce_gid;
 use crate::register_ibv_device_impl;
 
 /// PCI vendor ID for Mellanox Technologies.
@@ -44,7 +45,11 @@ impl IbvDeviceImpl for MlxDevice {
     }
 
     fn apply_config_defaults(config: &mut IbvConfig) {
-        config.gid_index = roce_gid::select_roce_v2_gid_index();
+        // Override the default GID index with the auto-detected routable RoCE v2
+        // (Global-scoped) GID when one is present.
+        if let Some(gid_index) = Gid::index_of::<MlxDevice>(GidType::Global) {
+            config.gid_index = gid_index;
+        }
     }
 }
 
