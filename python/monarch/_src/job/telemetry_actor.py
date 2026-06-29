@@ -76,10 +76,10 @@ class TelemetryActor(Actor):
         # means this actor did not win (or has not yet attempted) the
         # non-destructive bind, so it is not a live collector.
         self._scanner: DatabaseScanner | None = None
-        # Other telemetry actors this collector fans queries out to. Empty
-        # for leaf collectors; the query-root collector receives its list via
-        # `set_worker_collectors` once the worker meshes exist.
-        self._worker_collectors: list[Any] = []
+        # Worker actor meshes this collector fans queries out to. Empty for
+        # leaf collectors; the query-root collector receives its list via
+        # `set_worker_collector_meshes` once the worker meshes exist.
+        self._worker_collector_meshes: list[Any] = []
 
     def _scanner_or_raise(self) -> DatabaseScanner:
         scanner = self._scanner
@@ -124,10 +124,10 @@ class TelemetryActor(Actor):
         return self._activate_impl()
 
     @endpoint
-    def set_worker_collectors(self, worker_collectors: List[Any]) -> None:
-        """Replace the client collector's worker fan-out list."""
+    def set_worker_collector_meshes(self, worker_collector_meshes: List[Any]) -> None:
+        """Replace the client collector's worker mesh list."""
         self._scanner_or_raise()
-        self._worker_collectors = list(worker_collectors)
+        self._worker_collector_meshes = list(worker_collector_meshes)
 
     @endpoint
     def table_names(self) -> List[str]:
@@ -163,23 +163,23 @@ class TelemetryActor(Actor):
         limit: Optional[int],
         filter_expr: Optional[str],
     ) -> int:
-        """Scan the local store and configured worker collectors."""
+        """Scan the local store and configured worker collector meshes."""
         # The client collector is the singleton query root: scan its local store
-        # first, then fan out flat to active worker collectors. Worker collectors
-        # have an empty `_worker_collectors` list, so the same endpoint is
-        # leaf-only when invoked on a worker.
+        # first, then fan out flat to active worker collector meshes. Worker
+        # collectors have an empty `_worker_collector_meshes` list, so the same
+        # endpoint is leaf-only when invoked on a worker.
         local_count: int = self._scanner_or_raise().scan(
             dest, table_name, projection, limit, filter_expr
         )
 
         child_futures = []
-        for collector in self._worker_collectors:
+        for collector_mesh in self._worker_collector_meshes:
             try:
                 # Constructing the call can fail if the sidecar holds a stale
                 # actor ref. Treat that as reduced result coverage, matching
                 # the legacy best-effort query behavior.
                 child_futures.append(
-                    collector.scan.call(
+                    collector_mesh.scan.call(
                         dest, table_name, projection, limit, filter_expr
                     )
                 )

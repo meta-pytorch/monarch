@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Literal, NamedTuple, Optional, Sequence
 
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.job._batch_env import in_batch_job, MONARCH_BATCH_JOB_ENV
+from monarch._src.job._telemetry_query_client import QueryEngineClient
 from monarch._src.job.job_components import JobComponents, MeshAdminConfig
 from monarch._src.job.job_sidecar import stop_job_sidecar
 from monarch._src.job.telemetry_config import TelemetryConfig
@@ -312,11 +313,13 @@ class JobState:
         self,
         hosts: Dict[str, HostMesh],
         query_engine: Optional[QueryEngine] = None,
+        query_engine_client: Optional[QueryEngineClient] = None,
         telemetry_url: Optional[str] = None,
         admin_url: Optional[str] = None,
     ):
         self._hosts = hosts
         self.query_engine = query_engine
+        self.query_engine_client = query_engine_client
         self.telemetry_url = telemetry_url
         self.admin_url = admin_url
 

@@ -55,6 +55,35 @@ def _telemetry_config(**kwargs: Any) -> TelemetryConfig:
     return TelemetryConfig(**kwargs)
 
 
+def _sidecar_telemetry_config(**kwargs: Any) -> TelemetryConfig:
+    kwargs.setdefault("batch_size", 10)
+    kwargs.setdefault("retention_secs", 0)
+    return _telemetry_config(use_sidecar=True, **kwargs)
+
+
+def _sidecar_query_rows(state, sql: str) -> list[dict[str, Any]]:
+    client = state.query_engine_client
+    assert client is not None
+    return client.query(sql).get("rows", [])
+
+
+def _rows_to_pydict(rows: list[dict[str, Any]]) -> dict[str, list[Any]]:
+    if not rows:
+        return {}
+    return {column: [row.get(column) for row in rows] for column in rows[0].keys()}
+
+
+def _query(state, sql: str) -> dict[str, list[Any]]:
+    deadline = time.monotonic() + 10.0
+    rows: list[dict[str, Any]] = []
+    while time.monotonic() < deadline:
+        rows = _sidecar_query_rows(state, sql)
+        if rows:
+            break
+        time.sleep(0.2)
+    return _rows_to_pydict(rows)
+
+
 def _new_apply_id() -> str:
     return f"test_{uuid.uuid4().hex}"
 
@@ -145,6 +174,37 @@ def test_telemetry_actor_reports_activation_failure() -> None:
         assert actor._scanner is None
     finally:
         _remove_socket_dir(apply_id)
+
+
+@pytest.mark.timeout(180)
+@isolate_in_subprocess
+def test_state_uses_sidecar_query_client_when_opted_in() -> None:
+    # `use_sidecar=True` replaces the legacy in-process collector: the sidecar
+    # serves queries via `query_engine_client` and the legacy `query_engine`
+    # stays None.
+    job = ProcessJob({"hosts": 1}).enable_telemetry(
+        _telemetry_config(batch_size=10, retention_secs=0, use_sidecar=True)
+    )
+    try:
+        state = job.state(cached_path=None)
+        assert state.query_engine is None
+        assert state.query_engine_client is not None
+        assert state.telemetry_url is not None
+
+        rows = []
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            response = state.query_engine_client.query(
+                "SELECT class, COUNT(*) AS count FROM meshes GROUP BY class"
+            )
+            rows = response.get("rows", [])
+            if any(row.get("class") == "Host" for row in rows):
+                break
+            time.sleep(0.2)
+
+        assert any(row.get("class") == "Host" for row in rows), rows
+    finally:
+        job.kill()
 
 
 @pytest.fixture
@@ -632,19 +692,20 @@ def test_actor_status_events_table() -> None:
     """Test that the actor_status_events table is populated when actors change status."""
     # Spawn worker actors — actors go through status transitions during spawn
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
+        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
         cached_path=None,
     ) as state:
-        engine = state.query_engine
-        assert engine is not None
+        assert state.query_engine is None
         hosts = state.hosts
         worker_procs = hosts.spawn_procs(per_host={"workers": 2})
         workers = worker_procs.spawn("status_test_worker", WorkerActor)
         workers.initialized.get()
 
         # Query the actor_status_events table
-        result = engine.query("SELECT * FROM actor_status_events")
-        result_dict = result.to_pydict()
+        result_dict = _query(
+            state,
+            "SELECT * FROM actor_status_events",
+        )
 
         # Verify the schema has the expected columns
         expected_columns = {
@@ -666,12 +727,13 @@ def test_actor_status_events_table() -> None:
             f"Expected at least one actor status event, got {event_count}"
         )
 
-        joined = engine.query(
+        joined = _query(
+            state,
             "SELECT ase.id FROM actor_status_events ase "
             "INNER JOIN actors a ON ase.actor_id = a.id "
-            "WHERE a.display_name LIKE '%status_test_worker%'"
+            "WHERE a.display_name LIKE '%status_test_worker%'",
         )
-        joined_count = len(joined.to_pydict().get("id", []))
+        joined_count = len(joined.get("id", []))
         assert joined_count > 0, (
             "Expected actor_status_events.actor_id to join actors.id for "
             f"status_test_worker, got {joined_count} joined rows"
