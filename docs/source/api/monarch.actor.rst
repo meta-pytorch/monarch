@@ -49,6 +49,8 @@ Each publicly exposed function of the actor is annotated with `@endpoint`:
 
 .. autofunction:: endpoint
 
+.. autofunction:: concurrent_endpoint
+
 
 
 Messaging Actor
