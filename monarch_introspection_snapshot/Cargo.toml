@@ -19,7 +19,7 @@ hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }
 monarch_distributed_telemetry = { version = "0.0.0", path = "../monarch_distributed_telemetry" }
 monarch_record_batch = { version = "0.0.0", path = "../monarch_record_batch" }
-reqwest = { version = "0.13.2", features = ["blocking", "brotli", "charset", "cookies", "deflate", "gzip", "http2", "json", "multipart", "native-tls", "rustls", "socks", "stream", "system-proxy", "zstd"], default-features = false }
+reqwest = { version = "0.13.2", features = ["blocking", "charset", "cookies", "gzip", "http2", "json", "multipart", "rustls", "socks", "stream", "system-proxy"], default-features = false }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
