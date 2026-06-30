@@ -8,27 +8,265 @@
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import os
 import subprocess
-import sys
-import time
-from typing import Optional
+from typing import Any, Optional
 
+from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
 from monarch.actor import Actor, endpoint
-from monarch.config import configured
-from monarch.remotemount.fast_pack import (  # noqa: F401
-    block_hashes,
-    CHUNK_SIZE,
-    HASH_BLOCK_SIZE,
-    load_pack_index,
-    pack_directory_chunked,
-    save_pack_index,
-)
 
 logger: logging.Logger = logging.getLogger(__name__)
 
-CACHE_DIR = "/tmp/monarch_remotemount_cache"
+# Files >= this are "big" (libraries/data, on-demand); below are "code" (.py,
+# configs) -- the small-first prefix that open() prefills.
+BIG_FILE_THRESHOLD: int = 1 * 1024 * 1024
+
+# The unit of on-demand delivery and block addressing: a file's bytes fall in
+# block ``offset // BLOCK_SIZE``. Must match the Rust ``AVAILABILITY_BLOCK_SIZE``.
+BLOCK_SIZE: int = 64 * 1024 * 1024
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Directory scan + persisted pack index (folded in from the former fast_pack
+# module). ``build_index`` walks the source ONCE (without crossing FS
+# boundaries) and turns it into the transfer layout and the FUSE meta in a
+# single pass.
+# ──────────────────────────────────────────────────────────────────────────
+
+# Directory names never included in a mount: client-side state the workers do not
+# need and that would churn the mount. ``.monarch`` is the job-state dir the CLI
+# re-persists on every ``monarch exec``; mounting it makes every refresh observe
+# a change and ship a block for nothing.
+_MOUNT_EXCLUDED_DIRS: frozenset[str] = frozenset({".monarch"})
+
+
+_ATTR_KEYS: tuple[str, ...] = (
+    "st_atime",
+    "st_ctime",
+    "st_gid",
+    "st_mode",
+    "st_mtime",
+    "st_nlink",
+    "st_size",
+    "st_uid",
+)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# The v2 pure core: the per-file ``index`` dict doubles as the transfer layout
+# (each regular-file node carries ``global_offset`` + ``file_len``), with
+# stateless materialise and one FIFO block queue. All position-addressed,
+# stat-only; the entire client state is O(files), never O(bytes) (it holds no
+# file content).
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def code_blocks(index: dict) -> set[int]:
+    """The prefill set: every block backing at least one small (code) file,
+    derived from ``index``'s file nodes (``global_offset`` + ``file_len``).
+    Position-independent, so it stays correct under append-only repacking (new
+    code appended at the tail is still prefilled). Big-lib-only blocks are left
+    for on-demand delivery."""
+    blocks: set[int] = set()
+    for node in index.values():
+        offset = node.get("global_offset")
+        if offset is None:
+            continue  # not a regular file (dir / symlink / the root total_size)
+        size = node["file_len"]
+        if size == 0 or size >= BIG_FILE_THRESHOLD:
+            continue
+        for blk in range(offset // BLOCK_SIZE, (offset + size - 1) // BLOCK_SIZE + 1):
+            blocks.add(blk)
+    return blocks
+
+
+def build_index(source_path: str, previous: dict) -> dict:
+    """Walk the source ONCE into a single ``index`` dict (vpath -> node) that is
+    both the FUSE tree and the transfer layout: each file node carries ``attr``,
+    ``file_len``, ``mtime_ns``, ``full_path`` and a ``global_offset``, and
+    ``index["/"]["total_size"]`` is the packed size. ``materialise_block`` /
+    ``code_blocks`` derive the block<->file map from it on demand.
+
+    Pass ``previous={}`` for a cold pack, or the prior index to refresh. Two
+    invariants the rest of the system relies on:
+      - The walk does NOT cross filesystem boundaries (a foreign-``st_dev`` subdir
+        becomes an empty leaf, not scanned) -- keeping an inner mount point out of
+        the pack and avoiding a FUSE-in-FUSE deadlock.
+      - Offsets are append-only vs ``previous``: an unchanged file keeps its
+        ``global_offset`` so delivered blocks never move and a refresh invalidates
+        nothing; new/changed files append block-aligned past the high-water mark
+        (small files first, for prefill locality). A defrag is ``previous={}``.
+    """
+    # --- Walk the source tree (os.scandir + an explicit stack). A DirEntry types
+    # each child without a stat, and recursion is opt-in -- we push only same-fs,
+    # non-excluded dirs -- so an inner mount point (foreign st_dev) is recorded as
+    # an empty leaf but never scanned (the FUSE-in-FUSE / huge-foreign-mount
+    # guard). Each directory is stat'd once (the dev-probe stat is reused as its
+    # attr when we descend). A regular file's offset is decided here: unchanged vs
+    # ``previous`` -> keep it; otherwise queue it in ``appended`` for assignment
+    # below. ---
+    source_path = os.path.abspath(source_path)
+    source_dev = os.stat(source_path).st_dev
+    index: dict[str, Any] = {}
+    appended: list[str] = []  # new/changed files -- offsets assigned after the walk
+    stack: list[tuple[str, str, os.stat_result]] = [
+        (source_path, "/", os.stat(source_path))
+    ]
+    while stack:
+        abs_dir, vdir, dir_st = stack.pop()
+        base = vdir.rstrip("/")  # "" at the root, else the dir's virtual path
+        children: list[str] = []
+        with os.scandir(abs_dir) as it:
+            entries = sorted(it, key=lambda e: e.name)  # deterministic index
+        for entry in entries:
+            vpath = f"{base}/{entry.name}"
+            if entry.is_symlink():
+                children.append(entry.name)
+                lst = entry.stat(follow_symlinks=False)
+                index[vpath] = {
+                    "attr": {key: getattr(lst, key) for key in _ATTR_KEYS},
+                    "link_target": os.readlink(entry.path),
+                }
+            elif entry.is_dir():
+                if entry.name in _MOUNT_EXCLUDED_DIRS:
+                    continue  # client state (e.g. .monarch) -- never in the mount
+                try:
+                    st = entry.stat()  # one getattr; a mount point reports its dev
+                except OSError:
+                    logger.warning("build_index: cannot stat %r; skipping", entry.path)
+                    continue
+                children.append(entry.name)
+                if st.st_dev == source_dev:
+                    stack.append((entry.path, vpath, st))  # same fs -> descend
+                else:  # inner mount point: empty leaf, contents NOT scanned
+                    index[vpath] = {
+                        "attr": {key: getattr(st, key) for key in _ATTR_KEYS},
+                        "children": [],
+                    }
+                    logger.warning(
+                        "build_index: skipping %r (st_dev=%d) -- different "
+                        "filesystem than source %r (st_dev=%d); not packed.",
+                        entry.path,
+                        st.st_dev,
+                        source_path,
+                        source_dev,
+                    )
+            else:
+                children.append(entry.name)
+                lst = entry.stat(follow_symlinks=False)
+                node: dict[str, Any] = {
+                    "attr": {key: getattr(lst, key) for key in _ATTR_KEYS},
+                    "file_len": lst.st_size,
+                    "mtime_ns": lst.st_mtime_ns,
+                    "full_path": entry.path,
+                }
+                pf = previous.get(vpath)
+                if (
+                    pf is not None
+                    and pf.get("file_len") == lst.st_size
+                    and pf.get("mtime_ns") == lst.st_mtime_ns
+                ):
+                    node["global_offset"] = pf[
+                        "global_offset"
+                    ]  # unchanged -> keep block
+                else:
+                    appended.append(vpath)  # new/changed -> offset assigned below
+                index[vpath] = node
+        index[vdir] = {
+            "attr": {key: getattr(dir_st, key) for key in _ATTR_KEYS},
+            "children": children,
+        }
+
+    # --- Assign new/changed files block-aligned offsets past the previous
+    # high-water mark, small (code) files first for prefill locality -- the whole
+    # of "append-only": kept files never move, so a worker's already-delivered
+    # blocks stay valid across a refresh (cost: up to one block of dead space per
+    # append generation, reclaimed by a fresh ``previous={}`` defrag). ---
+    offset = previous.get("/", {}).get("total_size", 0)
+    if appended and offset % BLOCK_SIZE != 0:
+        offset = (offset // BLOCK_SIZE + 1) * BLOCK_SIZE  # block-align
+    # Small (code) files take the front blocks (so they get prefilled); big files
+    # follow. The walk already grouped each directory's files and is deterministic,
+    # so this size split is all the ordering the prefill needs -- no sort.
+    small = [v for v in appended if index[v]["file_len"] < BIG_FILE_THRESHOLD]
+    big = [v for v in appended if index[v]["file_len"] >= BIG_FILE_THRESHOLD]
+    for vp in small + big:
+        index[vp]["global_offset"] = offset
+        offset += index[vp]["file_len"]
+    index["/"]["total_size"] = offset
+
+    # st_atime reflects the source's last *read* time, which changes whenever the
+    # client materialises a file -- making the index non-deterministic. The mount
+    # is read-only (atime is cosmetic), so normalise it to st_mtime; the index is
+    # then a pure function of the source's content + structure, which lets a
+    # refresh detect "nothing changed" with a plain ``index == previous``.
+    for node in index.values():
+        attr = node.get("attr")
+        if attr is not None:
+            attr["st_atime"] = attr["st_mtime"]
+    return index
+
+
+def materialise_block(index: dict, block: int) -> tuple[bytes, list[str]]:
+    """Re-read block ``block`` from the source into a fixed ``BLOCK_SIZE`` buffer
+    (every block is the same length; the final block's tail past ``total_size``,
+    and the gaps between files, stay zero). The fixed size lets a downstream
+    transport move uniform chunks (e.g. a fixed-size RDMA buffer) at the cost of
+    trailing zeros on the last block.
+
+    Returns ``(bytes, diverged)``: the block buffer (``bytes``, not the working
+    ``bytearray`` -- the actor message bus rejects ``bytearray`` with "cannot be
+    converted to PyBytes", so that copy is load-bearing), and the list of vpaths
+    whose source diverged under the fence. The freshness fence is PER FILE, not per
+    block: a diverged file's bytes in the block are overwritten with random garbage
+    (never its changed content) and its vpath returned, so the caller marks just that
+    file stale (its reads then EIO) while co-located unchanged files keep their real
+    bytes and serve normally. A ``block`` past the layout end raises ``ValueError``:
+    ``total_size`` only grows within a mount, so an out-of-range id is a stale-index /
+    wrong-id bug, not a benign no-op."""
+    total_size = index["/"]["total_size"]
+    block_start = block * BLOCK_SIZE
+    if block_start >= total_size:
+        raise ValueError(
+            f"block {block} is past the layout end (offset {block_start} >= "
+            f"total_size {total_size}); stale index or wrong block id"
+        )
+    block_end = block_start + BLOCK_SIZE
+    buf = bytearray(BLOCK_SIZE)  # fixed size; gaps and the tail past total_size stay 0
+    mv = memoryview(buf)
+    diverged: list[str] = []
+    for vpath, node in index.items():
+        off = node.get("global_offset")
+        if off is None:
+            continue
+        lo = max(off, block_start)
+        hi = min(off + node["file_len"], block_end)
+        if lo >= hi:
+            continue  # this file does not touch the block
+        dst = mv[lo - block_start : hi - block_start]
+        full_path = node["full_path"]
+        # Reproduce the file's fenced bytes, guarded by the size+mtime fence (anything
+        # detectably != X cannot be served as X; a same-size+same-mtime content edit
+        # is the accepted residual).
+        ok = False
+        try:
+            st = os.stat(full_path, follow_symlinks=False)
+            if st.st_size == node["file_len"] and st.st_mtime_ns == node["mtime_ns"]:
+                with open(full_path, "rb", buffering=0) as fh:
+                    fh.seek(lo - off)
+                    ok = fh.readinto(dst) == hi - lo
+        except OSError:
+            ok = False
+        if not ok:
+            # Diverged (changed / vanished / short read): overwrite its range with
+            # random garbage so no stale or torn bytes can leak, and report it so the
+            # caller marks the file stale. The garbage is never served -- a read of a
+            # stale file EIOs -- it just hardens against an EIO-check bypass.
+            diverged.append(vpath)
+            dst[:] = os.urandom(hi - lo)
+    return bytes(buf), diverged
 
 
 def _point_to_key(point: dict) -> str:
@@ -67,389 +305,92 @@ def _resolve_path(path: str) -> str:
     return path.replace("$SUBDIR", _point_to_key(dict(rank)))
 
 
-def classify_workers(
-    client_hashes: list[str],
-    client_total_size: int,
-    worker_states: list[tuple[list[str], int]],
-) -> tuple[list[int], dict[int, list[int] | None]]:
-    """Classify workers as fresh, partial, or stale.
-
-    Args:
-        client_hashes: list of block hash strings from client
-        client_total_size: total packed data size on client
-        worker_states: list of (remote_hashes, remote_size) tuples
-
-    Returns:
-        (fresh_ranks, worker_dirty) where:
-        - fresh_ranks: list of rank indices that are up-to-date
-        - worker_dirty: dict {rank: list[int] | None} — dirty block
-          indices for partial workers, or None for stale workers
-    """
-    fresh_ranks = []
-    worker_dirty = {}
-    for rank, (remote_hashes, remote_size) in enumerate(worker_states):
-        if remote_hashes == client_hashes and remote_size == client_total_size:
-            fresh_ranks.append(rank)
-        elif remote_hashes:
-            # Partial: compare overlapping blocks, mark new/changed as dirty.
-            min_blocks = min(len(remote_hashes), len(client_hashes))
-            dirty = [
-                i for i in range(min_blocks) if remote_hashes[i] != client_hashes[i]
-            ]
-            # Any blocks beyond the old count are new and need transfer.
-            dirty.extend(range(min_blocks, len(client_hashes)))
-            # If size changed, the last overlapping block likely changed
-            # (partial block at the boundary may have different content).
-            if remote_size != client_total_size and min_blocks > 0:
-                last = min_blocks - 1
-                if last not in dirty:
-                    dirty.append(last)
-                    dirty.sort()
-            worker_dirty[rank] = dirty
-        else:
-            worker_dirty[rank] = None
-    return fresh_ranks, worker_dirty
-
-
 class FUSEActor(Actor):
-    def __init__(self, chunk_size, backend="slurm"):
-        self.chunk_size = chunk_size
-        self.backend = backend
-        self.meta = None
-        self.chunks = []
-        self._chunk_storage = None
-        self._chunk_offsets = None
-        self._next_chunk_idx = 0
-        self._block_hashes = []
-        self._total_size = 0
+    """The worker side of a mount: it owns the FUSE handle, signals the blocks
+    its FUSE reads are blocked on to the client, and receives the bytes the
+    client materialises for them -- held in memory by the Rust mount.
+
+    The data plane is intentionally simple: when a FUSE read faults a new block,
+    the Rust mount fires a callback (built in ``mount``) that sends the faulted
+    blocks to the client; the client materialises each block from the source and
+    ships the bytes back with ``receive_block``, which hands them to the Rust
+    mount (which keeps them in memory) and wakes the parked read. There is no
+    leader, dedup, fan-out, or RDMA -- each worker is served directly (duplicate
+    cross-DC pulls are acceptable).
+    """
+
+    def __init__(self, handler):
         self._fuse_handle = None
-        self._cache_path = None
-        self._pack_index = {}
-        # Dirty block indices accumulated since the last refresh.
-        # None means a full buffer copy is needed (initial mount or full transfer).
-        self._pending_dirty_blocks: list[int] | None = None
+        # The MountHandlerClient actor handle, passed in at spawn (by ``open``).
+        # On a fault the Rust mount fires a callback (built in ``mount``) that calls
+        # ``handler.enqueue`` to queue the faulted blocks for delivery.
+        self._handler = handler
 
-    def _alloc_storage(self, total_size, truncate=False):
-        """Allocate or resize chunk storage (file-backed or anonymous mmap).
+    @endpoint
+    def mount(self, mount_point, meta):
+        """Mount the FUSE filesystem from ``meta`` (the full directory tree).
 
-        Args:
-            total_size: desired buffer size in bytes.
-            truncate: if True, wipe existing data (O_TRUNC). If False,
-                preserve existing cached blocks during resize.
+        The Rust mount starts with no block data; every block faults in on
+        demand (its bytes arrive via ``receive_block`` and are held in memory).
+        This FUSEActor is freshly spawned per open (``close`` tears the previous
+        mesh down), so it never holds a prior handle. The total size is read from
+        ``meta["/"]["total_size"]``.
         """
-        import mmap as _mmap
-
-        self._chunk_storage_mv = None
-        self.chunks = []
-        self._chunk_offsets = None
-
-        if self._cache_path:
-            flags = os.O_RDWR | os.O_CREAT | (os.O_TRUNC if truncate else 0)
-            fd = os.open(self._cache_path, flags, 0o600)
-            os.ftruncate(fd, total_size)
-            if self._chunk_storage is not None:
-                self._chunk_storage.close()
-            self._chunk_storage = _mmap.mmap(fd, total_size)
-            os.close(fd)
-        else:
-            if self._chunk_storage is not None:
-                self._chunk_storage.close()
-            self._chunk_storage = _mmap.mmap(
-                -1, total_size, _mmap.MAP_PRIVATE | _mmap.MAP_ANONYMOUS
-            )
-
-        self._chunk_storage_mv = memoryview(self._chunk_storage)
-        self._total_size = total_size
-
-        # Build chunks list for mount().
-        self._chunk_offsets = []
-        remaining = total_size
-        off = 0
-        while remaining > 0:
-            sz = min(remaining, self.chunk_size)
-            self._chunk_offsets.append((off, sz))
-            self.chunks.append(self._chunk_storage_mv[off : off + sz])
-            off += sz
-            remaining -= sz
-        self._next_chunk_idx = len(self._chunk_offsets)
-
-    @endpoint
-    def try_load_cache(self, cache_key):
-        """Load cached chunk data from a previous run, if available.
-
-        Sets ``_cache_path`` so that subsequent ``init_chunk_storage`` and
-        ``collect_shards`` calls use file-backed mmap. If a cache file
-        already exists, mmaps it and computes block hashes so the client
-        can classify this worker as fresh or partial.
-        """
-        os.makedirs(CACHE_DIR, exist_ok=True)
-        self._cache_path = os.path.join(CACHE_DIR, cache_key)
-
-        if not os.path.exists(self._cache_path):
-            return
-
-        size = os.path.getsize(self._cache_path)
-        if size == 0:
-            return
-
-        self._alloc_storage(size)
-        self._block_hashes = block_hashes(self._chunk_storage_mv)
-        self._pack_index = load_pack_index(self._cache_path + ".index") or {}
-
-        print(
-            f"[CACHE] Loaded {self._cache_path}: "
-            f"{size // (1024**2)}MiB, "
-            f"{len(self._block_hashes)} block hashes",
-            file=sys.stderr,
-            flush=True,
-        )
-
-    @endpoint
-    def set_meta(self, meta):
-        self.meta = meta
-
-    @endpoint
-    def init_chunk_storage(self, chunk_sizes):
-        self._alloc_storage(sum(chunk_sizes), truncate=True)
-        # Override uniform chunks with caller-specified sizes.
-        self._chunk_offsets = []
-        self.chunks = []
-        offset = 0
-        for size in chunk_sizes:
-            self._chunk_offsets.append((offset, size))
-            self.chunks.append(self._chunk_storage_mv[offset : offset + size])
-            offset += size
-        self._next_chunk_idx = 0
-        # TODO(cpuhrsch): Re-enable EFA init after testing on SLURM.
-        # EFA requires explicit initialization of its manager actor on each
-        # worker (EfaManagerActor) before workers can register destination
-        # buffers for RDMA transfers. Unlike ibverbs, which lazily initializes.
-        # Code was:
-        #   if self.backend == "slurm":
-        #       from monarch.rdma import is_rdma_available
-        #       if not is_rdma_available():
-        #           from monarch._src.rdma.rdma import _ensure_init_efa_manager
-        #           _ensure_init_efa_manager().block_on()
-
-    @endpoint
-    def ensure_storage(self, total_size):
-        """Ensure storage is allocated at the given size."""
-        if self._chunk_storage is not None and self._total_size == total_size:
-            return
-        self._alloc_storage(total_size)
-
-    @endpoint
-    def get_blocks_rdma_buffer(self, block_indices, total_size):
-        """Pack specified blocks into a contiguous staging buffer, return RDMABuffer.
-
-        Used for leader→peer fan-out: the leader packs its blocks and
-        peers read from the returned RDMABuffer via ibverbs RDMA.
-        """
-        import mmap as _mmap
-
-        from monarch.rdma import RDMABuffer
-
-        staging_needed = sum(
-            min(HASH_BLOCK_SIZE, total_size - bi * HASH_BLOCK_SIZE)
-            for bi in block_indices
-        )
-
-        staging = _mmap.mmap(
-            -1, staging_needed, _mmap.MAP_PRIVATE | _mmap.MAP_ANONYMOUS
-        )
-        staging_mv = memoryview(staging)
-
-        pos = 0
-        for bi in block_indices:
-            block_size = min(HASH_BLOCK_SIZE, total_size - bi * HASH_BLOCK_SIZE)
-            offset = bi * HASH_BLOCK_SIZE
-            staging_mv[pos : pos + block_size] = self._chunk_storage_mv[  # noqa: E203
-                offset : offset + block_size
-            ]
-            pos += block_size
-
-        return RDMABuffer(staging_mv[:staging_needed])
-
-    def _receive_rdma_impl(self, rdma_buffer, block_indices, total_size, timeout=300):
-        """Shared implementation for receive_rdma and receive_and_relay_rdma."""
-        import mmap as _mmap
-
-        if self._chunk_storage is None or self._total_size != total_size:
-            self._alloc_storage(total_size)
-
-        staging_size = sum(
-            min(HASH_BLOCK_SIZE, total_size - bi * HASH_BLOCK_SIZE)
-            for bi in block_indices
-        )
-
-        # RDMA memory registration fails on file-backed MAP_SHARED pages.
-        # Always use anonymous mmap for the RDMA destination.
-        staging = _mmap.mmap(-1, staging_size, _mmap.MAP_PRIVATE | _mmap.MAP_ANONYMOUS)
-        staging_mv = memoryview(staging)
-
-        t0 = time.time()
-        rdma_buffer.read_into(staging_mv[:staging_size], timeout=timeout).get()
-        t1 = time.time()
-
-        # Scatter from staging into chunk storage at correct offsets.
-        pos = 0
-        for bi in block_indices:
-            block_size = min(HASH_BLOCK_SIZE, total_size - bi * HASH_BLOCK_SIZE)
-            offset = bi * HASH_BLOCK_SIZE
-            self._chunk_storage_mv[offset : offset + block_size] = staging_mv[  # noqa: E203
-                pos : pos + block_size
-            ]
-            pos += block_size
-        # Accumulate for atomic application during refresh_mount.
-        if self._pending_dirty_blocks is not None:
-            self._pending_dirty_blocks.extend(block_indices)
-        # If _pending_dirty_blocks is None a full copy is already scheduled.
-
-        t2 = time.time()
-        gbs = (staging_size / 1e9) / max(t1 - t0, 1e-9)
-        logger.debug(
-            "receive_rdma %sMiB in %.2fs (%.1f GB/s), scatter=%.3fs",
-            staging_size // (1024**2),
-            t1 - t0,
-            gbs,
-            t2 - t1,
-        )
-        return staging_mv[:staging_size]
-
-    @endpoint
-    def receive_rdma(self, rdma_buffer, block_indices, total_size, timeout=300):
-        """Receive dirty blocks from client via RDMA read.
-
-        The client creates an RDMABuffer containing all dirty blocks
-        packed contiguously. This endpoint reads the data and scatters
-        blocks to their correct offsets in chunk storage.
-        """
-        self._receive_rdma_impl(rdma_buffer, block_indices, total_size, timeout)
-
-    @endpoint
-    def receive_and_relay_rdma(
-        self, rdma_buffer, block_indices, total_size, timeout=300
-    ):
-        """Receive dirty blocks and return an RDMABuffer for fan-out to peers.
-
-        Like receive_rdma, but returns an RDMABuffer wrapping the received
-        staging buffer. Peers can read from it via ibverbs, eliminating the
-        redundant gather step that get_blocks_rdma_buffer would perform.
-        """
-        from monarch.rdma import RDMABuffer
-
-        staging_mv = self._receive_rdma_impl(
-            rdma_buffer, block_indices, total_size, timeout
-        )
-        return RDMABuffer(staging_mv)
-
-    def _do_refresh(self, new_block_hashes=None, total_size=0, pack_index=None):
-        """Swap metadata and chunk data into the running FUSE filesystem."""
-        t0 = time.time()
-
-        if self._cache_path and self._chunk_storage is not None:
-            self._chunk_storage.flush()
-        t_flush = time.time()
-
-        if pack_index is not None and self._cache_path:
-            self._pack_index = pack_index
-            save_pack_index(self._cache_path + ".index", pack_index)
-        t_index = time.time()
-
-        # Compute dirty ranges from accumulated pending blocks.
-        # None means a full buffer copy is needed (initial mount).
-        if self._pending_dirty_blocks is None:
-            dirty_ranges = [(0, self._total_size)] if self._total_size > 0 else []
-        else:
-            dirty_ranges = [
-                (
-                    bi * HASH_BLOCK_SIZE,
-                    min(HASH_BLOCK_SIZE, self._total_size - bi * HASH_BLOCK_SIZE),
-                )
-                for bi in self._pending_dirty_blocks
-            ]
-        self._pending_dirty_blocks = []
-
-        chunk_buf = (
-            self._chunk_storage_mv
-            if self._chunk_storage_mv is not None
-            else memoryview(b"")
-        )
-        # Atomically apply chunk patches and swap metadata under one write lock.
-        self._fuse_handle.refresh(
-            self.meta, chunk_buf, dirty_ranges, self._total_size, self.chunk_size
-        )
-        t_fuse = time.time()
-
-        self._block_hashes = new_block_hashes or []
-        self._total_size = total_size
-
-        return {
-            "flush": t_flush - t0,
-            "save_index": t_index - t_flush,
-            "fuse_refresh": t_fuse - t_index,
-            "total": t_fuse - t0,
-        }
-
-    @endpoint
-    def mount(self, mount_point, new_block_hashes=None, total_size=0, pack_index=None):
-        """Mount an empty FUSE filesystem and populate it via refresh."""
         mount_point = _resolve_path(mount_point)
         from monarch._rust_bindings.monarch_extension.chunked_fuse import (
             mount_chunked_fuse,
         )
 
-        now = time.time()
-        empty_meta = {
-            "/": {
-                "attr": {
-                    "st_atime": now,
-                    "st_ctime": now,
-                    "st_gid": os.getgid(),
-                    "st_mode": 0o40755,
-                    "st_mtime": now,
-                    "st_nlink": 2,
-                    "st_size": 4096,
-                    "st_uid": os.getuid(),
-                },
-                "children": [],
-            }
-        }
+        assert self._fuse_handle is None, "FUSEActor already holds a fuse handle"
+        # Build the fault callback the Rust mount fires (briefly under the GIL)
+        # when a read faults a new block: it calls the MountHandlerClient ``enqueue``
+        # endpoint with the single faulted block to queue for broadcast delivery.
+        # Run in a copy of this endpoint's actor context so the endpoint call
+        # routes correctly when fired off the Rust thread; ``broadcast`` is
+        # fire-and-forget (no reply to await).
+        handler = self._handler
+        cb_ctx = contextvars.copy_context()
+
+        def _fault_callback(block):
+            if handler is not None:
+                cb_ctx.run(lambda: handler.enqueue.broadcast(int(block)))
+
         self._fuse_handle = mount_chunked_fuse(
-            empty_meta, [], self.chunk_size, mount_point
+            meta,
+            meta["/"]["total_size"],
+            mount_point,
+            _fault_callback,
         )
-        # Block transfers ran while _fuse_handle was None, so no dirty blocks
-        # were accumulated. Signal _do_refresh to do a full buffer copy.
-        self._pending_dirty_blocks = None
-        if self.meta is not None:
-            self._do_refresh(new_block_hashes, total_size, pack_index)
 
     @endpoint
-    def refresh_mount(self, new_block_hashes=None, total_size=0, pack_index=None):
+    def refresh_mount(self, meta):
         """Refresh FUSE mount data without unmounting.
 
-        Atomically swaps metadata and chunk data in the running FUSE
-        filesystem. Open file handles remain valid and subsequent reads
-        see the new data.
+        Atomically swaps ``meta`` + size into the running FUSE filesystem.
+        Open file handles remain valid and subsequent reads see the new data.
+        Append-only: blocks already delivered (held in memory) stay valid, so
+        this is just a metadata swap. The total size is read from
+        ``meta["/"]["total_size"]``, which the layout build records there.
         """
         if self._fuse_handle is None:
             raise RuntimeError("no active mount to refresh")
-        return self._do_refresh(new_block_hashes, total_size, pack_index)
+        self._fuse_handle.refresh(meta, meta["/"]["total_size"])
 
     @endpoint
-    def get_block_hashes(self):
-        """Return per-block hashes and total size of the mounted data."""
-        return (self._block_hashes, self._total_size)
-
-    @endpoint
-    def recompute_block_hashes(self):
-        """Recompute block hashes from the current chunk storage."""
-        return block_hashes(self._chunk_storage_mv)
-
-    @endpoint
-    def get_pack_index(self):
-        """Return the pack index for append-only packing."""
-        return self._pack_index
+    def receive_block(self, block_id, data, stale) -> None:
+        """Hand a just-materialised block's bytes to the Rust mount, which holds
+        them in memory and wakes any parked read. The client sends a full
+        ``BLOCK_SIZE`` block (the tail block zero-padded past ``total_size``).
+        ``data`` is passed straight through to Rust (borrowed there as ``&[u8]``
+        and copied once into its per-block slot in the table), so there is no extra
+        copy here. ``stale`` is the vpaths of files in this block the client could not
+        reproduce (their bytes here are garbage); the mount marks them so their reads
+        EIO while co-located fresh files serve -- shipped WITH the block so the bytes
+        and which-files-are-stale arrive atomically (no separate call to order). A
+        block is only delivered to a mounted actor, so a missing handle is a bug --
+        assert rather than silently drop it (which would hang the parked read)."""
+        assert self._fuse_handle is not None, "receive_block on an unmounted FUSEActor"
+        self._fuse_handle.receive_block(int(block_id), data, [str(p) for p in stale])
 
     @endpoint
     def mkdir(self, path):
@@ -484,42 +425,13 @@ class FUSEActor(Actor):
         return "error", result.stderr.strip()
 
 
-class MountHandler:
+class MountHandlerClient(Actor):
     def __init__(
         self,
         host_mesh,
         sourcepath: str,
         mntpoint: Optional[str] = None,
-        chunk_size=None,
-        backend: str = "slurm",
-        num_parallel_streams: int = 8,
-        transfer_mode: str = "rdma",
-        cert_path: Optional[str] = None,
-        tls_port: int = 0,
     ):
-        import warnings
-
-        if cert_path is not None:
-            warnings.warn(
-                "cert_path is deprecated and ignored. "
-                "TLS is now configured via HYPERACTOR_TLS_CERT, "
-                "HYPERACTOR_TLS_KEY, and HYPERACTOR_TLS_CA env vars.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-        if tls_port != 0:
-            warnings.warn(
-                "tls_port is deprecated and ignored. "
-                "Port binding is handled by the transport layer automatically.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-        if transfer_mode != "rdma":
-            raise ValueError(
-                "transfer_mode must be 'rdma'; 'rust_tls' and 'actor' were removed "
-                "because RDMA already falls back to TCP when ibverbs is unavailable"
-            )
-
         self.sourcepath = os.path.abspath(sourcepath)
         if mntpoint is None:
             mntpoint = self.sourcepath
@@ -527,432 +439,250 @@ class MountHandler:
         self.fuse_actors = None
         self.host_mesh = host_mesh
         self.procs = None
-        self.chunk_size = chunk_size
-        self.backend = backend
-        if num_parallel_streams < 1:
-            raise ValueError(
-                f"num_parallel_streams must be >= 1, got {num_parallel_streams}"
-            )
-        self.num_parallel_streams = num_parallel_streams
-        self._staging_mv = None
-        self._pack_shm_path = None
-        self._mounted = False
+        # The client state: the ``index`` dict that ``build_index`` produces
+        # (file -> offset/size + tree). It holds no file content; blocks are
+        # materialised on demand from the source by ``_deliver``, and it is the
+        # append-only baseline for the next refresh.
+        self.index: Optional[dict] = None
+        # The block ids delivered to the current worker mesh, so a re-fault for a block
+        # the workers already hold is a no-op instead of a redundant re-broadcast to all
+        # of them. ``open`` resets it when it spawns a fresh mesh (a re-open re-delivers);
+        # within a mount it is never cleared. See ``_deliver`` for why this is safe.
+        self._delivered: set[int] = set()
 
-    def _sync(self):
-        """Pack source, diff against workers, transfer dirty blocks, refresh FUSE.
+    def _deliver(self, block: int) -> None:
+        """Materialise ``block`` once, broadcast it to every worker's ``receive_block``
+        (each stores the bytes and wakes its parked read), and record it as delivered
+        so it is never re-sent.
 
-        Shared by open() and refresh(). Expects self.fuse_actors to be
-        initialized and, for refresh(), an active mount.
-        """
-        t_start = time.time()
+        Dedup is by ``self._delivered``, the set of every block id this client has
+        successfully broadcast. A re-fault for an already-delivered block -- a worker
+        that re-reads it, or a straggler whose fault lands after the block was already
+        broadcast to it -- is a no-op: every worker already holds it. This set is
+        kept for the whole mount, not a per-delivery in-flight window. The previous
+        design added the block before the broadcast and cleared it after, so the instant
+        a delivery finished a fresh re-fault re-materialised and re-broadcast the block
+        to ALL workers again; under a cross-worker import storm that redelivered the hot
+        library blocks several times over, which measured as the bulk of the cold
+        import (a 4-worker import cost ~4x a single worker's). Remembering delivered
+        blocks instead is exactly as reliable as the two things it depends on:
+          (a) the ``receive_block.call`` broadcast -- it awaits every worker, so a
+              returned call means all workers have stored the block; and
+          (b) the worker-mount lifetime -- blocks live in worker memory for the life of
+              the mount, and ``open`` clears this set when it (re-)spawns the worker
+              mesh, so a re-open (or a restart after the workers die) re-delivers from
+              empty. Within a mount we never re-deliver a block the current workers
+              already hold; they do not evict mid-life.
+        Synchronous on purpose: with the delivered set the async interleaving the old
+        in-flight dedup relied on buys nothing, and a sync endpoint serialises
+        deliveries so the first fault for a block broadcasts it to all workers and the
+        rest skip -- and since monarch requires an actor's endpoints to be all-sync or
+        all-async, open/close/refresh are sync here too. (A fuller version -- async
+        pipelining over the delivered set, to overlap the cross-region broadcasts -- is
+        a fast follow-up; this is the quick, correct fix for the redelivery.)
 
-        flat_actors = self.fuse_actors.flatten("rank")
-        hashes_future = self.fuse_actors.get_block_hashes.call()
-        index_future = self.fuse_actors.get_pack_index.call()
-
-        index_result = index_future.get()
-        t_index_done = time.time()
-        print(
-            f"_sync(): get_pack_index RPC took {t_index_done - t_start:.2f}s",
-            file=sys.stderr,
-            flush=True,
-        )
-        previous_index = next(
-            (idx for _, idx in index_result if idx and idx.get("files")),
-            None,
-        )
-
-        meta, self._staging_mv, chunks, client_hashes, new_pack_index = (
-            pack_directory_chunked(
-                self.sourcepath, self.chunk_size, previous_index=previous_index
-            )
-        )
-        staging_mv = self._staging_mv
-        client_total_size = len(staging_mv) if staging_mv is not None else 0
-
-        t_pack_done = time.time()
-
-        result = hashes_future.get()
-        t_hashes_done = time.time()
-        print(
-            f"_sync(): get_block_hashes RPC wait {t_hashes_done - t_pack_done:.2f}s "
-            f"(overlapped with pack)",
-            file=sys.stderr,
-            flush=True,
-        )
-        worker_states = [
-            (remote_hashes, remote_size)
-            for _point, (remote_hashes, remote_size) in result
-        ]
-        fresh_ranks, worker_dirty = classify_workers(
-            client_hashes, client_total_size, worker_states
-        )
-
-        t_classify_done = time.time()
-        print(
-            f"_sync(): classify_workers {t_classify_done - t_hashes_done:.2f}s",
-            file=sys.stderr,
-            flush=True,
-        )
-
-        # No-op shortcut: all workers already have the right data and
-        # are mounted — nothing to transfer, refresh, or remount.
-        if not worker_dirty and self._mounted:
-            t_done = time.time()
-            print(
-                f"_sync(): all workers up-to-date, nothing to do. "
-                f"total={t_done - t_start:.2f}s",
-                file=sys.stderr,
-                flush=True,
-            )
+        Files that diverged under the fence can't be reproduced: ``materialise_block``
+        garbage-fills their bytes and returns their vpaths, shipped in the SAME
+        ``receive_block`` call (bytes + staleness atomic, no separate call to order) so
+        the mount marks them stale (their reads EIO) while co-located fresh files serve.
+        An out-of-range block is a stale-index bug, not a no-op: ``materialise_block``
+        raises ``ValueError`` and ``enqueue`` logs it."""
+        if block in self._delivered:
             return
-
-        self.fuse_actors.set_meta.call(meta).get()
-
-        t_meta_done = time.time()
-        print(
-            f"_sync(): set_meta RPC {t_meta_done - t_classify_done:.2f}s",
-            file=sys.stderr,
-            flush=True,
-        )
-
-        all_blocks = list(range(len(client_hashes)))
-        dirty_blocks: set[int] = set()
-        for _rank, d in worker_dirty.items():
-            if d is None:
-                dirty_blocks = set(all_blocks)
-                break
-            dirty_blocks.update(d)
-        sorted_dirty = sorted(dirty_blocks)
-
-        target_ranks = sorted(worker_dirty.keys())
-        is_full_transfer = len(sorted_dirty) == len(all_blocks)
-
-        if sorted_dirty and target_ranks:
-            print(
-                f"_sync(): {len(sorted_dirty)}/{len(client_hashes)} blocks dirty "
-                f"across {len(target_ranks)} workers"
-                f"{' (full transfer)' if is_full_transfer else ''}",
-                file=sys.stderr,
-                flush=True,
+        assert self.index is not None
+        data, stale = materialise_block(self.index, block)
+        if stale:
+            logger.warning(
+                "block %s: %d file(s) diverged under the fence, delivered stale: %s",
+                block,
+                len(stale),
+                stale,
             )
-            self._transfer_fanout(
-                flat_actors,
-                target_ranks,
-                sorted_dirty,
-                client_total_size,
-                full_transfer=is_full_transfer,
-            )
+        # One atomic broadcast carries the bytes + the stale set; ``.get()`` blocks
+        # until every worker's ``receive_block`` has stored it. Record the block as
+        # delivered only AFTER that succeeds, so a failed broadcast is not remembered.
+        self.fuse_actors.receive_block.call(block, data, stale).get()
+        self._delivered.add(block)
 
-        t_transfer_done = time.time()
-        print(
-            f"_sync(): transfer {t_transfer_done - t_meta_done:.2f}s",
-            file=sys.stderr,
-            flush=True,
-        )
+    @endpoint
+    def enqueue(self, block) -> None:
+        """Endpoint the workers call (fire-and-forget, from their fault callback) to
+        deliver a single faulted block -- a FUSE read faults one block at a time (a
+        straddling read re-faults the next on its following pass). Synchronous: the
+        actor processes one delivery at a time, so a cross-worker fault storm for one
+        block collapses against the permanent ``_delivered`` set -- the first delivery
+        broadcasts the block to every worker and records it, the rest see it delivered
+        and skip -- without needing the async interleaving the old in-flight dedup
+        relied on. Same delivery path as the prefill (open) and refresh.
 
-        # Mount or refresh after transfer succeeds — mounting before
-        # transfer would leak a FUSE mount if the transfer fails
-        # (open() raises before __enter__ completes, so close() never runs).
-        if self._mounted:
-            if os.environ.get("MONARCH_SKIP_REFRESH_MOUNT"):
-                print(
-                    "_sync(): skipping refresh_mount (MONARCH_SKIP_REFRESH_MOUNT set)",
-                    file=sys.stderr,
-                    flush=True,
-                )
-            else:
-                refresh_results = self.fuse_actors.refresh_mount.call(
-                    client_hashes, client_total_size, new_pack_index
-                ).get()
-                t_refresh_done = time.time()
-                for _point, timings in refresh_results:
-                    if timings:
-                        timings_str = ", ".join(
-                            f"{k}={v:.2f}s" for k, v in timings.items()
-                        )
-                        print(
-                            f"_sync(): refresh_mount remote breakdown: {timings_str}",
-                            file=sys.stderr,
-                            flush=True,
-                        )
-                print(
-                    f"_sync(): refresh_mount RPC {t_refresh_done - t_transfer_done:.2f}s",
-                    file=sys.stderr,
-                    flush=True,
-                )
-        else:
-            self.fuse_actors.mount.call(
-                self.mntpoint, client_hashes, client_total_size, new_pack_index
-            ).get()
-            t_refresh_done = time.time()
-            print(
-                f"_sync(): mount RPC {t_refresh_done - t_transfer_done:.2f}s",
-                file=sys.stderr,
-                flush=True,
-            )
-            self._mounted = True
+        Failures degrade the mount rather than abort this MountHandlerClient actor
+        (an uncaught fault here kills the sidecar and wedges every other worker): a
+        worker dying/preempted mid-delivery surfaces as ``SupervisionError`` and is
+        logged; source divergence is handled in ``_deliver`` (it marks the diverged
+        files stale so their reads get EIO); any other error is logged with its
+        traceback."""
+        try:
+            self._deliver(int(block))
+        except SupervisionError:
+            logger.warning("delivery stopping: workers no longer reachable")
+        except Exception:
+            logger.exception("delivery failed for block %s", block)
 
-        t_done = time.time()
+    @endpoint
+    def open(self, self_handle):
+        """Spawn the workers, build the index, mount, and deliver the code
+        prefix, then RETURN. The index (the whole tree) ships first as a 0-block
+        ``find``; the small code blocks are delivered here; the big libraries
+        stream in on demand when an import faults them.
 
-        print(
-            f"_sync() timings: "
-            f"index_rpc={t_index_done - t_start:.2f}s, "
-            f"pack={t_pack_done - t_index_done:.2f}s "
-            f"({client_total_size / (1024**2):.0f}MiB), "
-            f"hashes_rpc={t_hashes_done - t_pack_done:.2f}s, "
-            f"classify={t_classify_done - t_hashes_done:.2f}s, "
-            f"set_meta={t_meta_done - t_classify_done:.2f}s, "
-            f"transfer={t_transfer_done - t_meta_done:.2f}s, "
-            f"refresh={t_done - t_transfer_done:.2f}s, "
-            f"total={t_done - t_start:.2f}s"
-        )
-
-    def open(self):
-        # Reuse existing actors if available (preserves block hashes
-        # and pack index for incremental update checks).
-        if self.fuse_actors is None:
-            self.procs = self.host_mesh.spawn_procs()
-            self.fuse_actors = self.procs.spawn(
-                "FUSEActor", FUSEActor, self.chunk_size, self.backend
-            )
-            self.fuse_actors.mkdir.call(self.mntpoint).get()
-
-            import xxhash
-
-            cache_key = xxhash.xxh64(
-                (self.sourcepath + ":" + self.mntpoint).encode()
-            ).hexdigest()
-            self.fuse_actors.try_load_cache.call(cache_key).get()
-
-        with configured(rdma_tcp_fallback_parallelism=self.num_parallel_streams):
-            self._sync()
-        return self
-
-    def _transfer_fanout(
-        self,
-        flat_actors: object,
-        target_ranks: list[int],
-        dirty_blocks: list[int],
-        total_size: int,
-        full_transfer: bool = False,
-    ) -> None:
-        """Transfer dirty blocks: client → leaders via RDMABuffer, leaders → peers via RDMA.
-
-        The client sends to leader(s) using RDMABuffer (TCP fallback on
-        client since it typically lacks ibverbs). Leaders then fan out to
-        peers using RDMABuffer over ibverbs for maximum throughput.
-
-        When peers exist, leaders use receive_and_relay_rdma which returns
-        the received staging buffer as an RDMABuffer — eliminating the
-        redundant gather that get_blocks_rdma_buffer would perform.
-
-        When full_transfer is True (cold start — all blocks dirty), the
-        client skips the gather copy and wraps _staging_mv directly since
-        the packed buffer already contains all blocks contiguously.
+        ``self_handle`` is this actor's own handle, passed by the caller (which
+        holds it) so the workers can be spawned with it -- an actor can't obtain a
+        callable handle to itself, so it is threaded in here.
         """
-        from monarch.rdma import RDMABuffer
+        # Spawn a fresh worker FUSEActor mesh for this mount; ``close`` tears the
+        # previous one down, so each open starts clean (the workers hold blocks
+        # only in memory, so a re-mount has nothing to reuse). The workers are
+        # spawned with ``self_handle`` so their fault callbacks reach ``enqueue``.
+        # The fresh mesh holds nothing, so reset the delivered set: a re-open must
+        # re-deliver every block (the previous mesh's in-memory blocks are gone).
+        self._delivered.clear()
+        self.procs = self.host_mesh.spawn_procs()
+        self.fuse_actors = self.procs.spawn("FUSEActor", FUSEActor, self_handle)
+        self.fuse_actors.mkdir.call(self.mntpoint).get()
+        # Build the index from a fresh walk of the source (a cold full pack: the
+        # workers hold blocks only in memory, so there is no prior index to extend).
+        self.index = build_index(self.sourcepath, {})
 
-        t0 = time.time()
+        # Mount with the full tree: a 0-block ``find`` works immediately; data
+        # faults in afterwards.
+        self.fuse_actors.mount.call(self.mntpoint, self.index).get()
 
-        total_bytes = sum(
-            min(HASH_BLOCK_SIZE, total_size - bi * HASH_BLOCK_SIZE)
-            for bi in dirty_blocks
-        )
+        # Deliver the code blocks (the small-file region), then return. Big files
+        # (libraries, data) stream in on demand when a worker's read faults them
+        # -> the fault callback -> ``enqueue`` -> the same ``_deliver``.
+        for b in code_blocks(self.index):
+            self._deliver(b)
 
-        if full_transfer:
-            # Cold start: all blocks dirty, _staging_mv already has them
-            # contiguously in order. Skip the gather copy.
-            rdma_buf = RDMABuffer(self._staging_mv[:total_bytes])
-        else:
-            import mmap as _mmap
-
-            # Partial update: gather dirty blocks into a contiguous staging buffer.
-            staging = _mmap.mmap(
-                -1, total_bytes, _mmap.MAP_PRIVATE | _mmap.MAP_ANONYMOUS
-            )
-            staging_mv = memoryview(staging)
-            pos = 0
-            for bi in dirty_blocks:
-                block_size = min(HASH_BLOCK_SIZE, total_size - bi * HASH_BLOCK_SIZE)
-                offset = bi * HASH_BLOCK_SIZE
-                dst_block = slice(pos, pos + block_size)
-                src_block = slice(offset, offset + block_size)
-                staging_mv[dst_block] = self._staging_mv[src_block]
-                pos += block_size
-            rdma_buf = RDMABuffer(staging_mv[:total_bytes])
-
-        t_setup = time.time()
-
-        # Pick leader(s) — transfer from client to leaders first.
-        num_leaders = min(4, len(target_ranks))
-        leader_ranks = target_ranks[:num_leaders]
-        peer_ranks = target_ranks[num_leaders:]
-
-        # Step 1: Client → leader(s) via RDMABuffer (TCP fallback).
-        # If there are peers, leaders use receive_and_relay_rdma which
-        # returns an RDMABuffer for fan-out (avoids redundant gather).
-        leader_relay_futures = {}
-        leader_futures = {}
-        for rank in leader_ranks:
-            worker = flat_actors.slice(rank=rank)
-            if peer_ranks:
-                leader_relay_futures[rank] = worker.receive_and_relay_rdma.call(
-                    rdma_buf, dirty_blocks, total_size
-                )
-            else:
-                leader_futures[rank] = worker.receive_rdma.call(
-                    rdma_buf, dirty_blocks, total_size
-                )
-
-        if not peer_ranks:
-            for rank, f in leader_futures.items():
-                f.get()
-                elapsed = time.time() - t_setup
-                gbs = (total_bytes / 1e9) / max(elapsed, 1e-9)
-                print(
-                    f"  leader rank={rank}: {total_bytes // (1024**2)}MiB "
-                    f"done at {elapsed:.1f}s ({gbs:.1f} GB/s)",
-                    file=sys.stderr,
-                    flush=True,
-                )
-            return
-
-        # Step 2: Ensure peers have storage allocated (overlaps with leader transfer).
-        ensure_futures = []
-        for rank in peer_ranks:
-            ensure_futures.append(
-                flat_actors.slice(rank=rank).ensure_storage.call(total_size)
-            )
-        for f in ensure_futures:
-            f.get()
-
-        # Distribute peers round-robin across leaders.
-        leader_peer_groups: dict[int, list[int]] = {r: [] for r in leader_ranks}
-        for i, peer_rank in enumerate(peer_ranks):
-            leader_rank = leader_ranks[i % num_leaders]
-            leader_peer_groups[leader_rank].append(peer_rank)
-
-        # Step 3: Collect leader RDMABuffers and fan out to peers.
-        # Each leader's receive_and_relay_rdma returns an RDMABuffer
-        # wrapping the staging buffer it received into — no re-gather needed.
-        peer_futures = []
-        for leader_rank, relay_f in leader_relay_futures.items():
-            leader_rdma_result = relay_f.get()
-            elapsed = time.time() - t_setup
-            gbs = (total_bytes / 1e9) / max(elapsed, 1e-9)
-            print(
-                f"  leader rank={leader_rank}: {total_bytes // (1024**2)}MiB "
-                f"done at {elapsed:.1f}s ({gbs:.1f} GB/s)",
-                file=sys.stderr,
-                flush=True,
-            )
-            leader_rdma_buf = [v for _, v in leader_rdma_result][0]
-            for peer_rank in leader_peer_groups[leader_rank]:
-                worker = flat_actors.slice(rank=peer_rank)
-                peer_futures.append(
-                    worker.receive_rdma.call(leader_rdma_buf, dirty_blocks, total_size)
-                )
-
-        t_leaders = time.time()
-        print(
-            f"Client → {num_leaders} leader(s): "
-            f"{total_bytes // (1024**2)}MiB in {t_leaders - t_setup:.1f}s",
-            file=sys.stderr,
-            flush=True,
-        )
-
-        for f in peer_futures:
-            f.get()
-
-        t_done = time.time()
-        peer_gbs = (total_bytes * len(peer_ranks) / 1e9) / max(t_done - t_leaders, 1e-9)
-        print(
-            f"{num_leaders} leader(s) → {len(peer_ranks)} peer(s) via RDMA: "
-            f"{total_bytes // (1024**2)}MiB in {t_done - t_leaders:.1f}s "
-            f"({peer_gbs:.1f} GB/s), "
-            f"total={t_done - t0:.1f}s",
-            file=sys.stderr,
-            flush=True,
-        )
-
+    @endpoint
     def close(self) -> None:
-        """Unmount FUSE but keep actors alive for incremental updates."""
+        """Unmount the workers' FUSE mounts, then tear the worker procs down. A
+        subsequent open() spawns a fresh FUSEActor mesh; nothing is reused across
+        an open/close cycle (in-memory blocks do not survive a re-mount anyway).
+        """
         if self.fuse_actors is not None:
             result = self.fuse_actors.unmount.call(self.mntpoint).get()
             for _point, (status, detail) in result:
                 if status not in ("ok", "not_mounted"):
                     logger.warning(f"unmount failed ({status}): {detail}")
-        self._mounted = False
+            # Stop the proc mesh -- this also stops the FUSEActors on it -- so the
+            # workers are freed and the next open() spawns a clean, fresh mesh.
+            self.procs.stop().get()
+            self.fuse_actors = None
+            self.procs = None
 
-    def refresh(self, sourcepath: str):
-        """Re-pack source directory and refresh all running mounts in-place.
+    @endpoint
+    def refresh(self):
+        """Re-sync a live mount to the current source, without unmounting.
 
-        Unlike close()+open(), this does not unmount the FUSE filesystem.
-        Open file handles remain valid; subsequent reads see the updated
-        data.
+        Rebuilds the index append-only (unchanged files keep their block ids;
+        changed/new files are appended at fresh, block-aligned tail ids), ships
+        the new tree, and atomically swaps the new tree + size into the running
+        FUSE (``refresh_mount``). Open file handles stay valid; subsequent reads
+        -- even through a handle opened before the refresh -- see the new data.
 
-        Args:
-            sourcepath: Must match the sourcepath used in open(). Requiring
-                the caller to pass it again prevents accidentally refreshing
-                a mount with a forgotten or wrong source directory.
+        Block-aligned appends mean an existing block id's content never changes,
+        so the worker's already-delivered (in-memory) blocks stay valid and there
+        is nothing to invalidate. The new tail blocks are NOT pushed here -- they
+        fault in on demand on the next read, like every other block (open's code
+        prefill is the only proactive delivery). So a refresh is just a metadata
+        swap; even a big change costs nothing until something reads it.
+
+        The actor already holds ``self.sourcepath`` from open(), so (unlike the
+        plain-class version) the caller cannot pass a sourcepath to cross-check.
         """
-        if sourcepath != self.sourcepath:
-            raise ValueError(
-                f"sourcepath mismatch: refresh called with {sourcepath!r} "
-                f"but mount was opened with {self.sourcepath!r}"
-            )
-        if not self._mounted or self.fuse_actors is None:
+        if self.fuse_actors is None:
             raise RuntimeError("no active mount to refresh; call open() first")
-        with configured(rdma_tcp_fallback_parallelism=self.num_parallel_streams):
-            self._sync()
 
-    def __enter__(self) -> "MountHandler":
-        self.open()
-        return self
+        new_index = build_index(self.sourcepath, self.index)
 
-    def __exit__(self, exc_type: object, exc_val: object, exc_tb: object) -> bool:
-        self.close()
-        return False  # Don't suppress exceptions
+        # Guard the transport on the index: it is the single source of truth for
+        # "did anything change". If it is identical to the last sync, the workers
+        # are already current -- skip the ship + refresh_mount. Building the index
+        # is cheap (in-memory); shipping it to every worker is the expensive part
+        # this avoids on a no-op.
+        if new_index == self.index:
+            return
+        self.index = new_index
+        # Swap the new tree/size into the live FUSE. The new tail blocks are absent
+        # from the workers' in-memory block maps, so the next read of a changed/new
+        # file faults them in on demand (enqueue -> _deliver); refresh pushes
+        # nothing.
+        self.fuse_actors.refresh_mount.call(new_index).get()
+
+
+class MountHandler:
+    """Owner-facing handle returned by ``remotemount``: a thin wrapper that drives
+    the spawned ``MountHandlerClient`` actor through plain method calls, so callers
+    use the same ``handler.open()`` / ``close()`` / ``refresh()`` form as the other
+    mount handlers instead of ``handler.open.call_one(handler).get()``. The actor
+    is the remote surface (the worker FUSEActors call its ``enqueue`` on a fault);
+    this wrapper is the local owner's control surface.
+    """
+
+    def __init__(
+        self,
+        host_mesh: object,
+        sourcepath: str,
+        mntpoint: Optional[str] = None,
+    ) -> None:
+        # MountHandlerClient is an Actor: it must be SPAWNED (so its endpoints get
+        # an actor context, and the worker FUSEActors can call its ``enqueue`` on a
+        # fault), not constructed. Spawn it on a 1-proc client-side mesh; the spawn
+        # returns an actor-mesh handle, which this wrapper drives.
+        from monarch.actor import this_host
+
+        # Kept so the job-sidecar mount-config layer can identify the mount: it logs
+        # ``handler.sourcepath`` / ``handler.mntpoint`` on a refresh/close error.
+        self.sourcepath = sourcepath
+        self.mntpoint = mntpoint
+        client_procs = this_host().spawn_procs()
+        self._client = client_procs.spawn(
+            "MountHandlerClient",
+            MountHandlerClient,
+            host_mesh,
+            sourcepath,
+            mntpoint,
+        )
+
+    def open(self) -> None:
+        """Spawn the workers, mount, and deliver the code prefill."""
+        # ``open`` takes the client's own handle (to spawn the FUSEActors with),
+        # which an actor cannot obtain for itself -- so pass ``self._client`` in.
+        self._client.open.call_one(self._client).get()
+
+    def close(self) -> None:
+        """Unmount the workers' FUSE mounts and tear the workers down."""
+        self._client.close.call_one().get()
+
+    def refresh(self, sourcepath: Optional[str] = None) -> None:
+        """Re-sync the live mount to the current source, without unmounting.
+
+        ``sourcepath`` is accepted for the mount-config interface (which calls
+        ``handler.refresh(handler.sourcepath)``) but is unused -- the spawned actor
+        already holds its own source path from ``open()``.
+        """
+        self._client.refresh.call_one().get()
 
 
 def remotemount(
     host_mesh: object,
     sourcepath: str,
     mntpoint: Optional[str] = None,
-    chunk_size: Optional[int] = None,
-    backend: str = "slurm",
-    num_parallel_streams: int = 8,
-    transfer_mode: str = "rdma",
-    cert_path: Optional[str] = None,
-    tls_port: int = 0,
 ) -> MountHandler:
-    """Mount a local directory on remote hosts via RDMA transfer and FUSE.
+    """Mount a local directory on remote hosts via FUSE, delivered on demand.
 
-    Uses RDMABuffer for data transfer — supports ibverbs (hardware RDMA)
-    with automatic TCP fallback when ibverbs is unavailable.
-
-    Args:
-        num_parallel_streams: Number of parallel TCP streams for the
-            RDMABuffer TCP fallback path (when ibverbs is unavailable).
-        transfer_mode: Must be "rdma". RDMABuffer uses ibverbs when
-            available and automatically falls back to TCP otherwise.
-        cert_path: Deprecated, ignored. TLS is now configured via
-            HYPERACTOR_TLS_CERT, HYPERACTOR_TLS_KEY, and
-            HYPERACTOR_TLS_CA env vars.
-        tls_port: Deprecated, ignored. Port binding is handled by the
-            transport layer automatically.
+    The full directory tree (the FUSE meta) ships immediately, small "code"
+    files are prefilled, and big libraries/data stream in when a read faults
+    them. ``refresh()`` advances the freshness fence.
     """
-    if chunk_size is None:
-        chunk_size = CHUNK_SIZE
-    return MountHandler(
-        host_mesh,
-        sourcepath,
-        mntpoint,
-        chunk_size,
-        backend,
-        num_parallel_streams,
-        transfer_mode,
-        cert_path,
-        tls_port,
-    )
+    return MountHandler(host_mesh, sourcepath, mntpoint)

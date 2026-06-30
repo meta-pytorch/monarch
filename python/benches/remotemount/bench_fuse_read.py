@@ -19,6 +19,7 @@ import tempfile
 import time
 
 from monarch._rust_bindings.monarch_extension.chunked_fuse import mount_chunked_fuse
+from monarch.remotemount.remotemount import BLOCK_SIZE
 
 
 def make_attr(mode=0o100644, size=0, nlink=1):
@@ -126,7 +127,15 @@ def main():
     # --- FUSE (TTL=200ms hardcoded) ---
     print("\n=== FUSE (TTL=200ms) ===")
     with tempfile.TemporaryDirectory() as mnt:
-        handle = mount_chunked_fuse(metadata, [memoryview(data)], file_size, mnt)
+        # The mount starts empty and faults blocks in on demand; for a steady-state
+        # read benchmark we prefill every block up front via receive_block (the same
+        # path the worker uses to serve a fault), so reads never park and no fault
+        # callback is needed.
+        handle = mount_chunked_fuse(metadata, file_size, mnt, None)
+        n_blocks = (file_size + BLOCK_SIZE - 1) // BLOCK_SIZE
+        for block_id in range(n_blocks):
+            lo = block_id * BLOCK_SIZE
+            handle.receive_block(block_id, data[lo : lo + BLOCK_SIZE], [])
         path = os.path.join(mnt, "data.bin")
         bench_reads(path, 4096, num_small, "4KB reads")
         bench_reads(path, 1024 * 1024, num_large, "1MB reads")

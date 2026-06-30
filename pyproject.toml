@@ -48,7 +48,6 @@ dependencies = [
     "opentelemetry-api",
     "clusterscope",
     "flask>=2.0",
-    "xxhash",
     "py-spy",
 ]
 

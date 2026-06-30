@@ -7,9 +7,13 @@
 
 """Benchmark FUSE refresh scenarios.
 
-Based on TestFuseRefresh test cases. Measures the cost of each refresh
-pattern: unchanged data, changed data, added/deleted files, offset
-shifts (defrag), sequential reads across refresh, and many-files-one-changed.
+Measures the cost of each refresh pattern: unchanged data, changed data,
+added/deleted files, offset shifts (defrag), sequential reads across refresh,
+and many-files-one-changed.
+
+The mount starts empty; blocks are delivered via ``receive_block`` (as a worker
+would on a fault). ``refresh`` swaps the metadata and grows the block table; the
+changed blocks are then re-delivered before reading.
 """
 
 import os
@@ -17,7 +21,7 @@ import tempfile
 import time
 
 from monarch._rust_bindings.monarch_extension.chunked_fuse import mount_chunked_fuse
-from monarch.remotemount.fast_pack import pack_directory_chunked
+from monarch.remotemount.remotemount import BLOCK_SIZE, build_index, materialise_block
 
 
 def _make_attr(mode=0o100644, size=0, nlink=1):
@@ -42,14 +46,23 @@ def _file_attr(size):
     return _make_attr(mode=0o100644, size=size)
 
 
-def _file_meta(name, data, offset=0):
-    return {
-        f"/{name}": {
-            "attr": _file_attr(len(data)),
-            "global_offset": offset,
-            "file_len": len(data),
-        }
-    }
+def _deliver_all(handle, data):
+    """Hand *data* to the mount one BLOCK_SIZE block at a time, as the worker's
+    ``receive_block`` does on a fault. *data* is a contiguous packed buffer that
+    matches the metadata's offsets."""
+    n_blocks = (len(data) + BLOCK_SIZE - 1) // BLOCK_SIZE
+    for block_id in range(n_blocks):
+        lo = block_id * BLOCK_SIZE
+        handle.receive_block(block_id, data[lo : lo + BLOCK_SIZE], [])
+
+
+def _deliver_from_meta(handle, meta):
+    """Materialise every block from the source (as the client does) and deliver
+    it. For a layout backed by real files (``build_index``)."""
+    total = meta["/"]["total_size"]
+    n_blocks = (total + BLOCK_SIZE - 1) // BLOCK_SIZE
+    for block_id in range(n_blocks):
+        handle.receive_block(block_id, materialise_block(meta, block_id), [])
 
 
 def _timed(label, fn):
@@ -72,11 +85,11 @@ def bench_unchanged_file():
         },
     }
     with tempfile.TemporaryDirectory() as mnt:
-        handle = mount_chunked_fuse(metadata, [memoryview(content)], len(content), mnt)
+        handle = mount_chunked_fuse(metadata, len(content), mnt, None)
+        _deliver_all(handle, content)
         _timed(
-            "refresh (unchanged 1MB)",
-            # pyrefly: ignore [bad-argument-type, missing-argument]
-            lambda: handle.refresh(metadata, [memoryview(content)], len(content)),
+            "refresh swap (unchanged 1MB)",
+            lambda: handle.refresh(metadata, len(content)),
         )
         _timed(
             "read after refresh", lambda: open(os.path.join(mnt, "f.bin"), "rb").read()
@@ -100,13 +113,13 @@ def bench_changed_file():
         }
 
     with tempfile.TemporaryDirectory() as mnt:
-        handle = mount_chunked_fuse(meta_fn(v1), [memoryview(v1)], len(v1), mnt)
+        handle = mount_chunked_fuse(meta_fn(v1), len(v1), mnt, None)
+        _deliver_all(handle, v1)
         _timed(
-            "refresh (changed 1MB)",
-            # pyrefly: ignore [bad-argument-type, missing-argument]
-            lambda: handle.refresh(meta_fn(v2), [memoryview(v2)], len(v2)),
+            "refresh swap (changed 1MB)", lambda: handle.refresh(meta_fn(v2), len(v2))
         )
-        _, elapsed = _timed(
+        _timed("deliver changed 1MB", lambda: _deliver_all(handle, v2))
+        _timed(
             "read after refresh", lambda: open(os.path.join(mnt, "f.bin"), "rb").read()
         )
         handle.unmount()
@@ -126,12 +139,10 @@ def bench_added_file():
         "/b.txt": {"attr": _file_attr(3), "global_offset": 3, "file_len": 3},
     }
     with tempfile.TemporaryDirectory() as mnt:
-        handle = mount_chunked_fuse(meta1, [memoryview(v1)], 3, mnt)
-        _timed(
-            "refresh (add file)",
-            # pyrefly: ignore [bad-argument-type, missing-argument]
-            lambda: handle.refresh(meta2, [memoryview(v2)], len(v2)),
-        )
+        handle = mount_chunked_fuse(meta1, len(v1), mnt, None)
+        _deliver_all(handle, v1)
+        _timed("refresh swap (add file)", lambda: handle.refresh(meta2, len(v2)))
+        _deliver_all(handle, v2)
         _timed("listdir after add", lambda: os.listdir(mnt))
         _timed("read new file", lambda: open(os.path.join(mnt, "b.txt"), "rb").read())
         handle.unmount()
@@ -151,18 +162,15 @@ def bench_deleted_file():
         "/a.txt": {"attr": _file_attr(3), "global_offset": 0, "file_len": 3},
     }
     with tempfile.TemporaryDirectory() as mnt:
-        handle = mount_chunked_fuse(meta1, [memoryview(v1)], len(v1), mnt)
-        _timed(
-            "refresh (delete file)",
-            # pyrefly: ignore [bad-argument-type, missing-argument]
-            lambda: handle.refresh(meta2, [memoryview(v2)], 3),
-        )
+        handle = mount_chunked_fuse(meta1, len(v1), mnt, None)
+        _deliver_all(handle, v1)
+        _timed("refresh swap (delete file)", lambda: handle.refresh(meta2, len(v2)))
         _timed("listdir after delete", lambda: os.listdir(mnt))
         handle.unmount()
 
 
 def bench_defrag_offset_shift():
-    """Refresh where global_offset changes but content is same."""
+    """Refresh where global_offset changes but content is the same (a defrag)."""
     file_data = os.urandom(1024 * 1024)
     buf1 = b"\x00" * (1024 * 1024) + file_data
     meta1 = {
@@ -182,12 +190,13 @@ def bench_defrag_offset_shift():
         },
     }
     with tempfile.TemporaryDirectory() as mnt:
-        handle = mount_chunked_fuse(meta1, [memoryview(buf1)], len(buf1), mnt)
+        handle = mount_chunked_fuse(meta1, len(buf1), mnt, None)
+        _deliver_all(handle, buf1)
         _timed(
-            "refresh (defrag 1MB, offset shift)",
-            # pyrefly: ignore [bad-argument-type, missing-argument]
-            lambda: handle.refresh(meta2, [memoryview(file_data)], len(file_data)),
+            "refresh swap (defrag 1MB, offset shift)",
+            lambda: handle.refresh(meta2, len(file_data)),
         )
+        _deliver_all(handle, file_data)
         _timed(
             "read after defrag", lambda: open(os.path.join(mnt, "f.bin"), "rb").read()
         )
@@ -195,7 +204,7 @@ def bench_defrag_offset_shift():
 
 
 def bench_sequential_read_across_refresh():
-    """Read half, refresh, read other half."""
+    """Read half, refresh, read the other half through the same handle."""
     half = 512 * 1024
     content = os.urandom(half * 2)
     metadata = {
@@ -207,13 +216,13 @@ def bench_sequential_read_across_refresh():
         },
     }
     with tempfile.TemporaryDirectory() as mnt:
-        handle = mount_chunked_fuse(metadata, [memoryview(content)], len(content), mnt)
+        handle = mount_chunked_fuse(metadata, len(content), mnt, None)
+        _deliver_all(handle, content)
         fh = open(os.path.join(mnt, "f.bin"), "rb")
         _timed("read first 512KB", lambda: fh.read(half))
         _timed(
-            "refresh (unchanged)",
-            # pyrefly: ignore [bad-argument-type, missing-argument]
-            lambda: handle.refresh(metadata, [memoryview(content)], len(content)),
+            "refresh swap (unchanged)",
+            lambda: handle.refresh(metadata, len(content)),
         )
         _timed("read second 512KB", lambda: fh.read(half))
         fh.close()
@@ -235,17 +244,19 @@ def bench_many_files_one_changed():
         }
 
     with tempfile.TemporaryDirectory() as mnt:
-        handle = mount_chunked_fuse(metadata, [memoryview(data)], len(data), mnt)
+        handle = mount_chunked_fuse(metadata, len(data), mnt, None)
+        _deliver_all(handle, data)
         # Change file 25.
         new_data = bytearray(data)
         new_data[25 * file_size : 26 * file_size] = os.urandom(file_size)
         new_data = bytes(new_data)
 
         _timed(
-            f"refresh (1/{num_files} files changed, {num_files * file_size // 1024}KB total)",
-            # pyrefly: ignore [bad-argument-type, missing-argument]
-            lambda: handle.refresh(metadata, [memoryview(new_data)], len(new_data)),
+            f"refresh swap (1/{num_files} files changed, "
+            f"{num_files * file_size // 1024}KB total)",
+            lambda: handle.refresh(metadata, len(new_data)),
         )
+        _deliver_all(handle, new_data)
 
         def read_all():
             for i in range(num_files):
@@ -272,19 +283,13 @@ def bench_multiple_rapid_refreshes():
     content = os.urandom(1024 * 1024)
     n = 20
     with tempfile.TemporaryDirectory() as mnt:
-        handle = mount_chunked_fuse(
-            meta_fn(len(content)), [memoryview(content)], len(content), mnt
-        )
+        handle = mount_chunked_fuse(meta_fn(len(content)), len(content), mnt, None)
+        _deliver_all(handle, content)
         t0 = time.time()
         for _i in range(n):
             new_content = os.urandom(1024 * 1024)
-            # pyrefly: ignore [missing-argument]
-            handle.refresh(
-                meta_fn(len(new_content)),
-                [memoryview(new_content)],
-                # pyrefly: ignore [bad-argument-type]
-                len(new_content),
-            )
+            handle.refresh(meta_fn(len(new_content)), len(new_content))
+            _deliver_all(handle, new_content)
         elapsed = time.time() - t0
         print(
             f"  {n} refreshes (1MB each): {elapsed * 1000:.1f} ms total, "
@@ -293,39 +298,33 @@ def bench_multiple_rapid_refreshes():
         handle.unmount()
 
 
-def bench_end_to_end_pack_refresh():
-    """Full round-trip: pack, mount, modify, re-pack, refresh, read."""
+def bench_end_to_end_index_refresh():
+    """Full round-trip: build_index, mount, modify, re-index, refresh, read."""
     with tempfile.TemporaryDirectory() as src:
-        data = os.urandom(10 * 1024 * 1024)
         with open(os.path.join(src, "data.bin"), "wb") as f:
-            f.write(data)
+            f.write(os.urandom(10 * 1024 * 1024))
 
-        _timed("initial pack (10MB)", lambda: pack_directory_chunked(src))
-        meta, _, chunks, _, _ = pack_directory_chunked(src)
+        meta, _ = _timed("initial index (10MB)", lambda: build_index(src, {}))
 
         with tempfile.TemporaryDirectory() as mnt:
-            chunk_size = len(bytes(chunks[0])) if chunks else 1
-            handle = mount_chunked_fuse(meta, chunks, chunk_size, mnt)
+            handle = mount_chunked_fuse(meta, meta["/"]["total_size"], mnt, None)
+            _deliver_from_meta(handle, meta)
 
             _timed(
                 "initial read (10MB)",
                 lambda: open(os.path.join(mnt, "data.bin"), "rb").read(),
             )
 
-            # Modify and re-pack.
+            # Modify and re-index (append-only against the prior index).
             with open(os.path.join(src, "data.bin"), "wb") as f:
                 f.write(os.urandom(10 * 1024 * 1024))
 
-            _timed("re-pack (10MB)", lambda: pack_directory_chunked(src))
-            meta2, _, chunks2, _, _ = pack_directory_chunked(src)
-            chunk_size2 = len(bytes(chunks2[0])) if chunks2 else 1
-
+            meta2, _ = _timed("re-index (10MB)", lambda: build_index(src, meta))
             _timed(
-                "refresh (10MB)",
-                # pyrefly: ignore [bad-argument-type, missing-argument]
-                lambda: handle.refresh(meta2, chunks2, chunk_size2),
+                "refresh swap (10MB)",
+                lambda: handle.refresh(meta2, meta2["/"]["total_size"]),
             )
-
+            _timed("deliver (10MB)", lambda: _deliver_from_meta(handle, meta2))
             _timed(
                 "read after refresh (10MB)",
                 lambda: open(os.path.join(mnt, "data.bin"), "rb").read(),
@@ -361,8 +360,8 @@ def main():
     print("\n--- Multiple rapid refreshes ---")
     bench_multiple_rapid_refreshes()
 
-    print("\n--- End-to-end pack + refresh ---")
-    bench_end_to_end_pack_refresh()
+    print("\n--- End-to-end index + refresh ---")
+    bench_end_to_end_index_refresh()
 
 
 if __name__ == "__main__":

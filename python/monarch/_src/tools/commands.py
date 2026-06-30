@@ -537,6 +537,12 @@ def apply_job(module_path: Optional[str] = None) -> None:
 
     job = load_current_job()
     state = job.state()
+    apply_id = job.apply_id  # pyre-ignore[16]
+    if apply_id is not None:
+        print(
+            f"Mount daemon log: /tmp/monarch_mounts_{apply_id}.log "
+            "(tail for sync/cold-transfer progress, on-demand-pull events)"
+        )
     t0 = time.time()
     mesh = next(iter(state._hosts.values()))
     procs = mesh.spawn_procs()

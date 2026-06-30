@@ -24,7 +24,6 @@ mod tensor_worker;
 mod blocking;
 #[cfg(target_os = "linux")]
 mod chunked_fuse;
-mod fast_pack;
 mod panic;
 #[cfg(target_os = "linux")]
 mod readonly_fuse;
@@ -235,11 +234,6 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
     crate::blocking::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_extension.blocking",
-    )?)?;
-
-    crate::fast_pack::register_python_bindings(&get_or_add_new_module(
-        module,
-        "monarch_extension.fast_pack",
     )?)?;
 
     #[cfg(target_os = "linux")]

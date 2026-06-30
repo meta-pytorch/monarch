@@ -25,15 +25,12 @@ above injects rank 0's hostname for cross-host rdzv.
 
 Env knobs:
   TITAN_MODEL_MODULE   torchtitan module name (default: ``llama3``).
-  TITAN_MODEL_CONFIG   config function in that module's config_registry
-                       (default: ``llama3_debugmodel``).
+  TITAN_MODEL_CONFIG   toml basename under the module's ``train_configs/``
+                       (default: ``debug_model``; e.g. ``qwen3_1.7b``).
   TITAN_TRAINING_STEPS overrides cfg.training.steps (default: 20).
-  TITAN_DATASET        overrides cfg.dataloader.dataset; set to
+  TITAN_DATASET        overrides cfg.training.dataset; set to
                        ``fineweb_edu_10BT`` to read from locally mounted
                        parquet shards instead of HF ``c4``.
-  TITAN_LOSS           ``ce`` forces plain CrossEntropyLoss (workaround
-                       for the autograd bug in torch 2.10/2.11 +
-                       llama3_debugmodel + ChunkedCELoss).
 """
 
 from __future__ import annotations
@@ -108,25 +105,20 @@ def main() -> None:
 
     from torchtitan.config import ConfigManager
     from torchtitan.tools.logging import init_logger
-    from torchtitan.trainer import Trainer
+    from torchtitan.train import Trainer
 
     init_logger()
 
+    # v0.2.2 selects a model by its TOML config file, not --module/--config.
+    # TITAN_MODEL_CONFIG is the toml basename under the module's train_configs/.
     model_module = os.environ.get("TITAN_MODEL_MODULE", "llama3")
-    model_config = os.environ.get("TITAN_MODEL_CONFIG", "llama3_debugmodel")
-    cfg = ConfigManager().parse_args(
-        ["--module", model_module, "--config", model_config]
-    )
+    model_config = os.environ.get("TITAN_MODEL_CONFIG", "debug_model")
+    config_file = f"torchtitan/models/{model_module}/train_configs/{model_config}.toml"
+    cfg = ConfigManager().parse_args(["--job.config_file", config_file])
     cfg.training.steps = int(os.environ.get("TITAN_TRAINING_STEPS", "20"))
     dataset_override = os.environ.get("TITAN_DATASET")
     if dataset_override:
-        cfg.dataloader.dataset = dataset_override
-    if os.environ.get("TITAN_LOSS") == "ce":
-        # Workaround: ChunkedCELoss trips an autograd bug on torch 2.10/2.11
-        # + llama3_debugmodel. Opt into plain CE only when the caller asks.
-        from torchtitan.components.loss import CrossEntropyLoss
-
-        cfg.loss = CrossEntropyLoss.Config()
+        cfg.training.dataset = dataset_override
 
     trainer = Trainer(cfg)
     trainer.train()
