@@ -31,6 +31,8 @@ are launched across hosts. HostMesh represents a mesh of hosts. ProcMesh is a me
 
 .. autofunction:: this_proc
 
+.. autofunction:: default_bootstrap_cmd
+
 
 Defining Actors
 ===============

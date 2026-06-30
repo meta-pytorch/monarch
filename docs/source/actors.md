@@ -1142,8 +1142,7 @@ This is particularly useful for:
 The `BootstrapCommand.with_env()` method makes it easy to create modified copies of a base command with additional environment variables. Use `default_bootstrap_cmd()` to get the default command for the current environment:
 
 ```python
-from monarch.actor import this_host
-from monarch._src.actor.host_mesh import default_bootstrap_cmd
+from monarch.actor import default_bootstrap_cmd, this_host
 
 host = this_host()
 
