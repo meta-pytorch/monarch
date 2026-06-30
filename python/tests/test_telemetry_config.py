@@ -100,8 +100,8 @@ class _FakeTelemetryHandle:
         self.calls = []
         self.shutdown_called = False
 
-    def open_or_refresh(self, host_meshes, config):
-        self.calls.append((host_meshes, config))
+    def open_or_refresh(self, host_meshes, config, spawn_worker_collectors=True):
+        self.calls.append((host_meshes, config, spawn_worker_collectors))
         return {
             "telemetry_url": "http://telemetry",
             "dashboard_url": "http://dashboard",
@@ -282,6 +282,34 @@ def test_spawn_telemetry_actors_registers_workers_and_stops_on_shutdown() -> Non
     proc_mesh.stop.assert_called_once_with("telemetry shutdown")
     proc_mesh.stop.return_value.get.assert_called_once_with()
     shutdown_context.return_value.get.assert_called_once_with(timeout=5.0)
+
+
+def test_spawn_telemetry_actors_can_skip_worker_collectors() -> None:
+    proc_mesh = MagicMock()
+    host_mesh = MagicMock()
+    client_actor = MagicMock()
+    handle = tc._TelemetryHandle("fanout_test")
+    handle._client_actor = client_actor
+
+    host_mesh.spawn_procs.return_value = proc_mesh
+
+    worker_proc_meshes = handle._spawn_telemetry_actors(
+        {
+            "hosts": host_mesh,
+        },
+        TelemetryConfig(
+            retention_secs=0,
+            include_dashboard=False,
+            dashboard_port=0,
+        ),
+        spawn_worker_collectors=False,
+    )
+
+    host_mesh.spawn_procs.assert_called_once_with(name="telemetry_hosts")
+    proc_mesh.spawn.assert_not_called()
+    client_actor.set_worker_collector_meshes.call_one.assert_called_once_with([])
+    client_actor.set_worker_collector_meshes.call_one.return_value.get.assert_called_once_with()
+    assert worker_proc_meshes == [proc_mesh]
 
 
 def test_spawn_telemetry_actors_drops_inactive_worker_collectors() -> None:

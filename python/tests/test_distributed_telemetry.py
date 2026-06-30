@@ -124,7 +124,6 @@ def test_telemetry_actor_starts_local_socket_collector() -> None:
             unittest.mock.patch.object(
                 job_telemetry_actor,
                 "_start_socket_ingest",
-                return_value=True,
             ) as start_ingest,
         ):
             assert actor._activate_impl()
@@ -142,7 +141,7 @@ def test_telemetry_actor_starts_local_socket_collector() -> None:
 
 
 @pytest.mark.timeout(30)
-def test_telemetry_actor_skips_active_existing_collector() -> None:
+def test_telemetry_actor_reports_live_collector_activation_failure() -> None:
     apply_id = _new_apply_id()
     _remove_socket_dir(apply_id)
     try:
@@ -156,7 +155,9 @@ def test_telemetry_actor_skips_active_existing_collector() -> None:
             unittest.mock.patch.object(
                 job_telemetry_actor,
                 "_start_socket_ingest",
-                return_value=False,
+                side_effect=RuntimeError(
+                    "telemetry socket already has a live collector"
+                ),
             ),
         ):
             assert not actor._activate_impl()

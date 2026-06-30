@@ -218,8 +218,12 @@ class SidecarTelemetryComponent(JobComponent):
     telemetry handle and installs the client-process Unix socket sink *before*
     raw host meshes are materialized so host-mesh creation events are captured.
     ``connect`` asks the sidecar to fan worker collectors out across the
-    materialized host meshes. Telemetry is best-effort: any failure is logged
-    and leaves telemetry disabled for this job rather than failing ``state()``.
+    materialized host meshes. Config drift clears parent-side handles, but
+    the sidecar keeps its in-memory telemetry store for the same ``apply_id``.
+    Switching between sidecar and in-process telemetry replaces the telemetry
+    component slot.
+    Telemetry is best-effort: any failure is logged and leaves telemetry
+    disabled for this job rather than failing ``state()``.
     """
 
     def __init__(self, config: TelemetryConfig) -> None:
@@ -231,11 +235,13 @@ class SidecarTelemetryComponent(JobComponent):
     def reset_runtime(self) -> None:
         self._query_engine_client = None
         self._telemetry_url = None
+        self._dashboard_url = None
 
     def __getstate__(self) -> Dict[str, Any]:
         state = self.__dict__.copy()
         state["_query_engine_client"] = None
         state["_telemetry_url"] = None
+        state["_dashboard_url"] = None
         return state
 
     def before_connect(self, job: "JobTrait") -> None:
@@ -283,7 +289,11 @@ class SidecarTelemetryComponent(JobComponent):
             # `_telemetry_url`/`_dashboard_url` are already set by
             # `before_connect`; this call only triggers worker fan-out, so its
             # response is intentionally ignored.
-            Telemetry(self._config).ensure_open(apply_id, host_meshes=host_meshes)
+            Telemetry(self._config).ensure_open(
+                apply_id,
+                host_meshes=host_meshes,
+                spawn_worker_collectors=job._should_spawn_telemetry_worker_collector_actors(),
+            )
         except Exception:
             logger.warning(
                 "job sidecar telemetry worker fan-out failed",

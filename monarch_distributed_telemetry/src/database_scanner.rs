@@ -509,20 +509,16 @@ impl DatabaseScanner {
         }
     }
 
-    /// Start Unix-socket ingest for this scanner if no collector owns the path.
-    pub fn start_socket_ingest(&self, socket_path: &Path) -> anyhow::Result<bool> {
-        match crate::socket_ingest::non_destructive_bind(socket_path)? {
-            crate::socket_ingest::BindOutcome::Bound(listener) => {
-                let handle = crate::socket_ingest::run_ingest_server(listener, self.table_store())?;
-                self.start_periodic_retention()?;
-                self.socket_ingest_handles
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("lock poisoned"))?
-                    .push(handle);
-                Ok(true)
-            }
-            crate::socket_ingest::BindOutcome::SkippedExistingCollector => Ok(false),
-        }
+    /// Start Unix-socket ingest for this scanner.
+    pub fn start_socket_ingest(&self, socket_path: &Path) -> anyhow::Result<()> {
+        let listener = crate::socket_ingest::bind_ingest_socket(socket_path)?;
+        let handle = crate::socket_ingest::run_ingest_server(listener, self.table_store())?;
+        self.start_periodic_retention()?;
+        self.socket_ingest_handles
+            .lock()
+            .map_err(|_| anyhow::anyhow!("lock poisoned"))?
+            .push(handle);
+        Ok(())
     }
 
     fn start_periodic_retention(&self) -> anyhow::Result<()> {

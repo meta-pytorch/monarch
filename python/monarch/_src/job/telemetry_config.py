@@ -29,13 +29,15 @@ The parent talks to telemetry via two channels:
   framed Arrow IPC from producers, decoded by Rust socket ingest into the
   collector's scanner.
 
-Lifecycle: `Telemetry.ensure_open(apply_id, host_meshes)` is called twice per
-`JobTrait._connect`. The first call (`host_meshes={}`) opens the job sidecar's
-telemetry handle and activates the client process's `UnixSocketSink` *before*
-raw host meshes are materialized, so host-mesh creation events are captured.
-The second call (with materialised `host_meshes`) triggers worker fan-out: the
-telemetry handle spawns per-host `TelemetryActor` candidates and hands the live
-worker refs to the client collector for query fan-out.
+Lifecycle: `Telemetry.ensure_open(apply_id, host_meshes, spawn_worker_collectors)`
+is called during `JobTrait._connect`. The first call (`host_meshes={}`) opens
+the job sidecar's telemetry handle and activates the client process's
+`UnixSocketSink` before raw host meshes are materialized, so host-mesh creation
+events are captured. Jobs call it again with materialised `host_meshes`; that
+second call creates telemetry host proc meshes for proc discovery. Remote jobs
+also activate one live `TelemetryActor` collector per host-local socket
+namespace and hand only those live worker refs to the client collector for
+query fan-out.
 """
 
 from __future__ import annotations
@@ -176,6 +178,7 @@ class Telemetry:
         self,
         apply_id: str,
         host_meshes: Mapping[str, HostMesh] | None = None,
+        spawn_worker_collectors: bool = True,
     ) -> _TelemetryResponse:
         """Ensure the job sidecar's telemetry handle is open and refreshed."""
         if not isinstance(apply_id, str):
@@ -198,6 +201,7 @@ class Telemetry:
                     "dashboard_port": self._config.dashboard_port,
                 },
                 host_meshes=dict(host_meshes or {}),
+                spawn_worker_collectors=spawn_worker_collectors,
             )
         ).get()
         if not isinstance(response, dict):
@@ -242,6 +246,7 @@ class _TelemetryHandle:
         self,
         host_meshes: Mapping[str, HostMesh],
         config: Mapping[str, object],
+        spawn_worker_collectors: bool = True,
     ) -> _TelemetryResponse:
         parsed = _config_from_wire(config)
         if self._first_config is None:
@@ -253,7 +258,11 @@ class _TelemetryHandle:
             logger.warning("telemetry handle config drift ignored")
 
         if host_meshes and self._worker_proc_meshes is None:
-            self._worker_proc_meshes = self._spawn_telemetry_actors(host_meshes, parsed)
+            self._worker_proc_meshes = self._spawn_telemetry_actors(
+                host_meshes,
+                parsed,
+                spawn_worker_collectors=spawn_worker_collectors,
+            )
 
         dashboard_info = self._dashboard_info
         if dashboard_info is None:
@@ -280,10 +289,10 @@ class _TelemetryHandle:
             self._apply_id,
             config.retention_secs,
         )
-        # `activate` is the actor's bind decision: triggers the
-        # non-destructive Unix-socket bind and stands up the scanner. We
-        # do not branch on the return — failures stay scannerless and the
-        # scan endpoint surfaces them as best-effort empty results.
+        # `activate` is the actor's bind decision: it binds the Unix socket and
+        # stands up the scanner for the sidecar host. The job sidecar is keyed
+        # by apply id, so this should be the only live collector for the local
+        # socket namespace.
         client_actor.activate.call_one().get()
 
         query_engine = QueryEngine(client_actor)
@@ -307,10 +316,12 @@ class _TelemetryHandle:
         self,
         host_meshes: Mapping[str, HostMesh],
         config: TelemetryConfig,
+        *,
+        spawn_worker_collectors: bool = True,
     ) -> list[ProcMesh]:
         client_actor = self._client_actor
         if client_actor is None:
-            raise RuntimeError("telemetry sidecar has no client actor")
+            raise RuntimeError("telemetry handle has no client actor")
 
         worker_proc_meshes: list[ProcMesh] = []
         worker_collector_meshes: list[Any] = []
@@ -320,6 +331,7 @@ class _TelemetryHandle:
                     self._start_worker_telemetry_collector(
                         host_mesh,
                         config,
+                        spawn_worker_collector=spawn_worker_collectors,
                     )
                 )
             except Exception:
@@ -339,8 +351,13 @@ class _TelemetryHandle:
         self,
         host_mesh: HostMesh,
         config: TelemetryConfig,
+        *,
+        spawn_worker_collector: bool = True,
     ) -> tuple[ProcMesh, Any | None]:
         proc_mesh = host_mesh.spawn_procs(name="telemetry_hosts")
+        if not spawn_worker_collector:
+            return proc_mesh, None
+
         try:
             worker_collector_mesh = proc_mesh.spawn(
                 "TelemetryActor",
@@ -362,10 +379,9 @@ class _TelemetryHandle:
         if active:
             return proc_mesh, worker_collector_mesh
 
-        # TODO: avoid spawning the local worker collector when the root
-        # collector already owns the socket. Until then, keep the proc alive so
-        # mesh-admin snapshots can still resolve it, but stop the inactive
-        # collector actor so queries do not fan out to it.
+        # Only one live collector may own a host-local socket namespace. Keep
+        # the proc alive so mesh-admin snapshots can still resolve it, but stop
+        # the inactive actor so queries do not fan out to it.
         self._stop_worker_mesh(
             worker_collector_mesh,
             "telemetry collector inactive",

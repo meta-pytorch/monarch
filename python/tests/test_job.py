@@ -36,6 +36,7 @@ from monarch._src.job.job import (
 )
 from monarch._src.job.job_components import JobComponent, JobComponents, MountComponent
 from monarch._src.job.mount_config import Mounts
+from monarch._src.job.process import ProcessJob
 from monarch._src.job.process_guard import _Shutdown, _wait_for_socket
 from monarch.actor import HostMesh
 
@@ -1158,7 +1159,54 @@ def test_sidecar_bootstrap_then_fanout_carry_host_meshes():
     bootstrap_kwargs = m.ensure_open.call_args_list[0].kwargs
     fanout_kwargs = m.ensure_open.call_args_list[1].kwargs
     assert bootstrap_kwargs["host_meshes"] == {}
+    assert "spawn_worker_collectors" not in bootstrap_kwargs
     assert set(fanout_kwargs["host_meshes"].keys()) == {"hosts"}
+    assert fanout_kwargs["spawn_worker_collectors"] is True
+
+
+def test_local_job_sidecar_skips_worker_collector_actors():
+    """Local sidecar telemetry keeps fan-out procs without collector actors."""
+    with _patched_sidecar() as m:
+        job = LocalJob(hosts=["hosts"]).enable_telemetry(
+            TelemetryConfig(use_sidecar=True)
+        )
+        state = job.state(cached_path=None)
+
+    assert m.ensure_open.call_count == 2
+    bootstrap_kwargs = m.ensure_open.call_args_list[0].kwargs
+    fanout_kwargs = m.ensure_open.call_args_list[1].kwargs
+    assert bootstrap_kwargs["host_meshes"] == {}
+    assert "spawn_worker_collectors" not in bootstrap_kwargs
+    assert set(fanout_kwargs["host_meshes"].keys()) == {"hosts"}
+    assert fanout_kwargs["spawn_worker_collectors"] is False
+    assert state.query_engine_client is m.query_engine_client_cls.return_value
+
+
+def test_process_job_sidecar_skips_worker_collector_actors():
+    """ProcessJob sidecar telemetry keeps fan-out procs without collector actors."""
+    mock_host_mesh = cast("HostMesh", MagicMock())
+    with (
+        _patched_sidecar() as m,
+        patch.object(ProcessJob, "_create"),
+        patch.object(
+            ProcessJob,
+            "_state",
+            return_value=JobState({"hosts": mock_host_mesh}),
+        ),
+    ):
+        job = ProcessJob({"hosts": 1}).enable_telemetry(
+            TelemetryConfig(use_sidecar=True)
+        )
+        state = job.state(cached_path=None)
+
+    assert m.ensure_open.call_count == 2
+    bootstrap_kwargs = m.ensure_open.call_args_list[0].kwargs
+    fanout_kwargs = m.ensure_open.call_args_list[1].kwargs
+    assert bootstrap_kwargs["host_meshes"] == {}
+    assert "spawn_worker_collectors" not in bootstrap_kwargs
+    assert set(fanout_kwargs["host_meshes"].keys()) == {"hosts"}
+    assert fanout_kwargs["spawn_worker_collectors"] is False
+    assert state.query_engine_client is m.query_engine_client_cls.return_value
 
 
 def test_sidecar_worker_fanout_uses_configured_host_meshes():

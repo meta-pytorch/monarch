@@ -392,6 +392,15 @@ class JobTrait(ABC):
         self._components: JobComponents = JobComponents()
         self._apply_id: Optional[str] = None
 
+    def _should_spawn_telemetry_worker_collector_actors(self) -> bool:
+        """Whether sidecar telemetry should spawn per-host worker collectors.
+
+        Worker collectors only add value when workers run on separate hosts.
+        Single-host jobs (e.g. LocalJob) override this to avoid a redundant
+        local fan-out.
+        """
+        return True
+
     def _connect_host_meshes(self, running_job: "JobTrait") -> Dict[str, HostMesh]:
         """Run the connect phases and return the final host meshes.
 
@@ -939,6 +948,11 @@ class LocalJob(JobTrait):
         Local jobs are the same regardless of what was saved, so just
         use the spec, which has the correct 'hosts' sequence.
         """
+        return False
+
+    def _should_spawn_telemetry_worker_collector_actors(self) -> bool:
+        # LocalJob runs everything on one host; a worker collector fan-out
+        # would duplicate the client collector, so skip it.
         return False
 
     def _state(self) -> JobState:

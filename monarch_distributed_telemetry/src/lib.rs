@@ -128,7 +128,7 @@ fn reset_record_batch_flush_count() {
 
 /// Start Unix-socket ingest for a database scanner.
 #[pyfunction]
-fn _start_socket_ingest(scanner: PyRef<'_, DatabaseScanner>, socket_path: &str) -> PyResult<bool> {
+fn _start_socket_ingest(scanner: PyRef<'_, DatabaseScanner>, socket_path: &str) -> PyResult<()> {
     scanner
         .start_socket_ingest(std::path::Path::new(socket_path))
         .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))

@@ -120,6 +120,7 @@ class TelemetryRequest:
     apply_id: str
     config: dict[str, object]
     host_meshes: dict[str, HostMesh]
+    spawn_worker_collectors: bool = True
 
 
 class _JobSidecarState:
@@ -178,6 +179,7 @@ class _JobSidecarState:
         return self._telemetry_handle.open_or_refresh(
             request.host_meshes,
             request.config,
+            spawn_worker_collectors=request.spawn_worker_collectors,
         )
 
     def shutdown(self) -> None:
