@@ -1300,11 +1300,13 @@ pub struct MailboxServerHandle {
 impl MailboxServerHandle {
     /// Signal the server to stop serving the mailbox. The caller should
     /// join the handle by awaiting the [`MailboxServerHandle`] future.
-    ///
-    /// Stop should be called at most once.
     pub fn stop(&self, reason: &str) {
         tracing::info!("stopping mailbox server; reason: {}", reason);
-        self.stopped_tx.send(true).expect("stop called twice");
+        // The server task owns the only `stopped_rx`. A failed send means
+        // the task already exited on its own — e.g. a `serve_via` session
+        // whose remote duplex peer closed, which breaks the serve loop
+        // gracefully — so there is nothing left to stop.
+        let _ = self.stopped_tx.send(true);
     }
 
     /// Construct a handle from an already-spawned server task and a

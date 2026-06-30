@@ -9,7 +9,6 @@
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::path::PathBuf;
-use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -339,54 +338,6 @@ static HOST_SHUTDOWN_HANDLE: OnceLock<
     tokio::sync::Mutex<Option<hyperactor_mesh::bootstrap::HostShutdownHandle>>,
 > = OnceLock::new();
 
-enum ViaServeState {
-    Idle,
-    Starting,
-    Serving(Box<hyperactor::gateway::GatewayServeHandle>),
-}
-
-/// Handle for the via-mode duplex session opened by
-/// [`Gateway::serve_via`]. Kept until shutdown so the cluster-inbound
-/// serve and outbound duplex stay alive for the host's lifetime.
-static VIA_SERVE_HANDLE: OnceLock<Mutex<ViaServeState>> = OnceLock::new();
-
-async fn serve_global_gateway_via(addr: ChannelAddr) -> PyResult<()> {
-    let state = VIA_SERVE_HANDLE.get_or_init(|| Mutex::new(ViaServeState::Idle));
-    {
-        let mut state = state.lock().unwrap();
-        match &*state {
-            ViaServeState::Idle => {
-                *state = ViaServeState::Starting;
-            }
-            ViaServeState::Starting | ViaServeState::Serving(_) => {
-                return Err(PyException::new_err(
-                    "via serve handle is already initialized; \
-                     bootstrap_host called more than once with a via address",
-                ));
-            }
-        }
-    }
-
-    let result = Gateway::global().clone().serve_via(addr).await;
-    let mut state = state.lock().unwrap();
-    match result {
-        Ok(handle) => {
-            assert!(
-                matches!(&*state, ViaServeState::Starting),
-                "via serve state changed while initializing"
-            );
-            *state = ViaServeState::Serving(Box::new(handle));
-            Ok(())
-        }
-        Err(err) => {
-            if matches!(&*state, ViaServeState::Starting) {
-                *state = ViaServeState::Idle;
-            }
-            Err(PyException::new_err(err.to_string()))
-        }
-    }
-}
-
 /// Bootstrap the client host and root client actor.
 ///
 /// This creates a proper Host with BootstrapProcManager, spawns the root client
@@ -427,15 +378,14 @@ fn bootstrap_host(
         .transpose()?;
 
     PyPythonTask::new(async move {
-        // Take the process-wide global gateway up front so `serve_via`
-        // installs the cluster route before host bootstrap creates any
-        // actors or ports. Host bootstrap will serve its own backend
-        // and frontend endpoints, while the via session remains active
-        // as an outbound route and local delivery location.
+        // Pass the via address into `host` so the gateway's `serve_via`
+        // attach runs *after* the host's own frontend serve but *before*
+        // any proc or actor ref is minted. That ordering makes the via
+        // session the newest active serve, so refs advertise the
+        // routable `Via` location and out-of-cluster return traffic
+        // flows back over the duplex. The host owns the resulting serve
+        // handle and tears it down on drop.
         let gateway = Gateway::global().clone();
-        if let Some(addr) = via_addr {
-            serve_global_gateway_via(addr).await?;
-        }
 
         let (host_mesh_agent, shutdown_handle) = host(
             default_bind_spec().binding_addr(),
@@ -444,6 +394,7 @@ fn bootstrap_host(
             false,
             None,
             gateway,
+            via_addr,
         )
         .await
         .map_err(|e| PyException::new_err(e.to_string()))?;
@@ -632,18 +583,6 @@ fn shutdown_local_host_mesh() -> PyResult<PyPythonTask> {
             && let Some(handle) = lock.lock().await.take()
         {
             handle.join().await;
-        }
-
-        let via_handle = VIA_SERVE_HANDLE.get().and_then(|lock| {
-            let mut state = lock.lock().unwrap();
-            match std::mem::replace(&mut *state, ViaServeState::Idle) {
-                ViaServeState::Serving(handle) => Some(*handle),
-                ViaServeState::Idle | ViaServeState::Starting => None,
-            }
-        });
-        if let Some(mut handle) = via_handle {
-            handle.stop("local host shutdown");
-            let _ = handle.join().await;
         }
 
         Ok(())

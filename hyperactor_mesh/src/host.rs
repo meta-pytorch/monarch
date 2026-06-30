@@ -144,6 +144,10 @@ pub enum HostError {
     /// An input parameter was invalid.
     #[error("parameter '{0}' invalid: {1}")]
     InvalidParameter(String, anyhow::Error),
+
+    /// Attaching the gateway to a remote `serve_via` session failed.
+    #[error("failed to attach gateway via session: {0}")]
+    ViaAttachFailure(#[source] anyhow::Error),
 }
 
 /// Lifecycle manager for the procs on one machine.
@@ -167,6 +171,10 @@ pub struct Host<M> {
     gateway: Gateway,
     frontend_handle: Option<GatewayServeHandle>,
     backend_handle: Option<GatewayServeHandle>,
+    /// Duplex `serve_via` session to a remote gateway, present when this
+    /// host was bootstrapped out-of-cluster. Kept alive for the host's
+    /// lifetime so the cluster route and outbound forwarder persist.
+    via_handle: Option<GatewayServeHandle>,
     manager: M,
     service_proc: Proc,
     local_proc: Proc,
@@ -191,7 +199,7 @@ impl<M: ProcManager> Host<M> {
         // host share one routing table with the rest of the process.
         // Callers that need a different gateway (e.g. via attach) build
         // it externally and pass it to [`new_with_gateway`].
-        Self::new_with_gateway(manager, addr, listener, Gateway::global().clone()).await
+        Self::new_with_gateway(manager, addr, listener, Gateway::global().clone(), None).await
     }
 
     /// Like [`new_with_default`], but uses a caller-provided
@@ -204,17 +212,27 @@ impl<M: ProcManager> Host<M> {
     /// gateway's location. Adopting the bound frontend address makes the
     /// legacy pseudo-singleton proc ids (system, local) carry it so remote
     /// hosts can reach them by name.
+    ///
+    /// When `via` is `Some`, the gateway attaches to that remote duplex
+    /// address with [`Gateway::serve_via`] *after* the local
+    /// frontend/backend serves but *before* minting the built-in procs,
+    /// so the via session is the newest active serve. That ordering
+    /// makes every ref minted on this host advertise the routable
+    /// `Via` location rather than the bare local frontend, which is
+    /// what lets an out-of-cluster client receive return traffic over
+    /// the duplex.
     #[hyperactor::instrument(fields(addr=addr.to_string()))]
     pub async fn new_with_gateway(
         manager: M,
         addr: ChannelAddr,
         listener: Option<std::net::TcpListener>,
         gateway: Gateway,
+        via: Option<ChannelAddr>,
     ) -> Result<Self, HostError> {
         let mut backend_handle = Gateway::serve(&gateway, ChannelAddr::any(manager.transport()))?;
         let backend_addr = gateway.default_location().addr().clone();
 
-        let frontend_handle = match gateway.serve_with_listener(addr, listener) {
+        let mut frontend_handle = match gateway.serve_with_listener(addr, listener) {
             Ok(handle) => handle,
             Err(error) => {
                 backend_handle.stop("host setup failed");
@@ -228,6 +246,36 @@ impl<M: ProcManager> Host<M> {
             }
         };
         let frontend_addr = gateway.default_location().addr().clone();
+
+        // Attach to the remote gateway after the local serves are live
+        // but before any proc or actor ref is minted below. `serve_via`
+        // must be the newest active serve so it supplies the gateway's
+        // `default_location`; otherwise the local frontend serve above
+        // would win, and refs would advertise a bare, cluster-
+        // unreachable address — the out-of-cluster return-path bug.
+        let via_handle = match via {
+            Some(via_addr) => match gateway.serve_via(via_addr).await {
+                Ok(handle) => Some(handle),
+                Err(error) => {
+                    frontend_handle.stop("host setup failed");
+                    if let Err(join_error) = frontend_handle.join().await {
+                        tracing::warn!(
+                            error = %join_error,
+                            "failed to join frontend server after via attach error"
+                        );
+                    }
+                    backend_handle.stop("host setup failed");
+                    if let Err(join_error) = backend_handle.join().await {
+                        tracing::warn!(
+                            error = %join_error,
+                            "failed to join backend server after via attach error"
+                        );
+                    }
+                    return Err(HostError::ViaAttachFailure(error));
+                }
+            },
+            None => None,
+        };
 
         // Set up the system proc and the local client proc after the
         // gateway servers are live. The HostAgent is published only
@@ -253,6 +301,7 @@ impl<M: ProcManager> Host<M> {
             gateway,
             frontend_handle: Some(frontend_handle),
             backend_handle: Some(backend_handle),
+            via_handle,
             manager,
             service_proc,
             local_proc,
@@ -371,6 +420,9 @@ impl<M> Drop for Host<M> {
             handle.stop("host dropped");
         }
         if let Some(mut handle) = self.backend_handle.take() {
+            handle.stop("host dropped");
+        }
+        if let Some(mut handle) = self.via_handle.take() {
             handle.stop("host dropped");
         }
     }
@@ -2141,6 +2193,7 @@ mod tests {
             ChannelAddr::any(ChannelTransport::Unix),
             None,
             gateway,
+            None,
         )
         .await
         .unwrap();
@@ -2167,6 +2220,7 @@ mod tests {
             ChannelAddr::any(ChannelTransport::Unix),
             None,
             Gateway::new(),
+            None,
         )
         .await
         .unwrap();
@@ -2188,5 +2242,57 @@ mod tests {
 
         later_frontend.stop("test cleanup");
         later_frontend.join().await.unwrap();
+    }
+
+    // Regression: an out-of-cluster client (`via` set) must advertise
+    // its refs at the `Via` location so in-cluster hosts route return
+    // traffic back over the duplex. Before the fix, the host's own
+    // frontend serve clobbered the via as `default_location`, so refs
+    // carried a bare, cluster-unreachable address and the attach-time
+    // config-push acks timed out (`MESH_ATTACH_CONFIG_TIMEOUT`).
+    #[tokio::test]
+    async fn test_new_with_gateway_via_advertises_via_location() {
+        // A remote gateway accepting duplex attaches stands in for the
+        // in-cluster host the client attaches to.
+        let remote_gw = Gateway::new();
+        let mut remote_accept = remote_gw
+            .serve_duplex(ChannelAddr::any(ChannelTransport::Unix))
+            .unwrap();
+        let remote_addr = remote_gw.default_location().addr().clone();
+
+        let proc_manager = LocalProcManager::new(|proc: Proc| async move {
+            Ok(proc.spawn_with_label::<()>("host_agent", ()))
+        });
+
+        let host = Host::new_with_gateway(
+            proc_manager,
+            ChannelAddr::any(ChannelTransport::Unix),
+            None,
+            Gateway::new(),
+            Some(remote_addr.clone()),
+        )
+        .await
+        .unwrap();
+
+        // The gateway must advertise the Via (not the bare local
+        // frontend) as its default location for newly bound refs.
+        let default_location = host.gateway().default_location();
+        let (via_uid, inner) = default_location
+            .as_via()
+            .expect("default location must carry the via prefix");
+        assert_eq!(via_uid, host.gateway().uid());
+        assert_eq!(inner.addr(), &remote_addr);
+
+        // The built-in service proc, minted after `serve_via`, must
+        // also carry the Via — it advertised a bare address before the
+        // fix.
+        let svc_proc_addr = host.system_proc().proc_addr();
+        let (_, svc_inner) = svc_proc_addr
+            .location()
+            .as_via()
+            .expect("service proc must carry the via prefix");
+        assert_eq!(svc_inner.addr(), &remote_addr);
+
+        remote_accept.stop("test cleanup");
     }
 }
