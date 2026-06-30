@@ -124,6 +124,16 @@ T2 = TypeVar("T2")
 
 
 class Point(HyPoint, collections.abc.Mapping):
+    """A coordinate within a mesh.
+
+    A ``Point`` maps each mesh dimension label (for example ``"hosts"`` or
+    ``"gpus"``) to its integer index along that dimension. It behaves as a
+    read-only mapping, so ``point["gpus"]`` is the index along the ``"gpus"``
+    dimension. ``current_rank`` and ``Context.message_rank`` return the
+    ``Point`` that locates the current actor within the mesh that received the
+    message.
+    """
+
     pass
 
 
@@ -311,6 +321,13 @@ def _qualified_name(ins: "CreatorInstance | Instance | None") -> str:
 
 @rust_struct("monarch_hyperactor::context::Context")
 class Context:
+    """Runtime information about the currently executing actor.
+
+    A ``Context`` is returned by ``context()`` from within an endpoint. It
+    exposes the running actor through ``actor_instance`` and the position of the
+    current message within its broadcast through ``message_rank``.
+    """
+
     @property
     def actor_instance(self) -> Instance:
         """
@@ -559,6 +576,12 @@ def shutdown_context() -> "Future[None]":
 
 
 def context() -> Context:
+    """Return the ``Context`` for the currently executing actor.
+
+    Call this from within an endpoint to inspect the running actor and the
+    current message's position in the mesh. Outside an actor (on the client) it
+    returns the root client context.
+    """
     c = _context.get()
     if c is None:
         from monarch._src.actor.proc_mesh import _get_controller_controller
@@ -762,6 +785,26 @@ def as_endpoint(
     propagate: Propagator = None,
     explicit_response_port: bool = False,
 ) -> Any:
+    """Treat an actor method that is not an ``@endpoint`` as one.
+
+    Use this to call a plain method of a spawned actor through the messaging
+    adverbs when the method was not decorated with ``@endpoint``, for example
+    ``as_endpoint(actor.method).call(...)``. The options match those of
+    ``endpoint``.
+
+    Args:
+        not_an_endpoint: An unannotated method of a spawned actor.
+        propagate: Tensor-shape propagation for ``rref``; see ``endpoint``.
+        explicit_response_port: When ``True``, the method receives a ``Port``
+            as its first argument and sends its result through it; see
+            ``endpoint``.
+
+    Returns:
+        An ``Endpoint`` exposing the messaging adverbs.
+
+    Raises:
+        ValueError: If ``not_an_endpoint`` is not a method of a spawned actor.
+    """
     if not isinstance(not_an_endpoint, NotAnEndpoint):
         raise ValueError("expected an method of a spawned actor")
     kind = (
@@ -1600,6 +1643,15 @@ def _is_user_override(method: Any) -> bool:
 
 
 class Actor(MeshTrait):
+    """Base class for actors.
+
+    Subclass ``Actor`` to define an actor, and decorate the methods that form
+    its public API with ``@endpoint``. Actors are spawned onto a ``ProcMesh``
+    (for example with ``this_proc().spawn(...)``), after which their endpoints
+    are invoked remotely through the messaging adverbs. Each actor processes its
+    messages sequentially and participates in the supervision tree.
+    """
+
     @functools.cached_property
     def logger(cls) -> logging.Logger:
         lgr = logging.getLogger(cls.__class__.__name__)
@@ -1881,14 +1933,20 @@ class ActorError(Exception):
 
 
 def current_actor_name() -> str:
+    """Return the actor id of the currently executing actor as a string."""
     return str(context().actor_instance.actor_id)
 
 
 def current_rank() -> Point:
+    """Return the current message's position within its mesh as a ``Point``."""
     return context().message_rank
 
 
 def current_size() -> Dict[str, int]:
+    """Return the size of each mesh dimension for the current message.
+
+    The result maps each dimension label to the number of actors along it.
+    """
     r = context().message_rank.extent
     return {k: r[k] for k in r}
 
