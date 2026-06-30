@@ -351,6 +351,7 @@ async fn collect_value(
     }
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 async fn collect_valuemesh(
     extent: Extent,
     rx: OncePortReceiver<PythonMessage>,
@@ -664,6 +665,7 @@ pub(crate) trait Endpoint {
     }
 
     /// Call the endpoint on all actors and collect all responses into a ValueMesh.
+    #[tracing::instrument(level = "debug", skip_all)]
     fn call<'py>(
         &self,
         py: Python<'py>,

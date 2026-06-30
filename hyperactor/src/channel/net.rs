@@ -64,6 +64,7 @@ use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::watch;
+use tracing::Instrument;
 
 use super::*;
 use crate::RemoteMessage;
@@ -739,7 +740,7 @@ fn spawn_inner<M: RemoteMessage>(link: impl Link) -> super::ChannelTx<M> {
         }
 
         let _ = notify.send(TxStatus::Closed(reason));
-    });
+    }.instrument(tracing::debug_span!("net tx loop")));
     tx
 }
 

@@ -155,6 +155,7 @@ fn resolve_stream<S: Stream>(
 /// channel and return immediately. [`accept_loop`] joins every
 /// dispatch in its `connections` `JoinSet`, so it finishes only
 /// after every recv-loop has finished.
+#[tracing::instrument(level = "debug", skip_all)]
 pub(super) async fn dispatch_stream<M: RemoteMessage, S: Stream>(
     session_id: SessionId,
     streams: Option<(u8, Arc<StreamState<S>>)>,
@@ -310,6 +311,7 @@ pub(super) async fn dispatch_stream<M: RemoteMessage, S: Stream>(
 /// [`dispatch_stream`]: first dispatch for a given (`session_id`,
 /// `stream_id`) runs the recv-loop inline; reconnects hand off via
 /// the per-stream channel and return.
+#[tracing::instrument(level = "debug", skip_all)]
 async fn dispatch_multi_stream<M: RemoteMessage, S: Stream>(
     session_id: SessionId,
     stream_id: u8,
@@ -633,6 +635,7 @@ impl Future for ServerHandle {
 /// Serve new connections on the given address, optionally using a pre-opened TCP listener.
 /// When `prebound_listener` is `Some`, it is used instead of binding a new socket.
 /// This is only supported for TCP-based transports (Tcp, Tls, MetaTls).
+#[tracing::instrument(level = "debug", skip_all)]
 pub(in crate::channel) fn serve<M: RemoteMessage>(
     addr: ChannelAddr,
     prebound_listener: Option<std::net::TcpListener>,
@@ -736,6 +739,7 @@ pub(in crate::channel) fn serve<M: RemoteMessage>(
 /// Test-only variant that accepts an arbitrary `Listener`. Used by
 /// mock-link tests that cannot go through `net::listen()`.
 #[cfg(test)]
+#[tracing::instrument(level = "debug", skip_all)]
 pub(super) fn serve_with_listener<M, L>(
     mut listener: L,
     channel_addr: ChannelAddr,

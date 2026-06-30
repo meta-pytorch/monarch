@@ -137,6 +137,7 @@ use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 use typeuri::Named;
 
 use crate::ActorAddr;
@@ -1447,7 +1448,7 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
             rx.join().await;
 
             result
-        });
+        }.instrument(tracing::debug_span!("MailboxServer")));
 
         MailboxServerHandle {
             join_handle,
@@ -1474,14 +1475,17 @@ impl<T: Message> Buffer<T> {
     {
         let (queue, mut next) = mpsc::unbounded_channel();
         let (last_processed, processed) = watch::channel(0);
-        crate::init::get_runtime().spawn(async move {
-            let mut seq = 0;
-            while let Some((msg, return_handle)) = next.recv().await {
-                process(msg, return_handle).await;
-                seq += 1;
-                let _ = last_processed.send(seq);
+        crate::init::get_runtime().spawn(
+            async move {
+                let mut seq = 0;
+                while let Some((msg, return_handle)) = next.recv().await {
+                    process(msg, return_handle).await;
+                    seq += 1;
+                    let _ = last_processed.send(seq);
+                }
             }
-        });
+            .instrument(tracing::debug_span!("mailbox::Buffer")),
+        );
         Self {
             queue,
             processed,
@@ -1652,7 +1656,6 @@ impl MailboxClient {
 
 #[async_trait]
 impl MailboxSender for MailboxClient {
-    #[tracing::instrument(level = "debug", skip_all)]
     fn post_unchecked(
         &self,
         envelope: MessageEnvelope,

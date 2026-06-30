@@ -2001,6 +2001,7 @@ impl Port {
         self.port_ref.set_return_undeliverable(value);
     }
 
+    #[tracing::instrument(level = "debug", skip_all)]
     fn send(&mut self, py: Python<'_>, obj: Py<PyAny>) -> PyResult<()> {
         let message = PythonMessage::new_from_buf(
             PythonMessageKind::Result { rank: self.rank },
@@ -2012,6 +2013,7 @@ impl Port {
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 
+    #[tracing::instrument(level = "debug", skip_all)]
     fn send_message(&mut self, message: PythonMessage) -> PyResult<()> {
         self.port_ref
             .post_with_headers(&self.instance, self.reply_headers.clone(), message)

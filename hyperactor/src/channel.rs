@@ -200,7 +200,6 @@ pub trait Tx<M: RemoteMessage> {
     /// message is either delivered, or we eventually discover that
     /// the channel has failed and it will be sent back on `return_channel`.
     #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SendError`.
-    #[tracing::instrument(level = "debug", skip_all)]
     fn try_post(&self, message: M, return_channel: oneshot::Sender<SendError<M>>) {
         self.do_post(message, Some(return_channel));
     }
@@ -1144,7 +1143,6 @@ impl<M: RemoteMessage> ChannelRx<M> {
 
 #[async_trait]
 impl<M: RemoteMessage> Rx<M> for ChannelRx<M> {
-    #[tracing::instrument(level = "debug", skip_all)]
     async fn recv(&mut self) -> Result<M, ChannelError> {
         tracing::trace!(
             name = "recv",
