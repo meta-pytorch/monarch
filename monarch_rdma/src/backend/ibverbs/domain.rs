@@ -425,7 +425,7 @@ pub(super) unsafe fn register_dmabuf_mr(
 
     // Resolve the base and size of the allocation containing `addr`; the dmabuf
     // handle and MR cover the whole allocation.
-    let mut base: rdmaxcel_sys::CUdeviceptr = 0;
+    let mut base: rdmaxcel_sys::CUdeviceptr = unsafe { std::mem::zeroed() };
     let mut alloc_size: usize = 0;
     // SAFETY: `rdmaxcel_cuMemGetAddressRange` writes the allocation's base and
     // size into the out-params and touches no other Rust memory; it reports

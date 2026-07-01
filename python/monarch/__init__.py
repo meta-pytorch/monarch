@@ -12,13 +12,10 @@ from typing import TYPE_CHECKING
 # Import before monarch to pre-load torch DSOs as, in exploded wheel flows,
 # our RPATHs won't correctly find them.
 try:
-    import monarch._rust_bindings  # @manual  # noqa: F401
+    import torch  # @manual  # noqa: F401
 except ImportError:
-    try:
-        import torch  # @manual  # noqa: F401
-    except ImportError:
-        pass
-    import monarch._rust_bindings  # @manual  # noqa: F401
+    pass
+import monarch._rust_bindings  # @manual  # noqa: F401
 
 # submodules of monarch should not be imported in this
 # top-level file because it will cause them to get
