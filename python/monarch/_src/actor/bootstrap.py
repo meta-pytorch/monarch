@@ -38,7 +38,10 @@ def _as_python_task(s: str | Future[str]) -> "PythonTask[str]":
 
 
 def run_worker_loop_forever(
-    *, private_key: PrivateKey = None, ca: CA, address: str
+    *,
+    private_key: PrivateKey = None,
+    ca: CA,
+    address: str,
 ) -> None:
     """
     Start a monarch server at "address" capable of letting this machine participate in

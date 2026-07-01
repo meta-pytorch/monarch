@@ -44,6 +44,41 @@ roleRef:
   name: hello-controller
   apiGroup: rbac.authorization.k8s.io
 ---
+# Headless Service for mesh1.
+# The MonarchMesh operator may create this automatically; defining it
+# here ensures it exists for out-of-cluster port-forwarding
+# (kubectl port-forward svc/mesh1-svc 26600:26600).
+apiVersion: v1
+kind: Service
+metadata:
+  name: mesh1-svc
+  namespace: monarch-tests
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: monarch-worker
+    monarch.pytorch.org/mesh-name: mesh1
+  ports:
+    - name: monarch
+      port: 26600
+      targetPort: 26600
+---
+# Headless Service for mesh2.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mesh2-svc
+  namespace: monarch-tests
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: monarch-worker
+    monarch.pytorch.org/mesh-name: mesh2
+  ports:
+    - name: monarch
+      port: 26600
+      targetPort: 26600
+---
 apiVersion: monarch.pytorch.org/v1alpha1
 kind: MonarchMesh
 metadata:
@@ -78,7 +113,7 @@ spec:
             port = os.environ.get("MONARCH_PORT", "26600")
             # Use FQDN for cross-pod DNS resolution
             hostname = socket.getfqdn()
-            address = f"tcp://{hostname}:{port}"
+            address = f"tcp://{hostname}:{port}@tcp://0.0.0.0:{port}"
             logger.info(f"--- Starting Monarch Worker ---")
             logger.info(f"Identity: {hostname}")
             logger.info(f"Listening on: {address}")
@@ -118,7 +153,7 @@ spec:
             port = os.environ.get("MONARCH_PORT", "26600")
             # Use FQDN for cross-pod DNS resolution
             hostname = socket.getfqdn()
-            address = f"tcp://{hostname}:{port}"
+            address = f"tcp://{hostname}:{port}@tcp://0.0.0.0:{port}"
             logger.info(f"--- Starting Monarch Worker ---")
             logger.info(f"Identity: {hostname}")
             logger.info(f"Listening on: {address}")

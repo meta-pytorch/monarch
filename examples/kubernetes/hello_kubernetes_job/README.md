@@ -38,6 +38,9 @@ kubectl cp hello_kubernetes_job.py monarch-tests/hello-controller:/tmp/hello_kub
 # Run with --provision to create MonarchMesh CRDs from Python
 kubectl exec -it hello-controller -n monarch-tests -- python /tmp/hello_kubernetes_job.py --provision
 
+# Optionally exercise a small RDMABuffer transfer over TCP fallback
+kubectl exec -it hello-controller -n monarch-tests -- python /tmp/hello_kubernetes_job.py --provision --rdma-smoke
+
 # (Optional) Run with Kueue for gang scheduling (mesh level)
 kubectl exec -it hello-controller -n monarch-tests -- python /tmp/hello_kubernetes_job.py --provision --kueue user-queue
 ```
@@ -94,7 +97,7 @@ kubectl get pods -n monarch-tests hello-controller
 
 Wait for all pods to show `Running` status.
 
-### Running the Example
+### Running the Example In-Cluster
 
 Copy and execute the script from the controller pod:
 
@@ -178,3 +181,55 @@ The `--volcano` flag configures `KubernetesJob` to use Volcano's labels:
 ```bash
 kubectl delete -f manifests/volcano_workers.yaml
 ```
+
+## Out-of-Cluster Execution
+
+You can also run the same examples shown here from outside the cluster! The client runs locally
+and sends messages to the mesh inside the cluster. This relies on port-forwarding
+the monarch port on a single host in your cluster. The monarch port doubles as the
+attach endpoint, so no extra configuration is needed on the worker side.
+The easiest way is with `kubectl port-forward`:
+```
+kubectl port-forward -n monarch-tests pod/mesh1-0 26600:26600
+```
+This will forward localhost port 26600 to the monarch port on the pod.
+You can use any local port; it doesn't need to match the port on the pod.
+
+```bash
+uv run --no-build-isolation hello_kubernetes_job.py --out-of-cluster --attach-to tcp://localhost:26600
+```
+
+Or, for provisioning mode, use:
+```bash
+uv run --no-build-isolation hello_kubernetes_job.py --out-of-cluster --provision
+```
+
+To include a small `RDMABuffer` transfer between the two meshes over TCP fallback, add `--rdma-smoke`.
+
+The `--out-of-cluster` flag tells `KubernetesJob` to attach the client's mailbox
+to the host. The `--attach-to` flag tells it which host to attach to. In provisioning
+mode, we automatically expose the port on the pods, do a port-forward for you,
+and attach to that pod.
+
+Some caveats with this approach:
+* Your version of monarch locally and on the cluster must match exactly. If they
+  don't you may get timeouts or errors on the server decoding messages that may have
+  skew between the two versions. If you make local changes to monarch, you must
+  send them out in a new container for the pods
+* Your local python code may not exist on the remote machines. When we send requests
+  to PythonActor, we use `cloudpickle`, which may end up trying to import your
+  modules on the mesh. For this reason, it's also best to ensure your container
+  contains the same versions of all your local modules and source code.
+* Your local client and remote mesh may have different hardware, for example on
+  the cluster you may have access to RDMA and on the client you do not. Same goes
+  for other hardware like GPUs and CPUs. Be careful not to run things on the client
+  that may assume certain hardware. Even functions on torch.Tensor like
+  `tensor.to("cuda:0")` will fail if your client doesn't have that device.
+
+## Building a Docker Image
+
+If you make local changes to Monarch, publish a new container image so the pods
+run your build. See
+[Building a Docker Image from Source](../../../README.md#building-a-docker-image-from-source)
+in the top-level README. In `--provision` mode, pass `--image` to select which
+image the provisioned hosts use.
