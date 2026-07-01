@@ -159,7 +159,6 @@ use crate::channel::ChannelError;
 use crate::channel::ChannelTransport;
 use crate::channel::CloseReason;
 use crate::channel::CompletionSink;
-use crate::channel::SendCompletion;
 use crate::channel::SendError;
 use crate::channel::SendErrorReason;
 use crate::channel::TxStatus;
@@ -1558,45 +1557,41 @@ impl MailboxClient {
                 let addr = addr.clone();
                 // Set up for delivery failure.
                 let return_handle_0 = return_handle.clone();
-                let completed = completed.clone();
-                let completed_notify = completed_notify.clone();
-                let completion =
-                    CompletionSink::callback(move |completion: SendCompletion<MessageEnvelope>| {
-                        match completion {
-                            SendCompletion::Rejected(SendError {
-                                error,
-                                message,
-                                reason,
-                            }) => {
-                                let target = message.dest().clone();
-                                let reason_text = reason
-                                    .as_ref()
-                                    .map(ToString::to_string)
-                                    .unwrap_or_else(|| "channel closed".to_owned());
-                                let reason = match reason {
-                                    Some(SendErrorReason::OversizedFrame { len, max }) => {
-                                        TransportFailureReason::OversizedFrame { len, max }
-                                    }
-                                    Some(SendErrorReason::Other(_)) | None => {
-                                        TransportFailureReason::ChannelClosed { addr }
-                                    }
-                                };
-                                let failure = DeliveryFailure::new(UndeliverableReason::Transport(
-                                    TransportFailure::new(target, reason.clone()),
-                                ));
-                                tracing::debug!(
-                                    %error,
-                                    send_error_reason = %reason_text,
-                                    ?reason,
-                                    "failed to enqueue in mailbox client while processing buffer",
-                                );
-                                message.undeliverable(failure, return_handle_0);
+                let tracker =
+                    channel::CompletionTracker::new(completed.clone(), completed_notify.clone());
+                let completion = CompletionSink::tracked(
+                    tracker,
+                    move |send_error: SendError<MessageEnvelope>| {
+                        let SendError {
+                            error,
+                            message,
+                            reason,
+                        } = send_error;
+                        let target = message.dest().clone();
+                        let reason_text = reason
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| "channel closed".to_owned());
+                        let reason = match reason {
+                            Some(SendErrorReason::OversizedFrame { len, max }) => {
+                                TransportFailureReason::OversizedFrame { len, max }
                             }
-                            SendCompletion::Accepted => {}
-                        }
-                        completed.fetch_add(1, Ordering::SeqCst);
-                        completed_notify.notify_waiters();
-                    });
+                            Some(SendErrorReason::Other(_)) | None => {
+                                TransportFailureReason::ChannelClosed { addr }
+                            }
+                        };
+                        let failure = DeliveryFailure::new(UndeliverableReason::Transport(
+                            TransportFailure::new(target, reason.clone()),
+                        ));
+                        tracing::debug!(
+                            %error,
+                            send_error_reason = %reason_text,
+                            ?reason,
+                            "failed to enqueue in mailbox client while processing buffer",
+                        );
+                        message.undeliverable(failure, return_handle_0);
+                    },
+                );
                 // Send the message for transmission.
                 tx.do_post(envelope, completion);
                 future::ready(())
