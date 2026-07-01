@@ -221,6 +221,14 @@ pub(crate) fn proc_name(proc_mesh_id: &ProcMeshId, rank: usize) -> ResourceId {
 pub(crate) struct ProcCreationState {
     pub(crate) rank: usize,
     pub(crate) host_mesh_id: Option<HostMeshId>,
+    /// The proc mesh this proc belongs to. Used to scope per-mesh queries like
+    /// `StreamState`, since a host agent can hold procs from multiple meshes.
+    /// Always set for procs spawned through a proc mesh (the cast `SpawnProcs`
+    /// path populates it via `ProcSpec`). `None` only for procs created off that
+    /// path (e.g. the point-to-point `CreateOrUpdate` used by tests/admin),
+    /// which belong to no queryable mesh and are intentionally excluded from
+    /// per-mesh queries.
+    pub(crate) proc_mesh_id: Option<ProcMeshId>,
     pub(crate) created: Result<(ProcAddr, ActorRef<ProcAgent>), HostError>,
     /// "Owner is alive" deadline communicated by the controller via
     /// `KeepaliveGetState`. The host's `SelfCheck` reaper compares against this
@@ -820,6 +828,7 @@ impl Handler<SpawnProcs> for HostAgent {
                         proc_bind,
                         bootstrap_command,
                         host_mesh_id: spawn.host_mesh_id.clone(),
+                        proc_mesh_id: Some(spawn.proc_mesh_id.clone()),
                     },
                 },
             )
@@ -921,6 +930,7 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
             ProcCreationState {
                 rank,
                 host_mesh_id: create_or_update.spec.host_mesh_id.clone(),
+                proc_mesh_id: create_or_update.spec.proc_mesh_id.clone(),
                 created,
                 expiry_time: None,
             },
@@ -1579,59 +1589,59 @@ impl Handler<resource::StreamState<ProcState>> for HostAgent {
         cx: &Context<Self>,
         stream_state: resource::StreamState<ProcState>,
     ) -> anyhow::Result<()> {
-        // TODO: register `subscriber` for ongoing updates. For now send the
-        // current state once so the controller has an initial snapshot.
-        let state = match self.created.get(&stream_state.id) {
-            Some(ProcCreationState {
-                rank,
-                created: Ok((proc_id, mesh_agent)),
-                ..
-            }) => {
-                let (raw_status, proc_status, bootstrap_command) = match self.host() {
-                    Some(host) => {
-                        let (status, proc_status) = host.proc_status(proc_id).await;
-                        (status, proc_status, host.bootstrap_command())
-                    }
-                    None => (resource::Status::Unknown, None, None),
-                };
-                let status = raw_status.clamp_min(self.min_proc_status());
-                resource::State {
-                    id: stream_state.id.clone(),
-                    status,
-                    state: Some(ProcState {
-                        proc_id: proc_id.clone(),
-                        create_rank: *rank,
-                        mesh_agent: mesh_agent.clone(),
-                        bootstrap_command,
-                        proc_status,
-                    }),
-                    generation: 0,
-                    timestamp: std::time::SystemTime::now(),
-                }
-            }
-            Some(ProcCreationState {
-                created: Err(e), ..
-            }) => resource::State {
-                id: stream_state.id.clone(),
-                status: resource::Status::Failed(e.to_string()),
-                state: None,
-                generation: 0,
-                timestamp: std::time::SystemTime::now(),
-            },
-            None => resource::State {
-                id: stream_state.id.clone(),
-                status: resource::Status::NotExist,
-                state: None,
-                generation: 0,
-                timestamp: std::time::SystemTime::now(),
-            },
-        };
-
+        // One cast delivers a single StreamState per host agent. Stream a state
+        // for each proc this host owns that belongs to the subscribing mesh.
+        // TODO: register `subscriber` for ongoing updates.
         let mut headers = Flattrs::new();
         headers.set(crate::proc_agent::STREAM_STATE_SUBSCRIBER, true);
-        stream_state
-            .subscriber
-            .post_with_headers(cx, headers, state);
+
+        for (id, proc) in self.created.iter() {
+            // Skip procs that don't belong to the subscribing proc mesh.
+            if !proc
+                .proc_mesh_id
+                .as_ref()
+                .is_some_and(|mesh| mesh.resource_id() == &stream_state.id)
+            {
+                continue;
+            }
+
+            let state = match &proc.created {
+                Ok((proc_id, mesh_agent)) => {
+                    let (raw_status, proc_status, bootstrap_command) = match self.host() {
+                        Some(host) => {
+                            let (status, proc_status) = host.proc_status(proc_id).await;
+                            (status, proc_status, host.bootstrap_command())
+                        }
+                        None => (resource::Status::Unknown, None, None),
+                    };
+                    let status = raw_status.clamp_min(self.min_proc_status());
+                    resource::State {
+                        id: id.clone(),
+                        status,
+                        state: Some(ProcState {
+                            proc_id: proc_id.clone(),
+                            create_rank: proc.rank,
+                            mesh_agent: mesh_agent.clone(),
+                            bootstrap_command,
+                            proc_status,
+                        }),
+                        generation: 0,
+                        timestamp: std::time::SystemTime::now(),
+                    }
+                }
+                Err(e) => resource::State {
+                    id: id.clone(),
+                    status: resource::Status::Failed(e.to_string()),
+                    state: None,
+                    generation: 0,
+                    timestamp: std::time::SystemTime::now(),
+                },
+            };
+
+            stream_state
+                .subscriber
+                .post_with_headers(cx, headers.clone(), state);
+        }
         Ok(())
     }
 }

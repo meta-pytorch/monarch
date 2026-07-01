@@ -1062,6 +1062,21 @@ impl HostMeshRef {
         Ok(())
     }
 
+    /// Cast `StreamState<ProcState>` to every host agent so each host streams
+    /// its procs' state back through the cast tree (fanning in at cast actor 0)
+    /// instead of every host dialing the subscriber directly.
+    pub(crate) fn cast_stream_state(
+        &self,
+        cx: &impl context::Actor,
+        id: ResourceId,
+        subscriber: hyperactor::PortRef<resource::State<host_agent::ProcState>>,
+    ) -> anyhow::Result<()> {
+        Ok(self.host_agent_mesh.cast(
+            cx,
+            resource::StreamState::<host_agent::ProcState> { id, subscriber },
+        )?)
+    }
+
     /// Returns the host entries as `(addr_string, ActorRef<HostAgent>)` pairs.
     /// Used by `MeshAdminAgent::effective_hosts()` to merge C into the
     /// admin's host list (see CH-1 in mesh_admin module doc).
