@@ -52,6 +52,8 @@ use super::domain::IbvDomainKeepalive;
 use super::manager_actor::CreatePeerQueuePair;
 use super::memory_region::IbvMemoryRegionView;
 use super::primitives::Gid;
+use super::primitives::GidScope;
+use super::primitives::GidType;
 use super::primitives::IbvConfig;
 use super::primitives::IbvCq;
 use super::primitives::IbvOperation;
@@ -280,7 +282,7 @@ impl IbvQueuePair for legacy::IbvQueuePair {
 }
 
 /// Queries the local endpoint info for `qp`, whose device `context` and the QP
-/// `config` (port, GID index, PSN) describe the connection.
+/// `config` (port, PSN) describe the connection. `gid` is the port's source GID.
 ///
 /// # Safety
 ///
@@ -290,6 +292,7 @@ pub(super) unsafe fn get_qp_info(
     qp: *mut rdmaxcel_sys::ibv_qp,
     context: *mut rdmaxcel_sys::ibv_context,
     config: &IbvConfig,
+    gid: Gid,
 ) -> Result<IbvQpInfo, anyhow::Error> {
     let mut port_attr = rdmaxcel_sys::ibv_port_attr::default();
     // SAFETY: `context` is a live device context (caller contract); the
@@ -306,26 +309,6 @@ pub(super) unsafe fn get_qp_info(
         return Err(anyhow::anyhow!(
             "failed to query port attributes: {}",
             Error::from_raw_os_error(errno)
-        ));
-    }
-
-    let mut gid = Gid::default();
-    // SAFETY: `context` is live (caller contract); `gid.as_mut()` is a writable,
-    // properly aligned `ibv_gid`.
-    let ret = unsafe {
-        rdmaxcel_sys::ibv_query_gid(
-            context,
-            config.port_num,
-            i32::from(config.gid_index),
-            gid.as_mut(),
-        )
-    };
-    if ret != 0 {
-        // `ibv_query_gid` returns -1 (not the errno) and sets `errno`, unlike
-        // the other verbs here, so report `last_os_error`.
-        return Err(anyhow::anyhow!(
-            "failed to query GID: {}",
-            Error::last_os_error()
         ));
     }
 
@@ -363,6 +346,8 @@ unsafe fn state(qp: *mut rdmaxcel_sys::ibv_qp) -> Result<u32, anyhow::Error> {
 
 /// Transitions `qp` through `INIT -> RTR -> RTS`, connected to `info`, granting
 /// remote peers `access_flags` and using the connection parameters in `config`.
+/// `sgid_index` is the local source-GID table index, used as the address
+/// handle's `sgid_index` when `info` carries a (remote) GID.
 ///
 /// # Safety
 ///
@@ -372,6 +357,7 @@ pub(super) unsafe fn connect(
     config: &IbvConfig,
     access_flags: i32,
     info: &IbvQpInfo,
+    sgid_index: u8,
 ) -> Result<(), anyhow::Error> {
     // Transition to INIT.
     let mut qp_attr = rdmaxcel_sys::ibv_qp_attr {
@@ -418,7 +404,7 @@ pub(super) unsafe fn connect(
         qp_attr.ah_attr.is_global = 1;
         qp_attr.ah_attr.grh.dgid = rdmaxcel_sys::ibv_gid::from(gid);
         qp_attr.ah_attr.grh.hop_limit = 0xff;
-        qp_attr.ah_attr.grh.sgid_index = config.gid_index;
+        qp_attr.ah_attr.grh.sgid_index = sgid_index;
     } else {
         qp_attr.ah_attr.is_global = 0;
     }
@@ -495,6 +481,10 @@ pub struct RCQueuePair {
     /// The device context, used for the data-path verbs.
     context: Arc<IbvContext>,
     config: IbvConfig,
+    /// The source GID (carrying its table index), resolved from the owning
+    /// device's `IbvDeviceInfo` at construction: the first global RoCE v2 GID on
+    /// `config.port_num`.
+    gid: Gid,
     /// Remote-access flags granted to peers at connect time, taken from the
     /// owning domain at construction.
     access_flags: i32,
@@ -521,6 +511,7 @@ impl RCQueuePair {
         parts: QpParts,
         context: Arc<IbvContext>,
         config: IbvConfig,
+        gid: Gid,
         access_flags: i32,
         domain: Arc<dyn IbvDomainKeepalive>,
     ) -> Self {
@@ -535,6 +526,7 @@ impl RCQueuePair {
             recv_cq,
             context,
             config,
+            gid,
             access_flags,
             next_wr_id: 0,
             _domain: domain,
@@ -641,6 +633,14 @@ impl IbvQueuePair for RCQueuePair {
             anyhow::bail!("cannot create an RCQueuePair on a null protection domain");
         }
 
+        // Resolve the source GID up front (before allocating any FFI resources),
+        // so a port without a global RoCE v2 GID fails cleanly here.
+        let gid = domain.device_info().select_gid(
+            config.port_num,
+            Some(GidScope::Global),
+            Some(GidType::RoCEv2),
+        )?;
+
         // Separate send/recv completion queues. Each `IbvCq` destroys its queue
         // on drop, so an early return below (or a panic) cleans them up.
         // SAFETY: `context_ptr`, if non-null, is live (kept alive by `context`);
@@ -687,19 +687,27 @@ impl IbvQueuePair for RCQueuePair {
 
         // SAFETY: `parts` wraps a live RC QP just created against `pd`/`context`
         // with its completion queues; ownership transfers to the returned value.
-        Ok(unsafe { Self::from_parts(parts, context, config, access_flags, domain) })
+        Ok(unsafe { Self::from_parts(parts, context, config, gid, access_flags, domain) })
     }
 
     fn connect(&mut self, info: &IbvQpInfo) -> Result<(), anyhow::Error> {
         // SAFETY: `self.qp` is the live QP, kept alive for `self`'s lifetime.
-        unsafe { connect(self.qp.as_ptr(), &self.config, self.access_flags, info) }
+        unsafe {
+            connect(
+                self.qp.as_ptr(),
+                &self.config,
+                self.access_flags,
+                info,
+                self.gid.index(),
+            )
+        }
     }
 
     fn get_qp_info(&mut self) -> Result<IbvQpInfo, anyhow::Error> {
         let context = self.context.as_ptr();
         // SAFETY: `self.qp` is the live QP and `context` its non-null device
         // context (validated inside `new`), both valid for `self`'s lifetime.
-        unsafe { get_qp_info(self.qp.as_ptr(), context, &self.config) }
+        unsafe { get_qp_info(self.qp.as_ptr(), context, &self.config, self.gid) }
     }
 
     fn state(&mut self) -> Result<u32, anyhow::Error> {

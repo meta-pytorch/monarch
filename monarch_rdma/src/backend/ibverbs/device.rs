@@ -181,12 +181,13 @@ static DEVICE_NAMES_BY_IMPL: LazyLock<HashMap<&'static str, RegisteredBackend>> 
             {
                 // SAFETY: `device` and `ctx.as_ptr()` are non-null and
                 // `ctx.as_ptr()` was returned by `ibv_open_device(device)`.
-                if let Some(info) = unsafe { query_device_info(device, ctx.as_ptr()) } {
-                    by_impl
+                match unsafe { query_device_info(device, ctx.as_ptr()) } {
+                    Ok(info) => by_impl
                         .get_mut((reg.typename)())
                         .expect("registration typename present in map")
                         .devices
-                        .push(info);
+                        .push(info),
+                    Err(err) => tracing::warn!("failed to query RDMA device info: {err:#}"),
                 }
             }
             // `ctx` drops here, closing the transient context.
