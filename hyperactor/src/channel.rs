@@ -11,6 +11,7 @@
 
 use core::net::SocketAddr;
 use std::fmt;
+use std::future::Future;
 use std::net::IpAddr;
 use std::net::Ipv6Addr;
 #[cfg(target_os = "linux")]
@@ -18,18 +19,23 @@ use std::os::linux::net::SocketAddrExt;
 use std::os::unix::io::FromRawFd;
 use std::os::unix::io::RawFd;
 use std::panic::Location;
+use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use std::task::Context;
+use std::task::Poll;
 
 use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
+use futures::task::AtomicWaker;
 use hyperactor_config::attrs::AttrValue;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::mpsc;
-use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tokio::time::Instant;
 
@@ -134,6 +140,118 @@ pub struct SendError<M: RemoteMessage> {
     pub reason: Option<SendErrorReason>,
 }
 
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CompletionStatus {
+    Pending = 0,
+    Accepted = 1,
+    Rejected = 2,
+}
+
+impl CompletionStatus {
+    fn from_u8(value: u8) -> Self {
+        match value {
+            value if value == Self::Pending as u8 => Self::Pending,
+            value if value == Self::Accepted as u8 => Self::Accepted,
+            value if value == Self::Rejected as u8 => Self::Rejected,
+            _ => panic!("invalid completion state"),
+        }
+    }
+}
+
+struct CompletionState<M: RemoteMessage> {
+    state: AtomicU8,
+    waker: AtomicWaker,
+    rejected: Mutex<Option<Box<SendError<M>>>>,
+}
+
+pub(crate) struct CompletionSender<M: RemoteMessage> {
+    inner: Arc<CompletionState<M>>,
+}
+
+/// Future that resolves when a posted message is accepted or rejected.
+pub struct CompletionReceipt<M: RemoteMessage> {
+    inner: Arc<CompletionState<M>>,
+}
+
+impl<M: RemoteMessage> CompletionSender<M> {
+    fn pair() -> (Self, CompletionReceipt<M>) {
+        let inner = Arc::new(CompletionState {
+            state: AtomicU8::new(CompletionStatus::Pending as u8),
+            waker: AtomicWaker::new(),
+            rejected: Mutex::new(None),
+        });
+
+        (
+            Self {
+                inner: Arc::clone(&inner),
+            },
+            CompletionReceipt { inner },
+        )
+    }
+
+    fn accept(self) {
+        self.inner
+            .state
+            .store(CompletionStatus::Accepted as u8, Ordering::Release);
+        self.inner.waker.wake();
+    }
+
+    fn reject(self, error: SendError<M>) {
+        *self.inner.rejected.lock().unwrap() = Some(Box::new(error));
+        self.inner
+            .state
+            .store(CompletionStatus::Rejected as u8, Ordering::Release);
+        self.inner.waker.wake();
+    }
+}
+
+impl<M: RemoteMessage> Drop for CompletionSender<M> {
+    fn drop(&mut self) {
+        if CompletionStatus::from_u8(self.inner.state.load(Ordering::Acquire))
+            == CompletionStatus::Pending
+        {
+            self.inner
+                .state
+                .store(CompletionStatus::Accepted as u8, Ordering::Release);
+            self.inner.waker.wake();
+        }
+    }
+}
+
+impl<M: RemoteMessage> Future for CompletionReceipt<M> {
+    type Output = Result<(), SendError<M>>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match self.poll_ready() {
+            Poll::Ready(result) => Poll::Ready(result),
+            Poll::Pending => {
+                self.inner.waker.register(cx.waker());
+                self.poll_ready()
+            }
+        }
+    }
+}
+
+impl<M: RemoteMessage> CompletionReceipt<M> {
+    fn poll_ready(&self) -> Poll<Result<(), SendError<M>>> {
+        match CompletionStatus::from_u8(self.inner.state.load(Ordering::Acquire)) {
+            CompletionStatus::Accepted => Poll::Ready(Ok(())),
+            CompletionStatus::Rejected => {
+                let error = self
+                    .inner
+                    .rejected
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .expect("rejected completion should store send error");
+                Poll::Ready(Err(*error))
+            }
+            CompletionStatus::Pending => Poll::Pending,
+        }
+    }
+}
+
 /// Shared completion counter for sinks that need to wake flush waiters.
 pub(crate) struct CompletionTracker {
     completed: Arc<AtomicUsize>,
@@ -159,7 +277,7 @@ impl CompletionTracker {
 
 enum CompletionSinkInner<M: RemoteMessage> {
     Ignore,
-    OneShot(oneshot::Sender<SendError<M>>),
+    Receipt(CompletionSender<M>),
     OnReject(Box<dyn FnOnce(SendError<M>) + Send + Sync>),
     Tracked {
         tracker: CompletionTracker,
@@ -181,9 +299,10 @@ impl<M: RemoteMessage> CompletionSink<M> {
         Self(CompletionSinkInner::OnReject(Box::new(f)))
     }
 
-    /// Adapt a legacy oneshot send-error sender into a completion sink.
-    pub fn oneshot(sender: oneshot::Sender<SendError<M>>) -> Self {
-        Self(CompletionSinkInner::OneShot(sender))
+    /// Return a completion sink and a receipt that observes its terminal outcome.
+    pub fn receipt() -> (Self, CompletionReceipt<M>) {
+        let (sender, receipt) = CompletionSender::pair();
+        (Self(CompletionSinkInner::Receipt(sender)), receipt)
     }
 
     /// Track every completion and invoke `on_reject` only for rejected messages.
@@ -204,9 +323,11 @@ impl<M: RemoteMessage> CompletionSink<M> {
     ) -> CompletionSink<N> {
         match self.0 {
             CompletionSinkInner::Ignore => CompletionSink::ignore(),
-            CompletionSinkInner::OneShot(sender) => CompletionSink::on_reject(move |error| {
+            CompletionSinkInner::Receipt(sender) => CompletionSink::on_reject(move |error| {
                 if let Some(error) = f(error) {
-                    let _ = sender.send(error);
+                    sender.reject(error);
+                } else {
+                    sender.accept();
                 }
             }),
             CompletionSinkInner::OnReject(on_reject) => CompletionSink::on_reject(move |error| {
@@ -228,7 +349,7 @@ impl<M: RemoteMessage> CompletionSink<M> {
     pub fn accept(self) {
         match self.0 {
             CompletionSinkInner::Ignore => {}
-            CompletionSinkInner::OneShot(_) => {}
+            CompletionSinkInner::Receipt(sender) => sender.accept(),
             CompletionSinkInner::OnReject(_) => {}
             CompletionSinkInner::Tracked { tracker, .. } => tracker.complete(),
         }
@@ -238,21 +359,13 @@ impl<M: RemoteMessage> CompletionSink<M> {
     pub fn reject(self, error: SendError<M>) {
         match self.0 {
             CompletionSinkInner::Ignore => {}
-            CompletionSinkInner::OneShot(sender) => {
-                let _ = sender.send(error);
-            }
+            CompletionSinkInner::Receipt(sender) => sender.reject(error),
             CompletionSinkInner::OnReject(on_reject) => on_reject(error),
             CompletionSinkInner::Tracked { tracker, on_reject } => {
                 on_reject(error);
                 tracker.complete();
             }
         }
-    }
-}
-
-impl<M: RemoteMessage> From<oneshot::Sender<SendError<M>>> for CompletionSink<M> {
-    fn from(sender: oneshot::Sender<SendError<M>>) -> Self {
-        Self::oneshot(sender)
     }
 }
 
@@ -318,12 +431,12 @@ pub trait Tx<M: RemoteMessage> {
     /// Users should use the `try_post`, and `post` variants directly.
     fn do_post(&self, message: M, completion: CompletionSink<M>);
 
-    /// Enqueue a `message` on the local end of the channel. The
-    /// message is either delivered, or we eventually discover that
-    /// the channel has failed and it will be sent back on `return_channel`.
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SendError`.
-    fn try_post(&self, message: M, return_channel: oneshot::Sender<SendError<M>>) {
-        self.do_post(message, CompletionSink::oneshot(return_channel));
+    /// Enqueue a `message` on the local end of the channel and return a receipt
+    /// that resolves when the message is accepted or rejected.
+    fn try_post(&self, message: M) -> CompletionReceipt<M> {
+        let (completion, receipt) = CompletionSink::receipt();
+        self.do_post(message, completion);
+        receipt
     }
 
     /// Enqueue a message to be sent on the channel.
@@ -335,16 +448,7 @@ pub trait Tx<M: RemoteMessage> {
     /// Send a message synchronously, returning when the message has
     /// been delivered to the remote end of the channel.
     async fn send(&self, message: M) -> Result<(), SendError<M>> {
-        let (tx, rx) = oneshot::channel();
-        self.try_post(message, tx);
-        match rx.await {
-            // Channel was closed; the message was not delivered.
-            Ok(err) => Err(err),
-
-            // Channel was dropped; the message was successfully enqueued
-            // on the remote end of the channel.
-            Err(_) => Ok(()),
-        }
+        self.try_post(message).await
     }
 
     /// The channel address to which this Tx is sending.
@@ -1816,17 +1920,15 @@ mod tests {
             let start = tokio::time::Instant::now();
 
             let result = loop {
-                let (return_tx, return_rx) = oneshot::channel();
-                tx.try_post(123, return_tx);
-                let result = return_rx.await;
+                let result = tx.try_post(123).await;
 
-                if result.is_ok() || start.elapsed() > Duration::from_secs(10) {
+                if result.is_err() || start.elapsed() > Duration::from_secs(10) {
                     break result;
                 }
             };
             assert_matches!(
                 result,
-                Ok(SendError {
+                Err(SendError {
                     error: ChannelError::Closed,
                     message: 123,
                     reason: None

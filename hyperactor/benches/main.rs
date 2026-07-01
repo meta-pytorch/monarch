@@ -145,16 +145,12 @@ fn bench_message_rates(c: &mut Criterion) {
                         let mut response_handlers: Vec<tokio::task::JoinHandle<()>> =
                             Vec::with_capacity(rate as usize);
                         for _ in 0..rate {
-                            let (return_sender, return_receiver) = oneshot::channel();
-                            tx.try_post(message.clone(), return_sender);
+                            let receipt = tx.try_post(message.clone());
 
                             let handle = tokio::spawn(async move {
-                                _ = tokio::time::timeout(
-                                    Duration::from_millis(5000),
-                                    return_receiver,
-                                )
-                                .await
-                                .unwrap();
+                                _ = tokio::time::timeout(Duration::from_millis(5000), receipt)
+                                    .await
+                                    .unwrap();
                             });
 
                             response_handlers.push(handle);
