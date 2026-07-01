@@ -226,50 +226,10 @@ Some caveats with this approach:
   that may assume certain hardware. Even functions on torch.Tensor like
   `tensor.to("cuda:0")` will fail if your client doesn't have that device.
 
+## Building a Docker Image
 
-
-## Updating monarch build for images
-
-To update the version of monarch used in the cluster, which includes changes to both
-Rust and Python:
-```bash
-# Make sure to build for python 3.12 since the pytorch base image uses that python version
-uv python pin 3.12
-# Build the binary distribution, outputs to "dist/" directory.
-# --no-build-isolation allows using cached rust builds which speeds up subsequent
-# iterations.
-uv build --no-build-isolation --wheel
-
-# With docker:
-# Build and tag a docker image with your build of monarch. You can update the
-# PYTORCH_TAG to use a different base image depending on your needs.
-# The nightly dockerfile is used because it uses the package you already built,
-# rather than downloading from PyPI.
-docker build -f Dockerfile.nightly \
-  -t $USER/monarch:local-tag \
-  --build-arg PYTORCH_TAG=2.12.0.dev20260224-cuda12.8-cudnn9-runtime \
-  --build-arg MONARCH_WHEELS=dist \
-  .
-
-# Push so it's available to the kubernetes cluster.
-# Either (a) push to a container registry so your cluster can access it.
-# Might be slow based on your upload speed and the size of the container.
-docker push $USER/monarch:latest
-# Or (b) if you have a fully local kubernetes cluster you can change it to
-# imagePullPolicy: Never in the manifest and it'll use the image locally. This
-# is the fastest iteration speed.
-
-# With podman + kind:
-# Same build command, replace "docker" with "podman"
-# Save image to archive
-podman save localhost/$USER/monarch:local-tag -o /tmp/monarch-image
-# Then push to your kind cluster for local dev:
-KIND_EXPERIMENTAL_PROVIDER=podman kind load image-archive /tmp/monarch-image -n monarch-cluster
-
-```
-
-Then update the docker images from ghcr.io/meta-pytorch/monarch:latest to use
-your new image. Make sure to prepend the service you used for docker login like
-ghcr.io or docker.io, and that you have pushed the image first.
-In `--provision` mode, you can pass `--image` to customize which docker image is
-used for the provisioned hosts.
+If you make local changes to Monarch, publish a new container image so the pods
+run your build. See
+[Building a Docker Image from Source](../../../README.md#building-a-docker-image-from-source)
+in the top-level README. In `--provision` mode, pass `--image` to select which
+image the provisioned hosts use.
