@@ -20,3 +20,23 @@ def sleep_indefinitely_for_unit_tests() -> None:
         KeyboardInterrupt: When interrupted by a signal like SIGINT
     """
     ...
+
+def _get_gil_on_control_plane() -> int:
+    """
+    Number of unsanctioned GIL acquisitions seen on the control-plane runtime.
+    For tests.
+    """
+    ...
+
+def _reset_gil_on_control_plane() -> None:
+    """
+    Reset the unsanctioned control-plane GIL counter to zero. For tests.
+    """
+    ...
+
+def _force_unsanctioned_gil_on_control_plane() -> None:
+    """
+    Force one unsanctioned control-plane GIL acquisition and count it. For the
+    negative fitness test.
+    """
+    ...

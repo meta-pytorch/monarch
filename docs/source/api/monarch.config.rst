@@ -436,7 +436,7 @@ Actor Configuration
     Enable queue-based dispatch for actor message handling.
 
     - **Type**: ``bool``
-    - **Default**: ``False``
+    - **Default**: ``True``
     - **Environment**: ``HYPERACTOR_ACTOR_QUEUE_DISPATCH``
 
     When ``True``, actor messages are dispatched through a queue rather than

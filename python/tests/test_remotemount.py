@@ -9,15 +9,18 @@
 from __future__ import annotations
 
 import contextlib
-import gc
-import math
+import errno
 import mmap
 import os
 import shutil
 import stat
+import sys
 import tempfile
+import threading
 import time
 from collections.abc import Generator
+from types import SimpleNamespace
+from typing import cast
 
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
@@ -25,335 +28,69 @@ from monarch._rust_bindings.monarch_extension.chunked_fuse import (
     FuseMountHandle,
     mount_chunked_fuse,
 )
-from monarch._rust_bindings.monarch_extension.fast_pack import (
-    load_file_and_hash,
-    pack_files_with_offsets,
+from monarch.remotemount.remotemount import (
+    BLOCK_SIZE,
+    build_index,
+    materialise_block,
+    MountHandlerClient,
 )
-from monarch.remotemount.fast_pack import (
-    block_hashes,
-    HASH_BLOCK_SIZE,
-    pack_directory_chunked,
-)
-from monarch.remotemount.remotemount import classify_workers
+
+# Freshness is driven by per-file (size, mtime_ns) recorded in the layout
+# rather than xxhash block hashing. The FUSE tests pack a source dir into
+# ``(fs_metadata, staging_mv, chunks)`` via the production layout primitives
+# (``build_index`` + ``materialise_block``); see ``_pack_for_test``.
 
 
-class TestPackDirectoryChunked:
-    def test_empty_directory(self) -> None:
+class TestMountExcludesMonarchState:
+    """``.monarch`` is the CLI's job-state dir, re-persisted on every
+    ``monarch exec``. Mounting it churns the source so every refresh ships a
+    block for state the workers never need; ``build_index`` must drop it.
+    Regression for a self-inflicted ~0.8s-per-exec ship.
+    """
+
+    def _make_tree(self, d: str) -> None:
+        # A realistic mounted source: training code + a normal subdir, with the
+        # client's .monarch job-state dir nested inside.
+        with open(os.path.join(d, "train.py"), "w") as f:
+            f.write("print('hi')\n")
+        os.makedirs(os.path.join(d, "pkg"))
+        with open(os.path.join(d, "pkg", "mod.py"), "w") as f:
+            f.write("x = 1\n")
+        os.makedirs(os.path.join(d, ".monarch", "default"))
+        with open(os.path.join(d, ".monarch", "default", "state.pkl"), "wb") as f:
+            f.write(b"\x00" * 64)
+
+    def test_monarch_excluded_from_scan(self) -> None:
         with tempfile.TemporaryDirectory() as d:
-            meta, _staging_mv, chunks, hashes, _pi = pack_directory_chunked(d)
-            assert chunks == []
-            assert hashes == []
-            assert "/" in meta
-            assert "children" in meta["/"]
-            assert meta["/"]["children"] == []
+            self._make_tree(d)
+            meta = build_index(d, {})
 
-    def test_single_file(self) -> None:
+            # Nothing under .monarch reaches the FUSE meta or the root's child
+            # listing.
+            assert not any(".monarch" in vpath for vpath in meta)
+            assert ".monarch" not in meta["/"]["children"]
+
+            # Real content is present.
+            assert "/train.py" in meta
+            assert "/pkg" in meta
+            assert "/pkg/mod.py" in meta
+
+    def test_monarch_churn_keeps_meta_stable(self) -> None:
         with tempfile.TemporaryDirectory() as d:
-            content = b"hello world"
-            with open(os.path.join(d, "a.txt"), "wb") as f:
-                f.write(content)
+            self._make_tree(d)
+            meta1 = build_index(d, {})
 
-            meta, _staging_mv, chunks, hashes, _pi = pack_directory_chunked(d)
+            # Re-persist job state the way ``monarch exec`` does: new size + mtime.
+            # Without the exclusion this changes the meta and ships every refresh.
+            sp = os.path.join(d, ".monarch", "default", "state.pkl")
+            with open(sp, "wb") as f:
+                f.write(b"\x01" * 4096)
+            os.utime(sp, (time.time() + 5, time.time() + 5))
 
-            assert "/a.txt" in meta
-            file_meta = meta["/a.txt"]
-            assert file_meta["global_offset"] == 0
-            assert file_meta["file_len"] == len(content)
+            meta2 = build_index(d, meta1)
 
-            packed = b"".join(bytes(c) for c in chunks)
-            assert packed == content
-            assert len(hashes) == 1
-
-    def test_multiple_files_contiguous_offsets(self) -> None:
-        with tempfile.TemporaryDirectory() as d:
-            files = {"a.txt": b"aaa", "b.txt": b"bbbbbb", "c.txt": b"c"}
-            for name, content in files.items():
-                with open(os.path.join(d, name), "wb") as f:
-                    f.write(content)
-
-            meta, _staging_mv, chunks, _hashes, _pi = pack_directory_chunked(d)
-            packed = b"".join(bytes(c) for c in chunks)
-
-            # Verify each file's content at its offset
-            for name, content in files.items():
-                path = f"/{name}"
-                assert path in meta
-                off = meta[path]["global_offset"]
-                length = meta[path]["file_len"]
-                assert length == len(content)
-                assert packed[off : off + length] == content
-
-            # Verify offsets are contiguous
-            file_entries = sorted(
-                (
-                    (m["global_offset"], m["file_len"])
-                    for m in meta.values()
-                    if "global_offset" in m
-                ),
-                key=lambda x: x[0],
-            )
-            for i in range(1, len(file_entries)):
-                prev_off, prev_len = file_entries[i - 1]
-                curr_off, _ = file_entries[i]
-                assert curr_off == prev_off + prev_len
-
-    def test_symlink(self) -> None:
-        with tempfile.TemporaryDirectory() as d:
-            target = os.path.join(d, "target.txt")
-            with open(target, "w") as f:
-                f.write("target")
-            os.symlink(target, os.path.join(d, "link.txt"))
-
-            meta, _staging_mv, chunks, _hashes, _pi = pack_directory_chunked(d)
-
-            assert "/link.txt" in meta
-            link_meta = meta["/link.txt"]
-            assert "link_target" in link_meta
-            assert link_meta["link_target"] == target
-            assert "global_offset" not in link_meta
-
-    def test_directory_metadata(self) -> None:
-        with tempfile.TemporaryDirectory() as d:
-            os.makedirs(os.path.join(d, "sub"))
-            with open(os.path.join(d, "sub", "f.txt"), "w") as f:
-                f.write("x")
-
-            meta, _, _, _, _ = pack_directory_chunked(d)
-
-            assert "/" in meta
-            assert "sub" in meta["/"]["children"]
-            assert "/sub" in meta
-            assert "f.txt" in meta["/sub"]["children"]
-            assert "st_mode" in meta["/"]["attr"]
-
-    def test_custom_chunk_size(self) -> None:
-        with tempfile.TemporaryDirectory() as d:
-            content = b"x" * 1000
-            with open(os.path.join(d, "big.txt"), "wb") as f:
-                f.write(content)
-
-            chunk_size = 300
-            meta, _staging_mv, chunks, _hashes, _pi = pack_directory_chunked(
-                d, chunk_size=chunk_size
-            )
-
-            assert len(chunks) == math.ceil(len(content) / chunk_size)
-            packed = b"".join(bytes(c) for c in chunks)
-            assert packed == content
-
-    def test_hashes_deterministic(self) -> None:
-        with tempfile.TemporaryDirectory() as d:
-            with open(os.path.join(d, "f.bin"), "wb") as f:
-                f.write(os.urandom(500))
-
-            _, _, _, h1, _ = pack_directory_chunked(d)
-            _, _, _, h2, _ = pack_directory_chunked(d)
-            assert h1 == h2
-            assert len(h1) > 0
-
-    def test_hashes_change_on_content_change(self) -> None:
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "f.bin")
-            with open(path, "wb") as f:
-                f.write(b"\x00" * 500)
-            _, _, _, h1, _ = pack_directory_chunked(d)
-
-            with open(path, "wb") as f:
-                f.write(b"\xff" * 500)
-            _, _, _, h2, _ = pack_directory_chunked(d)
-
-            assert h1 != h2
-
-
-class TestPackDirectoryAppendOnly:
-    """Tests for append-only packing with previous_index."""
-
-    def test_no_previous_index_sequential(self) -> None:
-        """Without previous_index, files are packed sequentially."""
-        with tempfile.TemporaryDirectory() as d:
-            for name in ["a.txt", "b.txt"]:
-                with open(os.path.join(d, name), "wb") as f:
-                    f.write(name.encode() * 100)
-            meta, _mv, _chunks, _hashes, pi = pack_directory_chunked(d)
-            assert pi is not None
-            assert "files" in pi
-            assert "total_size" in pi
-            # Sequential: offsets are contiguous.
-            offsets = sorted(pi["files"][k]["offset"] for k in pi["files"])
-            assert offsets[0] == 0
-
-    def test_unchanged_files_keep_offsets(self) -> None:
-        """Files with matching mtime_ns and size keep their original offsets."""
-        with tempfile.TemporaryDirectory() as d:
-            with open(os.path.join(d, "a.txt"), "wb") as f:
-                f.write(b"hello" * 100)
-            with open(os.path.join(d, "b.txt"), "wb") as f:
-                f.write(b"world" * 100)
-
-            _, _, _, _, pi1 = pack_directory_chunked(d)
-            assert pi1 is not None
-
-            # Pack again with previous_index — offsets should be reused.
-            _, _, _, _, pi2 = pack_directory_chunked(d, previous_index=pi1)
-            assert pi2 is not None
-            for vpath in pi1["files"]:
-                assert pi2["files"][vpath]["offset"] == pi1["files"][vpath]["offset"]
-
-    def test_changed_file_appended(self) -> None:
-        """A changed file gets appended at the end, not at its old offset."""
-        with tempfile.TemporaryDirectory() as d:
-            # Use many unchanged files so the dead space from one changed
-            # file stays below FRAG_THRESHOLD (20%).
-            for i in range(10):
-                with open(os.path.join(d, f"keep_{i:02d}.txt"), "wb") as f:
-                    f.write(os.urandom(500))
-            with open(os.path.join(d, "change_me.txt"), "wb") as f:
-                f.write(b"bbb" * 100)
-
-            _, _, _, _, pi1 = pack_directory_chunked(d)
-            assert pi1 is not None
-            old_total = pi1["total_size"]
-
-            # Modify change_me.txt and force a different mtime_ns.
-            change_path = os.path.join(d, "change_me.txt")
-            with open(change_path, "wb") as f:
-                f.write(b"BBB" * 100)
-            # Ensure mtime differs even on fast filesystems.
-            st = os.stat(change_path)
-            os.utime(change_path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
-
-            _, _, _, _, pi2 = pack_directory_chunked(d, previous_index=pi1)
-            assert pi2 is not None
-            # Unchanged files should keep their offsets.
-            for i in range(10):
-                vpath = f"/keep_{i:02d}.txt"
-                assert pi2["files"][vpath]["offset"] == pi1["files"][vpath]["offset"]
-            # Changed file should be appended after the old total.
-            assert pi2["files"]["/change_me.txt"]["offset"] >= old_total
-
-    def test_new_file_appended(self) -> None:
-        """A new file is appended at the end."""
-        with tempfile.TemporaryDirectory() as d:
-            with open(os.path.join(d, "a.txt"), "wb") as f:
-                f.write(b"aaa" * 100)
-
-            _, _, _, _, pi1 = pack_directory_chunked(d)
-            assert pi1 is not None
-            old_total = pi1["total_size"]
-
-            # Add a new file.
-            with open(os.path.join(d, "b.txt"), "wb") as f:
-                f.write(b"bbb" * 100)
-
-            _, _, _, _, pi2 = pack_directory_chunked(d, previous_index=pi1)
-            assert pi2 is not None
-            assert pi2["files"]["/a.txt"]["offset"] == pi1["files"]["/a.txt"]["offset"]
-            assert pi2["files"]["/b.txt"]["offset"] >= old_total
-
-    def test_high_fragmentation_falls_back(self) -> None:
-        """When dead space exceeds FRAG_THRESHOLD, repacks sequentially."""
-        with tempfile.TemporaryDirectory() as d:
-            # Create one large file.
-            with open(os.path.join(d, "big.txt"), "wb") as f:
-                f.write(b"x" * 1000)
-
-            _, _, _, _, pi1 = pack_directory_chunked(d)
-            assert pi1 is not None
-
-            # Replace with a much smaller file — old offset has huge dead space.
-            with open(os.path.join(d, "big.txt"), "wb") as f:
-                f.write(b"y" * 10)
-
-            _, _, _, _, pi2 = pack_directory_chunked(d, previous_index=pi1)
-            assert pi2 is not None
-            # With high fragmentation, should repack sequentially starting at 0.
-            assert pi2["files"]["/big.txt"]["offset"] == 0
-
-    def test_pack_index_has_content_hashes(self) -> None:
-        """Pack index includes per-file content hashes."""
-        with tempfile.TemporaryDirectory() as d:
-            with open(os.path.join(d, "a.txt"), "wb") as f:
-                f.write(b"hello")
-
-            _, _, _, _, pi = pack_directory_chunked(d)
-            assert pi is not None
-            assert "content_hash" in pi["files"]["/a.txt"]
-            assert len(pi["files"]["/a.txt"]["content_hash"]) == 16  # xxh64 hex
-
-    def test_unchanged_files_stay_in_same_blocks(self) -> None:
-        """Append-only keeps unchanged file data in the same block positions.
-
-        When a file is modified, sequential repacking shifts all subsequent
-        file offsets. Append-only keeps unchanged files at their original
-        offsets, so their block hashes remain stable.
-        """
-        with tempfile.TemporaryDirectory() as d:
-            # Create 100 small files that share blocks.
-            file_size = HASH_BLOCK_SIZE // 10
-            for i in range(100):
-                with open(os.path.join(d, f"file_{i:03d}.bin"), "wb") as f:
-                    f.write(os.urandom(file_size))
-
-            _, mv1, _, h1, pi1 = pack_directory_chunked(d)
-            assert pi1 is not None
-            assert mv1 is not None
-
-            # Modify one file (triggers mtime change).
-            with open(os.path.join(d, "file_050.bin"), "wb") as f:
-                f.write(os.urandom(file_size))
-
-            # With append-only: unchanged files keep their offsets.
-            _, mv_app, _, h_app, pi2 = pack_directory_chunked(d, previous_index=pi1)
-            assert pi2 is not None
-            # All unchanged files should have the same offset as before.
-            changed_count = 0
-            for vpath in pi1["files"]:
-                if vpath in pi2["files"]:
-                    if pi2["files"][vpath]["offset"] != pi1["files"][vpath]["offset"]:
-                        changed_count += 1
-            # Only file_050.bin should have moved.
-            assert changed_count == 1
-
-    def test_previous_index_all_files_deleted(self) -> None:
-        """Append-only with a previous_index but all files deleted must not crash."""
-        with tempfile.TemporaryDirectory() as d:
-            with open(os.path.join(d, "a.txt"), "wb") as f:
-                f.write(b"hello")
-            _meta, _mv, _chunks, _hashes, pi = pack_directory_chunked(d)
-            assert pi is not None
-
-            # Remove all files, repack with previous_index.
-            os.remove(os.path.join(d, "a.txt"))
-            meta2, mv2, chunks2, hashes2, pi2 = pack_directory_chunked(
-                d, previous_index=pi
-            )
-            # Empty directory: total_size=0, no buffer, no pack_index.
-            assert "/" in meta2
-            assert meta2["/"]["children"] == []
-            assert mv2 is None
-            assert chunks2 == []
-            assert hashes2 == []
-            assert pi2 is None
-
-
-class TestBlockHashes:
-    def test_deterministic(self) -> None:
-        data = os.urandom(500)
-        mv = memoryview(data)
-        assert block_hashes(mv, block_size=200) == block_hashes(mv, block_size=200)
-
-    def test_different_data(self) -> None:
-        a = memoryview(b"\x00" * 500)
-        b = memoryview(b"\xff" * 500)
-        assert block_hashes(a, block_size=200) != block_hashes(b, block_size=200)
-
-    def test_block_count(self) -> None:
-        data = memoryview(os.urandom(500))
-        hashes = block_hashes(data, block_size=200)
-        assert len(hashes) == 3  # 200 + 200 + 100
-
-    def test_empty(self) -> None:
-        assert block_hashes(memoryview(b""), block_size=100) == []
+            assert not any(".monarch" in v for v in meta1)
+            assert meta1 == meta2
 
 
 class TestShmRoundTrip:
@@ -414,154 +151,13 @@ class TestShmRoundTrip:
         mm.close()
 
 
-class TestHashBlockSizeConsistency:
-    """Verify Rust and Python hash block sizes match."""
-
-    def test_default_block_sizes_match(self) -> None:
-        """Rust and Python should produce identical hashes with their defaults."""
-        with tempfile.TemporaryDirectory() as d:
-            # Create data larger than 100MB to get multiple blocks.
-            # Use a small amount for speed — just verify the constants agree.
-            data = os.urandom(1024)
-            path = os.path.join(d, "f.bin")
-            with open(path, "wb") as f:
-                f.write(data)
-
-            # Rust default hashes (via pack_files_with_offsets).
-            buf, rust_hashes = pack_files_with_offsets(
-                [(path, 0, len(data))], len(data)
-            )
-            # Python default hashes.
-            py_hashes = block_hashes(memoryview(buf))
-
-            assert list(rust_hashes) == py_hashes
-
-
-class TestMmapBufferOwnership:
-    """Verify MmapBuffer owns mmap memory and supports zero-copy access."""
-
-    def test_memoryview_zero_copy(self) -> None:
-        """memoryview(buf) should be zero-copy: writes through mv are visible."""
-        with tempfile.TemporaryDirectory() as d:
-            data = b"AAAA"
-            path = os.path.join(d, "f.bin")
-            with open(path, "wb") as f:
-                f.write(data)
-
-            buf, _hashes = pack_files_with_offsets([(path, 0, len(data))], len(data))
-            mv = memoryview(buf)
-
-            assert bytes(mv) == b"AAAA"
-            mv[0] = ord("Z")
-            assert bytes(memoryview(buf)[:1]) == b"Z"
-
-    def test_gc_frees_mmap(self) -> None:
-        """MmapBuffer should be GC-collectable without leaking."""
-        with tempfile.TemporaryDirectory() as d:
-            data = b"x" * 4096
-            path = os.path.join(d, "f.bin")
-            with open(path, "wb") as f:
-                f.write(data)
-
-            buf, _hashes = pack_files_with_offsets([(path, 0, len(data))], len(data))
-            # Create a memoryview, then release both.
-            mv = memoryview(buf)
-            assert len(mv) == 4096
-            del mv, buf
-            gc.collect()
-            # If we get here without segfault, cleanup worked.
-
-    def test_empty_buffer(self) -> None:
-        """Empty packing returns a zero-length MmapBuffer."""
-        buf, hashes = pack_files_with_offsets([], 0)
-        assert len(buf) == 0
-        assert list(hashes) == []
-
-    def test_load_file_and_hash_returns_buffer(self) -> None:
-        """load_file_and_hash should return an MmapBuffer, not raw memoryview."""
-        with tempfile.TemporaryDirectory() as d:
-            data = b"hello world" * 100
-            path = os.path.join(d, "f.bin")
-            with open(path, "wb") as f:
-                f.write(data)
-
-            buf, hashes = load_file_and_hash(path)
-            mv = memoryview(buf)
-            assert bytes(mv[: len(data)]) == data
-            assert len(hashes) > 0
-
-
-BLOCK_SIZE: int = 64 * 1024 * 1024  # Must match Rust HASH_BLOCK_SIZE / READ_CHUNK_SIZE
-
-
 class TestBlockBoundary:
-    """Test files that straddle the 64MB block/chunk boundary."""
-
-    def test_file_spanning_two_blocks(self) -> None:
-        """A single file larger than one block should produce correct hashes."""
-        size = BLOCK_SIZE + 1024  # Just over one block boundary.
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "big.bin")
-            with open(path, "wb") as f:
-                f.write(os.urandom(size))
-
-            buf, hashes = pack_files_with_offsets([(path, 0, size)], size)
-            mv = memoryview(buf)
-
-            assert len(mv) == size
-            assert len(hashes) == 2  # ceil(size / 64MB) = 2
-
-            # Verify hashes match Python-computed hashes.
-            py_hashes = block_hashes(mv, block_size=BLOCK_SIZE)
-            assert list(hashes) == py_hashes
-
-            # Verify content matches the file.
-            with open(path, "rb") as f:
-                expected = f.read()
-            assert bytes(mv) == expected
-
-    def test_file_exactly_one_block(self) -> None:
-        """A file exactly equal to block size should produce one hash."""
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "exact.bin")
-            with open(path, "wb") as f:
-                f.write(os.urandom(BLOCK_SIZE))
-
-            buf, hashes = pack_files_with_offsets([(path, 0, BLOCK_SIZE)], BLOCK_SIZE)
-            assert len(hashes) == 1
-            assert len(memoryview(buf)) == BLOCK_SIZE
-
-    def test_multiple_files_across_block_boundary(self) -> None:
-        """Multiple small files whose total spans a block boundary."""
-        # File A fills most of block 0, file B straddles into block 1.
-        size_a = BLOCK_SIZE - 100
-        size_b = 200  # Straddles: 100 bytes in block 0, 100 in block 1.
-        total = size_a + size_b
-
-        with tempfile.TemporaryDirectory() as d:
-            path_a = os.path.join(d, "a.bin")
-            path_b = os.path.join(d, "b.bin")
-            data_a = os.urandom(size_a)
-            data_b = os.urandom(size_b)
-
-            with open(path_a, "wb") as f:
-                f.write(data_a)
-            with open(path_b, "wb") as f:
-                f.write(data_b)
-
-            file_list = [(path_a, 0, size_a), (path_b, size_a, size_b)]
-            buf, hashes = pack_files_with_offsets(file_list, total)
-            mv = memoryview(buf)
-
-            assert len(mv) == total
-            assert len(hashes) == 2  # Spans two blocks.
-
-            # Verify content of both files at their offsets.
-            assert bytes(mv[:size_a]) == data_a
-            assert bytes(mv[size_a : size_a + size_b]) == data_b
+    """Test that a file straddling the 64MB block boundary round-trips through
+    the production layout primitives (build_index + materialise_block)."""
 
     def test_pack_directory_large_file(self) -> None:
-        """pack_directory_chunked with a file larger than the block size."""
+        """A file larger than the block size packs into multiple blocks and
+        materialises back to the original bytes."""
         size = BLOCK_SIZE + 512
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "big.bin")
@@ -569,38 +165,359 @@ class TestBlockBoundary:
             with open(path, "wb") as f:
                 f.write(data)
 
-            meta, staging_mv, chunks, hashes, _pi = pack_directory_chunked(d)
+            meta, staging_mv, chunks = _pack_for_test(d)
 
+            assert meta["/big.bin"]["file_len"] == size
+            assert staging_mv is not None
+            assert len(staging_mv) == size
             packed = b"".join(bytes(c) for c in chunks)
             assert packed == data
-            assert len(hashes) == 2
 
-            assert staging_mv is not None
-            py_hashes = block_hashes(staging_mv, block_size=BLOCK_SIZE)
-            assert hashes == py_hashes
+    def test_file_spanning_two_blocks(self) -> None:
+        """A file larger than one block occupies two blocks; each holds the
+        correct slice (the tail block zero-padded to BLOCK_SIZE)."""
+        size = BLOCK_SIZE + 1024
+        with tempfile.TemporaryDirectory() as d:
+            data = os.urandom(size)
+            with open(os.path.join(d, "big.bin"), "wb") as f:
+                f.write(data)
+            meta = build_index(d, {})
+            assert meta["/big.bin"]["global_offset"] == 0
+            assert meta["/"]["total_size"] == size
+            assert (size + BLOCK_SIZE - 1) // BLOCK_SIZE == 2
+            block0, _ = materialise_block(meta, 0)
+            block1, _ = materialise_block(meta, 1)
+            assert len(block0) == BLOCK_SIZE and len(block1) == BLOCK_SIZE
+            assert block0 == data[:BLOCK_SIZE]
+            assert block1[:1024] == data[BLOCK_SIZE:]
+            assert block1[1024:] == bytes(BLOCK_SIZE - 1024)  # zero-padded tail
+
+    def test_file_exactly_one_block(self) -> None:
+        """A file exactly one block long occupies a single block; the next block
+        is past the layout end and raises."""
+        with tempfile.TemporaryDirectory() as d:
+            data = os.urandom(BLOCK_SIZE)
+            with open(os.path.join(d, "exact.bin"), "wb") as f:
+                f.write(data)
+            meta = build_index(d, {})
+            assert meta["/"]["total_size"] == BLOCK_SIZE
+            assert materialise_block(meta, 0)[0] == data
+            with pytest.raises(ValueError):
+                materialise_block(meta, 1)
+
+    def test_multiple_files_across_block_boundary(self) -> None:
+        """Files whose packed layout straddles a block boundary each reconstruct
+        at their offsets. build_index packs the small (code) file first, so the
+        big file starts after it and crosses into block 1."""
+        small = b"s" * 200
+        with tempfile.TemporaryDirectory() as d:
+            big = os.urandom(BLOCK_SIZE)
+            with open(os.path.join(d, "big.bin"), "wb") as f:
+                f.write(big)
+            with open(os.path.join(d, "small.txt"), "wb") as f:
+                f.write(small)
+            meta, _staging, chunks = _pack_for_test(d)
+            assert meta["/small.txt"]["global_offset"] == 0
+            assert meta["/big.bin"]["global_offset"] == len(small)
+            total = meta["/"]["total_size"]
+            assert (total + BLOCK_SIZE - 1) // BLOCK_SIZE == 2
+            packed = b"".join(bytes(c) for c in chunks)
+            assert packed[: len(small)] == small
+            assert packed[len(small) : len(small) + len(big)] == big
 
 
-class TestPreadErrorHandling:
-    """Verify that pread errors are detected, not silently swallowed."""
+class TestBuildIndex:
+    """build_index meta structure: offsets, contiguity, symlinks, directories."""
 
-    def test_truncated_file_panics(self) -> None:
-        """If a file is truncated between stat and read, packing should fail."""
+    def test_empty_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            meta = build_index(d, {})
+            assert meta["/"]["children"] == []
+            assert meta["/"]["total_size"] == 0
+
+    def test_single_file(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            content = b"hello world"
+            with open(os.path.join(d, "a.txt"), "wb") as f:
+                f.write(content)
+            meta, _staging, chunks = _pack_for_test(d)
+            assert meta["/a.txt"]["global_offset"] == 0
+            assert meta["/a.txt"]["file_len"] == len(content)
+            assert meta["/"]["total_size"] == len(content)
+            assert b"".join(bytes(c) for c in chunks)[: len(content)] == content
+
+    def test_multiple_files_contiguous_offsets(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            files = {"a.txt": b"aaa", "b.txt": b"bbbbbb", "c.txt": b"c"}
+            for name, content in files.items():
+                with open(os.path.join(d, name), "wb") as f:
+                    f.write(content)
+            meta, _staging, chunks = _pack_for_test(d)
+            packed = b"".join(bytes(c) for c in chunks)
+            for name, content in files.items():
+                node = meta[f"/{name}"]
+                off, length = node["global_offset"], node["file_len"]
+                assert length == len(content)
+                assert packed[off : off + length] == content
+            entries = sorted(
+                (n["global_offset"], n["file_len"])
+                for n in meta.values()
+                if "global_offset" in n
+            )
+            for i in range(1, len(entries)):
+                assert entries[i][0] == entries[i - 1][0] + entries[i - 1][1]
+
+    def test_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, "target.txt")
+            with open(target, "w") as f:
+                f.write("target")
+            os.symlink(target, os.path.join(d, "link.txt"))
+            meta = build_index(d, {})
+            assert meta["/link.txt"]["link_target"] == target
+            assert "global_offset" not in meta["/link.txt"]
+
+    def test_directory_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "sub"))
+            with open(os.path.join(d, "sub", "f.txt"), "w") as f:
+                f.write("x")
+            meta = build_index(d, {})
+            assert "sub" in meta["/"]["children"]
+            assert "f.txt" in meta["/sub"]["children"]
+            assert "st_mode" in meta["/"]["attr"]
+
+
+class TestAppendOnlyOffsets:
+    """build_index's append-only offset assignment against a previous index."""
+
+    def test_no_previous_index_sequential(self) -> None:
+        """Without a previous index, files get contiguous offsets from 0."""
+        with tempfile.TemporaryDirectory() as d:
+            for name in ("a.txt", "b.txt"):
+                with open(os.path.join(d, name), "wb") as f:
+                    f.write(name.encode() * 100)
+            meta = build_index(d, {})
+            nodes = sorted(
+                (n["global_offset"], n["file_len"])
+                for n in meta.values()
+                if "global_offset" in n
+            )
+            assert nodes[0][0] == 0
+            for i in range(1, len(nodes)):
+                assert nodes[i][0] == nodes[i - 1][0] + nodes[i - 1][1]
+
+    def test_unchanged_files_keep_offsets(self) -> None:
+        """Files unchanged since the previous index keep their global_offset."""
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "a.txt"), "wb") as f:
+                f.write(b"hello" * 100)
+            with open(os.path.join(d, "b.txt"), "wb") as f:
+                f.write(b"world" * 100)
+            meta1 = build_index(d, {})
+            meta2 = build_index(d, meta1)
+            for v in ("/a.txt", "/b.txt"):
+                assert meta2[v]["global_offset"] == meta1[v]["global_offset"]
+
+    def test_changed_file_appended(self) -> None:
+        """A changed file is re-appended past the previous high-water mark while
+        unchanged files keep their offsets."""
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "keep.txt"), "wb") as f:
+                f.write(b"k" * 500)
+            change = os.path.join(d, "change.txt")
+            with open(change, "wb") as f:
+                f.write(b"c" * 500)
+            meta1 = build_index(d, {})
+            old_total = meta1["/"]["total_size"]
+            keep_off = meta1["/keep.txt"]["global_offset"]
+            with open(change, "wb") as f:
+                f.write(b"C" * 700)
+            st = os.stat(change)
+            os.utime(change, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+            meta2 = build_index(d, meta1)
+            assert meta2["/keep.txt"]["global_offset"] == keep_off
+            assert meta2["/change.txt"]["global_offset"] >= old_total
+
+    def test_new_file_appended(self) -> None:
+        """A new file is appended past the previous high-water mark."""
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "a.txt"), "wb") as f:
+                f.write(b"a" * 300)
+            meta1 = build_index(d, {})
+            old_total = meta1["/"]["total_size"]
+            with open(os.path.join(d, "b.txt"), "wb") as f:
+                f.write(b"b" * 300)
+            meta2 = build_index(d, meta1)
+            assert meta2["/a.txt"]["global_offset"] == meta1["/a.txt"]["global_offset"]
+            assert meta2["/b.txt"]["global_offset"] >= old_total
+
+    def test_appended_region_is_block_aligned(self) -> None:
+        """A non-block-aligned high-water mark (the normal case after contiguous
+        packing) is rounded up so the appended file starts on a block boundary, in
+        a strictly later block than the mark -- it never shares a 64 MiB block with
+        already-delivered data."""
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "a.txt"), "wb") as f:
+                f.write(b"a" * 1000)  # sub-block file -> non-aligned total_size
+            meta1 = build_index(d, {})
+            old_total = meta1["/"]["total_size"]
+            assert old_total % BLOCK_SIZE != 0  # precondition: mark is not aligned
+            with open(os.path.join(d, "b.txt"), "wb") as f:
+                f.write(b"b" * 10)
+            meta2 = build_index(d, meta1)
+            new_off = meta2["/b.txt"]["global_offset"]
+            assert new_off == ((old_total // BLOCK_SIZE) + 1) * BLOCK_SIZE
+            assert new_off % BLOCK_SIZE == 0
+            assert new_off // BLOCK_SIZE > (old_total - 1) // BLOCK_SIZE
+
+    def test_unchanged_files_stay_in_same_blocks(self) -> None:
+        """At scale, modifying one file moves only that file; every other file
+        keeps its offset, so already-delivered blocks stay valid."""
+        with tempfile.TemporaryDirectory() as d:
+            for i in range(100):
+                with open(os.path.join(d, f"f_{i:03d}.bin"), "wb") as f:
+                    f.write(os.urandom(1024))
+            meta1 = build_index(d, {})
+            p = os.path.join(d, "f_050.bin")
+            with open(p, "wb") as f:
+                f.write(os.urandom(1024))
+            st = os.stat(p)
+            os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+            meta2 = build_index(d, meta1)
+            moved = [
+                v
+                for v in meta1
+                if "global_offset" in meta1[v]
+                and meta2[v]["global_offset"] != meta1[v]["global_offset"]
+            ]
+            assert moved == ["/f_050.bin"]
+
+    def test_previous_index_all_files_deleted(self) -> None:
+        """build_index with a previous index but an emptied source does not crash;
+        total_size stays at the high-water mark (append-only never shrinks)."""
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "a.txt"), "wb") as f:
+                f.write(b"hello")
+            meta1 = build_index(d, {})
+            os.remove(os.path.join(d, "a.txt"))
+            meta2 = build_index(d, meta1)
+            assert meta2["/"]["children"] == []
+            assert not any("global_offset" in n for v, n in meta2.items() if v != "/")
+            assert meta2["/"]["total_size"] == meta1["/"]["total_size"]
+
+
+class TestMaterialiseSourceDiverged:
+    """materialise_block enforces the freshness fence PER FILE: a file that changed
+    since build_index is reported in the ``diverged`` list (its bytes garbage-filled,
+    never served stale) instead of raising or serving stale/short bytes."""
+
+    def test_truncated_file_diverges(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "f.bin")
             with open(path, "wb") as f:
                 f.write(b"x" * 1000)
-
-            # Tell pack_files_with_offsets the file is 1000 bytes,
-            # but truncate it to 500 before packing.
+            meta = build_index(d, {})
             os.truncate(path, 500)
+            data, diverged = materialise_block(meta, 0)
+            assert diverged == ["/f.bin"]
+            # The diverged file's bytes are garbage, NOT the (now-shorter) source.
+            assert data[:1000] != b"x" * 1000
 
-            with pytest.raises(BaseException, match="panicked"):  # noqa: B017
-                pack_files_with_offsets([(path, 0, 1000)], 1000)
+    def test_missing_file_diverges(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "f.bin")
+            with open(path, "wb") as f:
+                f.write(b"x" * 1000)
+            meta = build_index(d, {})
+            os.remove(path)
+            _data, diverged = materialise_block(meta, 0)
+            assert diverged == ["/f.bin"]
 
-    def test_missing_file_panics(self) -> None:
-        """Packing a nonexistent file should fail, not silently zero-fill."""
-        with pytest.raises(BaseException, match="panicked"):  # noqa: B017
-            pack_files_with_offsets([("/nonexistent/path/to/file.bin", 0, 100)], 100)
+    def test_mtime_change_same_size_diverges(self) -> None:
+        """A same-size in-place edit bumps mtime, tripping the fence via the
+        mtime_ns guard even though the file length is unchanged."""
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "f.bin")
+            with open(path, "wb") as f:
+                f.write(b"x" * 1000)
+            meta = build_index(d, {})
+            st = os.stat(path)
+            os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+            _data, diverged = materialise_block(meta, 0)
+            assert diverged == ["/f.bin"]
+
+    def test_unchanged_files_not_diverged(self) -> None:
+        """The happy path: every file matches the fence, so none is reported."""
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "a.txt"), "wb") as f:
+                f.write(b"a" * 100)
+            with open(os.path.join(d, "b.txt"), "wb") as f:
+                f.write(b"b" * 100)
+            meta = build_index(d, {})
+            _data, diverged = materialise_block(meta, 0)
+            assert diverged == []
+
+
+class TestDeliverRouting:
+    """MountHandlerClient._deliver materialises the block and broadcasts it via a
+    single ``receive_block`` call carrying both the bytes and the stale-file list (the
+    files ``materialise_block`` reports as diverged) -- one atomic delivery, no separate
+    ``mark_stale``. ``_deliver`` is a plain sync method (only its ``enqueue`` wrapper
+    is an @endpoint, and the actor's endpoints are all sync), so it is driven directly
+    against a duck-typed ``self`` -- no actor runtime or FUSE mount needed."""
+
+    class _RecordingEndpoint:
+        """Stand-in for an actor-mesh endpoint handle: records the args of each
+        ``ep.call(...).get()`` instead of dispatching to a worker."""
+
+        def __init__(self) -> None:
+            self.calls: list[tuple] = []
+
+        def call(self, *args: object) -> SimpleNamespace:
+            self.calls.append(args)
+            return SimpleNamespace(get=lambda: None)
+
+    def _fake_self(self) -> SimpleNamespace:
+        return SimpleNamespace(
+            index={"/": {"total_size": BLOCK_SIZE}},
+            _delivered=set(),
+            fuse_actors=SimpleNamespace(receive_block=self._RecordingEndpoint()),
+        )
+
+    def test_deliver_ships_block_with_empty_stale_when_all_fresh(
+        self, monkeypatch
+    ) -> None:
+        """All files reproduce -> one ``receive_block`` with an empty stale list."""
+        s = self._fake_self()
+        # Patch the module object, not the dotted string: the ``monarch.remotemount``
+        # package re-exports the ``remotemount`` factory, which shadows the
+        # ``remotemount`` submodule on the string path. ``_deliver`` looks up
+        # ``materialise_block`` in this module's globals, which this rebinds.
+        monkeypatch.setattr(
+            sys.modules[MountHandlerClient.__module__],
+            "materialise_block",
+            lambda index, block: (b"block-bytes", []),
+        )
+        # Call the unbound method with ``s`` as ``self`` (it only touches the attrs
+        # set on the stand-in). ``cast`` is a runtime no-op; it just satisfies pyre's
+        # ``self: MountHandlerClient`` at the call site.
+        MountHandlerClient._deliver(cast(MountHandlerClient, s), 7)
+        assert s.fuse_actors.receive_block.calls == [(7, b"block-bytes", [])]
+        assert s._delivered == {7}  # remembered permanently, never cleared
+
+    def test_deliver_ships_stale_set_with_the_block(self, monkeypatch) -> None:
+        """Diverged files ride along in the same ``receive_block`` call (atomic with the
+        bytes -- no separate mark_stale), and the path does not abort the actor."""
+        s = self._fake_self()
+        monkeypatch.setattr(
+            sys.modules[MountHandlerClient.__module__],
+            "materialise_block",
+            lambda index, block: (b"block-bytes", ["/f.bin"]),
+        )
+        MountHandlerClient._deliver(cast(MountHandlerClient, s), 3)
+        assert s.fuse_actors.receive_block.calls == [(3, b"block-bytes", ["/f.bin"])]
+        assert s._delivered == {3}
 
 
 def _check_fuse_available() -> bool:
@@ -618,6 +535,22 @@ def _check_fuse_available() -> bool:
 
 
 _fuse_available: bool = _check_fuse_available()
+
+
+def _fuse_connection_abort(mount_point: str) -> None:
+    """Best-effort: abort the FUSE connection backing ``mount_point`` via sysfs so an
+    in-flight (possibly wedged) read returns EIO/ENOTCONN instead of hanging in
+    uninterruptible sleep. Used only as a fallback in the parked-read tests: if a
+    wake regresses, this frees the stuck reader thread so the test fails fast rather
+    than stalling the whole suite. ``os.stat`` on the mount root is a getattr (it
+    never parks on block data), so the device minor is readable while a read is
+    wedged."""
+    try:
+        dev = os.stat(mount_point).st_dev
+        with open(f"/sys/fs/fuse/connections/{os.minor(dev)}/abort", "w") as f:
+            f.write("1")
+    except OSError:
+        pass  # sysfs absent / not permitted -- pytest-timeout is the backstop
 
 
 def _make_attr(
@@ -650,17 +583,72 @@ def _symlink_attr(target_len: int) -> dict[str, object]:
     return _make_attr(mode=0o120777, size=target_len)
 
 
+def _deliver_blocks(handle: FuseMountHandle, data: bytes) -> None:
+    """Hand *data* to the in-memory FUSE mount one block at a time via
+    ``receive_block`` (one BLOCK_SIZE-or-shorter block per id), exactly as
+    the worker's ``receive_block`` endpoint does when a read faults."""
+    n_blocks = (len(data) + BLOCK_SIZE - 1) // BLOCK_SIZE
+    for block_id in range(n_blocks):
+        lo = block_id * BLOCK_SIZE
+        handle.receive_block(block_id, data[lo : lo + BLOCK_SIZE], [])
+
+
+def _pack_for_test(
+    src: str,
+) -> tuple[dict, "memoryview | None", list[memoryview]]:
+    """Pack a source dir into (fs_metadata, staging_mv, chunks) for the FUSE
+    tests via the production layout primitives (build_index + materialise_block)
+    -- replaces the removed pack_directory_chunked."""
+    meta = build_index(src, {})
+    total_size = meta["/"]["total_size"]
+    if total_size == 0:
+        return meta, None, []
+    n_blocks = (total_size + BLOCK_SIZE - 1) // BLOCK_SIZE
+    staging = bytearray(total_size)
+    for b in range(n_blocks):
+        # materialise_block returns a fixed BLOCK_SIZE buffer; clip the tail
+        # block's zero pad so ``staging`` stays exactly total_size.
+        block_bytes, _ = materialise_block(meta, b)
+        start = b * BLOCK_SIZE
+        valid = min(BLOCK_SIZE, total_size - start)
+        staging[start : start + valid] = block_bytes[:valid]
+    staging_mv = memoryview(staging)
+    return meta, staging_mv, [staging_mv]
+
+
 @contextlib.contextmanager
 def _fuse_mount(
     metadata: dict[str, object],
     chunks: list[memoryview],
-    chunk_size: int,
     mount_point: str,
 ) -> Generator[FuseMountHandle, None, None]:
-    """Mount a FUSE filesystem and unmount on exit for test isolation."""
-    handle = mount_chunked_fuse(metadata, chunks, chunk_size, mount_point)
-    yield handle
-    handle.unmount()
+    """Mount the FUSE filesystem (in-memory: it starts with no block data),
+    deliver the packed chunks via ``receive_block`` as the worker would, and
+    unmount on exit."""
+    data = b"".join(bytes(c) for c in chunks)
+    handle = mount_chunked_fuse(metadata, len(data), mount_point, None)
+    _deliver_blocks(handle, data)
+    try:
+        yield handle
+    finally:
+        handle.unmount()
+
+
+def _refresh(
+    handle: FuseMountHandle,
+    meta: dict[str, object],
+    chunk_buf: memoryview,
+    dirty_ranges: list[tuple[int, int]],
+    total: int,
+) -> None:
+    """Adapt the old ``handle.refresh(meta, chunk_buf, dirty_ranges, total)``
+    call to the in-memory delivery: hand each block's bytes to the mount via
+    ``receive_block`` (as the worker would), then swap the metadata.
+    ``dirty_ranges`` is ignored -- every block is re-delivered, which is fine for
+    these tests.
+    """
+    _deliver_blocks(handle, bytes(chunk_buf)[:total])
+    handle.refresh(meta, total)
 
 
 @pytest.mark.skipif(
@@ -683,7 +671,7 @@ class TestFuseMount:
         }
         with (
             tempfile.TemporaryDirectory() as mnt,
-            _fuse_mount(metadata, [memoryview(content)], len(content), mnt),
+            _fuse_mount(metadata, [memoryview(content)], mnt),
         ):
             with open(os.path.join(mnt, "a.txt"), "rb") as f:
                 assert f.read() == content
@@ -710,7 +698,7 @@ class TestFuseMount:
 
         with (
             tempfile.TemporaryDirectory() as mnt,
-            _fuse_mount(metadata, [memoryview(packed)], len(packed), mnt),
+            _fuse_mount(metadata, [memoryview(packed)], mnt),
         ):
             for name, expected in files.items():
                 with open(os.path.join(mnt, name), "rb") as f:
@@ -730,7 +718,7 @@ class TestFuseMount:
         }
         with (
             tempfile.TemporaryDirectory() as mnt,
-            _fuse_mount(metadata, [memoryview(content)], len(content), mnt),
+            _fuse_mount(metadata, [memoryview(content)], mnt),
         ):
             with open(os.path.join(mnt, "sub", "f.txt"), "rb") as f:
                 assert f.read() == content
@@ -757,7 +745,7 @@ class TestFuseMount:
         }
         with (
             tempfile.TemporaryDirectory() as mnt,
-            _fuse_mount(metadata, [memoryview(b"\x00\x00")], 2, mnt),
+            _fuse_mount(metadata, [memoryview(b"\x00\x00")], mnt),
         ):
             assert sorted(os.listdir(mnt)) == ["sub", "x.bin", "y.bin"]
             assert os.listdir(os.path.join(mnt, "sub")) == []
@@ -774,33 +762,10 @@ class TestFuseMount:
         }
         with (
             tempfile.TemporaryDirectory() as mnt,
-            _fuse_mount(metadata, [memoryview(b"\x00")], 1, mnt),
+            _fuse_mount(metadata, [memoryview(b"\x00")], mnt),
         ):
             assert os.readlink(os.path.join(mnt, "link")) == target
             assert stat.S_ISLNK(os.lstat(os.path.join(mnt, "link")).st_mode)
-
-    def test_small_chunk_size(self) -> None:
-        """File spanning multiple chunks is read correctly."""
-        content = b"A" * 10 + b"B" * 10 + b"C" * 5
-        chunk_size = 10
-        chunk_list = [
-            memoryview(content[i : i + chunk_size])
-            for i in range(0, len(content), chunk_size)
-        ]
-        metadata: dict[str, object] = {
-            "/": {"attr": _dir_attr(), "children": ["f.bin"]},
-            "/f.bin": {
-                "attr": _file_attr(len(content)),
-                "global_offset": 0,
-                "file_len": len(content),
-            },
-        }
-        with (
-            tempfile.TemporaryDirectory() as mnt,
-            _fuse_mount(metadata, chunk_list, chunk_size, mnt),
-        ):
-            with open(os.path.join(mnt, "f.bin"), "rb") as f:
-                assert f.read() == content
 
     def test_partial_read(self) -> None:
         """Reading a slice of a file returns the correct bytes."""
@@ -815,7 +780,7 @@ class TestFuseMount:
         }
         with (
             tempfile.TemporaryDirectory() as mnt,
-            _fuse_mount(metadata, [memoryview(content)], len(content), mnt),
+            _fuse_mount(metadata, [memoryview(content)], mnt),
         ):
             with open(os.path.join(mnt, "f.bin"), "rb") as f:
                 f.seek(4)
@@ -833,7 +798,7 @@ class TestFuseMount:
         }
         with (
             tempfile.TemporaryDirectory() as mnt,
-            _fuse_mount(metadata, [memoryview(b"\x00" * 64)], 64, mnt),
+            _fuse_mount(metadata, [memoryview(b"\x00" * 64)], mnt),
         ):
             sub_stat = os.stat(os.path.join(mnt, "sub"))
             dotdot_stat = os.stat(os.path.join(mnt, "sub", ".."))
@@ -857,11 +822,10 @@ class TestFuseMount:
                 with open(os.path.join(src, name), "wb") as f:
                     f.write(content)
 
-            meta, _staging_mv, chunks, _hashes, _pi = pack_directory_chunked(src)
+            meta, _staging_mv, chunks = _pack_for_test(src)
 
             with tempfile.TemporaryDirectory() as mnt:
-                chunk_size = len(bytes(chunks[0])) if chunks else 1
-                with _fuse_mount(meta, chunks, chunk_size, mnt):
+                with _fuse_mount(meta, chunks, mnt):
                     for name, expected in files.items():
                         with open(os.path.join(mnt, name), "rb") as f:
                             assert f.read() == expected, f"content mismatch for {name}"
@@ -883,7 +847,7 @@ class TestFuseMount:
         }
         with (
             tempfile.TemporaryDirectory() as mnt,
-            _fuse_mount(metadata, [memoryview(b"\x00\x00")], 2, mnt),
+            _fuse_mount(metadata, [memoryview(b"\x00\x00")], mnt),
         ):
             rw = os.stat(os.path.join(mnt, "rw.txt"))
             ro = os.stat(os.path.join(mnt, "ro.txt"))
@@ -897,21 +861,12 @@ class TestFuseMount:
         }
         with (
             tempfile.TemporaryDirectory() as mnt,
-            _fuse_mount(metadata, [memoryview(b"\x00")], 1, mnt),
+            _fuse_mount(metadata, [memoryview(b"\x00")], mnt),
         ):
             with pytest.raises(FileNotFoundError):
                 open(os.path.join(mnt, "nope.txt"), "rb")
             with pytest.raises(FileNotFoundError):
                 os.stat(os.path.join(mnt, "nope.txt"))
-
-    def test_zero_chunk_size_rejected(self) -> None:
-        """chunk_size=0 should raise immediately."""
-        metadata: dict[str, object] = {
-            "/": {"attr": _dir_attr(), "children": []},
-        }
-        with tempfile.TemporaryDirectory() as mnt:
-            with pytest.raises(RuntimeError, match="chunk_size must be > 0"):
-                mount_chunked_fuse(metadata, [], 0, mnt)
 
     def test_relative_mount_point_rejected(self) -> None:
         """Relative mount point should raise immediately."""
@@ -919,7 +874,7 @@ class TestFuseMount:
             "/": {"attr": _dir_attr(), "children": []},
         }
         with pytest.raises(RuntimeError, match="absolute path"):
-            mount_chunked_fuse(metadata, [], 1, "relative/path")
+            mount_chunked_fuse(metadata, 0, "relative/path", None)
 
     def test_mount_nonexistent_directory(self) -> None:
         """Mounting on a path that doesn't exist should fail."""
@@ -927,7 +882,7 @@ class TestFuseMount:
             "/": {"attr": _dir_attr(), "children": []},
         }
         with pytest.raises(RuntimeError):
-            mount_chunked_fuse(metadata, [], 1, "/tmp/nonexistent_fuse_test_dir")
+            mount_chunked_fuse(metadata, 0, "/tmp/nonexistent_fuse_test_dir", None)
 
     def test_many_files(self) -> None:
         """Mount with many files and read all of them."""
@@ -947,7 +902,7 @@ class TestFuseMount:
 
         with (
             tempfile.TemporaryDirectory() as mnt,
-            _fuse_mount(metadata, [memoryview(packed)], len(packed), mnt),
+            _fuse_mount(metadata, [memoryview(packed)], mnt),
         ):
             for i in range(num_files):
                 with open(os.path.join(mnt, f"f_{i}.bin"), "rb") as f:
@@ -967,7 +922,7 @@ class TestFuseMount:
         }
         with (
             tempfile.TemporaryDirectory() as mnt,
-            _fuse_mount(metadata, [memoryview(content)], len(content), mnt),
+            _fuse_mount(metadata, [memoryview(content)], mnt),
         ):
             path = os.path.join(mnt, "data.bin")
             for _ in range(50):
@@ -987,7 +942,7 @@ class TestFuseMount:
         }
         with tempfile.TemporaryDirectory() as mnt:
             # First mount/unmount cycle.
-            with _fuse_mount(metadata, [memoryview(content)], len(content), mnt):
+            with _fuse_mount(metadata, [memoryview(content)], mnt):
                 with open(os.path.join(mnt, "f.txt"), "rb") as f:
                     assert f.read() == content
 
@@ -1001,7 +956,7 @@ class TestFuseMount:
                     "file_len": len(content2),
                 },
             }
-            with _fuse_mount(metadata2, [memoryview(content2)], len(content2), mnt):
+            with _fuse_mount(metadata2, [memoryview(content2)], mnt):
                 with open(os.path.join(mnt, "g.txt"), "rb") as f:
                     assert f.read() == content2
 
@@ -1026,16 +981,16 @@ class TestFuseRefresh:
         }
         with (
             tempfile.TemporaryDirectory() as mnt,
-            _fuse_mount(metadata, [memoryview(content)], len(content), mnt) as handle,
+            _fuse_mount(metadata, [memoryview(content)], mnt) as handle,
         ):
             with open(os.path.join(mnt, "f.txt"), "rb") as f:
                 assert f.read() == content
             # Refresh with identical data.
-            handle.refresh(
+            _refresh(
+                handle,
                 metadata,
                 memoryview(content),
                 [(0, len(content))],
-                len(content),
                 len(content),
             )
             with open(os.path.join(mnt, "f.txt"), "rb") as f:
@@ -1054,7 +1009,7 @@ class TestFuseRefresh:
         }
         with (
             tempfile.TemporaryDirectory() as mnt,
-            _fuse_mount(meta1, [memoryview(v1)], len(v1), mnt) as handle,
+            _fuse_mount(meta1, [memoryview(v1)], mnt) as handle,
         ):
             with open(os.path.join(mnt, "f.txt"), "rb") as f:
                 assert f.read() == v1
@@ -1067,7 +1022,7 @@ class TestFuseRefresh:
                     "file_len": len(v2),
                 },
             }
-            handle.refresh(meta2, memoryview(v2), [(0, len(v2))], len(v2), len(v2))
+            _refresh(handle, meta2, memoryview(v2), [(0, len(v2))], len(v2))
             with open(os.path.join(mnt, "f.txt"), "rb") as f:
                 assert f.read() == v2
 
@@ -1084,7 +1039,7 @@ class TestFuseRefresh:
         }
         with (
             tempfile.TemporaryDirectory() as mnt,
-            _fuse_mount(meta1, [memoryview(v1)], 3, mnt) as handle,
+            _fuse_mount(meta1, [memoryview(v1)], mnt) as handle,
         ):
             assert os.listdir(mnt) == ["a.txt"]
             v2 = b"aaabbb"
@@ -1101,7 +1056,7 @@ class TestFuseRefresh:
                     "file_len": 3,
                 },
             }
-            handle.refresh(meta2, memoryview(v2), [(0, len(v2))], len(v2), len(v2))
+            _refresh(handle, meta2, memoryview(v2), [(0, len(v2))], len(v2))
             assert sorted(os.listdir(mnt)) == ["a.txt", "b.txt"]
             with open(os.path.join(mnt, "b.txt"), "rb") as f:
                 assert f.read() == b"bbb"
@@ -1124,7 +1079,7 @@ class TestFuseRefresh:
         }
         with (
             tempfile.TemporaryDirectory() as mnt,
-            _fuse_mount(meta1, [memoryview(v1)], len(v1), mnt) as handle,
+            _fuse_mount(meta1, [memoryview(v1)], mnt) as handle,
         ):
             assert sorted(os.listdir(mnt)) == ["a.txt", "b.txt"]
             v2 = b"aaa"
@@ -1136,7 +1091,7 @@ class TestFuseRefresh:
                     "file_len": 3,
                 },
             }
-            handle.refresh(meta2, memoryview(v2), [(0, 3)], 3, 3)
+            _refresh(handle, meta2, memoryview(v2), [(0, 3)], 3)
             assert os.listdir(mnt) == ["a.txt"]
             with pytest.raises(FileNotFoundError):
                 open(os.path.join(mnt, "b.txt"), "rb")
@@ -1154,7 +1109,7 @@ class TestFuseRefresh:
         }
         with (
             tempfile.TemporaryDirectory() as mnt,
-            _fuse_mount(meta1, [memoryview(v1)], len(v1), mnt) as handle,
+            _fuse_mount(meta1, [memoryview(v1)], mnt) as handle,
         ):
             assert os.stat(os.path.join(mnt, "f.bin")).st_size == 5
             v2 = b"much larger content now"
@@ -1166,7 +1121,7 @@ class TestFuseRefresh:
                     "file_len": len(v2),
                 },
             }
-            handle.refresh(meta2, memoryview(v2), [(0, len(v2))], len(v2), len(v2))
+            _refresh(handle, meta2, memoryview(v2), [(0, len(v2))], len(v2))
             with open(os.path.join(mnt, "f.bin"), "rb") as f:
                 assert f.read() == v2
             assert os.stat(os.path.join(mnt, "f.bin")).st_size == len(v2)
@@ -1184,7 +1139,7 @@ class TestFuseRefresh:
         }
         with (
             tempfile.TemporaryDirectory() as mnt,
-            _fuse_mount(meta1, [memoryview(v1)], len(v1), mnt) as handle,
+            _fuse_mount(meta1, [memoryview(v1)], mnt) as handle,
         ):
             assert os.stat(os.path.join(mnt, "f.bin")).st_size == len(v1)
             v2 = b"tiny"
@@ -1196,7 +1151,7 @@ class TestFuseRefresh:
                     "file_len": len(v2),
                 },
             }
-            handle.refresh(meta2, memoryview(v2), [(0, len(v2))], len(v2), len(v2))
+            _refresh(handle, meta2, memoryview(v2), [(0, len(v2))], len(v2))
             with open(os.path.join(mnt, "f.bin"), "rb") as f:
                 assert f.read() == v2
             assert os.stat(os.path.join(mnt, "f.bin")).st_size == len(v2)
@@ -1214,17 +1169,17 @@ class TestFuseRefresh:
         }
         with (
             tempfile.TemporaryDirectory() as mnt,
-            _fuse_mount(metadata, [memoryview(content)], len(content), mnt) as handle,
+            _fuse_mount(metadata, [memoryview(content)], mnt) as handle,
         ):
             fh = open(os.path.join(mnt, "f.bin"), "rb")
             first_half = fh.read(4096)
             assert first_half == b"A" * 4096
             # Refresh with same content.
-            handle.refresh(
+            _refresh(
+                handle,
                 metadata,
                 memoryview(content),
                 [(0, len(content))],
-                len(content),
                 len(content),
             )
             second_half = fh.read(4096)
@@ -1251,7 +1206,7 @@ class TestFuseRefresh:
         }
         with (
             tempfile.TemporaryDirectory() as mnt,
-            _fuse_mount(meta1, [memoryview(buf1)], len(buf1), mnt) as handle,
+            _fuse_mount(meta1, [memoryview(buf1)], mnt) as handle,
         ):
             with open(os.path.join(mnt, "f.bin"), "rb") as f:
                 assert f.read() == file_data
@@ -1265,9 +1220,7 @@ class TestFuseRefresh:
                     "file_len": len(file_data),
                 },
             }
-            handle.refresh(
-                meta2, memoryview(buf2), [(0, len(buf2))], len(buf2), len(buf2)
-            )
+            _refresh(handle, meta2, memoryview(buf2), [(0, len(buf2))], len(buf2))
             with open(os.path.join(mnt, "f.bin"), "rb") as f:
                 assert f.read() == file_data
 
@@ -1287,15 +1240,15 @@ class TestFuseRefresh:
         content = b"v00"
         with (
             tempfile.TemporaryDirectory() as mnt,
-            _fuse_mount(meta_fn("f.txt", 3), [memoryview(content)], 3, mnt) as handle,
+            _fuse_mount(meta_fn("f.txt", 3), [memoryview(content)], mnt) as handle,
         ):
             for i in range(20):
                 new_content = f"v{i:02d}".encode()
-                handle.refresh(
+                _refresh(
+                    handle,
                     meta_fn("f.txt", len(new_content)),
                     memoryview(new_content),
                     [(0, len(new_content))],
-                    len(new_content),
                     len(new_content),
                 )
                 with open(os.path.join(mnt, "f.txt"), "rb") as f:
@@ -1319,7 +1272,7 @@ class TestFuseRefresh:
 
         with (
             tempfile.TemporaryDirectory() as mnt,
-            _fuse_mount(metadata, [memoryview(data)], len(data), mnt) as handle,
+            _fuse_mount(metadata, [memoryview(data)], mnt) as handle,
         ):
             # Read all files.
             for i in range(num_files):
@@ -1333,11 +1286,11 @@ class TestFuseRefresh:
             new_data[25 * file_size : 26 * file_size] = new_content
             new_data = bytes(new_data)
 
-            handle.refresh(
+            _refresh(
+                handle,
                 metadata,
                 memoryview(new_data),
                 [(0, len(new_data))],
-                len(new_data),
                 len(new_data),
             )
 
@@ -1353,14 +1306,13 @@ class TestFuseRefresh:
             with open(os.path.join(src, "data.txt"), "wb") as f:
                 f.write(b"original content")
 
-            meta, staging_mv, chunks, _hashes, _pi = pack_directory_chunked(src)
+            meta, staging_mv, chunks = _pack_for_test(src)
 
             with (
                 tempfile.TemporaryDirectory() as mnt,
                 _fuse_mount(
                     meta,
                     chunks,
-                    len(bytes(chunks[0])) if chunks else 1,
                     mnt,
                 ) as handle,
             ):
@@ -1369,106 +1321,227 @@ class TestFuseRefresh:
 
                 with open(os.path.join(src, "data.txt"), "wb") as f:
                     f.write(b"updated content!")
-                meta2, staging_mv2, chunks2, _h2, _pi2 = pack_directory_chunked(src)
-                chunk_size2 = len(bytes(chunks2[0])) if chunks2 else 1
+                meta2, staging_mv2, chunks2 = _pack_for_test(src)
                 buf2 = staging_mv2 if staging_mv2 is not None else memoryview(b"")
-                handle.refresh(
+                _refresh(
+                    handle,
                     meta2,
                     buf2,
                     [(0, len(buf2))],
                     len(buf2),
-                    chunk_size2,
                 )
 
                 with open(os.path.join(mnt, "data.txt"), "rb") as f:
                     assert f.read() == b"updated content!"
 
 
-class TestClassifyWorkers:
-    """Unit tests for the classify_workers function."""
+@pytest.mark.skipif(
+    not _fuse_available,
+    reason="FUSE not available (missing fusermount3, /dev/fuse, or permissions)",
+)
+@pytest.mark.timeout(60)
+class TestFuseStaleFileEio:
+    """The per-file stale -> EIO path through a real FUSE mount.
 
-    def test_all_fresh(self) -> None:
-        hashes = ["h1", "h2", "h3"]
-        size = 300
-        states = [(hashes, size), (hashes, size)]
-        fresh, dirty = classify_workers(hashes, size, states)
-        assert fresh == [0, 1]
-        assert dirty == {}
+    When the client cannot reproduce a file (its source diverged under the fence), it
+    garbage-fills that file's bytes in the delivered block and ships its vpath in the
+    ``receive_block`` stale list. A read of a stale file must return EIO -- and a read
+    already parked on its block must be WOKEN and EIO rather than hang forever in
+    uninterruptible sleep (the bug this fixes) -- while co-located valid files sharing
+    the block still serve. These mount the Rust FUSE filesystem directly (no actor
+    layer) and drive ``receive_block`` the way the worker's endpoint does. Each
+    parked-read test joins its reader with a wall-clock timeout and a FUSE-abort
+    fallback, so a wake regression fails fast instead of wedging."""
 
-    def test_all_stale(self) -> None:
-        hashes = ["h1", "h2"]
-        size = 200
-        states: list[tuple[list[str], int]] = [([], 0), ([], 0)]
-        fresh, dirty = classify_workers(hashes, size, states)
-        assert fresh == []
-        assert dirty == {0: None, 1: None}
+    @staticmethod
+    def _one_file_meta(file_len: int) -> dict[str, object]:
+        """A single file occupying (part of) block 0, with nothing delivered, so the
+        first read faults block 0."""
+        return {
+            "/": {"attr": _dir_attr(), "children": ["f.bin"]},
+            "/f.bin": {
+                "attr": _file_attr(file_len),
+                "global_offset": 0,
+                "file_len": file_len,
+            },
+        }
 
-    def test_partial(self) -> None:
-        hashes = ["h1", "h2", "h3"]
-        size = 300
-        states = [(["h1", "XX", "h3"], size)]
-        fresh, dirty = classify_workers(hashes, size, states)
-        assert fresh == []
-        assert dirty == {0: [1]}
+    @staticmethod
+    def _two_file_meta(len_a: int, len_b: int) -> dict[str, object]:
+        """Two files packed contiguously into block 0 (``a.bin`` at offset 0,
+        ``b.bin`` right after), so they share a block -- the case where one can be
+        stale while the other stays valid."""
+        return {
+            "/": {"attr": _dir_attr(), "children": ["a.bin", "b.bin"]},
+            "/a.bin": {
+                "attr": _file_attr(len_a),
+                "global_offset": 0,
+                "file_len": len_a,
+            },
+            "/b.bin": {
+                "attr": _file_attr(len_b),
+                "global_offset": len_a,
+                "file_len": len_b,
+            },
+        }
 
-    def test_mixed(self) -> None:
-        hashes = ["h1", "h2", "h3"]
-        size = 300
-        states = [(hashes, size), (["h1", "XX", "h3"], size), ([], 0)]
-        fresh, dirty = classify_workers(hashes, size, states)
-        assert fresh == [0]
-        assert dirty == {1: [1], 2: None}
+    @staticmethod
+    def _reader(path: str) -> tuple[threading.Thread, dict]:
+        """A daemon thread that reads ``path`` once, recording either ``data`` (on
+        success) or ``errno`` (on OSError). It is the only thread touching the mount's
+        data, so the main thread can drive receive_block while it is parked in the
+        read syscall (which releases the GIL)."""
+        out: dict = {}
 
-    def test_size_changed_partial_overlap(self) -> None:
-        """Worker has 3 blocks at old size, client now has 4 blocks at new size.
+        def _run() -> None:
+            try:
+                with open(path, "rb") as f:
+                    out["data"] = f.read()
+            except OSError as e:
+                out["errno"] = e.errno
 
-        Overlapping blocks that match should NOT be retransferred.
-        Only the new block and the boundary block should be dirty.
-        Without the fix, any size change marks the worker fully stale (None).
-        """
-        client_hashes = ["h1", "h2", "h3", "h4"]
-        client_size = 400
-        # Worker has first 3 blocks matching, but at the old size.
-        states = [(["h1", "h2", "h3"], 300)]
-        fresh, dirty = classify_workers(client_hashes, client_size, states)
-        assert fresh == []
-        # Block 3 is new (index 3), and block 2 (last overlap) is dirty
-        # because size changed.
-        assert dirty == {0: [2, 3]}
+        return threading.Thread(target=_run, daemon=True), out
 
-    def test_size_shrunk_partial_overlap(self) -> None:
-        """Client now has fewer blocks than worker (e.g. file deleted)."""
-        client_hashes = ["h1", "h2"]
-        client_size = 200
-        states = [(["h1", "h2", "h3"], 300)]
-        fresh, dirty = classify_workers(client_hashes, client_size, states)
-        assert fresh == []
-        # Last overlapping block (1) is dirty due to size change.
-        assert dirty == {0: [1]}
+    def test_stale_file_reads_eio(self) -> None:
+        """A block delivered with its file in the stale set -> the read returns EIO
+        (the per-file stale check fires before the gather)."""
+        file_len = 32
+        with tempfile.TemporaryDirectory() as mnt:
+            handle = mount_chunked_fuse(
+                self._one_file_meta(file_len), file_len, mnt, None
+            )
+            try:
+                # Deliver the (garbage) block with f.bin flagged stale.
+                handle.receive_block(0, os.urandom(file_len), ["/f.bin"])
+                with pytest.raises(OSError) as ei:
+                    with open(os.path.join(mnt, "f.bin"), "rb") as f:
+                        f.read()
+                assert ei.value.errno == errno.EIO
+            finally:
+                handle.unmount()
 
-    def test_size_changed_all_hashes_match(self) -> None:
-        """All overlapping hashes match but size changed — boundary block dirty."""
-        client_hashes = ["h1", "h2", "h3", "h4"]
-        client_size = 450
-        states = [(["h1", "h2", "h3"], 300)]
-        fresh, dirty = classify_workers(client_hashes, client_size, states)
-        assert fresh == []
-        # Block 2 (boundary) + block 3 (new).
-        assert dirty == {0: [2, 3]}
+    def test_parked_read_woken_by_receive_block(self) -> None:
+        """Control for the regression test below: a read parked on a missing block is
+        woken by ``receive_block`` and returns the delivered bytes. Proves the read
+        really parks and the wake machinery works, so the EIO in the stale test is
+        specifically the stale bit's doing, not an unrelated error."""
+        content = b"delivered-after-park" + bytes(12)  # 32 bytes == file_len
+        with tempfile.TemporaryDirectory() as mnt:
+            handle = mount_chunked_fuse(
+                self._one_file_meta(len(content)), len(content), mnt, None
+            )
+            t, out = self._reader(os.path.join(mnt, "f.bin"))
+            hung = False
+            try:
+                t.start()
+                time.sleep(0.5)  # let the read fault and park on block 0
+                assert t.is_alive(), "read should be parked on the missing block"
+                handle.receive_block(0, content, [])
+                t.join(timeout=10)
+                hung = t.is_alive()
+            finally:
+                if hung:
+                    _fuse_connection_abort(mnt)
+                    t.join(timeout=10)
+                handle.unmount()
+            assert not hung, "receive_block did not wake the parked read"
+            assert out.get("data") == content
 
-    def test_size_changed_with_content_change(self) -> None:
-        """Size changed AND some overlapping blocks differ."""
-        client_hashes = ["h1", "XX", "h3", "h4"]
-        client_size = 400
-        states = [(["h1", "h2", "h3"], 300)]
-        fresh, dirty = classify_workers(client_hashes, client_size, states)
-        assert fresh == []
-        # Block 1 (changed), block 2 (boundary), block 3 (new).
-        assert dirty == {0: [1, 2, 3]}
+    def test_parked_read_woken_by_stale_delivery_eios(self) -> None:
+        """The regression guard: a read parked on a missing block, then delivered as a
+        garbage block with its file in the stale set, must be woken and return EIO --
+        not hang. One ``receive_block`` carries the bytes + the stale flag and wakes
+        the parked read."""
+        file_len = 32
+        with tempfile.TemporaryDirectory() as mnt:
+            handle = mount_chunked_fuse(
+                self._one_file_meta(file_len), file_len, mnt, None
+            )
+            t, out = self._reader(os.path.join(mnt, "f.bin"))
+            hung = False
+            try:
+                t.start()
+                time.sleep(0.5)  # let the read fault and park on block 0
+                assert t.is_alive(), "read should be parked on the missing block"
+                # Deliver the garbage block with f.bin stale -- one atomic call.
+                handle.receive_block(0, os.urandom(file_len), ["/f.bin"])
+                t.join(timeout=10)
+                hung = t.is_alive()
+            finally:
+                if hung:
+                    _fuse_connection_abort(mnt)  # free the wedged read
+                    t.join(timeout=10)
+                handle.unmount()
+            assert not hung, (
+                "stale delivery did not wake the parked read (hang regression)"
+            )
+            assert out.get("errno") == errno.EIO, f"expected EIO, got {out!r}"
+
+    def test_colocated_valid_file_serves_when_other_stale(self) -> None:
+        """The point of per-file granularity: two files share block 0; one is stale,
+        the other valid. The valid file reads its real bytes; only the stale file
+        EIOs."""
+        valid = b"valid-file-bytes"  # 16 bytes (a.bin)
+        garbage = os.urandom(16)  # b.bin's range in the delivered (garbage) block
+        with tempfile.TemporaryDirectory() as mnt:
+            handle = mount_chunked_fuse(
+                self._two_file_meta(len(valid), len(garbage)),
+                len(valid) + len(garbage),
+                mnt,
+                None,
+            )
+            try:
+                # Deliver block 0 = a's real bytes ++ b's garbage, with only b stale.
+                handle.receive_block(0, valid + garbage, ["/b.bin"])
+                with open(os.path.join(mnt, "a.bin"), "rb") as f:
+                    assert f.read() == valid  # co-located valid file still serves
+                with pytest.raises(OSError) as ei:
+                    with open(os.path.join(mnt, "b.bin"), "rb") as f:
+                        f.read()
+                assert ei.value.errno == errno.EIO  # only the stale file EIOs
+            finally:
+                handle.unmount()
+
+    def test_fault_callback_delivers_stale_eios(self) -> None:
+        """Production shape end-to-end: the Rust read fault fires the callback, which
+        delivers the garbage block with its file in the stale set (as ``_deliver``
+        does). The read is woken and returns EIO -- fault -> callback ->
+        receive_block(stale) -> wake -> EIO through real FUSE in one path."""
+        file_len = 32
+        holder: dict = {}
+        faulted = threading.Event()
+
+        def on_fault(block_id: int) -> None:
+            faulted.set()
+            handle = holder.get("handle")
+            if handle is not None:
+                handle.receive_block(int(block_id), os.urandom(file_len), ["/f.bin"])
+
+        with tempfile.TemporaryDirectory() as mnt:
+            handle = mount_chunked_fuse(
+                self._one_file_meta(file_len), file_len, mnt, on_fault
+            )
+            holder["handle"] = handle
+            t, out = self._reader(os.path.join(mnt, "f.bin"))
+            hung = False
+            try:
+                t.start()
+                t.join(timeout=10)
+                hung = t.is_alive()
+            finally:
+                if hung:
+                    _fuse_connection_abort(mnt)
+                    t.join(timeout=10)
+                handle.unmount()
+            assert not hung, (
+                "fault-callback stale delivery did not wake the read (hang regression)"
+            )
+            assert faulted.is_set(), "the read should have faulted the block"
+            assert out.get("errno") == errno.EIO, f"expected EIO, got {out!r}"
 
 
 class TestDirtyBlockUnion:
-    """Tests for the dirty-block union logic used in MountHandler.open().
+    """Tests for the dirty-block union logic used in MountHandlerClient.open().
 
     When multiple workers have different dirty blocks, the transfer uses
     the union of all dirty blocks so a single fanout covers everyone.
@@ -1479,7 +1552,7 @@ class TestDirtyBlockUnion:
         worker_dirty: dict[int, list[int] | None],
         num_blocks: int,
     ) -> list[int]:
-        """Reproduce the dirty-block union logic from MountHandler.open()."""
+        """Reproduce the dirty-block union logic from MountHandlerClient.open()."""
         all_blocks = list(range(num_blocks))
         dirty_blocks: set[int] = set()
         for _rank, d in worker_dirty.items():
@@ -1850,10 +1923,14 @@ def test_actor_cold_transfer() -> None:
 
         with tempfile.TemporaryDirectory() as mnt:
             host = this_host()
-            with remotemount(host, src, mnt, transfer_mode="rdma"):
+            rm = remotemount(host, src, mnt)
+            rm.open()
+            try:
                 for name, expected in files.items():
                     with open(os.path.join(mnt, name), "rb") as f:
                         assert f.read() == expected, f"content mismatch for {name}"
+            finally:
+                rm.close()
 
 
 @pytest.mark.skipif(not _fuse_available, reason="FUSE not available")
@@ -1870,7 +1947,7 @@ def test_actor_incremental_no_change() -> None:
 
         with tempfile.TemporaryDirectory() as mnt:
             host = this_host()
-            rm = remotemount(host, src, mnt, transfer_mode="rdma")
+            rm = remotemount(host, src, mnt)
 
             # First open: full transfer.
             rm.open()
@@ -1900,7 +1977,7 @@ def test_actor_incremental_partial() -> None:
 
         with tempfile.TemporaryDirectory() as mnt:
             host = this_host()
-            rm = remotemount(host, src, mnt, transfer_mode="rdma")
+            rm = remotemount(host, src, mnt)
 
             # First open: full transfer.
             rm.open()
@@ -1929,7 +2006,7 @@ def test_unmount_not_mounted_returns_status() -> None:
 
     host = this_host()
     procs = host.spawn_procs()
-    actors = procs.spawn("FUSEActor", FUSEActor, 1024, "slurm")
+    actors = procs.spawn("FUSEActor", FUSEActor, "slurm")
 
     with tempfile.TemporaryDirectory() as d:
         result = actors.unmount.call(d).get()
@@ -1942,35 +2019,32 @@ def test_unmount_not_mounted_returns_status() -> None:
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 def test_unmount_after_mount_returns_ok() -> None:
-    """Mount via remotemount, unmount via actor endpoint, check 'ok' status."""
+    """Mount a FUSEActor, then unmount via its endpoint: first call returns 'ok',
+    second 'not_mounted'. Spawns the FUSEActor directly -- the MountHandler handle
+    does not expose its worker mesh."""
     from monarch.actor import this_host
-    from monarch.remotemount import remotemount
+    from monarch.remotemount.remotemount import build_index, FUSEActor
 
-    with tempfile.TemporaryDirectory() as src:
+    host = this_host()
+    procs = host.spawn_procs()
+    actors = procs.spawn("FUSEActor", FUSEActor, "handler")
+
+    with tempfile.TemporaryDirectory() as src, tempfile.TemporaryDirectory() as mnt:
         with open(os.path.join(src, "f.txt"), "wb") as f:
             f.write(b"test content")
+        meta = build_index(src, {})
+        actors.mount.call(mnt, meta).get()
 
-        with tempfile.TemporaryDirectory() as mnt:
-            host = this_host()
-            rm = remotemount(host, src, mnt, transfer_mode="rdma")
-            rm.open()
+        # First unmount -> ok.
+        result = actors.unmount.call(mnt).get()
+        for _rank, (status, detail) in result:
+            assert status == "ok"
+            assert detail == ""
 
-            # Verify mount works
-            with open(os.path.join(mnt, "f.txt"), "rb") as f:
-                assert f.read() == b"test content"
-
-            # Unmount via the actor endpoint — should return 'ok'
-            # pyrefly: ignore [missing-attribute]
-            result = rm.fuse_actors.unmount.call(mnt).get()
-            for _rank, (status, _detail) in result:
-                assert status == "ok"
-                assert _detail == ""
-
-            # Second unmount — should return 'not_mounted'
-            # pyrefly: ignore [missing-attribute]
-            result = rm.fuse_actors.unmount.call(mnt).get()
-            for _rank, (status, _detail) in result:
-                assert status == "not_mounted"
+        # Second unmount -> not_mounted.
+        result = actors.unmount.call(mnt).get()
+        for _rank, (status, _detail) in result:
+            assert status == "not_mounted"
 
 
 _tls_certs_available: bool = os.path.exists("/var/facebook/x509_identities/server.pem")
@@ -1998,10 +2072,14 @@ def test_tls_cold_transfer() -> None:
 
         with tempfile.TemporaryDirectory() as mnt:
             host = this_host()
-            with remotemount(host, src, mnt, transfer_mode="rdma"):
+            rm = remotemount(host, src, mnt)
+            rm.open()
+            try:
                 for name, expected in files.items():
                     with open(os.path.join(mnt, name), "rb") as f:
                         assert f.read() == expected, f"content mismatch for {name}"
+            finally:
+                rm.close()
 
 
 @pytest.mark.skipif(not _fuse_available, reason="FUSE not available")
@@ -2019,7 +2097,7 @@ def test_tls_incremental_no_change() -> None:
 
         with tempfile.TemporaryDirectory() as mnt:
             host = this_host()
-            rm = remotemount(host, src, mnt, transfer_mode="rdma")
+            rm = remotemount(host, src, mnt)
 
             rm.open()
             with open(os.path.join(mnt, "f.txt"), "rb") as f:
@@ -2048,7 +2126,7 @@ def test_tls_incremental_partial() -> None:
 
         with tempfile.TemporaryDirectory() as mnt:
             host = this_host()
-            rm = remotemount(host, src, mnt, transfer_mode="rdma")
+            rm = remotemount(host, src, mnt)
 
             rm.open()
             with open(os.path.join(mnt, "config.json")) as f:
@@ -2079,7 +2157,7 @@ def test_actor_refresh() -> None:
 
         with tempfile.TemporaryDirectory() as mnt:
             host = this_host()
-            rm = remotemount(host, src, mnt, transfer_mode="rdma")
+            rm = remotemount(host, src, mnt)
 
             rm.open()
             with open(os.path.join(mnt, "config.json")) as f:
@@ -2090,7 +2168,7 @@ def test_actor_refresh() -> None:
                 f.write('{"lr": 0.01, "epochs": 20}')
 
             # Refresh (no close/open cycle).
-            rm.refresh(src)
+            rm.refresh()
             with open(os.path.join(mnt, "config.json")) as f:
                 assert f.read() == '{"lr": 0.01, "epochs": 20}'
 
@@ -2112,7 +2190,7 @@ def test_actor_refresh_with_open_handles() -> None:
 
         with tempfile.TemporaryDirectory() as mnt:
             host = this_host()
-            rm = remotemount(host, src, mnt, transfer_mode="rdma")
+            rm = remotemount(host, src, mnt)
 
             rm.open()
 
@@ -2123,7 +2201,7 @@ def test_actor_refresh_with_open_handles() -> None:
             # Modify source and refresh.
             with open(path, "wb") as f:
                 f.write(b"BBBB")
-            rm.refresh(src)
+            rm.refresh()
 
             # Re-read from existing handle — should see new data.
             fh.seek(0)
@@ -2147,14 +2225,14 @@ def test_actor_refresh_no_change() -> None:
 
         with tempfile.TemporaryDirectory() as mnt:
             host = this_host()
-            rm = remotemount(host, src, mnt, transfer_mode="rdma")
+            rm = remotemount(host, src, mnt)
 
             rm.open()
             with open(os.path.join(mnt, "f.txt"), "rb") as f:
                 assert f.read() == b"unchanged"
 
             # Refresh without changes.
-            rm.refresh(src)
+            rm.refresh()
             with open(os.path.join(mnt, "f.txt"), "rb") as f:
                 assert f.read() == b"unchanged"
 
@@ -2175,7 +2253,7 @@ def test_actor_refresh_add_file() -> None:
 
         with tempfile.TemporaryDirectory() as mnt:
             host = this_host()
-            rm = remotemount(host, src, mnt, transfer_mode="rdma")
+            rm = remotemount(host, src, mnt)
 
             rm.open()
             assert os.listdir(mnt) == ["a.txt"]
@@ -2183,7 +2261,7 @@ def test_actor_refresh_add_file() -> None:
             # Add a new file and refresh.
             with open(os.path.join(src, "b.txt"), "wb") as f:
                 f.write(b"bbb")
-            rm.refresh(src)
+            rm.refresh()
 
             assert sorted(os.listdir(mnt)) == ["a.txt", "b.txt"]
             with open(os.path.join(mnt, "b.txt"), "rb") as f:

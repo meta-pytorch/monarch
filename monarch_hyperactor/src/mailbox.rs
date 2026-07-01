@@ -47,6 +47,7 @@ use crate::context::PyInstance;
 use crate::proc::PyActorAddr;
 use crate::pytokio::PyPythonTask;
 use crate::pytokio::PythonTask;
+use crate::runtime::GilSite;
 use crate::runtime::monarch_with_gil;
 use crate::runtime::monarch_with_gil_blocking;
 
@@ -332,7 +333,7 @@ async fn recv_async(
         .await
         .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
 
-    monarch_with_gil(|py| message.into_py_any(py)).await
+    monarch_with_gil(GilSite::ReplyConvert, |py| message.into_py_any(py)).await
 }
 
 #[pymethods]
@@ -535,7 +536,7 @@ impl PythonOncePortReceiver {
                 .await
                 .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
 
-            monarch_with_gil(|py| message.into_py_any(py)).await
+            monarch_with_gil(GilSite::ReplyConvert, |py| message.into_py_any(py)).await
         };
         Ok(PythonTask::new(fut)?.into())
     }
@@ -640,6 +641,7 @@ impl PythonReducer {
         let p = params.ok_or_else(|| anyhow::anyhow!("params cannot be None"))?;
         let obj: PickledPyObject = p.deserialized()?;
         Ok(monarch_with_gil_blocking(
+            GilSite::Reducer,
             |py: Python<'_>| -> PyResult<Self> {
                 let unpickled = obj.unpickle(py)?;
                 Ok(Self(unpickled.unbind()))
@@ -652,10 +654,13 @@ impl CommReducer for PythonReducer {
     type Update = PythonMessage;
 
     fn reduce(&self, left: Self::Update, right: Self::Update) -> anyhow::Result<Self::Update> {
-        monarch_with_gil_blocking(|py: Python<'_>| -> PyResult<PythonMessage> {
-            let result = self.0.call(py, (left, right), None)?;
-            result.extract::<PythonMessage>(py)
-        })
+        monarch_with_gil_blocking(
+            GilSite::Reducer,
+            |py: Python<'_>| -> PyResult<PythonMessage> {
+                let result = self.0.call(py, (left, right), None)?;
+                result.extract::<PythonMessage>(py)
+            },
+        )
         .map_err(Into::into)
     }
 }
@@ -690,7 +695,7 @@ impl Accumulator for PythonAccumulator {
     type Update = PythonMessage;
 
     fn accumulate(&self, state: &mut Self::State, update: Self::Update) -> anyhow::Result<()> {
-        monarch_with_gil_blocking(|py: Python<'_>| -> PyResult<()> {
+        monarch_with_gil_blocking(GilSite::Accumulate, |py: Python<'_>| -> PyResult<()> {
             // Initialize state if it is empty.
             if matches!(state.kind, PythonMessageKind::Uninit {}) {
                 *state = self

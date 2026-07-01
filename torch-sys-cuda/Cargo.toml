@@ -24,5 +24,5 @@ build_utils = { path = "../build_utils" }
 cuda = ["dep:nccl-sys"]
 default = []
 
-[lints]
-rust = { unexpected_cfgs = { check-cfg = ["cfg(fbcode_build)"], level = "warn" } }
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fbcode_build)"]}

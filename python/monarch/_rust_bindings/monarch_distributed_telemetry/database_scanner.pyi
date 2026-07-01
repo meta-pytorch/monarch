@@ -32,6 +32,9 @@ class DatabaseScanner:
     ) -> None:
         """Store a py-spy dump result into the pyspy_stacks table."""
         ...
+    def ingest_snapshot_batch(self, table_name: str, arrow_ipc_bytes: bytes) -> None:
+        """Decode one snapshot Arrow IPC stream and append it to a registered table."""
+        ...
     def scan(
         self,
         dest: object,

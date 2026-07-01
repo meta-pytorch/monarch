@@ -8,6 +8,8 @@
 
 use std::collections::HashMap;
 
+use monarch_gil::GilSite;
+use monarch_gil::monarch_with_gil_blocking;
 use pyo3::Bound;
 use pyo3::IntoPyObject;
 use pyo3::IntoPyObjectExt;
@@ -132,12 +134,16 @@ where
     T: Into<PyErr>,
 {
     fn from(value: T) -> Self {
-        Python::attach(|py| SerializablePyErr::from(py, &value.into()))
+        monarch_with_gil_blocking(GilSite::Traceback, |py| {
+            SerializablePyErr::from(py, &value.into())
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use monarch_gil::GilSite;
+    use monarch_gil::monarch_with_gil_blocking;
     use pyo3::Python;
     use pyo3::ffi::c_str;
     use pyo3::indoc::indoc;
@@ -149,7 +155,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 60)]
     async fn test_serializable_py_err() {
         Python::initialize();
-        let _unused = Python::attach(|py| {
+        let _unused = monarch_with_gil_blocking(GilSite::Test, |py| {
             let module = PyModule::from_code(
                 py,
                 c_str!(indoc! {r#"

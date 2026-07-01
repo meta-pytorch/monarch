@@ -12,9 +12,16 @@ from monarch._rust_bindings.monarch_distributed_telemetry.database_scanner impor
 from monarch._rust_bindings.monarch_hyperactor.context import Instance
 from monarch._rust_bindings.monarch_hyperactor.host_mesh import PyMeshAdminRef
 
+def _snapshot_table_names() -> list[str]: ...
 def _pre_register_snapshot_schemas(scanner: DatabaseScanner) -> None: ...
 def _start_periodic_snapshots(
     scanner: DatabaseScanner,
+    admin_ref: PyMeshAdminRef,
+    instance: Instance,
+    interval_secs: float,
+) -> None: ...
+def _start_periodic_snapshots_http(
+    base_url: str,
     admin_ref: PyMeshAdminRef,
     instance: Instance,
     interval_secs: float,

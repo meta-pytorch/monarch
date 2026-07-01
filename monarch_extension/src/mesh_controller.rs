@@ -600,29 +600,32 @@ impl History {
         let invocation = self.inflight_invocations.get(&seq).unwrap().clone();
 
         let python_message = Arc::new(
-            monarch_hyperactor::runtime::monarch_with_gil(|py| {
-                let traceback = invocation
-                    .lock()
-                    .unwrap()
-                    .tracebacks
-                    .bind(py)
-                    .get_item(0)
-                    .unwrap();
-                let remote_exception = py
-                    .import("monarch.mesh_controller")
-                    .unwrap()
-                    .getattr("RemoteException")
-                    .unwrap();
-                let exe = remote_exception
-                    .call1((exception.backtrace, traceback, rank))
-                    .unwrap();
-                let mut state = pickle(py, exe.unbind(), false, false).unwrap();
-                let inner = state.take_inner().unwrap();
-                PythonMessage::new_from_buf(
-                    PythonMessageKind::Exception { rank: Some(rank) },
-                    inner.take_buffer(),
-                )
-            })
+            monarch_hyperactor::runtime::monarch_with_gil(
+                monarch_hyperactor::runtime::GilSite::Traceback,
+                |py| {
+                    let traceback = invocation
+                        .lock()
+                        .unwrap()
+                        .tracebacks
+                        .bind(py)
+                        .get_item(0)
+                        .unwrap();
+                    let remote_exception = py
+                        .import("monarch.mesh_controller")
+                        .unwrap()
+                        .getattr("RemoteException")
+                        .unwrap();
+                    let exe = remote_exception
+                        .call1((exception.backtrace, traceback, rank))
+                        .unwrap();
+                    let mut state = pickle(py, exe.unbind(), false, false).unwrap();
+                    let inner = state.take_inner().unwrap();
+                    PythonMessage::new_from_buf(
+                        PythonMessageKind::Exception { rank: Some(rank) },
+                        inner.take_buffer(),
+                    )
+                },
+            )
             .await,
         );
 
@@ -858,26 +861,30 @@ impl MeshControllerActor {
                     self.debugger_active = None;
                 }
                 DebuggerAction::Read { requested_size } => {
-                    monarch_hyperactor::runtime::monarch_with_gil(|py| {
-                        let read = py
-                            .import("monarch.controller.debugger")
-                            .unwrap()
-                            .getattr("read")
-                            .unwrap();
-                        let bytes: Vec<u8> =
-                            read.call1((requested_size,)).unwrap().extract().unwrap();
+                    monarch_hyperactor::runtime::monarch_with_gil(
+                        monarch_hyperactor::runtime::GilSite::Debugger,
+                        |py| {
+                            let read = py
+                                .import("monarch.controller.debugger")
+                                .unwrap()
+                                .getattr("read")
+                                .unwrap();
+                            let bytes: Vec<u8> =
+                                read.call1((requested_size,)).unwrap().extract().unwrap();
 
-                        debugger_actor.post(
-                            this,
-                            DebuggerMessage::Action {
-                                action: DebuggerAction::Write { bytes },
-                            },
-                        );
-                    })
+                            debugger_actor.post(
+                                this,
+                                DebuggerMessage::Action {
+                                    action: DebuggerAction::Write { bytes },
+                                },
+                            );
+                        },
+                    )
                     .await;
                 }
                 DebuggerAction::Write { bytes } => {
                     monarch_hyperactor::runtime::monarch_with_gil(
+                        monarch_hyperactor::runtime::GilSite::Debugger,
                         |py| -> Result<(), anyhow::Error> {
                             let write = py
                                 .import("monarch.controller.debugger")

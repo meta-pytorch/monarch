@@ -128,10 +128,16 @@ install_python_test_dependencies() {
     dnf install -y rsync # required for code sync tests
 }
 
-# Install wheel from artifact directory
+# Install wheel from artifact directory.
+# Moves the .whl out of RUNNER_ARTIFACT_DIR first so that linux_job_v2's
+# upload-artifact step (which uploads everything in that directory) never
+# re-uploads the wheel under the test-results artifact name.
 install_wheel_from_artifact() {
     echo "Installing wheel from artifact..."
-    pip install "${RUNNER_ARTIFACT_DIR}"/*.whl
+    local wheel_dir="${RUNNER_TEMP:-/tmp}/wheel"
+    mkdir -p "$wheel_dir"
+    mv -v "${RUNNER_ARTIFACT_DIR}"/*.whl "$wheel_dir/"
+    pip install "$wheel_dir"/*.whl
 }
 
 # Setup and install dependencies for Tensor Engine
@@ -324,14 +330,8 @@ stage_nextest_junit() {
 # uploads them as a workflow artifact (when the caller sets upload-artifact).
 # Picks up pytest XMLs from RUNNER_TEST_RESULTS_DIR and the cargo-nextest
 # junit.xml; safe to call from a workflow that only ran one of them.
-#
-# Removes any *.whl that download-artifact placed in RUNNER_ARTIFACT_DIR first,
-# so the test-results artifact doesn't re-upload the wheel under its own name.
-# (The build workflow uploaded the wheel under its own name; that artifact
-# remains separately downloadable on the GitHub run summary.)
 stage_test_artifacts() {
   : "${RUNNER_ARTIFACT_DIR:?RUNNER_ARTIFACT_DIR must be set}"
-  rm -f "${RUNNER_ARTIFACT_DIR}"/*.whl
   if [[ -d "${RUNNER_TEST_RESULTS_DIR:-test-results}" ]]; then
     cp -v "${RUNNER_TEST_RESULTS_DIR:-test-results}"/*.xml "${RUNNER_ARTIFACT_DIR}/" 2>/dev/null || true
   fi

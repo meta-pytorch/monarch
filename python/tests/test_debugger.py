@@ -27,6 +27,7 @@ from monarch._src.actor.actor_mesh import (
     current_rank,
     IN_PAR,
 )
+from monarch._src.actor.concurrent import concurrent_endpoint
 from monarch._src.actor.debugger.debug_command import (
     Attach,
     Cast,
@@ -123,7 +124,7 @@ class DebugControllerForTesting(DebugController):
         super().__init__()
         self._debug_io = DebugStdIO()
 
-    @endpoint
+    @concurrent_endpoint
     async def blocking_enter(self):
         async with self._task_lock:
             assert self._task is None

@@ -29,6 +29,7 @@ import pytest
 from isolate_in_subprocess import isolate_in_subprocess
 from monarch._src.actor.host_mesh import this_host
 from monarch.actor import Actor, endpoint
+from monarch.config import parametrize_config
 
 
 @dataclass
@@ -91,6 +92,7 @@ class PingPongActor(Actor):
 
 
 @pytest.mark.timeout(60)
+@parametrize_config(actor_queue_dispatch={False})
 async def test_inter_mesh_ping_pong() -> None:
     """
     Test that two separate ProcMeshes can communicate by passing

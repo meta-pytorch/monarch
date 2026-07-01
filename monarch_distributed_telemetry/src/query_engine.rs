@@ -36,6 +36,8 @@ use datafusion::sql::unparser::expr_to_sql;
 use hyperactor::Instance;
 use hyperactor::context::Mailbox as MailboxTrait;
 use hyperactor::mailbox::PortReceiver;
+use monarch_gil::GilSite;
+use monarch_gil::monarch_with_gil_blocking;
 use monarch_hyperactor::actor::PythonActor;
 use monarch_hyperactor::context::PyInstance;
 use monarch_hyperactor::mailbox::PyPortId;
@@ -110,7 +112,7 @@ where
                         Ok(py_result) => {
                             // Extract the batch count from the Python result
                             // Result is a ValueMesh which is iterable, yielding (rank_dict, count) tuples
-                            let count = Python::attach(|py| {
+                            let count = monarch_with_gil_blocking(GilSite::Convert, |py| {
                                 let bound = py_result.bind(py);
                                 let mut total: usize = 0;
                                 // Iterate the ValueMesh
@@ -261,8 +263,9 @@ impl TableProvider for DistributedTableProvider {
         };
 
         // Clone actor and instance for the execution plan
-        let (actor, instance) =
-            Python::attach(|py| (self.actor.clone_ref(py), self.instance.clone_for_py()));
+        let (actor, instance) = monarch_with_gil_blocking(GilSite::Convert, |py| {
+            (self.actor.clone_ref(py), self.instance.clone_for_py())
+        });
 
         Ok(Arc::new(DistributedExec {
             table_name: self.table_name.clone(),
@@ -339,7 +342,8 @@ impl ExecutionPlan for DistributedExec {
         let dest_port_ref = handle.bind();
 
         // Start the distributed scan
-        let completion_future = Python::attach(
+        let completion_future = monarch_with_gil_blocking(
+            GilSite::EndpointDispatch,
             |py| -> anyhow::Result<
                 std::pin::Pin<
                     Box<dyn std::future::Future<Output = PyResult<Py<PyAny>>> + Send + 'static>,
@@ -361,11 +365,9 @@ impl ExecutionPlan for DistributedExec {
                     ),
                 )?;
 
-                // Extract the PythonTask from the Future object
-                // Future._status is an _Unawaited(coro) where coro is a PythonTask
-                let status = future_obj.getattr(py, "_status")?;
-                // _Unawaited is a NamedTuple with .coro attribute
-                let python_task_obj = status.getattr(py, "coro")?;
+                // Surrender the underlying PythonTask via Future._take_inner(),
+                // then consume it to get the raw completion future.
+                let python_task_obj = future_obj.call_method0(py, "_take_inner")?;
                 let mut python_task: PyRefMut<'_, PyPythonTask> = python_task_obj.extract(py)?;
                 let completion_future = python_task.take_task()?;
 

@@ -209,6 +209,58 @@ def test_alias_bootstrap() -> None:
 
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
+def test_attach_to_workers_accepts_future_addresses() -> None:
+    """`attach_to_workers` accepts ``Future[str]`` worker addresses, exercising
+    the ``_as_python_task`` -> ``Future._take_inner()`` path: the Future's
+    underlying task is surrendered to Rust, driven there to yield the address,
+    and the attach proceeds exactly as for plain ``str`` workers."""
+    from monarch._src.actor.future import Future
+
+    async def _resolve(addr: str) -> str:
+        return addr
+
+    procs = []
+    workers = []
+    for _i in range(2):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+        sock.close()
+
+        env = {**os.environ}
+        if "FB_XAR_INVOKED_NAME" in os.environ:
+            env["PYTHONPATH"] = ":".join(sys.path)
+
+        addr = f"tcp://127.0.0.1:{port}"
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import sys; from monarch.actor import run_worker_loop_forever; "
+                f'run_worker_loop_forever(address={addr!r}, ca="trust_all_connections")',
+            ],
+            env=env,
+        )
+        procs.append(proc)
+        # Wrap the address in a Future[str] so attach goes through _take_inner.
+        fut: Future[str] = Future(coro=_resolve(addr))
+        workers.append(fut)
+
+    try:
+        # pyrefly: ignore [bad-argument-type]
+        hosts = attach_to_workers(ca="trust_all_connections", workers=workers)
+        am = hosts.spawn_procs(per_host={"gpus": 1}).spawn("rank", RankActor)
+        ranks = sorted(v for _, v in am.get_rank.call().get().items())
+        assert ranks == [0, 1]
+        hosts.shutdown().get()
+    finally:
+        for proc in procs:
+            proc.kill()
+            proc.wait()
+
+
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
 async def test_host_mesh_context_manager() -> None:
     """Tests that the HostMesh can be used as a context manager and that it runs
     shutdown on exit"""

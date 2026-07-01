@@ -8,6 +8,8 @@
 
 use derive_more::From;
 use derive_more::TryInto;
+use monarch_gil::GilSite;
+use monarch_gil::monarch_with_gil_blocking;
 use monarch_types::PickledPyObject;
 use pyo3::IntoPyObjectExt;
 use pyo3::prelude::*;
@@ -81,6 +83,8 @@ impl<'py> IntoPyObject<'py> for WireValue {
 
 impl From<Py<PyAny>> for WireValue {
     fn from(obj: Py<PyAny>) -> Self {
-        Python::attach(|py| WireValue::PyObject(PickledPyObject::pickle(obj.bind(py)).unwrap()))
+        monarch_with_gil_blocking(GilSite::Convert, |py| {
+            WireValue::PyObject(PickledPyObject::pickle(obj.bind(py)).unwrap())
+        })
     }
 }

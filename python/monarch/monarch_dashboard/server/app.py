@@ -117,8 +117,9 @@ def start_dashboard(
 
     Returns:
         A dict with keys: ``url`` (external, browser-openable), ``local_url``
-        (in-process URL matching the cert SAN), ``port``, ``pid`` (always
-        None), ``handle`` (Thread).
+        (in-process URL matching the cert SAN), ``api_url`` (loopback
+        plaintext URL for internal API clients), ``port``, ``pid`` (always
+        None), ``handle`` (Thread), and ``api_handle`` (Thread).
 
     Raises:
         OSError: If the port is already in use.
@@ -162,18 +163,35 @@ def start_dashboard(
         url = f"http://localhost:{actual_port}"
         local_url = url
 
+    api_server = make_server(
+        "127.0.0.1",
+        0,
+        app,
+        threaded=True,
+        ssl_context=None,
+    )
+    api_url = f"http://127.0.0.1:{api_server.server_port}"
+
     thread = threading.Thread(
         target=server.serve_forever,
         daemon=True,
         name="monarch-dashboard",
     )
     thread.start()
+    api_thread = threading.Thread(
+        target=api_server.serve_forever,
+        daemon=True,
+        name="monarch-dashboard-api",
+    )
+    api_thread.start()
     logger.info("Monarch Dashboard running at %s", url)
 
     return {
         "url": url,
         "local_url": local_url,
+        "api_url": api_url,
         "port": actual_port,
         "pid": None,
         "handle": thread,
+        "api_handle": api_thread,
     }

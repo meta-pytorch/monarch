@@ -8,7 +8,7 @@
 
 #![allow(unsafe_op_in_unsafe_fn)]
 #![feature(exit_status_error)]
-#![feature(mapped_lock_guards)]
+#![deny(clippy::disallowed_methods)]
 
 pub mod actor;
 pub mod actor_mesh;

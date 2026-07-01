@@ -537,6 +537,12 @@ def apply_job(module_path: Optional[str] = None) -> None:
 
     job = load_current_job()
     state = job.state()
+    apply_id = job.apply_id  # pyre-ignore[16]
+    if apply_id is not None:
+        print(
+            f"Mount daemon log: /tmp/monarch_mounts_{apply_id}.log "
+            "(tail for sync/cold-transfer progress, on-demand-pull events)"
+        )
     t0 = time.time()
     mesh = next(iter(state._hosts.values()))
     procs = mesh.spawn_procs()
@@ -589,7 +595,7 @@ def _output_dir_for_job(job: "Any") -> tuple[str, str]:
     import uuid as _uuid
 
     run_id = _uuid.uuid4().hex[:8]
-    entries = job._mounts._gather_entries
+    entries = job._components.mounts._mounts._gather_entries
     if entries:
         entry = entries[0]
         remote = entry.remote_mount_point
@@ -683,7 +689,7 @@ def exec_on_job(
         # If a python_exe was set for this mesh's remote mount, prepend its
         # directory to PATH so commands like "python" resolve to the right one.
         mesh_env = dict(env_dict)
-        exe = job._python_executables.get(name, job._default_python_exe)
+        exe = job._components.mounts.python_executable_for_mesh(name)
         if exe is not None:
             bin_dir = os.path.dirname(exe)
             existing_path = mesh_env.get("PATH", os.environ.get("PATH", ""))

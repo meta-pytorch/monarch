@@ -9,6 +9,7 @@
 import json
 import logging
 import os
+import shlex
 import subprocess
 import sys
 from typing import Any, Dict, FrozenSet, List, Optional, Sequence
@@ -16,7 +17,9 @@ from typing import Any, Dict, FrozenSet, List, Optional, Sequence
 from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.config import configure
 from monarch._src.actor.bootstrap import attach_to_workers
-from monarch._src.job.job import JobState, JobTrait
+from monarch._src.job._batch_env import in_batch_job
+from monarch._src.job._slurm_batch import _WORKER_BOOTSTRAP
+from monarch._src.job.job import BatchJob, JobState, JobTrait
 
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -38,6 +41,12 @@ class SlurmJob(JobTrait):
     1. Uses sbatch to submit SLURM jobs that start monarch workers
     2. Queries job status with squeue to get allocated hostnames
     3. Uses the hostnames to connect to the started workers
+
+    Two launch modes are supported:
+    - External controller (default): ``apply()`` submits the workers; a separate
+      controller process attaches via ``state()``.
+    - Batch (``apply(client_script=...)``): one allocation runs both the workers
+      and the client; the allocation is released when the client exits.
     """
 
     def __init__(
@@ -95,18 +104,47 @@ class SlurmJob(JobTrait):
         self._all_hostnames: List[str] = []
         super().__init__()
 
+    def __setstate__(self, state: Dict[str, Any]) -> None:
+        # In batch mode the in-allocation client rehydrates this object via
+        # pickle.load (job_load), which bypasses __init__. Re-apply the
+        # transport config here so the client's host_agent serves on a TCP
+        # address remote workers can dial back, instead of an abstract unix
+        # socket whose namespace is local to the original (head) node.
+        self.__dict__.update(state)
+        configure(default_transport=ChannelTransport.TcpWithHostname)
+
     def add_mesh(self, name: str, num_nodes: int) -> None:
         self._meshes[name] = num_nodes
 
+    def _resolved_job_id(self) -> Optional[str]:
+        """The submitted job id, falling back to ``$SLURM_JOB_ID`` in batch mode
+        where the unpickled instance never had ``_slurm_job_id`` set. Gated on
+        batch mode so an external controller doesn't adopt an unrelated id from
+        its own surrounding SLURM job."""
+        if self._slurm_job_id is not None:
+            return self._slurm_job_id
+        return os.environ.get("SLURM_JOB_ID") if in_batch_job() else None
+
     def _create(self, client_script: Optional[str]) -> None:
-        """Submit a single SLURM job for all meshes."""
-        if client_script is not None:
-            raise RuntimeError("SlurmJob cannot run batch-mode scripts")
+        """Submit a single SLURM job for all meshes.
 
+        In batch mode (``client_script`` set) the job runs the client inside the
+        allocation alongside the workers, and a ``BatchJob`` wrapper is cached to
+        ``.monarch/job_state.pkl`` so the client reconnects to this allocation
+        instead of submitting a new one.
+        """
         total_nodes = sum(self._meshes.values())
-        self._slurm_job_id = self._submit_slurm_job(total_nodes)
+        if client_script is not None:
+            # Dumped before submit: the job id isn't known yet, and the client
+            # resolves it from $SLURM_JOB_ID anyway.
+            BatchJob(self).dump(".monarch/job_state.pkl")
+        self._slurm_job_id = self._submit_slurm_job(
+            total_nodes, client_script=client_script
+        )
 
-    def _submit_slurm_job(self, num_nodes: int) -> str:
+    def _submit_slurm_job(
+        self, num_nodes: int, client_script: Optional[str] = None
+    ) -> str:
         """Submit a SLURM job for all nodes."""
         unique_job_name = f"{self._job_name}_{os.getpid()}"
 
@@ -115,8 +153,6 @@ class SlurmJob(JobTrait):
 
         log_path_out = os.path.join(self._log_dir, f"slurm_%j_{unique_job_name}.out")
         log_path_err = os.path.join(self._log_dir, f"slurm_%j_{unique_job_name}.err")
-
-        python_command = f'import socket; from monarch.actor import run_worker_loop_forever; hostname = socket.gethostname(); run_worker_loop_forever(address=f"tcp://{{hostname}}:{self._port}", ca="trust_all_connections")'
 
         # Build SBATCH directives
         sbatch_directives = [
@@ -167,7 +203,19 @@ class SlurmJob(JobTrait):
                 sbatch_directives.append(f"#SBATCH {arg}")
 
         batch_script = "\n".join(sbatch_directives)
-        batch_script += f"\nsrun {self._python_exe} -c '{python_command}'\n"
+        if client_script is None:
+            # Workers only; an external controller attaches and manages the
+            # lifetime. Shares _WORKER_BOOTSTRAP with the batch runner.
+            worker_cmd = _WORKER_BOOTSTRAP % self._port
+            batch_script += f"\nsrun {self._python_exe} -c '{worker_cmd}'\n"
+        else:
+            # Batch mode: the in-allocation runner seeds the workers, runs the
+            # client (MONARCH_BATCH_JOB=1 so its cached BatchJob reconnects to
+            # this allocation), and tears the workers down in a finally.
+            batch_script += (
+                f"\n{self._python_exe} -m monarch._src.job._slurm_batch "
+                f"--port {self._port} {shlex.quote(client_script)}\n"
+            )
 
         logger.info(f"Submitting SLURM job with {num_nodes} nodes")
 
@@ -284,7 +332,7 @@ class SlurmJob(JobTrait):
 
         # Wait for job to start and get hostnames if not already done
         if not self._all_hostnames:
-            job_id = self._slurm_job_id
+            job_id = self._resolved_job_id()
             if job_id is None:
                 raise RuntimeError("SLURM job ID is not set")
             total_nodes = sum(self._meshes.values())
@@ -334,18 +382,24 @@ class SlurmJob(JobTrait):
 
     def _jobs_active(self) -> bool:
         """Check if SLURM job is still active by querying squeue."""
-        if not self.active or self._slurm_job_id is None:
+        # A batch job reloaded inside its own allocation pickles as not_running,
+        # so fall back to $SLURM_JOB_ID + squeue instead of the active flag.
+        if not self.active and not in_batch_job():
             return False
 
-        job_info = self._get_job_info_json(self._slurm_job_id)
+        job_id = self._resolved_job_id()
+        if job_id is None:
+            return False
+
+        job_info = self._get_job_info_json(job_id)
 
         if not job_info:
-            logger.warning(f"SLURM job {self._slurm_job_id} not found in queue")
+            logger.warning(f"SLURM job {job_id} not found in queue")
             return False
 
         job_state = job_info.get("job_state", [])
         if any(state in job_state for state in _SLURM_TERMINAL_STATES):
-            logger.warning(f"SLURM job {self._slurm_job_id} has status: {job_state}")
+            logger.warning(f"SLURM job {job_id} has status: {job_state}")
             return False
 
         return True
@@ -373,20 +427,27 @@ class SlurmJob(JobTrait):
         self._mem = slurm_args["memory"]
 
     def _kill(self) -> None:
-        """Cancel the SLURM job."""
-        if self._slurm_job_id is not None:
+        """Cancel the SLURM job.
+
+        No-op in batch mode: ``BatchJob`` registers this as an ``atexit`` hook on
+        the in-allocation client, but the sbatch runner owns teardown there, so
+        the client must not scancel its own allocation. The external-controller
+        path scancels as before.
+        """
+        if in_batch_job():
+            return
+        job_id = self._resolved_job_id()
+        if job_id is not None:
             try:
                 subprocess.run(
-                    ["scancel", self._slurm_job_id],
+                    ["scancel", job_id],
                     capture_output=True,
                     text=True,
                     check=True,
                 )
-                logger.info(f"Cancelled SLURM job {self._slurm_job_id}")
+                logger.info(f"Cancelled SLURM job {job_id}")
             except subprocess.CalledProcessError as e:
-                logger.warning(
-                    f"Failed to cancel SLURM job {self._slurm_job_id}: {e.stderr}"
-                )
+                logger.warning(f"Failed to cancel SLURM job {job_id}: {e.stderr}")
 
         self._slurm_job_id = None
         self._all_hostnames.clear()

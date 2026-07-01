@@ -51,14 +51,6 @@ use crate::database_scanner::TableStore;
 /// Buffered read capacity for producer socket connections.
 const READER_BUFFER_CAPACITY: usize = 64 * 1024;
 
-/// Outcome of a non-destructive telemetry socket bind.
-pub enum BindOutcome {
-    /// This process owns the listener and should start ingest.
-    Bound(StdUnixListener),
-    /// A live collector already owns this socket path.
-    SkippedExistingCollector,
-}
-
 /// Handle for the background socket ingest task.
 pub struct IngestServerHandle {
     task: JoinHandle<()>,
@@ -70,28 +62,27 @@ impl Drop for IngestServerHandle {
     }
 }
 
-/// Bind a Unix listener without replacing a live collector socket.
+/// Bind the telemetry ingest socket for the active collector.
 ///
-/// Socket ingest is optional sidecar plumbing: a scanner should own the path
-/// when it is free, but should quietly skip startup when another live collector
-/// already owns it. That makes this path safe for repeated setup calls and for
-/// mixed deployments during rollout. This is especially useful for
-/// `ProcessJob`, where local subprocess jobs and tests may initialize
-/// telemetry more than once against the same local socket path.
-pub fn non_destructive_bind(path: &Path) -> anyhow::Result<BindOutcome> {
+/// A stale socket file from a crashed collector is removed and replaced. A live
+/// collector is an activation error: callers should avoid starting duplicate
+/// collectors for the same host-local socket namespace.
+pub(crate) fn bind_ingest_socket(path: &Path) -> anyhow::Result<StdUnixListener> {
     match bind_listener(path) {
-        Ok(listener) => Ok(BindOutcome::Bound(listener)),
+        Ok(listener) => Ok(listener),
         Err(error) if error.kind() == ErrorKind::AddrInUse => {
             // `AddrInUse` can mean either a live collector or a stale socket
-            // file. Probe by connecting first so we never unlink another
-            // process's listener.
+            // file. Probe by connecting first so we only remove stale files.
             if StdUnixStream::connect(path).is_ok() {
-                return Ok(BindOutcome::SkippedExistingCollector);
+                return Err(anyhow::anyhow!(
+                    "telemetry socket already has a live collector: {}",
+                    path.display()
+                ));
             }
 
             std::fs::remove_file(path)
                 .with_context(|| format!("remove stale socket {}", path.display()))?;
-            Ok(BindOutcome::Bound(bind_listener(path)?))
+            bind_listener(path).with_context(|| format!("bind socket {}", path.display()))
         }
         Err(error) => Err(error).with_context(|| format!("bind socket {}", path.display())),
     }
@@ -102,11 +93,10 @@ pub fn run_ingest_server(
     listener: StdUnixListener,
     store: TableStore,
 ) -> anyhow::Result<IngestServerHandle> {
-    // `non_destructive_bind` returns a std listener because binding is a
+    // `bind_ingest_socket` returns a std listener because binding is a
     // synchronous ownership decision, not part of the async accept loop. Once
-    // ownership is established, convert the fd into Tokio's listener for
-    // serving connections. Tokio requires the fd to be nonblocking before
-    // `from_std`.
+    // ownership is established, convert the fd into Tokio's listener for serving
+    // connections. Tokio requires the fd to be nonblocking before `from_std`.
     listener.set_nonblocking(true)?;
     // Called from a PyO3 thread with no ambient Tokio runtime. Use monarch's
     // shared runtime.
@@ -366,34 +356,30 @@ mod tests {
     }
 
     #[test]
-    fn non_destructive_bind_skips_live_collector() {
+    fn bind_ingest_socket_rejects_live_collector() {
         let path = socket_path("telemetry.sock");
         let _listener = StdUnixListener::bind(&path).unwrap();
 
-        assert!(matches!(
-            non_destructive_bind(&path).unwrap(),
-            BindOutcome::SkippedExistingCollector
-        ));
+        let error = bind_ingest_socket(&path).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("telemetry socket already has a live collector")
+        );
     }
 
     #[test]
-    fn non_destructive_bind_replaces_stale_socket_file() {
+    fn bind_ingest_socket_replaces_stale_socket_file() {
         let path = socket_path("stale.sock");
         std::fs::write(&path, b"stale").unwrap();
 
-        assert!(matches!(
-            non_destructive_bind(&path).unwrap(),
-            BindOutcome::Bound(_)
-        ));
+        let _listener = bind_ingest_socket(&path).unwrap();
     }
 
     #[tokio::test]
     async fn ingest_server_pushes_registered_batch() {
         let path = socket_path("ingest.sock");
-        let listener = match non_destructive_bind(&path).unwrap() {
-            BindOutcome::Bound(listener) => listener,
-            BindOutcome::SkippedExistingCollector => panic!("test socket should be unowned"),
-        };
+        let listener = bind_ingest_socket(&path).unwrap();
         let store = TableStore::new_empty();
         store.register_table("t", make_batch(&[]).schema()).unwrap();
         let _handle = run_ingest_server(listener, store.clone()).unwrap();
@@ -406,10 +392,7 @@ mod tests {
     #[tokio::test]
     async fn ingest_server_receives_unix_socket_sink_frame() {
         let path = socket_path("integration.sock");
-        let listener = match non_destructive_bind(&path).unwrap() {
-            BindOutcome::Bound(listener) => listener,
-            BindOutcome::SkippedExistingCollector => panic!("test socket should be unowned"),
-        };
+        let listener = bind_ingest_socket(&path).unwrap();
         let store = TableStore::new_empty();
         let mut buffer = EventBuffer::default();
         // Register the generated schema without rows; the socket producer must
@@ -435,10 +418,7 @@ mod tests {
     #[tokio::test]
     async fn ingest_server_rejects_schema_mismatch() {
         let path = socket_path("schema.sock");
-        let listener = match non_destructive_bind(&path).unwrap() {
-            BindOutcome::Bound(listener) => listener,
-            BindOutcome::SkippedExistingCollector => panic!("test socket should be unowned"),
-        };
+        let listener = bind_ingest_socket(&path).unwrap();
         let store = TableStore::new_empty();
         store.register_table("t", make_batch(&[]).schema()).unwrap();
         let _handle = run_ingest_server(listener, store.clone()).unwrap();
@@ -451,10 +431,7 @@ mod tests {
     #[tokio::test]
     async fn ingest_server_keeps_accepting_after_malformed_frame() {
         let path = socket_path("survive.sock");
-        let listener = match non_destructive_bind(&path).unwrap() {
-            BindOutcome::Bound(listener) => listener,
-            BindOutcome::SkippedExistingCollector => panic!("test socket should be unowned"),
-        };
+        let listener = bind_ingest_socket(&path).unwrap();
         let store = TableStore::new_empty();
         store.register_table("t", make_batch(&[]).schema()).unwrap();
         let _handle = run_ingest_server(listener, store.clone()).unwrap();

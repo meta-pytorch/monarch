@@ -18,7 +18,7 @@ use std::time::SystemTime;
 
 struct DemoRun {
     driver: Output,
-    proc: Output,
+    spawner: Output,
 }
 
 #[test]
@@ -27,15 +27,21 @@ fn test_remote_spawner_demo_add() {
 
     assert!(
         run.driver.status.success(),
-        "driver failed:\n{}\nproc:\n{}",
+        "driver failed:\n{}\nspawner:\n{}",
         output_text(&run.driver),
-        output_text(&run.proc)
+        output_text(&run.spawner)
+    );
+    assert!(
+        output_text(&run.driver).contains("driver requested proc"),
+        "driver output did not include proc spawn request:\n{}\nspawner:\n{}",
+        output_text(&run.driver),
+        output_text(&run.spawner)
     );
     assert!(
         output_text(&run.driver).contains("driver received result: 40 + 2 = 42"),
-        "driver output did not include calculation result:\n{}\nproc:\n{}",
+        "driver output did not include calculation result:\n{}\nspawner:\n{}",
         output_text(&run.driver),
-        output_text(&run.proc)
+        output_text(&run.spawner)
     );
 }
 
@@ -45,46 +51,145 @@ fn test_remote_spawner_demo_overflow() {
 
     assert!(
         !run.driver.status.success(),
-        "overflow driver unexpectedly succeeded:\n{}\nproc:\n{}",
+        "overflow driver unexpectedly succeeded:\n{}\nspawner:\n{}",
         output_text(&run.driver),
-        output_text(&run.proc)
+        output_text(&run.spawner)
     );
     let driver_output = output_text(&run.driver);
     assert!(
         driver_output.contains("driver observed supervision event and will propagate it"),
-        "driver output did not include propagated supervision event:\n{}\nproc:\n{}",
+        "driver output did not include propagated supervision event:\n{}\nspawner:\n{}",
         driver_output,
-        output_text(&run.proc)
+        output_text(&run.spawner)
     );
     assert!(
         driver_output.contains("integer overflow while adding"),
-        "driver output did not include expected overflow failure:\n{}\nproc:\n{}",
+        "driver output did not include expected overflow failure:\n{}\nspawner:\n{}",
         driver_output,
-        output_text(&run.proc)
+        output_text(&run.spawner)
+    );
+}
+
+#[test]
+fn test_remote_spawner_demo_proc_death() {
+    // The spawned actor exits its whole OS process (process::exit(1)). The
+    // spawner-side worker observes the process exit and reports a terminal
+    // supervision event, which propagates back to the driver.
+    let run = run_demo("crash");
+
+    assert!(
+        !run.driver.status.success(),
+        "crash driver unexpectedly succeeded:\n{}\nspawner:\n{}",
+        output_text(&run.driver),
+        output_text(&run.spawner)
+    );
+    let driver_output = output_text(&run.driver);
+    assert!(
+        driver_output.contains("driver observed supervision event and will propagate it"),
+        "driver did not observe a supervision event for the dead proc:\n{}\nspawner:\n{}",
+        driver_output,
+        output_text(&run.spawner)
+    );
+    assert!(
+        driver_output.contains("exited with code 1"),
+        "driver supervision event did not reflect the proc's OS-process exit:\n{}\nspawner:\n{}",
+        driver_output,
+        output_text(&run.spawner)
+    );
+}
+
+#[test]
+fn test_remote_spawner_demo_graceful_stop() {
+    // The driver computes once and exits cleanly; that clean exit triggers a
+    // graceful stop of the spawned proc, which drains and exits on its own
+    // rather than being hard-killed. The child records "STOPPED_CLEANLY" only
+    // when it came down via a clean drain.
+    let tmp = temp_dir();
+    std::fs::create_dir_all(&tmp).unwrap();
+    let token_file = tmp.join("spawner-token");
+    let status_file = tmp.join("proc-status");
+    let binary = remote_spawner_binary();
+
+    let spawner = Command::new(&binary)
+        .arg("spawner")
+        .arg("--token-file")
+        .arg(&token_file)
+        .arg("--proc-status-file")
+        .arg(&status_file)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|error| {
+            panic!("failed to spawn proc spawner {}: {error}", binary.display())
+        });
+
+    if let Err(error) = wait_for_file(&token_file) {
+        let spawner_output = stop_child(spawner);
+        let _ = std::fs::remove_dir_all(&tmp);
+        panic!("{error}\nspawner output:\n{}", output_text(&spawner_output));
+    }
+
+    let driver = Command::new(&binary)
+        .arg("driver")
+        .arg("--token-file")
+        .arg(&token_file)
+        .output()
+        .unwrap_or_else(|error| panic!("failed to run driver {}: {error}", binary.display()));
+
+    // The child writes its status only after draining; wait for it before
+    // tearing down the spawner (which would otherwise hard-kill the child).
+    let status_wait = wait_for_file(&status_file);
+    let status_contents = std::fs::read_to_string(&status_file).unwrap_or_default();
+    let spawner = stop_child(spawner);
+    let _ = std::fs::remove_dir_all(&tmp);
+
+    assert!(
+        driver.status.success(),
+        "driver failed:\n{}\nspawner:\n{}",
+        output_text(&driver),
+        output_text(&spawner)
+    );
+    assert!(
+        status_wait.is_ok(),
+        "spawned proc never recorded a clean exit:\n{}\nspawner:\n{}",
+        output_text(&driver),
+        output_text(&spawner)
+    );
+    assert!(
+        status_contents.contains("STOPPED_CLEANLY"),
+        "spawned proc did not stop cleanly (status file: {status_contents:?}):\n{}\nspawner:\n{}",
+        output_text(&driver),
+        output_text(&spawner)
     );
 }
 
 fn run_demo(mode: &str) -> DemoRun {
     let tmp = temp_dir();
     std::fs::create_dir_all(&tmp).unwrap();
-    let token_file = tmp.join("proc-token");
+    let token_file = tmp.join("spawner-token");
     let binary = remote_spawner_binary();
 
-    let proc = Command::new(&binary)
-        .arg("proc")
+    let spawner = Command::new(&binary)
+        .arg("spawner")
         .arg("--token-file")
         .arg(&token_file)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .unwrap_or_else(|error| panic!("failed to spawn proc {}: {error}", binary.display()));
+        .unwrap_or_else(|error| {
+            panic!("failed to spawn proc spawner {}: {error}", binary.display())
+        });
 
     if let Err(error) = wait_for_file(&token_file) {
-        let proc_output = stop_child(proc);
+        let spawner_output = stop_child(spawner);
         let _ = std::fs::remove_dir_all(&tmp);
         panic!(
-            "{error}\nproc output:\n{}",
-            output_text_from_parts(proc_output.status, &proc_output.stdout, &proc_output.stderr)
+            "{error}\nspawner output:\n{}",
+            output_text_from_parts(
+                spawner_output.status,
+                &spawner_output.stdout,
+                &spawner_output.stderr
+            )
         );
     }
 
@@ -95,10 +200,10 @@ fn run_demo(mode: &str) -> DemoRun {
         .output()
         .unwrap_or_else(|error| panic!("failed to run driver {}: {error}", binary.display()));
 
-    let proc = stop_child(proc);
+    let spawner = stop_child(spawner);
     let _ = std::fs::remove_dir_all(&tmp);
 
-    DemoRun { driver, proc }
+    DemoRun { driver, spawner }
 }
 
 #[cfg(not(fbcode_build))]

@@ -83,6 +83,7 @@ pub mod port;
 pub mod proc;
 pub mod ref_;
 pub mod remote;
+pub mod runtime_identity;
 pub(crate) mod sequenced;
 mod signal_handler;
 mod stdio_redirect;

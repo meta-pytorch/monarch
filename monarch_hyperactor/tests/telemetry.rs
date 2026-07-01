@@ -17,6 +17,7 @@
 
 use anyhow::Result;
 use monarch_hyperactor::context::PyContext;
+use monarch_hyperactor::runtime::GilSite;
 use monarch_hyperactor::runtime::monarch_with_gil_blocking;
 use pyo3::ffi::c_str;
 use pyo3::prelude::*;
@@ -32,12 +33,14 @@ async fn forward_to_tracing_captures_via_extract_recording_span() -> Result<()> 
     pyo3::Python::initialize();
     hyperactor_telemetry::initialize_logging_for_test();
 
-    monarch_with_gil_blocking(|py| py.run(c_str!("import monarch._rust_bindings"), None, None))?;
+    monarch_with_gil_blocking(GilSite::Test, |py| {
+        py.run(c_str!("import monarch._rust_bindings"), None, None)
+    })?;
 
     let recording = hyperactor_telemetry::recorder().record(64);
     let span = recording.span("test");
 
-    monarch_with_gil_blocking(|py| -> PyResult<()> {
+    monarch_with_gil_blocking(GilSite::Test, |py| -> PyResult<()> {
         // Build a PyContext carrying our recording span.
         let py_ctx = PyContext::for_test(py, Some(span))?;
         let py_ctx_obj = Py::new(py, py_ctx)?;

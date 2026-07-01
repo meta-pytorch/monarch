@@ -18,16 +18,14 @@ import tempfile
 import traceback
 import uuid
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Literal, NamedTuple, Optional, Sequence
 
-from monarch._rust_bindings.monarch_hyperactor.host_mesh import PyMeshAdminRef
 from monarch._src.actor.bootstrap import attach_to_workers
-from monarch._src.actor.host_mesh import _spawn_admin
-from monarch._src.actor.sync_state import fake_sync_state
+from monarch._src.job._batch_env import in_batch_job, MONARCH_BATCH_JOB_ENV
+from monarch._src.job._telemetry_query_client import QueryEngineClient
+from monarch._src.job.job_components import JobComponents, MeshAdminConfig
 from monarch._src.job.job_sidecar import stop_job_sidecar
-from monarch._src.job.mount_config import Mounts
 from monarch._src.job.telemetry_config import TelemetryConfig
 
 # note: the jobs api is intended as a library so it should
@@ -42,7 +40,6 @@ from monarch.actor import (
     Port,
     this_host,
 )
-from monarch.distributed_telemetry.actor import start_telemetry
 from monarch.distributed_telemetry.engine import QueryEngine
 from typing_extensions import Self
 
@@ -298,23 +295,6 @@ class BashActor(Actor):
         output_port.send(f"{my_rank}:rc:{proc.returncode}")
 
 
-@dataclass
-class MeshAdminConfig:
-    """Configuration for automatic mesh admin agent startup.
-
-    When passed to a job constructor, a MeshAdminAgent HTTP server is
-    spawned automatically when ``state()`` is called.  The server
-    aggregates topology across all host meshes and exposes it via a
-    REST API that the admin TUI can attach to.
-
-    Args:
-        admin_addr: Bind address for the admin HTTP server.  When
-            ``None`` the server picks an available address automatically.
-    """
-
-    admin_addr: Optional[str] = None
-
-
 class JobState:
     """
     Container for the current state of a job.
@@ -333,12 +313,16 @@ class JobState:
         self,
         hosts: Dict[str, HostMesh],
         query_engine: Optional[QueryEngine] = None,
+        query_engine_client: Optional[QueryEngineClient] = None,
         telemetry_url: Optional[str] = None,
+        dashboard_url: Optional[str] = None,
         admin_url: Optional[str] = None,
     ):
         self._hosts = hosts
         self.query_engine = query_engine
+        self.query_engine_client = query_engine_client
         self.telemetry_url = telemetry_url
+        self.dashboard_url = dashboard_url
         self.admin_url = admin_url
 
     def __getattr__(self, attr: str) -> HostMesh:
@@ -405,96 +389,33 @@ class JobTrait(ABC):
         # Use enable_telemetry() / enable_admin() after construction instead.
         super().__init__()
         self._status: Literal["running", "not_running"] | CachedRunning = "not_running"
-        self._telemetry: Optional[TelemetryConfig] = None
-        self._mesh_admin: Optional[MeshAdminConfig] = None
-        self._query_engine: Optional[QueryEngine] = None
-        self._telemetry_url: Optional[str] = None
-        self._admin_url: Optional[str] = None
-        self._scanner = None  # DatabaseScanner, set by _start_telemetry_if_configured
-        self._snapshot_started: bool = False
+        self._components: JobComponents = JobComponents()
         self._apply_id: Optional[str] = None
-        self._mounts: Mounts = Mounts()
-        # Per-mesh python executable overrides.  None key means "all meshes".
-        self._python_executables: Dict[str, str] = {}
-        self._default_python_exe: Optional[str] = None
 
-    def _start_telemetry_if_configured(self) -> None:
-        """Start telemetry if configured and not already running."""
-        if self._telemetry is None or self._query_engine is not None:
-            return
+    def _should_spawn_telemetry_worker_collector_actors(self) -> bool:
+        """Whether sidecar telemetry should spawn per-host worker collectors.
 
-        cfg = self._telemetry
-        self._query_engine, self._telemetry_url, self._scanner = start_telemetry(
-            batch_size=cfg.batch_size,
-            retention_secs=cfg.retention_secs,
-            include_dashboard=cfg.include_dashboard,
-            dashboard_port=cfg.dashboard_port,
-        )
-
-    def _start_admin_if_configured(
-        self, host_meshes: List[HostMesh]
-    ) -> Optional[PyMeshAdminRef]:
-        """Start the mesh admin agent if configured and not already running.
-
-        Returns the opaque admin ref for immediate use by snapshot
-        startup, or None if admin is not configured or already running.
+        Worker collectors only add value when workers run on separate hosts.
+        Single-host jobs (e.g. LocalJob) override this to avoid a redundant
+        local fan-out.
         """
-        if self._mesh_admin is None or self._admin_url is not None:
-            return None
+        return True
 
-        # state() is a sync API but is commonly called from inside
-        # asyncio.run(...); mask the running loop so the inner .get() does not
-        # trip the Future.get-in-loop check.
-        with fake_sync_state():
-            admin_url, admin_ref = _spawn_admin(
-                host_meshes,
-                admin_addr=self._mesh_admin.admin_addr,
-                telemetry_url=self._telemetry_url,
-            ).get()
-        self._admin_url = admin_url
-        return admin_ref
+    def _connect_host_meshes(self, running_job: "JobTrait") -> Dict[str, HostMesh]:
+        """Run the connect phases and return the final host meshes.
 
-    def _start_periodic_snapshots_if_configured(
-        self, admin_ref: Optional[PyMeshAdminRef]
-    ) -> None:
-        """Start periodic snapshots if configured and not already running.
+        ``before_connect`` runs before raw host meshes are materialized;
+        ``connect`` receives those raw meshes and returns the final,
+        user-facing meshes. Service bring-up is deferred to :meth:`state` so
+        it spawns on those configured meshes.
 
-        Spawns a SnapshotCaptureActor on the local proc. The actor is
-        stopped by framework lifecycle on proc teardown — no manual
-        stop needed. The admin_ref is consumed here and not persisted.
+        ``running_job`` is the job whose scheduler-specific state materializes
+        the raw host meshes (``self``, a cached job, or the wrapped
+        CachedRunning job).
         """
-        if self._snapshot_started:
-            return
-        if self._telemetry is None or self._scanner is None:
-            return
-        if admin_ref is None:
-            return
-        telemetry = self._telemetry
-        assert telemetry is not None  # guarded above
-        if telemetry.snapshot_interval_secs <= 0:
-            return
-
-        from monarch._rust_bindings.monarch_extension.snapshot_integration import (
-            _start_periodic_snapshots,
-        )
-        from monarch.actor import context
-
-        _start_periodic_snapshots(
-            scanner=self._scanner,
-            admin_ref=admin_ref,
-            instance=context().actor_instance._as_rust(),
-            interval_secs=telemetry.snapshot_interval_secs,
-        )
-        self._snapshot_started = True
-
-    def _wrap_state(self, job_state: JobState) -> JobState:
-        """Attach telemetry and admin fields to a JobState."""
-        if self._query_engine is not None:
-            job_state.query_engine = self._query_engine
-            job_state.telemetry_url = self._telemetry_url
-        if self._admin_url is not None:
-            job_state.admin_url = self._admin_url
-        return job_state
+        self._components.before_connect(self)
+        host_meshes = dict(running_job._state()._hosts)
+        return self._components.connect(self, host_meshes)
 
     def enable_telemetry(
         self,
@@ -511,7 +432,9 @@ class JobTrait(ABC):
         Returns:
             ``self``, for chaining.
         """
-        self._telemetry = config if config is not None else TelemetryConfig(**kwargs)
+        self._components.configure_telemetry(
+            config if config is not None else TelemetryConfig(**kwargs)
+        )
         return self
 
     def enable_admin(
@@ -529,7 +452,9 @@ class JobTrait(ABC):
         Returns:
             ``self``, for chaining.
         """
-        self._mesh_admin = config if config is not None else MeshAdminConfig(**kwargs)
+        self._components.configure_admin(
+            config if config is not None else MeshAdminConfig(**kwargs)
+        )
         return self
 
     @property
@@ -601,29 +526,17 @@ class JobTrait(ABC):
         running_job = self._running
         if running_job is not None:
             logger.info("Job is running, returning current state")
-            job_state = running_job._state()
-            self._start_telemetry_if_configured()
-            admin_ref = self._start_admin_if_configured(list(job_state._hosts.values()))
-            self._start_periodic_snapshots_if_configured(admin_ref)
-            return self._wrap_state(job_state)
+            return JobState(self._connect_host_meshes(running_job))
 
         cached = self._load_cached(cached_path)
         if cached is not None:
             self._status = CachedRunning(cached)
             logger.info("Connecting to cached job")
-            job_state = cached._state()
-            self._start_telemetry_if_configured()
-            admin_ref = self._start_admin_if_configured(list(job_state._hosts.values()))
-            self._start_periodic_snapshots_if_configured(admin_ref)
-            return self._wrap_state(job_state)
+            return JobState(self._connect_host_meshes(cached))
         logger.info("Applying current job")
         self.apply()
         logger.info("Job has started, connecting to current state")
-        job_state = self._state()
-        self._start_telemetry_if_configured()
-        admin_ref = self._start_admin_if_configured(list(job_state._hosts.values()))
-        self._start_periodic_snapshots_if_configured(admin_ref)
-        result = self._wrap_state(job_state)
+        host_meshes = self._connect_host_meshes(self)
         if cached_path is not None:
             # Create the directory for cached_path if it doesn't exist
             cache_dir = os.path.dirname(cached_path)
@@ -631,29 +544,15 @@ class JobTrait(ABC):
                 os.makedirs(cache_dir, exist_ok=True)
             logger.info("Saving job to cache at %s", cached_path)
             self.dump(cached_path)
-        return result
+        return JobState(host_meshes)
 
     def state(
         self, cached_path: Optional[str] = ".monarch/job_state.pkl"
     ) -> "JobState":
-        """Connect to the job and return its state with all configured mounts applied.
-
-        See :meth:`_connect` for the connection logic. After connecting, all
-        mount configs registered via :meth:`remote_mount` and gather mount
-        configs registered via :meth:`gather_mount` are applied before returning.
-        """
-        raw = self._connect(cached_path)
-        apply_id = self.apply_id
-        running = self._running
-        if apply_id is not None and running is not None:
-            self._mounts.ensure_open(apply_id, raw._hosts)
-        hosts = {}
-        for mesh_name, mesh in raw._hosts.items():
-            exe = self._python_executables.get(mesh_name, self._default_python_exe)
-            if exe is not None:
-                mesh = mesh.with_python_executable(exe)
-            hosts[mesh_name] = mesh
-        return self._wrap_state(JobState(hosts))
+        """Connect and run component state hooks on the final host meshes."""
+        job_state = self._connect(cached_path)
+        self._components.state(self, job_state)
+        return job_state
 
     def _load_cached(self, cached_path: Optional[str]) -> "Optional[JobTrait]":
         if cached_path is None:
@@ -689,18 +588,6 @@ class JobTrait(ABC):
             return None
         return job
 
-    def __getstate__(self):
-        state = self.__dict__.copy()
-        # QueryEngine holds Rust bindings / network connections and is not
-        # picklable.  Drop it so deserialized jobs re-initialize telemetry
-        # on the next state() call.
-        state["_query_engine"] = None
-        state["_telemetry_url"] = None
-        state["_admin_url"] = None
-        state["_scanner"] = None
-        state["_snapshot_started"] = False
-        return state
-
     def dump(self, filename: str) -> None:
         """Save job to a file, following any symlink at *filename*.
 
@@ -720,9 +607,10 @@ class JobTrait(ABC):
 
     def kill(self):
         apply_id = self.apply_id
+        running = self._running
+        self._components.reset_runtime()
         if apply_id is not None:
             stop_job_sidecar(apply_id)
-        running = self._running
         if running is not None:
             running._kill()
         self._status = "not_running"
@@ -751,26 +639,13 @@ class JobTrait(ABC):
                 Set to ``None`` to skip. Defaults to ``".venv/bin/python"``.
             **kwargs: Forwarded to :func:`remotemount`.
         """
-        self._mounts.remote_mount(
-            source=source, mntpoint=mntpoint, meshes=meshes, **kwargs
+        self._components.mounts.remote_mount(
+            source=source,
+            mntpoint=mntpoint,
+            meshes=meshes,
+            python_exe=python_exe,
+            **kwargs,
         )
-        if python_exe is not None:
-            abs_source = os.path.abspath(source)
-            local_exe = os.path.join(abs_source, python_exe)
-            if not os.path.isfile(local_exe):
-                raise ValueError(
-                    f"python_exe '{python_exe}' not found locally at '{local_exe}'. "
-                    f"Ensure the virtual environment exists in '{source}' before calling remote_mount."
-                )
-            abs_mntpoint = (
-                os.path.abspath(mntpoint) if mntpoint is not None else abs_source
-            )
-            exe_path = os.path.join(abs_mntpoint, python_exe)
-            if meshes is None:
-                self._default_python_exe = exe_path
-            else:
-                for mesh_name in meshes:
-                    self._python_executables[mesh_name] = exe_path
 
     def gather_mount(
         self,
@@ -793,7 +668,7 @@ class JobTrait(ABC):
             meshes: Names of meshes to gather from. ``None`` means all meshes
                 returned by :meth:`state`.
         """
-        self._mounts.gather_mount(
+        self._components.mounts.gather_mount(
             remote_mount_point=remote_mount_point,
             local_mount_point=local_mount_point,
             meshes=meshes,
@@ -1075,6 +950,11 @@ class LocalJob(JobTrait):
         """
         return False
 
+    def _should_spawn_telemetry_worker_collector_actors(self) -> bool:
+        # LocalJob runs everything on one host; a worker collector fan-out
+        # would duplicate the client collector, so skip it.
+        return False
+
     def _state(self) -> JobState:
         return JobState({k: this_host() for k in self._host_names})
 
@@ -1116,9 +996,9 @@ class LocalJob(JobTrait):
         stdout_log = os.path.join(log_dir, "stdout.log")
         stderr_log = os.path.join(log_dir, "stderr.log")
 
-        # Create environment with MONARCH_BATCH_JOB=1
+        # Create environment with the batch-mode marker set.
         env = os.environ.copy()
-        env["MONARCH_BATCH_JOB"] = "1"
+        env[MONARCH_BATCH_JOB_ENV] = "1"
 
         # Open log files
         with open(stdout_log, "w") as stdout_file, open(stderr_log, "w") as stderr_file:
@@ -1148,14 +1028,23 @@ class BatchJob(JobTrait):
 
     def __init__(self, job: JobTrait):
         super().__init__()
-        # Copy telemetry/admin config from the wrapped job so the batch
-        # client benefits from the same observability setup.
-        self._telemetry = job._telemetry
-        self._mesh_admin = job._mesh_admin
         self._job = job
+        # BatchJob is a scheduler-state proxy; component config and runtime stay
+        # owned by the wrapped job so there is only one source of truth.
+        self._components = job._components
+
+    def _connect_host_meshes(self, running_job: "JobTrait") -> Dict[str, HostMesh]:
+        return self._job._connect_host_meshes(running_job)
+
+    def state(
+        self, cached_path: Optional[str] = ".monarch/job_state.pkl"
+    ) -> "JobState":
+        job_state = self._connect(cached_path)
+        self._job._components.state(self._job, job_state)
+        return job_state
 
     def can_run(self, spec: JobTrait):
-        if "MONARCH_BATCH_JOB" in os.environ:
+        if in_batch_job():
             import atexit
 
             atexit.register(self._kill)

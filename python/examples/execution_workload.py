@@ -27,10 +27,13 @@ Actors:
     (that would deadlock the dispatch loop); the test asserts
     ``count == 1`` then tears the proc down.
 
-Queue dispatch is forced for the queue proc by a ``bootstrap`` callable
-that sets ``MONARCH_ACTOR_QUEUE_DISPATCH=1`` before any actor spawns on
-it; ``ACTOR_QUEUE_DISPATCH`` is read from the process-global config at
-actor-spawn time.
+Each proc pins its dispatch mode explicitly via a ``bootstrap`` callable
+that sets ``MONARCH_ACTOR_QUEUE_DISPATCH`` and calls
+``reload_config_from_env()`` before any actor spawns on it (``0`` for the
+direct-dispatch ``busy``/``idle`` procs, ``1`` for the ``queue`` proc), so
+the choice is independent of the process-global default. The reload is
+required: the Env config layer is materialized once at proc start, so
+setting the variable in the bootstrap only takes effect after the reload.
 
 Stdin command protocol, one command per line::
 
@@ -54,6 +57,9 @@ import logging
 import os
 import sys
 
+from monarch._rust_bindings.monarch_hyperactor.config import (  # @manual=//monarch/monarch_extension:monarch_extension
+    reload_config_from_env,
+)
 from monarch._src.actor.actor_mesh import Channel, Port, PortReceiver
 from monarch._src.actor.telemetry import TracingForwarder
 from monarch.actor import Actor, context, endpoint
@@ -67,11 +73,26 @@ logger.setLevel(logging.INFO)
 def _enable_queue_dispatch() -> None:
     """Proc bootstrap: force queue dispatch for actors spawned here.
 
-    ``ACTOR_QUEUE_DISPATCH`` is read at actor-spawn time from the
-    process-global config, which is backed by ``MONARCH_ACTOR_QUEUE_DISPATCH``.
-    Setting it here affects only this proc, not the direct-dispatch procs.
+    The reload is required, not cosmetic: the Env config layer is
+    materialized once at proc start (before this bootstrap runs), so setting
+    the variable only takes effect after ``reload_config_from_env()`` rebuilds
+    that layer. Affects only this proc.
     """
     os.environ["MONARCH_ACTOR_QUEUE_DISPATCH"] = "1"
+    reload_config_from_env()
+
+
+def _disable_queue_dispatch() -> None:
+    """Proc bootstrap: force direct (concurrent) dispatch for actors here.
+
+    ``BusyActor`` depends on concurrent dispatch -- it holds one ``hold``
+    while a second ``hold``/``control`` overlaps -- so this proc is pinned to
+    direct dispatch rather than inheriting the process-global
+    ``ACTOR_QUEUE_DISPATCH`` default (now queue dispatch). See
+    ``_enable_queue_dispatch`` for why the reload is required.
+    """
+    os.environ["MONARCH_ACTOR_QUEUE_DISPATCH"] = "0"
+    reload_config_from_env()
 
 
 class BusyActor(Actor):
@@ -171,8 +192,12 @@ async def async_main() -> None:
     state = job.state(cached_path=None)
     host = state.hosts
 
-    busy_proc = host.spawn_procs(name="execution_busy")
-    idle_proc = host.spawn_procs(name="execution_idle")
+    busy_proc = host.spawn_procs(
+        name="execution_busy", bootstrap=_disable_queue_dispatch
+    )
+    idle_proc = host.spawn_procs(
+        name="execution_idle", bootstrap=_disable_queue_dispatch
+    )
     queue_proc = host.spawn_procs(
         name="execution_queue", bootstrap=_enable_queue_dispatch
     )

@@ -27,6 +27,8 @@ use crate::actor::PythonMessageKind;
 use crate::buffers::Buffer;
 use crate::pytokio::PyPythonTask;
 use crate::pytokio::PyShared;
+use crate::runtime::GilSite;
+use crate::runtime::monarch_with_gil_blocking;
 
 // Python helper used to reconstruct an object graph from a pickled
 // buffer plus a list of "unflatten values" (including placeholders).
@@ -302,7 +304,7 @@ impl PicklingState {
         }
 
         // Await all pending pickles to ensure they're resolved
-        let pending: Vec<Py<PyShared>> = Python::attach(|py| {
+        let pending: Vec<Py<PyShared>> = monarch_with_gil_blocking(GilSite::Convert, |py| {
             self.inner_ref().map(|inner| {
                 inner
                     .pending_pickles
@@ -313,12 +315,14 @@ impl PicklingState {
         })?;
 
         for pending_pickle in pending {
-            let mut task = Python::attach(|py| pending_pickle.borrow(py).task())?;
+            let mut task = monarch_with_gil_blocking(GilSite::AwaitDrive, |py| {
+                pending_pickle.borrow(py).task()
+            })?;
             task.take_task()?.await?;
         }
 
         // Unpickle (pending pickles are now resolved) and re-pickle without allowing new ones
-        Python::attach(|py| {
+        monarch_with_gil_blocking(GilSite::Convert, |py| {
             let obj = self.unpickle(py)?;
             pickle(py, obj, false, true)
         })

@@ -274,10 +274,10 @@
 //! - **MIT-67 (pyspy-dump-end-to-end):** Discover a proc via SQL
 //!   query, trigger a py-spy dump via `/v1/pyspy_dump`, then verify
 //!   the dump is stored and queryable via SQL.
-//! - **MIT-68 (query-no-dashboard-404):** `POST /v1/query` without a
-//!   configured dashboard returns 404 with `not_found` error code.
-//! - **MIT-69 (pyspy-dump-no-dashboard-404):** `POST /v1/pyspy_dump`
-//!   without a configured dashboard returns 404 with `not_found`
+//! - **MIT-68 (query-no-telemetry-404):** `POST /v1/query` without a
+//!   configured telemetry proxy returns 404 with `not_found` error code.
+//! - **MIT-69 (pyspy-dump-no-telemetry-404):** `POST /v1/pyspy_dump`
+//!   without a configured telemetry proxy returns 404 with `not_found`
 //!   error code.
 //! - **MIT-70 (query-malformed-body):** `POST /v1/query` with a
 //!   malformed JSON body (missing required `sql` field) returns a
@@ -492,10 +492,10 @@ async fn test_pyspy_dump_and_query() {
     telemetry::run_pyspy_dump_and_query().await;
 }
 
-/// MIT-68, MIT-69: /v1/query and /v1/pyspy_dump return 404 without dashboard.
+/// MIT-68, MIT-69: /v1/query and /v1/pyspy_dump return 404 without telemetry.
 #[tokio::test]
-async fn test_no_dashboard_returns_404() {
-    telemetry::run_no_dashboard_returns_404().await;
+async fn test_no_telemetry_returns_404() {
+    telemetry::run_no_telemetry_returns_404().await;
 }
 
 /// MIT-70: /v1/query with malformed body returns error.

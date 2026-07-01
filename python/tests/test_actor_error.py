@@ -22,6 +22,7 @@ from typing import cast, Generator, IO, Optional
 import monarch.actor
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
+from monarch._rust_bindings.monarch_extension.panic import panicking_function
 from monarch._rust_bindings.monarch_hyperactor.actor_mesh import hold_gil_for_test
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     UndeliverableMessageEnvelope,
@@ -36,6 +37,7 @@ from monarch.actor import (
     endpoint,
     get_or_spawn_controller,
     MeshFailure,
+    Port,
 )
 from monarch.config import configured, parametrize_config
 
@@ -134,6 +136,32 @@ def spawn_procs_on_fake_host(per_host: dict[str, int]) -> ProcMesh:
 
 def spawn_procs_on_this_host(per_host: dict[str, int]) -> ProcMesh:
     return this_host().spawn_procs(per_host)
+
+
+class MixedEndpointActor(Actor):
+    @endpoint
+    async def an_async_endpoint(self) -> None:
+        pass
+
+    @endpoint
+    def a_sync_endpoint(self) -> None:
+        pass
+
+
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+async def test_actor_mixing_sync_and_async_endpoints_is_rejected_at_spawn() -> None:
+    """An actor declaring both a sync (`def`) and an async (`async def`) endpoint
+    is rejected at spawn: `ActorMesh.__init__` raises `ValueError` synchronously,
+    before any message is dispatched. This pins the all-sync-or-all-async
+    invariant the runtime relies on; enforcement is a single check in
+    `ActorMesh.__init__` and nothing downstream re-checks. The check is
+    construction-time, so it is independent of dispatch mode."""
+    proc = spawn_procs_on_this_host({"gpus": 1})
+    with pytest.raises(ValueError, match="mixes both async and sync"):
+        proc.spawn("mixed_actor", MixedEndpointActor)
+
+    await proc.stop()
 
 
 @parametrize_config(actor_queue_dispatch={True, False})
@@ -276,6 +304,214 @@ def test_actor_init_exception_sync(mesh, actor_class, num_procs) -> None:
         assert "This is an exception from __init__" in fault_str
 
     proc.stop().get()
+
+
+@pytest.mark.timeout(60)
+@parametrize_config(actor_queue_dispatch={True, False})
+@pytest.mark.parametrize("actor_class", [ExceptionActor, ExceptionActorSync])
+@isolate_in_subprocess
+async def test_broadcast_exception_with_no_reply_port_kills_actor(actor_class) -> None:
+    """A plain `Exception` from an endpoint invoked with *no reply port*
+    (fire-and-forget `broadcast()`) fails the actor: the return is dropped, the
+    exception escapes through `DroppingPort.exception`, and the actor is killed,
+    surfacing as a supervision fault at the client. Parametrized over both
+    dispatch modes because the kill reaches `Signal::Kill` by different paths
+    (direct: the endpoint task resolves `Err`; queue: `_dispatch_loop` calls
+    `self_instance.kill`). The existing broadcast-failure coverage uses a
+    `BaseException`; this pins the plain-`Exception` path."""
+    faults = []
+    faulted = asyncio.Event()
+
+    def fault_hook(failure):
+        faults.append(failure)
+        faulted.set()
+
+    monarch.actor.unhandled_fault_hook = fault_hook
+    proc = spawn_procs_on_this_host({"gpus": 1})
+    actor = proc.spawn("exception_actor", actor_class)
+
+    actor.raise_exception.broadcast()  # no reply port => the actor dies
+    await asyncio.wait_for(faulted.wait(), timeout=15.0)
+
+    assert len(faults) >= 1
+    fault_str = str(faults[0])
+    assert "exception_actor" in fault_str
+    assert "This is a test exception" in fault_str
+
+    await proc.stop()
+
+
+@pytest.mark.timeout(60)
+@parametrize_config(actor_queue_dispatch={True, False})
+@pytest.mark.parametrize("actor_class", [ExceptionActor, ExceptionActorSync])
+@isolate_in_subprocess
+async def test_reply_port_exception_returns_to_caller_and_actor_survives(
+    actor_class,
+) -> None:
+    """The reply-port half of the contract, and the only cell where the actor
+    lives: an endpoint `Exception` called *with* a reply port comes back to the
+    caller as `ActorError`, the actor stays alive (a follow-up call succeeds),
+    and no supervision fires (a surviving actor is not a failure). The suite
+    already asserts the `ActorError`; the survival and the supervision-silence
+    are what this adds."""
+    faults = []
+    monarch.actor.unhandled_fault_hook = lambda failure: faults.append(failure)
+    proc = spawn_procs_on_this_host({"gpus": 1})
+    actor = proc.spawn("exception_actor", actor_class)
+
+    with pytest.raises(ActorError, match="This is a test exception"):
+        await actor.raise_exception.call_one()
+
+    # the actor survived: a subsequent call still works
+    await actor.noop.call_one()
+
+    # supervision faults reach the hook asynchronously; drain so a late delivery
+    # can't slip past the empty-check below.
+    await asyncio.sleep(0.5)
+
+    # and no supervision fired for the handled exception
+    assert faults == [], f"expected no supervision faults, got {faults}"
+
+    await proc.stop()
+
+
+class ExplicitPortFailingActor(Actor):
+    @endpoint(explicit_response_port=True)
+    async def fail(self, port: Port[None]) -> None:
+        raise Exception("This is a test exception")
+
+
+class ExplicitPortFailingActorSync(Actor):
+    @endpoint(explicit_response_port=True)
+    def fail(self, port: Port[None]) -> None:
+        raise Exception("This is a test exception")
+
+
+@pytest.mark.timeout(60)
+@parametrize_config(actor_queue_dispatch={True, False})
+@pytest.mark.parametrize(
+    "actor_class", [ExplicitPortFailingActor, ExplicitPortFailingActorSync]
+)
+@isolate_in_subprocess
+async def test_explicit_response_port_exception_kills_actor(actor_class) -> None:
+    """A plain `@endpoint(explicit_response_port=True)` that raises instead of
+    sending via its port kills the actor: the explicit-port declaration rebinds
+    the ambient response port to `DroppingPort`, so the raise takes the no-port
+    kill path and the caller sees a `SupervisionError`. The
+    `@concurrent_endpoint(explicit_response_port=True)` form behaves the same
+    way: an escaped exception likewise kills the actor (see
+    `test_concurrent_explicit_port_exception_kills_actor` in
+    `test_concurrent_endpoints.py`)."""
+    monarch.actor.unhandled_fault_hook = lambda failure: None
+    proc = spawn_procs_on_this_host({"gpus": 1})
+    actor = proc.spawn("explicit_port_actor", actor_class)
+
+    with pytest.raises(SupervisionError):
+        await asyncio.wait_for(actor.fail.call_one(), timeout=15)
+
+    await proc.stop()
+
+
+class PanicActor(Actor):
+    @endpoint
+    async def cause_panic(self) -> None:
+        """Raise a Rust panic, which pyo3 re-raises into Python as a
+        `PanicException` (a `BaseException`, not an `Exception`)."""
+        panicking_function()
+
+
+@pytest.mark.timeout(60)
+@parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
+async def test_endpoint_panic_kills_actor() -> None:
+    """A Rust panic in an endpoint surfaces in Python as a pyo3 `PanicException`
+    (a `BaseException`, not an `Exception`), which kills the actor and arrives as
+    a supervision fault. This is a different path from a plain `Exception`:
+    `_Actor.handle`'s `except BaseException` routes it through
+    `panic_flag.signal_panic` (direct dispatch) or `_QueuePanicFlag` +
+    `_dispatch_loop` (queue dispatch), never the response port. The fault
+    reason's exact text is racy (a known signal_panic-vs-Aborted format race),
+    so this pins death and delivery, not the message string."""
+    faults = []
+    faulted = asyncio.Event()
+
+    def fault_hook(failure):
+        faults.append(failure)
+        faulted.set()
+
+    monarch.actor.unhandled_fault_hook = fault_hook
+    proc = spawn_procs_on_this_host({"gpus": 1})
+    actor = proc.spawn("panic_actor", PanicActor)
+
+    actor.cause_panic.broadcast()  # no reply port => the actor dies
+    await asyncio.wait_for(faulted.wait(), timeout=15.0)
+
+    assert len(faults) >= 1
+    assert "panic_actor" in str(faults[0])
+
+    await proc.stop()
+
+
+class SuperviseExceptionParent(Actor):
+    """Owner actor that records `__supervise__` faults from a child it spawns.
+
+    Pins that a plain-`Exception` no-reply-port kill in the child is delivered
+    to the owner's supervisor callback, not only the root fault hook. Existing
+    `__supervise__` coverage drives the child with supervision-specific failures
+    rather than a plain `Exception`.
+    """
+
+    def __init__(self, proc_mesh: ProcMesh) -> None:
+        self.child = proc_mesh.spawn("exception_actor", ExceptionActor)
+        self.failures: list[MeshFailure] = []
+        self.faulted = asyncio.Event()
+
+    @endpoint
+    async def child_broadcast_fail(self) -> None:
+        await self.child.noop.call()  # ensure the child is alive first
+        # no reply port => the child dies; the failure must still reach
+        # __supervise__ on the owner.
+        self.child.raise_exception.broadcast()
+        await asyncio.wait_for(self.faulted.wait(), timeout=30)
+
+    @endpoint
+    async def get_failures(self) -> list[str]:
+        # MeshFailure is not picklable, so return strings.
+        return [str(f) for f in self.failures]
+
+    def __supervise__(self, failure: MeshFailure) -> bool:
+        self.failures.append(failure)
+        self.faulted.set()
+        return True  # suppress so the fault does not propagate further
+
+
+@pytest.mark.timeout(60)
+@parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
+async def test_no_reply_port_exception_delivered_to_supervisor() -> None:
+    """End-to-end supervision: a plain `Exception` from a child endpoint invoked
+    with no reply port (`broadcast()`) is delivered to the owner's
+    `__supervise__` as a `MeshFailure`. Companion to
+    `test_broadcast_exception_with_no_reply_port_kills_actor`, which pins the
+    kill at the root fault hook; this pins the parent-delivery half."""
+    pm = spawn_procs_on_this_host({"gpus": 1})
+    # A separate mesh for the child avoids an intermittent same-mesh spawn race
+    # (see the other supervise tests).
+    second_mesh = spawn_procs_on_this_host({"gpus": 1})
+    supervisor = pm.spawn("supervisor", SuperviseExceptionParent, second_mesh)
+
+    await supervisor.child_broadcast_fail.call()
+    result = await supervisor.get_failures.call()
+    result = [f for _, f in result]
+    assert len(result) == 1
+    r = result[0]
+    assert len(r) >= 1, f"expected at least one supervision event, got {len(r)}"
+    for msg in r:
+        assert "MeshFailure" in msg
+        assert "exception_actor" in msg
+
+    await pm.stop()
+    await second_mesh.stop()
 
 
 @parametrize_config(actor_queue_dispatch={True, False})
@@ -1624,6 +1860,7 @@ async def test_actor_abort(reason) -> None:
 
 
 @pytest.mark.timeout(500)
+@parametrize_config(actor_queue_dispatch={False})
 @isolate_in_subprocess
 async def test_gil_stall():
     """Test that many concurrent actor calls don't cause GIL stall issues.

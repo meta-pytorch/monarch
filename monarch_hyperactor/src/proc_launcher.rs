@@ -42,6 +42,8 @@ use crate::actor::PythonMessage;
 use crate::actor::PythonMessageKind;
 use crate::mailbox::EitherPortRef;
 use crate::mailbox::PythonOncePortRef;
+use crate::runtime::GilSite;
+use crate::runtime::monarch_with_gil_blocking;
 
 /// Python / PyO3 helpers used by the actor-based proc launcher.
 ///
@@ -91,6 +93,9 @@ mod decode {
     use hyperactor_mesh::proc_launcher::ProcExitResult;
     use hyperactor_mesh::proc_launcher::ProcLauncherError;
     use pyo3::prelude::*;
+
+    use crate::runtime::GilSite;
+    use crate::runtime::monarch_with_gil_blocking;
 
     /// Field names for the `ProcExitResult` dataclass attributes.
     const K_EXIT_CODE: &str = "exit_code";
@@ -271,7 +276,7 @@ mod decode {
     ) -> Result<ProcExitResult, ProcLauncherError> {
         use crate::actor::PythonMessageKind;
 
-        Python::attach(|py| {
+        monarch_with_gil_blocking(GilSite::Convert, |py| {
             let cloudpickle = super::py::import_cloudpickle(py)?;
 
             match msg.kind {
@@ -406,7 +411,7 @@ mod decode {
         #[test]
         fn test_validate_shape_valid_dataclass() {
             Python::initialize();
-            Python::attach(|py| {
+            monarch_with_gil_blocking(GilSite::Test, |py| {
                 // Create a simple class with all required attributes
                 let locals = run_py_code(
                     py,
@@ -431,7 +436,7 @@ obj = FakeExit()
         #[test]
         fn test_validate_shape_missing_attribute() {
             Python::initialize();
-            Python::attach(|py| {
+            monarch_with_gil_blocking(GilSite::Test, |py| {
                 // Missing stderr_tail
                 let locals = run_py_code(
                     py,
@@ -458,7 +463,7 @@ obj = IncompleteExit()
         #[test]
         fn test_decode_exit_obj_valid() {
             Python::initialize();
-            Python::attach(|py| {
+            monarch_with_gil_blocking(GilSite::Test, |py| {
                 let locals = run_py_code(
                     py,
                     c"
@@ -487,7 +492,7 @@ obj = FakeExit()
         #[test]
         fn test_decode_exit_obj_wrong_type() {
             Python::initialize();
-            Python::attach(|py| {
+            monarch_with_gil_blocking(GilSite::Test, |py| {
                 // exit_code is a string instead of int
                 let locals = run_py_code(
                     py,
@@ -626,68 +631,73 @@ impl ProcLauncher for ActorProcLauncher {
     ) -> Result<LaunchResult, ProcLauncherError> {
         let (exit_port, exit_port_rx) = self.mailbox.open_once_port::<PythonMessage>();
 
-        let pickled_args = Python::attach(|py| -> Result<Vec<u8>, ProcLauncherError> {
-            let cloudpickle = import_cloudpickle(py)?;
+        let pickled_args = monarch_with_gil_blocking(
+            GilSite::Bootstrap,
+            |py| -> Result<Vec<u8>, ProcLauncherError> {
+                let cloudpickle = import_cloudpickle(py)?;
 
-            let mod_ = py
-                .import("monarch._src.actor.proc_launcher")
-                .map_err(|e| ProcLauncherError::Other(format!("import proc_launcher: {e}")))?;
-            let launch_opts_cls = mod_
-                .getattr("LaunchOptions")
-                .map_err(|e| ProcLauncherError::Other(format!("getattr LaunchOptions: {e}")))?;
+                let mod_ = py
+                    .import("monarch._src.actor.proc_launcher")
+                    .map_err(|e| ProcLauncherError::Other(format!("import proc_launcher: {e}")))?;
+                let launch_opts_cls = mod_
+                    .getattr("LaunchOptions")
+                    .map_err(|e| ProcLauncherError::Other(format!("getattr LaunchOptions: {e}")))?;
 
-            let program = opts.command.program.to_str().ok_or_else(|| {
-                ProcLauncherError::Other("program path is not valid UTF-8".into())
-            })?;
+                let program = opts.command.program.to_str().ok_or_else(|| {
+                    ProcLauncherError::Other("program path is not valid UTF-8".into())
+                })?;
 
-            let env = pyo3::types::PyDict::new(py);
-            for (k, v) in &opts.command.env {
-                env.set_item(k, v)
-                    .map_err(|e| ProcLauncherError::Other(format!("set env item: {e}")))?;
-            }
-
-            let py_proc_bind = opts.proc_bind.as_ref().map(|bind| {
-                let d = pyo3::types::PyDict::new(py);
-                if let Some(v) = &bind.cpunodebind {
-                    d.set_item("cpunodebind", v).unwrap();
+                let env = pyo3::types::PyDict::new(py);
+                for (k, v) in &opts.command.env {
+                    env.set_item(k, v)
+                        .map_err(|e| ProcLauncherError::Other(format!("set env item: {e}")))?;
                 }
-                if let Some(v) = &bind.membind {
-                    d.set_item("membind", v).unwrap();
-                }
-                if let Some(v) = &bind.physcpubind {
-                    d.set_item("physcpubind", v).unwrap();
-                }
-                if let Some(v) = &bind.cpus {
-                    d.set_item("cpus", v).unwrap();
-                }
-                d
-            });
 
-            let py_opts = launch_opts_cls
-                .call1((
-                    &opts.bootstrap_payload,
-                    &opts.process_name,
-                    program,
-                    opts.command.arg0.as_deref(),
-                    &opts.command.args,
-                    env,
-                    opts.want_stdio,
-                    opts.tail_lines,
-                    opts.log_channel.as_ref().map(|a| a.to_string()),
-                    py_proc_bind,
-                ))
-                .map_err(|e| ProcLauncherError::Other(format!("construct LaunchOptions: {e}")))?;
+                let py_proc_bind = opts.proc_bind.as_ref().map(|bind| {
+                    let d = pyo3::types::PyDict::new(py);
+                    if let Some(v) = &bind.cpunodebind {
+                        d.set_item("cpunodebind", v).unwrap();
+                    }
+                    if let Some(v) = &bind.membind {
+                        d.set_item("membind", v).unwrap();
+                    }
+                    if let Some(v) = &bind.physcpubind {
+                        d.set_item("physcpubind", v).unwrap();
+                    }
+                    if let Some(v) = &bind.cpus {
+                        d.set_item("cpus", v).unwrap();
+                    }
+                    d
+                });
 
-            let args = (proc_id.to_string(), py_opts);
-            let kwargs = pyo3::types::PyDict::new(py);
-            let pickled = cloudpickle
-                .call_method1("dumps", ((args, kwargs),))
-                .map_err(|e| ProcLauncherError::Other(format!("cloudpickle: {e}")))?;
+                let py_opts = launch_opts_cls
+                    .call1((
+                        &opts.bootstrap_payload,
+                        &opts.process_name,
+                        program,
+                        opts.command.arg0.as_deref(),
+                        &opts.command.args,
+                        env,
+                        opts.want_stdio,
+                        opts.tail_lines,
+                        opts.log_channel.as_ref().map(|a| a.to_string()),
+                        py_proc_bind,
+                    ))
+                    .map_err(|e| {
+                        ProcLauncherError::Other(format!("construct LaunchOptions: {e}"))
+                    })?;
 
-            pickled
-                .extract::<Vec<u8>>()
-                .map_err(|e| ProcLauncherError::Other(format!("extract bytes: {e}")))
-        })?;
+                let args = (proc_id.to_string(), py_opts);
+                let kwargs = pyo3::types::PyDict::new(py);
+                let pickled = cloudpickle
+                    .call_method1("dumps", ((args, kwargs),))
+                    .map_err(|e| ProcLauncherError::Other(format!("cloudpickle: {e}")))?;
+
+                pickled
+                    .extract::<Vec<u8>>()
+                    .map_err(|e| ProcLauncherError::Other(format!("extract bytes: {e}")))
+            },
+        )?;
 
         let bound_port = exit_port.bind();
         let message = PythonMessage {
@@ -760,17 +770,18 @@ impl ProcLauncher for ActorProcLauncher {
         proc_id: &hyperactor::ProcAddr,
         timeout: Duration,
     ) -> Result<(), ProcLauncherError> {
-        let pickled = Python::attach(|py| -> Result<Vec<u8>, ProcLauncherError> {
-            let cloudpickle =
-                import_cloudpickle(py).map_err(|e| ProcLauncherError::Terminate(format!("{e}")))?;
-            let args = (proc_id.to_string(), timeout.as_secs_f64());
-            let kwargs = pyo3::types::PyDict::new(py);
-            cloudpickle
-                .call_method1("dumps", ((args, kwargs),))
-                .map_err(|e| ProcLauncherError::Terminate(format!("cloudpickle: {e}")))?
-                .extract()
-                .map_err(|e| ProcLauncherError::Terminate(format!("extract: {e}")))
-        })?;
+        let pickled =
+            monarch_with_gil_blocking(GilSite::Stop, |py| -> Result<Vec<u8>, ProcLauncherError> {
+                let cloudpickle = import_cloudpickle(py)
+                    .map_err(|e| ProcLauncherError::Terminate(format!("{e}")))?;
+                let args = (proc_id.to_string(), timeout.as_secs_f64());
+                let kwargs = pyo3::types::PyDict::new(py);
+                cloudpickle
+                    .call_method1("dumps", ((args, kwargs),))
+                    .map_err(|e| ProcLauncherError::Terminate(format!("cloudpickle: {e}")))?
+                    .extract()
+                    .map_err(|e| ProcLauncherError::Terminate(format!("extract: {e}")))
+            })?;
 
         let message = PythonMessage {
             kind: PythonMessageKind::CallMethod {
@@ -800,17 +811,18 @@ impl ProcLauncher for ActorProcLauncher {
     /// - import/serialize the request via `cloudpickle`, or
     /// - send the message to the spawner actor.
     async fn kill(&self, proc_id: &hyperactor::ProcAddr) -> Result<(), ProcLauncherError> {
-        let pickled = Python::attach(|py| -> Result<Vec<u8>, ProcLauncherError> {
-            let cloudpickle =
-                import_cloudpickle(py).map_err(|e| ProcLauncherError::Kill(format!("{e}")))?;
-            let args = (proc_id.to_string(),);
-            let kwargs = pyo3::types::PyDict::new(py);
-            cloudpickle
-                .call_method1("dumps", ((args, kwargs),))
-                .map_err(|e| ProcLauncherError::Kill(format!("cloudpickle: {e}")))?
-                .extract()
-                .map_err(|e| ProcLauncherError::Kill(format!("extract: {e}")))
-        })?;
+        let pickled =
+            monarch_with_gil_blocking(GilSite::Stop, |py| -> Result<Vec<u8>, ProcLauncherError> {
+                let cloudpickle =
+                    import_cloudpickle(py).map_err(|e| ProcLauncherError::Kill(format!("{e}")))?;
+                let args = (proc_id.to_string(),);
+                let kwargs = pyo3::types::PyDict::new(py);
+                cloudpickle
+                    .call_method1("dumps", ((args, kwargs),))
+                    .map_err(|e| ProcLauncherError::Kill(format!("cloudpickle: {e}")))?
+                    .extract()
+                    .map_err(|e| ProcLauncherError::Kill(format!("extract: {e}")))
+            })?;
 
         let message = PythonMessage {
             kind: PythonMessageKind::CallMethod {
@@ -836,7 +848,7 @@ mod tests {
     #[test]
     fn test_pyany_to_error_string() {
         Python::initialize();
-        Python::attach(|py| {
+        monarch_with_gil_blocking(GilSite::Test, |py| {
             // A Python string should round-trip through `str()`
             // unchanged.
             let s = pyo3::types::PyString::new(py, "hello");

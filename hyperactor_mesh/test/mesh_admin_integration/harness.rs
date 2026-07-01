@@ -418,6 +418,7 @@ pub(crate) async fn start_workload(
         .env("HYPERACTOR_TLS_KEY", &combined_path)
         .env("HYPERACTOR_TLS_CA", &ca_path)
         .env("HYPERACTOR_MESH_ADMIN_ADDR", "[::]:0")
+        .env("HYPERACTOR_MESH_ADMIN_QUERY_CHILD_TIMEOUT", "1s")
         .env("HYPERACTOR_MESH_PROC_SPAWN_MAX_IDLE", "120s")
         .env("HYPERACTOR_MESH_ACTOR_SPAWN_MAX_IDLE", "120s")
         // Pipe stdin so command-driven workloads (execution_workload)

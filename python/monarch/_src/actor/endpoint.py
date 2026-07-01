@@ -285,6 +285,50 @@ def endpoint(
     explicit_response_port: bool = False,
     instrument: bool = True,
 ) -> Any:
+    """Mark an ``Actor`` method as an endpoint callable from other actors.
+
+    An endpoint defines part of an actor's public API. Once the actor is
+    spawned onto a mesh, you invoke its endpoints through messaging adverbs
+    (``call``, ``call_one``, ``choose``, ``stream``, ``broadcast``, and
+    ``rref``) rather than calling the method directly. Each adverb controls how
+    the message is delivered and how the response is returned. Endpoint methods
+    may be synchronous or ``async``.
+
+    Apply it bare or with options::
+
+        class Counter(Actor):
+            @endpoint
+            def increment(self) -> int:
+                ...
+
+            @endpoint(explicit_response_port=True)
+            async def stream_results(self, port: Port[int]) -> None:
+                ...
+
+    Args:
+        method: The actor method to wrap. Supplied automatically when the
+            decorator is applied without parentheses; leave it unset when
+            passing options.
+        propagate: Controls how the tensor engine infers output tensor shapes
+            for ``rref`` without running the endpoint. Pass a callable that
+            takes the endpoint's arguments (excluding ``self``) and returns
+            tensors of the shapes the endpoint would produce, or one of the
+            strings ``"cached"``, ``"inspect"``, or ``"mocked"``. Defaults to
+            ``None``, which matters only for endpoints used with distributed
+            tensors.
+        explicit_response_port: When ``True``, the endpoint receives a ``Port``
+            as its first argument (after ``self``) and is responsible for
+            sending its result through that port instead of returning a value.
+            This supports custom response protocols, such as sending several
+            responses or deferring one. The method's return annotation should
+            be ``None``.
+        instrument: When ``True`` (the default), wrap each invocation in a
+            tracing span named for the method.
+
+    Returns:
+        An ``EndpointProperty`` descriptor. Accessing it on a spawned actor
+        yields an ``Endpoint`` exposing the messaging adverbs.
+    """
     if method is None:
         return functools.partial(
             endpoint,

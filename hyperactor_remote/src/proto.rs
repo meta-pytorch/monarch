@@ -99,7 +99,7 @@ impl Gspawn {
     }
 }
 
-/// Request sent to a remote spawner to spawn and supervise one registered actor.
+/// Request sent to an actor spawner to spawn and supervise one registered actor.
 #[derive(
     Clone,
     Debug,
@@ -119,6 +119,27 @@ pub struct SpawnActor {
     pub supervise: Supervise,
 }
 wirevalue::register_type!(SpawnActor);
+
+/// Request sent to a proc-spawner endpoint to spawn and supervise one proc.
+#[derive(
+    Clone,
+    Debug,
+    Serialize,
+    Deserialize,
+    Named,
+    PartialEq,
+    Eq,
+    Handler,
+    HandleClient,
+    RefClient
+)]
+pub struct SpawnProc {
+    /// Proc uid to spawn.
+    pub uid: Uid,
+    /// Supervise request to send back.
+    pub supervise: Supervise,
+}
+wirevalue::register_type!(SpawnProc);
 
 /// Request sent by a supervisor proxy to a worker actor.
 #[derive(

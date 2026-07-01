@@ -174,19 +174,15 @@ def _make_job() -> SimpleMastJob:
     # instead, the FUSEActor spawn would ENOENT (the venv isn't mounted yet) and
     # mount-open would time out. Workers boot on the bootstrap python; PYTHONPATH
     # (above) makes torch + torchtitan importable from the mount.
-    chunk_size = int(os.environ.get("TITAN_CHUNK_SIZE_MB", "256")) * 1024 * 1024
     job.remote_mount(
         workspace,
         mntpoint=workspace,
         python_exe=".venv/bin/python3.12",
-        backend="mast",
-        chunk_size=chunk_size,
-        num_parallel_streams=streams,
     )
     # Pass python_exe (above) for the mount layer, but do NOT let it become the
     # proc-bootstrap interpreter -- see the comment above. Workers boot on the
     # bootstrap-fbpkg python; torch/torchtitan come from the mount via PYTHONPATH.
-    job._default_python_exe = None
+    job._components.mounts._default_python_exe = None
 
     # The workspace's ``torchtitan/`` is a symlink to your local checkout
     # (resolved above into ``torchtitan_source``). The FUSE mount serves the
@@ -198,9 +194,6 @@ def _make_job() -> SimpleMastJob:
             torchtitan_source,
             mntpoint=torchtitan_source,
             python_exe=None,
-            backend="mast",
-            chunk_size=chunk_size,
-            num_parallel_streams=streams,
         )
 
     # Mount the example dir itself so ``train.py`` is reachable on workers
@@ -212,9 +205,6 @@ def _make_job() -> SimpleMastJob:
         example_dir,
         mntpoint=example_dir,
         python_exe=None,
-        backend="mast",
-        chunk_size=chunk_size,
-        num_parallel_streams=streams,
     )
 
     # Optional FineWeb-Edu sample-10BT shards (~25 GB) as a separate mount.
@@ -231,9 +221,6 @@ def _make_job() -> SimpleMastJob:
             fineweb_dir,
             mntpoint=fineweb_dir,
             python_exe=None,
-            backend="mast",
-            chunk_size=chunk_size,
-            num_parallel_streams=streams,
         )
 
     # Gather mount: per-worker writable log directory exposed back on the

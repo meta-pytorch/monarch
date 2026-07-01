@@ -26,7 +26,7 @@ const MELLANOX_VENDOR_ID: u32 = 0x02c9;
 pub struct MlxDevice;
 
 impl IbvDeviceImpl for MlxDevice {
-    type IbvDomainImpl = MlxDomain;
+    type Domain = MlxDomain;
 
     fn backend_name() -> &'static str {
         "mellanox"

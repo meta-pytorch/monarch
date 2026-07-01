@@ -15,6 +15,7 @@ use hyperactor_mesh::ActorMesh;
 use monarch_hyperactor::context::PyInstance;
 use monarch_hyperactor::proc_mesh::PyProcMesh;
 use monarch_hyperactor::pytokio::PyPythonTask;
+use monarch_hyperactor::runtime::GilSite;
 use monarch_hyperactor::runtime::monarch_with_gil_blocking;
 use monarch_hyperactor::runtime::signal_safe_block_on;
 use monarch_rdma::RdmaAction;
@@ -52,7 +53,7 @@ use typeuri::Named;
 /// erroring.
 fn pytorch_cuda_segments() -> Vec<ScannedSegment> {
     // Acquire the GIL to call Python code.
-    let result = monarch_with_gil_blocking(|py| -> PyResult<Vec<ScannedSegment>> {
+    let result = monarch_with_gil_blocking(GilSite::Rdma, |py| -> PyResult<Vec<ScannedSegment>> {
         // Check if torch is already imported - don't import it ourselves.
         let sys = py.import("sys")?;
         let modules = sys.getattr("modules")?;
@@ -223,7 +224,7 @@ impl Keepalive for PyMemoryViewKeepalive {
     }
 
     fn downgrade(&self) -> Option<Arc<dyn WeakKeepalive>> {
-        monarch_with_gil_blocking(|py| {
+        monarch_with_gil_blocking(GilSite::Rdma, |py| {
             let weak = make_weakref(py, &self.mv)?;
             Some(Arc::new(PyMemoryViewWeakKeepalive { weak }) as Arc<dyn WeakKeepalive>)
         })
@@ -241,7 +242,7 @@ struct PyMemoryViewWeakKeepalive {
 
 impl WeakKeepalive for PyMemoryViewWeakKeepalive {
     fn upgrade(&self) -> Option<Arc<dyn Keepalive>> {
-        monarch_with_gil_blocking(|py| {
+        monarch_with_gil_blocking(GilSite::Rdma, |py| {
             let mv = upgrade_weakref(py, &self.weak)?;
             let (addr, size) = memoryview_addr_size(py, &mv)?;
             Some(Arc::new(PyMemoryViewKeepalive { mv, addr, size }) as Arc<dyn Keepalive>)
@@ -273,7 +274,7 @@ impl Keepalive for PyTorchUntypedStorageKeepalive {
     }
 
     fn downgrade(&self) -> Option<Arc<dyn WeakKeepalive>> {
-        monarch_with_gil_blocking(|py| {
+        monarch_with_gil_blocking(GilSite::Rdma, |py| {
             let weak = make_weakref(py, &self.storage)?;
             Some(Arc::new(PyTorchUntypedStorageWeakKeepalive {
                 weak,
@@ -298,7 +299,7 @@ struct PyTorchUntypedStorageWeakKeepalive {
 
 impl WeakKeepalive for PyTorchUntypedStorageWeakKeepalive {
     fn upgrade(&self) -> Option<Arc<dyn Keepalive>> {
-        monarch_with_gil_blocking(|py| {
+        monarch_with_gil_blocking(GilSite::Rdma, |py| {
             let storage = upgrade_weakref(py, &self.weak)?;
             let base_addr: usize = storage
                 .bind(py)
@@ -693,7 +694,7 @@ impl PyRdmaBuffer {
     }
 
     fn __reduce__(&self) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
-        monarch_with_gil_blocking(|py| {
+        monarch_with_gil_blocking(GilSite::Rdma, |py| {
             let ctor = py.get_type::<PyRdmaBuffer>().into_py_any(py)?;
             let json = serde_json::to_string(&self.buffer).map_err(|e| {
                 PyErr::new::<PyValueError, _>(format!("Serialization failed: {}", e))

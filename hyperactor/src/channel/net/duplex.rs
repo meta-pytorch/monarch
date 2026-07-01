@@ -97,6 +97,15 @@ impl<In: RemoteMessage, Out: RemoteMessage> DuplexServer<In, Out> {
     }
 }
 
+impl<In: RemoteMessage, Out: RemoteMessage> Drop for DuplexServer<In, Out> {
+    fn drop(&mut self) {
+        self.handle.stop(&format!(
+            "DuplexServer dropped; channel address: {}",
+            self.addr
+        ));
+    }
+}
+
 /// Receiver half of a duplex channel.
 pub struct DuplexRx<M: RemoteMessage>(mpsc::Receiver<M>, ChannelAddr);
 
@@ -407,6 +416,7 @@ enum Either {
 /// joins every dispatch in its `connections` `JoinSet`, so it
 /// finishes only after every recv/send loop has finished — same
 /// contract as the simplex [`dispatch_stream`](super::server::dispatch_stream).
+#[tracing::instrument(level = "debug", skip_all)]
 async fn dispatch_duplex_stream<In: RemoteMessage, Out: RemoteMessage>(
     session_id: SessionId,
     stream: Box<dyn Stream>,
@@ -611,6 +621,7 @@ async fn dispatch_duplex_stream<In: RemoteMessage, Out: RemoteMessage>(
 /// spawned recv/send task; the client owns a cancellation token so
 /// callers can deterministically tear the session down via
 /// [`DuplexClient::join`].
+#[tracing::instrument(level = "debug", skip_all)]
 pub(crate) fn spawn<Out: RemoteMessage, In: RemoteMessage>(
     link: impl Link,
 ) -> DuplexClient<Out, In> {
@@ -841,6 +852,7 @@ pub(crate) fn spawn<Out: RemoteMessage, In: RemoteMessage>(
 pub fn dial<Out: RemoteMessage, In: RemoteMessage>(
     addr: ChannelAddr,
 ) -> Result<DuplexClient<Out, In>, ClientError> {
+    let addr = addr.into_dial_addr();
     Ok(spawn(super::link(addr, super::SessionId::random(), 0)?))
 }
 

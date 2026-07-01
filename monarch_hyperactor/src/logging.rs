@@ -47,6 +47,7 @@ use crate::context::PyInstance;
 use crate::proc::PyActorAddr;
 use crate::proc_mesh::PyProcMesh;
 use crate::pytokio::PyPythonTask;
+use crate::runtime::GilSite;
 use crate::runtime::monarch_with_gil;
 
 #[derive(
@@ -99,9 +100,10 @@ impl RemoteSpawn for LoggerRuntimeActor {
     type Params = ();
 
     async fn new(_: (), _environment: Flattrs) -> Result<Self, anyhow::Error> {
-        let logger =
-            monarch_with_gil(|py| Self::get_logger(py).map_err(SerializablePyErr::from_fn(py)))
-                .await?;
+        let logger = monarch_with_gil(GilSite::Logging, |py| {
+            Self::get_logger(py).map_err(SerializablePyErr::from_fn(py))
+        })
+        .await?;
         Ok(Self {
             logger: Arc::new(logger),
         })
@@ -113,7 +115,7 @@ impl RemoteSpawn for LoggerRuntimeActor {
 impl LoggerRuntimeMessageHandler for LoggerRuntimeActor {
     async fn set_logging(&mut self, _cx: &Context<Self>, level: u8) -> Result<(), anyhow::Error> {
         let logger: Arc<_> = self.logger.clone();
-        monarch_with_gil(|py| {
+        monarch_with_gil(GilSite::Logging, |py| {
             Self::set_logger_level(py, logger.as_ref(), level)
                 .map_err(SerializablePyErr::from_fn(py))
         })
@@ -661,7 +663,7 @@ mod tests {
                 .await
                 .expect("spawn failed (forwarding disabled)");
 
-            monarch_with_gil(|py| {
+            monarch_with_gil(GilSite::Test, |py| {
                 let client_ref = client_py.borrow(py);
                 assert!(
                     client_ref.forwarder_mesh.is_none(),
@@ -685,7 +687,7 @@ mod tests {
                 .await
                 .expect("spawn failed (forwarding enabled)");
 
-            monarch_with_gil(|py| {
+            monarch_with_gil(GilSite::Test, |py| {
                 let client_ref = client_py.borrow(py);
                 assert!(
                     client_ref.forwarder_mesh.is_some(),
@@ -721,7 +723,7 @@ mod tests {
                 .await
                 .expect("spawn failed (forwarding disabled)");
 
-            monarch_with_gil(|py| {
+            monarch_with_gil(GilSite::Test, |py| {
                 let client_ref = client_py.borrow(py);
 
                 // (a) stream_to_client = false, no aggregate window
@@ -781,7 +783,7 @@ mod tests {
                 .await
                 .expect("spawn failed (forwarding enabled)");
 
-            monarch_with_gil(|py| {
+            monarch_with_gil(GilSite::Test, |py| {
                 let client_ref = client_py.borrow(py);
 
                 // (d) stream_to_client = true, aggregate_window_sec =
@@ -840,7 +842,7 @@ mod tests {
                 .expect("spawn failed (forwarding disabled)");
 
             // Call flush() and bring the PyPythonTask back out.
-            let flush_task = monarch_with_gil(|py| {
+            let flush_task = monarch_with_gil(GilSite::Test, |py| {
                 let client_ref = client_py.borrow(py);
                 client_ref
                     .flush(&py_instance)
@@ -872,7 +874,7 @@ mod tests {
 
             // Call flush() to exercise the barrier path, and pull the
             // PyPythonTask out.
-            let flush_task = monarch_with_gil(|py| {
+            let flush_task = monarch_with_gil(GilSite::Test, |py| {
                 client_py
                     .borrow(py)
                     .flush(&py_instance)

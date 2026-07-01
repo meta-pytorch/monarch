@@ -31,6 +31,8 @@ are launched across hosts. HostMesh represents a mesh of hosts. ProcMesh is a me
 
 .. autofunction:: this_proc
 
+.. autofunction:: default_bootstrap_cmd
+
 
 Defining Actors
 ===============
@@ -46,6 +48,8 @@ Each publicly exposed function of the actor is annotated with `@endpoint`:
    :exclude-members: __init__, get
 
 .. autofunction:: endpoint
+
+.. autofunction:: concurrent_endpoint
 
 
 

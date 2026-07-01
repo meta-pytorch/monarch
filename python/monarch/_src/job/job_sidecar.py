@@ -21,8 +21,10 @@ import traceback
 from dataclasses import dataclass
 from typing import Any
 
+from monarch._rust_bindings.monarch_hyperactor.channel import BindSpec
 from monarch._src.job.process_guard import find_process, ProcessGuard
-from monarch.actor import HostMesh
+from monarch.actor import enable_transport, HostMesh
+from monarch.config import get_runtime_config
 
 _JOB_SIDECAR_WORKER_MODULE = "monarch._src.job._job_sidecar_worker"
 
@@ -39,7 +41,12 @@ def job_sidecar_lock_path(apply_id: str) -> str:
     return f"/tmp/monarch_job_sidecar_{apply_id}.lock"
 
 
-def spawn_module(lock_path: str, config_key: object, module_name: str) -> ProcessGuard:
+def spawn_module(
+    lock_path: str,
+    config_key: object,
+    module_name: str,
+    runtime_transport: str | None = None,
+) -> ProcessGuard:
     """Launch a Python module as a ``ProcessGuard``-managed background process."""
     if _IN_PAR:
         command = [sys.argv[0]]
@@ -49,15 +56,19 @@ def spawn_module(lock_path: str, config_key: object, module_name: str) -> Proces
             raise RuntimeError("no python executable available")
         command = [sys.executable, "-m", module_name]
         env = None
+    if runtime_transport is not None:
+        command.extend(["--runtime-transport", runtime_transport])
     return ProcessGuard.create(lock_path, config_key, command, env=env)
 
 
 def create_job_sidecar(apply_id: str) -> ProcessGuard:
     """Ensure the per-job sidecar process is running and return its guard."""
+    runtime_transport = sidecar_transport_from_runtime()
     return spawn_module(
         job_sidecar_lock_path(apply_id),
         apply_id,
         _JOB_SIDECAR_WORKER_MODULE,
+        runtime_transport=runtime_transport,
     )
 
 
@@ -71,6 +82,22 @@ def stop_job_sidecar(apply_id: str) -> None:
     guard = find_job_sidecar(apply_id)
     if guard is not None:
         guard.shutdown()
+
+
+def sidecar_transport_from_runtime() -> str | None:
+    """Return the Runtime-layer default transport for sidecar startup."""
+    transport = get_runtime_config().get("default_transport")
+    if transport is None:
+        return None
+    if isinstance(transport, str):
+        return transport
+    return str(BindSpec(transport))
+
+
+def configure_sidecar_transport(transport: str | None) -> None:
+    """Enable sidecar startup transport before actor context bootstrap."""
+    if transport is not None:
+        enable_transport(transport)
 
 
 @dataclass
@@ -93,6 +120,7 @@ class TelemetryRequest:
     apply_id: str
     config: dict[str, object]
     host_meshes: dict[str, HostMesh]
+    spawn_worker_collectors: bool = True
 
 
 class _JobSidecarState:
@@ -151,6 +179,7 @@ class _JobSidecarState:
         return self._telemetry_handle.open_or_refresh(
             request.host_meshes,
             request.config,
+            spawn_worker_collectors=request.spawn_worker_collectors,
         )
 
     def shutdown(self) -> None:
@@ -165,7 +194,7 @@ def _dbg(msg: str) -> None:
     print(f"[job_sidecar pid={os.getpid()}] {msg}", file=sys.stderr, flush=True)
 
 
-def _run_job_sidecar(socket_path: str) -> None:
+def _run_job_sidecar(socket_path: str, runtime_transport: str | None = None) -> None:
     """Run in the child process: bind socket then serve refresh/shutdown requests."""
     import signal as _signal
 
@@ -173,6 +202,8 @@ def _run_job_sidecar(socket_path: str) -> None:
     if threading.current_thread() is threading.main_thread():
         _signal.signal(_signal.SIGINT, _signal.SIG_DFL)
         _signal.signal(_signal.SIGTERM, _signal.SIG_DFL)
+
+    configure_sidecar_transport(runtime_transport)
 
     from monarch._src.job.process_guard import _Shutdown
 

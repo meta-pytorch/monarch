@@ -6,7 +6,6 @@
 
 # pyre-unsafe
 
-from collections.abc import Sequence
 from typing import Any
 
 class FuseMountHandle:
@@ -14,15 +13,13 @@ class FuseMountHandle:
     def refresh(
         self,
         metadata: dict[str, Any],
-        chunk_buf: Any,
-        dirty_ranges: list[tuple[int, int]],
         new_total_size: int,
-        chunk_size: int,
     ) -> None: ...
+    def receive_block(self, block_id: int, data: bytes, stale: list[str]) -> None: ...
 
 def mount_chunked_fuse(
     metadata: dict[str, Any],
-    chunks: Sequence[Any],
-    chunk_size: int,
+    total_size: int,
     mount_point: str,
+    fault_callback: Any,
 ) -> FuseMountHandle: ...

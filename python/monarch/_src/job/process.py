@@ -177,6 +177,9 @@ class ProcessJob(JobTrait):
 
         return JobState(host_meshes)
 
+    def _should_spawn_telemetry_worker_collector_actors(self) -> bool:
+        return False
+
     def can_run(self, spec: "JobTrait") -> bool:
         return (
             isinstance(spec, ProcessJob)
