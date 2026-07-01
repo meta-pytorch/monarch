@@ -737,6 +737,10 @@ pub(crate) struct ProcSpec {
     /// `DrainHost` to selectively drain only procs belonging to a
     /// specific mesh.
     pub(crate) host_mesh_id: Option<crate::mesh_id::HostMeshId>,
+    /// The id of the ProcMesh that owns this proc. A host agent can hold procs
+    /// from several proc meshes, so this lets per-mesh queries (e.g.
+    /// `StreamState`) scope to a single mesh rather than every proc on the host.
+    pub(crate) proc_mesh_id: Option<crate::mesh_id::ProcMeshId>,
 }
 wirevalue::register_type!(ProcSpec);
 
