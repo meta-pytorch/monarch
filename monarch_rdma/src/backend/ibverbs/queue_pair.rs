@@ -970,7 +970,10 @@ pub(super) struct QueuePairActor<M: Manager, Qp: IbvQueuePair> {
     init_timeout: Duration,
     /// QP-wide cap on outstanding send-queue WRs (reads + writes).
     max_send_wr: u32,
-    /// QP-wide cap on outstanding RDMA-READ WRs at the initiator.
+    /// QP-wide cap on outstanding RDMA-READ WRs at the initiator. A
+    /// configured value of 0 means the device imposes no separate read
+    /// limit; the constructor normalizes it to `max_send_wr`, so reads
+    /// gate only against the send-queue slot cap.
     max_rd_atomic: u32,
     /// Single FIFO of ops awaiting their first post attempt. If the
     /// head op bumps against either credit cap, ops queued behind
@@ -1005,6 +1008,14 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
         max_rd_atomic: u32,
     ) -> Self {
         let init_timeout = hyperactor_config::global::get(crate::config::RDMA_QP_INIT_TIMEOUT);
+        // A configured max_rd_atomic of 0 means "no separate read
+        // limit"; fall back to the send-queue slot cap so reads gate
+        // only against max_send_wr.
+        let max_rd_atomic = if max_rd_atomic == 0 {
+            max_send_wr
+        } else {
+            max_rd_atomic
+        };
         Self {
             qp_key,
             local_manager,
@@ -2422,6 +2433,45 @@ mod tests {
         assert_no_post(&mut posted_rx, Duration::from_millis(50)).await;
 
         // Complete the first read; the third should post.
+        qp.queue_completion(r0_wrs[0]);
+        let (_, _, r2_wrs) = expect_get(recv_posted(&mut posted_rx).await);
+        assert_eq!(r2_wrs, vec![2]);
+
+        qp.queue_completion(r1_wrs[0]);
+        qp.queue_completion(r2_wrs[0]);
+        let replies = collect_replies(&mut rx, 3).await;
+        assert_eq!(replies, vec![(0, Ok(())), (1, Ok(())), (2, Ok(()))]);
+        harness.teardown().await;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn qpa_zero_max_rd_atomic_uses_send_wr() -> Result<()> {
+        let harness = QpaHarness::build()?;
+        // max_rd_atomic=0 means "no separate read limit"; reads gate
+        // only against max_send_wr=2.
+        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(2, 0).await?;
+
+        let items = (0..3usize)
+            .map(|i| {
+                (
+                    i,
+                    make_op(RdmaOpType::ReadIntoLocal, 0x1000 + i * 0x1000, 4096),
+                    fake_mrv(0x1000 + i * 0x1000, 4096),
+                )
+            })
+            .collect();
+        let mut rx = submit_ops(&harness, &actor, items)?;
+
+        // Two reads fit the send-queue cap; the third parks. Were 0
+        // taken literally, every read would be rejected as too large.
+        let (_, _, r0_wrs) = expect_get(recv_posted(&mut posted_rx).await);
+        let (_, _, r1_wrs) = expect_get(recv_posted(&mut posted_rx).await);
+        assert_eq!(r0_wrs, vec![0]);
+        assert_eq!(r1_wrs, vec![1]);
+        assert_no_post(&mut posted_rx, Duration::from_millis(50)).await;
+
+        // Freeing one slot lets the third read post.
         qp.queue_completion(r0_wrs[0]);
         let (_, _, r2_wrs) = expect_get(recv_posted(&mut posted_rx).await);
         assert_eq!(r2_wrs, vec![2]);
