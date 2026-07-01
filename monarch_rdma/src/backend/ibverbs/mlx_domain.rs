@@ -36,6 +36,8 @@ use super::domain::register_host_or_dmabuf_mr;
 use super::memory_region::IbvMemoryRegionKeepalive;
 use super::memory_region::IbvMemoryRegionView;
 use super::mlx_queue_pair::MlxQueuePair;
+use super::primitives::GidScope;
+use super::primitives::GidType;
 use super::primitives::IbvConfig;
 use super::primitives::IbvDeviceInfo;
 use super::primitives::IbvQp;
@@ -277,15 +279,20 @@ impl MlxDomainOps for ProdMlxDomainOps {
             .context("could not create loopback QP for mkey binding")?;
         let context = domain.context.as_ptr();
         let access_flags = domain.access_flags();
+        let gid = domain.device_info().select_gid(
+            config.port_num,
+            Some(GidScope::Global),
+            Some(GidType::RoCEv2),
+        )?;
 
         // Connect the QP to itself (loopback) so it reaches RTS, the state
         // required to post work requests.
         // SAFETY: `parts.qp` wraps the live QP just created above and `context`
         // is its live device context.
-        let info = unsafe { get_qp_info(parts.qp.as_ptr(), context, config) }
+        let info = unsafe { get_qp_info(parts.qp.as_ptr(), context, config, gid) }
             .context("could not query loopback QP info for mkey binding")?;
         // SAFETY: as above.
-        unsafe { connect(parts.qp.as_ptr(), config, access_flags, &info) }
+        unsafe { connect(parts.qp.as_ptr(), config, access_flags, &info, gid.index()) }
             .context("could not connect loopback QP for mkey binding")?;
 
         Ok(parts)
