@@ -33,7 +33,6 @@ use backoff::ExponentialBackoffBuilder;
 use backoff::backoff::Backoff;
 use dashmap::DashMap;
 use tokio::sync::mpsc;
-use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -55,6 +54,7 @@ use crate::channel::ChannelAddr;
 use crate::channel::ChannelError;
 use crate::channel::ChannelTransport;
 use crate::channel::CloseReason;
+use crate::channel::CompletionSink;
 use crate::channel::Rx;
 use crate::channel::SendError;
 use crate::channel::SendErrorReason;
@@ -188,14 +188,14 @@ impl<Out: RemoteMessage, In: RemoteMessage> std::fmt::Debug for DuplexClient<Out
 
 /// Sender half of a duplex channel.
 pub struct DuplexTx<M: RemoteMessage> {
-    tx: mpsc::UnboundedSender<(M, oneshot::Sender<SendError<M>>, Instant)>,
+    tx: mpsc::UnboundedSender<(M, CompletionSink<M>, Instant)>,
     addr: ChannelAddr,
     status: watch::Receiver<TxStatus>,
 }
 
 impl<M: RemoteMessage> DuplexTx<M> {
     pub(super) fn new(
-        tx: mpsc::UnboundedSender<(M, oneshot::Sender<SendError<M>>, Instant)>,
+        tx: mpsc::UnboundedSender<(M, CompletionSink<M>, Instant)>,
         addr: ChannelAddr,
         status: watch::Receiver<TxStatus>,
     ) -> Self {
@@ -205,18 +205,17 @@ impl<M: RemoteMessage> DuplexTx<M> {
 
 #[async_trait]
 impl<M: RemoteMessage> Tx<M> for DuplexTx<M> {
-    fn do_post(&self, message: M, return_channel: Option<oneshot::Sender<SendError<M>>>) {
-        let return_channel = return_channel.unwrap_or_else(|| oneshot::channel().0);
-        if let Err(mpsc::error::SendError((message, return_channel, _))) =
+    fn do_post(&self, message: M, completion: CompletionSink<M>) {
+        if let Err(mpsc::error::SendError((message, completion, _))) =
             self.tx
-                .send((message, return_channel, tokio::time::Instant::now()))
+                .send((message, completion, tokio::time::Instant::now()))
         {
             let reason = self
                 .status
                 .borrow()
                 .as_closed()
                 .map(|r| SendErrorReason::Other(r.to_string()));
-            let _ = return_channel.send(SendError {
+            completion.reject(SendError {
                 error: ChannelError::Closed,
                 message,
                 reason,
@@ -458,7 +457,7 @@ async fn dispatch_duplex_stream<In: RemoteMessage, Out: RemoteMessage>(
     // application-facing handles and yield them to the server.
     let (inbound_tx, inbound_rx) = mpsc::channel::<In>(1024);
     let (outbound_tx, mut outbound_rx) =
-        mpsc::unbounded_channel::<(Out, oneshot::Sender<SendError<Out>>, Instant)>();
+        mpsc::unbounded_channel::<(Out, CompletionSink<Out>, Instant)>();
     let (notify, status) = watch::channel(TxStatus::Active);
     let net_rx = DuplexRx(inbound_rx, addr.clone());
     let net_tx = DuplexTx {

@@ -425,7 +425,11 @@ pub(crate) fn spawn_unordered<M: RemoteMessage>(
                                                     let mut guard = unacked.lock().await;
                                                     // Remove all entries with seq <= ack.
                                                     let retain: std::collections::BTreeMap<u64, session::QueuedMessage<M>> = guard.split_off(&(ack + 1));
-                                                    drop(std::mem::replace(&mut *guard, retain));
+                                                    let accepted = std::mem::replace(&mut *guard, retain);
+                                                    drop(guard);
+                                                    accepted.into_values().for_each(|queued| {
+                                                        queued.completion.accept();
+                                                    });
                                                 }
                                                 NetRxResponse::Reject(reason) => {
                                                     return Err(session::SendLoopError::Rejected(reason));
@@ -450,7 +454,7 @@ pub(crate) fn spawn_unordered<M: RemoteMessage>(
                                         seq,
                                         message,
                                         received_at,
-                                        return_channel,
+                                        completion,
                                     } = pending;
                                     let frame = Frame::Message(seq, message);
                                     let serialized = match serde_multipart::serialize_bincode(&frame) {
@@ -459,9 +463,7 @@ pub(crate) fn spawn_unordered<M: RemoteMessage>(
                                             tracing::error!(
                                                 "{log_id}: serialization error: {e}"
                                             );
-                                            // Drops return_channel; sender perceives success
-                                            // (preserving prior behavior of the dispatcher-side
-                                            // serialize path).
+                                            completion.accept();
                                             continue;
                                         }
                                     };
@@ -470,7 +472,7 @@ pub(crate) fn spawn_unordered<M: RemoteMessage>(
                                         message: serialized,
                                         received_at,
                                         sent_at: None,
-                                        return_channel,
+                                        completion,
                                     };
                                     let framed = queued.message.clone().framed();
                                     stream.write(framed).drive().await.map_err(|e| {
@@ -520,6 +522,7 @@ pub(crate) fn spawn_unordered<M: RemoteMessage>(
             }));
         }
 
+        let cleanup_rx = queue_rx.clone();
         // Drop our local receiver clone so the queue closes once the
         // dispatcher's sender (queue_tx) is dropped at shutdown.
         drop(queue_rx);
@@ -534,16 +537,17 @@ pub(crate) fn spawn_unordered<M: RemoteMessage>(
             "multi-stream dispatcher started"
         );
 
-        while let Some((message, return_channel, received_at)) = receiver.recv().await {
+        while let Some((message, completion, received_at)) = receiver.recv().await {
             let pending = session::PendingMessage {
                 seq: next_seq,
                 message,
                 received_at,
-                return_channel,
+                completion,
             };
             next_seq += 1;
 
-            if queue_tx.send(pending).await.is_err() {
+            if let Err(async_channel::SendError(pending)) = queue_tx.send(pending).await {
+                pending.completion.accept();
                 // All writers are gone.
                 break;
             }
@@ -553,6 +557,16 @@ pub(crate) fn spawn_unordered<M: RemoteMessage>(
         drop(queue_tx);
         for handle in writer_handles {
             let _ = handle.await;
+        }
+        while let Ok(pending) = cleanup_rx.try_recv() {
+            pending.completion.accept();
+        }
+        for queued in Arc::into_inner(unacked)
+            .expect("writer handles should drop their unacked clones")
+            .into_inner()
+            .into_values()
+        {
+            queued.completion.accept();
         }
 
         let reason = format!("{log_id}: dispatcher closed");
@@ -731,8 +745,8 @@ fn spawn_inner<M: RemoteMessage>(link: impl Link) -> super::ChannelTx<M> {
             .drain(..)
             .chain(deliveries.outbox.deque.drain(..))
             .for_each(|queued| queued.try_return(send_error_reason.clone()));
-        while let Ok((msg, return_channel, _)) = receiver.try_recv() {
-            let _ = return_channel.send(SendError {
+        while let Ok((msg, completion, _)) = receiver.try_recv() {
+            completion.reject(SendError {
                 error: ChannelError::Closed,
                 message: msg,
                 reason: send_error_reason.clone(),
@@ -2451,11 +2465,9 @@ mod tests {
             let tx = channel::dial::<u64>(addr).unwrap();
             drop(rx);
 
-            let (return_tx, return_rx) = oneshot::channel();
-            tx.try_post(123, return_tx);
             assert_matches!(
-                return_rx.await,
-                Ok(SendError {
+                tx.try_post(123).await,
+                Err(SendError {
                     error: ChannelError::Closed,
                     message: 123,
                     ..
@@ -2526,11 +2538,9 @@ mod tests {
             let tx = channel::dial::<u64>(addr).unwrap();
             drop(rx);
 
-            let (return_tx, return_rx) = oneshot::channel();
-            tx.try_post(123, return_tx);
             assert_matches!(
-                return_rx.await,
-                Ok(SendError {
+                tx.try_post(123).await,
+                Err(SendError {
                     error: ChannelError::Closed,
                     message: 123,
                     ..
@@ -2597,10 +2607,8 @@ mod tests {
         }
         // Bigger than the default size will fail.
         {
-            let (return_channel, return_receiver) = oneshot::channel();
             let message = "a".repeat(default_size_in_bytes + 1024);
-            tx.try_post(message.clone(), return_channel);
-            let returned = return_receiver.await.unwrap();
+            let returned = tx.try_post(message.clone()).await.unwrap_err();
             assert_eq!(message, returned.message);
         }
     }
@@ -2620,13 +2628,10 @@ mod tests {
         let (addr, mut net_rx) =
             server::serve::<u64>(ChannelAddr::Tcp("[::1]:0".parse().unwrap()), None).unwrap();
         let net_tx = channel::dial::<u64>(addr.clone()).unwrap();
-        let (tx, rx) = oneshot::channel();
-        net_tx.try_post(1, tx);
+        let receipt = net_tx.try_post(1);
         assert_eq!(net_rx.recv().await.unwrap(), 1);
         drop(net_rx);
-        // Using `is_err` to confirm the message is delivered/acked is confusing,
-        // but is correct. See how send is implemented: https://fburl.com/code/ywt8lip2
-        assert!(rx.await.is_err());
+        assert!(receipt.await.is_ok());
     }
 
     #[async_timed_test(timeout_secs = 60)]
@@ -2662,11 +2667,9 @@ mod tests {
             let tx = channel::dial::<u64>(local_addr).unwrap();
             drop(rx);
 
-            let (return_tx, return_rx) = oneshot::channel();
-            tx.try_post(123, return_tx);
             assert_matches!(
-                return_rx.await,
-                Ok(SendError {
+                tx.try_post(123).await,
+                Err(SendError {
                     error: ChannelError::Closed,
                     message: 123,
                     ..
@@ -3279,8 +3282,7 @@ mod tests {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(1));
         let mut tx_receiver = tx.status().clone();
-        let (return_channel, _return_receiver) = oneshot::channel();
-        tx.try_post(123, return_channel);
+        let _receipt = tx.try_post(123);
         verify_tx_closed(&mut tx_receiver, "failed to deliver message within timeout").await;
     }
 
@@ -3587,8 +3589,7 @@ mod tests {
 
         // Verify sent-and-ack a message. This is necessary for the test to
         // trigger a connection.
-        let (return_channel_tx, return_channel_rx) = oneshot::channel();
-        net_tx.try_post(100, return_channel_tx);
+        let receipt = net_tx.try_post(100);
         let (mut reader, mut writer) = take_receiver(&receiver_storage).await;
         verify_stream(&mut reader, &[(0u64, 100u64)], None, line!()).await;
         // ack it
@@ -3602,10 +3603,7 @@ mod tests {
         .map_err(|(_, e)| e)
         .unwrap();
         // confirm Tx received ack
-        //
-        // Using `is_err` to confirm the message is delivered/acked is confusing,
-        // but is correct. See how send is implemented: https://fburl.com/code/ywt8lip2
-        assert!(return_channel_rx.await.is_err());
+        assert!(receipt.await.is_ok());
 
         // Now fake an unknown delivery for Tx:
         // Although Tx did not actually send seq=1, we still ack it from Rx to
@@ -3621,17 +3619,14 @@ mod tests {
         .map_err(|(_, e)| e)
         .unwrap();
 
-        let (return_channel_tx, return_channel_rx) = oneshot::channel();
-        net_tx.try_post(101, return_channel_tx);
+        let receipt = net_tx.try_post(101);
         // Verify the message is sent to Rx.
         verify_message(&mut reader, (1u64, 101u64), line!()).await;
         // although we did not ack the message after it is sent, since we already
         // acked it previously, Tx will treat it as acked, and considered the
         // message delivered successfully.
         //
-        // Using `is_err` to confirm the message is delivered/acked is confusing,
-        // but is correct. See how send is implemented: https://fburl.com/code/ywt8lip2
-        assert!(return_channel_rx.await.is_err());
+        assert!(receipt.await.is_ok());
     }
 
     async fn verify_ack_exceeded_limit(disconnect_before_ack: bool) {
