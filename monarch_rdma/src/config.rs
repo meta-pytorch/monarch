@@ -79,4 +79,14 @@ declare_attrs! {
         Some("rdma_qp_init_timeout".to_string()),
     ))
     pub attr RDMA_QP_INIT_TIMEOUT: Duration = Duration::from_secs(30);
+
+    /// Default GID index for mlx5 NICs (else 3). `MlxDevice::apply_config_defaults`
+    /// overrides it with the auto-detected routable RoCE v2 GID when one is found,
+    /// so this value applies when auto-detection finds nothing (e.g. an
+    /// InfiniBand-mode mlx5 NIC).
+    @meta(CONFIG = ConfigAttr::new(
+        Some("MONARCH_RDMA_IBV_DEFAULT_GID_INDEX".to_string()),
+        Some("rdma_ibv_default_gid_index".to_string()),
+    ))
+    pub attr RDMA_IBV_DEFAULT_GID_INDEX: Option<u8> = None;
 }

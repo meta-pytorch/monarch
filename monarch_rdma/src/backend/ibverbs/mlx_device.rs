@@ -15,6 +15,8 @@ use typeuri::Named;
 use super::device::IbvContext;
 use super::device::IbvDeviceImpl;
 use super::mlx_domain::MlxDomain;
+use super::primitives::Gid;
+use super::primitives::GidType;
 use super::primitives::IbvConfig;
 use crate::register_ibv_device_impl;
 
@@ -42,7 +44,13 @@ impl IbvDeviceImpl for MlxDevice {
         queried && attr.vendor_id == MELLANOX_VENDOR_ID
     }
 
-    fn apply_config_defaults(_config: &mut IbvConfig) {}
+    fn apply_config_defaults(config: &mut IbvConfig) {
+        // Override the default GID index with the auto-detected routable RoCE v2
+        // (Global-scoped) GID when one is present.
+        if let Some(gid_index) = Gid::index_of::<MlxDevice>(GidType::Global) {
+            config.gid_index = gid_index;
+        }
+    }
 }
 
 register_ibv_device_impl!(MlxDevice);
