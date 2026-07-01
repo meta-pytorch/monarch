@@ -298,7 +298,7 @@ async fn main() -> Result<ExitCode> {
         "  - Diagnose:      cargo run -p hyperactor_mesh_admin_tui_lib --bin hyperactor_mesh_admin_tui -- --addr {} --diagnose",
         mesh_admin_url
     );
-    let host_addr = &host_mesh.hosts()[0];
+    let host_addr = &host_mesh.host_addrs()[0];
     println!(
         "  - Hyper list:    buck2 run fbcode//monarch/hyper:hyper -- list {}\n                   cargo run --manifest-path hyper/Cargo.toml -- list {}",
         host_addr, host_addr

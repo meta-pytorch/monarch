@@ -16,7 +16,10 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::hash_map::DefaultHasher;
 use std::fmt;
+use std::hash::Hash;
+use std::hash::Hasher;
 use std::pin::Pin;
 use std::sync::OnceLock;
 
@@ -37,9 +40,11 @@ use hyperactor::Proc;
 use hyperactor::ProcAddr;
 use hyperactor::RefClient;
 use hyperactor::RemoteEndpoint as _;
+use hyperactor::Uid;
 use hyperactor::actor::ActorStatus;
 use hyperactor::context;
 use hyperactor::gateway::GatewayServeHandle;
+use hyperactor::id::Label;
 use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::Attrs;
 use serde::Deserialize;
@@ -47,10 +52,12 @@ use serde::Serialize;
 use tokio::time::Duration;
 use typeuri::Named;
 
+use crate::StatusOverlay;
 use crate::bootstrap;
 use crate::bootstrap::BootstrapCommand;
 use crate::bootstrap::BootstrapProcConfig;
 use crate::bootstrap::BootstrapProcManager;
+use crate::bootstrap::ProcBind;
 use crate::config_dump::ConfigDump;
 use crate::config_dump::ConfigDumpResult;
 use crate::host::Host;
@@ -60,6 +67,7 @@ use crate::host::LocalProcManager;
 use crate::host::SERVICE_PROC_NAME;
 use crate::host::SingleTerminate;
 use crate::mesh_id::HostMeshId;
+use crate::mesh_id::ProcMeshId;
 use crate::mesh_id::ResourceId;
 use crate::proc_agent::ProcAgent;
 use crate::pyspy::PySpyDump;
@@ -68,6 +76,7 @@ use crate::pyspy::PySpyProfileWorker;
 use crate::pyspy::PySpyWorker;
 use crate::resource;
 use crate::resource::ProcSpec;
+use crate::resource::Status;
 
 pub(crate) type ProcManagerSpawnFuture =
     Pin<Box<dyn Future<Output = anyhow::Result<ActorHandle<ProcAgent>>> + Send>>;
@@ -173,10 +182,53 @@ impl HostAgentMode {
     }
 }
 
+/// Derive the proc resource name for the proc at the given mesh `rank`.
+///
+/// `rank` is the proc's absolute rank in the proc mesh — its position in the
+/// `host_extent ⊕ per_host` region, i.e. [`crate::proc_mesh::ProcRef::create_rank`].
+/// This is the proc's first-class, mesh-level identity; the `(host, per-host
+/// slot)` layout is an implementation detail of how procs are placed and is
+/// deliberately NOT part of the name. Both the caller and the receiving
+/// [`HostAgent`] derive the same name from `rank`, so the caller can construct
+/// [`crate::proc_mesh::ProcRef`]s before the casted `CreateOrUpdate<ProcSpec>`
+/// messages arrive. The id is a stable function of the proc mesh id and rank,
+/// so every proc in the mesh has a distinct id.
+pub(crate) fn proc_name(proc_mesh_id: &ProcMeshId, rank: usize) -> ResourceId {
+    let label = Label::strip(&format!(
+        "{}-{}",
+        proc_mesh_id
+            .display_label()
+            .map(|label| label.as_str())
+            .unwrap_or("unnamed"),
+        rank
+    ));
+
+    match proc_mesh_id.uid() {
+        Uid::Singleton(_) => ResourceId::singleton(label),
+        Uid::Instance(_, _) => {
+            let mut hasher = DefaultHasher::new();
+            proc_mesh_id.hash(&mut hasher);
+            rank.hash(&mut hasher);
+            ResourceId::new(
+                Uid::Instance(hasher.finish(), Some(label.clone())),
+                Some(label),
+            )
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct ProcCreationState {
     pub(crate) rank: usize,
     pub(crate) host_mesh_id: Option<HostMeshId>,
+    /// The proc mesh this proc belongs to. Used to scope per-mesh queries like
+    /// `StreamState`, since a host agent can hold procs from multiple meshes.
+    /// Always set for procs spawned through a proc mesh (the cast `SpawnProcs`
+    /// path populates it via `ProcSpec`). `None` only for procs created off that
+    /// path (e.g. the point-to-point `CreateOrUpdate` used by tests/admin),
+    /// which belong to no queryable mesh and are intentionally excluded from
+    /// per-mesh queries.
+    pub(crate) proc_mesh_id: Option<ProcMeshId>,
     pub(crate) created: Result<(ProcAddr, ActorRef<ProcAgent>), HostError>,
     /// "Owner is alive" deadline communicated by the controller via
     /// `KeepaliveGetState`. The host's `SelfCheck` reaper compares against this
@@ -287,6 +339,7 @@ impl fmt::Debug for DrainWorker {
 #[hyperactor::export(
     handlers=[
         resource::CreateOrUpdate<ProcSpec>,
+        SpawnProcs,
         resource::Stop,
         resource::GetState<ProcState>,
         resource::KeepaliveGetState<ProcState>,
@@ -690,6 +743,140 @@ impl fmt::Debug for HostAgent {
     }
 }
 
+/// Cast to every HostAgent to spawn a mesh's per-host proc slots in one message.
+/// Identity is positional: each recipient derives its procs' ids/ranks from its
+/// stamped `rank` plus `proc_mesh_id`/`num_per_host`, since a shared cast payload
+/// can't carry a per-host `id` (unlike `CreateOrUpdate`).
+#[derive(
+    Serialize,
+    Deserialize,
+    Clone,
+    Debug,
+    Named,
+    Handler,
+    RefClient,
+    HandleClient
+)]
+pub struct SpawnProcs {
+    /// This host's ordinal within the cast region, stamped by the cast layer.
+    pub rank: resource::Rank,
+    /// Proc mesh id used to deterministically derive per-host proc ids.
+    pub proc_mesh_id: ProcMeshId,
+    /// Number of procs to spawn on this host.
+    pub num_per_host: usize,
+    /// Config values to set on each spawned proc's global config, at the
+    /// `ClientOverride` layer.
+    pub client_config_override: Attrs,
+    /// The HostMesh that owns these procs (used by `DrainHost` for selective
+    /// drain).
+    pub host_mesh_id: Option<HostMeshId>,
+    /// Bootstrap command to use when no per-rank override applies.
+    pub default_bootstrap_command: Option<BootstrapCommand>,
+    /// Optional per-proc CPU/NUMA binding, indexed by per-host slot. `HostMesh::spawn`
+    /// already rejects a length that doesn't match the per-host extent, so the
+    /// handler is deliberately tolerant of a missing slot (including an index
+    /// past the vec's length): it spawns with no binding rather than panicking.
+    pub proc_bind: Option<Vec<ProcBind>>,
+    /// Optional per-rank bootstrap overrides, indexed by absolute proc rank
+    /// (`num_per_host * host_rank + per_host_rank`).
+    pub bootstrap_commands: Option<Vec<Option<BootstrapCommand>>>,
+    /// Spawn ack: the host posts one multi-rank overlay covering all of its
+    /// procs; the caller reduces these per-host overlays into a `StatusMesh`
+    /// barrier.
+    #[serde(default)]
+    pub status_reply: Option<PortRef<crate::StatusOverlay>>,
+}
+wirevalue::register_type!(SpawnProcs);
+
+#[async_trait]
+impl Handler<SpawnProcs> for HostAgent {
+    #[tracing::instrument("HostAgent::SpawnProcs", level = "info", skip_all, fields(host_rank, num = spawn.num_per_host))]
+    async fn handle(&mut self, cx: &Context<Self>, spawn: SpawnProcs) -> anyhow::Result<()> {
+        let host_rank = spawn
+            .rank
+            .0
+            .expect("cast layer stamps the rank before delivery");
+
+        tracing::Span::current().record("host_rank", host_rank);
+
+        let mut spawn_result = Ok(());
+
+        for per_host_rank in 0..spawn.num_per_host {
+            let rank = spawn.num_per_host * host_rank + per_host_rank;
+
+            let id = proc_name(&spawn.proc_mesh_id, rank);
+
+            let bootstrap_command = spawn
+                .bootstrap_commands
+                .as_ref()
+                .and_then(|commands| commands.get(rank).cloned().flatten())
+                .or_else(|| spawn.default_bootstrap_command.clone());
+
+            let proc_bind = spawn
+                .proc_bind
+                .as_ref()
+                .and_then(|binds| binds.get(per_host_rank).cloned());
+
+            if let Err(e) = <Self as Handler<resource::CreateOrUpdate<ProcSpec>>>::handle(
+                self,
+                cx,
+                resource::CreateOrUpdate {
+                    id,
+                    rank: resource::Rank::new(rank),
+                    spec: ProcSpec {
+                        client_config_override: spawn.client_config_override.clone(),
+                        proc_bind,
+                        bootstrap_command,
+                        host_mesh_id: spawn.host_mesh_id.clone(),
+                        proc_mesh_id: Some(spawn.proc_mesh_id.clone()),
+                    },
+                },
+            )
+            .await
+            {
+                // Stop spawning, but fall through to report the result below.
+                spawn_result = Err(e);
+                break;
+            }
+        }
+
+        // Report this host's full rank range in a single multi-rank overlay. The
+        // caller's readiness barrier only completes once *every* rank has moved
+        // off NotExist, so on the error path the ranks we never created are
+        // reported as Failed too — otherwise the caller would wait out its whole
+        // idle timeout instead of failing fast on the error we return below.
+        if let Some(reply) = &spawn.status_reply {
+            let mut runs = Vec::with_capacity(spawn.num_per_host);
+
+            for per_host_rank in 0..spawn.num_per_host {
+                let rank = spawn.num_per_host * host_rank + per_host_rank;
+
+                let id = proc_name(&spawn.proc_mesh_id, rank);
+
+                let status = match self.proc_rank_status(&id).await {
+                    (resolved, status) if resolved != usize::MAX => status,
+                    // Unknown to this host: not yet attempted, or its creation
+                    // errored before being recorded. Mark Failed on the error
+                    // path; on success every rank is created so this is moot.
+                    _ => match &spawn_result {
+                        Err(e) => Status::Failed(e.to_string()),
+                        Ok(()) => continue,
+                    },
+                };
+
+                runs.push((rank..(rank + 1), status));
+            }
+
+            reply.post(cx, crate::StatusOverlay::try_from_runs(runs)?);
+        }
+
+        spawn_result
+    }
+}
+
+// Point-to-point proc spawn by carried `id`. The shared per-proc creation path:
+// invoked directly (e.g. unit/admin tests) and once per slot by the `SpawnProcs`
+// cast handler, which derives each proc's id/rank from the host's stamped rank.
 #[async_trait]
 impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
     #[tracing::instrument("HostAgent::CreateOrUpdate", level = "info", skip_all, fields(id=%create_or_update.id))]
@@ -743,6 +930,7 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
             ProcCreationState {
                 rank,
                 host_mesh_id: create_or_update.spec.host_mesh_id.clone(),
+                proc_mesh_id: create_or_update.spec.proc_mesh_id.clone(),
                 created,
                 expiry_time: None,
             },
@@ -828,17 +1016,11 @@ impl Handler<resource::Stop> for HostAgent {
     }
 }
 
-#[async_trait]
-impl Handler<resource::GetRankStatus> for HostAgent {
-    async fn handle(
-        &mut self,
-        cx: &Context<Self>,
-        get_rank_status: resource::GetRankStatus,
-    ) -> anyhow::Result<()> {
-        use crate::StatusOverlay;
-        use crate::resource::Status;
-
-        let (rank, status) = match self.created.get(&get_rank_status.id) {
+impl HostAgent {
+    /// The `(rank, status)` for a created proc, clamped to the host's minimum
+    /// status. `rank == usize::MAX` means the proc is unknown to this host.
+    async fn proc_rank_status(&self, id: &ResourceId) -> (usize, Status) {
+        match self.created.get(id) {
             Some(ProcCreationState {
                 rank,
                 created: Ok((proc_id, _mesh_agent)),
@@ -856,7 +1038,18 @@ impl Handler<resource::GetRankStatus> for HostAgent {
                 ..
             }) => (*rank, Status::Failed(e.to_string())),
             None => (usize::MAX, Status::NotExist),
-        };
+        }
+    }
+}
+
+#[async_trait]
+impl Handler<resource::GetRankStatus> for HostAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        get_rank_status: resource::GetRankStatus,
+    ) -> anyhow::Result<()> {
+        let (rank, status) = self.proc_rank_status(&get_rank_status.id).await;
 
         let overlay = if rank == usize::MAX {
             StatusOverlay::new()
@@ -1396,59 +1589,59 @@ impl Handler<resource::StreamState<ProcState>> for HostAgent {
         cx: &Context<Self>,
         stream_state: resource::StreamState<ProcState>,
     ) -> anyhow::Result<()> {
-        // TODO: register `subscriber` for ongoing updates. For now send the
-        // current state once so the controller has an initial snapshot.
-        let state = match self.created.get(&stream_state.id) {
-            Some(ProcCreationState {
-                rank,
-                created: Ok((proc_id, mesh_agent)),
-                ..
-            }) => {
-                let (raw_status, proc_status, bootstrap_command) = match self.host() {
-                    Some(host) => {
-                        let (status, proc_status) = host.proc_status(proc_id).await;
-                        (status, proc_status, host.bootstrap_command())
-                    }
-                    None => (resource::Status::Unknown, None, None),
-                };
-                let status = raw_status.clamp_min(self.min_proc_status());
-                resource::State {
-                    id: stream_state.id.clone(),
-                    status,
-                    state: Some(ProcState {
-                        proc_id: proc_id.clone(),
-                        create_rank: *rank,
-                        mesh_agent: mesh_agent.clone(),
-                        bootstrap_command,
-                        proc_status,
-                    }),
-                    generation: 0,
-                    timestamp: std::time::SystemTime::now(),
-                }
-            }
-            Some(ProcCreationState {
-                created: Err(e), ..
-            }) => resource::State {
-                id: stream_state.id.clone(),
-                status: resource::Status::Failed(e.to_string()),
-                state: None,
-                generation: 0,
-                timestamp: std::time::SystemTime::now(),
-            },
-            None => resource::State {
-                id: stream_state.id.clone(),
-                status: resource::Status::NotExist,
-                state: None,
-                generation: 0,
-                timestamp: std::time::SystemTime::now(),
-            },
-        };
-
+        // One cast delivers a single StreamState per host agent. Stream a state
+        // for each proc this host owns that belongs to the subscribing mesh.
+        // TODO: register `subscriber` for ongoing updates.
         let mut headers = Flattrs::new();
         headers.set(crate::proc_agent::STREAM_STATE_SUBSCRIBER, true);
-        stream_state
-            .subscriber
-            .post_with_headers(cx, headers, state);
+
+        for (id, proc) in self.created.iter() {
+            // Skip procs that don't belong to the subscribing proc mesh.
+            if !proc
+                .proc_mesh_id
+                .as_ref()
+                .is_some_and(|mesh| mesh.resource_id() == &stream_state.id)
+            {
+                continue;
+            }
+
+            let state = match &proc.created {
+                Ok((proc_id, mesh_agent)) => {
+                    let (raw_status, proc_status, bootstrap_command) = match self.host() {
+                        Some(host) => {
+                            let (status, proc_status) = host.proc_status(proc_id).await;
+                            (status, proc_status, host.bootstrap_command())
+                        }
+                        None => (resource::Status::Unknown, None, None),
+                    };
+                    let status = raw_status.clamp_min(self.min_proc_status());
+                    resource::State {
+                        id: id.clone(),
+                        status,
+                        state: Some(ProcState {
+                            proc_id: proc_id.clone(),
+                            create_rank: proc.rank,
+                            mesh_agent: mesh_agent.clone(),
+                            bootstrap_command,
+                            proc_status,
+                        }),
+                        generation: 0,
+                        timestamp: std::time::SystemTime::now(),
+                    }
+                }
+                Err(e) => resource::State {
+                    id: id.clone(),
+                    status: resource::Status::Failed(e.to_string()),
+                    state: None,
+                    generation: 0,
+                    timestamp: std::time::SystemTime::now(),
+                },
+            };
+
+            stream_state
+                .subscriber
+                .post_with_headers(cx, headers.clone(), state);
+        }
         Ok(())
     }
 }
@@ -2107,6 +2300,80 @@ mod tests {
                 "timed out waiting for service proc watermark > 0",
             );
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+
+    /// A single `SpawnProcs` message at host rank 0 fans out into
+    /// `num_per_host` procs, each created under the id derived from
+    /// `proc_name(&proc_mesh_id, rank)`. All of them should come up Running.
+    #[tokio::test]
+    async fn test_spawn_procs_many_per_host() {
+        let host = Host::new(
+            BootstrapProcManager::new(BootstrapCommand::test()).unwrap(),
+            ChannelTransport::Unix.any(),
+        )
+        .await
+        .unwrap();
+
+        let system_proc = host.system_proc().clone();
+        let host_agent = system_proc
+            .spawn_with_uid(
+                Uid::singleton(Label::new(HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
+                HostAgent::new(HostAgentMode::Process {
+                    host,
+                    shutdown_tx: None,
+                }),
+            )
+            .unwrap();
+
+        let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
+        let client = client_proc.client("client");
+
+        let proc_mesh_id = ProcMeshId::singleton(Label::new("spawn-many").unwrap());
+        let num_per_host = 4;
+
+        // Send a single point-to-point SpawnProcs (not a cast) to the host
+        // agent at host rank 0.
+        let agent_ref: ActorRef<HostAgent> = host_agent.bind();
+        agent_ref.post(
+            &client,
+            SpawnProcs {
+                rank: resource::Rank::new(0),
+                proc_mesh_id: proc_mesh_id.clone(),
+                num_per_host,
+                client_config_override: Attrs::new(),
+                host_mesh_id: None,
+                default_bootstrap_command: None,
+                proc_bind: None,
+                bootstrap_commands: None,
+                status_reply: None,
+            },
+        );
+
+        // Each of the num_per_host procs should reach Running.
+        for rank in 0..num_per_host {
+            let id = proc_name(&proc_mesh_id, rank);
+            let (port, mut rx) = client.open_port::<crate::StatusOverlay>();
+            host_agent
+                .wait_rank_status(&client, id.clone(), resource::Status::Running, port.bind())
+                .await
+                .unwrap();
+            let overlay = tokio::time::timeout(Duration::from_secs(30), rx.recv())
+                .await
+                .unwrap_or_else(|_| panic!("proc {rank} did not reach Running"))
+                .expect("reply channel closed");
+            assert!(
+                !overlay.is_empty(),
+                "expected non-empty Running overlay for proc {rank}",
+            );
+
+            assert_matches!(
+                host_agent.get_state(&client, id).await.unwrap(),
+                resource::State {
+                    status: resource::Status::Running,
+                    ..
+                }
+            );
         }
     }
 }
