@@ -158,6 +158,8 @@ use crate::channel::ChannelAddr;
 use crate::channel::ChannelError;
 use crate::channel::ChannelTransport;
 use crate::channel::CloseReason;
+use crate::channel::CompletionSink;
+use crate::channel::SendCompletion;
 use crate::channel::SendError;
 use crate::channel::SendErrorReason;
 use crate::channel::TxStatus;
@@ -1554,52 +1556,49 @@ impl MailboxClient {
             Buffer::new(move |envelope, return_handle| {
                 let tx = Arc::clone(&tx);
                 let addr = addr.clone();
-                let (return_channel, return_receiver) =
-                    oneshot::channel::<SendError<MessageEnvelope>>();
                 // Set up for delivery failure.
                 let return_handle_0 = return_handle.clone();
                 let completed = completed.clone();
                 let completed_notify = completed_notify.clone();
-                tokio::spawn(async move {
-                    match return_receiver.await {
-                        Ok(SendError {
-                            error,
-                            message,
-                            reason,
-                        }) => {
-                            let target = message.dest().clone();
-                            let reason_text = reason
-                                .as_ref()
-                                .map(ToString::to_string)
-                                .unwrap_or_else(|| "channel closed".to_owned());
-                            let reason = match reason {
-                                Some(SendErrorReason::OversizedFrame { len, max }) => {
-                                    TransportFailureReason::OversizedFrame { len, max }
-                                }
-                                Some(SendErrorReason::Other(_)) | None => {
-                                    TransportFailureReason::ChannelClosed { addr }
-                                }
-                            };
-                            let failure = DeliveryFailure::new(UndeliverableReason::Transport(
-                                TransportFailure::new(target, reason.clone()),
-                            ));
-                            tracing::debug!(
-                                %error,
-                                send_error_reason = %reason_text,
-                                ?reason,
-                                "failed to enqueue in mailbox client while processing buffer",
-                            );
-                            message.undeliverable(failure, return_handle_0);
+                let completion =
+                    CompletionSink::callback(move |completion: SendCompletion<MessageEnvelope>| {
+                        match completion {
+                            SendCompletion::Rejected(SendError {
+                                error,
+                                message,
+                                reason,
+                            }) => {
+                                let target = message.dest().clone();
+                                let reason_text = reason
+                                    .as_ref()
+                                    .map(ToString::to_string)
+                                    .unwrap_or_else(|| "channel closed".to_owned());
+                                let reason = match reason {
+                                    Some(SendErrorReason::OversizedFrame { len, max }) => {
+                                        TransportFailureReason::OversizedFrame { len, max }
+                                    }
+                                    Some(SendErrorReason::Other(_)) | None => {
+                                        TransportFailureReason::ChannelClosed { addr }
+                                    }
+                                };
+                                let failure = DeliveryFailure::new(UndeliverableReason::Transport(
+                                    TransportFailure::new(target, reason.clone()),
+                                ));
+                                tracing::debug!(
+                                    %error,
+                                    send_error_reason = %reason_text,
+                                    ?reason,
+                                    "failed to enqueue in mailbox client while processing buffer",
+                                );
+                                message.undeliverable(failure, return_handle_0);
+                            }
+                            SendCompletion::Accepted => {}
                         }
-                        Err(_) => {
-                            // Oneshot sender was dropped — message was acked.
-                        }
-                    }
-                    completed.fetch_add(1, Ordering::SeqCst);
-                    completed_notify.notify_waiters();
-                });
+                        completed.fetch_add(1, Ordering::SeqCst);
+                        completed_notify.notify_waiters();
+                    });
                 // Send the message for transmission.
-                tx.try_post(envelope, return_channel);
+                tx.do_post(envelope, completion);
                 future::ready(())
             })
         };
@@ -4011,18 +4010,12 @@ mod tests {
 
     #[async_trait]
     impl channel::Tx<MessageEnvelope> for ClosedChannelTx {
-        fn do_post(
-            &self,
-            message: MessageEnvelope,
-            return_channel: Option<oneshot::Sender<SendError<MessageEnvelope>>>,
-        ) {
-            if let Some(return_channel) = return_channel {
-                let _ = return_channel.send(SendError {
-                    error: ChannelError::Closed,
-                    message,
-                    reason: None,
-                });
-            }
+        fn do_post(&self, message: MessageEnvelope, completion: CompletionSink<MessageEnvelope>) {
+            completion.reject(SendError {
+                error: ChannelError::Closed,
+                message,
+                reason: None,
+            });
         }
 
         fn addr(&self) -> ChannelAddr {
