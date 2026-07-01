@@ -742,9 +742,10 @@ where
         //
         // Bind the handler port before handing the `PortRef` to the agent.
         // The later external bind races against `init`, but both calls bind
-        // the same well-known handler port and are idempotent.
-        self.mesh
-            .subscribe_to_stream(this, this.port().bind().unsplit())?;
+        // the same well-known handler port and are idempotent. No `.unsplit()`:
+        // the subscriber port is split by the cast tree so streamed states
+        // reduce up it (see the `StreamState` cast).
+        self.mesh.subscribe_to_stream(this, this.port().bind())?;
 
         // Start the monitor task.
         self.monitor = Some(());
@@ -1340,18 +1341,20 @@ impl Controlled for ProcMeshRef {
         cx: &impl context::Actor,
         subscriber: hyperactor::PortRef<resource::State<Self::StateInner>>,
     ) -> anyhow::Result<()> {
-        // Send one StreamState per proc to its host agent.
-        for proc_id in self.proc_ids() {
-            let proc_resource_id = ResourceId::new(proc_id.uid().clone(), proc_id.label().cloned());
-            let host = crate::host_mesh::HostRef::new(proc_id.addr().clone());
-            host.mesh_agent().post(
-                cx,
-                resource::StreamState::<Self::StateInner> {
-                    id: proc_resource_id,
-                    subscriber: subscriber.clone(),
-                },
-            );
-        }
+        // A `ProcMeshController` is only ever created for host-backed proc
+        // meshes (host_mesh.rs spawn path), so a host mesh should always be
+        // present. Surface a violation as an error rather than panicking — this
+        // runs from `init`, so a panic would abort the actor. Cast a single
+        // StreamState to the host-agent mesh so each host streams its procs'
+        // state back through the cast tree (fanning in at cast actor 0) instead
+        // of every host dialing the subscriber directly.
+        let host_mesh = self.hosts().ok_or_else(|| {
+            anyhow::anyhow!(
+                "ProcMeshController has no host mesh; it must run on a host-backed proc mesh"
+            )
+        })?;
+
+        host_mesh.cast_stream_state(cx, ProcMeshRef::id(self).resource_id().clone(), subscriber)?;
         Ok(())
     }
 
@@ -1361,8 +1364,7 @@ impl Controlled for ProcMeshRef {
         msg: resource::WaitRankStatus,
     ) -> anyhow::Result<()> {
         for proc_id in self.proc_ids() {
-            let host = crate::host_mesh::HostRef::new(proc_id.addr().clone());
-            host.mesh_agent().post(cx, msg.clone());
+            crate::host_mesh::host_agent_ref(proc_id.addr().clone()).post(cx, msg.clone());
         }
         Ok(())
     }
