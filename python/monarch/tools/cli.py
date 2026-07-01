@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 from monarch.actor import shutdown_context
+from monarch.monarch_dashboard.relay import DEFAULT_DASHBOARD_PORT
 from monarch.tools.commands import (
     apply_job,
     context_create,
@@ -236,6 +237,66 @@ class KillCmd:
         print("Killed job")
 
 
+class DashboardCmd:
+    def add_arguments(self, subparser: argparse.ArgumentParser) -> None:
+        subparser.set_defaults(_dashboard_subparser=subparser)
+        sub = subparser.add_subparsers(title="DASHBOARD COMMANDS", dest="dashboard_cmd")
+        mast = sub.add_parser(
+            "mast",
+            help="Relay an existing MAST job's Monarch dashboard through this host",
+        )
+        mast.add_argument(
+            "job",
+            type=str,
+            help="Direct MAST job name.",
+        )
+        mast.add_argument(
+            "--role-name",
+            type=str,
+            default=None,
+            help=(
+                "MAST task group / Monarch host mesh role that hosts the dashboard. "
+                "If omitted, Monarch probes every role and uses the single reachable dashboard."
+            ),
+        )
+        mast.add_argument(
+            "--dashboard-port",
+            type=int,
+            default=DEFAULT_DASHBOARD_PORT,
+            help="Dashboard port on the MAST task.",
+        )
+        mast.set_defaults(dashboard_func=self._run_mast)
+
+    def run(self, args: argparse.Namespace) -> None:
+        if not hasattr(args, "dashboard_func"):
+            args._dashboard_subparser.print_help()
+            sys.exit(1)
+        args.dashboard_func(args)
+
+    def _run_mast(self, args: argparse.Namespace) -> None:
+        try:
+            from monarch.monarch_dashboard.meta.mast import (
+                MastDashboardUnavailableError,
+                serve_mast_dashboard_relay,
+            )
+        except ImportError:
+            sys.stderr.write(
+                "Error: `monarch-launch dashboard mast` is only available in "
+                "Meta-internal builds.\n"
+            )
+            sys.exit(1)
+
+        try:
+            serve_mast_dashboard_relay(
+                job_name=args.job,
+                role_name=args.role_name,
+                dashboard_port=args.dashboard_port,
+            )
+        except MastDashboardUnavailableError as error:
+            sys.stderr.write(f"Error: {error}\n")
+            sys.exit(1)
+
+
 def _load_skill_md() -> str:
     """Load SKILL.md as the help text."""
     skill_file = importlib.resources.files("monarch.tools").joinpath("SKILL.md")
@@ -265,6 +326,7 @@ def get_parser() -> argparse.ArgumentParser:
         ),
         ("kill", KillCmd(), "Kill the active job"),
         ("debug", DebugCmd(), "Connect to the debug server"),
+        ("dashboard", DashboardCmd(), "Serve Monarch dashboards"),
     ]:
         cmd_parser = subparser.add_parser(cmd_name, help=cmd_help)
         cmd.add_arguments(cmd_parser)

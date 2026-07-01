@@ -27,6 +27,40 @@ class TestCli(unittest.TestCase):
         args = parser.parse_args(["context", "use", "myjob"])
         self.assertEqual(args.name, "myjob")
 
+    def test_dashboard_mast_command(self) -> None:
+        parser = get_parser()
+        args = parser.parse_args(["dashboard", "mast", "sample-mast-job"])
+        self.assertEqual(args.job, "sample-mast-job")
+        self.assertIsNone(args.role_name)
+        self.assertEqual(8265, args.dashboard_port)
+        self.assertFalse(hasattr(args, "relay_port"))
+
+    def test_dashboard_mast_accepts_role_name(self) -> None:
+        parser = get_parser()
+        args = parser.parse_args(
+            [
+                "dashboard",
+                "mast",
+                "sample-mast-job",
+                "--role-name",
+                "worker",
+            ]
+        )
+        self.assertEqual("worker", args.role_name)
+
+    def test_dashboard_mast_accepts_dashboard_port(self) -> None:
+        parser = get_parser()
+        args = parser.parse_args(
+            [
+                "dashboard",
+                "mast",
+                "sample-mast-job",
+                "--dashboard-port",
+                "9000",
+            ]
+        )
+        self.assertEqual(9000, args.dashboard_port)
+
     def test_exec_run_all_default(self) -> None:
         parser = get_parser()
         args = parser.parse_args(["exec", "echo", "hi"])
