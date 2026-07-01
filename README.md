@@ -255,6 +255,53 @@ pip install -e .
 USE_TENSOR_ENGINE=0 pip install -e .
 ```
 
+### Building a Docker Image from Source
+
+To build a Docker image that bundles your from-source build of Monarch — for
+example, to run Monarch on a Kubernetes cluster — first build a wheel, then build
+the image from that wheel. This picks up changes to both the Rust and Python
+code.
+
+```bash
+# Make sure to build for python 3.12 since the pytorch base image uses that python version
+uv python pin 3.12
+# Build the binary distribution, outputs to "dist/" directory.
+# --no-build-isolation allows using cached rust builds which speeds up subsequent
+# iterations.
+uv build --no-build-isolation --wheel
+
+# With docker:
+# Build and tag a docker image with your build of monarch. You can update the
+# PYTORCH_TAG to use a different base image depending on your needs.
+# The nightly dockerfile is used because it uses the package you already built,
+# rather than downloading from PyPI. The wheels are supplied through the
+# "monarch-wheels" named build context, which the Dockerfile copies from.
+docker build -f Dockerfile.nightly \
+  -t $USER/monarch:local-tag \
+  --build-arg PYTORCH_TAG=2.12.0.dev20260224-cuda12.8-cudnn9-runtime \
+  --build-context monarch-wheels=dist \
+  .
+
+# Push so it's available to the kubernetes cluster.
+# Either (a) push to a container registry so your cluster can access it.
+# Might be slow based on your upload speed and the size of the container.
+docker push $USER/monarch:latest
+# Or (b) if you have a fully local kubernetes cluster you can change it to
+# imagePullPolicy: Never in the manifest and it'll use the image locally. This
+# is the fastest iteration speed.
+
+# With podman + kind:
+# Same build command, replace "docker" with "podman"
+# Save image to archive
+podman save localhost/$USER/monarch:local-tag -o /tmp/monarch-image
+# Then push to your kind cluster for local dev:
+KIND_EXPERIMENTAL_PROVIDER=podman kind load image-archive /tmp/monarch-image -n monarch-cluster
+```
+
+Then point your deployment at the new image. Make sure to prepend the registry
+you used for docker login, like `ghcr.io` or `docker.io`, and that you have
+pushed the image first.
+
 ## Running examples
 
 Check out the `examples/` directory for demonstrations of how to use Monarch's
