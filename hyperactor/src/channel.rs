@@ -152,7 +152,7 @@ impl CompletionTracker {
     }
 
     fn complete(&self) {
-        self.completed.fetch_add(1, Ordering::SeqCst);
+        self.completed.fetch_add(1, Ordering::Relaxed);
         self.completed_notify.notify_waiters();
     }
 }
