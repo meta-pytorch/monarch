@@ -27,8 +27,7 @@
 //!   `ProcRef::actor_id()` in `proc_mesh.rs` and by `ProcAgent` when it calls
 //!   `remote.gspawn(...)`.
 //! - The runtime proc name is `ResourceId::to_string()`, which is consumed by
-//!   `HostRef::named_proc()` in `host_mesh.rs` and by `HostAgent` when it
-//!   spawns a proc on a host.
+//!   `host_mesh.rs` and by `HostAgent` when it spawns a proc on a host.
 //! - Telemetry uses `display_label()` for human-facing `given_name`, while
 //!   `to_string()` is emitted as the stable `full_name`.
 //!
