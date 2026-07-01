@@ -110,9 +110,7 @@ use crate::mesh_id::ResourceId;
 use crate::proc_agent::ProcAgent;
 use crate::proc_mesh::ProcMeshRef;
 use crate::resource;
-use crate::resource::CreateOrUpdateClient;
 use crate::resource::GetRankStatus;
-use crate::resource::GetRankStatusClient;
 use crate::resource::RankedValues;
 use crate::resource::Status;
 use crate::resource::WaitRankStatusClient;
@@ -1280,8 +1278,9 @@ impl HostMeshRef {
     /// `host_extent ⊕ per_host` extent. Its return value takes
     /// precedence over `self.bootstrap_command` for that proc only.
     ///
-    /// Currently, spawn issues direct calls to each host agent. This will be fixed by
-    /// maintaining a comm actor on the host service procs themselves.
+    /// Spawn is issued as a single `SpawnProcs` cast — each HostAgent spawns all
+    /// of its per-host proc slots — then fenced with an accumulated status
+    /// barrier so returned procs are addressable and ready.
     #[allow(clippy::result_large_err)]
     pub async fn spawn<C: context::Actor>(
         &self,
@@ -1391,69 +1390,19 @@ impl HostMeshRef {
             },
         );
 
-        // Create or update each proc, then fence on receiving status
-        // overlays. This prevents a race where procs become
-        // addressable before their local muxers are ready, which
-        // could make early messages unroutable. A future improvement
-        // would allow buffering in the host-level muxer to eliminate
-        // the need for this synchronization step.
+        // Build each proc's `ProcRef` up front: the caller derives the same
+        // id/rank (`host_agent::proc_name(&proc_mesh_id, create_rank)`) that
+        // each HostAgent will, so the refs are ready before the cast lands. A single
+        // `SpawnProcs` cast (below) then has each HostAgent spawn all of its
+        // per-host slots, replying with status overlays to drive the readiness
+        // barrier.
         let mut proc_names = Vec::new();
         let client_config_override = hyperactor_config::global::propagatable_attrs();
         for (host_rank, host) in self.ranks.iter().enumerate() {
             for per_host_rank in 0..per_host.num_ranks() {
                 let create_rank = per_host.num_ranks() * host_rank + per_host_rank;
-                let proc_name = ResourceId::instance(Label::strip(&format!(
-                    "{}-{}",
-                    proc_mesh_id
-                        .display_label()
-                        .map(|l| l.as_str())
-                        .unwrap_or("unnamed"),
-                    per_host_rank
-                )));
+                let proc_name = host_agent::proc_name(&proc_mesh_id, create_rank);
                 proc_names.push(proc_name.clone());
-                let bind = proc_bind.as_ref().map(|v| v[per_host_rank].clone());
-                let bootstrap_command = match per_rank_bootstrap.as_ref() {
-                    Some(f) => Some(
-                        f(extent
-                            .point_of_rank(create_rank)
-                            .expect("rank in combined extent"))
-                        .map_err(crate::Error::ConfigurationError)?,
-                    ),
-                    None => self.bootstrap_command.clone(),
-                };
-                let proc_spec = resource::ProcSpec {
-                    client_config_override: client_config_override.clone(),
-                    bootstrap_command,
-                    proc_bind: bind,
-                    host_mesh_id: Some(self.id.clone()),
-                };
-                host.mesh_agent()
-                    .create_or_update(
-                        cx,
-                        proc_name.clone(),
-                        resource::Rank::new(create_rank),
-                        proc_spec,
-                    )
-                    .await
-                    .map_err(|e| {
-                        crate::Error::HostMeshAgentConfigurationError(
-                            host.mesh_agent().actor_addr().clone(),
-                            format!("failed while creating proc: {}", e),
-                        )
-                    })?;
-                let mut reply_port = port.bind();
-                // If this proc dies or some other issue renders the reply undeliverable,
-                // the reply does not need to be returned to the sender.
-                reply_port.return_undeliverable(false);
-                host.mesh_agent()
-                    .get_rank_status(cx, proc_name.clone(), reply_port)
-                    .await
-                    .map_err(|e| {
-                        crate::Error::HostMeshAgentConfigurationError(
-                            host.mesh_agent().actor_addr().clone(),
-                            format!("failed while querying proc status: {}", e),
-                        )
-                    })?;
                 let proc_id = host.named_proc(&proc_name);
                 tracing::info!(
                     name = "ProcMeshStatus",
@@ -1472,6 +1421,46 @@ impl HostMeshRef {
                 ));
             }
         }
+
+        let mut reply_port = port.bind();
+
+        reply_port.return_undeliverable(false);
+
+        let total_procs = self.region.num_ranks() * per_host.num_ranks();
+
+        let bootstrap_commands = match per_rank_bootstrap.as_ref() {
+            Some(per_rank_bootstrap) => Some(
+                (0..total_procs)
+                    .map(|create_rank| {
+                        per_rank_bootstrap(
+                            extent
+                                .point_of_rank(create_rank)
+                                .expect("rank in combined extent"),
+                        )
+                        .map(Some)
+                        .map_err(crate::Error::ConfigurationError)
+                    })
+                    .collect::<crate::Result<Vec<_>>>()?,
+            ),
+            None => None,
+        };
+
+        // One cast: each HostAgent spawns all `num_per_host` of its proc slots,
+        // deriving each proc's id/rank from its stamped host rank.
+        self.host_agent_mesh.cast(
+            cx,
+            host_agent::SpawnProcs {
+                rank: resource::Rank::default(),
+                proc_mesh_id: proc_mesh_id.clone(),
+                num_per_host: per_host.num_ranks(),
+                client_config_override,
+                host_mesh_id: Some(self.id.clone()),
+                default_bootstrap_command: self.bootstrap_command.clone(),
+                proc_bind,
+                bootstrap_commands,
+                status_reply: Some(reply_port),
+            },
+        )?;
 
         let start_time = tokio::time::Instant::now();
 
@@ -2149,7 +2138,7 @@ mod tests {
             HostMeshRef::from_hosts(HostMeshId::singleton(Label::new("test").unwrap()), hosts);
 
         let proc_mesh = host_mesh
-            .spawn(&testing::instance(), "test", Extent::unity(), None, None)
+            .spawn(&testing::instance(), "test", extent!(gpus = 4), None, None)
             .await
             .unwrap();
 
