@@ -26,6 +26,7 @@ hyperactor_telemetry = { version = "0.0.0", path = "../hyperactor_telemetry" }
 libc = "0.2.186"
 monarch_cpp_static_libs = { path = "../monarch_cpp_static_libs", optional = true }
 monarch_distributed_telemetry = { version = "0.0.0", path = "../monarch_distributed_telemetry", optional = true }
+monarch_gil = { version = "0.0.0", path = "../monarch_gil" }
 monarch_hyperactor = { version = "0.0.0", path = "../monarch_hyperactor" }
 monarch_introspection_snapshot = { version = "0.0.0", path = "../monarch_introspection_snapshot", optional = true }
 monarch_messages = { version = "0.0.0", path = "../monarch_messages", optional = true, default-features = false }
@@ -41,7 +42,6 @@ tokio = { version = "1.52.3", features = ["full", "test-util", "tracing"] }
 torch-sys-cuda = { version = "0.0.0", path = "../torch-sys-cuda", optional = true, default-features = false }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 wirevalue = { version = "0.0.0", path = "../wirevalue" }
-xxhash-rust = { version = "0.8.15", features = ["xxh3", "xxh64"] }
 
 [build-dependencies]
 build_utils = { path = "../build_utils" }

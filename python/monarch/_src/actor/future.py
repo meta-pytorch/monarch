@@ -86,7 +86,11 @@ class _Tokio(NamedTuple):
     shared: Shared[Any]
 
 
-_Status = _Unawaited | _Complete | _Exception | _Asyncio | _Tokio
+class _Taken(NamedTuple):
+    pass
+
+
+_Status = _Unawaited | _Complete | _Exception | _Asyncio | _Tokio | _Taken
 
 
 class Future(Generic[R]):
@@ -105,6 +109,19 @@ class Future(Generic[R]):
         self._status: _Status = _Unawaited(
             coro if isinstance(coro, PythonTask) else PythonTask.from_coroutine(coro)
         )
+
+    def _take_inner(self) -> "PythonTask[R]":
+        """Surrender the underlying ``PythonTask`` to a caller that needs to drive
+        it directly (for example to await the raw Rust future without the GIL).
+        Only valid on a Future that has not yet been awaited or resolved; the
+        Future is spent afterward (a second take, or any get()/await, raises).
+        """
+        match self._status:
+            case _Unawaited(coro=coro):
+                self._status = _Taken()
+                return cast("PythonTask[R]", coro)
+            case _:
+                raise ValueError("Future has already been awaited or resolved.")
 
     def get(self, timeout: Optional[float] = None) -> R:
         """Get the result of the Future.
@@ -182,6 +199,8 @@ class Future(Generic[R]):
                 raise ValueError(
                     "already converted into a pytokio.Shared object, use 'await' from a PythonTask coroutine to get the value."
                 )
+            case _Taken():
+                raise ValueError("Future was consumed.")
             case _:
                 raise RuntimeError("unknown status")
 
@@ -217,6 +236,8 @@ class Future(Generic[R]):
                     raise ValueError(
                         "already converted into a tokio future, but being awaited from the asyncio loop."
                     )
+                case _Taken():
+                    raise ValueError("Future was consumed.")
                 case _:
                     raise ValueError(
                         "already converted into a synchronous future, use 'get' to get the value."
@@ -233,6 +254,8 @@ class Future(Generic[R]):
                     raise ValueError(
                         "already converted into asyncio future, but being awaited from the tokio loop."
                     )
+                case _Taken():
+                    raise ValueError("Future was consumed.")
                 case _:
                     raise ValueError(
                         "already converted into a synchronous future, use 'get' to get the value."

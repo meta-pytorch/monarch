@@ -7,12 +7,14 @@ This is the development documentation for the hyperactor system, built using [`m
 :caption: Contents
 
 ./src/introduction
-./src/refrences
-macros
-mailbox
-channels
-actors
-summary
+./src/references/index
+./src/mailboxes/index
+./src/channels/index
+./src/procs/index
+./src/actors/index
+./src/remote_supervision
+./src/macros/index
+./src/appendix/index
 ```
 
 ## Running the Book
@@ -24,7 +26,7 @@ To run the book on a remote server (e.g., `devgpu004`):
 ```bash
 x2ssh devgpu004.rva5.facebook.com
 tmux new -s mdbook
-cd ~/fbsource/fbcode/monarch/books/hyperactor-book
+cd ~/fbsource/fbcode/monarch/docs/source/books/hyperactor-book
 mdbook serve
 ```
 Then detach with Ctrl+b, then d.

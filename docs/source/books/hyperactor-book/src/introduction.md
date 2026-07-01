@@ -14,7 +14,8 @@ We hope this becomes the book we wish we had when we started working with Monarc
 ./macros/index
 ./channels/index
 ./mailboxes/index
+./procs/index
 ./references/index
+./remote_supervision
 ./appendix/index
-./SUMMARY.md
 ```

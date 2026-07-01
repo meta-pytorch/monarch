@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use anyhow::Context as _;
 use anyhow::Result;
@@ -189,8 +190,8 @@ pub struct CodeSyncManager {
     rsync: OnceCell<ActorHandle<RsyncActor>>,
     auto_reload: OnceCell<ActorHandle<AutoReloadActor>>,
     conda_sync: OnceCell<ActorHandle<CondaSyncActor>>,
-    self_mesh: once_cell::sync::OnceCell<hyperactor_mesh::ActorMeshRef<CodeSyncManager>>,
-    rank: once_cell::sync::OnceCell<usize>,
+    self_mesh: OnceLock<hyperactor_mesh::ActorMeshRef<CodeSyncManager>>,
+    rank: OnceLock<usize>,
 }
 
 impl Actor for CodeSyncManager {}
@@ -204,8 +205,8 @@ impl RemoteSpawn for CodeSyncManager {
             rsync: OnceCell::new(),
             auto_reload: OnceCell::new(),
             conda_sync: OnceCell::new(),
-            self_mesh: once_cell::sync::OnceCell::new(),
-            rank: once_cell::sync::OnceCell::new(),
+            self_mesh: OnceLock::new(),
+            rank: OnceLock::new(),
         })
     }
 }

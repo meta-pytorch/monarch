@@ -32,8 +32,8 @@ use super::session::Next;
 use super::session::Session;
 use crate::RemoteMessage;
 use crate::channel::ChannelAddr;
+use crate::channel::ChannelRx;
 use crate::channel::ChannelTransport;
-use crate::channel::net::NetRx;
 use crate::channel::net::ServerError;
 use crate::channel::net::Stream;
 use crate::channel::net::meta;
@@ -155,6 +155,7 @@ fn resolve_stream<S: Stream>(
 /// channel and return immediately. [`accept_loop`] joins every
 /// dispatch in its `connections` `JoinSet`, so it finishes only
 /// after every recv-loop has finished.
+#[tracing::instrument(level = "debug", skip_all)]
 pub(super) async fn dispatch_stream<M: RemoteMessage, S: Stream>(
     session_id: SessionId,
     streams: Option<(u8, Arc<StreamState<S>>)>,
@@ -310,6 +311,7 @@ pub(super) async fn dispatch_stream<M: RemoteMessage, S: Stream>(
 /// [`dispatch_stream`]: first dispatch for a given (`session_id`,
 /// `stream_id`) runs the recv-loop inline; reconnects hand off via
 /// the per-stream channel and return.
+#[tracing::instrument(level = "debug", skip_all)]
 async fn dispatch_multi_stream<M: RemoteMessage, S: Stream>(
     session_id: SessionId,
     stream_id: u8,
@@ -390,7 +392,7 @@ async fn dispatch_multi_stream<M: RemoteMessage, S: Stream>(
         };
 
         // Each stream emits the cumulative watermark on its own wire
-        // so the peer's per-wire NetTx sees an ack for messages it
+        // so the peer's per-wire ChannelTx sees an ack for messages it
         // sent on this connection.
         let pending_ack = shared_state
             .ack_watermark
@@ -633,10 +635,11 @@ impl Future for ServerHandle {
 /// Serve new connections on the given address, optionally using a pre-opened TCP listener.
 /// When `prebound_listener` is `Some`, it is used instead of binding a new socket.
 /// This is only supported for TCP-based transports (Tcp, Tls, MetaTls).
+#[tracing::instrument(level = "debug", skip_all)]
 pub(in crate::channel) fn serve<M: RemoteMessage>(
     addr: ChannelAddr,
     prebound_listener: Option<std::net::TcpListener>,
-) -> Result<(ChannelAddr, NetRx<M>), ServerError> {
+) -> Result<(ChannelAddr, ChannelRx<M>), ServerError> {
     let (mut listener, channel_addr) = super::listen_with_prebound(addr, prebound_listener)?;
 
     metrics::CHANNEL_CONNECTIONS.add(
@@ -725,17 +728,22 @@ pub(in crate::channel) fn serve<M: RemoteMessage>(
 
     Ok((
         server_handle.channel_addr.clone(),
-        NetRx(rx, channel_addr, server_handle),
+        ChannelRx {
+            receiver: rx,
+            dest: channel_addr,
+            server: server_handle,
+        },
     ))
 }
 
 /// Test-only variant that accepts an arbitrary `Listener`. Used by
 /// mock-link tests that cannot go through `net::listen()`.
 #[cfg(test)]
+#[tracing::instrument(level = "debug", skip_all)]
 pub(super) fn serve_with_listener<M, L>(
     mut listener: L,
     channel_addr: ChannelAddr,
-) -> Result<(ChannelAddr, NetRx<M>), ServerError>
+) -> Result<(ChannelAddr, ChannelRx<M>), ServerError>
 where
     M: RemoteMessage,
     L: super::Listener + 'static,
@@ -797,6 +805,10 @@ where
 
     Ok((
         server_handle.channel_addr.clone(),
-        NetRx(rx, channel_addr, server_handle),
+        ChannelRx {
+            receiver: rx,
+            dest: channel_addr,
+            server: server_handle,
+        },
     ))
 }

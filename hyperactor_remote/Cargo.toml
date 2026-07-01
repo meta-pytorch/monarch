@@ -22,8 +22,11 @@ anyhow = "1.0.102"
 async-trait = "0.1.86"
 base64 = { version = "0.22.1", features = ["alloc"] }
 bincode = { version = "2", features = ["serde"] }
+erased-serde = "0.4.10"
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
+libc = "0.2.186"
+nix = { version = "0.30.1", features = ["dir", "event", "hostname", "inotify", "ioctl", "mman", "mount", "net", "poll", "ptrace", "reboot", "resource", "sched", "signal", "term", "time", "user", "zerocopy"] }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 thiserror = "2.0.18"

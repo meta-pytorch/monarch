@@ -26,6 +26,9 @@ use serde::Serialize;
 use serde_multipart::Part;
 use typeuri::Named;
 
+use crate::runtime::GilSite;
+use crate::runtime::monarch_with_gil_blocking;
+
 declare_attrs! {
     /// Threshold below which writes are copied into a contiguous buffer.
     /// Writes >= this size are stored as zero-copy references.
@@ -45,7 +48,7 @@ struct KeepPyBytesAlive {
 
 impl KeepPyBytesAlive {
     fn new(py_bytes: Py<PyBytes>) -> Self {
-        let (ptr, len) = Python::attach(|py| {
+        let (ptr, len) = monarch_with_gil_blocking(GilSite::Convert, |py| {
             let bytes_ref = py_bytes.as_bytes(py);
             (bytes_ref.as_ptr(), bytes_ref.len())
         });
@@ -156,7 +159,7 @@ impl Buffer {
     /// # Returns
     /// The total number of bytes stored in the buffer
     fn __len__(&self) -> usize {
-        let fragments_len: usize = Python::attach(|py| {
+        let fragments_len: usize = monarch_with_gil_blocking(GilSite::Convert, |py| {
             self.fragments
                 .iter()
                 .map(|frag| match frag {

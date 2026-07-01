@@ -64,7 +64,7 @@ use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::watch;
-use tokio::time::Instant;
+use tracing::Instrument;
 
 use super::*;
 use crate::RemoteMessage;
@@ -126,7 +126,7 @@ pub(crate) struct LinkInit {
 }
 
 /// Write a LinkInit header to the stream.
-async fn write_link_init<S: AsyncWrite + Unpin>(
+pub(crate) async fn write_link_init<S: AsyncWrite + Unpin>(
     stream: &mut S,
     session_id: SessionId,
     stream_id: u8,
@@ -330,14 +330,16 @@ fn classify_send_loop_error(error: &session::SendLoopError, log_id: &str) -> Clo
 }
 
 /// Establish a simplex (send-only) session over the given link. Returns a send handle.
-pub(crate) fn spawn<M: RemoteMessage>(link: impl Link) -> NetTx<M> {
-    spawn_inner(link)
+pub(crate) fn spawn<M: RemoteMessage>(link: impl Link) -> super::ChannelTx<M> {
+    spawn_inner::<M>(link)
 }
 
 /// Establish a multi-stream (unordered) simplex session over N
 /// links sharing the same `SessionId`. Returns a single send handle
 /// that distributes frames across streams.
-pub(crate) fn spawn_unordered<M: RemoteMessage>(links: Vec<impl Link + 'static>) -> NetTx<M> {
+pub(crate) fn spawn_unordered<M: RemoteMessage>(
+    links: Vec<impl Link + 'static>,
+) -> super::ChannelTx<M> {
     assert!(!links.is_empty());
     if links.len() == 1 {
         return spawn(links.into_iter().next().unwrap());
@@ -347,7 +349,7 @@ pub(crate) fn spawn_unordered<M: RemoteMessage>(links: Vec<impl Link + 'static>)
     let dest = links[0].dest();
     let session_id = links[0].link_id();
     let (notify, status) = watch::channel(TxStatus::Active);
-    let tx = NetTx {
+    let tx = super::ChannelTx {
         sender,
         dest: dest.clone(),
         status,
@@ -560,12 +562,12 @@ pub(crate) fn spawn_unordered<M: RemoteMessage>(links: Vec<impl Link + 'static>)
     tx
 }
 
-fn spawn_inner<M: RemoteMessage>(link: impl Link) -> NetTx<M> {
+fn spawn_inner<M: RemoteMessage>(link: impl Link) -> super::ChannelTx<M> {
     let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
     let dest = link.dest();
     let session_id = link.link_id();
     let (notify, status) = watch::channel(TxStatus::Active);
-    let tx = NetTx {
+    let tx = super::ChannelTx {
         sender,
         dest: dest.clone(),
         status,
@@ -712,7 +714,7 @@ fn spawn_inner<M: RemoteMessage>(link: impl Link) -> NetTx<M> {
         };
 
         tracing::info!(
-            dest = %dest, session_id = session_id.0, "NetTx closing: {reason}"
+            dest = %dest, session_id = session_id.0, "ChannelTx closing: {reason}"
         );
 
         let send_error_reason = match &reason {
@@ -738,7 +740,7 @@ fn spawn_inner<M: RemoteMessage>(link: impl Link) -> NetTx<M> {
         }
 
         let _ = notify.send(TxStatus::Closed(reason));
-    });
+    }.instrument(tracing::debug_span!("net tx loop")));
     tx
 }
 
@@ -750,6 +752,7 @@ pub(crate) enum NetLink {
     Unix(unix::UnixLink),
     Tls(tls::TlsLink),
     Quic(quic::QuicLink),
+    Local(local::stream::LocalLink),
 }
 
 /// Create a link for the given channel address with the given
@@ -766,6 +769,12 @@ pub(crate) fn link(
         }
         ChannelAddr::Unix(unix_addr) => {
             Ok(NetLink::Unix(unix::link(unix_addr, session_id, stream_id)))
+        }
+        ChannelAddr::Local(port) => {
+            local::stream::check(port)?;
+            Ok(NetLink::Local(local::stream::link(
+                port, session_id, stream_id,
+            )))
         }
         ChannelAddr::Tls(tls_addr) => Ok(NetLink::Tls(tls::link(tls_addr, session_id, stream_id)?)),
         ChannelAddr::MetaTls(meta_addr) => {
@@ -801,6 +810,7 @@ impl Link for NetLink {
             Self::Unix(l) => l.dest(),
             Self::Tls(l) => l.dest(),
             Self::Quic(l) => l.dest(),
+            Self::Local(l) => l.dest(),
         }
     }
 
@@ -810,6 +820,7 @@ impl Link for NetLink {
             Self::Unix(l) => l.link_id(),
             Self::Tls(l) => l.link_id(),
             Self::Quic(l) => l.link_id(),
+            Self::Local(l) => l.link_id(),
         }
     }
 
@@ -819,6 +830,7 @@ impl Link for NetLink {
             Self::Unix(l) => Ok(Box::new(l.next().await?)),
             Self::Tls(l) => Ok(Box::new(l.next().await?)),
             Self::Quic(l) => Ok(Box::new(l.next().await?)),
+            Self::Local(l) => Ok(Box::new(l.next().await?)),
         }
     }
 }
@@ -845,6 +857,7 @@ pub(crate) enum NetListener {
     Tcp(tcp::TcpSocketListener),
     Unix(unix::UnixSocketListener),
     Quic(quic::QuicSocketListener),
+    Local(local::stream::LocalListener),
 }
 
 #[async_trait]
@@ -862,6 +875,10 @@ impl Listener for NetListener {
                 Ok((Box::new(stream), addr))
             }
             Self::Quic(l) => {
+                let (stream, addr) = l.accept().await?;
+                Ok((Box::new(stream), addr))
+            }
+            Self::Local(l) => {
                 let (stream, addr) = l.accept().await?;
                 Ok((Box::new(stream), addr))
             }
@@ -924,6 +941,10 @@ pub(crate) fn listen_with_prebound(
                 addr: bound_addr.clone(),
             };
             Ok((NetListener::Unix(listener), ChannelAddr::Unix(bound_addr)))
+        }
+        ChannelAddr::Local(_) => {
+            let (listener, addr) = local::stream::listen(addr, prebound)?;
+            Ok((NetListener::Local(listener), addr))
         }
         addr @ (ChannelAddr::Tls(_) | ChannelAddr::MetaTls(_)) => {
             let is_meta = matches!(addr, ChannelAddr::MetaTls(_));
@@ -1005,10 +1026,6 @@ pub(crate) fn listen_with_prebound(
             let (listener, _bound_addr) = listen_with_prebound(*bind_to, prebound)?;
             Ok((listener, *dial_to))
         }
-        other => Err(ServerError::Listen(
-            other.clone(),
-            std::io::Error::other(format!("unsupported transport: {}", other)),
-        )),
     }
 }
 
@@ -1022,7 +1039,7 @@ pub(super) enum Frame<M> {
 #[derive(Debug, Serialize, Deserialize, EnumAsInner)]
 pub(super) enum NetRxResponse {
     Ack(u64),
-    /// This session is rejected with the given reason. NetTx should stop reconnecting.
+    /// This session is rejected with the given reason. ChannelTx should stop reconnecting.
     Reject(String),
     /// This channel is closed.
     Closed,
@@ -1038,84 +1055,6 @@ pub(super) fn deserialize_response(
     data: Bytes,
 ) -> Result<NetRxResponse, bincode::error::DecodeError> {
     bincode::serde::decode_from_slice(&data, bincode::config::legacy()).map(|(v, _)| v)
-}
-
-/// A Tx implemented on top of a Link. The Tx manages the link state,
-/// reconnections, etc.
-pub(crate) struct NetTx<M: RemoteMessage> {
-    sender: mpsc::UnboundedSender<(M, oneshot::Sender<SendError<M>>, Instant)>,
-    dest: ChannelAddr,
-    status: watch::Receiver<TxStatus>,
-}
-
-#[async_trait]
-impl<M: RemoteMessage> Tx<M> for NetTx<M> {
-    fn addr(&self) -> ChannelAddr {
-        self.dest.clone()
-    }
-
-    fn status(&self) -> &watch::Receiver<TxStatus> {
-        &self.status
-    }
-
-    fn do_post(&self, message: M, return_channel: Option<oneshot::Sender<SendError<M>>>) {
-        tracing::trace!(
-            name = "post",
-            dest = %self.dest,
-            "sending message"
-        );
-
-        let return_channel = return_channel.unwrap_or_else(|| oneshot::channel().0);
-        if let Err(mpsc::error::SendError((message, return_channel, _))) =
-            self.sender
-                .send((message, return_channel, tokio::time::Instant::now()))
-        {
-            let reason = self
-                .status
-                .borrow()
-                .as_closed()
-                .map(|r| SendErrorReason::Other(r.to_string()));
-            let _ = return_channel.send(SendError {
-                error: ChannelError::Closed,
-                message,
-                reason,
-            });
-        }
-    }
-}
-
-pub struct NetRx<M: RemoteMessage>(mpsc::Receiver<M>, ChannelAddr, ServerHandle);
-
-#[async_trait]
-impl<M: RemoteMessage> Rx<M> for NetRx<M> {
-    async fn recv(&mut self) -> Result<M, ChannelError> {
-        tracing::trace!(
-            name = "recv",
-            dest = %self.1,
-            "receiving message"
-        );
-        self.0.recv().await.ok_or(ChannelError::Closed)
-    }
-
-    fn addr(&self) -> ChannelAddr {
-        self.1.clone()
-    }
-
-    /// Gracefully shut down the channel server, waiting for pending
-    /// acks to be flushed before returning.
-    async fn join(mut self) {
-        self.2
-            .stop(&format!("NetRx joined; channel address: {}", self.1));
-        let _ = (&mut self.2).await;
-        // Drop will call stop() again which is harmless (token already cancelled).
-    }
-}
-
-impl<M: RemoteMessage> Drop for NetRx<M> {
-    fn drop(&mut self) {
-        self.2
-            .stop(&format!("NetRx dropped; channel address: {}", self.1));
-    }
 }
 
 /// Error returned during server operations.
@@ -1155,15 +1094,16 @@ pub enum ClientError {
 /// from local transports.
 #[cfg(test)]
 pub(super) fn is_net_addr(addr: &ChannelAddr) -> bool {
-    match addr.transport() {
-        ChannelTransport::Tcp(_) => true,
-        ChannelTransport::MetaTls(_) => true,
-        ChannelTransport::Tls => true,
-        ChannelTransport::Quic => true,
-        ChannelTransport::MetaQuic(_) => true,
-        ChannelTransport::Unix => true,
-        _ => false,
-    }
+    matches!(
+        addr.transport(),
+        ChannelTransport::Tcp(_)
+            | ChannelTransport::MetaTls(_)
+            | ChannelTransport::Tls
+            | ChannelTransport::Quic
+            | ChannelTransport::MetaQuic(_)
+            | ChannelTransport::Unix
+            | ChannelTransport::Local
+    )
 }
 
 pub(crate) mod unix {
@@ -2012,6 +1952,7 @@ pub(crate) mod tls {
         use timed_test::async_timed_test;
 
         use super::*;
+        use crate::channel::ChannelTx;
         use crate::channel::Rx;
         use crate::channel::Tx;
         use crate::channel::dial;
@@ -2121,7 +2062,7 @@ u19txmtkiMEH+aNmekk=
                 server::serve::<u64>(ChannelAddr::Tls(addr), None).expect("failed to serve");
 
             // Dial the server
-            let tx: super::NetTx<u64> = super::spawn(
+            let tx: ChannelTx<u64> = super::spawn(
                 link(
                     match &local_addr {
                         ChannelAddr::Tls(addr) => addr.clone(),
@@ -2208,7 +2149,7 @@ u19txmtkiMEH+aNmekk=
 
             let (local_addr, mut rx) =
                 server::serve::<String>(ChannelAddr::Tls(addr), None).expect("failed to serve");
-            let tx: super::NetTx<String> = super::spawn(
+            let tx: ChannelTx<String> = super::spawn(
                 link(
                     match &local_addr {
                         ChannelAddr::Tls(addr) => addr.clone(),
@@ -2439,11 +2380,14 @@ mod tests {
     use tokio::io::ReadHalf;
     use tokio::io::WriteHalf;
     use tokio::task::JoinHandle;
+    use tokio::time::Instant;
     use tokio_util::sync::CancellationToken;
 
     use super::server;
     use super::*;
     use crate::channel;
+    use crate::channel::ChannelRx;
+    use crate::channel::ChannelTx;
     use crate::channel::net::framed::FrameReader;
     use crate::channel::net::framed::FrameWrite;
     use crate::channel::net::server::AcceptorLink;
@@ -2483,8 +2427,8 @@ mod tests {
         // It is important to keep Tx alive until all expected messages are
         // received. Otherwise, the channel would be closed when Tx is dropped.
         // Although the messages are sent to the server's buffer before the
-        // channel was closed, NetRx could still error out before taking them
-        // out of the buffer because NetRx could not ack through the closed
+        // channel was closed, ChannelRx could still error out before taking them
+        // out of the buffer because ChannelRx could not ack through the closed
         // channel.
         {
             let tx: ChannelTx<u64> = channel::dial::<u64>(addr.clone()).unwrap();
@@ -3378,7 +3322,7 @@ mod tests {
         }
     }
 
-    async fn net_tx_send(tx: &NetTx<u64>, msgs: &[u64]) {
+    async fn net_tx_send(tx: &ChannelTx<u64>, msgs: &[u64]) {
         for msg in msgs {
             tx.post(*msg);
         }
@@ -3420,7 +3364,7 @@ mod tests {
                 .map_err(|(_, e)| e)
                 .unwrap();
             }
-            // Wait for the acks to be processed by NetTx.
+            // Wait for the acks to be processed by ChannelTx.
             tokio::time::sleep(Duration::from_secs(3)).await;
             // Drop both halves to break the in-memory connection (parity with old drop of DuplexStream).
             drop(reader);
@@ -3483,7 +3427,7 @@ mod tests {
                     .await
                     .map_err(|(_, e)| e)
                     .unwrap();
-                    // Wait for the acks to be processed by NetTx.
+                    // Wait for the acks to be processed by ChannelTx.
                     tokio::time::sleep(Duration::from_secs(3)).await;
                 }
                 // client DuplexStream is dropped here. This breaks the connection.
@@ -3565,7 +3509,7 @@ mod tests {
                     .await
                     .map_err(|(_, e)| e)
                     .unwrap();
-                    // Wait for the acks to be processed by NetTx.
+                    // Wait for the acks to be processed by ChannelTx.
                     tokio::time::sleep(Duration::from_secs(3)).await;
                 }
                 // client DuplexStream is dropped here. This breaks the connection.
@@ -3605,7 +3549,7 @@ mod tests {
                     .await
                     .map_err(|(_, e)| e)
                     .unwrap();
-                    // Wait for the acks to be processed by NetTx.
+                    // Wait for the acks to be processed by ChannelTx.
                     tokio::time::sleep(Duration::from_secs(3)).await;
                 }
                 // client DuplexStream is dropped here. This breaks the connection.
@@ -3776,7 +3720,7 @@ mod tests {
         let receiver_storage = link.receiver_storage();
         let listener = MockLinkListener::new(receiver_storage.clone(), link.dest());
         let local_addr = listener.channel_addr.clone();
-        let (_, mut nx): (ChannelAddr, NetRx<u64>) =
+        let (_, mut nx): (ChannelAddr, ChannelRx<u64>) =
             super::server::serve_with_listener(listener, local_addr).unwrap();
         let tx = spawn::<u64>(link);
         let messages: Vec<_> = (0..10001).collect();
@@ -3785,13 +3729,13 @@ mod tests {
         // side concurrently.
         let send_task_handle = tokio::spawn(async move {
             for message in messages_clone {
-                // Add a small delay between messages to give NetRx time to ack.
+                // Add a small delay between messages to give ChannelRx time to ack.
                 // Technically, this test still can pass without this delay. But
                 // the test will need a might larger timeout. The reason is
                 // fairly convoluted:
                 //
                 // MockLink uses the number of delivery to calculate the disconnection
-                // probability. If NetRx sends messages much faster than NetTx
+                // probability. If ChannelRx sends messages much faster than ChannelTx
                 // can ack them, there is a higher chance that the messages are
                 // not acked before reconnect. Then those message would be redelivered.
                 // The repeated redelivery increases the total time of sending
@@ -3799,7 +3743,7 @@ mod tests {
                 tokio::time::sleep(Duration::from_micros(rand::random::<u64>() % 100)).await;
                 tx.post(message);
             }
-            tracing::debug!("NetTx sent all messages");
+            tracing::debug!("ChannelTx sent all messages");
             // It is important to return tx instead of dropping it here, because
             // Rx might not receive all messages yet.
             tx
@@ -3807,11 +3751,11 @@ mod tests {
 
         for message in &messages {
             if message % sampling_rate == 0 {
-                tracing::debug!("NetRx received a message: {message}");
+                tracing::debug!("ChannelRx received a message: {message}");
             }
             assert_eq!(nx.recv().await.unwrap(), *message);
         }
-        tracing::debug!("NetRx received all messages");
+        tracing::debug!("ChannelRx received all messages");
 
         let send_result = send_task_handle.await;
         assert!(send_result.is_ok());
@@ -3820,7 +3764,7 @@ mod tests {
             "MockLink disconnected {} times.",
             disconnected_count.load(Ordering::SeqCst)
         );
-        // TODO(pzhang) after the return_handle work in NetTx is done, add a
+        // TODO(pzhang) after the return_handle work in ChannelTx is done, add a
         // check here to verify the messages are acked correctly.
     }
 
@@ -3853,7 +3797,7 @@ mod tests {
         let receiver_storage = link.receiver_storage();
         let listener = MockLinkListener::new(receiver_storage.clone(), link.dest());
         let local_addr = listener.channel_addr.clone();
-        let (_, mut nx): (ChannelAddr, NetRx<u64>) =
+        let (_, mut nx): (ChannelAddr, ChannelRx<u64>) =
             super::server::serve_with_listener(listener, local_addr).unwrap();
         let tx = spawn::<u64>(link);
         let messages: Vec<_> = (0..20001).collect();
@@ -3866,14 +3810,14 @@ mod tests {
                 tx.post(message);
             }
             tokio::time::sleep(Duration::from_secs(5)).await;
-            tracing::debug!("NetTx sent all messages");
+            tracing::debug!("ChannelTx sent all messages");
             tx
         });
 
         for message in &messages {
             assert_eq!(nx.recv().await.unwrap(), *message);
         }
-        tracing::debug!("NetRx received all messages");
+        tracing::debug!("ChannelRx received all messages");
 
         let send_result = send_task_handle.await;
         assert!(send_result.is_ok());
@@ -3980,7 +3924,7 @@ mod tests {
             .await
             .map_err(|(_, e)| e);
 
-            // Wait for response to be processed by NetTx before dropping reader/writer. Otherwise
+            // Wait for response to be processed by ChannelTx before dropping reader/writer. Otherwise
             // the channel will be closed and we will get the wrong error.
             tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
         }
@@ -4030,22 +3974,22 @@ mod tests {
             ChannelAddr::Tcp(a) => a,
             _ => panic!("unexpected channel type"),
         };
-        let tx: NetTx<u64> = spawn(tcp::link(socket_addr, SessionId::random(), 0));
-        // NetTx will not establish a connection until it sends the 1st message.
-        // Without a live connection, NetTx cannot received the Closed message
-        // from NetRx. Therefore, we need to send a message to establish the
+        let tx: ChannelTx<u64> = spawn(tcp::link(socket_addr, SessionId::random(), 0));
+        // ChannelTx will not establish a connection until it sends the 1st message.
+        // Without a live connection, ChannelTx cannot received the Closed message
+        // from ChannelRx. Therefore, we need to send a message to establish the
         //connection.
         tx.send(100).await.unwrap();
         assert_eq!(rx.recv().await.unwrap(), 100);
-        // Drop rx will close the NetRx server.
-        rx.2.stop("testing");
+        // Drop rx will close the ChannelRx server.
+        rx.server.stop("testing");
         assert!(rx.recv().await.is_err());
 
-        // NetTx will only read from the stream when it needs to send a message
+        // ChannelTx will only read from the stream when it needs to send a message
         // or wait for an ack. Therefore we need to send a message to trigger that.
         tx.post(101);
         let mut watcher = tx.status().clone();
-        // When NetRx exits, it should notify NetTx to exit as well.
+        // When ChannelRx exits, it should notify ChannelTx to exit as well.
         let _ = watcher.wait_for(|val| val.is_closed()).await;
         // wait_for could return Err due to race between when watch's sender was
         // dropped and when wait_for was called. So we still need to do an
@@ -4289,7 +4233,7 @@ mod tests {
     /// send three messages with disjoint seqs filling the contiguous
     /// range 0..=8. Each stream's cleanup reads `highest_uncommitted`
     /// and emits `Ack(8)` on its own wire so the peer's per-wire
-    /// NetTx sees an ack for messages it sent there; the receiver
+    /// ChannelTx sees an ack for messages it sent there; the receiver
     /// discards duplicates. Every stream also emits its own `Closed`.
     #[async_timed_test(timeout_secs = 30)]
     async fn rx_join_flushes_pending_ack_shared_multi_stream_session() {

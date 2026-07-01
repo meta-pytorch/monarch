@@ -80,11 +80,11 @@ impl<T> PyTree<T> {
         self.leaves.iter().for_each(func)
     }
 
-    pub fn iter<'a>(&'a self) -> std::slice::Iter<'a, T> {
+    pub fn iter(&self) -> std::slice::Iter<'_, T> {
         self.leaves.iter()
     }
 
-    pub fn iter_mut<'a>(&'a mut self) -> std::slice::IterMut<'a, T> {
+    pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, T> {
         self.leaves.iter_mut()
     }
 
@@ -264,6 +264,8 @@ impl<'a, T: FromPyObject<'a>> FromPyObject<'a> for PyTree<T> {
 #[cfg(all(test, fbcode_build))]
 mod tests {
     use anyhow::Result;
+    use monarch_gil::GilSite;
+    use monarch_gil::monarch_with_gil_blocking;
     use pyo3::IntoPyObject;
     use pyo3::Python;
     use pyo3::ffi::c_str;
@@ -275,7 +277,7 @@ mod tests {
     #[test]
     fn flatten_unflatten() -> Result<()> {
         Python::initialize();
-        Python::attach(|py| {
+        monarch_with_gil_blocking(GilSite::Test, |py| {
             let tree = py.eval(c_str!("[1, 2]"), None, None)?;
             let tree: PyTree<u64> = PyTree::flatten(&tree)?;
             assert_eq!(tree.leaves, vec![1u64, 2u64]);
@@ -290,7 +292,7 @@ mod tests {
     #[test]
     fn try_map() -> Result<()> {
         Python::initialize();
-        Python::attach(|py| {
+        monarch_with_gil_blocking(GilSite::Test, |py| {
             let tree = py.eval(c_str!("[1, 2]"), None, None)?;
             let tree: PyTree<u64> = PyTree::flatten(&tree)?;
             let tree = tree.try_map(|v| anyhow::Ok(v + 1))?;

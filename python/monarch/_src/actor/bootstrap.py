@@ -18,7 +18,7 @@ from monarch._rust_bindings.monarch_hyperactor.host_mesh import HostMesh as HyHo
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent
 from monarch._src.actor.actor_mesh import _Lazy
-from monarch._src.actor.future import _Unawaited, Future
+from monarch._src.actor.future import Future
 from monarch._src.actor.host_mesh import HostMesh
 
 PrivateKey = Union[bytes, Path, None]
@@ -34,8 +34,7 @@ def _as_python_task(s: str | Future[str]) -> "PythonTask[str]":
 
         return PythonTask.from_coroutine(just())
     else:
-        assert isinstance(s._status, _Unawaited)
-        return s._status.coro
+        return s._take_inner()
 
 
 def run_worker_loop_forever(

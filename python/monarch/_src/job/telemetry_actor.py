@@ -14,18 +14,11 @@ write framed Arrow IPC over `telemetry.sock`, Rust socket ingest validates and
 decodes those frames, and the scanner owns the in-memory DataFusion tables.
 Python coordinates activation and exposes actor endpoints for query fan-out.
 
-More than one `TelemetryActor` may be started for what turns out to be the
-same host-local socket namespace. That can happen in collocated/local jobs
-(i.e. ProcessJob) where the client-side sidecar collector and a worker-host
-collector resolve the same `/tmp/monarch_<apply_id>/telemetry.sock`, or during
-a sidecar refresh while an existing collector is still alive. This is a deliberate
-design choice. The non-destructive socket bind is the serialization point; the actor
-that binds the socket owns the store, and an actor that observes a live socket
-leaves its scanner unset and acts as an inert candidate.
-
-TODO: consider dedup'ing the worker fan-out by hostname (or job type) so
-ProcessJob / collocated jobs skip the redundant per-host candidate spawns
-instead of relying on each one to lose the bind race and be torn down.
+Only one live `TelemetryActor` may own a given host-local socket namespace. The
+socket bind is the ownership point: the actor that binds
+`/tmp/monarch_<apply_id>/telemetry.sock` owns the store, and any activation
+candidate that cannot bind leaves its scanner unset and must not participate in
+query fan-out.
 """
 
 from __future__ import annotations
@@ -73,13 +66,13 @@ class TelemetryActor(Actor):
         # disables retention. Passed to DataFusion's periodic retention task.
         self._retention_secs: int = retention_secs
         # The DataFusion store + socket-ingest pair this actor owns. `None`
-        # means this actor did not win (or has not yet attempted) the
-        # non-destructive bind, so it is not a live collector.
+        # means this actor has not activated as the single live collector for
+        # the host-local socket namespace.
         self._scanner: DatabaseScanner | None = None
-        # Other telemetry actors this collector fans queries out to. Empty
-        # for leaf collectors; the query-root collector receives its list via
-        # `set_worker_collectors` once the worker meshes exist.
-        self._worker_collectors: list[Any] = []
+        # Worker actor meshes this collector fans queries out to. Empty for
+        # leaf collectors; the query-root collector receives its list via
+        # `set_worker_collector_meshes` once the worker meshes exist.
+        self._worker_collector_meshes: list[Any] = []
 
     def _scanner_or_raise(self) -> DatabaseScanner:
         scanner = self._scanner
@@ -90,9 +83,8 @@ class TelemetryActor(Actor):
     def _activate_impl(self) -> bool:
         """Lazily bind the local socket and stand up the scanner.
 
-        No-op once active. On a previously skipped or failed actor the next
-        call re-attempts activation: the bind is non-destructive, so a retry
-        is safe and may succeed if the prior owner has gone away.
+        No-op once active. On a previously failed actor the next call
+        re-attempts activation and may succeed if the prior owner has gone away.
         """
         if self._scanner is not None:
             return True
@@ -111,9 +103,9 @@ class TelemetryActor(Actor):
         try:
             _register_trace_entity_schemas(scanner)
             _pre_register_snapshot_schemas(scanner)
-            if _start_socket_ingest(scanner, telemetry_socket_path(self._apply_id)):
-                self._scanner = scanner
-                return True
+            _start_socket_ingest(scanner, telemetry_socket_path(self._apply_id))
+            self._scanner = scanner
+            return True
         except Exception as error:
             logger.warning("telemetry collector activation failed: %s", error)
         return False
@@ -124,10 +116,10 @@ class TelemetryActor(Actor):
         return self._activate_impl()
 
     @endpoint
-    def set_worker_collectors(self, worker_collectors: List[Any]) -> None:
-        """Replace the client collector's worker fan-out list."""
+    def set_worker_collector_meshes(self, worker_collector_meshes: List[Any]) -> None:
+        """Replace the client collector's worker mesh list."""
         self._scanner_or_raise()
-        self._worker_collectors = list(worker_collectors)
+        self._worker_collector_meshes = list(worker_collector_meshes)
 
     @endpoint
     def table_names(self) -> List[str]:
@@ -155,6 +147,12 @@ class TelemetryActor(Actor):
         return True
 
     @endpoint
+    def ingest_snapshot_batch(self, table_name: str, arrow_ipc_bytes: bytes) -> bool:
+        """Store one snapshot Arrow IPC batch in a local registered table."""
+        self._scanner_or_raise().ingest_snapshot_batch(table_name, arrow_ipc_bytes)
+        return True
+
+    @endpoint
     def scan(
         self,
         dest: PortId,
@@ -163,23 +161,23 @@ class TelemetryActor(Actor):
         limit: Optional[int],
         filter_expr: Optional[str],
     ) -> int:
-        """Scan the local store and configured worker collectors."""
+        """Scan the local store and configured worker collector meshes."""
         # The client collector is the singleton query root: scan its local store
-        # first, then fan out flat to active worker collectors. Worker collectors
-        # have an empty `_worker_collectors` list, so the same endpoint is
-        # leaf-only when invoked on a worker.
+        # first, then fan out flat to active worker collector meshes. Worker
+        # collectors have an empty `_worker_collector_meshes` list, so the same
+        # endpoint is leaf-only when invoked on a worker.
         local_count: int = self._scanner_or_raise().scan(
             dest, table_name, projection, limit, filter_expr
         )
 
         child_futures = []
-        for collector in self._worker_collectors:
+        for collector_mesh in self._worker_collector_meshes:
             try:
                 # Constructing the call can fail if the sidecar holds a stale
                 # actor ref. Treat that as reduced result coverage, matching
                 # the legacy best-effort query behavior.
                 child_futures.append(
-                    collector.scan.call(
+                    collector_mesh.scan.call(
                         dest, table_name, projection, limit, filter_expr
                     )
                 )

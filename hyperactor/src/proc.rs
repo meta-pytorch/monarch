@@ -159,6 +159,7 @@ use crate::Handler;
 use crate::Location;
 use crate::Message;
 use crate::PortAddr;
+use crate::PortRef;
 use crate::ProcAddr;
 use crate::ProcId;
 use crate::RemoteMessage;
@@ -449,8 +450,10 @@ struct ProcState {
     actor_tombstones: DashMap<ActorId, ActorStatus>,
 
     /// Used by root actors to send events to the actor coordinating
-    /// supervision of root actors in this proc.
-    supervision_coordinator_port: OnceLock<PortHandle<ActorSupervisionEvent>>,
+    /// supervision of root actors in this proc. Stored as a [`PortRef`] so
+    /// the coordinator may live in another proc — e.g. a process monitor
+    /// supervising this proc from its parent — reached over the gateway.
+    supervision_coordinator_port: OnceLock<PortRef<ActorSupervisionEvent>>,
 
     /// The actor ID of the supervision coordinator, if it lives on this proc.
     /// Used to ensure the coordinator is shut down last during proc teardown.
@@ -889,9 +892,9 @@ impl Proc {
     /// already set.
     pub fn set_supervision_coordinator(
         &self,
-        port: PortHandle<ActorSupervisionEvent>,
+        port: PortRef<ActorSupervisionEvent>,
     ) -> Result<(), anyhow::Error> {
-        let actor_ref: ActorAddr = port.location().actor_addr();
+        let actor_ref: ActorAddr = port.port_addr().actor_addr();
         self.state()
             .supervision_coordinator_port
             .set(port)

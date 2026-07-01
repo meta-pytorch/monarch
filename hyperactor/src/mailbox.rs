@@ -137,6 +137,7 @@ use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 use typeuri::Named;
 
 use crate::ActorAddr;
@@ -1447,7 +1448,7 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
             rx.join().await;
 
             result
-        });
+        }.instrument(tracing::debug_span!("MailboxServer")));
 
         MailboxServerHandle {
             join_handle,
@@ -1474,14 +1475,17 @@ impl<T: Message> Buffer<T> {
     {
         let (queue, mut next) = mpsc::unbounded_channel();
         let (last_processed, processed) = watch::channel(0);
-        crate::init::get_runtime().spawn(async move {
-            let mut seq = 0;
-            while let Some((msg, return_handle)) = next.recv().await {
-                process(msg, return_handle).await;
-                seq += 1;
-                let _ = last_processed.send(seq);
+        crate::init::get_runtime().spawn(
+            async move {
+                let mut seq = 0;
+                while let Some((msg, return_handle)) = next.recv().await {
+                    process(msg, return_handle).await;
+                    seq += 1;
+                    let _ = last_processed.send(seq);
+                }
             }
-        });
+            .instrument(tracing::debug_span!("mailbox::Buffer")),
+        );
         Self {
             queue,
             processed,
@@ -1652,7 +1656,6 @@ impl MailboxClient {
 
 #[async_trait]
 impl MailboxSender for MailboxClient {
-    #[tracing::instrument(level = "debug", skip_all)]
     fn post_unchecked(
         &self,
         envelope: MessageEnvelope,
@@ -3940,6 +3943,7 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
     use std::time::Duration;
 
+    use async_trait::async_trait;
     use timed_test::async_timed_test;
 
     use super::*;
@@ -3987,6 +3991,45 @@ mod tests {
             panic!("expected invalid reference, got {root_failure}");
         };
         invalid_reference
+    }
+
+    struct ClosedChannelTx {
+        addr: ChannelAddr,
+        status: watch::Receiver<TxStatus>,
+    }
+
+    impl ClosedChannelTx {
+        fn new(addr: ChannelAddr) -> Self {
+            let (_sender, status) = watch::channel(TxStatus::Closed(CloseReason::Other(
+                "test channel closed".into(),
+            )));
+            Self { addr, status }
+        }
+    }
+
+    #[async_trait]
+    impl channel::Tx<MessageEnvelope> for ClosedChannelTx {
+        fn do_post(
+            &self,
+            message: MessageEnvelope,
+            return_channel: Option<oneshot::Sender<SendError<MessageEnvelope>>>,
+        ) {
+            if let Some(return_channel) = return_channel {
+                let _ = return_channel.send(SendError {
+                    error: ChannelError::Closed,
+                    message,
+                    reason: None,
+                });
+            }
+        }
+
+        fn addr(&self) -> ChannelAddr {
+            self.addr.clone()
+        }
+
+        fn status(&self) -> &watch::Receiver<TxStatus> {
+            &self.status
+        }
     }
 
     #[test]
@@ -4600,7 +4643,9 @@ mod tests {
     #[tokio::test]
     async fn test_local_client_server() {
         let mbox = Mailbox::new(test_actor_id("0", "actor0"));
-        let (tx, rx) = channel::local::new();
+        let (addr, rx) =
+            channel::serve(ChannelAddr::any(ChannelTransport::Local)).expect("serve local");
+        let tx = channel::dial(addr).expect("dial local");
         let serve_handle = mbox.clone().serve(rx);
         let client = MailboxClient::new(tx);
 
@@ -4618,9 +4663,7 @@ mod tests {
     #[tokio::test]
     async fn test_mailbox_client_records_channel_closed_failure() {
         let mbox = Mailbox::new(test_actor_id("0", "actor0"));
-        let (tx, rx) = channel::local::new();
-        drop(rx);
-        let client = MailboxClient::new(tx);
+        let client = MailboxClient::new(ClosedChannelTx::new(ChannelAddr::Local(0)));
         let addr = client.addr.clone();
 
         let (port, _receiver) = mbox.open_once_port::<u64>();
@@ -4990,9 +5033,23 @@ mod tests {
         let client1 = router.dial(&addr, mbox.actor_addr()).unwrap();
         let mut status = client1.tx_status().clone();
 
-        // LocalRx::drop closes the watcher with a non-stale reason — the
-        // string never contains "out-of-sequence message", so it must not
-        // trigger eviction.
+        // Local transport behaves like a socket: the dialer connects lazily
+        // on the first send and only observes peer teardown over an
+        // established connection. Post a message (routed through client1) and
+        // confirm receipt so the session actually connects, then drain acks so
+        // no unacked messages remain — this makes the post-teardown close take
+        // the fast connect-failure path rather than the delivery-timeout path.
+        let (port, receiver) = mbox.open_once_port::<u64>();
+        let port = port.bind();
+        router
+            .serialize_and_send_once(port, 67u64, monitored_return_handle())
+            .unwrap();
+        assert_eq!(receiver.recv().await.unwrap(), 67u64);
+        client1.flush().await.unwrap();
+
+        // Tearing down the local server breaks the established connection; the
+        // next reconnect fails (port freed) and the session closes with a
+        // non-stale reason, so it must not trigger eviction.
         h.stop("test teardown");
         let _ = h.await;
         while !status.borrow_and_update().is_closed() {

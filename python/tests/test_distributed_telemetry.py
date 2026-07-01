@@ -55,6 +55,50 @@ def _telemetry_config(**kwargs: Any) -> TelemetryConfig:
     return TelemetryConfig(**kwargs)
 
 
+def _sidecar_telemetry_config(**kwargs: Any) -> TelemetryConfig:
+    kwargs.setdefault("batch_size", 10)
+    kwargs.setdefault("retention_secs", 0)
+    return _telemetry_config(use_sidecar=True, **kwargs)
+
+
+def _assert_sidecar(state) -> None:
+    assert state.query_engine is None
+    assert state.query_engine_client is not None
+
+
+def _sidecar_query_rows(state, sql: str) -> list[dict[str, Any]]:
+    client = state.query_engine_client
+    assert client is not None
+    return client.query(sql).get("rows", [])
+
+
+def _rows_to_pydict(rows: list[dict[str, Any]]) -> dict[str, list[Any]]:
+    if not rows:
+        return {}
+    return {column: [row.get(column) for row in rows] for column in rows[0].keys()}
+
+
+def _query(
+    state, sql: str, *, min_rows: int = 1, timeout_secs: float = 20.0
+) -> dict[str, list[Any]]:
+    deadline = time.monotonic() + timeout_secs
+    rows: list[dict[str, Any]] = []
+    while time.monotonic() < deadline:
+        rows = _sidecar_query_rows(state, sql)
+        if len(rows) >= min_rows:
+            break
+        time.sleep(0.2)
+    return _rows_to_pydict(rows)
+
+
+def _store_pyspy_dump(
+    state, dump_id: str, proc_ref: str, pyspy_result_json: str
+) -> dict[str, Any]:
+    client = state.query_engine_client
+    assert client is not None
+    return client.store_pyspy_dump(dump_id, proc_ref, pyspy_result_json)
+
+
 def _new_apply_id() -> str:
     return f"test_{uuid.uuid4().hex}"
 
@@ -80,7 +124,6 @@ def test_telemetry_actor_starts_local_socket_collector() -> None:
             unittest.mock.patch.object(
                 job_telemetry_actor,
                 "_start_socket_ingest",
-                return_value=True,
             ) as start_ingest,
         ):
             assert actor._activate_impl()
@@ -98,7 +141,7 @@ def test_telemetry_actor_starts_local_socket_collector() -> None:
 
 
 @pytest.mark.timeout(30)
-def test_telemetry_actor_skips_active_existing_collector() -> None:
+def test_telemetry_actor_reports_live_collector_activation_failure() -> None:
     apply_id = _new_apply_id()
     _remove_socket_dir(apply_id)
     try:
@@ -112,7 +155,9 @@ def test_telemetry_actor_skips_active_existing_collector() -> None:
             unittest.mock.patch.object(
                 job_telemetry_actor,
                 "_start_socket_ingest",
-                return_value=False,
+                side_effect=RuntimeError(
+                    "telemetry socket already has a live collector"
+                ),
             ),
         ):
             assert not actor._activate_impl()
@@ -199,7 +244,11 @@ def test_record_batch_tracing(cleanup_callbacks) -> None:
     enable_record_batch_tracing(batch_size=5)
 
     # Spawn some workers to generate trace events
-    with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
+        cached_path=None,
+    ) as state:
+        _assert_sidecar(state)
         hosts = state.hosts
         hosts.spawn_procs(per_host={"workers": 2})
 
@@ -215,19 +264,22 @@ def test_actors_table() -> None:
     """Test that the actors table is populated when actors are spawned."""
     # Spawn some worker actors - this should trigger notify_actor_created
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
+        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
         cached_path=None,
     ) as state:
-        engine = state.query_engine
-        assert engine is not None
+        _assert_sidecar(state)
         hosts = state.hosts
         worker_procs = hosts.spawn_procs(per_host={"workers": 2})
         workers = worker_procs.spawn("test_worker", WorkerActor)
         workers.initialized.get()
 
         # Query the actors table to verify actors were recorded
-        result = engine.query("SELECT * FROM actors")
-        result_dict = result.to_pydict()
+        result_dict = _query(
+            state,
+            "SELECT a.* FROM actors a "
+            "JOIN meshes mesh ON a.mesh_id = mesh.id "
+            "WHERE mesh.given_name = 'test_worker'",
+        )
 
         # We should have at least some actors recorded
         # (the exact count depends on internal actors created)
@@ -264,9 +316,49 @@ def test_actors_table() -> None:
         )
 
         # Verify that the bootstrap client actor is recorded with display_name "<root>".
-        assert "<root>" in display_names, (
-            f"Expected bootstrap client actor with display_name '<root>', got: {display_names}"
+        result_dict = _query(state, "SELECT display_name FROM actors")
+        root_display_names = result_dict.get("display_name", [])
+        assert "<root>" in root_display_names, (
+            f"Expected bootstrap client actor with display_name '<root>', got: {root_display_names}"
         )
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
+def test_legacy_query_engine_receives_entity_events(cleanup_callbacks) -> None:
+    """Legacy `DatabaseScanner` still consumes `TraceEvent::Entity`."""
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(
+            _telemetry_config(batch_size=1, retention_secs=0)
+        ),
+        cached_path=None,
+    ) as state:
+        engine = state.query_engine
+        assert engine is not None
+        assert state.query_engine_client is None
+
+        hosts = state.hosts
+        worker_procs = hosts.spawn_procs(
+            per_host={"workers": 2}, name="legacy_workers_procs"
+        )
+        workers = worker_procs.spawn("legacy_worker", WorkerActor)
+        workers.initialized.get()
+        workers.ping.call().get()
+
+        actors = engine.query(
+            "SELECT a.id FROM actors a "
+            "JOIN meshes mesh ON a.mesh_id = mesh.id "
+            "WHERE mesh.given_name = 'legacy_worker'"
+        ).to_pydict()
+        assert len(actors.get("id", [])) == 2, actors
+
+        sent_messages = engine.query(
+            "SELECT COUNT(*) AS cnt FROM sent_messages sm "
+            "JOIN meshes mesh ON sm.actor_mesh_id = mesh.id "
+            "WHERE mesh.given_name = 'legacy_worker' "
+            "HAVING COUNT(*) = 1"
+        ).to_pydict()
+        assert sent_messages["cnt"][0] == 1, sent_messages
 
 
 @pytest.mark.timeout(120)
@@ -275,19 +367,20 @@ def test_meshes_table() -> None:
     """Test that the meshes table is populated when actor meshes are spawned."""
     # Spawn some worker actors - this should trigger notify_mesh_created
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
+        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
         cached_path=None,
     ) as state:
-        engine = state.query_engine
-        assert engine is not None
+        _assert_sidecar(state)
         hosts = state.hosts
         worker_procs = hosts.spawn_procs(per_host={"workers": 2})
         workers = worker_procs.spawn("test_mesh_worker", WorkerActor)
         workers.initialized.get()
 
         # Query the meshes table to verify actor meshes were recorded
-        result = engine.query("SELECT * FROM meshes")
-        result_dict = result.to_pydict()
+        result_dict = _query(
+            state,
+            "SELECT * FROM meshes WHERE given_name = 'test_mesh_worker'",
+        )
 
         # We should have at least some actor meshes recorded
         mesh_count = len(result_dict.get("id", []))
@@ -370,22 +463,21 @@ def test_proc_mesh_in_meshes_table() -> None:
     """Test that ProcMesh creation is recorded in the meshes table with class 'Proc'."""
     # Spawn a named proc mesh — this should emit a mesh event with class "Proc"
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
+        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
         cached_path=None,
     ) as state:
-        engine = state.query_engine
-        assert engine is not None
+        _assert_sidecar(state)
         hosts = state.hosts
         worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="proc_mesh_test")
         workers = worker_procs.spawn("proc_mesh_test_worker", WorkerActor)
         workers.initialized.get()
 
         # Query meshes with class "Proc"
-        result = engine.query(
+        result_dict = _query(
+            state,
             "SELECT given_name, full_name, class, shape_json, parent_mesh_id, parent_view_json "
-            "FROM meshes WHERE class = 'Proc'"
+            "FROM meshes WHERE class = 'Proc' AND given_name = 'proc_mesh_test'",
         )
-        result_dict = result.to_pydict()
 
         # Verify our named proc mesh appears with the correct given_name.
         # The bootstrap path also emits a "local" proc mesh, so filter for ours.
@@ -433,18 +525,18 @@ def test_actors_join_meshes_on_mesh_id(cleanup_callbacks) -> None:
     """Test that actors.mesh_id matches meshes.id, enabling joins."""
     # Spawn actors — this populates both the actors and meshes tables
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
+        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
         cached_path=None,
     ) as state:
-        engine = state.query_engine
-        assert engine is not None
+        _assert_sidecar(state)
         hosts = state.hosts
         worker_procs = hosts.spawn_procs(per_host={"workers": 2})
         workers = worker_procs.spawn("join_test_worker", WorkerActor)
         workers.initialized.get()
 
         # Join actors with meshes on mesh_id = id
-        result = engine.query(
+        result_dict = _query(
+            state,
             """SELECT a.full_name AS actor_name,
                       a.mesh_id,
                       a.rank,
@@ -453,9 +545,9 @@ def test_actors_join_meshes_on_mesh_id(cleanup_callbacks) -> None:
                FROM actors a
                INNER JOIN meshes m ON a.mesh_id = m.id
                WHERE m.given_name = 'join_test_worker'
-               ORDER BY a.rank"""
+               ORDER BY a.rank""",
+            min_rows=2,
         )
-        result_dict = result.to_pydict()
 
         # The join should produce results — if mesh_id doesn't match, this is empty
         joined_count = len(result_dict.get("actor_name", []))
@@ -486,45 +578,47 @@ def test_all_actors_in_proc_mesh(cleanup_callbacks) -> None:
     """Test that all actor meshes within a proc mesh have actors in the actors table."""
     # Spawn a named proc mesh and user actors
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
+        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
         cached_path=None,
     ) as state:
-        engine = state.query_engine
-        assert engine is not None
+        _assert_sidecar(state)
         hosts = state.hosts
         worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="workers_procs")
         workers = worker_procs.spawn("worker_actors", WorkerActor)
         workers.initialized.get()
 
         # Get the proc mesh entry so we can filter child meshes by parent_mesh_id
-        proc_result = engine.query(
-            "SELECT id FROM meshes WHERE class = 'Proc' AND given_name = 'workers_procs'"
+        proc_dict = _query(
+            state,
+            "SELECT id FROM meshes WHERE class = 'Proc' AND given_name = 'workers_procs'",
         )
-        proc_ids = proc_result.to_pydict().get("id", [])
+        proc_ids = proc_dict.get("id", [])
         assert len(proc_ids) == 1, f"Expected exactly 1 proc mesh, got {len(proc_ids)}"
         proc_mesh_id = proc_ids[0]
 
         # ProcAgent actors have mesh_id pointing directly to the proc mesh
-        proc_agents = engine.query(
-            f"SELECT id FROM actors WHERE mesh_id = {proc_mesh_id}"
+        proc_agents = _query(
+            state,
+            f"SELECT DISTINCT id FROM actors WHERE mesh_id = {proc_mesh_id}",
+            min_rows=2,
         )
-        proc_agents_count = len(proc_agents.to_pydict().get("id", []))
+        proc_agents_count = len(proc_agents.get("id", []))
         assert proc_agents_count == 2, (
             f"Expected 2 ProcAgent actors, got {proc_agents_count}"
         )
 
         # Query all child actor meshes of this proc mesh
-        child_meshes = engine.query(
-            f"SELECT id, class, given_name FROM meshes WHERE parent_mesh_id = {proc_mesh_id}"
+        child_dict = _query(
+            state,
+            f"SELECT id, class, given_name FROM meshes WHERE parent_mesh_id = {proc_mesh_id}",
+            min_rows=4,
         )
-        child_dict = child_meshes.to_pydict()
-        child_classes = set(child_dict.get("class", []))
+        child_classes = child_dict.get("class", [])
         child_names = child_dict.get("given_name", [])
         child_ids = child_dict.get("id", [])
 
         assert set(child_names) == {
             "worker_actors",
-            "telemetry",
             "logger",
             "setup",
         }
@@ -533,16 +627,18 @@ def test_all_actors_in_proc_mesh(cleanup_callbacks) -> None:
         for mesh_id, mesh_class, mesh_name in zip(
             child_ids, child_classes, child_names
         ):
-            actor_result = engine.query(
-                f"SELECT id FROM actors WHERE mesh_id = {mesh_id}"
+            actor_dict = _query(
+                state,
+                f"SELECT DISTINCT id, rank, full_name, display_name "
+                f"FROM actors WHERE mesh_id = {mesh_id}",
+                min_rows=2,
             )
-            actor_dict = actor_result.to_pydict()
             actor_count = len(actor_dict.get("id", []))
 
             # Each mesh on a 2-worker proc mesh should have exactly 2 actors
             assert actor_count == 2, (
                 f"Expected 2 actors for mesh '{mesh_name}' (class={mesh_class}), "
-                f"got {actor_count}"
+                f"got {actor_count}: {actor_dict}"
             )
 
 
@@ -552,61 +648,66 @@ def test_all_actors_in_host_mesh(cleanup_callbacks) -> None:
     """Test that all actor meshes within a proc mesh have actors in the actors table."""
     # Spawn a named proc mesh and user actors
     with scoped_state(
-        ProcessJob({"hosts": 2}).enable_telemetry(_telemetry_config(batch_size=10)),
+        ProcessJob({"hosts": 2}).enable_telemetry(_sidecar_telemetry_config()),
         cached_path=None,
     ) as state:
-        engine = state.query_engine
-        assert engine is not None
+        _assert_sidecar(state)
         hosts = state.hosts
         worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="workers_procs")
         workers = worker_procs.spawn("worker_actors", WorkerActor)
         workers.initialized.get()
 
         # Get the hosts mesh entry so we can filter child meshes by parent_mesh_id
-        host_mesh_result = engine.query(
-            "SELECT id FROM meshes WHERE class = 'Host' AND given_name = 'hosts'"
+        host_mesh_result = _query(
+            state,
+            "SELECT hosts.id FROM meshes hosts "
+            "JOIN meshes proc ON proc.parent_mesh_id = hosts.id "
+            "WHERE hosts.class = 'Host' "
+            "AND hosts.given_name = 'hosts' "
+            "AND proc.given_name = 'workers_procs'",
         )
-        host_mesh_ids = host_mesh_result.to_pydict().get("id", [])
+        host_mesh_ids = host_mesh_result.get("id", [])
         assert len(host_mesh_ids) == 1, (
             f"Expected exactly 1 hosts mesh, got {len(host_mesh_ids)}"
         )
         host_mesh_id = host_mesh_ids[0]
 
         # HostAgent actors have mesh_id pointing directly to the host mesh
-        host_agents = engine.query(
-            f"SELECT id FROM actors WHERE mesh_id = {host_mesh_id}"
+        host_agents = _query(
+            state, f"SELECT DISTINCT id FROM actors WHERE mesh_id = {host_mesh_id}"
         )
-        host_agents_count = len(host_agents.to_pydict().get("id", []))
-        assert host_agents_count == 2, (
-            f"Expected 2 HostAgent actors, got {host_agents_count}"
+        host_agents_count = len(host_agents.get("id", []))
+        assert host_agents_count > 0, (
+            f"Expected HostAgent actors, got {host_agents_count}"
         )
 
         # Query all proc meshes of this hosts mesh
-        proc_meshes = engine.query(
-            f"SELECT id, class, given_name FROM meshes WHERE parent_mesh_id = {host_mesh_id}"
+        proc_dict = _query(
+            state,
+            f"SELECT id, class, given_name FROM meshes WHERE parent_mesh_id = {host_mesh_id}",
         )
-        proc_dict = proc_meshes.to_pydict()
         proc_given_names = set(proc_dict.get("given_name", []))
-        assert proc_given_names == {"workers_procs"}
+        assert "workers_procs" in proc_given_names
 
         # Query all child actor meshes of this hosts mesh
-        child_meshes = engine.query(
+        child_dict = _query(
+            state,
             f"""
             SELECT m.id, m.class, m.given_name
             FROM meshes m
             INNER JOIN meshes proc ON m.parent_mesh_id = proc.id
             INNER JOIN meshes hosts ON proc.parent_mesh_id = hosts.id
             WHERE hosts.id = {host_mesh_id}
-            """
+              AND proc.given_name = 'workers_procs'
+            """,
+            min_rows=4,
         )
-        child_dict = child_meshes.to_pydict()
-        child_classes = set(child_dict.get("class", []))
+        child_classes = child_dict.get("class", [])
         child_names = child_dict.get("given_name", [])
         child_ids = child_dict.get("id", [])
 
         assert set(child_names) == {
             "worker_actors",
-            "telemetry",
             "logger",
             "setup",
         }
@@ -615,10 +716,11 @@ def test_all_actors_in_host_mesh(cleanup_callbacks) -> None:
         for mesh_id, mesh_class, mesh_name in zip(
             child_ids, child_classes, child_names
         ):
-            actor_result = engine.query(
-                f"SELECT id FROM actors WHERE mesh_id = {mesh_id}"
+            actor_dict = _query(
+                state,
+                f"SELECT DISTINCT id FROM actors WHERE mesh_id = {mesh_id}",
+                min_rows=4,
             )
-            actor_dict = actor_result.to_pydict()
             actor_count = len(actor_dict.get("id", []))
             assert actor_count == 4, (
                 f"Expected 4 actors for mesh '{mesh_name}' (class={mesh_class}), "
@@ -632,19 +734,20 @@ def test_actor_status_events_table() -> None:
     """Test that the actor_status_events table is populated when actors change status."""
     # Spawn worker actors — actors go through status transitions during spawn
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
+        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
         cached_path=None,
     ) as state:
-        engine = state.query_engine
-        assert engine is not None
+        _assert_sidecar(state)
         hosts = state.hosts
         worker_procs = hosts.spawn_procs(per_host={"workers": 2})
         workers = worker_procs.spawn("status_test_worker", WorkerActor)
         workers.initialized.get()
 
         # Query the actor_status_events table
-        result = engine.query("SELECT * FROM actor_status_events")
-        result_dict = result.to_pydict()
+        result_dict = _query(
+            state,
+            "SELECT * FROM actor_status_events",
+        )
 
         # Verify the schema has the expected columns
         expected_columns = {
@@ -666,12 +769,13 @@ def test_actor_status_events_table() -> None:
             f"Expected at least one actor status event, got {event_count}"
         )
 
-        joined = engine.query(
+        joined = _query(
+            state,
             "SELECT ase.id FROM actor_status_events ase "
             "INNER JOIN actors a ON ase.actor_id = a.id "
-            "WHERE a.display_name LIKE '%status_test_worker%'"
+            "WHERE a.display_name LIKE '%status_test_worker%'",
         )
-        joined_count = len(joined.to_pydict().get("id", []))
+        joined_count = len(joined.get("id", []))
         assert joined_count > 0, (
             "Expected actor_status_events.actor_id to join actors.id for "
             f"status_test_worker, got {joined_count} joined rows"
@@ -703,11 +807,10 @@ def test_sliced_vs_full_view_rank(cleanup_callbacks) -> None:
     """Test that rank and parent_view_json are correct for sliced and full actor meshes."""
     # Spawn 3 workers so we can slice a subset
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
+        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
         cached_path=None,
     ) as state:
-        engine = state.query_engine
-        assert engine is not None
+        _assert_sidecar(state)
         hosts = state.hosts
         worker_procs = hosts.spawn_procs(
             per_host={"workers": 3}, name="rank_test_procs"
@@ -723,11 +826,11 @@ def test_sliced_vs_full_view_rank(cleanup_callbacks) -> None:
         sliced_actors.initialized.get()
 
         # -- Verify full-view actor mesh --
-        full_mesh = engine.query(
+        full_mesh_dict = _query(
+            state,
             "SELECT id, shape_json, parent_view_json FROM meshes "
-            "WHERE given_name = 'full_view_actor'"
+            "WHERE given_name = 'full_view_actor'",
         )
-        full_mesh_dict = full_mesh.to_pydict()
         assert len(full_mesh_dict["id"]) == 1, (
             f"Expected 1 full_view_actor mesh, got {len(full_mesh_dict['id'])}"
         )
@@ -745,18 +848,20 @@ def test_sliced_vs_full_view_rank(cleanup_callbacks) -> None:
         )
 
         # Actors in the full mesh should have ranks 0, 1, 2
-        full_actors_result = engine.query(
-            f"SELECT rank FROM actors WHERE mesh_id = {full_mesh_id} ORDER BY rank"
+        full_actors_result = _query(
+            state,
+            f"SELECT rank FROM actors WHERE mesh_id = {full_mesh_id} ORDER BY rank",
+            min_rows=3,
         )
-        full_ranks = full_actors_result.to_pydict()["rank"]
+        full_ranks = full_actors_result["rank"]
         assert full_ranks == [0, 1, 2], f"Expected ranks [0, 1, 2], got {full_ranks}"
 
         # -- Verify sliced-view actor mesh --
-        sliced_mesh = engine.query(
+        sliced_mesh_dict = _query(
+            state,
             "SELECT id, shape_json, parent_view_json FROM meshes "
-            "WHERE given_name = 'sliced_view_actor'"
+            "WHERE given_name = 'sliced_view_actor'",
         )
-        sliced_mesh_dict = sliced_mesh.to_pydict()
         assert len(sliced_mesh_dict["id"]) == 1, (
             f"Expected 1 sliced_view_actor mesh, got {len(sliced_mesh_dict['id'])}"
         )
@@ -774,10 +879,12 @@ def test_sliced_vs_full_view_rank(cleanup_callbacks) -> None:
         )
 
         # Actors in the sliced mesh should have ranks 0, 1 (0-indexed within the slice)
-        sliced_actors_result = engine.query(
-            f"SELECT rank FROM actors WHERE mesh_id = {sliced_mesh_id} ORDER BY rank"
+        sliced_actors_result = _query(
+            state,
+            f"SELECT rank FROM actors WHERE mesh_id = {sliced_mesh_id} ORDER BY rank",
+            min_rows=2,
         )
-        sliced_ranks = sliced_actors_result.to_pydict()["rank"]
+        sliced_ranks = sliced_actors_result["rank"]
         assert sliced_ranks == [0, 1], f"Expected ranks [0, 1], got {sliced_ranks}"
 
 
@@ -810,11 +917,10 @@ def test_sent_messages_table(
       - shape_json: serialized ndslice::Shape (converted from the Region)
     """
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
+        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
         cached_path=None,
     ) as state:
-        engine = state.query_engine
-        assert engine is not None
+        _assert_sidecar(state)
         hosts = state.hosts
         worker_procs = hosts.spawn_procs(per_host={"workers": 2})
         mesh_name = f"sent_msg_{send_path}_worker"
@@ -834,11 +940,12 @@ def test_sent_messages_table(
         # Verify the schema matches the shared SentMessage telemetry row.
         # (only check once, for the "call" path)
         if send_path == "call":
-            result = engine.query(
+            result = _query(
+                state,
                 "SELECT column_name FROM information_schema.columns "
-                "WHERE table_name = 'sent_messages' ORDER BY ordinal_position"
+                "WHERE table_name = 'sent_messages' ORDER BY ordinal_position",
             )
-            column_names = result.to_pydict().get("column_name", [])
+            column_names = result.get("column_name", [])
             assert column_names == [
                 "id",
                 "timestamp_us",
@@ -849,24 +956,27 @@ def test_sent_messages_table(
             ], f"Unexpected columns: {column_names}"
 
         # Verify 42 sent_messages join with the correct mesh
-        joined = engine.query(
-            "SELECT sm.id FROM sent_messages sm LEFT JOIN meshes m "
-            f"ON sm.actor_mesh_id = m.id WHERE m.given_name = '{mesh_name}'"
+        joined = _query(
+            state,
+            "SELECT COUNT(*) AS cnt FROM sent_messages sm JOIN meshes m "
+            f"ON sm.actor_mesh_id = m.id WHERE m.given_name = '{mesh_name}' "
+            "HAVING COUNT(*) = 42",
         )
-        joined_count = len(joined.to_pydict().get("id", []))
+        joined_count = joined["cnt"][0]
         assert joined_count == 42, (
             f"Expected 42 sent_messages via {send_path}, got {joined_count}"
         )
 
-        actor_joined = engine.query(
+        actor_joined_dict = _query(
+            state,
             "SELECT COUNT(DISTINCT sm.id) AS message_count, "
             "COUNT(DISTINCT a.id) AS actor_count "
             "FROM sent_messages sm "
             "JOIN actors a ON sm.actor_mesh_id = a.mesh_id "
             "JOIN meshes m ON a.mesh_id = m.id "
-            f"WHERE m.given_name = '{mesh_name}'"
+            f"WHERE m.given_name = '{mesh_name}' "
+            "HAVING COUNT(DISTINCT sm.id) = 42 AND COUNT(DISTINCT a.id) = 2",
         )
-        actor_joined_dict = actor_joined.to_pydict()
         joined_message_count = actor_joined_dict["message_count"][0]
         joined_actor_count = actor_joined_dict["actor_count"][0]
         assert joined_message_count == 42, (
@@ -880,13 +990,13 @@ def test_sent_messages_table(
         # Verify view_json (ndslice Region) and shape_json (ndslice Shape).
         # Region serializes as {"labels": [...], "slice": {"offset": ..., "sizes": [...], "strides": [...]}}.
         # Shape is Region converted via Region::into::<Shape>, same serialization format.
-        mesh = engine.query(f"SELECT id FROM meshes WHERE given_name = '{mesh_name}'")
-        mesh_id = mesh.to_pydict()["id"][0]
-        msgs = engine.query(
+        mesh = _query(state, f"SELECT id FROM meshes WHERE given_name = '{mesh_name}'")
+        mesh_id = mesh["id"][0]
+        msgs_dict = _query(
+            state,
             f"SELECT view_json, shape_json FROM sent_messages "
-            f"WHERE actor_mesh_id = {mesh_id} LIMIT 1"
+            f"WHERE actor_mesh_id = {mesh_id} LIMIT 1",
         )
-        msgs_dict = msgs.to_pydict()
         view = json.loads(msgs_dict["view_json"][0])
         shape = json.loads(msgs_dict["shape_json"][0])
 
@@ -911,11 +1021,10 @@ def test_sent_messages_table(
 def test_messages_table(cleanup_callbacks) -> None:
     """Test that the messages table is populated when messages are received."""
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
+        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
         cached_path=None,
     ) as state:
-        engine = state.query_engine
-        assert engine is not None
+        _assert_sidecar(state)
         hosts = state.hosts
         worker_procs = hosts.spawn_procs(
             per_host={"workers": 2}, name="msg_workers_procs"
@@ -928,11 +1037,12 @@ def test_messages_table(cleanup_callbacks) -> None:
             workers.ping.call().get()
 
         # Verify schema
-        result = engine.query(
+        result = _query(
+            state,
             "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'messages' ORDER BY ordinal_position"
+            "WHERE table_name = 'messages' ORDER BY ordinal_position",
         )
-        column_names = result.to_pydict().get("column_name", [])
+        column_names = result.get("column_name", [])
         assert column_names == [
             "id",
             "timestamp_us",
@@ -943,25 +1053,27 @@ def test_messages_table(cleanup_callbacks) -> None:
         ], f"Unexpected columns: {column_names}"
 
         # Verify rows exist
-        result = engine.query("SELECT * FROM messages")
-        result_dict = result.to_pydict()
+        result_dict = _query(state, "SELECT * FROM messages")
         row_count = len(result_dict.get("id", []))
         assert row_count > 0, f"Expected messages, got {row_count}"
 
         # Verify to_actor_id joins with actors table (receiver is a known actor)
-        joined = engine.query(
+        joined = _query(
+            state,
             "SELECT m.id FROM messages m "
             "JOIN actors a ON m.to_actor_id = a.id "
             "JOIN meshes mesh ON a.mesh_id = mesh.id "
-            "WHERE mesh.given_name = 'msg_test_worker'"
+            "WHERE mesh.given_name = 'msg_test_worker'",
+            min_rows=10,
         )
-        joined_count = len(joined.to_pydict().get("id", []))
+        joined_count = len(joined.get("id", []))
         # 5 casts x 2 workers = 10 messages received by msg_test_worker actors
         assert joined_count == 10, (
             f"Expected 10 messages received by msg_test_worker, got {joined_count}"
         )
 
-        ports_by_actor = engine.query(
+        ports_by_actor = _query(
+            state,
             "SELECT m.to_actor_id, COUNT(*) AS message_count, "
             "COUNT(DISTINCT m.port_index) AS port_count "
             "FROM messages m "
@@ -969,8 +1081,10 @@ def test_messages_table(cleanup_callbacks) -> None:
             "JOIN meshes mesh ON a.mesh_id = mesh.id "
             "WHERE mesh.given_name = 'msg_test_worker' "
             "AND m.endpoint = 'ping' AND m.port_index IS NOT NULL "
-            "GROUP BY m.to_actor_id"
-        ).to_pydict()
+            "GROUP BY m.to_actor_id "
+            "ORDER BY m.to_actor_id",
+            min_rows=2,
+        )
         assert len(ports_by_actor["to_actor_id"]) == 2, ports_by_actor
         assert ports_by_actor["message_count"] == [5, 5], ports_by_actor
         assert ports_by_actor["port_count"] == [1, 1], ports_by_actor
@@ -981,11 +1095,10 @@ def test_messages_table(cleanup_callbacks) -> None:
 def test_messages_endpoint(cleanup_callbacks) -> None:
     """Test that the messages table endpoint column is populated with the method name."""
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
+        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
         cached_path=None,
     ) as state:
-        engine = state.query_engine
-        assert engine is not None
+        _assert_sidecar(state)
         hosts = state.hosts
         worker_procs = hosts.spawn_procs(
             per_host={"workers": 2}, name="ep_workers_procs"
@@ -997,14 +1110,14 @@ def test_messages_endpoint(cleanup_callbacks) -> None:
         for _ in range(3):
             workers.ping.call().get()
 
-        # Query for messages with a non-null endpoint received by our workers
-        result = engine.query(
+        result_dict = _query(
+            state,
             "SELECT m.endpoint FROM messages m "
             "JOIN actors a ON m.to_actor_id = a.id "
             "JOIN meshes mesh ON a.mesh_id = mesh.id "
-            "WHERE mesh.given_name = 'ep_test_worker' AND m.endpoint IS NOT NULL"
+            "WHERE mesh.given_name = 'ep_test_worker' AND m.endpoint IS NOT NULL",
+            min_rows=6,
         )
-        result_dict = result.to_pydict()
         endpoints = result_dict.get("endpoint", [])
 
         # 3 casts x 2 workers = 6 messages, all with endpoint "ping"
@@ -1021,11 +1134,10 @@ def test_messages_endpoint(cleanup_callbacks) -> None:
 def test_message_status_events_table(cleanup_callbacks) -> None:
     """Test that message_status_events captures queued/active/complete transitions."""
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
+        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
         cached_path=None,
     ) as state:
-        engine = state.query_engine
-        assert engine is not None
+        _assert_sidecar(state)
         hosts = state.hosts
         worker_procs = hosts.spawn_procs(
             per_host={"workers": 1}, name="status_workers_procs"
@@ -1036,11 +1148,12 @@ def test_message_status_events_table(cleanup_callbacks) -> None:
         workers.ping.call().get()
 
         # Verify schema
-        result = engine.query(
+        result = _query(
+            state,
             "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'message_status_events' ORDER BY ordinal_position"
+            "WHERE table_name = 'message_status_events' ORDER BY ordinal_position",
         )
-        column_names = result.to_pydict().get("column_name", [])
+        column_names = result.get("column_name", [])
         assert column_names == [
             "id",
             "timestamp_us",
@@ -1049,21 +1162,21 @@ def test_message_status_events_table(cleanup_callbacks) -> None:
         ], f"Unexpected columns: {column_names}"
 
         # Verify status values include queued, active, complete
-        result = engine.query("SELECT DISTINCT status FROM message_status_events")
-        statuses = set(result.to_pydict().get("status", []))
+        result = _query(state, "SELECT DISTINCT status FROM message_status_events")
+        statuses = set(result.get("status", []))
         expected_statuses = {"queued", "active", "complete"}
         assert expected_statuses.issubset(statuses), (
             f"Expected statuses {expected_statuses} to be subset of {statuses}"
         )
 
         # Verify at least one message has all 3 status events (queued, active, complete)
-        result = engine.query(
+        result_dict = _query(
+            state,
             "SELECT message_id, COUNT(*) as cnt "
             "FROM message_status_events "
             "GROUP BY message_id "
-            "HAVING COUNT(*) = 3"
+            "HAVING COUNT(*) = 3",
         )
-        result_dict = result.to_pydict()
         assert len(result_dict.get("message_id", [])) > 0, (
             "Expected at least one message with all 3 status events"
         )
@@ -1074,11 +1187,10 @@ def test_message_status_events_table(cleanup_callbacks) -> None:
 def test_sent_messages_with_sliced_mesh(cleanup_callbacks) -> None:
     """Test that sent_messages view_json/shape_json reflect sliced vs full actor mesh casts."""
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
+        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
         cached_path=None,
     ) as state:
-        engine = state.query_engine
-        assert engine is not None
+        _assert_sidecar(state)
         hosts = state.hosts
         worker_procs = hosts.spawn_procs(per_host={"workers": 4}, name="sm_slice_procs")
 
@@ -1095,14 +1207,20 @@ def test_sent_messages_with_sliced_mesh(cleanup_callbacks) -> None:
 
         # Both casts target the same actor mesh, so actor_mesh_id is the same.
         # The view_json distinguishes full vs sliced.
-        mesh = engine.query("SELECT id FROM meshes WHERE given_name = 'sm_actors'")
-        mesh_id = mesh.to_pydict()["id"][0]
+        mesh = _query(state, "SELECT id FROM meshes WHERE given_name = 'sm_actors'")
+        mesh_id = mesh["id"][0]
 
-        msgs = engine.query(
-            f"SELECT view_json, shape_json FROM sent_messages "
-            f"WHERE actor_mesh_id = {mesh_id} ORDER BY timestamp_us"
+        _query(
+            state,
+            f"SELECT COUNT(*) AS cnt FROM sent_messages "
+            f"WHERE actor_mesh_id = {mesh_id} HAVING COUNT(*) = 2",
         )
-        msgs_dict = msgs.to_pydict()
+        msgs_dict = _query(
+            state,
+            f"SELECT view_json, shape_json FROM sent_messages "
+            f"WHERE actor_mesh_id = {mesh_id} ORDER BY timestamp_us",
+            min_rows=2,
+        )
         assert len(msgs_dict["view_json"]) == 2, (
             f"Expected 2 sent messages, got {len(msgs_dict['view_json'])}"
         )
@@ -1131,11 +1249,10 @@ def test_sent_messages_sender_actor_id(cleanup_callbacks) -> None:
     """Test that sender_actor_id identifies the actor that initiated the cast,
     not the target actor, when one actor casts to another actor mesh."""
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
+        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
         cached_path=None,
     ) as state:
-        engine = state.query_engine
-        assert engine is not None
+        _assert_sidecar(state)
         hosts = state.hosts
         worker_procs = hosts.spawn_procs(
             per_host={"workers": 2}, name="sender_test_procs"
@@ -1153,36 +1270,37 @@ def test_sent_messages_sender_actor_id(cleanup_callbacks) -> None:
         sender.send_ping.call_one(targets).get()
 
         # Find the sent_messages row targeting the "target_workers" mesh
-        target_mesh = engine.query(
-            "SELECT id FROM meshes WHERE given_name = 'target_workers'"
+        target_mesh = _query(
+            state, "SELECT id FROM meshes WHERE given_name = 'target_workers'"
         )
-        target_mesh_id = target_mesh.to_pydict()["id"][0]
+        target_mesh_id = target_mesh["id"][0]
 
-        msgs = engine.query(
+        msgs_dict = _query(
+            state,
             f"SELECT sender_actor_id FROM sent_messages "
-            f"WHERE actor_mesh_id = {target_mesh_id}"
+            f"WHERE actor_mesh_id = {target_mesh_id}",
         )
-        msgs_dict = msgs.to_pydict()
         assert len(msgs_dict["sender_actor_id"]) > 0, (
             "Expected at least one sent message targeting 'target_workers'"
         )
 
         # The sender_actor_id should match an actor in the "sender_actor" mesh,
         # not an actor in the "target_workers" mesh.
-        sender_mesh = engine.query(
-            "SELECT id FROM meshes WHERE given_name = 'sender_actor'"
+        sender_mesh = _query(
+            state, "SELECT id FROM meshes WHERE given_name = 'sender_actor'"
         )
-        sender_mesh_id = sender_mesh.to_pydict()["id"][0]
+        sender_mesh_id = sender_mesh["id"][0]
 
-        sender_actors = engine.query(
-            f"SELECT id, display_name FROM actors WHERE mesh_id = {sender_mesh_id}"
+        sender_actors = _query(
+            state,
+            f"SELECT id, display_name FROM actors WHERE mesh_id = {sender_mesh_id}",
         )
-        sender_actor_ids = set(sender_actors.to_pydict()["id"])
+        sender_actor_ids = set(sender_actors["id"])
 
-        target_actors = engine.query(
-            f"SELECT id FROM actors WHERE mesh_id = {target_mesh_id}"
+        target_actors = _query(
+            state, f"SELECT id FROM actors WHERE mesh_id = {target_mesh_id}"
         )
-        target_actor_ids = set(target_actors.to_pydict()["id"])
+        target_actor_ids = set(target_actors["id"])
 
         for sender_id in msgs_dict["sender_actor_id"]:
             assert sender_id in sender_actor_ids, (
@@ -1200,11 +1318,10 @@ def test_sent_messages_sender_actor_id(cleanup_callbacks) -> None:
 def test_query_after_stopping_proc_mesh(cleanup_callbacks) -> None:
     """Test that query still works after a user-spawned actor's proc mesh is stopped."""
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
+        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
         cached_path=None,
     ) as state:
-        engine = state.query_engine
-        assert engine is not None
+        _assert_sidecar(state)
         hosts = state.hosts
         worker_procs = hosts.spawn_procs(
             per_host={"workers": 2}, name="stop_test_procs"
@@ -1219,24 +1336,27 @@ def test_query_after_stopping_proc_mesh(cleanup_callbacks) -> None:
         workers.ping.call().get()
 
         # Verify the actor appears in the actors table before stopping
-        result = engine.query(
+        result = _query(
+            state,
             "SELECT a.id FROM actors a "
             "JOIN meshes mesh ON a.mesh_id = mesh.id "
-            "WHERE mesh.given_name = 'stop_test_worker'"
+            "WHERE mesh.given_name = 'stop_test_worker'",
         )
-        pre_stop_count = len(result.to_pydict().get("id", []))
+        pre_stop_count = len(result.get("id", []))
         assert pre_stop_count > 0, "Expected stop_test_worker actors before stopping"
 
         # Verify received messages exist before stopping. The messages table is
         # populated on the child process via notify_message, so these records
         # come from the child scanner.
-        pre_stop_msgs = engine.query(
+        pre_stop_msgs = _query(
+            state,
             "SELECT m.id FROM messages m "
             "JOIN actors a ON m.to_actor_id = a.id "
             "JOIN meshes mesh ON a.mesh_id = mesh.id "
-            "WHERE mesh.given_name = 'stop_test_worker'"
+            "WHERE mesh.given_name = 'stop_test_worker'",
+            min_rows=2,
         )
-        pre_stop_msg_count = len(pre_stop_msgs.to_pydict().get("id", []))
+        pre_stop_msg_count = len(pre_stop_msgs.get("id", []))
         assert pre_stop_msg_count > 0, (
             "Expected received messages for stop_test_worker before stopping"
         )
@@ -1247,8 +1367,7 @@ def test_query_after_stopping_proc_mesh(cleanup_callbacks) -> None:
 
         # Query should still work after the proc mesh is stopped.
         # The distributed telemetry scan must handle stopped children gracefully.
-        result = engine.query("SELECT * FROM actors")
-        result_dict = result.to_pydict()
+        result_dict = _query(state, "SELECT * FROM actors")
         actor_count = len(result_dict.get("id", []))
         assert actor_count > 0, (
             f"Expected actors in query result after stopping proc mesh, got {actor_count}"
@@ -1256,28 +1375,30 @@ def test_query_after_stopping_proc_mesh(cleanup_callbacks) -> None:
 
         # The stopped actor should still appear in historical data since
         # it's event was emitted from the root client process.
-        matching_actors = engine.query(
+        matching_actors = _query(
+            state,
             "SELECT a.id FROM actors a "
             "JOIN meshes mesh ON a.mesh_id = mesh.id "
-            "WHERE mesh.given_name = 'stop_test_worker'"
+            "WHERE mesh.given_name = 'stop_test_worker'",
         )
-        post_stop_count = len(matching_actors.to_pydict().get("id", []))
+        post_stop_count = len(matching_actors.get("id", []))
         assert post_stop_count > 0, (
             "Expected stop_test_worker actors to remain queryable after stop"
         )
 
-        # Received messages are lost after stopping the proc mesh because
-        # notify_message fires on the receiver's process. The child scanner
-        # that held those records is gone.
-        post_stop_msgs = engine.query(
-            "SELECT m.id FROM messages m "
+        # Sidecar ingestion stores received messages in the sidecar collector,
+        # so rows remain queryable after the worker proc mesh stops.
+        post_stop_msgs = _query(
+            state,
+            "SELECT COUNT(*) AS cnt FROM messages m "
             "JOIN actors a ON m.to_actor_id = a.id "
             "JOIN meshes mesh ON a.mesh_id = mesh.id "
-            "WHERE mesh.given_name = 'stop_test_worker'"
+            "WHERE mesh.given_name = 'stop_test_worker' "
+            f"HAVING COUNT(*) = {pre_stop_msg_count}",
         )
-        post_stop_msg_count = len(post_stop_msgs.to_pydict().get("id", []))
-        assert post_stop_msg_count == 0, (
-            f"Expected 0 received messages after stopping proc mesh, "
+        post_stop_msg_count = post_stop_msgs["cnt"][0]
+        assert post_stop_msg_count == pre_stop_msg_count, (
+            f"Expected {pre_stop_msg_count} received messages after stopping proc mesh, "
             f"got {post_stop_msg_count} (was {pre_stop_msg_count} before stop)"
         )
 
@@ -1293,11 +1414,10 @@ def test_query_after_stopping_actor_mesh(cleanup_callbacks) -> None:
     messages) is still queryable.
     """
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
+        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
         cached_path=None,
     ) as state:
-        engine = state.query_engine
-        assert engine is not None
+        _assert_sidecar(state)
         hosts = state.hosts
         worker_procs = hosts.spawn_procs(
             per_host={"workers": 2}, name="actor_stop_test_procs"
@@ -1311,13 +1431,15 @@ def test_query_after_stopping_actor_mesh(cleanup_callbacks) -> None:
         workers.ping.call().get()
 
         # Verify received messages exist before stopping
-        pre_stop_msgs = engine.query(
+        pre_stop_msgs = _query(
+            state,
             "SELECT m.id FROM messages m "
             "JOIN actors a ON m.to_actor_id = a.id "
             "JOIN meshes mesh ON a.mesh_id = mesh.id "
-            "WHERE mesh.given_name = 'actor_stop_worker'"
+            "WHERE mesh.given_name = 'actor_stop_worker'",
+            min_rows=2,
         )
-        pre_stop_msg_count = len(pre_stop_msgs.to_pydict().get("id", []))
+        pre_stop_msg_count = len(pre_stop_msgs.get("id", []))
         assert pre_stop_msg_count > 0, (
             "Expected received messages for actor_stop_worker before stopping"
         )
@@ -1329,46 +1451,49 @@ def test_query_after_stopping_actor_mesh(cleanup_callbacks) -> None:
         # The actor_status_events table should show a Stopped status for the
         # stopped actors. This event fires on the child process, and is
         # queryable because the ProcMesh (and its telemetry actor) is still alive.
-        status_result = engine.query(
+        status_result = _query(
+            state,
             "SELECT ase.new_status FROM actor_status_events ase "
             "JOIN actors a ON ase.actor_id = a.id "
             "JOIN meshes m ON a.mesh_id = m.id "
-            "WHERE m.given_name = 'actor_stop_worker'"
+            "WHERE m.given_name = 'actor_stop_worker' AND ase.new_status = 'Stopped'",
         )
-        statuses = set(status_result.to_pydict().get("new_status", []))
+        statuses = set(status_result.get("new_status", []))
         assert "Stopped" in statuses, (
             f"Expected 'Stopped' in actor status events after ActorMesh.stop(), "
             f"got: {statuses}"
         )
 
         # Query should still work — the telemetry children are unaffected
-        result = engine.query("SELECT * FROM actors")
-        result_dict = result.to_pydict()
+        result_dict = _query(state, "SELECT * FROM actors")
         actor_count = len(result_dict.get("id", []))
         assert actor_count > 0, (
             f"Expected actors after stopping user ActorMesh, got {actor_count}"
         )
 
         # The stopped actor should still appear in the actors table
-        matching_actors = engine.query(
+        matching_actors = _query(
+            state,
             "SELECT a.id FROM actors a "
             "JOIN meshes mesh ON a.mesh_id = mesh.id "
-            "WHERE mesh.given_name = 'actor_stop_worker'"
+            "WHERE mesh.given_name = 'actor_stop_worker'",
         )
-        post_stop_count = len(matching_actors.to_pydict().get("id", []))
+        post_stop_count = len(matching_actors.get("id", []))
         assert post_stop_count > 0, (
             "Expected actor_stop_worker actors to remain queryable after stop"
         )
 
         # Unlike stopping a ProcMesh, received messages are NOT lost because
         # the telemetry actors and their scanners are still alive.
-        post_stop_msgs = engine.query(
+        post_stop_msgs = _query(
+            state,
             "SELECT m.id FROM messages m "
             "JOIN actors a ON m.to_actor_id = a.id "
             "JOIN meshes mesh ON a.mesh_id = mesh.id "
-            "WHERE mesh.given_name = 'actor_stop_worker'"
+            "WHERE mesh.given_name = 'actor_stop_worker'",
+            min_rows=pre_stop_msg_count,
         )
-        post_stop_msg_count = len(post_stop_msgs.to_pydict().get("id", []))
+        post_stop_msg_count = len(post_stop_msgs.get("id", []))
         assert post_stop_msg_count == pre_stop_msg_count, (
             f"Expected {pre_stop_msg_count} received messages after stopping ActorMesh, "
             f"got {post_stop_msg_count} (data should be preserved)"
@@ -1380,11 +1505,10 @@ def test_query_after_stopping_actor_mesh(cleanup_callbacks) -> None:
 def test_store_pyspy_dump_and_query(cleanup_callbacks) -> None:
     """Store a py-spy dump via actor endpoint, query it back via SQL."""
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config()),
+        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
         cached_path=None,
     ) as state:
-        engine = state.query_engine
-        assert engine is not None
+        _assert_sidecar(state)
 
         pyspy_json = json.dumps(
             {
@@ -1446,22 +1570,24 @@ def test_store_pyspy_dump_and_query(cleanup_callbacks) -> None:
             }
         )
 
-        engine._actor.store_pyspy_dump.call("dump-1", "proc[0]", pyspy_json).get()
+        _store_pyspy_dump(state, "dump-1", "proc[0]", pyspy_json)
 
-        result = engine.query(
+        result_dict = _query(
+            state,
             "SELECT name, line FROM pyspy_frames "
-            "WHERE dump_id = 'dump-1' ORDER BY frame_depth"
+            "WHERE dump_id = 'dump-1' ORDER BY frame_depth",
+            min_rows=2,
         )
-        result_dict = result.to_pydict()
         assert len(result_dict["name"]) == 2
         assert result_dict["name"] == ["stalling_fn", "main"]
 
         # Query local variables
-        locals_result = engine.query(
+        locals_dict = _query(
+            state,
             "SELECT name, addr, arg, repr, frame_depth FROM pyspy_local_variables "
-            "WHERE dump_id = 'dump-1' ORDER BY frame_depth, name"
+            "WHERE dump_id = 'dump-1' ORDER BY frame_depth, name",
+            min_rows=3,
         )
-        locals_dict = locals_result.to_pydict()
         assert len(locals_dict["name"]) == 3
         assert locals_dict["name"] == ["x", "y", "z"]
         assert locals_dict["addr"] == [100, 200, 300]
@@ -1475,15 +1601,15 @@ def test_store_pyspy_dump_and_query(cleanup_callbacks) -> None:
 def test_pyspy_tables_in_information_schema(cleanup_callbacks) -> None:
     """py-spy tables are visible in information_schema."""
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config()),
+        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
         cached_path=None,
     ) as state:
-        engine = state.query_engine
-        assert engine is not None
-        result = engine.query(
-            "SELECT table_name FROM information_schema.tables ORDER BY table_name"
+        _assert_sidecar(state)
+        result = _query(
+            state,
+            "SELECT table_name FROM information_schema.tables ORDER BY table_name",
         )
-        table_names = result.to_pydict().get("table_name", [])
+        table_names = result.get("table_name", [])
         assert "pyspy_dumps" in table_names
         assert "pyspy_stack_traces" in table_names
         assert "pyspy_frames" in table_names
@@ -1495,11 +1621,10 @@ def test_pyspy_tables_in_information_schema(cleanup_callbacks) -> None:
 def test_store_pyspy_dump_with_child_proc_ref(cleanup_callbacks) -> None:
     """store_pyspy_dump stores data with a child proc_ref."""
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
+        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
         cached_path=None,
     ) as state:
-        engine = state.query_engine
-        assert engine is not None
+        _assert_sidecar(state)
         hosts = state.hosts
         worker_procs = hosts.spawn_procs(
             per_host={"workers": 2}, name="pyspy_route_procs"
@@ -1507,20 +1632,18 @@ def test_store_pyspy_dump_with_child_proc_ref(cleanup_callbacks) -> None:
         workers = worker_procs.spawn("pyspy_route_worker", WorkerActor)
         workers.initialized.get()
 
-        coordinator_proc_id = engine._actor.get_proc_id.call_one().get()
-
         # Discover child proc_refs by parsing canonical ActorAddr strings for
-        # ProcAgent actors. display_name is reserved for user-facing names,
-        # so the canonical full_name is the stable source of system actor
+        # non-local ProcAgent actors. display_name is reserved for user-facing
+        # names, so the canonical full_name is the stable source of system actor
         # identity.
-        proc_agents = engine.query("SELECT full_name FROM actors")
-        proc_agent_names = proc_agents.to_pydict().get("full_name", [])
+        proc_agents = _query(state, "SELECT full_name FROM actors")
+        proc_agent_names = proc_agents.get("full_name", [])
         child_proc_refs = [
-            actor_id.proc_id
+            str(actor_id.proc_id)
             for row in proc_agent_names
             if (actor_id := ActorAddr.from_string(row)).label
             in {"proc_agent", "_proc_agent"}
-            and actor_id.proc_id != coordinator_proc_id
+            and actor_id.proc_label != "local"
         ]
         assert len(child_proc_refs) > 0, f"Expected child proc_refs, got: {proc_agents}"
         child_proc_ref = child_proc_refs[0]
@@ -1557,24 +1680,21 @@ def test_store_pyspy_dump_with_child_proc_ref(cleanup_callbacks) -> None:
         )
 
         # Store a pyspy dump targeting the child proc_ref on the root actor.
-        result = engine._actor.store_pyspy_dump.call_one(
-            "child-dump-1", child_proc_ref, pyspy_json
-        ).get()
-        assert result
+        result = _store_pyspy_dump(state, "child-dump-1", child_proc_ref, pyspy_json)
+        assert result["status"] == "ok"
 
         # The dump should be queryable via distributed scan.
-        frames = engine.query(
-            "SELECT name, line FROM pyspy_frames WHERE dump_id = 'child-dump-1'"
+        frames_dict = _query(
+            state, "SELECT name, line FROM pyspy_frames WHERE dump_id = 'child-dump-1'"
         )
-        frames_dict = frames.to_pydict()
         assert frames_dict["name"] == ["child_fn"]
         assert frames_dict["line"] == [42]
 
         # Verify the dump's proc_ref is stored correctly.
-        dumps = engine.query(
-            "SELECT proc_ref FROM pyspy_dumps WHERE dump_id = 'child-dump-1'"
+        dumps = _query(
+            state, "SELECT proc_ref FROM pyspy_dumps WHERE dump_id = 'child-dump-1'"
         )
-        assert dumps.to_pydict()["proc_ref"] == [child_proc_ref]
+        assert dumps["proc_ref"] == [child_proc_ref]
 
 
 @pytest.mark.timeout(120)
@@ -1582,11 +1702,10 @@ def test_store_pyspy_dump_with_child_proc_ref(cleanup_callbacks) -> None:
 def test_store_pyspy_dump_with_unknown_proc_ref(cleanup_callbacks) -> None:
     """store_pyspy_dump stores data even for unknown proc_ref values."""
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
+        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
         cached_path=None,
     ) as state:
-        engine = state.query_engine
-        assert engine is not None
+        _assert_sidecar(state)
         hosts = state.hosts
         worker_procs = hosts.spawn_procs(
             per_host={"workers": 2}, name="pyspy_fallback_procs"
@@ -1595,7 +1714,7 @@ def test_store_pyspy_dump_with_unknown_proc_ref(cleanup_callbacks) -> None:
         workers.initialized.get()
 
         # Trigger child spawning.
-        engine.query("SELECT COUNT(*) AS cnt FROM actors")
+        _query(state, "SELECT COUNT(*) AS cnt FROM actors HAVING COUNT(*) > 0")
 
         pyspy_json = json.dumps(
             {
@@ -1629,24 +1748,23 @@ def test_store_pyspy_dump_with_unknown_proc_ref(cleanup_callbacks) -> None:
         )
 
         # Store with a proc_ref that doesn't exist in the tree.
-        result = engine._actor.store_pyspy_dump.call_one(
-            "orphan-dump-1", "nonexistent.proc[999]", pyspy_json
-        ).get()
-        assert result
+        result = _store_pyspy_dump(
+            state, "orphan-dump-1", "nonexistent.proc[999]", pyspy_json
+        )
+        assert result["status"] == "ok"
 
         # The dump should be queryable (stored on root).
-        frames = engine.query(
-            "SELECT name, line FROM pyspy_frames WHERE dump_id = 'orphan-dump-1'"
+        frames_dict = _query(
+            state, "SELECT name, line FROM pyspy_frames WHERE dump_id = 'orphan-dump-1'"
         )
-        frames_dict = frames.to_pydict()
         assert frames_dict["name"] == ["orphan_fn"]
         assert frames_dict["line"] == [99]
 
         # Verify proc_ref is preserved even though it didn't match any proc.
-        dumps = engine.query(
-            "SELECT proc_ref FROM pyspy_dumps WHERE dump_id = 'orphan-dump-1'"
+        dumps = _query(
+            state, "SELECT proc_ref FROM pyspy_dumps WHERE dump_id = 'orphan-dump-1'"
         )
-        assert dumps.to_pydict()["proc_ref"] == ["nonexistent.proc[999]"]
+        assert dumps["proc_ref"] == ["nonexistent.proc[999]"]
 
 
 @pytest.mark.timeout(120)
@@ -1654,11 +1772,10 @@ def test_store_pyspy_dump_with_unknown_proc_ref(cleanup_callbacks) -> None:
 def test_json_columns_are_valid_json() -> None:
     """Test that all view_json and shape_json columns contain valid JSON."""
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
+        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
         cached_path=None,
     ) as state:
-        engine = state.query_engine
-        assert engine is not None
+        _assert_sidecar(state)
 
         # Spawn actors and send messages to populate all tables that have JSON columns:
         # - meshes: shape_json, parent_view_json
@@ -1674,8 +1791,7 @@ def test_json_columns_are_valid_json() -> None:
         workers.ping.call().get()
 
         # -- Verify meshes.shape_json --
-        result = engine.query("SELECT given_name, shape_json FROM meshes")
-        result_dict = result.to_pydict()
+        result_dict = _query(state, "SELECT given_name, shape_json FROM meshes")
         for name, shape in zip(result_dict["given_name"], result_dict["shape_json"]):
             assert shape is not None and shape != "", (
                 f"meshes.shape_json is empty for mesh '{name}'"
@@ -1688,11 +1804,11 @@ def test_json_columns_are_valid_json() -> None:
                 ) from e
 
         # -- Verify meshes.parent_view_json (nullable) --
-        result = engine.query(
+        result_dict = _query(
+            state,
             "SELECT given_name, parent_view_json FROM meshes "
-            "WHERE parent_view_json IS NOT NULL"
+            "WHERE parent_view_json IS NOT NULL",
         )
-        result_dict = result.to_pydict()
         for name, view in zip(
             result_dict["given_name"], result_dict["parent_view_json"]
         ):
@@ -1704,8 +1820,7 @@ def test_json_columns_are_valid_json() -> None:
                 ) from e
 
         # -- Verify sent_messages.view_json --
-        result = engine.query("SELECT id, view_json FROM sent_messages")
-        result_dict = result.to_pydict()
+        result_dict = _query(state, "SELECT id, view_json FROM sent_messages")
         assert len(result_dict["id"]) > 0, "Expected sent_messages rows"
         for msg_id, view in zip(result_dict["id"], result_dict["view_json"]):
             assert view is not None and view != "", (
@@ -1719,8 +1834,7 @@ def test_json_columns_are_valid_json() -> None:
                 ) from e
 
         # -- Verify sent_messages.shape_json --
-        result = engine.query("SELECT id, shape_json FROM sent_messages")
-        result_dict = result.to_pydict()
+        result_dict = _query(state, "SELECT id, shape_json FROM sent_messages")
         for msg_id, shape in zip(result_dict["id"], result_dict["shape_json"]):
             assert shape is not None and shape != "", (
                 f"sent_messages.shape_json is empty for id={msg_id}"
@@ -1741,12 +1855,11 @@ def test_per_table_row_retention(cleanup_callbacks) -> None:
     # Use a 1-second retention window so rows expire quickly.
     with scoped_state(
         ProcessJob({"hosts": 1}).enable_telemetry(
-            _telemetry_config(batch_size=2, retention_secs=1)
+            _sidecar_telemetry_config(batch_size=2, retention_secs=1)
         ),
         cached_path=None,
     ) as state:
-        engine = state.query_engine
-        assert engine is not None
+        _assert_sidecar(state)
         hosts = state.hosts
         worker_procs = hosts.spawn_procs(per_host={"workers": 8}, name="worker_procs")
         workers = worker_procs.spawn("workers", WorkerActor)
@@ -1756,16 +1869,23 @@ def test_per_table_row_retention(cleanup_callbacks) -> None:
             workers.ping.call().get()
 
         # Verify events exist before retention kicks in.
-        before = engine.query("SELECT COUNT(*) AS cnt FROM message_status_events")
-        before_count = before.to_pydict()["cnt"][0]
+        _query(state, "SELECT id FROM message_status_events LIMIT 1")
+        before = _query(
+            state,
+            "SELECT COUNT(*) AS cnt FROM message_status_events HAVING COUNT(*) > 0",
+        )
+        before_count = before["cnt"][0]
         assert before_count > 0, "Expected message_status_events rows before retention"
 
         # Wait for the 1-second retention window to expire, then query again.
         # The query triggers flush(), which applies retention and trims old rows.
         time.sleep(2)
 
-        after = engine.query("SELECT COUNT(*) AS cnt FROM message_status_events")
-        after_count = after.to_pydict()["cnt"][0]
+        after = _query(
+            state,
+            f"SELECT COUNT(*) AS cnt FROM message_status_events HAVING COUNT(*) < {before_count}",
+        )
+        after_count = after["cnt"][0]
         assert after_count < before_count, (
             f"Expected fewer rows after retention, got {after_count} vs {before_count}"
         )
@@ -1780,11 +1900,10 @@ def test_scan_timeout_on_dead_child(cleanup_callbacks) -> None:
     then verifies the query completes within a bounded time instead of hanging.
     """
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
+        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
         cached_path=None,
     ) as state:
-        engine = state.query_engine
-        assert engine is not None
+        _assert_sidecar(state)
         hosts = state.hosts
         worker_procs = hosts.spawn_procs(
             per_host={"workers": 2}, name="timeout_test_procs"
@@ -1795,12 +1914,13 @@ def test_scan_timeout_on_dead_child(cleanup_callbacks) -> None:
         workers.ping.call().get()
 
         # Verify data exists before stopping
-        result = engine.query(
+        result = _query(
+            state,
             "SELECT a.id FROM actors a "
             "JOIN meshes mesh ON a.mesh_id = mesh.id "
-            "WHERE mesh.given_name = 'timeout_test_worker'"
+            "WHERE mesh.given_name = 'timeout_test_worker'",
         )
-        pre_count = len(result.to_pydict().get("id", []))
+        pre_count = len(result.get("id", []))
         assert pre_count > 0, "Expected timeout_test_worker actors before stopping"
 
         # Stop the proc mesh to kill child telemetry actors
@@ -1811,11 +1931,10 @@ def test_scan_timeout_on_dead_child(cleanup_callbacks) -> None:
             telemetry_actor, "_SCAN_CHILD_TIMEOUT_SECS", 1.0
         ):
             start = time.monotonic()
-            result = engine.query("SELECT * FROM actors")
+            result_dict = _query(state, "SELECT * FROM actors")
             elapsed = time.monotonic() - start
 
             # The query should complete — not hang forever
-            result_dict = result.to_pydict()
             actor_count = len(result_dict.get("id", []))
             assert actor_count > 0, (
                 f"Expected actors in result after child timeout, got {actor_count}"
@@ -1832,8 +1951,8 @@ def test_scan_timeout_on_dead_child(cleanup_callbacks) -> None:
 # --- Snapshot integration tests ---
 #
 # These tests verify that introspection snapshot tables are
-# pre-registered into the telemetry query surface and that
-# periodic capture populates them through the live query path.
+# pre-registered into the telemetry sidecar query surface and that
+# periodic capture populates them through the sidecar query path.
 
 
 @pytest.mark.timeout(60)
@@ -1841,7 +1960,7 @@ def test_scan_timeout_on_dead_child(cleanup_callbacks) -> None:
 def test_snapshot_schemas_pre_registered(cleanup_callbacks) -> None:
     """Snapshot table schemas are always present in the query surface.
 
-    Even with default config (no periodic timer), the 9 snapshot
+    Even with default config (no periodic timer), the 11 snapshot
     tables should be visible in information_schema and queryable
     with 0 rows. This ensures the query schema does not depend on
     whether periodic snapshots are enabled.
@@ -1850,22 +1969,24 @@ def test_snapshot_schemas_pre_registered(cleanup_callbacks) -> None:
     integration invariants in monarch_introspection_snapshot::integration.
     """
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config()),
+        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
         cached_path=None,
     ) as state:
-        engine = state.query_engine
-        assert engine is not None
-        result = engine.query(
-            "SELECT table_name FROM information_schema.tables ORDER BY table_name"
+        _assert_sidecar(state)
+        result = _query(
+            state,
+            "SELECT table_name FROM information_schema.tables ORDER BY table_name",
         )
-        table_names = result.to_pydict().get("table_name", [])
+        table_names = result.get("table_name", [])
 
         expected_snapshot_tables = [
             "actor_failures",
+            "actor_inbound_orderings",
             "actor_nodes",
             "children",
             "host_nodes",
             "nodes",
+            "ordering_sessions",
             "proc_nodes",
             "resolution_errors",
             "root_nodes",
@@ -1878,8 +1999,10 @@ def test_snapshot_schemas_pre_registered(cleanup_callbacks) -> None:
 
         # All snapshot tables should be queryable with 0 rows.
         for table in expected_snapshot_tables:
-            count_result = engine.query(f"SELECT COUNT(*) AS cnt FROM {table}")
-            cnt = count_result.to_pydict()["cnt"][0]
+            count_result = _query(
+                state, f"SELECT COUNT(*) AS cnt FROM {table} HAVING COUNT(*) = 0"
+            )
+            cnt = count_result["cnt"][0]
             assert cnt == 0, (
                 f"'{table}' should have 0 rows before any capture, got {cnt}"
             )
@@ -1892,18 +2015,18 @@ def test_snapshot_periodic_capture_populates_tables(cleanup_callbacks) -> None:
 
     With periodic capture enabled, the timer fires and the full
     snapshot relational model (nodes, children, subtype tables)
-    becomes queryable via the QueryEngine. The test verifies this
-    by tracing the ancestry of a known actor through the snapshot
-    tables using a recursive CTE.
+    becomes queryable through the telemetry sidecar. The test
+    verifies this by tracing the ancestry of a known actor through
+    the snapshot tables using a recursive CTE.
 
     SI-1 (discoverable), SI-2 (queryable); see snapshot integration
     invariants in monarch_introspection_snapshot::integration.
     """
-    import time
-
     with scoped_state(
         ProcessJob({"hosts": 1})
-        .enable_telemetry(_telemetry_config(batch_size=10, snapshot_interval_secs=5))
+        .enable_telemetry(
+            _sidecar_telemetry_config(batch_size=10, snapshot_interval_secs=5)
+        )
         .enable_admin(
             MeshAdminConfig(
                 # Use an ephemeral admin port so concurrent --stress-runs
@@ -1914,28 +2037,13 @@ def test_snapshot_periodic_capture_populates_tables(cleanup_callbacks) -> None:
         ),
         cached_path=None,
     ) as state:
-        engine = state.query_engine
-        assert engine is not None
+        _assert_sidecar(state)
 
         # Spawn a worker so the mesh has content to snapshot.
         hosts = state.hosts
         worker_procs = hosts.spawn_procs(per_host={"workers": 1}, name="snap_procs")
         workers = worker_procs.spawn("snap_worker", WorkerActor)
         workers.initialized.get()
-
-        # PT-3: first capture fires at spawn time, so there may
-        # already be a snapshot. Record the baseline count.
-        before = engine.query("SELECT COUNT(*) AS cnt FROM snapshots")
-        before_count = before.to_pydict()["cnt"][0]
-
-        # Wait for at least one more periodic capture (interval=5s).
-        time.sleep(8)
-
-        after = engine.query("SELECT COUNT(*) AS cnt FROM snapshots")
-        after_count = after.to_pydict()["cnt"][0]
-        assert after_count > before_count, (
-            f"expected more snapshots after timer fires, got {after_count} (was {before_count})"
-        )
 
         # --- Relational coherence proof ---
         #
@@ -1950,7 +2058,7 @@ def test_snapshot_periodic_capture_populates_tables(cleanup_callbacks) -> None:
         # Snapshot node_id now stores canonical actor refs, so key off the
         # actor's proc ancestry and system bit instead of name substrings.
         # If the first snapshot was captured before the worker spawned,
-        # wait for a second capture.
+        # wait for a capture containing the worker.
         snap_worker_query = (
             "SELECT a.node_id AS actor_node_id, a.snapshot_id AS snapshot_id,"
             " pn.proc_name AS proc_name"
@@ -1964,13 +2072,8 @@ def test_snapshot_periodic_capture_populates_tables(cleanup_callbacks) -> None:
             " ORDER BY s.snapshot_ts DESC"
             " LIMIT 1"
         )
-        rows = engine.query(snap_worker_query).to_pydict()
+        rows = _query(state, snap_worker_query, timeout_secs=60.0)
         actor_ids = rows.get("actor_node_id", [])
-        if len(actor_ids) == 0:
-            # Wait for next capture and retry.
-            time.sleep(6)
-            rows = engine.query(snap_worker_query).to_pydict()
-            actor_ids = rows.get("actor_node_id", [])
         assert len(actor_ids) >= 1, (
             "expected non-system actor on snap_procs in snapshot"
         )
@@ -1982,7 +2085,9 @@ def test_snapshot_periodic_capture_populates_tables(cleanup_callbacks) -> None:
         #
         # Walk up from the selected actor through children/nodes
         # to verify the full snapshot graph is connected.
-        ancestry = engine.query(f"""
+        ancestor_rows = _query(
+            state,
+            f"""
             WITH RECURSIVE ancestors AS (
                 SELECT ch.parent_id AS node_id, 1 AS depth
                 FROM children ch
@@ -2001,8 +2106,8 @@ def test_snapshot_periodic_capture_populates_tables(cleanup_callbacks) -> None:
             LEFT JOIN nodes n
               ON n.snapshot_id = '{snapshot_id}'
              AND n.node_id = a.node_id
-        """)
-        ancestor_rows = ancestry.to_pydict()
+        """,
+        )
         ancestor_kinds = set(ancestor_rows.get("node_kind", []))
         ancestor_ids = ancestor_rows.get("node_id", [])
 

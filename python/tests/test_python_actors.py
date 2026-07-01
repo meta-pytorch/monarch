@@ -22,6 +22,7 @@ import threading
 import time
 import unittest
 import unittest.mock
+import warnings
 from tempfile import TemporaryDirectory
 from types import ModuleType
 from typing import Any, cast, Dict, Iterator, NamedTuple, Tuple
@@ -267,6 +268,40 @@ def test_sync_actor_sync_client() -> None:
     r = a.sync_endpoint.choose(c).get()
     assert r == 5
     proc.stop().get()
+
+
+class SyncContextActor(Actor):
+    @endpoint
+    def observe_sync_context(self, a_counter: Counter) -> Tuple[bool, bool, int]:
+        # A sync endpoint runs with no asyncio loop visible on its thread, so
+        # get_running_loop() raises and Future.get() blocks without the
+        # active-event-loop warning.
+        try:
+            asyncio.get_running_loop()
+            loop_visible = True
+        except RuntimeError:
+            loop_visible = False
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            value = a_counter.value.choose().get()
+        warned = any("active event loop" in str(w.message) for w in caught)
+        return loop_visible, warned, value
+
+
+@pytest.mark.timeout(60)
+@parametrize_config(actor_queue_dispatch={True, False})
+async def test_sync_endpoint_has_no_visible_loop_and_get_does_not_warn() -> None:
+    """A sync (`def`) endpoint runs without a visible asyncio loop:
+    `asyncio.get_running_loop()` raises inside it, and `Future.get()` therefore
+    takes the legal blocking path without the "active event loop" warning."""
+    proc = this_host().spawn_procs(per_host={"gpus": 1})
+    a = proc.spawn("actor", SyncContextActor)
+    c = proc.spawn("counter", Counter, 5)
+    loop_visible, warned, value = await a.observe_sync_context.choose(c)
+    assert loop_visible is False, "a sync endpoint should see no running loop"
+    assert warned is False, "Future.get() in a sync endpoint should not warn"
+    assert value == 5
+    await proc.stop()
 
 
 @pytest.mark.timeout(60)
@@ -1326,8 +1361,10 @@ class UndeliverableMessageSenderWithOverride(UndeliverableMessageSender):
 
 
 @pytest.mark.timeout(10)
+# Pinned to direct dispatch; this test assumes concurrent dispatch and isn't
+# compatible with the queue-based path.
+@parametrize_config(actor_queue_dispatch={False})
 @isolate_in_subprocess
-# Not compatible with queue dispatch, as it assumes concurrent dispatch
 async def test_undeliverable_message_with_override() -> None:
     pm = this_host().spawn_procs(per_host={"gpus": 1})
     receiver = pm.spawn("undeliverable_receiver", UndeliverableMessageReceiver)
@@ -1851,24 +1888,6 @@ def test_context_propagated_through_python_task_spawn_blocking():
     a = p.spawn("test_pytokio_actor", TestPytokioActor)
     a.context_propagated_through_spawn_blocking.call().get()
     p.stop().get()
-
-
-@pytest.mark.timeout(15)
-def test_future_get_inside_async_loop_warns():
-    """Calling Future.get() from inside an active asyncio loop blocks the
-    surrounding loop. Verify a UserWarning fires while the call still
-    completes for backward compatibility.
-    """
-
-    async def runner() -> int:
-        async def inner() -> int:
-            return 1
-
-        f: Future[int] = Future(coro=inner())
-        with pytest.warns(UserWarning, match="event loop"):
-            return f.get()
-
-    assert asyncio.run(runner()) == 1
 
 
 class ActorWithCleanup(Actor):

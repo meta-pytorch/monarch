@@ -33,6 +33,7 @@ use crate::context::PyInstance;
 use crate::pickle::PendingMessage;
 use crate::pytokio::PyPythonTask;
 use crate::pytokio::PyShared;
+use crate::runtime::GilSite;
 use crate::runtime::get_tokio_runtime;
 use crate::runtime::monarch_with_gil;
 use crate::runtime::monarch_with_gil_blocking;
@@ -93,26 +94,27 @@ impl PyProcMesh {
 
             let init_message = init_message.resolve().await?;
 
-            let (proc_mesh, params) = monarch_with_gil(|py| -> PyResult<_> {
-                let slf: Bound<PyProcMesh> = proc_mesh.extract(py)?;
-                let slf = slf.borrow();
-                let pickled_type = PickledPyObject::pickle(actor.bind(py).as_any())?;
-                Ok((
-                    slf.mesh_ref()?.clone(),
-                    // Plumb `mesh_base_name` into the actor so the
-                    // direct actor-handled supervision path can
-                    // populate `MeshFailure.actor_mesh_name` without
-                    // a lookup. Kept separate from
-                    // `supervision_display_name` below (rendered
-                    // supervision display string).
-                    PythonActorParams::new(
-                        pickled_type,
-                        Some(init_message),
-                        Some(mesh_base_name.clone()),
-                    ),
-                ))
-            })
-            .await?;
+            let (proc_mesh, params) =
+                monarch_with_gil(GilSite::ActorConstruct, |py| -> PyResult<_> {
+                    let slf: Bound<PyProcMesh> = proc_mesh.extract(py)?;
+                    let slf = slf.borrow();
+                    let pickled_type = PickledPyObject::pickle(actor.bind(py).as_any())?;
+                    Ok((
+                        slf.mesh_ref()?.clone(),
+                        // Plumb `mesh_base_name` into the actor so the
+                        // direct actor-handled supervision path can
+                        // populate `MeshFailure.actor_mesh_name` without
+                        // a lookup. Kept separate from
+                        // `supervision_display_name` below (rendered
+                        // supervision display string).
+                        PythonActorParams::new(
+                            pickled_type,
+                            Some(init_message),
+                            Some(mesh_base_name.clone()),
+                        ),
+                    ))
+                })
+                .await?;
 
             let mesh_name = ActorMeshId::instance(Label::strip(&mesh_base_name));
             let actor_mesh = proc_mesh
@@ -131,7 +133,7 @@ impl PyProcMesh {
             // we give up on doing mesh spawn async for the emulated old version
             // it is too complicated to make both work.
             let r = get_tokio_runtime().block_on(mesh_impl)?;
-            monarch_with_gil_blocking(|py| r.into_py_any(py))
+            monarch_with_gil_blocking(GilSite::Convert, |py| r.into_py_any(py))
         } else {
             let r = PythonActorMesh::new(
                 async move {
@@ -140,7 +142,7 @@ impl PyProcMesh {
                 },
                 true,
             );
-            monarch_with_gil_blocking(|py| r.into_py_any(py))
+            monarch_with_gil_blocking(GilSite::Convert, |py| r.into_py_any(py))
         }
     }
 
@@ -168,7 +170,7 @@ impl PyProcMesh {
 
     fn stop_nonblocking(&self, instance: &PyInstance, reason: String) -> PyResult<PyPythonTask> {
         // Clone the necessary fields from self to avoid capturing self in the async block
-        let (owned_inner, instance) = monarch_with_gil_blocking(|_py| {
+        let (owned_inner, instance) = monarch_with_gil_blocking(GilSite::Stop, |_py| {
             let owned_inner = match self {
                 PyProcMesh::Owned(inner) => inner.clone(),
                 PyProcMesh::Ref(_) => {

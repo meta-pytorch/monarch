@@ -11,6 +11,7 @@
 // NOTE: Until https://github.com/PyO3/pyo3/pull/4674, `pyo3::pymethods` trigger
 // and unsafe-op-in-unsafe-fn warnings.
 #![allow(unsafe_op_in_unsafe_fn)]
+#![deny(clippy::disallowed_methods)]
 
 //! A `hyperactor`-based implementation of a PyTorch worker actor.
 //!
@@ -59,6 +60,8 @@ use hyperactor::context;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::comm::multicast::CastInfo;
 use itertools::Itertools;
+use monarch_gil::GilSite;
+use monarch_gil::monarch_with_gil_blocking;
 use monarch_hyperactor::shape::PyPoint;
 use monarch_messages::controller::ControllerActor;
 use monarch_messages::controller::ControllerMessageClient;
@@ -177,7 +180,7 @@ pub struct WorkerActor {
 
 impl WorkerActor {
     fn runtime_has_cuda() -> bool {
-        Python::attach(|py| {
+        monarch_with_gil_blocking(GilSite::WorkerInit, |py| {
             py.import("torch")
                 .expect("torch must be importable in a worker")
                 .getattr("cuda")
@@ -240,7 +243,7 @@ impl RemoteSpawn for WorkerActor {
         }: Self::Params,
         _environment: Flattrs,
     ) -> Result<Self> {
-        Python::attach(|py| {
+        monarch_with_gil_blocking(GilSite::WorkerInit, |py| {
             py.import("monarch.safe_torch").unwrap();
         });
         let device = if Self::runtime_has_cuda() {
@@ -278,7 +281,7 @@ impl Handler<AssignRankMessage> for WorkerActor {
         let point = cx.cast_point();
         self.rank = point.rank();
         self.respond_with_python_message = true;
-        Python::attach(|py| {
+        monarch_with_gil_blocking(GilSite::WorkerInit, |py| {
             let mesh_controller = py.import("monarch.mesh_controller").unwrap();
             let p: PyPoint = point.into();
             mesh_controller
@@ -1456,7 +1459,7 @@ mod tests {
             .unwrap(),
         );
         let (split_arg, sort_list, dim, layout, none, scalar, device, memory_format) =
-            Python::attach(|py| {
+            monarch_with_gil_blocking(GilSite::Test, |py| {
                 let split_arg: PickledPyObject = PyString::new(py, "/fbs/fbc/foo/bar")
                     .into_any()
                     .try_into()?;

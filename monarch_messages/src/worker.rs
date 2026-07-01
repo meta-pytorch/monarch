@@ -28,6 +28,8 @@ use hyperactor as reference;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::RefClient;
+use monarch_gil::GilSite;
+use monarch_gil::monarch_with_gil_blocking;
 use monarch_types::ReduceOp;
 use monarch_types::SerializablePyErr;
 use monarch_types::UniqueId;
@@ -350,7 +352,7 @@ impl ArgsKwargs {
         args: Vec<WireValue>,
         kwargs: HashMap<String, WireValue>,
     ) -> PyResult<Self> {
-        Python::attach(|py| {
+        monarch_with_gil_blocking(GilSite::Convert, |py| {
             // Convert WireValue args to Python objects
             let py_args: Vec<Bound<'_, PyAny>> = args
                 .into_iter()

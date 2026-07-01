@@ -30,6 +30,7 @@ use pyo3::wrap_pyfunction;
 
 use crate::host_mesh::PyHostMesh;
 use crate::pytokio::PyPythonTask;
+use crate::runtime::GilSite;
 use crate::runtime::monarch_with_gil;
 
 #[pyfunction]
@@ -133,16 +134,17 @@ pub fn attach_to_workers(
     PyPythonTask::new(async move {
         let results = try_join_all(tasks).await?;
 
-        let addresses: Result<Vec<ChannelAddr>, anyhow::Error> = monarch_with_gil(|py| {
-            results
-                .into_iter()
-                .map(|result| {
-                    let url_str: String = result.bind(py).extract()?;
-                    Ok(ChannelAddr::from_zmq_url(&url_str)?.into_dial_addr())
-                })
-                .collect()
-        })
-        .await;
+        let addresses: Result<Vec<ChannelAddr>, anyhow::Error> =
+            monarch_with_gil(GilSite::Bootstrap, |py| {
+                results
+                    .into_iter()
+                    .map(|result| {
+                        let url_str: String = result.bind(py).extract()?;
+                        Ok(ChannelAddr::from_zmq_url(&url_str)?.into_dial_addr())
+                    })
+                    .collect()
+            })
+            .await;
         let addresses = addresses?;
 
         let host_mesh = HostMesh::attach(&*instance, name, addresses)

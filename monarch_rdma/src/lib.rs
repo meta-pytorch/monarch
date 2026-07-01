@@ -24,6 +24,7 @@ pub mod efa;
 pub mod local_memory;
 mod rdma_components;
 mod rdma_manager_actor;
+mod rdma_runtime;
 
 pub use backend::ibverbs::primitives::*;
 

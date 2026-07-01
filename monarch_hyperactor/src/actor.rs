@@ -13,6 +13,7 @@ use std::future::pending;
 use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::Once;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering as AtomicOrdering;
@@ -85,6 +86,7 @@ use crate::proc::PyActorAddr;
 use crate::pympsc;
 use crate::pytokio::PyPythonTask;
 use crate::pytokio::PythonTask;
+use crate::runtime::GilSite;
 use crate::runtime::get_tokio_runtime;
 use crate::runtime::monarch_with_gil;
 use crate::runtime::monarch_with_gil_blocking;
@@ -355,7 +357,7 @@ impl PythonMessage {
                 broker.post(cx, LocalStateBrokerMessage::Get(id, send));
                 let state = recv.recv().await?;
                 let mut state_it = state.state.into_iter();
-                monarch_with_gil(|py| {
+                monarch_with_gil(GilSite::EndpointDispatch, |py| {
                     let mailbox = mailbox(py, cx);
                     let local_state = Some(
                         PyList::new(
@@ -820,8 +822,17 @@ impl PythonActor {
         mesh_base_name: Option<String>,
     ) -> Result<Self, anyhow::Error> {
         let use_queue_dispatch = hyperactor_config::global::get(ACTOR_QUEUE_DISPATCH);
+        if !use_queue_dispatch {
+            static WARNED: Once = Once::new();
+            WARNED.call_once(|| {
+                tracing::warn!(
+                    "actor_queue_dispatch=false is deprecated and direct dispatch will be removed in a future release"
+                );
+            });
+        }
 
         Ok(monarch_with_gil_blocking(
+            GilSite::ActorConstruct,
             |py| -> Result<Self, SerializablePyErr> {
                 let unpickled = actor_type.unpickle(py)?;
                 let class_type: &Bound<'_, PyType> = unpickled.downcast()?;
@@ -885,7 +896,7 @@ impl PythonActor {
 
     fn cancel_pending_python_tasks_and_stop_loop(&self) -> anyhow::Result<()> {
         let task_locals = &self.task_locals;
-        monarch_with_gil_blocking(|py| -> anyhow::Result<()> {
+        monarch_with_gil_blocking(GilSite::Stop, |py| -> anyhow::Result<()> {
             Self::cancel_tasks_and_stop_python_loop(py, task_locals)
                 .map_err(|err| anyhow::Error::from(SerializablePyErr::from(py, &err)))?;
             Ok(())
@@ -1014,7 +1025,7 @@ impl PythonActor {
                             // event and the hook raised, don't re-handle it via
                             // handle_supervision_event — that would call
                             // __supervise__ a second time.
-                            let is_hook_exception = monarch_with_gil(|py| {
+                            let is_hook_exception = monarch_with_gil(GilSite::Supervise, |py| {
                                 err.downcast_ref::<pyo3::PyErr>()
                                     .is_some_and(|pyerr| {
                                         pyerr.is_instance(
@@ -1113,7 +1124,7 @@ impl PythonActor {
                 // There is no way to propagate the exception message, but it
                 // will at least run proper shutdown code as long as BaseException
                 // isn't caught.
-                monarch_with_gil_blocking(|py| {
+                monarch_with_gil_blocking(GilSite::Stop, |py| {
                     // Use _thread.interrupt_main to force the client to exit if it has an
                     // unhandled supervision event.
                     let thread_mod = py.import("_thread").expect("import _thread");
@@ -1166,7 +1177,7 @@ pub(crate) fn root_client_actor(py: Python<'_>) -> &'static Instance<PythonActor
     // a deadlock.
     py.detach(|| {
         ROOT_CLIENT_ACTOR.get_or_init(|| {
-            monarch_with_gil_blocking(|py| {
+            monarch_with_gil_blocking(GilSite::Bootstrap, |py| {
                 let (client, _handle) = PythonActor::bootstrap_client(py);
                 client
             })
@@ -1191,7 +1202,7 @@ impl Actor for PythonActor {
         if let PythonActorDispatchMode::Queue { receiver, .. } = &mut self.dispatch_mode {
             let receiver = receiver.take().unwrap();
 
-            monarch_with_gil(|py| {
+            monarch_with_gil(GilSite::DispatchInit, |py| {
                 let self_instance = self.ensure_py_instance(py, this);
                 let actor_mesh_mod = py.import("monarch._src.actor.actor_mesh")?;
 
@@ -1236,7 +1247,7 @@ impl Actor for PythonActor {
         // have an original exception object or traceback, so we just pass in
         // the message.
         let err_as_str = err.map(|e| e.to_string());
-        let future = monarch_with_gil(|py| {
+        let future = monarch_with_gil(GilSite::EndpointCleanup, |py| {
             let py_cx = match &self.instance {
                 Some(instance) => crate::context::PyContext::new(&cx, instance.clone_ref(py)),
                 None => {
@@ -1288,7 +1299,9 @@ impl Actor for PythonActor {
 
     fn display_name(&self) -> Option<String> {
         self.instance.as_ref().and_then(|instance| {
-            monarch_with_gil_blocking(|py| instance.bind(py).str().ok().map(|s| s.to_string()))
+            monarch_with_gil_blocking(GilSite::DisplayName, |py| {
+                instance.bind(py).str().ok().map(|s| s.to_string())
+            })
         })
     }
 
@@ -1325,7 +1338,7 @@ impl Actor for PythonActor {
 
         let cx = Context::new(ins, envelope.headers().clone());
 
-        let (envelope, handled) = monarch_with_gil(|py| {
+        let (envelope, handled) = monarch_with_gil(GilSite::EndpointDispatch, |py| {
             let py_cx = match &self.instance {
                 Some(instance) => crate::context::PyContext::new(&cx, instance.clone_ref(py)),
                 None => {
@@ -1449,7 +1462,7 @@ impl RemoteSpawn for PythonActor {
 
 /// Create a new TaskLocals with its own asyncio event loop in a dedicated thread.
 fn create_task_locals() -> pyo3_async_runtimes::TaskLocals {
-    monarch_with_gil_blocking(|py| {
+    monarch_with_gil_blocking(GilSite::TaskLocals, |py| {
         let asyncio = Python::import(py, "asyncio").unwrap();
         let event_loop = asyncio.call_method0("new_event_loop").unwrap();
         let task_locals = pyo3_async_runtimes::TaskLocals::new(event_loop.clone())
@@ -1550,33 +1563,36 @@ impl PythonActor {
         // See [Panics in async endpoints].
         let (sender, receiver) = oneshot::channel();
 
-        let future = monarch_with_gil(|py| -> Result<_, SerializablePyErr> {
-            let inst = self.ensure_py_instance(py, cx);
+        let future = monarch_with_gil(
+            GilSite::EndpointDispatch,
+            |py| -> Result<_, SerializablePyErr> {
+                let inst = self.ensure_py_instance(py, cx);
 
-            let awaitable = self.actor.call_method(
-                py,
-                "handle",
-                (
-                    crate::context::PyContext::new(cx, inst.clone_ref(py)),
-                    resolved.method,
-                    resolved.bytes,
-                    PanicFlag {
-                        sender: Some(sender),
-                    },
-                    resolved
-                        .local_state
-                        .unwrap_or_else(|| PyList::empty(py).unbind().into()),
-                    resolved.response_port.into_py_any(py)?,
-                ),
-                None,
-            )?;
+                let awaitable = self.actor.call_method(
+                    py,
+                    "handle",
+                    (
+                        crate::context::PyContext::new(cx, inst.clone_ref(py)),
+                        resolved.method,
+                        resolved.bytes,
+                        PanicFlag {
+                            sender: Some(sender),
+                        },
+                        resolved
+                            .local_state
+                            .unwrap_or_else(|| PyList::empty(py).unbind().into()),
+                        resolved.response_port.into_py_any(py)?,
+                    ),
+                    None,
+                )?;
 
-            pyo3_async_runtimes::into_future_with_locals(
-                &self.task_locals,
-                awaitable.into_bound(py),
-            )
-            .map_err(|err| err.into())
-        })
+                pyo3_async_runtimes::into_future_with_locals(
+                    &self.task_locals,
+                    awaitable.into_bound(py),
+                )
+                .map_err(|err| err.into())
+            },
+        )
         .await?;
 
         // Spawn a child actor to await the Python handler method.
@@ -1600,22 +1616,25 @@ impl PythonActor {
     ) -> anyhow::Result<()> {
         let resolved = message.resolve_indirect_call(cx).await?;
 
-        let queued_msg = monarch_with_gil(|py| -> anyhow::Result<QueuedMessage> {
-            let inst = self.ensure_py_instance(py, cx);
+        let queued_msg = monarch_with_gil(
+            GilSite::QueueDispatch,
+            |py| -> anyhow::Result<QueuedMessage> {
+                let inst = self.ensure_py_instance(py, cx);
 
-            let py_context = crate::context::PyContext::new(cx, inst.clone_ref(py));
-            let py_context_obj = Py::new(py, py_context)?;
+                let py_context = crate::context::PyContext::new(cx, inst.clone_ref(py));
+                let py_context_obj = Py::new(py, py_context)?;
 
-            Ok(QueuedMessage {
-                context: py_context_obj,
-                method: resolved.method,
-                bytes: resolved.bytes,
-                local_state: resolved
-                    .local_state
-                    .unwrap_or_else(|| PyList::empty(py).unbind().into()),
-                response_port: resolved.response_port.into_py_any(py)?,
-            })
-        })
+                Ok(QueuedMessage {
+                    context: py_context_obj,
+                    method: resolved.method,
+                    bytes: resolved.bytes,
+                    local_state: resolved
+                        .local_state
+                        .unwrap_or_else(|| PyList::empty(py).unbind().into()),
+                    response_port: resolved.response_port.into_py_any(py)?,
+                })
+            },
+        )
         .await?;
 
         sender
@@ -1647,7 +1666,7 @@ impl Handler<MeshFailure> for PythonActor {
         // the same loop that runs endpoint coroutines. A sync user
         // `__supervise__` is dispatched under `fake_sync_state` inside
         // `_Actor.__supervise__`, mirroring `__cleanup__`.
-        let (display_name, fut) = monarch_with_gil(|py| {
+        let (display_name, fut) = monarch_with_gil(GilSite::Supervise, |py| {
             let inst = self.ensure_py_instance(py, cx);
             // Compute display_name here since we can't call self.display_name() due to borrow.
             let display_name: Option<String> = inst.bind(py).str().ok().map(|s| s.to_string());
@@ -1675,7 +1694,7 @@ impl Handler<MeshFailure> for PythonActor {
 
         let awaited = fut.await;
 
-        monarch_with_gil(|py| match awaited {
+        monarch_with_gil(GilSite::Supervise, |py| match awaited {
             Ok(s) => {
                 if s.bind(py).is_truthy()? {
                     // If the return value is truthy, then the exception was handled
@@ -1806,7 +1825,7 @@ async fn handle_async_endpoint_panic(
         // processing of the async endpoint, see [Panics in async endpoints].
         match side_channel.await {
             Ok(value) => {
-                monarch_with_gil(|py| -> Option<SerializablePyErr> {
+                monarch_with_gil(GilSite::AwaitDrive, |py| -> Option<SerializablePyErr> {
                     let err: PyErr = value
                         .downcast_bound::<PyBaseException>(py)
                         .unwrap()
@@ -1982,6 +2001,7 @@ impl Port {
         self.port_ref.set_return_undeliverable(value);
     }
 
+    #[tracing::instrument(level = "debug", skip_all)]
     fn send(&mut self, py: Python<'_>, obj: Py<PyAny>) -> PyResult<()> {
         let message = PythonMessage::new_from_buf(
             PythonMessageKind::Result { rank: self.rank },
@@ -1993,6 +2013,7 @@ impl Port {
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 
+    #[tracing::instrument(level = "debug", skip_all)]
     fn send_message(&mut self, message: PythonMessage) -> PyResult<()> {
         self.port_ref
             .post_with_headers(&self.instance, self.reply_headers.clone(), message)
@@ -2164,7 +2185,7 @@ mod tests {
         let pyerr = to_py_error(err);
 
         pyo3::Python::initialize();
-        monarch_with_gil_blocking(|py| {
+        monarch_with_gil_blocking(GilSite::Test, |py| {
             assert!(pyerr.get_type(py).is(PyValueError::type_object(py)));
             let py_msg = pyerr.value(py).to_string();
 

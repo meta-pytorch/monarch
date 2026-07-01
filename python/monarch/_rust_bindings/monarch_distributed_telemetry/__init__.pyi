@@ -23,7 +23,7 @@ def reset_record_batch_flush_count() -> None:
 
 def _start_socket_ingest(
     scanner: database_scanner.DatabaseScanner, socket_path: str
-) -> bool:
+) -> None:
     """Start Unix-socket ingest for a database scanner."""
     ...
 

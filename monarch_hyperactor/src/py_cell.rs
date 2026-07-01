@@ -74,6 +74,8 @@ mod tests {
     use pyo3::prelude::*;
 
     use super::*;
+    use crate::runtime::GilSite;
+    use crate::runtime::monarch_with_gil_blocking;
 
     #[pyclass]
     struct TestClass {
@@ -84,7 +86,7 @@ mod tests {
     #[test]
     fn test_clone_ref() {
         Python::initialize();
-        Python::attach(|py| {
+        monarch_with_gil_blocking(GilSite::Test, |py| {
             let cell = PyCell::new(TestClass { value: 42 });
 
             let py_obj1 = cell.clone_ref(py).unwrap();

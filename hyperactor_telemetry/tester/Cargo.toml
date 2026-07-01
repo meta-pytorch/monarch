@@ -16,5 +16,5 @@ hyperactor_telemetry = { version = "0.0.0", path = ".." }
 opentelemetry = "0.31"
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 
-[lints]
-rust = { unexpected_cfgs = { check-cfg = ["cfg(fbcode_build)"], level = "warn" } }
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fbcode_build)"]}

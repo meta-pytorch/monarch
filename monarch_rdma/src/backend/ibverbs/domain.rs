@@ -213,10 +213,10 @@ impl<I: IbvDomainImpl> IbvDomain<I> {
         &self.device_info
     }
 
-    /// Access flags used when registering memory regions on this domain,
-    /// from the backend [`IbvDomainImpl`] strategy.
-    pub fn mr_access_flags(&self) -> i32 {
-        self.domain_impl().mr_access_flags()
+    /// Access flags used when registering memory regions and creating queue pairs
+    /// on this domain, from the backend [`IbvDomainImpl`] strategy.
+    pub fn access_flags(&self) -> i32 {
+        self.domain_impl().access_flags()
     }
 
     /// Register `mem` against this domain's PD, dispatching to the backend
@@ -233,7 +233,7 @@ impl<I: IbvDomainImpl> IbvDomain<I> {
 
     /// Create a queue pair against this domain, dispatching to the backend
     /// [`IbvDomainImpl`] strategy.
-    pub fn create_queue_pair(self: Arc<Self>, config: &IbvConfig) -> anyhow::Result<IbvQueuePair> {
+    pub fn create_queue_pair(self: Arc<Self>, config: &IbvConfig) -> anyhow::Result<I::QueuePair> {
         I::create_queue_pair(self, config)
     }
 }
@@ -247,6 +247,9 @@ impl<I: IbvDomainImpl> IbvDomain<I> {
 /// methods are associated functions taking the owning `Arc<IbvDomain<Self>>`
 /// and reach the strategy itself through [`IbvDomain::domain_impl`].
 pub trait IbvDomainImpl: std::fmt::Debug + Send + Sync + 'static + Sized {
+    /// The concrete queue-pair type built against this domain's PD.
+    type QueuePair: IbvQueuePair;
+
     /// Build the strategy for the device behind `context` (whose queried
     /// metadata is `device_info`), using `config` for any setup it performs.
     ///
@@ -256,8 +259,9 @@ pub trait IbvDomainImpl: std::fmt::Debug + Send + Sync + 'static + Sized {
     /// implementations may query the device behind it.
     unsafe fn new(context: &IbvContext, device_info: &IbvDeviceInfo, config: &IbvConfig) -> Self;
 
-    /// Access flags used when registering memory regions on this domain.
-    fn mr_access_flags(&self) -> i32;
+    /// Access flags used when registering memory regions and creating queue
+    /// pairs on this domain.
+    fn access_flags(&self) -> i32;
 
     /// Register `mem` against `domain`'s PD and return a view of the
     /// resulting memory region.
@@ -282,12 +286,15 @@ pub trait IbvDomainImpl: std::fmt::Debug + Send + Sync + 'static + Sized {
         unsafe { register_host_or_dmabuf_mr(domain, mem) }
     }
 
-    /// Create a queue pair against `domain`.
+    /// Create a queue pair against `domain`. The default builds [`Self::QueuePair`]
+    /// directly; backends override to construct their own queue-pair type.
     fn create_queue_pair(
         domain: Arc<IbvDomain<Self>>,
         config: &IbvConfig,
-    ) -> anyhow::Result<IbvQueuePair> {
-        IbvQueuePair::new(domain, config.clone())
+    ) -> anyhow::Result<Self::QueuePair> {
+        // SAFETY: a fully-constructed `IbvDomain` holds a null-or-live PD per
+        // its construction contract, which is what `IbvQueuePair::new` requires.
+        unsafe { Self::QueuePair::new(domain, config.clone()) }
     }
 }
 
@@ -463,7 +470,7 @@ pub(super) unsafe fn register_host_or_dmabuf_mr<I: IbvDomainImpl>(
 ) -> anyhow::Result<IbvMemoryRegionView> {
     let addr = mem.addr();
     let size = mem.size();
-    let access_flags = domain.mr_access_flags();
+    let access_flags = domain.access_flags();
     // `mr_offset` is the offset of `addr` within the MR. For device memory the
     // MR covers the whole allocation, so the requested range starts partway in;
     // for host memory the MR is the requested range itself, so the offset is 0.
@@ -563,7 +570,7 @@ mod tests {
     fn register_dmabuf_mr_covers_whole_allocation() {
         let domain = open_domain_for_cuda_device(0);
         let pd = domain.as_ptr();
-        let access = domain.mr_access_flags();
+        let access = domain.access_flags();
         let alloc = committed_allocation();
         let alloc_size = alloc.size();
 
@@ -608,7 +615,7 @@ mod tests {
     fn register_dmabuf_range_registers_exact_range() {
         let domain = open_domain_for_cuda_device(0);
         let pd = domain.as_ptr();
-        let access = domain.mr_access_flags();
+        let access = domain.access_flags();
         let alloc = committed_allocation();
 
         let offset = 2 * host_page_size();
@@ -634,7 +641,7 @@ mod tests {
     fn register_dmabuf_range_rejects_unaligned_addr() {
         let domain = open_domain_for_cuda_device(0);
         let pd = domain.as_ptr();
-        let access = domain.mr_access_flags();
+        let access = domain.access_flags();
         let alloc = committed_allocation();
 
         // One byte past the (aligned) base is not host-page aligned.
@@ -654,7 +661,7 @@ mod tests {
     fn register_dmabuf_range_rejects_unaligned_size() {
         let domain = open_domain_for_cuda_device(0);
         let pd = domain.as_ptr();
-        let access = domain.mr_access_flags();
+        let access = domain.access_flags();
         let alloc = committed_allocation();
 
         // A size that is not a multiple of the host page size.

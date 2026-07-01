@@ -29,21 +29,24 @@ The parent talks to telemetry via two channels:
   framed Arrow IPC from producers, decoded by Rust socket ingest into the
   collector's scanner.
 
-Lifecycle: `Telemetry.ensure_open(apply_id, host_meshes)` is called twice per
-`JobTrait._connect`. The first call (`host_meshes={}`) opens the job sidecar's
-telemetry handle and activates the client process's `UnixSocketSink` *before*
-`_state()` runs `bootstrap_host`, so the host-mesh creation events are
-captured. The second call (with materialised `host_meshes`) triggers worker
-fan-out: the telemetry handle spawns per-host `TelemetryActor` candidates and
-hands the live worker refs to the client collector for query fan-out.
+Lifecycle: `Telemetry.ensure_open(apply_id, host_meshes, spawn_worker_collectors)`
+is called during `JobTrait._connect`. The first call (`host_meshes={}`) opens
+the job sidecar's telemetry handle and activates the client process's
+`UnixSocketSink` before raw host meshes are materialized, so host-mesh creation
+events are captured. Jobs call it again with materialised `host_meshes`; that
+second call creates telemetry host proc meshes for proc discovery. Remote jobs
+also activate one live `TelemetryActor` collector per host-local socket
+namespace and hand only those live worker refs to the client collector for
+query fan-out.
 """
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any, cast, Mapping, TypedDict
+from typing import Any, Callable, cast, Mapping, TypedDict
 
 from monarch._rust_bindings.monarch_distributed_telemetry import (
     _set_unix_socket_sink_path,
@@ -54,20 +57,23 @@ from monarch._src.job.telemetry_actor import (
     telemetry_socket_path,
     TelemetryActor,
 )
-from monarch.actor import context, HostMesh, shutdown_context
+from monarch.actor import context, HostMesh, ProcMesh, shutdown_context
 from monarch.distributed_telemetry.engine import QueryEngine
 from monarch.monarch_dashboard.server.app import start_dashboard
 from monarch.monarch_dashboard.server.query_engine_adapter import QueryEngineAdapter
 
 logger: logging.Logger = logging.getLogger(__name__)
 
+_sidecar_socket_path: str | None = None
+_startup_provider_registered: bool = False
+
 
 @dataclass
 class TelemetryConfig:
     """Configuration for automatic telemetry startup.
 
-    When passed to a job constructor, telemetry (and optionally a dashboard)
-    is started automatically when ``state()`` is called.
+    When configured via ``JobTrait.enable_telemetry``, telemetry
+    (and optionally a dashboard) is started when ``state()`` is called.
 
     Args:
         batch_size: Number of rows to buffer before flushing to a RecordBatch.
@@ -81,6 +87,11 @@ class TelemetryConfig:
             (default). When ``include_dashboard`` is True and this is 0,
             it is automatically set to 30s because the dashboard requires
             snapshot data for system actor filtering.
+        use_sidecar: Opt in to telemetry hosted by the job sidecar, which
+            *replaces* the legacy in-process collector for this job (the two
+            never run together). Transitional flag for the migration; defaults
+            to the legacy path. When True, ``state.query_engine`` is None and
+            ``state.query_engine_client`` serves queries instead.
     """
 
     batch_size: int = 1000
@@ -88,6 +99,7 @@ class TelemetryConfig:
     include_dashboard: bool = False
     dashboard_port: int = 8265
     snapshot_interval_secs: float = 0  # 0 = disabled
+    use_sidecar: bool = False
 
     def __post_init__(self) -> None:
         if self.include_dashboard and self.snapshot_interval_secs <= 0:
@@ -115,6 +127,40 @@ def _config_from_wire(config: Mapping[str, object]) -> TelemetryConfig:
     )
 
 
+def install_sidecar_socket_sink(socket_path: str) -> None:
+    """Install the sidecar telemetry socket sink locally and in future workers."""
+    global _sidecar_socket_path
+    if _sidecar_socket_path not in (None, socket_path):
+        logger.warning(
+            "replacing telemetry data socket path %s with %s",
+            _sidecar_socket_path,
+            socket_path,
+        )
+    _sidecar_socket_path = socket_path
+
+    _ensure_setup_actor_telemetry_provider()
+    _set_unix_socket_sink_path(socket_path)
+
+
+def _unix_socket_sink_startup() -> Callable[[], None] | None:
+    socket_path = _sidecar_socket_path
+    if socket_path is None:
+        return None
+    return functools.partial(_set_unix_socket_sink_path, socket_path)
+
+
+def _ensure_setup_actor_telemetry_provider() -> None:
+    """Install the SetupActor provider that activates worker Unix sinks."""
+    global _startup_provider_registered
+    if _startup_provider_registered:
+        return
+
+    from monarch._src.actor.proc_mesh import SetupActor
+
+    SetupActor.register_startup_function(_unix_socket_sink_startup)
+    _startup_provider_registered = True
+
+
 class Telemetry:
     """Parent-process client for telemetry hosted by the job sidecar.
 
@@ -132,6 +178,7 @@ class Telemetry:
         self,
         apply_id: str,
         host_meshes: Mapping[str, HostMesh] | None = None,
+        spawn_worker_collectors: bool = True,
     ) -> _TelemetryResponse:
         """Ensure the job sidecar's telemetry handle is open and refreshed."""
         if not isinstance(apply_id, str):
@@ -154,6 +201,7 @@ class Telemetry:
                     "dashboard_port": self._config.dashboard_port,
                 },
                 host_meshes=dict(host_meshes or {}),
+                spawn_worker_collectors=spawn_worker_collectors,
             )
         ).get()
         if not isinstance(response, dict):
@@ -186,6 +234,9 @@ class _TelemetryHandle:
         self._client_actor: Any | None = None
         self._query_engine: QueryEngine | None = None
         self._dashboard_info: dict[str, object] | None = None
+        # None means worker fan-out has not run yet. An empty list means fan-out
+        # ran, but no worker collectors became active.
+        self._worker_proc_meshes: list[ProcMesh] | None = None
 
     @property
     def client_socket_path(self) -> str:
@@ -195,6 +246,7 @@ class _TelemetryHandle:
         self,
         host_meshes: Mapping[str, HostMesh],
         config: Mapping[str, object],
+        spawn_worker_collectors: bool = True,
     ) -> _TelemetryResponse:
         parsed = _config_from_wire(config)
         if self._first_config is None:
@@ -205,15 +257,22 @@ class _TelemetryHandle:
             # the in-memory telemetry store and re-bind the data socket.
             logger.warning("telemetry handle config drift ignored")
 
+        if host_meshes and self._worker_proc_meshes is None:
+            self._worker_proc_meshes = self._spawn_telemetry_actors(
+                host_meshes,
+                parsed,
+                spawn_worker_collectors=spawn_worker_collectors,
+            )
+
         dashboard_info = self._dashboard_info
         if dashboard_info is None:
             raise RuntimeError("telemetry handle is not open")
-        local_url = dashboard_info["local_url"]
+        api_url = dashboard_info["api_url"]
         url = dashboard_info["url"]
-        if not isinstance(local_url, str) or not isinstance(url, str):
+        if not isinstance(api_url, str) or not isinstance(url, str):
             raise RuntimeError(f"invalid dashboard info: {dashboard_info!r}")
         return {
-            "telemetry_url": local_url,
+            "telemetry_url": api_url,
             "dashboard_url": url,
             "socket_path": self.client_socket_path,
         }
@@ -230,10 +289,10 @@ class _TelemetryHandle:
             self._apply_id,
             config.retention_secs,
         )
-        # `activate` is the actor's bind decision: triggers the
-        # non-destructive Unix-socket bind and stands up the scanner. We
-        # do not branch on the return — failures stay scannerless and the
-        # scan endpoint surfaces them as best-effort empty results.
+        # `activate` is the actor's bind decision: it binds the Unix socket and
+        # stands up the scanner for the sidecar host. The job sidecar is keyed
+        # by apply id, so this should be the only live collector for the local
+        # socket namespace.
         client_actor.activate.call_one().get()
 
         query_engine = QueryEngine(client_actor)
@@ -253,7 +312,103 @@ class _TelemetryHandle:
         if config.include_dashboard:
             logger.info("Monarch Dashboard: %s", dashboard_info["url"])
 
+    def _spawn_telemetry_actors(
+        self,
+        host_meshes: Mapping[str, HostMesh],
+        config: TelemetryConfig,
+        *,
+        spawn_worker_collectors: bool = True,
+    ) -> list[ProcMesh]:
+        client_actor = self._client_actor
+        if client_actor is None:
+            raise RuntimeError("telemetry handle has no client actor")
+
+        worker_proc_meshes: list[ProcMesh] = []
+        worker_collector_meshes: list[Any] = []
+        for host_mesh in host_meshes.values():
+            try:
+                proc_mesh, worker_collector_mesh = (
+                    self._start_worker_telemetry_collector(
+                        host_mesh,
+                        config,
+                        spawn_worker_collector=spawn_worker_collectors,
+                    )
+                )
+            except Exception:
+                logger.warning(
+                    "failed to start worker telemetry collector",
+                    exc_info=True,
+                )
+                continue
+            worker_proc_meshes.append(proc_mesh)
+            if worker_collector_mesh is not None:
+                worker_collector_meshes.append(worker_collector_mesh)
+
+        client_actor.set_worker_collector_meshes.call_one(worker_collector_meshes).get()
+        return worker_proc_meshes
+
+    def _start_worker_telemetry_collector(
+        self,
+        host_mesh: HostMesh,
+        config: TelemetryConfig,
+        *,
+        spawn_worker_collector: bool = True,
+    ) -> tuple[ProcMesh, Any | None]:
+        proc_mesh = host_mesh.spawn_procs(name="telemetry_hosts")
+        if not spawn_worker_collector:
+            return proc_mesh, None
+
+        try:
+            worker_collector_mesh = proc_mesh.spawn(
+                "TelemetryActor",
+                TelemetryActor,
+                self._apply_id,
+                config.retention_secs,
+            )
+            active = any(
+                active for _rank, active in worker_collector_mesh.activate.call().get()
+            )
+        except Exception:
+            self._stop_worker_mesh(
+                proc_mesh,
+                "telemetry collector startup failed",
+                "failed to stop failed telemetry worker proc mesh",
+            )
+            raise
+
+        if active:
+            return proc_mesh, worker_collector_mesh
+
+        # Only one live collector may own a host-local socket namespace. Keep
+        # the proc alive so mesh-admin snapshots can still resolve it, but stop
+        # the inactive actor so queries do not fan out to it.
+        self._stop_worker_mesh(
+            worker_collector_mesh,
+            "telemetry collector inactive",
+            "failed to stop inactive telemetry worker collector",
+        )
+        return proc_mesh, None
+
+    def _stop_worker_mesh(
+        self,
+        mesh: Any,
+        reason: str,
+        log_message: str,
+    ) -> None:
+        try:
+            mesh.stop(reason).get()
+        except Exception:
+            logger.info(log_message, exc_info=True)
+
     def shutdown(self) -> None:
+        for proc_mesh in self._worker_proc_meshes or []:
+            try:
+                proc_mesh.stop("telemetry shutdown").get()
+            except Exception:
+                logger.info(
+                    "failed to stop telemetry worker proc mesh",
+                    exc_info=True,
+                )
         # Drain in-flight async work with a short cap. Beyond that, we
         # prefer a quick teardown over guaranteed completion — the sidecar
         # is being asked to die and the parent has already moved on.

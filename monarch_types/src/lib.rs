@@ -6,6 +6,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#![deny(clippy::disallowed_methods)]
+
 pub mod nccl_types;
 mod pyobject;
 mod python;

@@ -125,12 +125,13 @@ impl MailboxClient {
             tokio::spawn(async move {
                 let result = return_receiver.await;
                 if let Ok(SendError{error: e, message, ..}) = result {
-                    message.undeliverable(
-                        DeliveryError::BrokenLink(format!(
-                            "failed to enqueue in MailboxClient when processing buffer: {e}"
-                        )),
-                        return_handle_0,
-                    );
+                    let failure = DeliveryFailure::new(UndeliverableReason::Transport(
+                        TransportFailure::new(
+                            message.dest().clone(),
+                            TransportFailureReason::LinkUnavailable(e.to_string()),
+                        ),
+                    ));
+                    message.undeliverable(failure, return_handle_0);
                 }
             });
             // Send the message for transmission.
@@ -182,10 +183,13 @@ impl MailboxSender for MailboxClient {
             self.buffer.send((envelope, return_handle))
         {
             // Failed to enqueue.
-            envelope.undeliverable(
-                DeliveryError::BrokenLink("failed to enqueue in MailboxClient".to_string()),
-                return_handle,
-            );
+            let failure = DeliveryFailure::new(UndeliverableReason::Transport(
+                TransportFailure::new(
+                    envelope.dest().clone(),
+                    TransportFailureReason::LinkUnavailable("failed to enqueue in MailboxClient".to_string()),
+                ),
+            ));
+            envelope.undeliverable(failure, return_handle);
         }
     }
 }

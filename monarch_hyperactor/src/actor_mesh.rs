@@ -34,6 +34,7 @@ use pyo3::types::PyBytes;
 use pyo3::types::PyTuple;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::mpsc::unbounded_channel;
+use tracing::Instrument;
 
 use crate::actor::PythonActor;
 use crate::actor::PythonMessage;
@@ -42,6 +43,7 @@ use crate::context::PyInstance;
 use crate::pickle::PendingMessage;
 use crate::proc::PyActorAddr;
 use crate::pytokio::PyPythonTask;
+use crate::runtime::GilSite;
 use crate::runtime::get_tokio_runtime;
 use crate::runtime::monarch_with_gil;
 use crate::runtime::monarch_with_gil_blocking;
@@ -272,7 +274,7 @@ impl From<PyErr> for ClonePyErr {
 
 impl Clone for ClonePyErr {
     fn clone(&self) -> Self {
-        monarch_with_gil_blocking(|py| self.inner.clone_ref(py).into())
+        monarch_with_gil_blocking(GilSite::Convert, |py| self.inner.clone_ref(py).into())
     }
 }
 
@@ -381,58 +383,65 @@ impl ActorMeshProtocol for AsyncActorMesh {
             PythonMessageKind::CallMethod { response_port, .. } => response_port.clone(),
             _ => None,
         };
-        self.push(async move {
-            let result = async {
-                let resolved = message.resolve().await?;
-                mesh.await?
-                    .cast_with_headers(resolved, selection, &instance, caller_headers)
-            }
-            .await;
-            if let (Some(mut port_ref), Err(pyerr)) = (port, result) {
-                let _ = monarch_with_gil(|py: Python<'_>| {
-                    let exception_str = crate::logging::format_traceback(py, &pyerr);
-                    tracing::error!(
-                        actor_id = instance.self_addr().to_string(),
-                        "error occurred during cast unresolved: {}",
-                        exception_str
-                    );
-
-                    // Endpoint calls create a response port: the
-                    // PortRef is sent to the remote worker (to send
-                    // results back), and collect_valuemesh owns the
-                    // PortReceiver. If mesh.cast() fails here, we try
-                    // to send the exception back to the caller via
-                    // the PortRef ourselves. But a supervision event
-                    // can cause collect_valuemesh to drop the
-                    // PortReceiver (removing the port from the
-                    // mailbox) before we get here. Disable
-                    // return-undeliverable so a delivery failure
-                    // doesn't bounce back and crash the root client.
-                    //
-                    // TODO: Tie the lifetime of this queued work to
-                    // the PortReceiver (e.g. a cancellation token set
-                    // on drop) so we can distinguish
-                    // supervision-caused failures — where the caller
-                    // already knows — from other cast errors where
-                    // the caller actually needs this exception.
-
-                    port_ref.set_return_undeliverable(false);
-
-                    let mut state =
-                        crate::pickle::pickle(py, pyerr.into_value(py).into_any(), false, false)?;
-                    let _ = port_ref.post(
-                        &instance,
-                        PythonMessage::new_from_buf(
-                            PythonMessageKind::Exception { rank: Some(0) },
-                            state.take_inner()?.take_buffer(),
-                        ),
-                    );
-
-                    Ok::<_, PyErr>(())
-                })
+        self.push(
+            async move {
+                let result = async {
+                    let resolved = message.resolve().await?;
+                    mesh.await?
+                        .cast_with_headers(resolved, selection, &instance, caller_headers)
+                }
                 .await;
+                if let (Some(mut port_ref), Err(pyerr)) = (port, result) {
+                    let _ = monarch_with_gil(GilSite::Traceback, |py: Python<'_>| {
+                        let exception_str = crate::logging::format_traceback(py, &pyerr);
+                        tracing::error!(
+                            actor_id = instance.self_addr().to_string(),
+                            "error occurred during cast unresolved: {}",
+                            exception_str
+                        );
+
+                        // Endpoint calls create a response port: the
+                        // PortRef is sent to the remote worker (to send
+                        // results back), and collect_valuemesh owns the
+                        // PortReceiver. If mesh.cast() fails here, we try
+                        // to send the exception back to the caller via
+                        // the PortRef ourselves. But a supervision event
+                        // can cause collect_valuemesh to drop the
+                        // PortReceiver (removing the port from the
+                        // mailbox) before we get here. Disable
+                        // return-undeliverable so a delivery failure
+                        // doesn't bounce back and crash the root client.
+                        //
+                        // TODO: Tie the lifetime of this queued work to
+                        // the PortReceiver (e.g. a cancellation token set
+                        // on drop) so we can distinguish
+                        // supervision-caused failures — where the caller
+                        // already knows — from other cast errors where
+                        // the caller actually needs this exception.
+
+                        port_ref.set_return_undeliverable(false);
+
+                        let mut state = crate::pickle::pickle(
+                            py,
+                            pyerr.into_value(py).into_any(),
+                            false,
+                            false,
+                        )?;
+                        let _ = port_ref.post(
+                            &instance,
+                            PythonMessage::new_from_buf(
+                                PythonMessageKind::Exception { rank: Some(0) },
+                                state.take_inner()?.take_buffer(),
+                            ),
+                        );
+
+                        Ok::<_, PyErr>(())
+                    })
+                    .await;
+                }
             }
-        });
+            .instrument(tracing::debug_span!("AsyncActorMesh::cast")),
+        );
         Ok(())
     }
 
@@ -454,7 +463,7 @@ impl ActorMeshProtocol for AsyncActorMesh {
 
     fn stop(&self, instance: &PyInstance, reason: String) -> PyResult<PyPythonTask> {
         let mesh = self.mesh.clone();
-        let instance = monarch_with_gil_blocking(|_py| instance.clone());
+        let instance = monarch_with_gil_blocking(GilSite::Stop, |_py| instance.clone());
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.push(async move {
             let result =
@@ -609,7 +618,8 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
     }
 
     fn stop(&self, instance: &PyInstance, reason: String) -> PyResult<PyPythonTask> {
-        let (slf, instance) = monarch_with_gil_blocking(|_py| (self.clone(), instance.clone()));
+        let (slf, instance) =
+            monarch_with_gil_blocking(GilSite::Stop, |_py| (self.clone(), instance.clone()));
         match slf {
             PythonActorMeshImpl::Owned(mut mesh) => PyPythonTask::new(async move {
                 mesh.mesh
@@ -801,7 +811,7 @@ pub fn hold_gil_for_test(delay_secs: f64, hold_secs: f64) {
         // Wait before grabbing the GIL (blocking sleep is fine here, we're in a spawned thread)
         thread::sleep(Duration::from_secs_f64(delay_secs));
         // Acquire and hold the GIL - MUST use blocking sleep to keep GIL held
-        Python::attach(|_py| {
+        monarch_with_gil_blocking(GilSite::Test, |_py| {
             tracing::info!("start holding the gil...");
             thread::sleep(Duration::from_secs_f64(hold_secs));
             tracing::info!("end holding the gil...");
@@ -853,12 +863,12 @@ mod tests {
     use hyperactor_mesh::supervision::MeshFailure;
     use monarch_types::PickledPyObject;
     use ndslice::extent;
-    use pyo3::Python;
     use tokio::sync::mpsc;
 
     use super::*;
     use crate::actor::PythonActor;
     use crate::actor::PythonActorParams;
+    use crate::config::ACTOR_QUEUE_DISPATCH;
 
     /// Minimal root-client actor for test infrastructure.
     /// Handles MeshFailure by panicking (test failure).
@@ -952,7 +962,7 @@ mod tests {
         // Create a minimal Python class and pickle it so we can spawn
         // PythonActor instances (mirroring PyProcMesh::spawn_async).
         // The class must live in __main__'s globals for pickle to find it.
-        let pickled_type = Python::attach(|py| {
+        let pickled_type = monarch_with_gil_blocking(GilSite::Test, |py| {
             py.run(c"class MinimalActor: pass", None, None).unwrap();
 
             PickledPyObject::pickle(
@@ -964,14 +974,15 @@ mod tests {
             .unwrap()
         });
 
+        let actor_params = PythonActorParams::new(pickled_type, None, None);
+        let config_lock = hyperactor_config::global::lock();
+        let _queue_dispatch_guard = config_lock.override_key(ACTOR_QUEUE_DISPATCH, false);
         let actor_mesh = proc_mesh
-            .spawn::<PythonActor, _>(
-                instance,
-                "test_actors",
-                &PythonActorParams::new(pickled_type, None, None),
-            )
+            .spawn::<PythonActor, _>(instance, "test_actors", &actor_params)
             .await
             .unwrap();
+        drop(_queue_dispatch_guard);
+        drop(config_lock);
 
         let controller = actor_mesh.controller().as_ref().unwrap().clone();
 

@@ -16,6 +16,7 @@ use hyperactor_mesh::test_utils;
 use monarch_hyperactor::code_sync::auto_reload::AutoReloadActor;
 use monarch_hyperactor::code_sync::auto_reload::AutoReloadMessage;
 use monarch_hyperactor::code_sync::auto_reload::AutoReloadParams;
+use monarch_hyperactor::runtime::GilSite;
 use monarch_hyperactor::runtime::monarch_with_gil_blocking;
 use ndslice::View;
 use pyo3::ffi::c_str;
@@ -28,7 +29,9 @@ use tokio::fs;
 #[cfg_attr(not(fbcode_build), ignore)]
 async fn test_auto_reload_actor() -> Result<()> {
     pyo3::Python::initialize();
-    monarch_with_gil_blocking(|py| py.run(c_str!("import monarch._rust_bindings"), None, None))?;
+    monarch_with_gil_blocking(GilSite::Test, |py| {
+        py.run(c_str!("import monarch._rust_bindings"), None, None)
+    })?;
 
     // Create a temporary directory for Python files
     let temp_dir = TempDir::new()?;
@@ -72,7 +75,7 @@ CONSTANT = "initial_constant"
     let temp_path = temp_dir.path().to_path_buf();
     let import_result = tokio::task::spawn_blocking({
         move || {
-            monarch_with_gil_blocking(|py| -> PyResult<String> {
+            monarch_with_gil_blocking(GilSite::Test, |py| -> PyResult<String> {
                 // Add the temp directory to Python path
                 let sys = py.import("sys")?;
                 let path = sys.getattr("path")?;
@@ -122,7 +125,7 @@ CONSTANT = "modified_constant"
     // Now import the module again and verify the changes were propagated
     let final_result = tokio::task::spawn_blocking({
         move || {
-            monarch_with_gil_blocking(|py| -> PyResult<String> {
+            monarch_with_gil_blocking(GilSite::Test, |py| -> PyResult<String> {
                 // Re-import the test module (it should be reloaded now)
                 let test_module = py.import("test_module")?;
                 let get_value_func = test_module.getattr("get_value")?;

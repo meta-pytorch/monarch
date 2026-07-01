@@ -118,7 +118,6 @@ def main(
     mount_point: str | None = None,
     run_local=False,
     verbose=False,
-    chunk_size_mb: int | None = None,
     backend="slurm",
     qos="h100_lowest",
     hpc_identity="hyper_monarch",
@@ -130,7 +129,6 @@ def main(
     num_hosts: int = 2,
     gpus_per_host: int = 8,
     host_type: str = "grandteton",
-    num_parallel_streams: int = 8,
 ):
     t_main_start = time.time()
     if verbose:
@@ -232,18 +230,11 @@ def main(
         with open(Path(script).resolve()) as f:
             script = f.read()
 
-    if chunk_size_mb is None:
-        chunk_size_mb = 1024
-    chunk_size = chunk_size_mb * 1024 * 1024
-
     t_rm_start = time.time()
     rm = remotemount(
         host_mesh,
         str(source_dir),
         str(mount_point),
-        chunk_size=chunk_size,
-        backend=backend,
-        num_parallel_streams=num_parallel_streams,
     )
     rm.open()
     t_rm_open = time.time()
@@ -304,7 +295,6 @@ if __name__ == "__main__":
         "--run_local", action="store_true", help="Run locally without MAST/SLURM"
     )
     parser.add_argument("--verbose", action="store_true")
-    parser.add_argument("--chunk_size_mb", type=int, default=None)
     parser.add_argument(
         "--backend", default="slurm", choices=["slurm", "mast", "local"]
     )
@@ -320,6 +310,5 @@ if __name__ == "__main__":
     parser.add_argument("--num_hosts", type=int, default=2)
     parser.add_argument("--gpus_per_host", type=int, default=8)
     parser.add_argument("--host_type", default="grandteton")
-    parser.add_argument("--num_parallel_streams", type=int, default=8)
     args = parser.parse_args()
     main(**vars(args))

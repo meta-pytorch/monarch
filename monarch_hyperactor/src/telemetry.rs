@@ -392,6 +392,8 @@ mod tests {
     use pyo3::prelude::*;
 
     use super::*;
+    use crate::runtime::GilSite;
+    use crate::runtime::monarch_with_gil_blocking;
 
     fn init_python() {
         pyo3::Python::initialize();
@@ -418,7 +420,7 @@ mod tests {
     #[test]
     fn forward_to_tracing_without_context_does_not_crash() {
         init_python();
-        Python::attach(|py| {
+        monarch_with_gil_blocking(GilSite::Test, |py| {
             let record = make_log_record(py, "no context marker");
             let result = forward_to_tracing(py, record);
             assert!(result.is_ok());
@@ -436,7 +438,7 @@ mod tests {
         let recording = hyperactor_telemetry::recorder().record(64);
         let span = recording.span("test");
 
-        Python::attach(|py| {
+        monarch_with_gil_blocking(GilSite::Test, |py| {
             let record = make_log_record(py, "recorder marker");
             let _guard = span.enter();
             let result = forward_to_tracing(py, record);
@@ -460,7 +462,7 @@ mod tests {
     #[test]
     fn extract_recording_span_returns_none_without_context() {
         init_python();
-        Python::attach(|py| {
+        monarch_with_gil_blocking(GilSite::Test, |py| {
             let result = extract_recording_span(py);
             assert!(result.is_none());
         });

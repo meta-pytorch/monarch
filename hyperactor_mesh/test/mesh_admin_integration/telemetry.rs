@@ -11,8 +11,8 @@
 //!
 //! These routes proxy to the Monarch dashboard and require
 //! `telemetry_url` to be configured. The Python dining_philosophers
-//! binary is launched with `--dashboard` so that job-level telemetry
-//! starts the dashboard and passes `telemetry_url` to `_spawn_admin`.
+//! binary is launched with telemetry so the job passes `telemetry_url`
+//! to `_spawn_admin`.
 
 use std::time::Duration;
 
@@ -205,14 +205,14 @@ pub async fn run_pyspy_dump_bogus_ref() {
 }
 
 /// MIT-68, MIT-69: `/v1/query` and `/v1/pyspy_dump` return 404 when no
-/// dashboard is configured.
-pub async fn run_no_dashboard_returns_404() {
+/// telemetry proxy is configured.
+pub async fn run_no_telemetry_returns_404() {
     let bin = harness::dining_philosophers_python_binary();
-    let fixture = harness::start_workload(&bin, &[], Duration::from_secs(60))
+    let fixture = harness::start_workload(&bin, &["--no-telemetry"], Duration::from_secs(60))
         .await
-        .expect("failed to start dining_philosophers without --dashboard");
+        .expect("failed to start dining_philosophers without telemetry");
 
-    // MIT-68: POST /v1/query without dashboard → 404.
+    // MIT-68: POST /v1/query without telemetry proxy → 404.
     let req = QueryRequest {
         sql: "SELECT 1".to_string(),
     };
@@ -223,7 +223,7 @@ pub async fn run_no_dashboard_returns_404() {
     assert_eq!(
         resp.status().as_u16(),
         404,
-        "/v1/query without dashboard should return 404, got {}",
+        "/v1/query without telemetry should return 404, got {}",
         resp.status()
     );
     let body = resp.text().await.unwrap();
@@ -231,7 +231,7 @@ pub async fn run_no_dashboard_returns_404() {
         serde_json::from_str(&body).expect("response should be ApiErrorEnvelope");
     assert_eq!(envelope.error.code, "not_found");
 
-    // MIT-69: POST /v1/pyspy_dump/{ref} without dashboard → 404.
+    // MIT-69: POST /v1/pyspy_dump/{ref} without telemetry proxy → 404.
     let encoded = urlencoding::encode("unix:@fake,fake-0000000000000000");
     let resp = fixture
         .post(
@@ -243,7 +243,7 @@ pub async fn run_no_dashboard_returns_404() {
     assert_eq!(
         resp.status().as_u16(),
         404,
-        "/v1/pyspy_dump without dashboard should return 404, got {}",
+        "/v1/pyspy_dump without telemetry should return 404, got {}",
         resp.status()
     );
     let body = resp.text().await.unwrap();

@@ -39,6 +39,7 @@ from monarch._src.actor.debugger.debug_controller import debug_controller
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.future import Future
 from monarch._src.actor.host_mesh import (
+    default_bootstrap_cmd,
     HostMesh,
     hosts_from_config,
     this_host,
@@ -70,6 +71,7 @@ __all__ = [
     "get_or_spawn_controller",
     "this_host",
     "this_proc",
+    "default_bootstrap_cmd",
     "HostMesh",
     "context",
     "hosts_from_config",

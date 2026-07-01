@@ -1,119 +1,87 @@
 # Proc
 
-A `Proc` is the fundamental container for actors in hyperactor. It provides the runtime context for actor execution and determines how messages are routed—both inbound messages arriving at the proc from the network and outbound messages leaving the proc.
+A `Proc` is the fundamental container for actors in hyperactor. It provides
+the runtime context for actor execution: it owns actor lifecycle, delivers
+messages to its local actors, and hosts supervision state.
+
+A proc is **not** a network endpoint by itself. It reaches—and is reached by—
+the outside world only through a [`Gateway`](gateway.md), its connectivity
+boundary. Every proc is attached to exactly one gateway; outbound messages flow
+through that gateway, and inbound messages for the proc arrive via the gateway's
+ingress path. Procs that share a gateway reach each other by an in-gateway
+lookup rather than dialing.
 
 ## Construction
 
-Create a pre-configured proc using `Proc::configured()`:
+Build a proc with the builder, choosing how it attaches to a gateway:
 
 ```rust
-pub fn configured(proc_id: ProcId, forwarder: BoxedMailboxSender) -> Self
+// Default: attach to the process-wide `Gateway::global()`.
+// (Legacy pseudo-singleton ids are reserved for host-scoped construction.)
+let proc = Proc::builder().proc_id(id).build()?;
+
+// Attach to a caller-provided gateway — e.g. a host wiring its procs
+// into the one gateway it owns. Accepts any proc id.
+let proc = Proc::builder().shared_gateway(gateway.clone()).build()?;
 ```
 
-**Parameters:**
+Convenience constructors cover common cases:
 
-- `proc_id`: The proc's unique identity (see [ProcId](../references/proc_id.md))
-- `forwarder`: A `BoxedMailboxSender` that routes all outbound messages from this proc
+- `Proc::isolated()` — a random-id proc on a fresh local-only gateway
+  (`Gateway::isolated()`); outbound to unknown destinations is undeliverable.
+  Useful in tests.
+- `Proc::configured(proc_id, forwarder)` — wraps `Gateway::configured(location,
+  forwarder)` so the proc advertises `location` and uses `forwarder` for
+  egress.
+- `Proc::direct(addr, name)` — a direct-addressed proc served on its own
+  channel.
 
-The forwarder is the critical routing component for remote delivery - when an actor within this proc sends a message to an actor in another proc, it flows through this forwarder.
+The proc's gateway is reachable via `Proc::gateway()`.
 
-## Example: Service Proc in Host
+## Proc identity and addressing
 
-From `Host::new()`:
-
-```rust
-let router = DialMailboxRouter::new();
-
-let service_proc_id = ProcId(
-    frontend_addr.clone(),
-    "service".to_string()
-);
-
-let service_proc = Proc::configured(service_proc_id, router.boxed());
-```
-
-Here:
-- The proc is identified by `ProcId(frontend_addr, "service")`
-- All outbound messages use the `DialMailboxRouter` as their forwarder
-- The router will look up target procs and dial their backend addresses
-
-## ProcId: Addressing
-
-Procs are identified using `ProcId`:
-
-```rust
-ProcId(ChannelAddr, String)
-```
-
-Example:
+`ProcId` is pure identity. `ProcAddr` pairs that id with the `Location` where the proc is reachable:
 
 ```rust
 let addr: ChannelAddr = "unix:@abc123".parse()?;
-let proc_id = ProcId(addr, "service".to_string());
+let proc_addr = ProcAddr::instance(addr, "service");
 ```
 
-The proc is addressed by:
-- The host's channel address (where it can be reached)
-- A name identifying the proc within that host
+A proc is reached through its gateway's advertised location. On a host, spawned
+children are advertised through the host frontend with a
+`Via(child_uid, frontend_addr)` location, so the host gateway can peel the child
+uid and forward to the child gateway peer. See [ProcId](../references/proc_id.md)
+for identity details and [Addr](../references/reference.md) for addressable
+references.
 
-See [ProcId](../references/proc_id.md) for complete details.
+## Egress through the gateway
 
-## Forwarder Integration
+When an actor sends a message to an actor in another proc, the message leaves
+the proc through its gateway, which applies the single
+[routing decision](gateway.md#the-single-routing-decision): deliver to a local
+proc, forward to a child proc or a known peer by peeling its `Via` hop, or hand
+to the forwarder for everything else. Spawned children are just peers keyed by
+their child uid. The default forwarder is a `DialMailboxRouter`, which looks up
+the target's address and dials it.
 
-The forwarder determines how messages leave the proc. Typically, a `DialMailboxRouter` is used to enable dynamic routing to multiple destinations.
+### Local proc bypass
 
-### Using DialMailboxRouter
-
-Routes messages by looking up target addresses and dialing connections:
-
-```rust
-let router = DialMailboxRouter::new();
-let proc = Proc::configured(proc_id, router.boxed());
-```
-
-When an actor sends a message to another proc, the router:
-1. Looks up the target's address in its address book
-2. Dials a connection (or reuses a cached one)
-3. Sends the message over that connection
-
-See [Routers](../mailboxes/routers.md#dialmailboxrouter-remote-and-serializable-routing).
-
-### Local Proc Bypass
-
-When a proc sends a message to an actor in another proc, the message normally flows through the proc's forwarder to a backend address, where a central routing layer forwards it to the destination proc (see [Host](host.md) for the complete architecture with frontend and backend receivers). For procs running on the same host, this can be optimized: procs can dial each other directly via Unix sockets, bypassing the central routing layer entirely.
-
-**Injection point**: When a proc manager spawns a new proc, instead of providing a plain backend sender as the forwarder, it wraps it with a local-aware forwarder:
+For procs that run in *separate processes* on the same host, same-host
+proc-to-proc traffic can skip the host round-trip. At spawn time the proc
+manager gives the child gateway a `LocalProcDialer` forwarder that dials a
+sibling proc directly over its Unix socket when the destination is local, and
+falls back to the host backend otherwise:
 
 ```rust
-// At proc spawn time, the manager injects a local bypass forwarder:
 let backend_sender = MailboxClient::dial(backend_addr);
-let proc_forwarder = LocalProcDialer::new(
-    host_frontend_addr,   // Identify local procs by this address
-    socket_dir,           // Directory where procs place Unix sockets
-    backend_sender,       // Fallback for remote procs
-);
+let proc_forwarder = LocalProcDialer::new(host_frontend_addr, socket_dir, backend_sender);
 let proc = Proc::configured(proc_id, proc_forwarder.boxed());
 ```
 
-The forwarder checks each outbound message: if the destination is a local proc (matching the host's frontend address), it dials directly via the proc's Unix socket. Otherwise, it routes through the backend sender:
+This reduces message copies and keeps the host agent off the hot path for
+intra-host traffic. See `hyperactor_mesh::bootstrap::mailbox::LocalProcDialer`.
 
-```rust
-impl MailboxSender for LocalProcDialer {
-    fn post_unchecked(&self, envelope: MessageEnvelope, ...) {
-        if envelope.dest().proc_id() == local_proc_on_this_host {
-            unix_sender.post_unchecked(envelope, ...)  // Direct
-        } else {
-            backend_sender.post_unchecked(envelope, ...)  // Via host backend
-        }
-    }
-}
-```
-
-This improves throughput for intra-host communication by reducing message copies and preventing the host agent from becoming a sequencing bottleneck for all messages between local procs, while maintaining compatibility with remote routing.
-
-See `hyperactor_mesh::bootstrap::mailbox::LocalProcDialer` for the implementation.
-
-## Spawning Actors
+## Spawning actors
 
 Once you have a proc, spawn actors within it:
 
@@ -121,16 +89,13 @@ Once you have a proc, spawn actors within it:
 let actor_handle = proc.spawn("my_actor", MyActor::new())?;
 ```
 
-The spawned actor:
-- Runs within this proc
-- Inherits the proc's `ProcId` as part of its `ActorId`
-- Uses the proc's forwarder for outbound messages
-
-See [RemoteSpawn](../actors/remote_spawn.md) for spawning details.
+The spawned actor runs within this proc, inherits the proc's `ProcId` as part
+of its `ActorId`, and uses the proc's gateway for outbound messages. See
+[RemoteSpawn](../actors/remote_spawn.md) for spawning details.
 
 ## See Also
 
-- [Host](host.md) - How hosts create and manage procs
-- [ProcId](../references/proc_id.md) - Proc addressing schemes
-- [Routers](../mailboxes/routers.md) - Forwarder implementations
-- [ActorId](../references/actor_id.md) - How actors inherit proc identity
+- [Gateway](gateway.md) — the connectivity boundary every proc attaches to
+- [Host](host.md) — how hosts create and manage procs
+- [ProcId](../references/proc_id.md) — proc addressing
+- [ActorId](../references/actor_id.md) — how actors inherit proc identity

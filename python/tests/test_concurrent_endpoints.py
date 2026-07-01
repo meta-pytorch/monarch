@@ -11,8 +11,10 @@ import os
 from tempfile import TemporaryDirectory
 from typing import Any, cast
 
+import monarch.actor
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
+from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
 from monarch.actor import Actor, concurrent_endpoint, endpoint, Port, this_host
 from monarch.config import parametrize_config
 
@@ -232,16 +234,21 @@ async def test_concurrent_endpoint_exception_uses_actor_error_context() -> None:
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
 @isolate_in_subprocess
-async def test_concurrent_explicit_port_exception_is_not_auto_forwarded() -> None:
+async def test_concurrent_explicit_port_exception_kills_actor() -> None:
+    """An ``@concurrent_endpoint(explicit_response_port=True)`` body that raises
+    instead of sending through its port kills the actor with a supervision
+    error, just as a plain ``@endpoint(explicit_response_port=True)`` does (see
+    ``test_explicit_response_port_exception_kills_actor`` in
+    ``test_actor_error.py``). The escaped exception is not silently swallowed."""
+    monarch.actor.unhandled_fault_hook = lambda failure: None
     proc = this_host().spawn_procs(per_host={"gpus": 1})
     actor = proc.spawn(
         "concurrent_explicit_port_failing_actor", ConcurrentExplicitPortFailingActor
     )
 
     try:
-        with pytest.raises(asyncio.TimeoutError):
-            await asyncio.wait_for(actor.fail.call_one(), timeout=0.2)
-        assert await asyncio.wait_for(actor.ping.call_one(), timeout=10) == "pong"
+        with pytest.raises(SupervisionError):
+            await asyncio.wait_for(actor.fail.call_one(), timeout=15)
     finally:
         await proc.stop()
 

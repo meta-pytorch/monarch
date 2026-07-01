@@ -38,7 +38,7 @@ _PYTHON = "/usr/local/fbcode/platform010/bin/python3.12"
 DEFAULT_WORKER_FBPKG_NAME = "monarch_additional_packages"
 
 _DEFAULT_NETWORK_AFFINITY = {"preferredScope": 3, "fallbackScope": 3}
-_DEFAULT_X86_LOCALITY_CONSTRAINTS = ("region", "pci")
+_DEFAULT_X86_LOCALITY_CONSTRAINTS = ("region", "eag")
 
 # h100 x86 host shape (whole 8-GPU host) for resourceLimit/machineConstraints.
 _H100_RAM_MB = (2048 - 145) * 1024
@@ -209,7 +209,7 @@ def launch_mast(
     hosts: int,
     hpc_identity: str = "hyper_monarch",
     hpc_job_oncall: str = "monarch",
-    rm_attribution: str = "msl_infra_pytorch_dev",
+    rm_attribution: str = "msl_infra_hw_enab_agentrl",
     hpc_cluster_uuid: str = "MastGenAICluster",
     env: Optional[dict[str, str]] = None,
     locality_constraints: tuple[str, ...] = (),
