@@ -606,6 +606,28 @@ users:
         self.assertEqual(configuration.proxy, "http://fwdproxy:8080")
         mock_set_default.assert_called_once_with(configuration)
 
+    @patch("monarch._src.job.kubernetes.config.load_kube_config")
+    def test_local_load_malformed_kubeconfig_raises(
+        self, mock_load_kube_config: MagicMock
+    ) -> None:
+        # current-context references a context that does not exist, so proxy-url
+        # resolution fails. The error must surface as a RuntimeError, not a raw
+        # traceback from the underlying kubeconfig parsing.
+        with NamedTemporaryFile("w") as kubeconfig:
+            kubeconfig.write(
+                """
+apiVersion: v1
+kind: Config
+current-context: missing-context
+clusters: []
+contexts: []
+users: []
+"""
+            )
+            kubeconfig.flush()
+            with self.assertRaises(RuntimeError, msg="kubeconfig"):
+                KubeConfig.from_path(kubeconfig.name).load()
+
 
 class TestIsPodWorkerReady(unittest.TestCase):
     """Tests for KubernetesJob._is_pod_worker_ready."""
@@ -1118,10 +1140,11 @@ class TestPortForwardToPod(unittest.TestCase):
         with self.assertRaises(RuntimeError, msg="kubectl"):
             job._port_forward_to_pod(pod)
 
+    @patch("monarch._src.job.kubernetes.select.select", return_value=([1], [], []))
     @patch("monarch._src.job.kubernetes.subprocess.Popen")
     @patch("monarch._src.job.kubernetes.shutil.which", return_value="/usr/bin/kubectl")
     def test_port_forward_uses_pod(
-        self, mock_which: MagicMock, mock_popen: MagicMock
+        self, mock_which: MagicMock, mock_popen: MagicMock, mock_select: MagicMock
     ) -> None:
         job = self._make_job()
         pod = _MonarchMeshPod(name="mesh1-0", ip="10.0.0.1", port=26600)
@@ -1141,27 +1164,29 @@ class TestPortForwardToPod(unittest.TestCase):
         self.assertIn("--namespace", cmd)
         self.assertIn("test-ns", cmd)
 
+    @patch("monarch._src.job.kubernetes.select.select", return_value=([1], [], []))
     @patch("monarch._src.job.kubernetes.subprocess.Popen")
     @patch("monarch._src.job.kubernetes.shutil.which", return_value="/usr/bin/kubectl")
     def test_port_forward_no_output_raises(
-        self, mock_which: MagicMock, mock_popen: MagicMock
+        self, mock_which: MagicMock, mock_popen: MagicMock, mock_select: MagicMock
     ) -> None:
         job = self._make_job()
         pod = _MonarchMeshPod(name="mesh1-0", ip="10.0.0.1", port=26600)
 
         mock_process = MagicMock()
         mock_process.stdout.readline.return_value = ""
-        mock_process.stderr.read.return_value = "connection refused"
-        mock_process.wait.return_value = 1
+        mock_process.communicate.return_value = ("", "connection refused")
         mock_popen.return_value = mock_process
 
         with self.assertRaises(RuntimeError, msg="no output"):
             job._port_forward_to_pod(pod)
+        mock_process.terminate.assert_called_once()
 
+    @patch("monarch._src.job.kubernetes.select.select", return_value=([1], [], []))
     @patch("monarch._src.job.kubernetes.subprocess.Popen")
     @patch("monarch._src.job.kubernetes.shutil.which", return_value="/usr/bin/kubectl")
     def test_port_forward_unparseable_output_raises(
-        self, mock_which: MagicMock, mock_popen: MagicMock
+        self, mock_which: MagicMock, mock_popen: MagicMock, mock_select: MagicMock
     ) -> None:
         job = self._make_job()
         pod = _MonarchMeshPod(name="mesh1-0", ip="10.0.0.1", port=26600)
@@ -1174,6 +1199,25 @@ class TestPortForwardToPod(unittest.TestCase):
 
         with self.assertRaises(RuntimeError, msg="could not parse"):
             job._port_forward_to_pod(pod)
+
+    @patch("monarch._src.job.kubernetes.select.select", return_value=([], [], []))
+    @patch("monarch._src.job.kubernetes.subprocess.Popen")
+    @patch("monarch._src.job.kubernetes.shutil.which", return_value="/usr/bin/kubectl")
+    def test_port_forward_start_timeout_raises(
+        self, mock_which: MagicMock, mock_popen: MagicMock, mock_select: MagicMock
+    ) -> None:
+        job = self._make_job()
+        pod = _MonarchMeshPod(name="mesh1-0", ip="10.0.0.1", port=26600)
+
+        mock_process = MagicMock()
+        mock_popen.return_value = mock_process
+
+        # select reports the port-forward never became readable within the
+        # deadline, so we kill it and raise before ever reading stdout.
+        with self.assertRaises(RuntimeError, msg="did not start within"):
+            job._port_forward_to_pod(pod)
+        mock_process.kill.assert_called_once()
+        mock_process.stdout.readline.assert_not_called()
 
 
 class TestStateOutOfCluster(unittest.TestCase):
