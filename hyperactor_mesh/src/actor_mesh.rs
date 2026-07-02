@@ -1154,18 +1154,22 @@ impl<A: Referable> fmt::Display for ActorMeshRef<A> {
 
 impl<A: Referable> PartialEq for ActorMeshRef<A> {
     fn eq(&self, other: &Self) -> bool {
-        self.cast_domain.region() == other.cast_domain.region()
-            && self.cast_domain.id.domain_id() == other.cast_domain.id.domain_id()
-            && self.id == other.id
+        // Value identity: the same mesh (`id`) over the same `region`. `id` is
+        // cloned through `sliced()` and preserved across serialization, and the
+        // members are a function of `(id, region)`, so this captures "same
+        // actors." The cast domain's `domain_id` is a freshly-minted per-slice
+        // routing token (`Uid::anonymous()`), so it is deliberately excluded —
+        // two independent slices to the same region denote the same actors and
+        // must compare equal.
+        self.id == other.id && self.cast_domain.region() == other.cast_domain.region()
     }
 }
 impl<A: Referable> Eq for ActorMeshRef<A> {}
 
 impl<A: Referable> Hash for ActorMeshRef<A> {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.cast_domain.region().hash(state);
-        self.cast_domain.id.domain_id().hash(state);
         self.id.hash(state);
+        self.cast_domain.region().hash(state);
     }
 }
 
