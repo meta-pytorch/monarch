@@ -34,6 +34,8 @@ use pyo3_async_runtimes::TaskLocals;
 use tokio::runtime::Handle;
 use tokio::task;
 
+use crate::config::TOKIO_WORKER_THREADS;
+
 /// Global tokio runtime container.
 ///
 /// `handle` is cheap to clone and is what callers receive from
@@ -52,7 +54,12 @@ static INSTANCE: OnceLock<GlobalRuntime> = OnceLock::new();
 
 fn global_runtime() -> &'static GlobalRuntime {
     INSTANCE.get_or_init(|| {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
+        let worker_threads = hyperactor_config::global::get(TOKIO_WORKER_THREADS);
+        let mut builder = tokio::runtime::Builder::new_multi_thread();
+        if let Some(worker_threads) = worker_threads {
+            builder.worker_threads(worker_threads.get());
+        }
+        let runtime = builder
             .thread_name_fn(|| {
                 static ATOMIC_ID: AtomicUsize = AtomicUsize::new(0);
                 let id = ATOMIC_ID.fetch_add(1, Ordering::SeqCst);

@@ -211,6 +211,13 @@ declare_attrs! {
         Some("actor_queue_dispatch".to_string()),
     ))
     pub attr ACTOR_QUEUE_DISPATCH: bool = true;
+
+    /// Worker thread count for Monarch's Python Tokio runtime bridge.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("MONARCH_TOKIO_WORKER_THREADS".to_string()),
+        Some("tokio_worker_threads".to_string()),
+    ))
+    pub attr TOKIO_WORKER_THREADS: Option<hyperactor_config::NonZeroUsize> = None;
 }
 
 /// Python API for configuration management
@@ -545,6 +552,7 @@ declare_py_config_type!(PyEncoding as wirevalue::Encoding);
 declare_py_config_type!(PyPortRange as std::ops::Range::<u16>);
 declare_py_config_type!(String as hyperactor_mesh::config::SocketAddrStr);
 declare_py_config_type!(usize as hyperactor_config::NonZeroUsize);
+declare_py_config_type!(Option<usize> as Option<hyperactor_config::NonZeroUsize>);
 declare_py_config_type!(
     i8, i16, i32, i64, u8, u16, u32, u64, usize, f32, f64, bool, String
 );
