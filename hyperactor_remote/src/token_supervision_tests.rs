@@ -41,12 +41,12 @@ use crate::token;
 type SupervisionToken = Token<ActorAddr, ActorRef<WorkerLike>>;
 
 #[derive(Clone, Debug, Serialize, Deserialize, Named)]
-struct ParentExit;
+struct ParentExit(StopMode);
 wirevalue::register_type!(ParentExit);
 
 #[derive(Clone, Debug, Serialize, Deserialize, Named)]
 enum ParentControl {
-    Exit,
+    Exit(StopMode),
     Kill,
 }
 wirevalue::register_type!(ParentControl);
@@ -116,8 +116,11 @@ impl Handler<token::Joined<ActorRef<WorkerLike>>> for Parent {
 
 #[async_trait]
 impl Handler<ParentExit> for Parent {
-    async fn handle(&mut self, cx: &Context<Self>, _message: ParentExit) -> anyhow::Result<()> {
-        cx.drain_and_stop("parent requested exit")?;
+    async fn handle(&mut self, cx: &Context<Self>, message: ParentExit) -> anyhow::Result<()> {
+        match message.0 {
+            StopMode::Stop => cx.stop("parent requested stop")?,
+            StopMode::DrainAndStop => cx.drain_and_stop("parent requested drain and stop")?,
+        }
         Ok(())
     }
 }
@@ -157,7 +160,7 @@ impl Handler<ParentControl> for ParentRoot {
             .as_ref()
             .expect("parent must be spawned before control message");
         match message {
-            ParentControl::Exit => parent.post(cx, ParentExit),
+            ParentControl::Exit(stop_mode) => parent.post(cx, ParentExit(stop_mode)),
             ParentControl::Kill => parent.kill("test parent killed")?,
         }
         Ok(())
@@ -391,10 +394,25 @@ async fn test_token_join_parent_exit_stops_child_first() -> anyhow::Result<()> {
 
     harness
         .parent_root
-        .post(&harness.observer, ParentControl::Exit);
+        .post(&harness.observer, ParentControl::Exit(StopMode::Stop));
 
     let reason = recv(&mut harness.child_stopped_rx).await?;
     assert_eq!(reason, "parent stopping");
+    harness.stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_token_join_parent_exit_drain_and_stops_child_first() -> anyhow::Result<()> {
+    let mut harness = Harness::new().await?;
+
+    harness.parent_root.post(
+        &harness.observer,
+        ParentControl::Exit(StopMode::DrainAndStop),
+    );
+
+    let reason = recv(&mut harness.child_stopped_rx).await?;
+    assert_eq!(reason, "parent draining");
     harness.stop().await?;
     Ok(())
 }
