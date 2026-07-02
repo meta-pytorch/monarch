@@ -100,7 +100,6 @@ use crate::host::LocalProcManager;
 use crate::host::SERVICE_PROC_NAME;
 pub use crate::host_mesh::host_agent::HostAgent;
 use crate::host_mesh::host_agent::ProcManagerSpawnFn;
-use crate::host_mesh::host_agent::ProcState;
 use crate::mesh_controller::ProcMeshController;
 use crate::mesh_id::ActorMeshId;
 use crate::mesh_id::HostMeshId;
@@ -1509,6 +1508,14 @@ impl HostMeshRef {
     /// The identity of the referenced host mesh.
     pub fn id(&self) -> &HostMeshId {
         &self.id
+    }
+
+    /// The `ActorMesh<HostAgent>` backing this host mesh. Casting to it routes
+    /// through the host mesh's cast tree (root = its cast actor 0), so replies
+    /// to a bound port reduce up the tree instead of every host dialing the
+    /// caller directly.
+    pub(crate) fn agent_mesh(&self) -> &ActorMeshRef<HostAgent> {
+        &self.host_agent_mesh
     }
 
     /// The host channel addresses in rank order.

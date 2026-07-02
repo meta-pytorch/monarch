@@ -7,6 +7,7 @@
  */
 
 use std::any::type_name;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt;
 use std::hash::Hash;
@@ -47,8 +48,8 @@ use crate::Error;
 use crate::HostMeshRef;
 use crate::ValueMesh;
 use crate::host_mesh::GET_PROC_STATE_MAX_IDLE;
+use crate::host_mesh::host_agent::GetHostProcStates;
 use crate::host_mesh::host_agent::ProcState;
-use crate::host_mesh::host_agent_ref;
 use crate::host_mesh::mesh_to_rankedvalues_with_default;
 use crate::mesh_controller::ActorMeshControlPlane;
 use crate::mesh_controller::ActorMeshController;
@@ -571,14 +572,18 @@ impl ProcMeshRef {
         Ok(vm)
     }
 
-    /// Get the state of all procs in this proc mesh.
+    /// Get the state of every proc in this proc mesh.
     ///
-    /// Sends one `GetState` per proc (or `KeepaliveGetState` when `keepalive`
-    /// is `Some`, so the host agent extends each proc's expiry) directly to the
-    /// proc's host agent, and collects the replies into a rank-ordered
-    /// `ValueMesh`. Returns `None` when this proc mesh is not backed by a host
-    /// mesh (local/in-process meshes). On timeout, missing ranks are padded
-    /// with a `Timeout` state.
+    /// Casts a single `GetHostProcStates` to the routing host-agent mesh
+    /// carrying this mesh's selected global ranks (the mesh may be sliced, so
+    /// they need not be a dense `0..n`). The cast may reach hosts that own no
+    /// selected procs, but each HostAgent filters locally and only hosts with
+    /// matching ranks reply. Replies reduce up the cast tree (fanning in at cast
+    /// actor 0) instead of every host dialing this caller. When `keepalive` is
+    /// `Some`, each proc's expiry is extended (orphan protection, as with
+    /// `KeepaliveGetState`). Returns `None` when this proc mesh is not backed by
+    /// a host mesh (local/in-process meshes). On timeout, ranks whose host did
+    /// not reply are padded with a `Timeout` state.
     #[allow(clippy::result_large_err)]
     pub async fn states(
         &self,
@@ -586,111 +591,84 @@ impl ProcMeshRef {
         keepalive: Option<std::time::SystemTime>,
     ) -> crate::Result<Option<ValueMesh<resource::State<ProcState>>>> {
         // Only meaningful when this proc mesh is backed by a host mesh.
-        if self.host_mesh.is_none() {
+        let Some(host_mesh) = self.host_mesh.as_ref() else {
             return Ok(None);
-        }
+        };
         let region = self.region.clone();
 
         let (tx, mut rx) = cx.mailbox().open_port();
+        let mut reply = tx.bind();
+        // If this proc dies or some other issue renders the reply undeliverable,
+        // the reply does not need to be returned to the sender.
+        reply.return_undeliverable(false);
 
-        let mut num_ranks = 0;
-        let mut proc_names = Vec::new();
-        for proc_id in self.proc_ids() {
-            num_ranks += 1;
-            let addr = proc_id.addr().clone();
-
-            // Note that we don't send 1 message per host agent, we send 1 message
-            // per proc.
-            let host_agent = host_agent_ref(addr);
-            let proc_resource_id = ResourceId::new(proc_id.uid().clone(), proc_id.label().cloned());
-            proc_names.push(proc_resource_id.clone());
-            let mut reply = tx.bind();
-            // If this proc dies or some other issue renders the reply undeliverable,
-            // the reply does not need to be returned to the sender.
-            reply.return_undeliverable(false);
-            let mut send_port = host_agent.port();
-            // If the message is undeliverable, the timeout below will catch the issue, and the caller
-            // can handle the error as it pleases. Set this so an undeliverable message doesn't cause
-            // a supervision crash.
-            send_port.return_undeliverable(false);
-            let get_state = resource::GetState {
-                id: proc_resource_id,
+        // Cast a single query carrying the queried region. The host mesh is a
+        // routing over-approximation for sliced proc meshes; HostAgents that own
+        // selected ranks reply with one batch, and HostAgents that do not own
+        // any selected ranks stay silent.
+        host_mesh.agent_mesh().cast(
+            cx,
+            GetHostProcStates {
+                proc_mesh_id: self.id.clone(),
+                region: region.clone(),
+                keepalive,
                 reply,
-            };
-            if let Some(expires_after) = keepalive {
-                let mut keepalive_port = host_agent.port();
-                keepalive_port.return_undeliverable(false);
-                keepalive_port.post(
-                    cx,
-                    resource::KeepaliveGetState {
-                        expires_after,
-                        get_state,
-                    },
-                );
-            } else {
-                send_port.post(cx, get_state);
+            },
+        )?;
+
+        let mut state_by_rank: HashMap<usize, resource::State<ProcState>> =
+            HashMap::with_capacity(self.ranks.len());
+
+        let timeout = hyperactor_config::global::get(GET_PROC_STATE_MAX_IDLE);
+
+        while state_by_rank.len() < self.ranks.len() {
+            // The agent runs in the same process as its procs, so a fatal event
+            // (OOM, signal, exit) leaves it unresponsive; the recv timeout lets
+            // us assume the host is dead and pad its procs with timeout states.
+            match tokio::time::timeout(timeout, rx.recv()).await {
+                Ok(batch) => {
+                    for state in batch? {
+                        match state.state {
+                            Some(ref inner) => {
+                                state_by_rank.insert(inner.create_rank, state);
+                            }
+                            None => {
+                                return Err(crate::Error::NotExist(state.id));
+                            }
+                        }
+                    }
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "Timeout waiting for response from host mesh agent for proc states after {:?}",
+                        timeout
+                    );
+                    break;
+                }
             }
         }
 
-        let mut states = Vec::with_capacity(num_ranks);
-        let timeout = hyperactor_config::global::get(GET_PROC_STATE_MAX_IDLE);
-        for _ in 0..num_ranks {
-            // The agent runs on the same process as the running actor, so if some
-            // fatal event caused the process to crash (e.g. OOM, signal, process exit),
-            // the agent will be unresponsive.
-            // We handle this by setting a timeout on the recv, and if we don't get a
-            // message we assume the agent is dead and return a failed state.
-            let state = tokio::time::timeout(timeout, rx.recv()).await;
-            if let Ok(state) = state {
-                // Handle non-timeout receiver error.
-                let state = state?;
-                match state.state {
-                    Some(ref inner) => {
-                        states.push((inner.create_rank, state));
-                    }
-                    None => {
-                        return Err(crate::Error::NotExist(state.id));
-                    }
-                }
-            } else {
-                // Timeout error, stop reading from the receiver and send back what we have so far,
-                // padding with failed states.
-                tracing::warn!(
-                    "Timeout waiting for response from host mesh agent for proc states after {:?}",
-                    timeout
-                );
-                let all_ranks = (0..num_ranks).collect::<HashSet<_>>();
-                let completed_ranks = states.iter().map(|(rank, _)| *rank).collect::<HashSet<_>>();
-                let mut leftover_ranks = all_ranks.difference(&completed_ranks).collect::<Vec<_>>();
-                assert_eq!(leftover_ranks.len(), num_ranks - states.len());
-                while states.len() < num_ranks {
-                    let rank = *leftover_ranks
-                        .pop()
-                        .expect("leftover ranks should not be empty");
-                    states.push((
-                        // We populate with any ranks leftover at the time of the timeout.
-                        rank,
-                        resource::State {
-                            id: proc_names[rank].clone(),
+        // Assemble in region order, padding any rank whose host did not reply
+        // before the timeout with a `Timeout` state.
+        Ok(Some(
+            self.ranks
+                .iter()
+                .map(|proc_ref| {
+                    state_by_rank
+                        .remove(&proc_ref.create_rank)
+                        .unwrap_or_else(|| resource::State {
+                            id: ResourceId::new(
+                                proc_ref.proc_id.uid().clone(),
+                                proc_ref.proc_id.label().cloned(),
+                            ),
                             status: resource::Status::Timeout(timeout),
                             state: None,
                             generation: 0,
                             timestamp: std::time::SystemTime::now(),
-                        },
-                    ));
-                }
-                break;
-            }
-        }
-        // Ensure that all ranks have replied. Note that if the mesh is sliced,
-        // not all create_ranks may be in the mesh.
-        // Sort by rank, so that the resulting mesh is ordered.
-        states.sort_by_key(|(rank, _)| *rank);
-        let vm = states
-            .into_iter()
-            .map(|(_, state)| state)
-            .collect_mesh::<ValueMesh<_>>(region)?;
-        Ok(Some(vm))
+                        })
+                })
+                .collect_mesh::<ValueMesh<_>>(region)?,
+        ))
     }
 
     /// Returns an iterator over the proc ids in this mesh.
@@ -1556,6 +1534,81 @@ mod tests {
             crate::Error::NotExist(name) if name == expected_name => {}
             other => panic!("expected NotExist for {expected_name}, got {other:?}"),
         }
+
+        let _ = hm.shutdown(instance).await;
+    }
+
+    /// `proc_states` must resolve exactly the procs of the (possibly sliced)
+    /// mesh it is called on — gpu-dim slices, host-dim slices, and
+    /// slice-of-slice — rather than re-deriving a dense `0..n` from per-host
+    /// counts or from the recipient's stamped (sliced-ordinal) rank.
+    #[cfg(fbcode_build)]
+    async fn assert_proc_states_match_slice<C: hyperactor::context::Actor>(
+        mesh: &super::ProcMeshRef,
+        cx: &C,
+    ) {
+        // The slice's own procs, by their original global rank.
+        let mut expected: Vec<usize> = mesh.ranks.iter().map(|r| r.create_rank).collect();
+        expected.sort();
+
+        let states = mesh
+            .states(cx, None)
+            .await
+            .unwrap()
+            .expect("host-backed mesh yields Some");
+
+        assert_eq!(states.extent(), mesh.extent());
+
+        let mut got: Vec<usize> = states
+            .values()
+            .map(|s| {
+                assert!(
+                    !matches!(
+                        s.status,
+                        Status::NotExist | Status::Failed(_) | Status::Timeout(_)
+                    ),
+                    "rank should resolve to a live proc, got status {:?}",
+                    s.status
+                );
+                s.state.expect("live proc carries ProcState").create_rank
+            })
+            .collect();
+
+        got.sort();
+
+        assert_eq!(
+            got, expected,
+            "proc_states must return exactly this (sub)mesh's procs"
+        );
+    }
+
+    #[async_timed_test(timeout_secs = 60)]
+    #[cfg(fbcode_build)]
+    async fn test_proc_states_on_sliced_mesh() {
+        let instance = testing::instance();
+        let mut hm = testing::host_mesh(2).await;
+        // 2 hosts x 4 gpus, host-major: global rank = host * 4 + gpu.
+        let proc_mesh = hm
+            .spawn(&instance, "test", extent!(gpus = 4), None, None)
+            .await
+            .unwrap();
+
+        // Full mesh: ranks 0..8.
+        assert_proc_states_match_slice(&proc_mesh, instance).await;
+        // gpu-dim slice (gpus 2..4): ranks {2,3,6,7} — the original mis-derivation.
+        assert_proc_states_match_slice(&proc_mesh.range("gpus", 2..4).unwrap(), instance).await;
+        // host-dim slice (host 1): ranks {4,5,6,7} — the stamped-ordinal trap.
+        assert_proc_states_match_slice(&proc_mesh.range("hosts", 1..2).unwrap(), instance).await;
+        // slice-of-slice (host 1, gpus 2..4): ranks {6,7} — pins base-rank composition.
+        assert_proc_states_match_slice(
+            &proc_mesh
+                .range("gpus", 2..4)
+                .unwrap()
+                .range("hosts", 1..2)
+                .unwrap(),
+            instance,
+        )
+        .await;
 
         let _ = hm.shutdown(instance).await;
     }

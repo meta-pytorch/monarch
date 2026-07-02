@@ -47,6 +47,7 @@ use hyperactor::gateway::GatewayServeHandle;
 use hyperactor::id::Label;
 use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::Attrs;
+use ndslice::view::Region;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::time::Duration;
@@ -343,6 +344,7 @@ impl fmt::Debug for DrainWorker {
         resource::Stop,
         resource::GetState<ProcState>,
         resource::KeepaliveGetState<ProcState>,
+        GetHostProcStates,
         resource::StreamState<ProcState>,
         resource::GetRankStatus,
         resource::WaitRankStatus,
@@ -1442,14 +1444,11 @@ pub struct ProcState {
 }
 wirevalue::register_type!(ProcState);
 
-#[async_trait]
-impl Handler<resource::GetState<ProcState>> for HostAgent {
-    async fn handle(
-        &mut self,
-        cx: &Context<Self>,
-        get_state: resource::GetState<ProcState>,
-    ) -> anyhow::Result<()> {
-        let state = match self.created.get(&get_state.id) {
+impl HostAgent {
+    /// Build the `State<ProcState>` for a single proc `id` from `created`.
+    /// Shared by the `GetState` and `GetHostProcStates` handlers.
+    async fn proc_state(&self, id: &ResourceId) -> resource::State<ProcState> {
+        match self.created.get(id) {
             Some(ProcCreationState {
                 rank,
                 created: Ok((proc_id, mesh_agent)),
@@ -1464,7 +1463,7 @@ impl Handler<resource::GetState<ProcState>> for HostAgent {
                 };
                 let status = raw_status.clamp_min(self.min_proc_status());
                 resource::State {
-                    id: get_state.id.clone(),
+                    id: id.clone(),
                     status,
                     state: Some(ProcState {
                         proc_id: proc_id.clone(),
@@ -1480,22 +1479,100 @@ impl Handler<resource::GetState<ProcState>> for HostAgent {
             Some(ProcCreationState {
                 created: Err(e), ..
             }) => resource::State {
-                id: get_state.id.clone(),
+                id: id.clone(),
                 status: resource::Status::Failed(e.to_string()),
                 state: None,
                 generation: 0,
                 timestamp: std::time::SystemTime::now(),
             },
             None => resource::State {
-                id: get_state.id.clone(),
+                id: id.clone(),
                 status: resource::Status::NotExist,
                 state: None,
                 generation: 0,
                 timestamp: std::time::SystemTime::now(),
             },
+        }
+    }
+}
+
+#[async_trait]
+impl Handler<resource::GetState<ProcState>> for HostAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        get_state: resource::GetState<ProcState>,
+    ) -> anyhow::Result<()> {
+        let state = self.proc_state(&get_state.id).await;
+        get_state.reply.post(cx, state);
+        Ok(())
+    }
+}
+
+/// Query the state of a proc mesh's procs, cast to the host agents backing that
+/// mesh. The caller casts ONE of these carrying the queried `region` (the mesh
+/// may be sliced, so the region need not be a dense `0..n`). The cast reaches
+/// every routing host, but each rank's proc lives on exactly one host, so each
+/// `HostAgent` that owns at least one selected proc reports those procs in a
+/// single batch. Hosts that own no selected procs do not reply.
+///
+/// The bound `reply` port is split by the cast tree, so replies reduce up the
+/// tree (to cast actor 0) instead of every host dialing the caller directly.
+/// One batched reply per owning host means the caller sees `O(hosts)` reply
+/// messages instead of `O(procs)`.
+///
+/// `GetState<ProcState>` cannot be cast this way because it carries a
+/// fully-resolved id; this message resolves ids host-side instead.
+///
+/// If `keepalive` is `Some`, each proc's expiry is extended (same
+/// orphan-protection semantics as `KeepaliveGetState`).
+#[derive(Debug, Clone, Serialize, Deserialize, Named)]
+pub struct GetHostProcStates {
+    pub proc_mesh_id: ProcMeshId,
+    /// The (possibly sliced) region being queried. Each host keeps the procs it
+    /// owns for this mesh whose global rank lies in the region, tested with
+    /// `Slice::contains` (offset/stride-aware) — so a sliced or host-offset
+    /// region resolves correctly without relying on the recipient's stamped rank.
+    pub region: Region,
+    pub keepalive: Option<std::time::SystemTime>,
+    pub reply: hyperactor::PortRef<Vec<resource::State<ProcState>>>,
+}
+wirevalue::register_type!(GetHostProcStates);
+
+#[async_trait]
+impl Handler<GetHostProcStates> for HostAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: GetHostProcStates,
+    ) -> anyhow::Result<()> {
+        let selects = |state: &ProcCreationState| {
+            state.proc_mesh_id.as_ref() == Some(&message.proc_mesh_id)
+                && message.region.slice().contains(state.rank)
         };
 
-        get_state.reply.post(cx, state);
+        // Bump keepalive (if requested) in a separate mutable pass, so the read
+        // loop can borrow `&self` via `proc_state` (mirrors `KeepaliveGetState`).
+        if let Some(expires_after) = message.keepalive {
+            for state in self.created.values_mut() {
+                if selects(state) {
+                    state.expiry_time = Some(expires_after);
+                }
+            }
+        }
+
+        let mut states = Vec::new();
+
+        for (id, state) in self.created.iter() {
+            if selects(state) {
+                states.push(self.proc_state(id).await);
+            }
+        }
+
+        if !states.is_empty() {
+            message.reply.post(cx, states);
+        }
+
         Ok(())
     }
 }
