@@ -1910,9 +1910,6 @@ struct InstanceState<A: Actor> {
     /// serving loop to join introspection.
     detached_introspect_shutdown_tx: Mutex<Option<oneshot::Sender<ActorStatus>>>,
 
-    /// A watch for communicating the actor's state.
-    status_tx: watch::Sender<ActorStatus>,
-
     /// This instance's globally unique ID.
     id: Uuid,
 
@@ -2254,34 +2251,6 @@ impl<A: Actor> InstanceState<A> {
     }
 }
 
-fn publish_dropped_instance_status(
-    proc: Proc,
-    status_tx: watch::Sender<ActorStatus>,
-    actor_addr: ActorAddr,
-    terminal_status: ActorStatus,
-) {
-    let actor_id = actor_addr.id().clone();
-    status_tx.send_if_modified(|status| {
-        if status.is_terminal() {
-            false
-        } else {
-            proc.inner
-                .actor_tombstones
-                .insert(actor_id.clone(), terminal_status.clone());
-            tracing::info!(
-                name = "ActorStatus",
-                actor_id = %actor_addr,
-                actor_name = actor_addr.log_name(),
-                status = "Stopped",
-                prev_status = status.arm().unwrap_or("unknown"),
-                "instance is dropped",
-            );
-            *status = terminal_status.clone();
-            true
-        }
-    });
-}
-
 impl<A: Actor> Drop for InstanceState<A> {
     fn drop(&mut self) {
         let terminal_status = ActorStatus::Stopped("instance is dropped".into());
@@ -2295,12 +2264,7 @@ impl<A: Actor> Drop for InstanceState<A> {
         }
         let _ = self.introspect_task_handle.lock().unwrap().take();
 
-        publish_dropped_instance_status(
-            self.proc.clone(),
-            self.status_tx.clone(),
-            self.self_addr().clone(),
-            terminal_status,
-        );
+        self.cell.publish_dropped_status(terminal_status);
     }
 }
 
@@ -2391,6 +2355,7 @@ impl<A: Actor> Instance<A> {
             actor_type,
             proc.clone(),
             actor_loop,
+            status_tx,
             status_rx,
             parent,
             ports.clone(),
@@ -2406,7 +2371,6 @@ impl<A: Actor> Instance<A> {
             introspect_shutdown_tx: Mutex::new(None),
             introspect_task_handle: Mutex::new(None),
             detached_introspect_shutdown_tx: Mutex::new(None),
-            status_tx,
             sequencer: Sequencer::new(instance_id),
             id: instance_id,
             instance_locals: ActorLocalStorage::new(),
@@ -2449,9 +2413,7 @@ impl<A: Actor> Instance<A> {
             introspect_shutdown_rx,
         ));
 
-        let proc = self.inner.proc.clone();
-        let status_tx = self.inner.status_tx.clone();
-        let actor_addr = self.self_addr().clone();
+        let cell = self.inner.cell.clone();
         tokio::spawn(async move {
             let Ok(terminal_status) = detached_shutdown_rx.await else {
                 return;
@@ -2460,7 +2422,7 @@ impl<A: Actor> Instance<A> {
             if let Err(err) = introspect_handle.await {
                 tracing::debug!("introspect task join failed: {:?}", err);
             }
-            publish_dropped_instance_status(proc, status_tx, actor_addr, terminal_status);
+            cell.publish_dropped_status(terminal_status);
         });
 
         let mut shutdown = self.inner.detached_introspect_shutdown_tx.lock().unwrap();
@@ -2490,73 +2452,15 @@ impl<A: Actor> Instance<A> {
     /// the last status was active for.
     #[track_caller]
     pub fn change_status(&self, new: ActorStatus) {
-        if new.is_terminal() {
-            self.inner
-                .proc
-                .inner
-                .actor_tombstones
-                .insert(self.self_addr().id().clone(), new.clone());
-        }
-        let old = self.inner.status_tx.send_replace(new.clone());
-        // 2 cases are allowed:
-        // * non-terminal -> non-terminal
-        // * non-terminal -> terminal
-        // terminal -> terminal is not allowed unless it is the same status (no-op).
-        // terminal -> non-terminal is never allowed.
-        assert!(
-            !old.is_terminal() && !new.is_terminal()
-                || !old.is_terminal() && new.is_terminal()
-                || old == new,
-            "actor changing status illegally, only allow non-terminal -> non-terminal \
-            and non-terminal -> terminal statuses. actor_id={}, prev_status={}, status={}",
-            self.self_addr(),
-            old,
-            new
-        );
-        // Actor status changes between Idle and Processing when handling every
-        // message. It creates too many logs if we want to log these 2 states.
-        // Also, sometimes the actor transitions from Processing -> Processing.
-        // Therefore we skip the status changes between them.
-        if !((old.is_idle() && new.is_processing())
-            || (old.is_processing() && new.is_idle())
-            || old == new)
-        {
-            let new_status = new.arm().unwrap_or("unknown");
-            let change_reason = match &new {
-                ActorStatus::Failed(reason) => reason.to_string(),
-                ActorStatus::Stopped(reason) => reason.clone(),
-                _ => "".to_string(),
-            };
-            tracing::info!(
-                name = "ActorStatus",
-                actor_id = %self.self_addr(),
-                actor_name = self.self_addr().log_name(),
-                status = new_status,
-                prev_status = old.arm().unwrap_or("unknown"),
-                caller = %PanicLocation::caller(),
-                change_reason,
-            );
-            let actor_id = hash_to_u64(self.self_addr().id());
-            notify_actor_status_changed(ActorStatusEvent {
-                id: generate_actor_status_event_id(actor_id),
-                timestamp: std::time::SystemTime::now(),
-                actor_id,
-                new_status: new_status.to_string(),
-                reason: if change_reason.is_empty() {
-                    None
-                } else {
-                    Some(change_reason)
-                },
-            });
-        }
+        self.inner.cell.change_status(new);
     }
 
     fn is_terminal(&self) -> bool {
-        self.inner.status_tx.borrow().is_terminal()
+        self.inner.cell.status().borrow().is_terminal()
     }
 
     fn is_stopping(&self) -> bool {
-        self.inner.status_tx.borrow().is_stopping()
+        self.inner.cell.status().borrow().is_stopping()
     }
 
     /// This instance's actor address.
@@ -2770,7 +2674,7 @@ impl<A: Actor> Instance<A> {
     }
 
     pub(crate) fn status(&self) -> watch::Receiver<ActorStatus> {
-        self.inner.status_tx.subscribe()
+        self.inner.cell.status().clone()
     }
 
     pub(crate) fn close_client(&self, reason: &str) {
@@ -2910,7 +2814,7 @@ impl<A: Actor> Instance<A> {
         D: PostAfterEndpoint<A, M>,
     {
         let dest_location = dest.endpoint_location();
-        if matches!(*self.inner.status_tx.borrow(), ActorStatus::Client) {
+        if matches!(*self.inner.cell.status().borrow(), ActorStatus::Client) {
             self.report_delivery_failure(
                 crate::mailbox::DeliveryFailureReport::link_unavailable::<M>(
                     self.mailbox().actor_addr().clone(),
@@ -3826,6 +3730,9 @@ struct InstanceCellState {
         mpsc::UnboundedSender<ActorSupervisionEvent>,
     )>,
 
+    /// A watch for communicating the actor's state.
+    status_tx: watch::Sender<ActorStatus>,
+
     /// An observer that stores the current status of the actor.
     status: watch::Receiver<ActorStatus>,
 
@@ -4010,6 +3917,7 @@ impl InstanceCell {
             mpsc::UnboundedSender<Signal>,
             mpsc::UnboundedSender<ActorSupervisionEvent>,
         )>,
+        status_tx: watch::Sender<ActorStatus>,
         status: watch::Receiver<ActorStatus>,
         parent: Option<InstanceCell>,
         ports: Arc<dyn Any + Send + Sync>,
@@ -4027,6 +3935,7 @@ impl InstanceCell {
                 actor_type,
                 proc: proc.clone(),
                 actor_loop,
+                status_tx,
                 status,
                 parent: parent.map_or_else(WeakInstanceCell::new, |cell| cell.downgrade()),
                 children: DashMap::new(),
@@ -4087,6 +3996,96 @@ impl InstanceCell {
     /// The instance's status observer.
     pub fn status(&self) -> &watch::Receiver<ActorStatus> {
         &self.inner.status
+    }
+
+    fn publish_dropped_status(&self, terminal_status: ActorStatus) {
+        let proc = self.proc().clone();
+        let actor_addr = self.actor_addr().clone();
+        let actor_id = actor_addr.id().clone();
+        self.inner.status_tx.send_if_modified(|status| {
+            if status.is_terminal() {
+                false
+            } else {
+                proc.inner
+                    .actor_tombstones
+                    .insert(actor_id.clone(), terminal_status.clone());
+                tracing::info!(
+                    name = "ActorStatus",
+                    actor_id = %actor_addr,
+                    actor_name = actor_addr.log_name(),
+                    status = "Stopped",
+                    prev_status = status.arm().unwrap_or("unknown"),
+                    "instance is dropped",
+                );
+                *status = terminal_status.clone();
+                true
+            }
+        });
+    }
+
+    /// Notify subscribers of a change in the actors status and bump counters with the duration which
+    /// the last status was active for.
+    #[track_caller]
+    fn change_status(&self, new: ActorStatus) {
+        if new.is_terminal() {
+            self.inner
+                .proc
+                .inner
+                .actor_tombstones
+                .insert(self.actor_addr().id().clone(), new.clone());
+        }
+        let old = self.inner.status_tx.send_replace(new.clone());
+        // 2 cases are allowed:
+        // * non-terminal -> non-terminal
+        // * non-terminal -> terminal
+        // terminal -> terminal is not allowed unless it is the same status (no-op).
+        // terminal -> non-terminal is never allowed.
+        assert!(
+            !old.is_terminal() && !new.is_terminal()
+                || !old.is_terminal() && new.is_terminal()
+                || old == new,
+            "actor changing status illegally, only allow non-terminal -> non-terminal \
+            and non-terminal -> terminal statuses. actor_id={}, prev_status={}, status={}",
+            self.actor_addr(),
+            old,
+            new
+        );
+        // Actor status changes between Idle and Processing when handling every
+        // message. It creates too many logs if we want to log these 2 states.
+        // Also, sometimes the actor transitions from Processing -> Processing.
+        // Therefore we skip the status changes between them.
+        if !((old.is_idle() && new.is_processing())
+            || (old.is_processing() && new.is_idle())
+            || old == new)
+        {
+            let new_status = new.arm().unwrap_or("unknown");
+            let change_reason = match &new {
+                ActorStatus::Failed(reason) => reason.to_string(),
+                ActorStatus::Stopped(reason) => reason.clone(),
+                _ => "".to_string(),
+            };
+            tracing::info!(
+                name = "ActorStatus",
+                actor_id = %self.actor_addr(),
+                actor_name = self.actor_addr().log_name(),
+                status = new_status,
+                prev_status = old.arm().unwrap_or("unknown"),
+                caller = %PanicLocation::caller(),
+                change_reason,
+            );
+            let actor_id = hash_to_u64(self.actor_addr().id());
+            notify_actor_status_changed(ActorStatusEvent {
+                id: generate_actor_status_event_id(actor_id),
+                timestamp: std::time::SystemTime::now(),
+                actor_id,
+                new_status: new_status.to_string(),
+                reason: if change_reason.is_empty() {
+                    None
+                } else {
+                    Some(change_reason)
+                },
+            });
+        }
     }
 
     /// The supervision event stored when this actor failed.
