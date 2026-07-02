@@ -1928,6 +1928,29 @@ struct ActorStopped {
     stop_mode: StopMode,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChildTeardown {
+    Cooperative(StopMode),
+    Kill,
+}
+
+impl ChildTeardown {
+    fn from_run_result(result: &Result<ActorStopped, ActorError>) -> Self {
+        match result {
+            Ok(stopped) => Self::Cooperative(stopped.stop_mode),
+            Err(err) if matches!(err.kind.as_ref(), ActorErrorKind::Aborted(_)) => Self::Kill,
+            Err(_) => Self::Cooperative(StopMode::Stop),
+        }
+    }
+
+    fn cooperative_signal(mode: StopMode) -> Signal {
+        match mode {
+            StopMode::DrainAndStop => Signal::DrainAndStop("parent draining".to_string()),
+            StopMode::Stop => Signal::Stop("parent stopping".to_string()),
+        }
+    }
+}
+
 type DelayedPost<A> = Box<dyn FnOnce(&Instance<A>) + Send>;
 
 trait PostAfterEndpoint<A: Actor, M: Message>: Send {
@@ -3094,13 +3117,13 @@ impl<A: Actor> Instance<A> {
         // After this point, we know we won't spawn any more children,
         // so we can safely read the current child keys.
         let mut to_unlink = Vec::new();
-        let stop_mode = match &result {
-            Ok(stopped) => stopped.stop_mode,
-            Err(_) => StopMode::Stop,
-        };
-        let child_signal = match stop_mode {
-            StopMode::DrainAndStop => Signal::DrainAndStop("parent draining".to_string()),
-            StopMode::Stop => Signal::Stop("parent stopping".to_string()),
+        let child_signal = match ChildTeardown::from_run_result(&result) {
+            ChildTeardown::Cooperative(mode) => ChildTeardown::cooperative_signal(mode),
+            ChildTeardown::Kill => {
+                // TODO: fan out kill once child teardown can detach
+                // unresponsive children without blocking this parent.
+                ChildTeardown::cooperative_signal(StopMode::Stop)
+            }
         };
         for child in self.inner.cell.child_iter() {
             if let Err(err) = child.value().signal(child_signal.clone()) {
@@ -4697,6 +4720,7 @@ mod tests {
     use crate::mailbox::MailboxClient;
     use crate::mailbox::PanickingMailboxSender;
     use crate::port::Port;
+    use crate::testing::ids::test_actor_id;
     use crate::testing::proc_supervison::ProcSupervisionCoordinator;
     use crate::testing::process_assertion::assert_termination;
 
@@ -5241,7 +5265,6 @@ mod tests {
     #[tokio::test]
     async fn test_post_routes_by_proc_id() {
         use crate::mailbox::monitored_return_handle;
-        use crate::testing::ids::test_actor_id;
 
         #[derive(Clone)]
         struct CountingSender(Arc<AtomicUsize>);
@@ -5469,7 +5492,6 @@ mod tests {
     async fn test_mailbox_muxer_delivers_by_actor_id() {
         use crate::mailbox::PortLocation;
         use crate::mailbox::monitored_return_handle;
-        use crate::testing::ids::test_actor_id;
 
         let proc = Proc::isolated();
         let instance = proc.client("worker");
@@ -5652,7 +5674,6 @@ mod tests {
     async fn test_gateway_serve_updates_location_and_stops() {
         use crate::mailbox::PortLocation;
         use crate::mailbox::monitored_return_handle;
-        use crate::testing::ids::test_actor_id;
 
         let proc = Proc::isolated();
         let gateway = proc.gateway();
@@ -5747,8 +5768,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_local_only_gateway_returns_undeliverable_messages() {
-        use crate::testing::ids::test_actor_id;
-
         let proc = Proc::isolated();
         let client = proc.client("client");
         let (return_handle, mut undeliverable_rx) =
@@ -5781,7 +5800,6 @@ mod tests {
         use crate::mailbox::IntoBoxedMailboxSender;
         use crate::mailbox::MailboxSender as _;
         use crate::mailbox::monitored_return_handle;
-        use crate::testing::ids::test_actor_id;
 
         #[derive(Clone)]
         struct MpscSender(UnboundedSender<MessageEnvelope>);
@@ -7756,5 +7774,34 @@ mod tests {
         // would panic in debug builds if running_total had wrapped to u64::MAX.
         account_enqueue(&depth, &stats, "a");
         assert_eq!(stats.running_total(), 1);
+    }
+
+    #[test]
+    fn child_teardown_distinguishes_kill_from_failure() {
+        let actor_addr = test_actor_id("proc", "actor");
+
+        let stopped = Ok(ActorStopped {
+            reason: "test".to_string(),
+            stop_mode: StopMode::DrainAndStop,
+        });
+        assert_eq!(
+            ChildTeardown::from_run_result(&stopped),
+            ChildTeardown::Cooperative(StopMode::DrainAndStop)
+        );
+
+        let killed = Err(ActorError::new(
+            &actor_addr,
+            ActorErrorKind::Aborted("test kill".to_string()),
+        ));
+        assert_eq!(ChildTeardown::from_run_result(&killed), ChildTeardown::Kill);
+
+        let failed = Err(ActorError::new(
+            &actor_addr,
+            ActorErrorKind::Generic("test failure".to_string()),
+        ));
+        assert_eq!(
+            ChildTeardown::from_run_result(&failed),
+            ChildTeardown::Cooperative(StopMode::Stop)
+        );
     }
 }
