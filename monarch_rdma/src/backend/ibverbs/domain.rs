@@ -20,11 +20,11 @@ use std::os::fd::OwnedFd;
 use std::result::Result;
 use std::sync::Arc;
 
-use super::memory_region::IbvMemoryRegion;
 use super::memory_region::IbvMemoryRegionView;
 use super::primitives::IbvConfig;
 use super::primitives::IbvContext;
 use super::primitives::IbvDeviceInfo;
+use super::primitives::IbvMr;
 use super::primitives::IbvPd;
 use super::queue_pair::IbvQueuePair;
 use crate::local_memory::KeepaliveLocalMemory;
@@ -255,8 +255,7 @@ pub trait IbvDomainImpl: std::fmt::Debug + Send + Sync + 'static + Sized {
     }
 }
 
-/// Register host memory as a standard MR via `ibv_reg_mr`. Returns the raw
-/// `ibv_mr`; the caller wraps it in an [`IbvMemoryRegion`] guard.
+/// Register host memory as a standard MR via `ibv_reg_mr`.
 ///
 /// # Safety
 ///
@@ -264,27 +263,29 @@ pub trait IbvDomainImpl: std::fmt::Debug + Send + Sync + 'static + Sized {
 /// outlives this call. `[addr, addr + size)` must name a host mapping that
 /// stays valid for the lifetime of the returned MR.
 pub(super) unsafe fn register_host_mr(
-    pd: *mut rdmaxcel_sys::ibv_pd,
+    pd: &Arc<IbvPd>,
     addr: usize,
     size: usize,
     access_flags: i32,
-) -> anyhow::Result<*mut rdmaxcel_sys::ibv_mr> {
-    if pd.is_null() {
+) -> anyhow::Result<IbvMr> {
+    if pd.as_ptr().is_null() {
         anyhow::bail!("register_host_mr called with a null protection domain");
     }
     // SAFETY: `pd` is non-null (checked above) and, per this function's
     // contract, a live protection domain; `[addr, addr + size)` is a
     // caller-guaranteed valid mapping. `ibv_reg_mr` returns null on failure,
     // which we check before returning the pointer.
-    let mr = unsafe { rdmaxcel_sys::ibv_reg_mr(pd, addr as *mut c_void, size, access_flags) };
+    let mr =
+        unsafe { rdmaxcel_sys::ibv_reg_mr(pd.as_ptr(), addr as *mut c_void, size, access_flags) };
     if mr.is_null() {
         anyhow::bail!("failed to register standard MR");
     }
-    Ok(mr)
+    // SAFETY: `mr` is a non-null `ibv_mr` just registered against `pd`.
+    Ok(unsafe { IbvMr::from_raw(mr, pd.clone()) })
 }
 
 /// Register exactly `[addr, addr + size)` of device memory as a dmabuf MR via
-/// `ibv_reg_dmabuf_mr`, mapped at iova 0. Returns the raw `ibv_mr`.
+/// `ibv_reg_dmabuf_mr`, mapped at iova 0.
 ///
 /// `cuMemGetHandleForAddressRange` requires both `addr` and `size` to be
 /// host-page aligned, so this errors if either is not.
@@ -295,12 +296,12 @@ pub(super) unsafe fn register_host_mr(
 /// outlives this call. `[addr, addr + size)` must name device memory that
 /// stays valid for the lifetime of the returned MR.
 pub(super) unsafe fn register_dmabuf_range(
-    pd: *mut rdmaxcel_sys::ibv_pd,
+    pd: &Arc<IbvPd>,
     addr: usize,
     size: usize,
     access_flags: i32,
-) -> anyhow::Result<*mut rdmaxcel_sys::ibv_mr> {
-    if pd.is_null() {
+) -> anyhow::Result<IbvMr> {
+    if pd.as_ptr().is_null() {
         anyhow::bail!("register_dmabuf_range called with a null protection domain");
     }
     // SAFETY: `sysconf` reads a process-global parameter and takes no pointers.
@@ -346,12 +347,14 @@ pub(super) unsafe fn register_dmabuf_range(
     // a live context; `fd` is a valid dmabuf descriptor kept open by the
     // `OwnedFd` across this call; `size` matches the range queried above.
     // `ibv_reg_dmabuf_mr` returns null on failure, which we check.
-    let mr =
-        unsafe { rdmaxcel_sys::ibv_reg_dmabuf_mr(pd, 0, size, 0, fd.as_raw_fd(), access_flags) };
+    let mr = unsafe {
+        rdmaxcel_sys::ibv_reg_dmabuf_mr(pd.as_ptr(), 0, size, 0, fd.as_raw_fd(), access_flags)
+    };
     if mr.is_null() {
         anyhow::bail!("failed to register dmabuf MR");
     }
-    Ok(mr)
+    // SAFETY: `mr` is a non-null `ibv_mr` just registered against `pd`.
+    Ok(unsafe { IbvMr::from_raw(mr, pd.clone()) })
 }
 
 /// Register the CUDA allocation containing `addr` as a dmabuf MR.
@@ -367,10 +370,10 @@ pub(super) unsafe fn register_dmabuf_range(
 /// outlives this call. `addr` must belong to a CUDA device allocation
 /// that stays valid for the lifetime of the returned MR.
 pub(super) unsafe fn register_dmabuf_mr(
-    pd: *mut rdmaxcel_sys::ibv_pd,
+    pd: &Arc<IbvPd>,
     addr: usize,
     access_flags: i32,
-) -> anyhow::Result<(*mut rdmaxcel_sys::ibv_mr, usize)> {
+) -> anyhow::Result<(IbvMr, usize)> {
     // `cuMemGetAddressRange` resolves the pointer in the *current* CUDA context,
     // so make the pointer's own device context current first. Without this, in a
     // multi-GPU process it fails with `CUDA_ERROR_NOT_FOUND` whenever the active
@@ -436,29 +439,26 @@ pub(super) unsafe fn register_host_or_dmabuf_mr<I: IbvDomainImpl>(
     // the returned MR's lifetime.
     let (mr, mr_offset) = unsafe {
         if is_device_ptr(addr) {
-            register_dmabuf_mr(domain.as_ptr(), addr, access_flags)?
+            register_dmabuf_mr(domain.pd(), addr, access_flags)?
         } else {
-            (
-                register_host_mr(domain.as_ptr(), addr, size, access_flags)?,
-                0,
-            )
+            (register_host_mr(domain.pd(), addr, size, access_flags)?, 0)
         }
     };
 
     // SAFETY: `mr` is non-null — `register_dmabuf_mr`/`register_host_mr` only
     // return `Ok` with a non-null, freshly-registered `ibv_mr` — so reading its
     // `addr`/`lkey`/`rkey` here is sound.
-    let (mr_addr, lkey, rkey) = unsafe { ((*mr).addr as usize, (*mr).lkey, (*mr).rkey) };
+    let (mr_addr, lkey, rkey) = unsafe {
+        let p = mr.as_ptr();
+        ((*p).addr as usize, (*p).lkey, (*p).rkey)
+    };
     // The view addresses the requested sub-range, which sits at `mr_offset`
     // within the MR's zero-based address space.
     let rdma_addr = mr_addr + mr_offset;
     let device_name = domain.device_info().name().to_string();
-    // The `IbvMemoryRegion` guard owns the MR (deregistered on its `Drop`) and anchors
-    // the PD past that deregistration; it coerces to `Arc<dyn IbvMemoryRegionKeepalive>`.
-    let guard = Arc::new(IbvMemoryRegion {
-        mr,
-        _pd: domain.pd().clone(),
-    });
+    // The `IbvMr` guard owns the MR (deregistered on its `Drop`) and anchors the
+    // PD past that deregistration; it coerces to `Arc<dyn IbvMemoryRegionKeepalive>`.
+    let guard = Arc::new(mr);
     Ok(IbvMemoryRegionView::new(
         addr,
         rdma_addr,
@@ -513,8 +513,7 @@ mod tests {
     ///
     /// # Safety
     ///
-    /// `mr` must be a live MR (e.g. owned by a not-yet-dropped
-    /// [`IbvMemoryRegion`]).
+    /// `mr` must be a live MR (e.g. owned by a not-yet-dropped [`IbvMr`]).
     unsafe fn mr_extent(mr: *mut rdmaxcel_sys::ibv_mr) -> (usize, usize) {
         // SAFETY: per this function's contract `mr` is a live MR.
         unsafe { ((*mr).addr as usize, (*mr).length) }
@@ -526,24 +525,18 @@ mod tests {
     #[test]
     fn register_dmabuf_mr_covers_whole_allocation() {
         let domain = open_domain_for_cuda_device(0);
-        let pd = domain.as_ptr();
+        let pd = domain.pd();
         let access = domain.access_flags();
         let alloc = committed_allocation();
         let alloc_size = alloc.size();
 
         // At the allocation base: offset 0, MR spans the whole allocation at iova
-        // 0.
+        // 0. `mr` deregisters on drop, after the assertions below.
         // SAFETY: `pd` is a live PD; `alloc.ptr()` is a live CUDA allocation kept
         // mapped by `alloc` for the MR's lifetime.
         let (mr, offset) = unsafe { register_dmabuf_mr(pd, alloc.ptr(), access) }.unwrap();
-        // Wrap immediately so the MR is deregistered on drop regardless of what
-        // the assertions below do.
-        let region = IbvMemoryRegion {
-            mr,
-            _pd: domain.pd().clone(),
-        };
-        // SAFETY: `region` owns `mr` and has not been dropped.
-        let (iova, length) = unsafe { mr_extent(region.as_ptr()) };
+        // SAFETY: `mr` owns a live MR and has not been dropped.
+        let (iova, length) = unsafe { mr_extent(mr.as_ptr()) };
         assert_eq!(offset, 0, "base address sits at offset 0");
         assert_eq!(iova, 0, "dmabuf MR is mapped at iova 0");
         assert_eq!(length, alloc_size, "MR covers the whole allocation");
@@ -555,12 +548,8 @@ mod tests {
         // SAFETY: as above; `alloc.ptr() + unaligned` is inside the allocation.
         let (mr, offset) =
             unsafe { register_dmabuf_mr(pd, alloc.ptr() + unaligned, access) }.unwrap();
-        let region = IbvMemoryRegion {
-            mr,
-            _pd: domain.pd().clone(),
-        };
-        // SAFETY: `region` owns `mr` and has not been dropped.
-        let (iova, length) = unsafe { mr_extent(region.as_ptr()) };
+        // SAFETY: `mr` owns a live MR and has not been dropped.
+        let (iova, length) = unsafe { mr_extent(mr.as_ptr()) };
         assert_eq!(offset, unaligned, "offset locates the requested address");
         assert_eq!(iova, 0, "dmabuf MR is mapped at iova 0");
         assert_eq!(length, alloc_size, "MR covers the whole allocation");
@@ -571,7 +560,7 @@ mod tests {
     #[test]
     fn register_dmabuf_range_registers_exact_range() {
         let domain = open_domain_for_cuda_device(0);
-        let pd = domain.as_ptr();
+        let pd = domain.pd();
         let access = domain.access_flags();
         let alloc = committed_allocation();
 
@@ -582,12 +571,8 @@ mod tests {
         // SAFETY: `pd` is a live PD; `[alloc.ptr() + offset, ... + size)` is a
         // host-page-aligned range within the fully mapped allocation.
         let mr = unsafe { register_dmabuf_range(pd, alloc.ptr() + offset, size, access) }.unwrap();
-        let region = IbvMemoryRegion {
-            mr,
-            _pd: domain.pd().clone(),
-        };
-        // SAFETY: `region` owns `mr` and has not been dropped.
-        let (iova, length) = unsafe { mr_extent(region.as_ptr()) };
+        // SAFETY: `mr` owns a live MR and has not been dropped.
+        let (iova, length) = unsafe { mr_extent(mr.as_ptr()) };
         assert_eq!(iova, 0, "dmabuf MR is mapped at iova 0");
         assert_eq!(length, size, "MR covers exactly the requested sub-range");
     }
@@ -597,7 +582,7 @@ mod tests {
     #[test]
     fn register_dmabuf_range_rejects_unaligned_addr() {
         let domain = open_domain_for_cuda_device(0);
-        let pd = domain.as_ptr();
+        let pd = domain.pd();
         let access = domain.access_flags();
         let alloc = committed_allocation();
 
@@ -617,7 +602,7 @@ mod tests {
     #[test]
     fn register_dmabuf_range_rejects_unaligned_size() {
         let domain = open_domain_for_cuda_device(0);
-        let pd = domain.as_ptr();
+        let pd = domain.pd();
         let access = domain.access_flags();
         let alloc = committed_allocation();
 
@@ -635,9 +620,9 @@ mod tests {
     #[test]
     fn register_dmabuf_range_rejects_null_pd() {
         let page = host_page_size();
+        let null_pd = Arc::new(IbvPd::null());
         // SAFETY: a null PD is the documented error path; no memory is touched.
-        let err =
-            unsafe { register_dmabuf_range(std::ptr::null_mut(), page, page, 0) }.unwrap_err();
+        let err = unsafe { register_dmabuf_range(&null_pd, page, page, 0) }.unwrap_err();
         assert!(
             err.to_string().contains("null protection domain"),
             "unexpected error: {err}"

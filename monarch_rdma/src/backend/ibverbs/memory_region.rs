@@ -17,7 +17,7 @@
 
 use std::sync::Arc;
 
-use super::primitives::IbvPd;
+use super::primitives::IbvMr;
 
 /// Guards the resources behind a registered MR, releasing them when the last
 /// [`IbvMemoryRegionView`] over it drops. Each implementor frees whatever it
@@ -26,53 +26,9 @@ use super::primitives::IbvPd;
 /// `Arc<dyn IbvMemoryRegionKeepalive>`.
 pub(super) trait IbvMemoryRegionKeepalive: std::fmt::Debug + Send + Sync {}
 
-/// Guard for a standalone MR registered via `ibv_reg_mr` / `ibv_reg_dmabuf_mr`;
-/// its `Drop` runs `ibv_dereg_mr`. Holds the PD so it outlives that call.
-#[derive(Debug)]
-pub(super) struct IbvMemoryRegion {
-    pub(super) mr: *mut rdmaxcel_sys::ibv_mr,
-    /// Keepalive for the PD `mr` was registered against; dropped only after
-    /// this struct's `Drop` returns, so the PD is alive during `ibv_dereg_mr`.
-    /// Never read directly.
-    pub(super) _pd: Arc<IbvPd>,
-}
-
-// SAFETY: `mr` is only handed to `ibv_dereg_mr` (which libibverbs treats as
-// thread-safe) and is owned exclusively by this guard; `_pd` is itself
-// `Send + Sync`.
-unsafe impl Send for IbvMemoryRegion {}
-unsafe impl Sync for IbvMemoryRegion {}
-
-impl IbvMemoryRegionKeepalive for IbvMemoryRegion {}
-
-#[cfg(test)]
-impl IbvMemoryRegion {
-    /// The raw `ibv_mr` this guard owns. Valid until the guard drops (which
-    /// deregisters it).
-    pub(super) fn as_ptr(&self) -> *mut rdmaxcel_sys::ibv_mr {
-        self.mr
-    }
-}
-
-impl Drop for IbvMemoryRegion {
-    fn drop(&mut self) {
-        if self.mr.is_null() {
-            return;
-        }
-        // SAFETY: `mr` is non-null (checked above), was returned by
-        // `ibv_reg_mr` / `ibv_reg_dmabuf_mr`, and is deregistered exactly once
-        // (a value's `Drop` runs once). The PD it was registered against is
-        // still alive: `domain` is dropped only after this returns.
-        let result = unsafe { rdmaxcel_sys::ibv_dereg_mr(self.mr) };
-        if result != 0 {
-            tracing::error!(
-                "failed to deregister MR at {:p}: error code {}",
-                self.mr,
-                result
-            );
-        }
-    }
-}
+/// A standalone [`IbvMr`] guards its own registration: its `Drop` runs
+/// `ibv_dereg_mr` against the PD it owns.
+impl IbvMemoryRegionKeepalive for IbvMr {}
 
 /// A cloneable handle to a slice of registered memory: the keys and addresses
 /// a peer needs, plus an `Arc<dyn IbvMemoryRegionKeepalive>` keepalive.

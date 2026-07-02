@@ -1409,6 +1409,70 @@ impl Drop for IbvPd {
     }
 }
 
+/// Owns an `ibv_mr` together with the `Arc<IbvPd>` it was registered against,
+/// deregistering the MR on drop (a no-op if null) before releasing the PD.
+/// Holding the PD keeps it (and, through it, the context) alive across
+/// `ibv_dereg_mr`, so an `IbvMr` is a self-contained registration callers can
+/// keep alive on its own.
+#[derive(Debug)]
+pub(super) struct IbvMr {
+    mr: *mut rdmaxcel_sys::ibv_mr,
+    /// Keeps the PD open until after `ibv_dereg_mr`. Never read.
+    _pd: Arc<IbvPd>,
+}
+
+// SAFETY: the only raw member is the `ibv_mr` pointer. The ibverbs MR it names is
+// not thread-affine — it may be registered on one thread and used or
+// deregistered on another (`Send`) — and `IbvMr` exposes no operation that
+// mutates the MR through a shared `&` (`as_ptr` only hands back the pointer
+// value), so sharing a `&IbvMr` cannot race (`Sync`).
+unsafe impl Send for IbvMr {}
+// SAFETY: as for `Send` above.
+unsafe impl Sync for IbvMr {}
+
+impl IbvMr {
+    /// Takes ownership of a raw `ibv_mr` and the `pd` it was registered against,
+    /// deregistering the MR on drop.
+    ///
+    /// # Safety
+    ///
+    /// `mr`, if non-null, must be a live `ibv_mr` owned solely by the returned
+    /// value (its `Drop` calls `ibv_dereg_mr` once), registered against `pd`.
+    pub(super) unsafe fn from_raw(mr: *mut rdmaxcel_sys::ibv_mr, pd: Arc<IbvPd>) -> Self {
+        Self { mr, _pd: pd }
+    }
+
+    /// The raw `ibv_mr`; null for a placeholder that holds no region.
+    pub(super) fn as_ptr(&self) -> *mut rdmaxcel_sys::ibv_mr {
+        self.mr
+    }
+
+    /// A placeholder holding no memory region (and a no-op PD): both `Drop`s are
+    /// no-ops.
+    #[cfg(test)]
+    pub(super) fn null() -> Self {
+        Self {
+            mr: std::ptr::null_mut(),
+            _pd: Arc::new(IbvPd::null()),
+        }
+    }
+}
+
+impl Drop for IbvMr {
+    fn drop(&mut self) {
+        if self.mr.is_null() {
+            return;
+        }
+        // SAFETY: a non-null `self.mr` was handed to `from_raw` as a live
+        // `ibv_mr` and, since `IbvMr` is not `Clone`, is deregistered exactly
+        // once. `_pd` drops only after this returns, so the PD is still alive.
+        let ret = unsafe { rdmaxcel_sys::ibv_dereg_mr(self.mr) };
+        if ret != 0 {
+            tracing::error!("failed to deregister MR {:p}: error code {}", self.mr, ret);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

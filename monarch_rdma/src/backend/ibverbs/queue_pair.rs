@@ -2040,16 +2040,9 @@ mod tests {
     // QueuePairActor op processing
     // =================================================================
 
-    use crate::backend::ibverbs::memory_region::IbvMemoryRegion;
-    use crate::backend::ibverbs::primitives::IbvPd;
+    use crate::backend::ibverbs::primitives::IbvMr;
     use crate::local_memory::Keepalive;
     use crate::local_memory::KeepaliveLocalMemory;
-
-    /// A null [`Arc<IbvPd>`] keepalive for [`fake_mrv`]'s region; its `Drop`
-    /// deallocates nothing (null `pd`/`context`).
-    fn null_pd() -> Arc<IbvPd> {
-        Arc::new(IbvPd::null())
-    }
 
     /// No-op [`Keepalive`] for tests that mint a [`KeepaliveLocalMemory`]
     /// from a fake address never actually read or written through.
@@ -2078,10 +2071,8 @@ mod tests {
             0x1234,
             0x5678,
             "dev0".to_string(),
-            Arc::new(IbvMemoryRegion {
-                mr: std::ptr::null_mut(),
-                _pd: null_pd(),
-            }),
+            // A null MR keepalive: its `Drop` is a no-op.
+            Arc::new(IbvMr::null()),
         )
     }
 
