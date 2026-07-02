@@ -171,6 +171,8 @@ async def _spawn_host_and_client(
     seed_base: int = 0,
     num_slots: int | None = None,
 ) -> tuple[BufferHost, ActionClient]:
+    if "cuda" in (host_device, client_device) and not torch.cuda.is_available():
+        pytest.skip("CUDA not available")
     host_proc = this_host().spawn_procs(per_host={"processes": 1})
     client_proc = this_host().spawn_procs(per_host={"processes": 1})
     host = host_proc.spawn(
@@ -186,14 +188,15 @@ async def _spawn_host_and_client(
     return host, client
 
 
-def _device_variants() -> list[tuple[str, str]]:
-    variants: list[tuple[str, str]] = [("cpu", "cpu")]
-    if torch.cuda.is_available():
-        variants.extend([("cuda", "cuda"), ("cpu", "cuda"), ("cuda", "cpu")])
-    return variants
-
-
-DEVICE_VARIANTS = _device_variants()
+# Parametrize the full host/client device matrix at collection time. CUDA
+# variants are skipped at run time (see `_spawn_host_and_client`) when no CUDA
+# device is present.
+DEVICE_VARIANTS: list[tuple[str, str]] = [
+    ("cpu", "cpu"),
+    ("cuda", "cuda"),
+    ("cpu", "cuda"),
+    ("cuda", "cpu"),
+]
 DEVICE_IDS = [f"{h}->{c}" for h, c in DEVICE_VARIANTS]
 
 

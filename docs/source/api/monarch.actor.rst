@@ -33,6 +33,10 @@ are launched across hosts. HostMesh represents a mesh of hosts. ProcMesh is a me
 
 .. autofunction:: default_bootstrap_cmd
 
+.. autofunction:: hosts_from_config
+
+.. autofunction:: enable_transport
+
 
 Defining Actors
 ===============
@@ -135,6 +139,8 @@ Use these functions to look up what actor is running the currently executing cod
 
 .. autofunction:: context
 
+.. autofunction:: shutdown_context
+
 .. autoclass:: Context
    :members:
    :undoc-members:
@@ -164,3 +170,12 @@ Types used for error handling and supervision in actor meshes.
    :members:
    :undoc-members:
    :show-inheritance:
+
+.. autofunction:: unhandled_fault_hook
+
+
+Telemetry
+=========
+Utilities for tracing actor execution.
+
+.. autofunction:: traced

@@ -38,6 +38,10 @@ pub struct IbvQueuePair {
     pub dv_recv_cq: usize, // *mut rdmaxcel_sys::mlx5dv_cq,
     context: usize,        // *mut rdmaxcel_sys::ibv_context,
     config: IbvConfig,
+    // The source GID (carrying its table index), resolved from the owning
+    // device's `IbvDeviceInfo` at construction: index 0 on the EFA path,
+    // otherwise the first global RoCE v2 GID on `config.port_num`.
+    gid: Gid,
     is_efa: bool,
     // Keepalive for the domain whose `context`/`pd` this QP was built
     // against, so it outlives the QP regardless of other owners (the
@@ -125,10 +129,21 @@ impl IbvQueuePair {
         tracing::debug!("creating an IbvQueuePair from config {}", config);
         let context = domain.context.as_ptr();
         let pd = domain.as_ptr();
+        // Resolve Auto to a concrete QP type based on device capabilities.
+        let resolved_qp_type = resolve_qp_type(config.qp_type);
+        let is_efa = resolved_qp_type == rdmaxcel_sys::RDMA_QP_TYPE_EFA;
+        // EFA is not RoCE, so its `gid_attrs/types` never reports "RoCE v2"; it
+        // always uses GID index 0. RoCE selects the first global RoCE v2 GID.
+        let gid = if is_efa {
+            domain.device_info().gid_at(config.port_num, 0)?
+        } else {
+            domain.device_info().select_gid(
+                config.port_num,
+                Some(GidScope::Global),
+                Some(GidType::RoCEv2),
+            )?
+        };
         unsafe {
-            // Resolve Auto to a concrete QP type based on device capabilities
-            let resolved_qp_type = resolve_qp_type(config.qp_type);
-            let is_efa = resolved_qp_type == rdmaxcel_sys::RDMA_QP_TYPE_EFA;
             let qp = rdmaxcel_sys::rdmaxcel_qp_create(
                 context,
                 pd,
@@ -162,6 +177,7 @@ impl IbvQueuePair {
                     dv_recv_cq: 0,
                     context: context as usize,
                     config,
+                    gid,
                     is_efa: true,
                     _domain: domain,
                 });
@@ -201,6 +217,7 @@ impl IbvQueuePair {
                 dv_recv_cq: dv_recv_cq as usize,
                 context: context as usize,
                 config,
+                gid,
                 is_efa: false,
                 _domain: domain,
             })
@@ -213,7 +230,7 @@ impl IbvQueuePair {
         let qp = self.qp as *mut rdmaxcel_sys::rdmaxcel_qp;
         // SAFETY: `(*qp).ibv_qp` is the live `ibv_qp` owned by this `rdmaxcel_qp`,
         // and `context` is its live device context.
-        unsafe { super::get_qp_info((*qp).ibv_qp, context, &self.config) }
+        unsafe { super::get_qp_info((*qp).ibv_qp, context, &self.config, self.gid) }
     }
 
     /// Returns the current state of the QP.
@@ -241,7 +258,15 @@ impl IbvQueuePair {
             .0 as i32;
         let qp = self.qp as *mut rdmaxcel_sys::rdmaxcel_qp;
         // SAFETY: `(*qp).ibv_qp` is the live `ibv_qp` owned by this `rdmaxcel_qp`.
-        unsafe { super::connect((*qp).ibv_qp, &self.config, access_flags, connection_info) }?;
+        unsafe {
+            super::connect(
+                (*qp).ibv_qp,
+                &self.config,
+                access_flags,
+                connection_info,
+                self.gid.index(),
+            )
+        }?;
 
         tracing::debug!(
             "connection sequence has successfully completed (qp: {:?})",
@@ -275,7 +300,7 @@ impl IbvQueuePair {
                 self.config.pkey_index,
                 0x4242, // qkey
                 self.config.psn,
-                self.config.gid_index,
+                self.gid.index(),
                 gid_ptr,
                 connection_info.qp_num,
             );

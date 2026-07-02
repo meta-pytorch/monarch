@@ -6289,13 +6289,24 @@ mod tests {
         }
     }
 
-    // Supervision propagation is deterministic (uses Notify + channel
-    // recv for ordering), but the chain of message passes is sensitive
-    // to tokio runtime scheduling. Under suite-wide CPU contention this
-    // can take well above the natural sub-second runtime; 120s gives
-    // headroom without masking genuine hangs.
-    #[cfg_attr(not(target_os = "linux"), ignore = "linux-only")]
-    #[async_timed_test(timeout_secs = 120)]
+    // Two independent supervision trees on one proc exercise both
+    // propagation outcomes concurrently:
+    //   - tree 1 (`root` -> `root_1` -> `root_1_1` -> `root_1_1_1`): a leaf
+    //     failure bubbles up and is *contained* at `root_1`, the one actor
+    //     that handles supervision events.
+    //   - tree 2 (`root_2` -> `root_2_1`): a leaf failure has no handler and
+    //     bubbles all the way to the `ProcSupervisionCoordinator`.
+    //
+    // The trees must not share an ancestor. If tree 2 hung off `root`, then
+    // failing `root_2_1` would fail `root` (which does not handle events),
+    // and a failed parent tears down its whole subtree — including `root_1`
+    // — before `root_1` could handle its own subtree's failure. Whichever
+    // chain reached `root` first won that race; when tree 2 won, `root_1`
+    // was stopped without ever handling, its subtree's failure was rerouted
+    // to the coordinator, and the test blocked forever on `root_1`'s Notify.
+    // Independent trees make both outcomes deterministic regardless of
+    // scheduling.
+    #[async_timed_test(timeout_secs = 30)]
     async fn test_local_supervision_propagation() {
         hyperactor_telemetry::initialize_logging_for_test();
 
@@ -6374,8 +6385,9 @@ mod tests {
             root_1_1.cell().clone(),
             make_actor(&root_1_1_1_state, false),
         );
-        let root_2 =
-            proc.spawn_child::<TestActor>(root.cell().clone(), make_actor(&root_2_state, false));
+        // `root_2` is a second, independent root — deliberately not a child
+        // of `root` — so failing its subtree cannot tear down tree 1.
+        let root_2 = proc.spawn_with_label::<TestActor>("root_2", make_actor(&root_2_state, false));
         let root_2_1 = proc
             .spawn_child::<TestActor>(root_2.cell().clone(), make_actor(&root_2_1_state, false));
 

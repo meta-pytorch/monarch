@@ -36,7 +36,6 @@ impl IbvDeviceImpl for EfaDevice {
     }
 
     fn apply_config_defaults(config: &mut IbvConfig) {
-        config.gid_index = 0;
         config.max_send_sge = 1;
         config.max_recv_sge = 1;
         config.max_dest_rd_atomic = 0;

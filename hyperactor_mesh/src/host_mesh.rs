@@ -399,7 +399,7 @@ impl HostMesh {
         // `global_context`), which owns the global gateway; sharing it
         // would collide on the legacy `service`/`local` pseudo-singleton
         // proc ids.
-        let host = Host::new_with_gateway(manager, addr, None, Gateway::new()).await?;
+        let host = Host::new_with_gateway(manager, addr, None, Gateway::new(), None).await?;
         let addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let host_mesh_agent = system_proc
@@ -472,7 +472,7 @@ impl HostMesh {
         // process-wide global one. Several hosts coexist in one process
         // here, and the legacy `service`/`local` pseudo-singleton proc
         // ids would collide if they all attached to the same gateway.
-        let host = Host::new_with_gateway(manager, addr, None, Gateway::new()).await?;
+        let host = Host::new_with_gateway(manager, addr, None, Gateway::new(), None).await?;
         let addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let host_mesh_agent = system_proc

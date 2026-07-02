@@ -51,6 +51,15 @@ Propagator = Union[None, Literal["cached", "inspect", "mocked"], Callable[..., A
 
 
 class Endpoint(Protocol[P, R]):
+    """A callable endpoint on a spawned actor or actor mesh.
+
+    Accessing an ``@endpoint`` method on a spawned actor yields an ``Endpoint``
+    rather than calling the method directly. Its methods are the messaging
+    adverbs that send a message to the actor(s) and control how responses are
+    returned: ``call``, ``call_one``, ``choose``, ``stream``, ``broadcast``,
+    and ``rref``.
+    """
+
     def _send(
         self,
         args: Tuple[Any, ...],

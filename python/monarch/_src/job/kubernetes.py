@@ -15,7 +15,7 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
-from typing import Any, NotRequired, TypedDict
+from typing import Any, TypedDict
 
 try:
     from kubernetes import client, config, watch
@@ -172,16 +172,19 @@ class _MonarchMeshPod:
     port: int
 
 
-class _MeshConfig(TypedDict):
+class _MeshConfigRequired(TypedDict):
     service_name: str
     label_selector: str
     num_replicas: int
     pod_rank_label: str
     provisioned: bool
     port: int
-    labels: NotRequired[dict[str, str]]
-    annotations: NotRequired[dict[str, str]]
-    pod_template: NotRequired[client.V1PodTemplateSpec]
+
+
+class _MeshConfig(_MeshConfigRequired, total=False):
+    labels: dict[str, str]
+    annotations: dict[str, str]
+    pod_template: client.V1PodTemplateSpec
 
 
 class KubernetesJob(JobTrait):

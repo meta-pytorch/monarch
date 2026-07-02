@@ -24,11 +24,14 @@
 //! - `IbvOperation`: Represents the type of RDMA operation to perform (Read or Write).
 //! - `IbvQpInfo`: Contains connection information needed to establish an RDMA connection with a remote endpoint.
 //! - `IbvWc`: Wrapper around ibverbs work completion structure, used to track the status of RDMA operations.
+use std::collections::BTreeMap;
 use std::ffi::CStr;
 use std::fmt;
 use std::io::Error;
+use std::net::Ipv6Addr;
 use std::sync::OnceLock;
 
+use anyhow::Context;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -40,7 +43,6 @@ use crate::backend::ibverbs::device_selection::resolve_target;
 use crate::device_selection::MemoryLocation;
 
 #[derive(
-    Default,
     Copy,
     Clone,
     Debug,
@@ -50,12 +52,48 @@ use crate::device_selection::MemoryLocation;
     serde::Serialize,
     serde::Deserialize
 )]
-#[repr(transparent)]
+// `AsRef`/`AsMut`/`From<Gid>` reinterpret the leading `raw` bytes in place as an
+// `ibv_gid` (which is 8-aligned, holding `__be64`s). `repr(C, align(8))` keeps
+// `raw` first and 8-aligned so that pointer cast is well-defined; without it the
+// derived layout can place `raw` at a misaligned offset, faulting on that read.
+#[repr(C, align(8))]
 pub struct Gid {
     raw: [u8; 16],
+    /// The GID's index in its port's GID table.
+    index: u8,
+    /// Address scope, classified from `raw` at construction.
+    scope: GidScope,
+    /// RoCE type, from the port's `gid_attrs/types` sysfs entry.
+    gid_type: GidType,
 }
 
 impl Gid {
+    /// Builds a GID from its IPv6 address, RoCE type, and GID-table index,
+    /// classifying the address's scope.
+    fn new(addr: Ipv6Addr, gid_type: GidType, index: u8) -> Self {
+        Self {
+            raw: addr.octets(),
+            index,
+            scope: GidScope::of(addr),
+            gid_type,
+        }
+    }
+
+    /// The GID's index in its port's GID table.
+    pub(crate) fn index(&self) -> u8 {
+        self.index
+    }
+
+    /// The GID's address scope.
+    fn scope(&self) -> GidScope {
+        self.scope
+    }
+
+    /// The GID's RoCE type.
+    fn gid_type(&self) -> GidType {
+        self.gid_type
+    }
+
     #[allow(dead_code)]
     fn subnet_prefix(&self) -> u64 {
         u64::from_be_bytes(self.raw[..8].try_into().unwrap())
@@ -64,13 +102,6 @@ impl Gid {
     #[allow(dead_code)]
     fn interface_id(&self) -> u64 {
         u64::from_be_bytes(self.raw[8..].try_into().unwrap())
-    }
-}
-impl From<rdmaxcel_sys::ibv_gid> for Gid {
-    fn from(gid: rdmaxcel_sys::ibv_gid) -> Self {
-        Self {
-            raw: unsafe { gid.raw },
-        }
     }
 }
 
@@ -89,6 +120,98 @@ impl AsRef<rdmaxcel_sys::ibv_gid> for Gid {
 impl AsMut<rdmaxcel_sys::ibv_gid> for Gid {
     fn as_mut(&mut self) -> &mut rdmaxcel_sys::ibv_gid {
         unsafe { &mut *self.raw.as_mut_ptr().cast::<rdmaxcel_sys::ibv_gid>() }
+    }
+}
+
+impl fmt::Display for Gid {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&format_gid(&self.raw))
+    }
+}
+
+/// Scope of an IPv6-form GID. RoCE encodes the source GID as an IPv6 address, so
+/// the usual IPv6 scopes apply.
+///
+/// - [`Loopback`](GidScope::Loopback): `::1`, or IPv4-mapped loopback
+///   (`::ffff:127.0.0.0/8`).
+/// - [`LinkLocal`](GidScope::LinkLocal): `fe80::/10` (the default GID prefix), or
+///   IPv4-mapped link-local (`::ffff:169.254.0.0/16`).
+/// - [`SiteLocal`](GidScope::SiteLocal): `fec0::/10`, deprecated by RFC 3879.
+/// - [`Global`](GidScope::Global): everything else, including globally-routable
+///   IPv4-mapped, global, and ULA IPv6.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize
+)]
+pub(crate) enum GidScope {
+    Loopback,
+    LinkLocal,
+    SiteLocal,
+    Global,
+}
+
+impl GidScope {
+    /// Classifies an IPv6 address by scope. IPv4-mapped addresses
+    /// (`::ffff:a.b.c.d`) are classified by their embedded IPv4 address, so an
+    /// IPv4 loopback/link-local GID is not mistaken for a global one.
+    fn of(addr: Ipv6Addr) -> Self {
+        if addr.is_loopback() {
+            return GidScope::Loopback;
+        }
+        if let Some(v4) = addr.to_ipv4_mapped() {
+            return if v4.is_loopback() {
+                GidScope::Loopback
+            } else if v4.is_link_local() {
+                GidScope::LinkLocal
+            } else {
+                GidScope::Global
+            };
+        }
+        let [a, b, ..] = addr.octets();
+        if a == 0xfe && b & 0xc0 == 0x80 {
+            GidScope::LinkLocal
+        } else if a == 0xfe && b & 0xc0 == 0xc0 {
+            GidScope::SiteLocal
+        } else {
+            GidScope::Global
+        }
+    }
+}
+
+/// RoCE type of a GID, from its `gid_attrs/types` sysfs entry.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize
+)]
+pub(crate) enum GidType {
+    /// `IB/RoCE v1`.
+    RoCEv1,
+    /// `RoCE v2`.
+    RoCEv2,
+    /// Any other or unrecognized type.
+    Unknown,
+}
+
+impl GidType {
+    /// Classifies a `gid_attrs/types` sysfs value.
+    fn of(gid_type: &str) -> Self {
+        match gid_type.trim() {
+            "RoCE v2" => GidType::RoCEv2,
+            "IB/RoCE v1" => GidType::RoCEv1,
+            _ => GidType::Unknown,
+        }
     }
 }
 
@@ -140,8 +263,6 @@ pub struct IbvConfig {
     pub cq_entries: i32,
     /// `port_num` - The physical port number on the device.
     pub port_num: u8,
-    /// `gid_index` - The GID index for the RDMA device.
-    pub gid_index: u8,
     /// `max_send_wr` - The maximum number of outstanding send work requests.
     pub max_send_wr: u32,
     /// `max_recv_wr` - The maximum number of outstanding receive work requests.
@@ -192,7 +313,6 @@ impl Default for IbvConfig {
             target: IbvDeviceTarget::MemoryLocation(MemoryLocation::Cpu(Some(0))),
             cq_entries: 1024,
             port_num: 1,
-            gid_index: 3,
             max_send_wr: 512,
             max_recv_wr: 512,
             max_send_sge: 30,
@@ -229,10 +349,9 @@ impl std::fmt::Display for IbvConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "IbvConfig {{ target: {:?}, port_num: {}, gid_index: {}, max_send_wr: {}, max_recv_wr: {}, max_send_sge: {}, max_recv_sge: {}, path_mtu: {:?}, retry_cnt: {}, rnr_retry: {}, qp_timeout: {}, min_rnr_timer: {}, max_dest_rd_atomic: {}, max_rd_atomic: {}, pkey_index: {}, psn: 0x{:x} }}",
+            "IbvConfig {{ target: {:?}, port_num: {}, max_send_wr: {}, max_recv_wr: {}, max_send_sge: {}, max_recv_sge: {}, path_mtu: {:?}, retry_cnt: {}, rnr_retry: {}, qp_timeout: {}, min_rnr_timer: {}, max_dest_rd_atomic: {}, max_rd_atomic: {}, pkey_index: {}, psn: 0x{:x} }}",
             self.target,
             self.port_num,
-            self.gid_index,
             self.max_send_wr,
             self.max_recv_wr,
             self.max_send_sge,
@@ -339,6 +458,57 @@ impl IbvDeviceInfo {
         &self.ports
     }
 
+    /// Returns the port with the given `port_num`, if present.
+    pub fn port(&self, port_num: u8) -> Option<&IbvPort> {
+        self.ports.iter().find(|port| port.port_num == port_num)
+    }
+
+    /// The lowest-indexed GID on `port_num` matching `scope` (if `Some`) and
+    /// `gid_type` (if `Some`); a `None` filter matches any value. Errors if the
+    /// device has no such port or no GID matches.
+    pub(crate) fn select_gid(
+        &self,
+        port_num: u8,
+        scope: Option<GidScope>,
+        gid_type: Option<GidType>,
+    ) -> Result<Gid, anyhow::Error> {
+        let port = self
+            .port(port_num)
+            .ok_or_else(|| anyhow::anyhow!("device {} has no port {}", self.name, port_num))?;
+        port.gids
+            .values()
+            .find(|gid| {
+                scope.is_none_or(|s| gid.scope() == s)
+                    && gid_type.is_none_or(|t| gid.gid_type() == t)
+            })
+            .copied()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "device {} port {} has no GID with scope {:?} and type {:?}",
+                    self.name,
+                    port_num,
+                    scope,
+                    gid_type
+                )
+            })
+    }
+
+    /// The GID at `index` on `port_num`. Errors if the device has no such port
+    /// or the port has no GID at that index.
+    pub(crate) fn gid_at(&self, port_num: u8, index: u8) -> Result<Gid, anyhow::Error> {
+        let port = self
+            .port(port_num)
+            .ok_or_else(|| anyhow::anyhow!("device {} has no port {}", self.name, port_num))?;
+        port.gids.get(&index).copied().ok_or_else(|| {
+            anyhow::anyhow!(
+                "device {} port {} has no GID at index {}",
+                self.name,
+                port_num,
+                index
+            )
+        })
+    }
+
     /// Aggregate bandwidth (MB/s) of the device's fastest active port,
     /// derived from its IB `active_speed` / `active_width`. 0 if no port
     /// is active, which ranks the device at the worst case.
@@ -437,8 +607,9 @@ pub struct IbvPort {
     capability_mask: u32,
     /// `link_layer` - The link layer type (e.g., InfiniBand, Ethernet).
     link_layer: String,
-    /// `gid` - Global Identifier for the port.
-    gid: String,
+    /// `gids` - The port's populated GID-table entries, keyed by table index
+    /// (empty slots omitted).
+    gids: BTreeMap<u8, Gid>,
     /// `gid_tbl_len` - Length of the GID table.
     gid_tbl_len: i32,
     /// `active_speed` - IB active speed bitmask (one bit set).
@@ -471,6 +642,13 @@ impl fmt::Display for IbvDeviceInfo {
     }
 }
 
+impl IbvPort {
+    /// The port's populated GID-table entries, keyed by table index.
+    pub fn gids(&self) -> &BTreeMap<u8, Gid> {
+        &self.gids
+    }
+}
+
 impl fmt::Display for IbvPort {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "\tPort {}:", self.port_num)?;
@@ -481,8 +659,17 @@ impl fmt::Display for IbvPort {
         writeln!(f, "\t\tSM lid: {}", self.sm_lid)?;
         writeln!(f, "\t\tCapability mask: 0x{:08x}", self.capability_mask)?;
         writeln!(f, "\t\tLink layer: {}", self.link_layer)?;
-        writeln!(f, "\t\tGID: {}", self.gid)?;
         writeln!(f, "\t\tGID table length: {}", self.gid_tbl_len)?;
+        for (index, gid) in &self.gids {
+            writeln!(
+                f,
+                "\t\tGID[{}]: {} ({:?}, {:?})",
+                index,
+                gid,
+                gid.scope(),
+                gid.gid_type()
+            )?;
+        }
         Ok(())
     }
 }
@@ -604,8 +791,42 @@ pub fn format_gid(gid: &[u8; 16]) -> String {
     )
 }
 
-/// Builds an [`IbvDeviceInfo`] from an already-open
-/// `ibv_context`. Returns `None` if `ibv_query_device` fails.
+/// Reads the populated GID-table entries under
+/// `/sys/class/infiniband/{device}/ports/{port}/gids/`, keyed by table index.
+/// Scans indices `0..gid_tbl_len` (capped at the `u8` GID-index range). Empty
+/// slots read as the all-zero GID and have no readable `gid_attrs/types`
+/// attribute, so they are skipped before that file is touched. Errors if a
+/// populated entry's GID or type sysfs file cannot be read.
+fn read_port_gids(
+    device: &str,
+    port: u8,
+    gid_tbl_len: i32,
+) -> Result<BTreeMap<u8, Gid>, anyhow::Error> {
+    let mut gids = BTreeMap::new();
+    for index in 0..gid_tbl_len.min(u8::MAX as i32 + 1) {
+        let gid_path = format!("/sys/class/infiniband/{device}/ports/{port}/gids/{index}");
+        let gid_str =
+            std::fs::read_to_string(&gid_path).with_context(|| format!("reading {gid_path}"))?;
+        // Skip empty (all-zero) or malformed slots before reading the type
+        // attribute, which the kernel leaves unreadable for empty slots.
+        let Ok(addr) = gid_str.trim().parse::<Ipv6Addr>() else {
+            continue;
+        };
+        if addr.is_unspecified() {
+            continue;
+        }
+        let type_path =
+            format!("/sys/class/infiniband/{device}/ports/{port}/gid_attrs/types/{index}");
+        let type_str =
+            std::fs::read_to_string(&type_path).with_context(|| format!("reading {type_path}"))?;
+        let index = index as u8;
+        gids.insert(index, Gid::new(addr, GidType::of(&type_str), index));
+    }
+    Ok(gids)
+}
+
+/// Builds an [`IbvDeviceInfo`] from an already-open `ibv_context`. Errors if
+/// `ibv_query_device` or any GID sysfs read fails.
 ///
 /// # Safety
 ///
@@ -615,7 +836,7 @@ pub fn format_gid(gid: &[u8; 16]) -> String {
 pub(super) unsafe fn query_device_info(
     device: *mut rdmaxcel_sys::ibv_device,
     context: *mut rdmaxcel_sys::ibv_context,
-) -> Option<IbvDeviceInfo> {
+) -> Result<IbvDeviceInfo, anyhow::Error> {
     // SAFETY: `device` is non-null per the caller's contract;
     // `ibv_get_device_name` returns a null-terminated C string
     // owned by the device list.
@@ -626,8 +847,9 @@ pub(super) unsafe fn query_device_info(
     // SAFETY: `context` is a non-null context per the caller's
     // contract; `&mut device_attr` is a writable, properly
     // aligned `ibv_device_attr`.
-    if unsafe { rdmaxcel_sys::ibv_query_device(context, &mut device_attr) } != 0 {
-        return None;
+    let rc = unsafe { rdmaxcel_sys::ibv_query_device(context, &mut device_attr) };
+    if rc != 0 {
+        anyhow::bail!("ibv_query_device failed for device {device_name}: {rc}");
     }
     // SAFETY: `device_attr.fw_ver` is a null-terminated C buffer
     // populated by `ibv_query_device`.
@@ -665,18 +887,7 @@ pub(super) unsafe fn query_device_info(
         }
         let physical_state = get_port_phy_state_str(port_attr.phys_state);
         let link_layer = get_link_layer_str(port_attr.link_layer);
-        let mut gid = rdmaxcel_sys::ibv_gid::default();
-        // SAFETY: `context` is a valid context; `&mut gid` is a
-        // writable, properly aligned `ibv_gid`.
-        let gid_str = if unsafe { rdmaxcel_sys::ibv_query_gid(context, port_num, 0, &mut gid) } == 0
-        {
-            // SAFETY: `gid.raw` is a union field that is
-            // always initialized; `ibv_query_gid` filled it.
-            let raw = unsafe { gid.raw };
-            format_gid(&raw)
-        } else {
-            "N/A".to_string()
-        };
+        let gids = read_port_gids(&info.name, port_num, port_attr.gid_tbl_len)?;
         info.ports.push(IbvPort {
             port_num,
             state: port_attr.state,
@@ -686,13 +897,13 @@ pub(super) unsafe fn query_device_info(
             sm_lid: port_attr.sm_lid,
             capability_mask: port_attr.port_cap_flags,
             link_layer,
-            gid: gid_str,
+            gids,
             gid_tbl_len: port_attr.gid_tbl_len,
             active_speed: port_attr.active_speed,
             active_width: port_attr.active_width,
         });
     }
-    Some(info)
+    Ok(info)
 }
 
 /// Cached result of mlx5dv support check.
@@ -1182,7 +1393,7 @@ mod tests {
                 sm_lid: 0,
                 capability_mask: 0,
                 link_layer: String::new(),
-                gid: String::new(),
+                gids: BTreeMap::new(),
                 gid_tbl_len: 0,
                 active_speed,
                 active_width,
@@ -1282,6 +1493,46 @@ mod tests {
         let ibv_wc = IbvWc::from(wc);
         assert_eq!(ibv_wc.wr_id(), 42);
         assert!(ibv_wc.is_valid());
+    }
+
+    #[test]
+    fn test_gid_scope_of() {
+        fn scope(addr: &str) -> GidScope {
+            GidScope::of(addr.parse().expect("valid IPv6"))
+        }
+
+        // Loopback: `::1` and IPv4-mapped loopback (`::ffff:127.0.0.0/8`) — the
+        // latter must not be classified as global.
+        assert_eq!(scope("::1"), GidScope::Loopback);
+        assert_eq!(scope("::ffff:127.0.0.1"), GidScope::Loopback);
+
+        // Link-local: `fe80::/10` (the default GID prefix) and IPv4-mapped
+        // link-local (`::ffff:169.254.0.0/16`).
+        assert_eq!(scope("fe80::1"), GidScope::LinkLocal);
+        assert_eq!(scope("::ffff:169.254.1.1"), GidScope::LinkLocal);
+
+        // Site-local `fec0::/10`.
+        assert_eq!(scope("fec0::1"), GidScope::SiteLocal);
+
+        // Global: IPv4-mapped (the common RoCE v2 form, in both sysfs hextet and
+        // dotted-quad forms), ULA, and global IPv6.
+        assert_eq!(
+            scope("0000:0000:0000:0000:0000:ffff:0a1e:0f44"),
+            GidScope::Global
+        );
+        assert_eq!(scope("::ffff:10.30.15.68"), GidScope::Global);
+        assert_eq!(scope("fd00::1"), GidScope::Global);
+        assert_eq!(scope("2001:db8::1"), GidScope::Global);
+    }
+
+    #[test]
+    fn test_gid_type_of() {
+        // Matches the sysfs `gid_attrs/types` strings (trailing newline and all);
+        // anything else is `Unknown`.
+        assert_eq!(GidType::of("RoCE v2\n"), GidType::RoCEv2);
+        assert_eq!(GidType::of("IB/RoCE v1\n"), GidType::RoCEv1);
+        assert_eq!(GidType::of(""), GidType::Unknown);
+        assert_eq!(GidType::of("something else"), GidType::Unknown);
     }
 
     #[test]
