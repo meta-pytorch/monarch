@@ -17,6 +17,7 @@ use std::time::Duration;
 use hyperactor_config::AttrValue;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
+use hyperactor_config::NonZeroUsize;
 use hyperactor_config::attrs::declare_attrs;
 use serde::Deserialize;
 use serde::Serialize;
@@ -279,5 +280,6 @@ declare_attrs! {
         Some("HYPERACTOR_MESH_MAX_CAST_FANOUT".to_string()),
         Some("max_cast_fanout".to_string()),
     ))
-    pub attr MAX_CAST_FANOUT: usize = 16;
+    pub attr MAX_CAST_FANOUT: NonZeroUsize =
+        NonZeroUsize::new(16).expect("16 is non-zero");
 }

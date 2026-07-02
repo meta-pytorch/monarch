@@ -23,9 +23,13 @@ use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
+use derive_more::Display;
+use derive_more::From;
+use derive_more::Into;
 use serde::Deserialize;
 use serde::Serialize;
 use shell_quote::QuoteRefExt;
+use thiserror::Error;
 use typeuri::Named;
 
 pub mod attrs;
@@ -118,6 +122,74 @@ impl AttrValue for ConfigAttr {
     }
     fn parse(s: &str) -> Result<Self, anyhow::Error> {
         Ok(serde_json::from_str(s)?)
+    }
+}
+
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Display,
+    From,
+    Into,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize
+)]
+#[display("{}", _0)]
+pub struct NonZeroUsize(std::num::NonZeroUsize);
+
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+#[error("expected non-zero usize")]
+pub struct NonZeroUsizeError;
+
+impl NonZeroUsize {
+    pub const MIN: Self = Self(std::num::NonZeroUsize::MIN);
+
+    pub const fn new(value: usize) -> Option<Self> {
+        match std::num::NonZeroUsize::new(value) {
+            Some(value) => Some(Self(value)),
+            None => None,
+        }
+    }
+
+    pub const fn get(self) -> usize {
+        self.0.get()
+    }
+
+    pub const fn into_std(self) -> std::num::NonZeroUsize {
+        self.0
+    }
+}
+
+impl Named for NonZeroUsize {
+    fn typename() -> &'static str {
+        "hyperactor_config::NonZeroUsize"
+    }
+}
+
+impl TryFrom<usize> for NonZeroUsize {
+    type Error = NonZeroUsizeError;
+
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        Self::new(value).ok_or(NonZeroUsizeError)
+    }
+}
+
+impl From<NonZeroUsize> for usize {
+    fn from(value: NonZeroUsize) -> Self {
+        value.get()
+    }
+}
+
+impl AttrValue for NonZeroUsize {
+    fn display(&self) -> String {
+        self.to_string()
+    }
+
+    fn parse(s: &str) -> Result<Self, anyhow::Error> {
+        Ok(s.parse::<usize>()?.try_into()?)
     }
 }
 
@@ -266,8 +338,10 @@ mod tests {
 
     use indoc::indoc;
 
+    use crate::AttrValue;
     use crate::CONFIG;
     use crate::ConfigAttr;
+    use crate::NonZeroUsize;
     use crate::attrs::declare_attrs;
     use crate::from_env;
     use crate::from_yaml;
@@ -567,6 +641,28 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&temp_path);
+    }
+
+    #[test]
+    fn test_nonzero_usize_attr_value() {
+        let value = NonZeroUsize::parse("16").unwrap();
+        assert_eq!(value.get(), 16);
+        assert_eq!(value.display(), "16");
+        assert_eq!(usize::from(value), 16);
+        assert_eq!(
+            std::num::NonZeroUsize::from(value),
+            std::num::NonZeroUsize::new(16).unwrap()
+        );
+        assert_eq!(Option::<NonZeroUsize>::parse("").unwrap(), None);
+        assert_eq!(
+            Option::<NonZeroUsize>::parse("16")
+                .unwrap()
+                .map(NonZeroUsize::get),
+            Some(16)
+        );
+        assert!(NonZeroUsize::try_from(0).is_err());
+        assert!(NonZeroUsize::parse("0").is_err());
+        assert!(Option::<NonZeroUsize>::parse("0").is_err());
     }
 
     // Verify that the INTROSPECT meta-attribute attaches structured
