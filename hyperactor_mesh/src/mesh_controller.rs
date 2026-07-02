@@ -1085,7 +1085,7 @@ impl<A: Referable> Controlled for ActorMeshControlPlane<A> {
 
         // Actor-specific: first check if the proc mesh is dead before
         // trying to query their agents.
-        let proc_states = self.proc_mesh.proc_states(cx, None).await;
+        let proc_states = self.proc_mesh.states(cx, None).await;
         if let Err(e) = proc_states {
             send_state_change(
                 cx,
@@ -1377,8 +1377,7 @@ impl Controlled for ProcMeshRef {
     ) -> PollResult {
         let mesh_name = Controlled::id(self);
 
-        let proc_states = self.proc_states(cx, compute_keepalive()).await;
-        match proc_states {
+        match self.states(cx, compute_keepalive()).await {
             Err(e) => {
                 send_state_change(
                     cx,
