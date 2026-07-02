@@ -587,6 +587,8 @@ impl AttrValue for bool {
 
 impl DisplayNonEmpty for bool {}
 
+impl DisplayNonEmpty for crate::NonZeroUsize {}
+
 impl<T: AttrValue + DisplayNonEmpty> AttrValue for Option<T> {
     fn display(&self) -> String {
         match self {

@@ -211,6 +211,13 @@ declare_attrs! {
         Some("actor_queue_dispatch".to_string()),
     ))
     pub attr ACTOR_QUEUE_DISPATCH: bool = true;
+
+    /// Worker thread count for Monarch's Python Tokio runtime bridge.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("MONARCH_TOKIO_WORKER_THREADS".to_string()),
+        Some("tokio_worker_threads".to_string()),
+    ))
+    pub attr TOKIO_WORKER_THREADS: Option<hyperactor_config::NonZeroUsize> = None;
 }
 
 /// Python API for configuration management
@@ -330,6 +337,13 @@ fn set_runtime_config_py<T: AttrValue + Debug>(
     attrs.set(*key, value);
     hyperactor_config::global::create_or_merge(Source::Runtime, attrs);
     Ok(())
+}
+
+fn py_value_repr(py: Python<'_>, val: &Py<PyAny>) -> String {
+    val.bind(py)
+        .repr()
+        .map(|repr| repr.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| "<unprintable>".to_string())
 }
 
 /// Bridge a single Python kwarg into a typed Runtime config update.
@@ -457,12 +471,20 @@ macro_rules! declare_py_config_type {
             PythonConfigTypeInfo {
                 typehash: <Option<$ty> as Named>::typehash,
                 set_runtime_config: |py, key, val| {
-                    let val: Option<$ty> = val.extract::<Option<$py_ty>>(py)
+                    let val_repr = py_value_repr(py, &val);
+                    let val: Option<$py_ty> = val.extract::<Option<$py_ty>>(py)
                         .map_err(|err| PyTypeError::new_err(format!(
                             "invalid value `{}` for configuration key `{}` ({})",
-                            val, key.name(), err
-                        )))?
-                        .map(Into::into);
+                            val_repr, key.name(), err
+                        )))?;
+                    // Python extraction checks shape; TryInto checks Rust-side invariants.
+                    let val: Option<$ty> = val
+                        .map(TryInto::try_into)
+                        .transpose()
+                        .map_err(|err| PyValueError::new_err(format!(
+                            "invalid value `{}` for configuration key `{}` ({})",
+                            val_repr, key.name(), err
+                        )))?;
                     set_runtime_config_py(key, val)
                 },
                 get_global_config: |py, key| {
@@ -499,10 +521,16 @@ macro_rules! declare_py_config_type {
                 PythonConfigTypeInfo {
                     typehash: $ty::typehash,
                     set_runtime_config: |py, key, val| {
-                        let val: $ty = val.extract::<$py_ty>(py).map_err(|err| PyTypeError::new_err(format!(
+                        let val_repr = py_value_repr(py, &val);
+                        let val: $py_ty = val.extract::<$py_ty>(py).map_err(|err| PyTypeError::new_err(format!(
                             "invalid value `{}` for configuration key `{}` ({})",
-                            val, key.name(), err
-                        )))?.into();
+                            val_repr, key.name(), err
+                        )))?;
+                        // Python extraction checks shape; TryInto checks Rust-side invariants.
+                        let val: $ty = val.try_into().map_err(|err| PyValueError::new_err(format!(
+                            "invalid value `{}` for configuration key `{}` ({})",
+                            val_repr, key.name(), err
+                        )))?;
                         set_runtime_config_py(key, val)
                     },
                     get_global_config: |py, key| {
@@ -523,6 +551,8 @@ declare_py_config_type!(Option<PyDuration> as Option<Duration>);
 declare_py_config_type!(PyEncoding as wirevalue::Encoding);
 declare_py_config_type!(PyPortRange as std::ops::Range::<u16>);
 declare_py_config_type!(String as hyperactor_mesh::config::SocketAddrStr);
+declare_py_config_type!(usize as hyperactor_config::NonZeroUsize);
+declare_py_config_type!(Option<usize> as Option<hyperactor_config::NonZeroUsize>);
 declare_py_config_type!(
     i8, i16, i32, i64, u8, u16, u32, u64, usize, f32, f64, bool, String
 );
@@ -712,8 +742,11 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::time::Duration;
 
+    use hyperactor_config::attrs::declare_attrs;
+    use pyo3::exceptions::PyValueError;
     use pyo3::prelude::*;
     use pyo3::types::PyString;
     use pyo3::types::PyTuple;
@@ -721,6 +754,15 @@ mod tests {
     use super::*;
     use crate::runtime::GilSite;
     use crate::runtime::monarch_with_gil_blocking;
+
+    declare_attrs! {
+        @meta(CONFIG = ConfigAttr::new(
+            None,
+            Some("test_nonzero_usize".to_string()),
+        ))
+        attr TEST_NONZERO_USIZE: hyperactor_config::NonZeroUsize =
+            hyperactor_config::NonZeroUsize::MIN;
+    }
 
     #[test]
     fn test_pyduration_parse_valid_formats() {
@@ -818,6 +860,37 @@ mod tests {
                 PyEncoding::from(wirevalue::Encoding::Multipart),
                 PyEncoding::Multipart
             );
+        });
+    }
+
+    #[test]
+    fn test_nonzero_usize_config_rejects_zero_from_python() {
+        Python::initialize();
+        monarch_with_gil_blocking(GilSite::Test, |py| {
+            clear_runtime_config(py).expect("clear runtime config before test");
+
+            let kwargs = HashMap::from([(
+                "test_nonzero_usize".to_string(),
+                0usize.into_py_any(py).expect("convert integer to python"),
+            )]);
+            let err = configure(py, Some(kwargs)).expect_err("zero value should be rejected");
+
+            assert!(err.is_instance_of::<PyValueError>(py));
+            let err_msg = err.to_string();
+            assert!(
+                err_msg.contains(
+                    "invalid value `0` for configuration key `monarch_hyperactor::config::tests::test_nonzero_usize`"
+                ),
+                "unexpected error message: {}",
+                err_msg
+            );
+            assert!(
+                err_msg.contains("expected non-zero usize"),
+                "unexpected error message: {}",
+                err_msg
+            );
+
+            clear_runtime_config(py).expect("clear runtime config after test");
         });
     }
 
