@@ -7,6 +7,7 @@
  */
 
 use std::any::type_name;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt;
 use std::hash::Hash;
@@ -46,12 +47,15 @@ use crate::ActorMeshRef;
 use crate::Error;
 use crate::HostMeshRef;
 use crate::ValueMesh;
+use crate::host_mesh::GET_PROC_STATE_MAX_IDLE;
+use crate::host_mesh::host_agent::GetHostProcStates;
 use crate::host_mesh::host_agent::ProcState;
 use crate::host_mesh::mesh_to_rankedvalues_with_default;
 use crate::mesh_controller::ActorMeshControlPlane;
 use crate::mesh_controller::ActorMeshController;
 use crate::mesh_id::ActorMeshId;
 use crate::mesh_id::ProcMeshId;
+use crate::mesh_id::ResourceId;
 use crate::proc_agent;
 use crate::proc_agent::ActorState;
 use crate::proc_agent::ProcAgent;
@@ -568,21 +572,103 @@ impl ProcMeshRef {
         Ok(vm)
     }
 
-    pub async fn proc_states(
+    /// Get the state of every proc in this proc mesh.
+    ///
+    /// Casts a single `GetHostProcStates` to the routing host-agent mesh
+    /// carrying this mesh's selected global ranks (the mesh may be sliced, so
+    /// they need not be a dense `0..n`). The cast may reach hosts that own no
+    /// selected procs, but each HostAgent filters locally and only hosts with
+    /// matching ranks reply. Replies reduce up the cast tree (fanning in at cast
+    /// actor 0) instead of every host dialing this caller. When `keepalive` is
+    /// `Some`, each proc's expiry is extended (orphan protection, as with
+    /// `KeepaliveGetState`). Returns `None` when this proc mesh is not backed by
+    /// a host mesh (local/in-process meshes). On timeout, ranks whose host did
+    /// not reply are padded with a `Timeout` state.
+    #[allow(clippy::result_large_err)]
+    pub async fn states(
         &self,
         cx: &impl context::Actor,
         keepalive: Option<std::time::SystemTime>,
     ) -> crate::Result<Option<ValueMesh<resource::State<ProcState>>>> {
-        let names = self.proc_ids().collect::<Vec<ProcAddr>>();
-        if let Some(host_mesh) = &self.host_mesh {
-            Ok(Some(
-                host_mesh
-                    .proc_states(cx, names, self.region.clone(), keepalive)
-                    .await?,
-            ))
-        } else {
-            Ok(None)
+        // Only meaningful when this proc mesh is backed by a host mesh.
+        let Some(host_mesh) = self.host_mesh.as_ref() else {
+            return Ok(None);
+        };
+        let region = self.region.clone();
+
+        let (tx, mut rx) = cx.mailbox().open_port();
+        let mut reply = tx.bind();
+        // If this proc dies or some other issue renders the reply undeliverable,
+        // the reply does not need to be returned to the sender.
+        reply.return_undeliverable(false);
+
+        // Cast a single query carrying the queried region. The host mesh is a
+        // routing over-approximation for sliced proc meshes; HostAgents that own
+        // selected ranks reply with one batch, and HostAgents that do not own
+        // any selected ranks stay silent.
+        host_mesh.agent_mesh().cast(
+            cx,
+            GetHostProcStates {
+                proc_mesh_id: self.id.clone(),
+                region: region.clone(),
+                keepalive,
+                reply,
+            },
+        )?;
+
+        let mut state_by_rank: HashMap<usize, resource::State<ProcState>> =
+            HashMap::with_capacity(self.ranks.len());
+
+        let timeout = hyperactor_config::global::get(GET_PROC_STATE_MAX_IDLE);
+
+        while state_by_rank.len() < self.ranks.len() {
+            // The agent runs in the same process as its procs, so a fatal event
+            // (OOM, signal, exit) leaves it unresponsive; the recv timeout lets
+            // us assume the host is dead and pad its procs with timeout states.
+            match tokio::time::timeout(timeout, rx.recv()).await {
+                Ok(batch) => {
+                    for state in batch? {
+                        match state.state {
+                            Some(ref inner) => {
+                                state_by_rank.insert(inner.create_rank, state);
+                            }
+                            None => {
+                                return Err(crate::Error::NotExist(state.id));
+                            }
+                        }
+                    }
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "Timeout waiting for response from host mesh agent for proc states after {:?}",
+                        timeout
+                    );
+                    break;
+                }
+            }
         }
+
+        // Assemble in region order, padding any rank whose host did not reply
+        // before the timeout with a `Timeout` state.
+        Ok(Some(
+            self.ranks
+                .iter()
+                .map(|proc_ref| {
+                    state_by_rank
+                        .remove(&proc_ref.create_rank)
+                        .unwrap_or_else(|| resource::State {
+                            id: ResourceId::new(
+                                proc_ref.proc_id.uid().clone(),
+                                proc_ref.proc_id.label().cloned(),
+                            ),
+                            status: resource::Status::Timeout(timeout),
+                            state: None,
+                            generation: 0,
+                            timestamp: std::time::SystemTime::now(),
+                        })
+                })
+                .collect_mesh::<ValueMesh<_>>(region)?,
+        ))
     }
 
     /// Returns an iterator over the proc ids in this mesh.
@@ -1448,6 +1534,81 @@ mod tests {
             crate::Error::NotExist(name) if name == expected_name => {}
             other => panic!("expected NotExist for {expected_name}, got {other:?}"),
         }
+
+        let _ = hm.shutdown(instance).await;
+    }
+
+    /// `proc_states` must resolve exactly the procs of the (possibly sliced)
+    /// mesh it is called on — gpu-dim slices, host-dim slices, and
+    /// slice-of-slice — rather than re-deriving a dense `0..n` from per-host
+    /// counts or from the recipient's stamped (sliced-ordinal) rank.
+    #[cfg(fbcode_build)]
+    async fn assert_proc_states_match_slice<C: hyperactor::context::Actor>(
+        mesh: &super::ProcMeshRef,
+        cx: &C,
+    ) {
+        // The slice's own procs, by their original global rank.
+        let mut expected: Vec<usize> = mesh.ranks.iter().map(|r| r.create_rank).collect();
+        expected.sort();
+
+        let states = mesh
+            .states(cx, None)
+            .await
+            .unwrap()
+            .expect("host-backed mesh yields Some");
+
+        assert_eq!(states.extent(), mesh.extent());
+
+        let mut got: Vec<usize> = states
+            .values()
+            .map(|s| {
+                assert!(
+                    !matches!(
+                        s.status,
+                        Status::NotExist | Status::Failed(_) | Status::Timeout(_)
+                    ),
+                    "rank should resolve to a live proc, got status {:?}",
+                    s.status
+                );
+                s.state.expect("live proc carries ProcState").create_rank
+            })
+            .collect();
+
+        got.sort();
+
+        assert_eq!(
+            got, expected,
+            "proc_states must return exactly this (sub)mesh's procs"
+        );
+    }
+
+    #[async_timed_test(timeout_secs = 60)]
+    #[cfg(fbcode_build)]
+    async fn test_proc_states_on_sliced_mesh() {
+        let instance = testing::instance();
+        let mut hm = testing::host_mesh(2).await;
+        // 2 hosts x 4 gpus, host-major: global rank = host * 4 + gpu.
+        let proc_mesh = hm
+            .spawn(&instance, "test", extent!(gpus = 4), None, None)
+            .await
+            .unwrap();
+
+        // Full mesh: ranks 0..8.
+        assert_proc_states_match_slice(&proc_mesh, instance).await;
+        // gpu-dim slice (gpus 2..4): ranks {2,3,6,7} — the original mis-derivation.
+        assert_proc_states_match_slice(&proc_mesh.range("gpus", 2..4).unwrap(), instance).await;
+        // host-dim slice (host 1): ranks {4,5,6,7} — the stamped-ordinal trap.
+        assert_proc_states_match_slice(&proc_mesh.range("hosts", 1..2).unwrap(), instance).await;
+        // slice-of-slice (host 1, gpus 2..4): ranks {6,7} — pins base-rank composition.
+        assert_proc_states_match_slice(
+            &proc_mesh
+                .range("gpus", 2..4)
+                .unwrap()
+                .range("hosts", 1..2)
+                .unwrap(),
+            instance,
+        )
+        .await;
 
         let _ = hm.shutdown(instance).await;
     }

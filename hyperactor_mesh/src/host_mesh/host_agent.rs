@@ -47,6 +47,7 @@ use hyperactor::gateway::GatewayServeHandle;
 use hyperactor::id::Label;
 use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::Attrs;
+use ndslice::view::Region;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::time::Duration;
@@ -221,6 +222,14 @@ pub(crate) fn proc_name(proc_mesh_id: &ProcMeshId, rank: usize) -> ResourceId {
 pub(crate) struct ProcCreationState {
     pub(crate) rank: usize,
     pub(crate) host_mesh_id: Option<HostMeshId>,
+    /// The proc mesh this proc belongs to. Used to scope per-mesh queries like
+    /// `StreamState`, since a host agent can hold procs from multiple meshes.
+    /// Always set for procs spawned through a proc mesh (the cast `SpawnProcs`
+    /// path populates it via `ProcSpec`). `None` only for procs created off that
+    /// path (e.g. the point-to-point `CreateOrUpdate` used by tests/admin),
+    /// which belong to no queryable mesh and are intentionally excluded from
+    /// per-mesh queries.
+    pub(crate) proc_mesh_id: Option<ProcMeshId>,
     pub(crate) created: Result<(ProcAddr, ActorRef<ProcAgent>), HostError>,
     /// "Owner is alive" deadline communicated by the controller via
     /// `KeepaliveGetState`. The host's `SelfCheck` reaper compares against this
@@ -335,6 +344,7 @@ impl fmt::Debug for DrainWorker {
         resource::Stop,
         resource::GetState<ProcState>,
         resource::KeepaliveGetState<ProcState>,
+        GetHostProcStates,
         resource::StreamState<ProcState>,
         resource::GetRankStatus,
         resource::WaitRankStatus,
@@ -820,6 +830,7 @@ impl Handler<SpawnProcs> for HostAgent {
                         proc_bind,
                         bootstrap_command,
                         host_mesh_id: spawn.host_mesh_id.clone(),
+                        proc_mesh_id: Some(spawn.proc_mesh_id.clone()),
                     },
                 },
             )
@@ -921,6 +932,7 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
             ProcCreationState {
                 rank,
                 host_mesh_id: create_or_update.spec.host_mesh_id.clone(),
+                proc_mesh_id: create_or_update.spec.proc_mesh_id.clone(),
                 created,
                 expiry_time: None,
             },
@@ -1432,14 +1444,11 @@ pub struct ProcState {
 }
 wirevalue::register_type!(ProcState);
 
-#[async_trait]
-impl Handler<resource::GetState<ProcState>> for HostAgent {
-    async fn handle(
-        &mut self,
-        cx: &Context<Self>,
-        get_state: resource::GetState<ProcState>,
-    ) -> anyhow::Result<()> {
-        let state = match self.created.get(&get_state.id) {
+impl HostAgent {
+    /// Build the `State<ProcState>` for a single proc `id` from `created`.
+    /// Shared by the `GetState` and `GetHostProcStates` handlers.
+    async fn proc_state(&self, id: &ResourceId) -> resource::State<ProcState> {
+        match self.created.get(id) {
             Some(ProcCreationState {
                 rank,
                 created: Ok((proc_id, mesh_agent)),
@@ -1454,7 +1463,7 @@ impl Handler<resource::GetState<ProcState>> for HostAgent {
                 };
                 let status = raw_status.clamp_min(self.min_proc_status());
                 resource::State {
-                    id: get_state.id.clone(),
+                    id: id.clone(),
                     status,
                     state: Some(ProcState {
                         proc_id: proc_id.clone(),
@@ -1470,22 +1479,100 @@ impl Handler<resource::GetState<ProcState>> for HostAgent {
             Some(ProcCreationState {
                 created: Err(e), ..
             }) => resource::State {
-                id: get_state.id.clone(),
+                id: id.clone(),
                 status: resource::Status::Failed(e.to_string()),
                 state: None,
                 generation: 0,
                 timestamp: std::time::SystemTime::now(),
             },
             None => resource::State {
-                id: get_state.id.clone(),
+                id: id.clone(),
                 status: resource::Status::NotExist,
                 state: None,
                 generation: 0,
                 timestamp: std::time::SystemTime::now(),
             },
+        }
+    }
+}
+
+#[async_trait]
+impl Handler<resource::GetState<ProcState>> for HostAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        get_state: resource::GetState<ProcState>,
+    ) -> anyhow::Result<()> {
+        let state = self.proc_state(&get_state.id).await;
+        get_state.reply.post(cx, state);
+        Ok(())
+    }
+}
+
+/// Query the state of a proc mesh's procs, cast to the host agents backing that
+/// mesh. The caller casts ONE of these carrying the queried `region` (the mesh
+/// may be sliced, so the region need not be a dense `0..n`). The cast reaches
+/// every routing host, but each rank's proc lives on exactly one host, so each
+/// `HostAgent` that owns at least one selected proc reports those procs in a
+/// single batch. Hosts that own no selected procs do not reply.
+///
+/// The bound `reply` port is split by the cast tree, so replies reduce up the
+/// tree (to cast actor 0) instead of every host dialing the caller directly.
+/// One batched reply per owning host means the caller sees `O(hosts)` reply
+/// messages instead of `O(procs)`.
+///
+/// `GetState<ProcState>` cannot be cast this way because it carries a
+/// fully-resolved id; this message resolves ids host-side instead.
+///
+/// If `keepalive` is `Some`, each proc's expiry is extended (same
+/// orphan-protection semantics as `KeepaliveGetState`).
+#[derive(Debug, Clone, Serialize, Deserialize, Named)]
+pub struct GetHostProcStates {
+    pub proc_mesh_id: ProcMeshId,
+    /// The (possibly sliced) region being queried. Each host keeps the procs it
+    /// owns for this mesh whose global rank lies in the region, tested with
+    /// `Slice::contains` (offset/stride-aware) — so a sliced or host-offset
+    /// region resolves correctly without relying on the recipient's stamped rank.
+    pub region: Region,
+    pub keepalive: Option<std::time::SystemTime>,
+    pub reply: hyperactor::PortRef<Vec<resource::State<ProcState>>>,
+}
+wirevalue::register_type!(GetHostProcStates);
+
+#[async_trait]
+impl Handler<GetHostProcStates> for HostAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: GetHostProcStates,
+    ) -> anyhow::Result<()> {
+        let selects = |state: &ProcCreationState| {
+            state.proc_mesh_id.as_ref() == Some(&message.proc_mesh_id)
+                && message.region.slice().contains(state.rank)
         };
 
-        get_state.reply.post(cx, state);
+        // Bump keepalive (if requested) in a separate mutable pass, so the read
+        // loop can borrow `&self` via `proc_state` (mirrors `KeepaliveGetState`).
+        if let Some(expires_after) = message.keepalive {
+            for state in self.created.values_mut() {
+                if selects(state) {
+                    state.expiry_time = Some(expires_after);
+                }
+            }
+        }
+
+        let mut states = Vec::new();
+
+        for (id, state) in self.created.iter() {
+            if selects(state) {
+                states.push(self.proc_state(id).await);
+            }
+        }
+
+        if !states.is_empty() {
+            message.reply.post(cx, states);
+        }
+
         Ok(())
     }
 }
@@ -1579,59 +1666,59 @@ impl Handler<resource::StreamState<ProcState>> for HostAgent {
         cx: &Context<Self>,
         stream_state: resource::StreamState<ProcState>,
     ) -> anyhow::Result<()> {
-        // TODO: register `subscriber` for ongoing updates. For now send the
-        // current state once so the controller has an initial snapshot.
-        let state = match self.created.get(&stream_state.id) {
-            Some(ProcCreationState {
-                rank,
-                created: Ok((proc_id, mesh_agent)),
-                ..
-            }) => {
-                let (raw_status, proc_status, bootstrap_command) = match self.host() {
-                    Some(host) => {
-                        let (status, proc_status) = host.proc_status(proc_id).await;
-                        (status, proc_status, host.bootstrap_command())
-                    }
-                    None => (resource::Status::Unknown, None, None),
-                };
-                let status = raw_status.clamp_min(self.min_proc_status());
-                resource::State {
-                    id: stream_state.id.clone(),
-                    status,
-                    state: Some(ProcState {
-                        proc_id: proc_id.clone(),
-                        create_rank: *rank,
-                        mesh_agent: mesh_agent.clone(),
-                        bootstrap_command,
-                        proc_status,
-                    }),
-                    generation: 0,
-                    timestamp: std::time::SystemTime::now(),
-                }
-            }
-            Some(ProcCreationState {
-                created: Err(e), ..
-            }) => resource::State {
-                id: stream_state.id.clone(),
-                status: resource::Status::Failed(e.to_string()),
-                state: None,
-                generation: 0,
-                timestamp: std::time::SystemTime::now(),
-            },
-            None => resource::State {
-                id: stream_state.id.clone(),
-                status: resource::Status::NotExist,
-                state: None,
-                generation: 0,
-                timestamp: std::time::SystemTime::now(),
-            },
-        };
-
+        // One cast delivers a single StreamState per host agent. Stream a state
+        // for each proc this host owns that belongs to the subscribing mesh.
+        // TODO: register `subscriber` for ongoing updates.
         let mut headers = Flattrs::new();
         headers.set(crate::proc_agent::STREAM_STATE_SUBSCRIBER, true);
-        stream_state
-            .subscriber
-            .post_with_headers(cx, headers, state);
+
+        for (id, proc) in self.created.iter() {
+            // Skip procs that don't belong to the subscribing proc mesh.
+            if !proc
+                .proc_mesh_id
+                .as_ref()
+                .is_some_and(|mesh| mesh.resource_id() == &stream_state.id)
+            {
+                continue;
+            }
+
+            let state = match &proc.created {
+                Ok((proc_id, mesh_agent)) => {
+                    let (raw_status, proc_status, bootstrap_command) = match self.host() {
+                        Some(host) => {
+                            let (status, proc_status) = host.proc_status(proc_id).await;
+                            (status, proc_status, host.bootstrap_command())
+                        }
+                        None => (resource::Status::Unknown, None, None),
+                    };
+                    let status = raw_status.clamp_min(self.min_proc_status());
+                    resource::State {
+                        id: id.clone(),
+                        status,
+                        state: Some(ProcState {
+                            proc_id: proc_id.clone(),
+                            create_rank: proc.rank,
+                            mesh_agent: mesh_agent.clone(),
+                            bootstrap_command,
+                            proc_status,
+                        }),
+                        generation: 0,
+                        timestamp: std::time::SystemTime::now(),
+                    }
+                }
+                Err(e) => resource::State {
+                    id: id.clone(),
+                    status: resource::Status::Failed(e.to_string()),
+                    state: None,
+                    generation: 0,
+                    timestamp: std::time::SystemTime::now(),
+                },
+            };
+
+            stream_state
+                .subscriber
+                .post_with_headers(cx, headers.clone(), state);
+        }
         Ok(())
     }
 }
