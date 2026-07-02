@@ -24,7 +24,6 @@ use std::collections::HashMap;
 use std::fmt;
 use std::hash::Hash;
 use std::hash::Hasher;
-use std::num::NonZeroUsize;
 use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::OnceLock as OnceCell;
@@ -368,8 +367,7 @@ impl<M: Send + Sync + Clone + Default + 'static> Default for MessageOrFailure<M>
 
 fn default_cast_tiling_policy() -> TilingPolicy {
     TilingPolicy::BoundedFanout {
-        fanout: NonZeroUsize::new(hyperactor_config::global::get(MAX_CAST_FANOUT))
-            .expect("MAX_CAST_FANOUT must be > 0"),
+        fanout: hyperactor_config::global::get(MAX_CAST_FANOUT).into(),
     }
 }
 
