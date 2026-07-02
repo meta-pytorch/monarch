@@ -149,7 +149,7 @@ pub(super) trait MlxDomainOps: Send + Sync + 'static {
     /// PD yields `Err`.
     unsafe fn create_loopback_qp(
         &self,
-        domain: Arc<IbvDomain<MlxDomain>>,
+        domain: &IbvDomain<MlxDomain>,
         config: &IbvConfig,
     ) -> anyhow::Result<IbvQp>;
 
@@ -239,13 +239,13 @@ impl MlxDomainOps for ProdMlxDomainOps {
 
     unsafe fn create_loopback_qp(
         &self,
-        domain: Arc<IbvDomain<MlxDomain>>,
+        domain: &IbvDomain<MlxDomain>,
         config: &IbvConfig,
     ) -> anyhow::Result<IbvQp> {
         // The `IbvQp` owns its completion queues and PD, so an early return or
         // panic in the connect below still tears everything down in order.
         // SAFETY: an `IbvDomain` holds a null-or-live context and PD.
-        let qp = unsafe { MlxQueuePair::create_ibv_qp(&domain, config) }
+        let qp = unsafe { MlxQueuePair::create_ibv_qp(domain, config) }
             .context("could not create loopback QP for mkey binding")?;
         let context = qp.context().as_ptr();
         let access_flags = domain.access_flags();
@@ -661,7 +661,7 @@ impl MlxDomain {
     }
 
     /// Get-or-create the loopback QP.
-    fn loopback_qp_ptr(&self, domain: &Arc<IbvDomain<MlxDomain>>) -> anyhow::Result<&IbvQp> {
+    fn loopback_qp_ptr(&self, domain: &IbvDomain<MlxDomain>) -> anyhow::Result<&IbvQp> {
         // `OnceLock::get_or_try_init` would fit here but is still unstable
         // (`once_cell_try`); calls are serialized under the `segments` lock,
         // so this check-then-set is race-free.
@@ -670,10 +670,7 @@ impl MlxDomain {
         }
         // SAFETY: an `IbvDomain` guarantees its context and PD are null or live;
         // `create_loopback_qp` rejects null.
-        let qp = unsafe {
-            self.ops
-                .create_loopback_qp(Arc::clone(domain), &self.config)
-        }?;
+        let qp = unsafe { self.ops.create_loopback_qp(domain, &self.config) }?;
         let _ = self.loopback.set(qp);
         Ok(self.loopback.get().expect("loopback just set"))
     }
@@ -690,7 +687,7 @@ impl MlxDomain {
     /// outlives this call.
     unsafe fn register_cuda_mlx5dv_mr(
         &self,
-        domain: &Arc<IbvDomain<MlxDomain>>,
+        domain: &IbvDomain<MlxDomain>,
         addr: usize,
         size: usize,
     ) -> anyhow::Result<IbvMemoryRegionView> {
@@ -781,14 +778,14 @@ impl IbvDomainImpl for MlxDomain {
     }
 
     unsafe fn register_mr(
-        domain: Arc<IbvDomain<MlxDomain>>,
+        domain: &IbvDomain<MlxDomain>,
         mem: &KeepaliveLocalMemory,
     ) -> anyhow::Result<IbvMemoryRegionView> {
         let this = domain.domain_impl();
         if this.mlx5dv_enabled && is_device_ptr(mem.addr()) {
             // SAFETY: `domain.as_ptr()` is null or a live PD, per this method's
             // contract.
-            match unsafe { this.register_cuda_mlx5dv_mr(&domain, mem.addr(), mem.size()) } {
+            match unsafe { this.register_cuda_mlx5dv_mr(domain, mem.addr(), mem.size()) } {
                 Ok(view) => return Ok(view),
                 Err(e) => {
                     tracing::warn!("mlx5dv CUDA registration failed, falling back to dmabuf: {e}")
@@ -930,7 +927,7 @@ mod tests {
 
         unsafe fn create_loopback_qp(
             &self,
-            _domain: Arc<IbvDomain<MlxDomain>>,
+            _domain: &IbvDomain<MlxDomain>,
             _config: &IbvConfig,
         ) -> anyhow::Result<IbvQp> {
             // A null QP placeholder (its `Drop` is a no-op); just count the call.

@@ -121,9 +121,8 @@ impl<I: IbvDomainImpl> IbvDomain<I> {
         })
     }
 
-    /// Test-only constructor assembling a domain from raw parts without
-    /// allocating a PD, so unit tests can fabricate a domain (typically with a
-    /// null `pd` whose `Drop` is a no-op).
+    /// Test-only constructor assembling a domain from parts, so unit tests can
+    /// fabricate a domain (typically with a null `pd` whose `Drop` is a no-op).
     ///
     /// # Safety
     ///
@@ -178,10 +177,7 @@ impl<I: IbvDomainImpl> IbvDomain<I> {
 
     /// Register `mem` against this domain's PD, dispatching to the backend
     /// [`IbvDomainImpl`] strategy.
-    pub fn register_mr(
-        self: Arc<Self>,
-        mem: &KeepaliveLocalMemory,
-    ) -> anyhow::Result<IbvMemoryRegionView> {
+    pub fn register_mr(&self, mem: &KeepaliveLocalMemory) -> anyhow::Result<IbvMemoryRegionView> {
         // SAFETY: a fully-constructed `IbvDomain` holds a null-or-live PD per its
         // construction contract, and `KeepaliveLocalMemory` keeps `mem`'s backing
         // memory alive for the registration.
@@ -190,7 +186,7 @@ impl<I: IbvDomainImpl> IbvDomain<I> {
 
     /// Create a queue pair against this domain, dispatching to the backend
     /// [`IbvDomainImpl`] strategy.
-    pub fn create_queue_pair(self: Arc<Self>, config: &IbvConfig) -> anyhow::Result<I::QueuePair> {
+    pub fn create_queue_pair(&self, config: &IbvConfig) -> anyhow::Result<I::QueuePair> {
         I::create_queue_pair(self, config)
     }
 }
@@ -201,8 +197,8 @@ impl<I: IbvDomainImpl> IbvDomain<I> {
 /// One strategy is constructed per domain via [`Self::new`], which
 /// inspects the device behind the context to decide backend-specific behavior
 /// up front, and is then stored in the [`IbvDomain`] it drives. The per-op
-/// methods are associated functions taking the owning `Arc<IbvDomain<Self>>`
-/// and reach the strategy itself through [`IbvDomain::domain_impl`].
+/// methods are associated functions taking `&IbvDomain<Self>` and reach the
+/// strategy itself through [`IbvDomain::domain_impl`].
 pub trait IbvDomainImpl: std::fmt::Debug + Send + Sync + 'static + Sized {
     /// The concrete queue-pair type built against this domain's PD.
     type QueuePair: IbvQueuePair;
@@ -234,7 +230,7 @@ pub trait IbvDomainImpl: std::fmt::Debug + Send + Sync + 'static + Sized {
     /// domain; `mem`'s backing memory must stay valid for the returned MR's
     /// lifetime.
     unsafe fn register_mr(
-        domain: Arc<IbvDomain<Self>>,
+        domain: &IbvDomain<Self>,
         mem: &KeepaliveLocalMemory,
     ) -> anyhow::Result<IbvMemoryRegionView> {
         // SAFETY: `domain.as_ptr()` is null or a live PD (per this method's
@@ -246,7 +242,7 @@ pub trait IbvDomainImpl: std::fmt::Debug + Send + Sync + 'static + Sized {
     /// Create a queue pair against `domain`. The default builds [`Self::QueuePair`]
     /// directly; backends override to construct their own queue-pair type.
     fn create_queue_pair(
-        domain: Arc<IbvDomain<Self>>,
+        domain: &IbvDomain<Self>,
         config: &IbvConfig,
     ) -> anyhow::Result<Self::QueuePair> {
         // SAFETY: a fully-constructed `IbvDomain` holds a null-or-live PD per
@@ -271,16 +267,17 @@ pub(super) unsafe fn register_host_mr(
     if pd.as_ptr().is_null() {
         anyhow::bail!("register_host_mr called with a null protection domain");
     }
-    // SAFETY: `pd` is non-null (checked above) and, per this function's
+    // SAFETY: `pd.as_ptr()` is non-null (checked above) and, per this function's
     // contract, a live protection domain; `[addr, addr + size)` is a
     // caller-guaranteed valid mapping. `ibv_reg_mr` returns null on failure,
-    // which we check before returning the pointer.
+    // which we check before wrapping the pointer.
     let mr =
         unsafe { rdmaxcel_sys::ibv_reg_mr(pd.as_ptr(), addr as *mut c_void, size, access_flags) };
     if mr.is_null() {
         anyhow::bail!("failed to register standard MR");
     }
-    // SAFETY: `mr` is a non-null `ibv_mr` just registered against `pd`.
+    // SAFETY: `mr` is non-null (checked above) and freshly registered against
+    // `pd`.
     Ok(unsafe { IbvMr::from_raw(mr, pd.clone()) })
 }
 
@@ -343,9 +340,9 @@ pub(super) unsafe fn register_dmabuf_range(
     // exclusively own; wrapping it in `OwnedFd` closes it on drop and keeps it
     // open across the registration below.
     let fd = unsafe { OwnedFd::from_raw_fd(fd) };
-    // SAFETY: `pd` is a non-null protection domain (checked above) belonging to
-    // a live context; `fd` is a valid dmabuf descriptor kept open by the
-    // `OwnedFd` across this call; `size` matches the range queried above.
+    // SAFETY: `pd.as_ptr()` is a non-null protection domain (checked above)
+    // belonging to a live context; `fd` is a valid dmabuf descriptor kept open
+    // by the `OwnedFd` across this call; `size` matches the range queried above.
     // `ibv_reg_dmabuf_mr` returns null on failure, which we check.
     let mr = unsafe {
         rdmaxcel_sys::ibv_reg_dmabuf_mr(pd.as_ptr(), 0, size, 0, fd.as_raw_fd(), access_flags)
@@ -353,7 +350,8 @@ pub(super) unsafe fn register_dmabuf_range(
     if mr.is_null() {
         anyhow::bail!("failed to register dmabuf MR");
     }
-    // SAFETY: `mr` is a non-null `ibv_mr` just registered against `pd`.
+    // SAFETY: `mr` is non-null (checked above) and freshly registered against
+    // `pd`.
     Ok(unsafe { IbvMr::from_raw(mr, pd.clone()) })
 }
 
@@ -425,7 +423,7 @@ pub(super) unsafe fn register_dmabuf_mr(
 /// view's MR — the MR keepalive maintains the `ibv_mr` but does not keep the
 /// backing memory mapped.
 pub(super) unsafe fn register_host_or_dmabuf_mr<I: IbvDomainImpl>(
-    domain: Arc<IbvDomain<I>>,
+    domain: &IbvDomain<I>,
     mem: &KeepaliveLocalMemory,
 ) -> anyhow::Result<IbvMemoryRegionView> {
     let addr = mem.addr();
@@ -445,9 +443,9 @@ pub(super) unsafe fn register_host_or_dmabuf_mr<I: IbvDomainImpl>(
         }
     };
 
-    // SAFETY: `mr` is non-null — `register_dmabuf_mr`/`register_host_mr` only
-    // return `Ok` with a non-null, freshly-registered `ibv_mr` — so reading its
-    // `addr`/`lkey`/`rkey` here is sound.
+    // SAFETY: `mr` wraps a non-null, freshly-registered `ibv_mr` —
+    // `register_dmabuf_mr`/`register_host_mr` only return `Ok` with one — so
+    // reading its `addr`/`lkey`/`rkey` here is sound.
     let (mr_addr, lkey, rkey) = unsafe {
         let p = mr.as_ptr();
         ((*p).addr as usize, (*p).lkey, (*p).rkey)
@@ -489,7 +487,7 @@ mod tests {
     /// require a GPU with a mapped RDMA NIC, so a missing device, missing NIC, or
     /// open/creation failure panics. The returned domain owns its context, so it
     /// (and its PD) stays valid after the local [`IbvDevice`] drops.
-    fn open_domain_for_cuda_device(device: i32) -> Arc<IbvDomain<MlxDomain>> {
+    fn open_domain_for_cuda_device(device: i32) -> IbvDomain<MlxDomain> {
         let nic = get_cuda_device_to_ibv_device::<MlxDevice>()
             .get(device as usize)
             .and_then(|nic| nic.as_ref())
@@ -498,8 +496,11 @@ mod tests {
             .clone();
         let mut config = IbvConfig::default();
         MlxDevice::apply_config_defaults(&mut config);
-        let mut dev = IbvDevice::<MlxDevice>::open(&nic, config).expect("mapped NIC should open");
-        dev.get_or_create_domain("test")
+        let dev =
+            IbvDevice::<MlxDevice>::open(&nic, config.clone()).expect("mapped NIC should open");
+        // SAFETY: `dev.context()` wraps the live `ibv_context` opened above; the
+        // returned `Arc<IbvContext>` keeps it open for the new domain's lifetime.
+        unsafe { IbvDomain::new(dev.context(), dev.device_info().clone(), &config) }
             .expect("domain creation should succeed")
     }
 
@@ -620,9 +621,9 @@ mod tests {
     #[test]
     fn register_dmabuf_range_rejects_null_pd() {
         let page = host_page_size();
-        let null_pd = Arc::new(IbvPd::null());
+        let pd = Arc::new(IbvPd::null());
         // SAFETY: a null PD is the documented error path; no memory is touched.
-        let err = unsafe { register_dmabuf_range(&null_pd, page, page, 0) }.unwrap_err();
+        let err = unsafe { register_dmabuf_range(&pd, page, page, 0) }.unwrap_err();
         assert!(
             err.to_string().contains("null protection domain"),
             "unexpected error: {err}"
@@ -640,7 +641,7 @@ mod tests {
 
         // SAFETY: `domain`'s PD is live; `mem` keeps the allocation mapped for
         // the view's MR lifetime.
-        let view = unsafe { register_host_or_dmabuf_mr(domain.clone(), &mem) }.unwrap();
+        let view = unsafe { register_host_or_dmabuf_mr(&domain, &mem) }.unwrap();
         // Tie the view's lifetime to the allocation's lifetime so that the safety contract
         // above holds.
         mem.mr_slot()
@@ -668,7 +669,7 @@ mod tests {
         let mem = alloc.keepalive_slice(offset, size);
 
         // SAFETY: as above.
-        let view = unsafe { register_host_or_dmabuf_mr(domain.clone(), &mem) }.unwrap();
+        let view = unsafe { register_host_or_dmabuf_mr(&domain, &mem) }.unwrap();
         // Tie the view's lifetime to the allocation's lifetime so that the safety contract
         // above holds.
         mem.mr_slot()
@@ -692,7 +693,7 @@ mod tests {
         let mem = alloc.keepalive_slice(offset, size);
 
         // SAFETY: as above.
-        let view = unsafe { register_host_or_dmabuf_mr(domain.clone(), &mem) }.unwrap();
+        let view = unsafe { register_host_or_dmabuf_mr(&domain, &mem) }.unwrap();
         // Tie the view's lifetime to the allocation's lifetime so that the safety contract
         // above holds.
         mem.mr_slot()
@@ -713,7 +714,7 @@ mod tests {
         let mem = alloc.keepalive_slice(0, size);
 
         // SAFETY: as above.
-        let view = unsafe { register_host_or_dmabuf_mr(domain.clone(), &mem) }.unwrap();
+        let view = unsafe { register_host_or_dmabuf_mr(&domain, &mem) }.unwrap();
         // Tie the view's lifetime to the allocation's lifetime so that the safety contract
         // above holds.
         mem.mr_slot()

@@ -55,7 +55,6 @@ use super::primitives::GidType;
 use super::primitives::IbvConfig;
 use super::primitives::IbvCq;
 use super::primitives::IbvOperation;
-use super::primitives::IbvPd;
 use super::primitives::IbvQp;
 use super::primitives::IbvQpInfo;
 use super::primitives::IbvWc;
@@ -185,10 +184,10 @@ pub trait IbvQueuePair: std::fmt::Debug + Send + Sync + 'static + Sized {
     ///
     /// `domain`'s PD (`domain.as_ptr()`) must be null or a valid protection
     /// domain. Callers must ensure the PD outlives the QP; the easiest way to
-    /// do this is for implementers to store the value of `domain` inside the
-    /// QP.
+    /// do this is for implementers to store a clone of `domain.pd()` (an
+    /// `Arc<IbvPd>`) inside the QP.
     unsafe fn new<I: IbvDomainImpl<QueuePair = Self>>(
-        domain: Arc<IbvDomain<I>>,
+        domain: &IbvDomain<I>,
         config: IbvConfig,
     ) -> Result<Self, anyhow::Error>;
 
@@ -238,7 +237,7 @@ pub trait IbvQueuePair: std::fmt::Debug + Send + Sync + 'static + Sized {
 
 impl IbvQueuePair for legacy::IbvQueuePair {
     unsafe fn new<I: IbvDomainImpl<QueuePair = Self>>(
-        domain: Arc<IbvDomain<I>>,
+        domain: &IbvDomain<I>,
         config: IbvConfig,
     ) -> Result<Self, anyhow::Error> {
         legacy::IbvQueuePair::new(domain, config)
@@ -585,7 +584,7 @@ impl RCQueuePair {
 
 impl IbvQueuePair for RCQueuePair {
     unsafe fn new<I: IbvDomainImpl<QueuePair = Self>>(
-        domain: Arc<IbvDomain<I>>,
+        domain: &IbvDomain<I>,
         config: IbvConfig,
     ) -> Result<Self, anyhow::Error> {
         tracing::debug!("creating an RCQueuePair from config {}", config);
@@ -1636,7 +1635,7 @@ mod tests {
 
     impl IbvQueuePair for MockQp {
         unsafe fn new<I: IbvDomainImpl<QueuePair = Self>>(
-            _domain: Arc<IbvDomain<I>>,
+            _domain: &IbvDomain<I>,
             _config: IbvConfig,
         ) -> Result<Self> {
             // No `IbvDomainImpl` sets `Q = MockQp`, so this is never reached;

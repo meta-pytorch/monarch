@@ -10,7 +10,7 @@
 //!
 //! [`IbvDevice`] owns the per-process state for a single opened RDMA
 //! device: an `Arc<IbvContext>`, an [`IbvConfig`], and a map of named
-//! `Arc<IbvDomain>`s allocated against the device.
+//! [`IbvDomain`]s allocated against the device.
 //! Per-backend behavior — claiming a device as the backend's,
 //! allocating a domain, and seeding config defaults — is provided by
 //! an [`IbvDeviceImpl`].
@@ -203,19 +203,14 @@ static DEVICE_NAMES_BY_IMPL: LazyLock<HashMap<&'static str, RegisteredBackend>> 
 ///
 /// Owns an `Arc<IbvContext>`, the queried [`IbvDeviceInfo`]
 /// metadata, a device-scoped [`IbvDeviceConfig`], and a map of
-/// named `Arc<IbvDomain>`s allocated against the device (one PD
+/// named [`IbvDomain`]s allocated against the device (one PD
 /// per name, created lazily by [`Self::get_or_create_domain`]).
 ///
 /// `I` is the backend driver type, parameterizing all per-backend
 /// behavior via [`IbvDeviceImpl`].
-///
-/// Field declaration order is significant: `domains` is declared
-/// before `context` so that, on drop, every `Arc<IbvDomain>` in
-/// the map releases its PD before the final `Arc<IbvContext>`
-/// reference closes the context.
 #[derive(Debug)]
 pub(crate) struct IbvDevice<I: IbvDeviceImpl> {
-    domains: HashMap<String, Arc<IbvDomain<I::Domain>>>,
+    domains: HashMap<String, IbvDomain<I::Domain>>,
     device_info: IbvDeviceInfo,
     config: IbvConfig,
     context: Arc<IbvContext>,
@@ -350,33 +345,32 @@ impl<I: IbvDeviceImpl> IbvDevice<I> {
         &self.config
     }
 
-    /// Returns the `Arc<IbvDomain>` registered under `name`, if
-    /// one has already been created. Read-only lookup; use
-    /// [`Self::get_or_create_domain`] to create on demand.
-    pub fn domain(&self, name: &str) -> Option<&Arc<IbvDomain<I::Domain>>> {
+    /// Returns the [`IbvDomain`] registered under `name`, if one has already
+    /// been created. Read-only lookup; use [`Self::get_or_create_domain`] to
+    /// create on demand.
+    pub fn domain(&self, name: &str) -> Option<&IbvDomain<I::Domain>> {
         self.domains.get(name)
     }
 
-    /// Returns the `Arc<IbvDomain>` registered under `name`, creating (and
+    /// Returns the [`IbvDomain`] registered under `name`, creating (and
     /// caching) a new one via [`IbvDomain::new`] on first access.
-    pub fn get_or_create_domain(
-        &mut self,
-        name: &str,
-    ) -> anyhow::Result<Arc<IbvDomain<I::Domain>>> {
-        if let Some(domain) = self.domains.get(name) {
-            return Ok(Arc::clone(domain));
+    pub fn get_or_create_domain(&mut self, name: &str) -> anyhow::Result<&IbvDomain<I::Domain>> {
+        if !self.domains.contains_key(name) {
+            // SAFETY: `self.context` wraps the live `ibv_context` opened by
+            // `IbvDevice::open`, valid for this device's lifetime.
+            let domain = unsafe {
+                IbvDomain::<I::Domain>::new(
+                    Arc::clone(&self.context),
+                    self.device_info.clone(),
+                    &self.config,
+                )
+            }?;
+            self.domains.insert(name.to_string(), domain);
         }
-        // SAFETY: `self.context` wraps the live `ibv_context` opened by
-        // `IbvDevice::open`, valid for this device's lifetime.
-        let domain = Arc::new(unsafe {
-            IbvDomain::<I::Domain>::new(
-                Arc::clone(&self.context),
-                self.device_info.clone(),
-                &self.config,
-            )
-        }?);
-        self.domains.insert(name.to_string(), Arc::clone(&domain));
-        Ok(domain)
+        Ok(self
+            .domains
+            .get(name)
+            .expect("domain just inserted or already present"))
     }
 
     /// Whether any device claimed by impl `I` is present on this

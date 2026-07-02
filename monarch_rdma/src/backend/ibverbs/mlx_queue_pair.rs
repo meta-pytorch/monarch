@@ -10,7 +10,6 @@
 
 use std::io::Error;
 use std::result::Result;
-use std::sync::Arc;
 
 use super::IbvBuffer;
 use super::domain::IbvDomain;
@@ -118,7 +117,7 @@ impl MlxQueuePair {
 
 impl IbvQueuePair for MlxQueuePair {
     unsafe fn new<I: IbvDomainImpl<QueuePair = Self>>(
-        domain: Arc<IbvDomain<I>>,
+        domain: &IbvDomain<I>,
         config: IbvConfig,
     ) -> Result<Self, anyhow::Error> {
         tracing::debug!("creating an MlxQueuePair from config {}", config);
@@ -129,7 +128,7 @@ impl IbvQueuePair for MlxQueuePair {
         )?;
         // SAFETY: an `IbvDomain` holds a null-or-live context and PD, which is
         // `create_ibv_qp`'s contract.
-        let qp = unsafe { Self::create_ibv_qp(&domain, &config) }?;
+        let qp = unsafe { Self::create_ibv_qp(domain, &config) }?;
         let access_flags = domain.access_flags();
         // SAFETY: `create_ibv_qp` returns a live, fully non-null `IbvQp` (it
         // bails on any null handle).

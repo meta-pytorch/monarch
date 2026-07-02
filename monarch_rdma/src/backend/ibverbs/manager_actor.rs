@@ -18,7 +18,6 @@
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -297,22 +296,20 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
     fn get_or_create_device_domain(
         &mut self,
         device_name: &str,
-    ) -> Result<Arc<IbvDomain<I::Domain>>, anyhow::Error> {
-        if let Some(device) = self.devices.get_mut(device_name) {
-            return device.get_or_create_domain(DEFAULT_DOMAIN);
+    ) -> Result<&IbvDomain<I::Domain>, anyhow::Error> {
+        if !self.devices.contains_key(device_name) {
+            let device =
+                IbvDevice::<I>::open(device_name, self.config.clone()).ok_or_else(|| {
+                    anyhow::anyhow!("{} does not advertise {}", I::backend_name(), device_name,)
+                })?;
+            // Print device info if MONARCH_DEBUG_RDMA=1 is set.
+            crate::print_device_info_if_debug_enabled(device.context().as_ptr());
+            self.devices.insert(device_name.to_string(), device);
         }
-
-        let mut device =
-            IbvDevice::<I>::open(device_name, self.config.clone()).ok_or_else(|| {
-                anyhow::anyhow!("{} does not advertise {}", I::backend_name(), device_name,)
-            })?;
-        let domain = device.get_or_create_domain(DEFAULT_DOMAIN)?;
-
-        // Print device info if MONARCH_DEBUG_RDMA=1 is set.
-        crate::print_device_info_if_debug_enabled(domain.context().as_ptr());
-
-        self.devices.insert(device_name.to_string(), device);
-        Ok(domain)
+        self.devices
+            .get_mut(device_name)
+            .expect("device just inserted or already present")
+            .get_or_create_domain(DEFAULT_DOMAIN)
     }
 
     /// Resolve `mem` to an [`IbvMemoryRegionView`] using the slot shared by
@@ -385,9 +382,10 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
             anyhow::bail!("peer queue pair already exists for {qp_key:?}");
         }
         let self_device = &qp_key.self_device;
+        let config = self.config.clone();
         let domain = self.get_or_create_device_domain(self_device)?;
         let mut qp = domain
-            .create_queue_pair(&self.config)
+            .create_queue_pair(&config)
             .map_err(|e| anyhow::anyhow!("could not create peer IbvQueuePair: {}", e))?;
         let local_info = qp
             .get_qp_info()
@@ -415,9 +413,10 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
             return Ok(h.clone());
         }
         let self_device = &qp_key.self_device;
+        let config = self.config.clone();
         let domain = self.get_or_create_device_domain(self_device)?;
         let qp = domain
-            .create_queue_pair(&self.config)
+            .create_queue_pair(&config)
             .map_err(|e| anyhow::anyhow!("could not create IbvQueuePair for {qp_key:?}: {}", e))?;
         let local_manager: ActorRef<Self> = cx.bind();
         let is_loopback = local_manager.actor_addr() == peer_manager.actor_addr()
@@ -428,8 +427,8 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
             peer_manager,
             qp,
             is_loopback,
-            self.config.max_send_wr,
-            self.config.max_rd_atomic as u32,
+            config.max_send_wr,
+            config.max_rd_atomic as u32,
         ));
         self.qp_handles.insert(qp_key.clone(), actor.clone());
         Ok(actor)
@@ -525,9 +524,10 @@ impl<I: IbvDeviceImpl> Handler<RawQueuePair> for IbvManagerActor<I> {
         let RawQueuePair { self_device, reply } = msg;
         // Build a fresh, unconnected legacy QP on `self_device` and hand it
         // back; the caller exchanges endpoint info and connects it.
+        let config = self.config.clone();
         let result = self
             .get_or_create_device_domain(&self_device)
-            .and_then(|domain| legacy::IbvQueuePair::new(domain, self.config.clone()))
+            .and_then(|domain| legacy::IbvQueuePair::new(domain, config))
             .map_err(|e| e.to_string());
         let _ = reply.try_post(cx, result);
         Ok(())

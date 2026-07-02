@@ -7,6 +7,7 @@
  */
 
 use super::*;
+use crate::backend::ibverbs::primitives::IbvPd;
 
 /// An RDMA Queue Pair (QP) for communication between two endpoints.
 ///
@@ -44,8 +45,8 @@ pub struct IbvQueuePair {
     gid: Gid,
     is_efa: bool,
     // Keepalive for the protection domain this QP was built against, so the PD
-    // outlives the QP regardless of other owners (the manager, registered MRs,
-    // etc.). Never read directly.
+    // (and, through it, the context) outlives the QP regardless of other owners
+    // (the manager, registered MRs, etc.). Never read directly.
     _pd: Arc<IbvPd>,
 }
 
@@ -123,7 +124,7 @@ impl IbvQueuePair {
     ///
     /// Returns errors if CQ or QP creation fails.
     pub fn new<I: IbvDomainImpl>(
-        domain: Arc<IbvDomain<I>>,
+        domain: &IbvDomain<I>,
         config: IbvConfig,
     ) -> Result<Self, anyhow::Error> {
         tracing::debug!("creating an IbvQueuePair from config {}", config);

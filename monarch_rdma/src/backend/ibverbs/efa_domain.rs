@@ -8,8 +8,6 @@
 
 //! EFA domain strategy for [`IbvDomainImpl`].
 
-use std::sync::Arc;
-
 use super::domain::IbvDomain;
 use super::domain::IbvDomainImpl;
 use super::primitives::IbvConfig;
@@ -42,7 +40,7 @@ impl IbvDomainImpl for EfaDomain {
     }
 
     fn create_queue_pair(
-        domain: Arc<IbvDomain<Self>>,
+        domain: &IbvDomain<Self>,
         config: &IbvConfig,
     ) -> anyhow::Result<Self::QueuePair> {
         // EFA builds the legacy single-type queue pair for now; it will
