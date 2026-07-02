@@ -36,6 +36,7 @@ use typeuri::Named;
 use super::domain::IbvDomain;
 use super::domain::IbvDomainImpl;
 use super::primitives::IbvConfig;
+use super::primitives::IbvContext;
 use super::primitives::IbvDeviceInfo;
 use super::primitives::query_device_info;
 
@@ -173,7 +174,7 @@ static DEVICE_NAMES_BY_IMPL: LazyLock<HashMap<&'static str, RegisteredBackend>> 
             }
             // SAFETY: `raw_ctx` was just returned by `ibv_open_device` and is
             // non-null (checked above); this `Arc<IbvContext>` is its sole owner.
-            let ctx = Arc::new(unsafe { IbvContext::new(raw_ctx) });
+            let ctx = Arc::new(unsafe { IbvContext::from_raw(raw_ctx) });
             // Assign the device to the first impl that claims it.
             if let Some(reg) = registrations
                 .iter()
@@ -197,63 +198,6 @@ static DEVICE_NAMES_BY_IMPL: LazyLock<HashMap<&'static str, RegisteredBackend>> 
         unsafe { rdmaxcel_sys::ibv_free_device_list(device_list) };
         by_impl
     });
-
-/// RAII owner of a raw `ibv_context*`.
-///
-/// Closes the context in [`Drop`]. Held inside an `Arc` not because
-/// clones are expected to outlive the owning [`IbvDevice`], but so
-/// the raw pointer can be passed around with a lifetime safeguard
-/// where borrow-checked references aren't practical.
-#[derive(Debug)]
-pub struct IbvContext {
-    context: *mut rdmaxcel_sys::ibv_context,
-}
-
-// SAFETY: libibverbs treats `ibv_context*` as thread-safe for the
-// operations we perform (allocation, polling, and the final close).
-unsafe impl Send for IbvContext {}
-unsafe impl Sync for IbvContext {}
-
-impl IbvContext {
-    /// Wraps a raw `ibv_context*`. A null pointer yields a no-op context
-    /// (its `Drop` does nothing).
-    ///
-    /// # Safety
-    ///
-    /// `context` must be either null or a pointer returned by
-    /// `ibv_open_device` that has not been (and will not be) closed elsewhere:
-    /// the resulting `IbvContext` takes sole ownership and its `Drop` calls
-    /// `ibv_close_device` exactly once.
-    pub(super) unsafe fn new(context: *mut rdmaxcel_sys::ibv_context) -> Self {
-        Self { context }
-    }
-
-    /// Returns the raw `ibv_context*`. The pointer is valid for
-    /// the lifetime of `&self`.
-    pub fn as_ptr(&self) -> *mut rdmaxcel_sys::ibv_context {
-        self.context
-    }
-}
-
-impl Drop for IbvContext {
-    fn drop(&mut self) {
-        if self.context.is_null() {
-            return;
-        }
-        // SAFETY: `self.context` was returned by `ibv_open_device` in
-        // `IbvDevice::open` and has not been closed elsewhere. The
-        // intended ownership is a single `Arc<IbvContext>`, whose
-        // final `Drop` calls `ibv_close_device` exactly once.
-        let result = unsafe { rdmaxcel_sys::ibv_close_device(self.context) };
-        if result != 0 {
-            tracing::error!(
-                "ibv_close_device failed for context {:p}: error code {}",
-                self.context,
-                result
-            );
-        }
-    }
-}
 
 /// An opened RDMA device.
 ///
@@ -332,6 +276,7 @@ impl<I: IbvDeviceImpl> IbvDevice<I> {
             );
         }
         let mut target = std::ptr::null_mut();
+        let mut context = None;
         for i in 0..num_devices {
             // SAFETY: `device_list` is non-null with `num_devices`
             // valid entries (checked above).
@@ -349,7 +294,6 @@ impl<I: IbvDeviceImpl> IbvDevice<I> {
             }
         }
         let mut failure = None;
-        let mut context: *mut crate::rdmaxcel_sys::ibv_context = std::ptr::null_mut();
         if target.is_null() {
             failure = Some(format!(
                 "ibv device with name {} not found by ibv_get_device_list",
@@ -359,13 +303,17 @@ impl<I: IbvDeviceImpl> IbvDevice<I> {
             // Open while `target` still points into `device_list`, then free.
             // SAFETY: `target`, when non-null, is one of `device_list`'s
             // entries; `ibv_open_device` returns null on failure.
-            context = unsafe { rdmaxcel_sys::ibv_open_device(target) };
-            if context.is_null() {
+            let raw_context = unsafe { rdmaxcel_sys::ibv_open_device(target) };
+            if raw_context.is_null() {
                 failure = Some(format!(
                     "registered ibv device {} could not be opened: {}",
                     name,
                     std::io::Error::last_os_error(),
                 ));
+            } else {
+                // SAFETY: `raw_context` was just returned by `ibv_open_device` and is
+                // non-null (checked above); this `Arc<IbvContext>` is its sole owner.
+                context = Some(Arc::new(unsafe { IbvContext::from_raw(raw_context) }));
             }
         }
 
@@ -381,10 +329,7 @@ impl<I: IbvDeviceImpl> IbvDevice<I> {
             domains: HashMap::new(),
             device_info,
             config,
-            // SAFETY: `context` was returned by `ibv_open_device` above and is
-            // non-null (a null open set `failure`, which panics before here);
-            // this `Arc<IbvContext>` is its sole owner.
-            context: Arc::new(unsafe { IbvContext::new(context) }),
+            context: context.expect("device context opened above"),
             _marker: PhantomData,
         })
     }

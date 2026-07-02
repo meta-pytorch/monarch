@@ -12,10 +12,10 @@ use std::sync::Arc;
 
 use typeuri::Named;
 
-use super::device::IbvContext;
 use super::device::IbvDeviceImpl;
 use super::efa_domain::EfaDomain;
 use super::primitives::IbvConfig;
+use super::primitives::IbvContext;
 use crate::register_ibv_device_impl;
 
 /// AWS EFA (Elastic Fabric Adapter) backend.

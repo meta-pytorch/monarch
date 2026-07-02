@@ -47,7 +47,7 @@ impl MlxQueuePair {
         domain: &IbvDomain<I>,
         config: &IbvConfig,
     ) -> Result<QpParts, anyhow::Error> {
-        let context = domain.context.as_ptr();
+        let context = domain.context().as_ptr();
         let pd = domain.as_ptr();
         if pd.is_null() {
             anyhow::bail!("cannot create an MlxQueuePair on a null protection domain");
@@ -128,14 +128,22 @@ impl IbvQueuePair for MlxQueuePair {
             Some(GidType::RoCEv2),
         )?;
         let parts = Self::create_raw_parts(&domain, &config)?;
-        let context = domain.context.clone();
+        let context = domain.context().clone();
         let access_flags = domain.access_flags();
 
         // SAFETY: `parts` wraps a live RC QP just created against `domain`'s
         // context/PD with its completion queues; ownership transfers to the
         // inner `RCQueuePair`.
-        let inner =
-            unsafe { RCQueuePair::from_parts(parts, context, config, gid, access_flags, domain) };
+        let inner = unsafe {
+            RCQueuePair::from_parts(
+                parts,
+                context,
+                config,
+                gid,
+                access_flags,
+                domain.pd().clone(),
+            )
+        };
         Ok(MlxQueuePair(inner))
     }
 

@@ -45,18 +45,18 @@ use typeuri::Named;
 
 use super::IbvBuffer;
 use super::IbvOp;
-use super::device::IbvContext;
 use super::domain::IbvDomain;
 use super::domain::IbvDomainImpl;
-use super::domain::IbvDomainKeepalive;
 use super::manager_actor::CreatePeerQueuePair;
 use super::memory_region::IbvMemoryRegionView;
 use super::primitives::Gid;
 use super::primitives::GidScope;
 use super::primitives::GidType;
 use super::primitives::IbvConfig;
+use super::primitives::IbvContext;
 use super::primitives::IbvCq;
 use super::primitives::IbvOperation;
+use super::primitives::IbvPd;
 use super::primitives::IbvQp;
 use super::primitives::IbvQpInfo;
 use super::primitives::IbvWc;
@@ -491,9 +491,9 @@ pub struct RCQueuePair {
     /// Monotonic work-request id, handed out one per posted WR. Standard
     /// ibverbs carries no internal counter, so the QP tracks its own.
     next_wr_id: u64,
-    /// The domain this QP was built against, kept alive so its PD outlives the
-    /// QP. Never read directly.
-    _domain: Arc<dyn IbvDomainKeepalive>,
+    /// The protection domain this QP was built against, kept alive so the PD
+    /// outlives the QP. Never read directly.
+    _pd: Arc<IbvPd>,
 }
 
 impl RCQueuePair {
@@ -505,15 +505,15 @@ impl RCQueuePair {
     ///
     /// `context` must wrap a non-null, live `ibv_context` (the data-path verbs
     /// invoke it without re-checking). `parts.qp` must wrap a live RC `ibv_qp`
-    /// created against that context's device and `domain`'s protection domain,
-    /// with `parts.send_cq`/`parts.recv_cq` as its completion queues.
+    /// created against that context's device and `pd`, with
+    /// `parts.send_cq`/`parts.recv_cq` as its completion queues.
     pub(super) unsafe fn from_parts(
         parts: QpParts,
         context: Arc<IbvContext>,
         config: IbvConfig,
         gid: Gid,
         access_flags: i32,
-        domain: Arc<dyn IbvDomainKeepalive>,
+        pd: Arc<IbvPd>,
     ) -> Self {
         let QpParts {
             qp,
@@ -529,7 +529,7 @@ impl RCQueuePair {
             gid,
             access_flags,
             next_wr_id: 0,
-            _domain: domain,
+            _pd: pd,
         }
     }
 
@@ -623,7 +623,7 @@ impl IbvQueuePair for RCQueuePair {
         config: IbvConfig,
     ) -> Result<Self, anyhow::Error> {
         tracing::debug!("creating an RCQueuePair from config {}", config);
-        let context = domain.context.clone();
+        let context = domain.context().clone();
         let context_ptr = context.as_ptr();
         // `IbvDomain`'s `pd` accessor permits null (e.g. a test domain); a real
         // QP needs one, so reject null up front (`IbvCq::create` likewise rejects
@@ -687,7 +687,16 @@ impl IbvQueuePair for RCQueuePair {
 
         // SAFETY: `parts` wraps a live RC QP just created against `pd`/`context`
         // with its completion queues; ownership transfers to the returned value.
-        Ok(unsafe { Self::from_parts(parts, context, config, gid, access_flags, domain) })
+        Ok(unsafe {
+            Self::from_parts(
+                parts,
+                context,
+                config,
+                gid,
+                access_flags,
+                domain.pd().clone(),
+            )
+        })
     }
 
     fn connect(&mut self, info: &IbvQpInfo) -> Result<(), anyhow::Error> {
@@ -1391,8 +1400,6 @@ mod tests {
     use crate::backend::ibverbs::device::IbvDevice;
     use crate::backend::ibverbs::device::list_all_devices;
     use crate::backend::ibverbs::device_selection::resolve_target;
-    use crate::backend::ibverbs::domain::IbvDomain;
-    use crate::backend::ibverbs::efa_domain::EfaDomain;
     use crate::backend::ibverbs::mlx_device::MlxDevice;
     use crate::backend::ibverbs::primitives::IbvConfig;
 
@@ -2033,29 +2040,15 @@ mod tests {
     // QueuePairActor op processing
     // =================================================================
 
-    use crate::backend::ibverbs::device::IbvContext;
     use crate::backend::ibverbs::memory_region::IbvMemoryRegion;
-    use crate::backend::ibverbs::primitives::IbvDeviceInfo;
+    use crate::backend::ibverbs::primitives::IbvPd;
     use crate::local_memory::Keepalive;
     use crate::local_memory::KeepaliveLocalMemory;
 
-    /// A throwaway [`IbvDomain`] with null `context`/`pd`, used as the
-    /// `_domain` keepalive of [`fake_mrv`]'s region; its `Drop` deallocs
-    /// nothing (null `pd`).
-    fn null_domain() -> Arc<IbvDomain<EfaDomain>> {
-        // SAFETY: a null `ibv_context*` is explicitly allowed — `IbvContext`'s
-        // `Drop` is a no-op for null, so nothing is ever closed.
-        let context = Arc::new(unsafe { IbvContext::new(std::ptr::null_mut()) });
-        // SAFETY: a null `pd` is allowed — `IbvDomain`'s `Drop` skips
-        // `ibv_dealloc_pd` for null, so nothing is ever freed.
-        Arc::new(unsafe {
-            IbvDomain::for_test(
-                context,
-                std::ptr::null_mut(),
-                IbvDeviceInfo::for_test_named("null_domain"),
-                EfaDomain,
-            )
-        })
+    /// A null [`Arc<IbvPd>`] keepalive for [`fake_mrv`]'s region; its `Drop`
+    /// deallocates nothing (null `pd`/`context`).
+    fn null_pd() -> Arc<IbvPd> {
+        Arc::new(IbvPd::null())
     }
 
     /// No-op [`Keepalive`] for tests that mint a [`KeepaliveLocalMemory`]
@@ -2087,7 +2080,7 @@ mod tests {
             "dev0".to_string(),
             Arc::new(IbvMemoryRegion {
                 mr: std::ptr::null_mut(),
-                _domain: null_domain(),
+                _pd: null_pd(),
             }),
         )
     }

@@ -43,10 +43,10 @@ pub struct IbvQueuePair {
     // otherwise the first global RoCE v2 GID on `config.port_num`.
     gid: Gid,
     is_efa: bool,
-    // Keepalive for the domain whose `context`/`pd` this QP was built
-    // against, so it outlives the QP regardless of other owners (the
-    // manager, registered MRs, etc.). Never read directly.
-    _domain: Arc<dyn IbvDomainKeepalive>,
+    // Keepalive for the protection domain this QP was built against, so the PD
+    // outlives the QP regardless of other owners (the manager, registered MRs,
+    // etc.). Never read directly.
+    _pd: Arc<IbvPd>,
 }
 
 impl Drop for IbvQueuePair {
@@ -127,7 +127,7 @@ impl IbvQueuePair {
         config: IbvConfig,
     ) -> Result<Self, anyhow::Error> {
         tracing::debug!("creating an IbvQueuePair from config {}", config);
-        let context = domain.context.as_ptr();
+        let context = domain.context().as_ptr();
         let pd = domain.as_ptr();
         // Resolve Auto to a concrete QP type based on device capabilities.
         let resolved_qp_type = resolve_qp_type(config.qp_type);
@@ -179,7 +179,7 @@ impl IbvQueuePair {
                     config,
                     gid,
                     is_efa: true,
-                    _domain: domain,
+                    _pd: domain.pd().clone(),
                 });
             }
 
@@ -219,7 +219,7 @@ impl IbvQueuePair {
                 config,
                 gid,
                 is_efa: false,
-                _domain: domain,
+                _pd: domain.pd().clone(),
             })
         }
     }

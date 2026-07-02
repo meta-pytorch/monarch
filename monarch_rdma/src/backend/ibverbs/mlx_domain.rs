@@ -27,7 +27,6 @@ use std::sync::OnceLock;
 
 use anyhow::Context;
 
-use super::device::IbvContext;
 use super::device_selection::get_cuda_device_to_ibv_device;
 use super::domain::IbvDomain;
 use super::domain::IbvDomainImpl;
@@ -39,6 +38,7 @@ use super::mlx_queue_pair::MlxQueuePair;
 use super::primitives::GidScope;
 use super::primitives::GidType;
 use super::primitives::IbvConfig;
+use super::primitives::IbvContext;
 use super::primitives::IbvDeviceInfo;
 use super::primitives::IbvQp;
 use super::queue_pair::QpParts;
@@ -277,7 +277,7 @@ impl MlxDomainOps for ProdMlxDomainOps {
         // down in the right order.
         let parts = MlxQueuePair::create_raw_parts(&domain, config)
             .context("could not create loopback QP for mkey binding")?;
-        let context = domain.context.as_ptr();
+        let context = domain.context().as_ptr();
         let access_flags = domain.access_flags();
         let gid = domain.device_info().select_gid(
             config.port_num,
@@ -836,6 +836,7 @@ mod tests {
 
     use super::super::primitives::IbvCq;
     use super::super::primitives::IbvDeviceInfo;
+    use super::super::primitives::IbvPd;
     use super::*;
 
     const MIB2: usize = 2 * 1024 * 1024;
@@ -1040,18 +1041,17 @@ mod tests {
         }
     }
 
-    /// A domain wrapping the mock-driven [`MlxDomain`] under test. Its
-    /// `pd`/`context` are null (no-op `Drop`); the segment views built against
-    /// it hold it only as a keepalive. Drive the strategy via
+    /// A domain wrapping the mock-driven [`MlxDomain`] under test. Its `pd`
+    /// (and, through it, its context) is null (no-op `Drop`); the segment views
+    /// built against it hold it only as a keepalive. Drive the strategy via
     /// [`IbvDomain::domain_impl`].
     fn domain(mock: Arc<MockOps>) -> Arc<IbvDomain<MlxDomain>> {
         let mlx = MlxDomain::new_with_ops(mock, IbvConfig::default());
-        // SAFETY: null `ibv_context*`/`pd` are explicitly allowed — both
-        // `IbvContext` and `IbvDomain` skip their FFI destructors for null.
+        // SAFETY: `IbvPd::null()` holds a null PD (and, through it, a null
+        // context) whose `Drop`s are no-ops.
         unsafe {
             Arc::new(IbvDomain::for_test(
-                Arc::new(IbvContext::new(std::ptr::null_mut())),
-                std::ptr::null_mut(),
+                Arc::new(IbvPd::null()),
                 IbvDeviceInfo::for_test_named("test"),
                 mlx,
             ))

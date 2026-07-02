@@ -12,10 +12,10 @@ use std::sync::Arc;
 
 use typeuri::Named;
 
-use super::device::IbvContext;
 use super::device::IbvDeviceImpl;
 use super::mlx_domain::MlxDomain;
 use super::primitives::IbvConfig;
+use super::primitives::IbvContext;
 use crate::register_ibv_device_impl;
 
 /// PCI vendor ID for Mellanox Technologies.

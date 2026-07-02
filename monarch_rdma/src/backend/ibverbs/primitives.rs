@@ -29,6 +29,7 @@ use std::ffi::CStr;
 use std::fmt;
 use std::io::Error;
 use std::net::Ipv6Addr;
+use std::sync::Arc;
 use std::sync::OnceLock;
 
 use anyhow::Context;
@@ -1264,6 +1265,144 @@ impl Drop for IbvQp {
             tracing::error!(
                 "failed to destroy queue pair {:p}: error code {}",
                 self.0,
+                ret
+            );
+        }
+    }
+}
+
+/// RAII owner of a raw `ibv_context*`, closing it in [`Drop`] (a no-op if
+/// null).
+#[derive(Debug)]
+pub struct IbvContext(*mut rdmaxcel_sys::ibv_context);
+
+// SAFETY: libibverbs treats `ibv_context*` as thread-safe for the
+// operations we perform.
+unsafe impl Send for IbvContext {}
+unsafe impl Sync for IbvContext {}
+
+impl IbvContext {
+    /// Wraps a raw `ibv_context*`. A null pointer yields a no-op context
+    /// (its `Drop` does nothing).
+    ///
+    /// # Safety
+    ///
+    /// `context` must be either null or a pointer returned by
+    /// `ibv_open_device` that has not been (and will not be) closed elsewhere:
+    /// the resulting `IbvContext` takes sole ownership and its `Drop` calls
+    /// `ibv_close_device` exactly once.
+    pub(super) unsafe fn from_raw(context: *mut rdmaxcel_sys::ibv_context) -> Self {
+        Self(context)
+    }
+
+    /// Returns the raw `ibv_context*`. The pointer is valid for
+    /// the lifetime of `&self`.
+    pub fn as_ptr(&self) -> *mut rdmaxcel_sys::ibv_context {
+        self.0
+    }
+
+    /// A placeholder holding no context: `as_ptr` returns null and `Drop` is a
+    /// no-op. Used by the test-only `null()` constructors of the pointer
+    /// wrappers that hold a context.
+    #[cfg(test)]
+    pub(super) fn null() -> Self {
+        // SAFETY: a null context is explicitly allowed; `Drop` skips
+        // `ibv_close_device` for null.
+        unsafe { Self::from_raw(std::ptr::null_mut()) }
+    }
+}
+
+impl Drop for IbvContext {
+    fn drop(&mut self) {
+        if self.0.is_null() {
+            return;
+        }
+        // SAFETY: `self.0` was returned by `ibv_open_device` and
+        // has not been closed elsewhere.
+        let result = unsafe { rdmaxcel_sys::ibv_close_device(self.0) };
+        if result != 0 {
+            tracing::error!(
+                "ibv_close_device failed for context {:p}: error code {}",
+                self.0,
+                result
+            );
+        }
+    }
+}
+
+/// Owns an `ibv_pd` together with the `Arc<IbvContext>` it was allocated
+/// against, deallocating the PD on drop (a no-op if null) before releasing the
+/// context.
+#[derive(Debug)]
+pub(super) struct IbvPd {
+    pd: *mut rdmaxcel_sys::ibv_pd,
+    /// The context the PD was allocated against, kept open until after
+    /// `ibv_dealloc_pd` and reached by holders via [`Self::context`].
+    context: Arc<IbvContext>,
+}
+
+// SAFETY: the only raw member is the `ibv_pd` pointer. The ibverbs PD it names is
+// not thread-affine — it may be allocated on one thread and used or deallocated
+// on another (`Send`) — and `IbvPd` exposes no operation that mutates the PD
+// through a shared `&` (`as_ptr` only hands back the pointer value), so sharing a
+// `&IbvPd` cannot race (`Sync`).
+unsafe impl Send for IbvPd {}
+// SAFETY: as for `Send` above.
+unsafe impl Sync for IbvPd {}
+
+impl IbvPd {
+    /// Allocates a protection domain against `context`.
+    ///
+    /// # Safety
+    ///
+    /// `context` must wrap a live `ibv_context`; a null context yields `Err`.
+    pub(super) unsafe fn create(context: Arc<IbvContext>) -> Result<Self, anyhow::Error> {
+        if context.as_ptr().is_null() {
+            anyhow::bail!("cannot allocate a protection domain on a null context");
+        }
+        // SAFETY: `context.as_ptr()` is non-null (checked above) and live (caller
+        // contract); `ibv_alloc_pd` returns null on failure.
+        let pd = unsafe { rdmaxcel_sys::ibv_alloc_pd(context.as_ptr()) };
+        if pd.is_null() {
+            anyhow::bail!("ibv_alloc_pd failed: {}", Error::last_os_error());
+        }
+        Ok(Self { pd, context })
+    }
+
+    /// The raw `ibv_pd`; null for a placeholder that holds no protection domain.
+    pub(super) fn as_ptr(&self) -> *mut rdmaxcel_sys::ibv_pd {
+        self.pd
+    }
+
+    /// The context this PD was allocated against.
+    pub(super) fn context(&self) -> &Arc<IbvContext> {
+        &self.context
+    }
+
+    /// A placeholder holding no protection domain (and a no-op context): both
+    /// `Drop`s are no-ops.
+    #[cfg(test)]
+    pub(super) fn null() -> Self {
+        Self {
+            pd: std::ptr::null_mut(),
+            context: Arc::new(IbvContext::null()),
+        }
+    }
+}
+
+impl Drop for IbvPd {
+    fn drop(&mut self) {
+        if self.pd.is_null() {
+            return;
+        }
+        // SAFETY: a non-null `self.pd` was returned by `ibv_alloc_pd` and, since
+        // `IbvPd` is not `Clone`, is deallocated exactly once. `context` is
+        // dropped only after this returns, so the device is still open here.
+        let ret = unsafe { rdmaxcel_sys::ibv_dealloc_pd(self.pd) };
+        if ret != 0 {
+            tracing::error!(
+                "failed to deallocate protection domain {:p}: error code {}",
+                self.pd,
                 ret
             );
         }

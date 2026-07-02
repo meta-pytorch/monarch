@@ -309,7 +309,7 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
         let domain = device.get_or_create_domain(DEFAULT_DOMAIN)?;
 
         // Print device info if MONARCH_DEBUG_RDMA=1 is set.
-        crate::print_device_info_if_debug_enabled(domain.context.as_ptr());
+        crate::print_device_info_if_debug_enabled(domain.context().as_ptr());
 
         self.devices.insert(device_name.to_string(), device);
         Ok(domain)

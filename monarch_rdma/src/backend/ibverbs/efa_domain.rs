@@ -10,10 +10,10 @@
 
 use std::sync::Arc;
 
-use super::device::IbvContext;
 use super::domain::IbvDomain;
 use super::domain::IbvDomainImpl;
 use super::primitives::IbvConfig;
+use super::primitives::IbvContext;
 use super::primitives::IbvDeviceInfo;
 use super::queue_pair::legacy::IbvQueuePair;
 

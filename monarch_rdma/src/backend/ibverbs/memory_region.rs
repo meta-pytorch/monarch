@@ -17,7 +17,7 @@
 
 use std::sync::Arc;
 
-use super::domain::IbvDomainKeepalive;
+use super::primitives::IbvPd;
 
 /// Guards the resources behind a registered MR, releasing them when the last
 /// [`IbvMemoryRegionView`] over it drops. Each implementor frees whatever it
@@ -27,19 +27,18 @@ use super::domain::IbvDomainKeepalive;
 pub(super) trait IbvMemoryRegionKeepalive: std::fmt::Debug + Send + Sync {}
 
 /// Guard for a standalone MR registered via `ibv_reg_mr` / `ibv_reg_dmabuf_mr`;
-/// its `Drop` runs `ibv_dereg_mr`. Owns the domain so the PD outlives that
-/// call.
+/// its `Drop` runs `ibv_dereg_mr`. Holds the PD so it outlives that call.
 #[derive(Debug)]
 pub(super) struct IbvMemoryRegion {
     pub(super) mr: *mut rdmaxcel_sys::ibv_mr,
     /// Keepalive for the PD `mr` was registered against; dropped only after
     /// this struct's `Drop` returns, so the PD is alive during `ibv_dereg_mr`.
     /// Never read directly.
-    pub(super) _domain: Arc<dyn IbvDomainKeepalive>,
+    pub(super) _pd: Arc<IbvPd>,
 }
 
 // SAFETY: `mr` is only handed to `ibv_dereg_mr` (which libibverbs treats as
-// thread-safe) and is owned exclusively by this guard; `domain` is itself
+// thread-safe) and is owned exclusively by this guard; `_pd` is itself
 // `Send + Sync`.
 unsafe impl Send for IbvMemoryRegion {}
 unsafe impl Sync for IbvMemoryRegion {}

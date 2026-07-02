@@ -14,18 +14,18 @@
 
 use std::ffi::c_void;
 use std::io::Error;
-use std::mem::ManuallyDrop;
 use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
 use std::os::fd::OwnedFd;
 use std::result::Result;
 use std::sync::Arc;
 
-use super::device::IbvContext;
 use super::memory_region::IbvMemoryRegion;
 use super::memory_region::IbvMemoryRegionView;
 use super::primitives::IbvConfig;
+use super::primitives::IbvContext;
 use super::primitives::IbvDeviceInfo;
+use super::primitives::IbvPd;
 use super::queue_pair::IbvQueuePair;
 use crate::local_memory::KeepaliveLocalMemory;
 use crate::local_memory::is_device_ptr;
@@ -34,82 +34,35 @@ use crate::local_memory::is_device_ptr;
 ///
 /// # Fields
 ///
-/// * `context`: The owning [`Arc<IbvContext>`]; held (rather than a raw
-///   pointer) so the device context outlives the PD by construction. The PD is
-///   deallocated in `Drop` before this `Arc` is released.
-/// * `pd`: The protection domain pointer (private; read via [`Self::as_ptr`]),
-///   which provides isolation between connections.
 /// * `device_info`: Metadata for the device this PD is allocated on.
 /// * `domain_impl`: The backend [`IbvDomainImpl`] strategy for this PD. It may
-///   own FFI resources allocated against the PD, so `Drop` releases it before
-///   deallocating the PD. Held in a [`ManuallyDrop`] so that ordering can be
-///   enforced by hand.
+///   own FFI resources allocated against the PD, so it is declared before `pd`
+///   and thus dropped first — releasing those resources while the PD is still
+///   alive.
+/// * `pd`: The protection domain (and, through [`IbvPd`], the device context).
+///   Held in an `Arc` because the resources built against it — memory regions
+///   and queue pairs — each keep their own clone (via [`Self::pd`]) to hold the
+///   PD open for as long as they need it, independent of this domain.
 ///
 /// `I` is the backend [`IbvDomainImpl`] strategy parameterizing per-PD
 /// behavior.
 ///
-/// `IbvDomain` is not `Clone`: its `Drop` runs `ibv_dealloc_pd` and copying the
-/// pointer would lead to a double-free. Share the domain across owners via
-/// `Arc<IbvDomain>` instead.
+/// `IbvDomain` is not `Clone`: it owns the backend strategy's FFI resources.
+/// Hand out [`Self::pd`] clones to share the protection domain.
 pub struct IbvDomain<I: IbvDomainImpl> {
-    pub context: Arc<IbvContext>,
-    pd: *mut rdmaxcel_sys::ibv_pd,
     pub device_info: IbvDeviceInfo,
-    domain_impl: ManuallyDrop<I>,
+    domain_impl: I,
+    pd: Arc<IbvPd>,
 }
 
 impl<I: IbvDomainImpl> std::fmt::Debug for IbvDomain<I> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IbvDomain")
-            .field("context", &format!("{:p}", self.context.as_ptr()))
-            .field("pd", &format!("{:p}", self.pd))
+            .field("context", &format!("{:p}", self.pd.context().as_ptr()))
+            .field("pd", &format!("{:p}", self.pd.as_ptr()))
             .field("device_info", &self.device_info)
             .field("domain_impl", &self.domain_impl)
             .finish()
-    }
-}
-
-// SAFETY:
-// IbvDomain is `Send` because the raw pointers to ibverbs structs can be
-// accessed from any thread, and it is safe to drop `IbvDomain` (and run the
-// ibverbs destructors) from any thread.
-unsafe impl<I: IbvDomainImpl> Send for IbvDomain<I> {}
-
-// SAFETY:
-// IbvDomain is `Sync` because the underlying ibverbs APIs are thread-safe.
-unsafe impl<I: IbvDomainImpl> Sync for IbvDomain<I> {}
-
-/// Type-erased keepalive for an [`IbvDomain`] of any backend. Lets holders that
-/// only need to keep a domain's PD (and context) alive — standalone MR guards,
-/// queue pairs — hold an `Arc<dyn IbvDomainKeepalive>` without being generic
-/// over the backend [`IbvDomainImpl`].
-pub(super) trait IbvDomainKeepalive: std::fmt::Debug + Send + Sync {}
-
-impl<I: IbvDomainImpl> IbvDomainKeepalive for IbvDomain<I> {}
-
-impl<I: IbvDomainImpl> Drop for IbvDomain<I> {
-    fn drop(&mut self) {
-        // Drop the backend strategy first: it may own FFI resources allocated
-        // against `pd`, which must be released before the PD is deallocated.
-        // SAFETY: `domain_impl` is dropped exactly once — here — and never
-        // accessed afterward (this is `IbvDomain`'s own `Drop`).
-        unsafe {
-            ManuallyDrop::drop(&mut self.domain_impl);
-        }
-        if self.pd.is_null() {
-            return;
-        }
-        // SAFETY: `pd` was returned by `ibv_alloc_pd` and is deallocated exactly
-        // once (`IbvDomain` is not `Clone`). `context` is a separate field,
-        // dropped only after this returns, so the device is still open here.
-        let result = unsafe { rdmaxcel_sys::ibv_dealloc_pd(self.pd) };
-        if result != 0 {
-            tracing::error!(
-                "failed to deallocate protection domain {:p}: error code {}",
-                self.pd,
-                result
-            );
-        }
     }
 }
 
@@ -157,50 +110,54 @@ impl<I: IbvDomainImpl> IbvDomain<I> {
         // SAFETY: per this function's contract `context` wraps a valid, live
         // `ibv_context`, which is what `I::new` requires to query the device.
         let domain_impl = unsafe { I::new(&context, &device_info, config) };
-        // SAFETY: `context.as_ptr()` is non-null (asserted above) and, per this
-        // function's contract, a valid live `ibv_context` owned by the
-        // `Arc<IbvContext>` for the duration of this call.
-        let pd = unsafe { rdmaxcel_sys::ibv_alloc_pd(context.as_ptr()) };
-        if pd.is_null() {
-            anyhow::bail!("ibv_alloc_pd failed: {}", Error::last_os_error());
-        }
+        // SAFETY: per this function's contract `context` wraps a valid, live
+        // `ibv_context`, which `IbvPd::create` allocates the PD against. The PD
+        // takes ownership of `context`; the domain reaches it via `pd.context()`.
+        let pd = Arc::new(unsafe { IbvPd::create(context) }?);
         Ok(Self {
-            context,
-            pd,
             device_info,
-            domain_impl: ManuallyDrop::new(domain_impl),
+            domain_impl,
+            pd,
         })
     }
 
     /// Test-only constructor assembling a domain from raw parts without
     /// allocating a PD, so unit tests can fabricate a domain (typically with a
-    /// null `pd`/`context` whose `Drop` is a no-op).
+    /// null `pd` whose `Drop` is a no-op).
     ///
     /// # Safety
     ///
-    /// If `pd` is non-null it must be a protection domain allocated against
-    /// `context` and owned solely by the returned domain (its `Drop` calls
-    /// `ibv_dealloc_pd` once); `context` must satisfy [`IbvContext`]'s validity
-    /// contract.
+    /// `pd` must satisfy [`IbvPd`]'s validity contract.
     #[cfg(test)]
     pub(super) unsafe fn for_test(
-        context: Arc<IbvContext>,
-        pd: *mut rdmaxcel_sys::ibv_pd,
+        pd: Arc<IbvPd>,
         device_info: IbvDeviceInfo,
         domain_impl: I,
     ) -> Self {
         Self {
-            context,
-            pd,
             device_info,
-            domain_impl: ManuallyDrop::new(domain_impl),
+            domain_impl,
+            pd,
         }
     }
 
     /// The protection domain pointer. Valid for the lifetime of `&self`.
     /// Prefer this over touching the field directly (which is private).
     pub fn as_ptr(&self) -> *mut rdmaxcel_sys::ibv_pd {
-        self.pd
+        self.pd.as_ptr()
+    }
+
+    /// The protection domain, shareable as a keepalive. Holders that only need
+    /// the PD (and, through it, the context) kept alive clone this rather than
+    /// the whole domain.
+    pub(super) fn pd(&self) -> &Arc<IbvPd> {
+        &self.pd
+    }
+
+    /// The device context this domain's PD was allocated against, used by the
+    /// data-path verbs.
+    pub fn context(&self) -> &Arc<IbvContext> {
+        self.pd.context()
     }
 
     /// The backend [`IbvDomainImpl`] strategy for this domain.
@@ -500,7 +457,7 @@ pub(super) unsafe fn register_host_or_dmabuf_mr<I: IbvDomainImpl>(
     // the PD past that deregistration; it coerces to `Arc<dyn IbvMemoryRegionKeepalive>`.
     let guard = Arc::new(IbvMemoryRegion {
         mr,
-        _domain: domain,
+        _pd: domain.pd().clone(),
     });
     Ok(IbvMemoryRegionView::new(
         addr,
@@ -583,7 +540,7 @@ mod tests {
         // the assertions below do.
         let region = IbvMemoryRegion {
             mr,
-            _domain: domain.clone(),
+            _pd: domain.pd().clone(),
         };
         // SAFETY: `region` owns `mr` and has not been dropped.
         let (iova, length) = unsafe { mr_extent(region.as_ptr()) };
@@ -600,7 +557,7 @@ mod tests {
             unsafe { register_dmabuf_mr(pd, alloc.ptr() + unaligned, access) }.unwrap();
         let region = IbvMemoryRegion {
             mr,
-            _domain: domain.clone(),
+            _pd: domain.pd().clone(),
         };
         // SAFETY: `region` owns `mr` and has not been dropped.
         let (iova, length) = unsafe { mr_extent(region.as_ptr()) };
@@ -627,7 +584,7 @@ mod tests {
         let mr = unsafe { register_dmabuf_range(pd, alloc.ptr() + offset, size, access) }.unwrap();
         let region = IbvMemoryRegion {
             mr,
-            _domain: domain.clone(),
+            _pd: domain.pd().clone(),
         };
         // SAFETY: `region` owns `mr` and has not been dropped.
         let (iova, length) = unsafe { mr_extent(region.as_ptr()) };
