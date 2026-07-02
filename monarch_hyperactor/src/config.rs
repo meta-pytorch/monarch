@@ -499,10 +499,14 @@ macro_rules! declare_py_config_type {
                 PythonConfigTypeInfo {
                     typehash: $ty::typehash,
                     set_runtime_config: |py, key, val| {
-                        let val: $ty = val.extract::<$py_ty>(py).map_err(|err| PyTypeError::new_err(format!(
+                        let val: $py_ty = val.extract::<$py_ty>(py).map_err(|err| PyTypeError::new_err(format!(
                             "invalid value `{}` for configuration key `{}` ({})",
                             val, key.name(), err
-                        )))?.into();
+                        )))?;
+                        let val: $ty = val.try_into().map_err(|err| PyValueError::new_err(format!(
+                            "invalid value for configuration key `{}` ({})",
+                            key.name(), err
+                        )))?;
                         set_runtime_config_py(key, val)
                     },
                     get_global_config: |py, key| {
@@ -523,6 +527,7 @@ declare_py_config_type!(Option<PyDuration> as Option<Duration>);
 declare_py_config_type!(PyEncoding as wirevalue::Encoding);
 declare_py_config_type!(PyPortRange as std::ops::Range::<u16>);
 declare_py_config_type!(String as hyperactor_mesh::config::SocketAddrStr);
+declare_py_config_type!(usize as hyperactor_config::NonZeroUsize);
 declare_py_config_type!(
     i8, i16, i32, i64, u8, u16, u32, u64, usize, f32, f64, bool, String
 );
