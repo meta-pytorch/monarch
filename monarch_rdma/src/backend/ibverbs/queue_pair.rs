@@ -53,7 +53,6 @@ use super::primitives::Gid;
 use super::primitives::GidScope;
 use super::primitives::GidType;
 use super::primitives::IbvConfig;
-use super::primitives::IbvContext;
 use super::primitives::IbvCq;
 use super::primitives::IbvOperation;
 use super::primitives::IbvPd;
@@ -451,35 +450,16 @@ pub(super) unsafe fn connect(
     Ok(())
 }
 
-/// The owned ibverbs handles backing a queue pair: the queue pair and its two
-/// completion queues.
-///
-/// `qp` is declared before the CQs so it is destroyed first whenever a
-/// `QpParts` is dropped — a CQ cannot be destroyed while a queue pair still
-/// references it. Because struct fields drop in declaration order, this holds
-/// however the value is moved, stored, or unwound; keep the parts bundled in
-/// this struct across any fallible step rather than splitting them into
-/// separate locals (whose drop order would not be guaranteed).
-pub(super) struct QpParts {
-    pub(super) qp: IbvQp,
-    pub(super) send_cq: IbvCq,
-    pub(super) recv_cq: IbvCq,
-}
-
 /// An RDMA reliable-connected (RC) queue pair built on plain ibverbs
 /// (`ibv_post_send`), independent of any device-specific verbs.
 ///
-/// Single-owner: it owns the QP and its two completion queues and destroys them
-/// on drop, so the type is intentionally `!Clone`. Its fields are declared
-/// QP-before-CQs (see [`QpParts`]). The device context comes from the held
-/// `Arc<IbvContext>`.
+/// Single-owner: it owns the [`IbvQp`] — which in turn owns its two completion
+/// queues and the protection domain — and destroys them on drop, so the type is
+/// intentionally `!Clone`. The device context and completion queues are reached
+/// through the [`IbvQp`].
 #[derive(Debug)]
 pub struct RCQueuePair {
     qp: IbvQp,
-    send_cq: IbvCq,
-    recv_cq: IbvCq,
-    /// The device context, used for the data-path verbs.
-    context: Arc<IbvContext>,
     config: IbvConfig,
     /// The source GID (carrying its table index), resolved from the owning
     /// device's `IbvDeviceInfo` at construction: the first global RoCE v2 GID on
@@ -491,45 +471,32 @@ pub struct RCQueuePair {
     /// Monotonic work-request id, handed out one per posted WR. Standard
     /// ibverbs carries no internal counter, so the QP tracks its own.
     next_wr_id: u64,
-    /// The protection domain this QP was built against, kept alive so the PD
-    /// outlives the QP. Never read directly.
-    _pd: Arc<IbvPd>,
 }
 
 impl RCQueuePair {
-    /// Assembles an `RCQueuePair` that owns the already-created queue pair and
-    /// completion queues in `parts`. `access_flags` is granted to peers at
-    /// [`Self::connect`]; it is taken from the owning domain by the caller.
+    /// Assembles an `RCQueuePair` that owns `qp` (and, through it, its
+    /// completion queues, protection domain, and device context). `access_flags`
+    /// is granted to peers at [`Self::connect`]; it is taken from the owning
+    /// domain by the caller.
     ///
     /// # Safety
     ///
-    /// `context` must wrap a non-null, live `ibv_context` (the data-path verbs
-    /// invoke it without re-checking). `parts.qp` must wrap a live RC `ibv_qp`
-    /// created against that context's device and `pd`, with
-    /// `parts.send_cq`/`parts.recv_cq` as its completion queues.
-    pub(super) unsafe fn from_parts(
-        parts: QpParts,
-        context: Arc<IbvContext>,
+    /// `qp` must wrap a live, non-null `ibv_qp`, and everything reached through
+    /// it — its send/recv completion queues, protection domain, and device
+    /// context — must likewise be non-null and valid: the data-path verbs invoke
+    /// them without re-checking.
+    pub(super) unsafe fn from_qp(
+        qp: IbvQp,
         config: IbvConfig,
         gid: Gid,
         access_flags: i32,
-        pd: Arc<IbvPd>,
     ) -> Self {
-        let QpParts {
-            qp,
-            send_cq,
-            recv_cq,
-        } = parts;
         RCQueuePair {
             qp,
-            send_cq,
-            recv_cq,
-            context,
             config,
             gid,
             access_flags,
             next_wr_id: 0,
-            _pd: pd,
         }
     }
 
@@ -572,7 +539,7 @@ impl RCQueuePair {
         wr_id: u64,
     ) -> Result<(), anyhow::Error> {
         let qp = self.qp.as_ptr();
-        let context = self.context.as_ptr();
+        let context = self.qp.context().as_ptr();
         let mut sge = rdmaxcel_sys::ibv_sge {
             addr: laddr as u64,
             length: length as u32,
@@ -595,10 +562,9 @@ impl RCQueuePair {
         wr.wr.rdma.remote_addr = raddr as u64;
         wr.wr.rdma.rkey = rkey;
         let mut bad_wr: *mut rdmaxcel_sys::ibv_send_wr = std::ptr::null_mut();
-        // SAFETY: `context` is the QP's live device context, non-null per
-        // `from_parts`'s contract; we invoke its `post_send` verb through the ops
-        // table. `qp` is live and `wr`/`sge`/`bad_wr` are valid for the duration
-        // of the call.
+        // SAFETY: `context` is the QP's live device context (read from the live
+        // `qp`); we invoke its `post_send` verb through the ops table. `qp` is
+        // live and `wr`/`sge`/`bad_wr` are valid for the duration of the call.
         let errno = unsafe {
             let post_send = (*context)
                 .ops
@@ -623,8 +589,6 @@ impl IbvQueuePair for RCQueuePair {
         config: IbvConfig,
     ) -> Result<Self, anyhow::Error> {
         tracing::debug!("creating an RCQueuePair from config {}", config);
-        let context = domain.context().clone();
-        let context_ptr = context.as_ptr();
         // `IbvDomain`'s `pd` accessor permits null (e.g. a test domain); a real
         // QP needs one, so reject null up front (`IbvCq::create` likewise rejects
         // a null context).
@@ -643,11 +607,11 @@ impl IbvQueuePair for RCQueuePair {
 
         // Separate send/recv completion queues. Each `IbvCq` destroys its queue
         // on drop, so an early return below (or a panic) cleans them up.
-        // SAFETY: `context_ptr`, if non-null, is live (kept alive by `context`);
-        // `IbvCq::create` rejects a null context.
-        let send_cq = unsafe { IbvCq::create(context_ptr, config.cq_entries) }?;
+        // SAFETY: `domain`'s context is null or live; `IbvCq::create` rejects
+        // a null context.
+        let send_cq = unsafe { IbvCq::create(domain.context().clone(), config.cq_entries) }?;
         // SAFETY: as for `send_cq` above.
-        let recv_cq = unsafe { IbvCq::create(context_ptr, config.cq_entries) }?;
+        let recv_cq = unsafe { IbvCq::create(domain.context().clone(), config.cq_entries) }?;
 
         // A standard RC QP with the caps from `config`.
         let mut init_attr = rdmaxcel_sys::ibv_qp_init_attr {
@@ -675,28 +639,14 @@ impl IbvQueuePair for RCQueuePair {
                 Error::last_os_error()
             );
         }
-        // SAFETY: `qp` is a live RC QP just created above; `IbvQp` takes
-        // ownership and destroys it on drop.
-        let qp = unsafe { IbvQp::from_raw(qp) };
-        let parts = QpParts {
-            qp,
-            send_cq,
-            recv_cq,
-        };
+        // SAFETY: `qp` is a live RC QP just created against `pd` with
+        // `send_cq`/`recv_cq`; `IbvQp` takes ownership of all of them plus the
+        // PD and destroys them in order on drop.
+        let qp = unsafe { IbvQp::from_raw(qp, send_cq, recv_cq, domain.pd().clone()) };
         let access_flags = domain.access_flags();
-
-        // SAFETY: `parts` wraps a live RC QP just created against `pd`/`context`
-        // with its completion queues; ownership transfers to the returned value.
-        Ok(unsafe {
-            Self::from_parts(
-                parts,
-                context,
-                config,
-                gid,
-                access_flags,
-                domain.pd().clone(),
-            )
-        })
+        // SAFETY: `qp` and its `send_cq`/`recv_cq`/PD/context were all created
+        // non-null.
+        Ok(unsafe { Self::from_qp(qp, config, gid, access_flags) })
     }
 
     fn connect(&mut self, info: &IbvQpInfo) -> Result<(), anyhow::Error> {
@@ -713,7 +663,7 @@ impl IbvQueuePair for RCQueuePair {
     }
 
     fn get_qp_info(&mut self) -> Result<IbvQpInfo, anyhow::Error> {
-        let context = self.context.as_ptr();
+        let context = self.qp.context().as_ptr();
         // SAFETY: `self.qp` is the live QP and `context` its non-null device
         // context (validated inside `new`), both valid for `self`'s lifetime.
         unsafe { get_qp_info(self.qp.as_ptr(), context, &self.config, self.gid) }
@@ -773,13 +723,12 @@ impl IbvQueuePair for RCQueuePair {
         target: PollTarget,
     ) -> Result<Option<Result<IbvWc, WorkRequestError>>, PollCompletionError> {
         let (cq, cq_type) = match target {
-            PollTarget::Send => (self.send_cq.as_ptr(), "send"),
-            PollTarget::Recv => (self.recv_cq.as_ptr(), "recv"),
+            PollTarget::Send => (self.qp.send_cq().as_ptr(), "send"),
+            PollTarget::Recv => (self.qp.recv_cq().as_ptr(), "recv"),
         };
-        let context = self.context.as_ptr();
-        // SAFETY: `context` is non-null (per `from_parts`'s contract) and the
-        // QP's live device context; we invoke its `poll_cq` verb through the ops
-        // table.
+        let context = self.qp.context().as_ptr();
+        // SAFETY: `context` is the QP's live device context (read from the live
+        // `qp`); we invoke its `poll_cq` verb through the ops table.
         let poll_cq = unsafe {
             (*context)
                 .ops

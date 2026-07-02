@@ -25,7 +25,6 @@ use super::primitives::IbvWc;
 use super::queue_pair::IbvQueuePair;
 use super::queue_pair::PollCompletionError;
 use super::queue_pair::PollTarget;
-use super::queue_pair::QpParts;
 use super::queue_pair::RCQueuePair;
 use super::queue_pair::WorkRequestError;
 
@@ -40,26 +39,32 @@ pub struct MlxQueuePair(RCQueuePair);
 
 impl MlxQueuePair {
     /// Creates the `mlx5dv` RC QP and the two completion queues backing it,
-    /// against `domain`'s context and PD, bundled in a [`QpParts`]. The QP
-    /// carries the mlx5dv send-ops flags that arm its extended work-request
-    /// builder. A null context or PD on `domain` yields `Err`.
-    pub(super) fn create_raw_parts<I: IbvDomainImpl>(
+    /// against `domain`'s context and PD, returned as an [`IbvQp`] that owns the
+    /// CQs and PD. The QP carries the mlx5dv send-ops flags that arm its
+    /// extended work-request builder. A null context or PD on `domain` yields
+    /// `Err`.
+    ///
+    /// # Safety
+    ///
+    /// `domain`'s context and PD, if non-null, must be live.
+    pub(super) unsafe fn create_ibv_qp<I: IbvDomainImpl>(
         domain: &IbvDomain<I>,
         config: &IbvConfig,
-    ) -> Result<QpParts, anyhow::Error> {
+    ) -> Result<IbvQp, anyhow::Error> {
         let context = domain.context().as_ptr();
         let pd = domain.as_ptr();
         if pd.is_null() {
             anyhow::bail!("cannot create an MlxQueuePair on a null protection domain");
         }
 
-        // Separate send/recv completion queues. Each `IbvCq` destroys its queue
-        // on drop, so an early return below cleans them up.
-        // SAFETY: `context`, if non-null, is live (an `IbvDomain` holds a
-        // null-or-live context); `IbvCq::create` rejects a null context.
-        let send_cq = unsafe { IbvCq::create(context, config.cq_entries) }?;
+        // Separate send/recv completion queues, each owning a clone of the
+        // device context. Each `IbvCq` destroys its queue on drop, so an early
+        // return below cleans them up.
+        // SAFETY: `domain`'s context is live (an `IbvDomain` holds a null-or-live
+        // context); `IbvCq::create` rejects a null context.
+        let send_cq = unsafe { IbvCq::create(domain.context().clone(), config.cq_entries) }?;
         // SAFETY: as for `send_cq` above.
-        let recv_cq = unsafe { IbvCq::create(context, config.cq_entries) }?;
+        let recv_cq = unsafe { IbvCq::create(domain.context().clone(), config.cq_entries) }?;
 
         // An mlx5dv extended RC QP with the caps from `config`. The
         // `SEND_OPS_FLAGS` enable the mlx5dv extended work-request builder; the
@@ -104,15 +109,10 @@ impl MlxQueuePair {
                 Error::last_os_error()
             );
         }
-        // SAFETY: `qp` is a live RC QP just created above; `IbvQp` takes
-        // ownership and destroys it on drop.
-        let qp = unsafe { IbvQp::from_raw(qp) };
-
-        Ok(QpParts {
-            qp,
-            send_cq,
-            recv_cq,
-        })
+        // SAFETY: `qp` is a live RC QP just created against `pd` with
+        // `send_cq`/`recv_cq`; `IbvQp` takes ownership of all of them plus the PD
+        // and destroys them in order on drop.
+        Ok(unsafe { IbvQp::from_raw(qp, send_cq, recv_cq, domain.pd().clone()) })
     }
 }
 
@@ -127,24 +127,15 @@ impl IbvQueuePair for MlxQueuePair {
             Some(GidScope::Global),
             Some(GidType::RoCEv2),
         )?;
-        let parts = Self::create_raw_parts(&domain, &config)?;
-        let context = domain.context().clone();
+        // SAFETY: an `IbvDomain` holds a null-or-live context and PD, which is
+        // `create_ibv_qp`'s contract.
+        let qp = unsafe { Self::create_ibv_qp(&domain, &config) }?;
         let access_flags = domain.access_flags();
-
-        // SAFETY: `parts` wraps a live RC QP just created against `domain`'s
-        // context/PD with its completion queues; ownership transfers to the
-        // inner `RCQueuePair`.
-        let inner = unsafe {
-            RCQueuePair::from_parts(
-                parts,
-                context,
-                config,
-                gid,
-                access_flags,
-                domain.pd().clone(),
-            )
-        };
-        Ok(MlxQueuePair(inner))
+        // SAFETY: `create_ibv_qp` returns a live, fully non-null `IbvQp` (it
+        // bails on any null handle).
+        Ok(MlxQueuePair(unsafe {
+            RCQueuePair::from_qp(qp, config, gid, access_flags)
+        }))
     }
 
     fn connect(&mut self, info: &IbvQpInfo) -> Result<(), anyhow::Error> {

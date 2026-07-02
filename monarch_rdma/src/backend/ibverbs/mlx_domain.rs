@@ -44,7 +44,6 @@ use super::primitives::IbvDeviceInfo;
 use super::primitives::IbvMr;
 use super::primitives::IbvPd;
 use super::primitives::IbvQp;
-use super::queue_pair::QpParts;
 use super::queue_pair::connect;
 use super::queue_pair::get_qp_info;
 use crate::backend::ibverbs::mlx_device::MlxDevice;
@@ -140,19 +139,19 @@ pub(super) trait MlxDomainOps: Send + Sync + 'static {
         access: i32,
     ) -> anyhow::Result<IbvMr>;
 
-    /// Creates a loopback-connected queue pair against `domain`'s PD, returning
-    /// it and the two completion queues backing it bundled in a [`QpParts`]. The
-    /// caller stores the bundle for the domain's lifetime.
+    /// Creates a loopback-connected queue pair against `domain`'s PD, returned
+    /// as an [`IbvQp`] owning its completion queues and PD. The caller stores it
+    /// for the domain's lifetime.
     ///
     /// # Safety
     ///
     /// `domain`'s context and PD, if non-null, must be live. A null context or
     /// PD yields `Err`.
-    unsafe fn create_loopback_qp_parts(
+    unsafe fn create_loopback_qp(
         &self,
         domain: Arc<IbvDomain<MlxDomain>>,
         config: &IbvConfig,
-    ) -> anyhow::Result<QpParts>;
+    ) -> anyhow::Result<IbvQp>;
 
     /// Bind `mrs` to a freshly created indirect key using `qp`'s work-request
     /// builder, returning it as a [`Mlx5dvMkey`] owning those MR references. On
@@ -238,17 +237,17 @@ impl MlxDomainOps for ProdMlxDomainOps {
         unsafe { register_dmabuf_range(pd, addr, size, access) }
     }
 
-    unsafe fn create_loopback_qp_parts(
+    unsafe fn create_loopback_qp(
         &self,
         domain: Arc<IbvDomain<MlxDomain>>,
         config: &IbvConfig,
-    ) -> anyhow::Result<QpParts> {
-        // Kept bundled in the `QpParts` (rather than split into locals) across
-        // the fallible connect below, so an early return or panic still tears it
-        // down in the right order.
-        let parts = MlxQueuePair::create_raw_parts(&domain, config)
+    ) -> anyhow::Result<IbvQp> {
+        // The `IbvQp` owns its completion queues and PD, so an early return or
+        // panic in the connect below still tears everything down in order.
+        // SAFETY: an `IbvDomain` holds a null-or-live context and PD.
+        let qp = unsafe { MlxQueuePair::create_ibv_qp(&domain, config) }
             .context("could not create loopback QP for mkey binding")?;
-        let context = domain.context().as_ptr();
+        let context = qp.context().as_ptr();
         let access_flags = domain.access_flags();
         let gid = domain.device_info().select_gid(
             config.port_num,
@@ -258,15 +257,15 @@ impl MlxDomainOps for ProdMlxDomainOps {
 
         // Connect the QP to itself (loopback) so it reaches RTS, the state
         // required to post work requests.
-        // SAFETY: `parts.qp` wraps the live QP just created above and `context`
-        // is its live device context.
-        let info = unsafe { get_qp_info(parts.qp.as_ptr(), context, config, gid) }
+        // SAFETY: `qp` wraps the live QP just created above and `context` is its
+        // live device context.
+        let info = unsafe { get_qp_info(qp.as_ptr(), context, config, gid) }
             .context("could not query loopback QP info for mkey binding")?;
         // SAFETY: as above.
-        unsafe { connect(parts.qp.as_ptr(), config, access_flags, &info, gid.index()) }
+        unsafe { connect(qp.as_ptr(), config, access_flags, &info, gid.index()) }
             .context("could not connect loopback QP for mkey binding")?;
 
-        Ok(parts)
+        Ok(qp)
     }
 
     unsafe fn bind_mr_list(
@@ -625,9 +624,10 @@ pub struct MlxDomain {
     /// CUDA ordinals whose optimal NIC is this device. Only segments on
     /// these ordinals are bound here.
     cuda_ordinals: Vec<i32>,
-    /// Lazily-created loopback QP (with its completion queues) used to post
-    /// key-binding work requests, destroyed when this domain drops.
-    loopback: OnceLock<QpParts>,
+    /// Lazily-created loopback QP (an [`IbvQp`] owning its completion queues and
+    /// PD) used to post key-binding work requests, destroyed when this domain
+    /// drops.
+    loopback: OnceLock<IbvQp>,
     /// Currently-bound segments, keyed by `(base address, CUDA ordinal)`. Each
     /// grows in place (reusing its MRs, retiring superseded keys internally);
     /// a key whose base vanishes from the scan is dropped (a live view keeps
@@ -665,17 +665,17 @@ impl MlxDomain {
         // `OnceLock::get_or_try_init` would fit here but is still unstable
         // (`once_cell_try`); calls are serialized under the `segments` lock,
         // so this check-then-set is race-free.
-        if let Some(parts) = self.loopback.get() {
-            return Ok(&parts.qp);
+        if let Some(qp) = self.loopback.get() {
+            return Ok(qp);
         }
         // SAFETY: an `IbvDomain` guarantees its context and PD are null or live;
-        // `create_loopback_qp_parts` rejects null.
-        let parts = unsafe {
+        // `create_loopback_qp` rejects null.
+        let qp = unsafe {
             self.ops
-                .create_loopback_qp_parts(Arc::clone(domain), &self.config)
+                .create_loopback_qp(Arc::clone(domain), &self.config)
         }?;
-        let _ = self.loopback.set(parts);
-        Ok(&self.loopback.get().expect("loopback just set").qp)
+        let _ = self.loopback.set(qp);
+        Ok(self.loopback.get().expect("loopback just set"))
     }
 
     /// Bind CUDA `[addr, addr + size)` via an indirect mlx5dv key. Scans for
@@ -807,7 +807,6 @@ mod tests {
     use std::sync::Mutex;
     use std::sync::MutexGuard;
 
-    use super::super::primitives::IbvCq;
     use super::super::primitives::IbvDeviceInfo;
     use super::*;
 
@@ -841,10 +840,9 @@ mod tests {
     /// Recorded state + scripted behavior for [`MockOps`]. Creation calls
     /// (`dmabuf_calls`, `bind_calls`, `scan_calls`, `loopback_created`) are
     /// recorded so tests can assert on the scan/bind algorithm. The returned
-    /// [`IbvMr`]/[`Mlx5dvMkey`] wrap null handles, and the loopback [`QpParts`]
-    /// holds null [`IbvQp`]/[`IbvCq`]s, so their `Drop` is a no-op and FFI
-    /// teardown is not observed here — that ordering is structurally guaranteed
-    /// by ownership and exercised by the hardware tests.
+    /// [`IbvMr`]/[`Mlx5dvMkey`]/[`IbvQp`] wrap null handles, so their `Drop` is a
+    /// no-op and FFI teardown is not observed here — that ordering is
+    /// structurally guaranteed by ownership and exercised by the hardware tests.
     #[derive(Default)]
     struct MockState {
         device_name: String,
@@ -852,7 +850,7 @@ mod tests {
         served_ordinals: Vec<i32>,
         scan: Vec<ScannedSegment>,
         next_handle: usize,
-        /// Number of `create_loopback_qp_parts` calls; tests check the QP is
+        /// Number of `create_loopback_qp` calls; tests check the QP is
         /// created once and reused.
         loopback_created: usize,
         fail_dmabuf_after: Option<usize>,
@@ -930,18 +928,14 @@ mod tests {
             Ok(IbvMr::null())
         }
 
-        unsafe fn create_loopback_qp_parts(
+        unsafe fn create_loopback_qp(
             &self,
             _domain: Arc<IbvDomain<MlxDomain>>,
             _config: &IbvConfig,
-        ) -> anyhow::Result<QpParts> {
-            // Null placeholders (their `Drop` is a no-op); just count the call.
+        ) -> anyhow::Result<IbvQp> {
+            // A null QP placeholder (its `Drop` is a no-op); just count the call.
             self.lock().loopback_created += 1;
-            Ok(QpParts {
-                qp: IbvQp::null(),
-                send_cq: IbvCq::null(),
-                recv_cq: IbvCq::null(),
-            })
+            Ok(IbvQp::null())
         }
 
         unsafe fn bind_mr_list(
