@@ -356,7 +356,7 @@ mod tests {
     // GIL-1 (outermost-entry-accountable): reentrant_unsanctioned_is_skipped.
     // GIL-2 (off-control-plane-exempt): unsanctioned_site_off_control_plane_is_silent.
     // GIL-3 (allowlist-exhaustive): allowed_classification; structural (wildcard-free match, no catch-all).
-    // GIL-4 (unsanctioned-accounted): unsanctioned_site_on_control_plane_panics; allowed_site_on_control_plane_is_silent.
+    // GIL-4 (unsanctioned-accounted): unsanctioned_site_on_control_plane_is_accounted; allowed_site_on_control_plane_is_silent.
 
     // The classification is the source of truth for the net: dispatch is
     // sanctioned; Rdma is not (it must run on the data plane).
@@ -386,21 +386,27 @@ mod tests {
         assert_eq!(after, before, "allowed site must not bump the counter");
     }
 
-    // An unsanctioned site (Rdma) on a control-plane thread trips the
-    // debug_assert (which fires in test builds).
+    // An unsanctioned site (Rdma) on a control-plane thread is accounted: the
+    // counter bumps in `check_gil_site` before the debug_assert, in every build
+    // mode. `catch_unwind` absorbs the debug-build assert panic so the delta is
+    // observable regardless of `debug_assertions` (under `mode/opt`, which CI
+    // runs, the assert is compiled out and there is nothing to absorb). Run on a
+    // freshly tagged thread and assert a delta so concurrent tests on the global
+    // counter do not interfere.
     // GIL-4:
     #[test]
-    fn unsanctioned_site_on_control_plane_panics() {
-        // Run on a throwaway thread so the ControlPlane tag never leaks into a
-        // sibling test; the debug_assert fires inside it, so join() returns Err.
-        let res = std::thread::spawn(|| {
+    fn unsanctioned_site_on_control_plane_is_accounted() {
+        let before = GIL_ON_CONTROL_PLANE.load(Ordering::Relaxed);
+        std::thread::spawn(|| {
             tag_current_thread(RuntimeKind::ControlPlane);
-            check_gil_site(GilSite::Rdma);
+            let _ = std::panic::catch_unwind(|| check_gil_site(GilSite::Rdma));
         })
-        .join();
+        .join()
+        .unwrap();
+        let after = GIL_ON_CONTROL_PLANE.load(Ordering::Relaxed);
         assert!(
-            res.is_err(),
-            "unsanctioned control-plane GIL must trip the debug_assert"
+            after > before,
+            "unsanctioned control-plane GIL must bump the counter"
         );
     }
 

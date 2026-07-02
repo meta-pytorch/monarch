@@ -15,6 +15,8 @@ use std::sync::Arc;
 use super::IbvBuffer;
 use super::domain::IbvDomain;
 use super::domain::IbvDomainImpl;
+use super::primitives::GidScope;
+use super::primitives::GidType;
 use super::primitives::IbvConfig;
 use super::primitives::IbvCq;
 use super::primitives::IbvQp;
@@ -120,6 +122,11 @@ impl IbvQueuePair for MlxQueuePair {
         config: IbvConfig,
     ) -> Result<Self, anyhow::Error> {
         tracing::debug!("creating an MlxQueuePair from config {}", config);
+        let gid = domain.device_info().select_gid(
+            config.port_num,
+            Some(GidScope::Global),
+            Some(GidType::RoCEv2),
+        )?;
         let parts = Self::create_raw_parts(&domain, &config)?;
         let context = domain.context.clone();
         let access_flags = domain.access_flags();
@@ -128,7 +135,7 @@ impl IbvQueuePair for MlxQueuePair {
         // context/PD with its completion queues; ownership transfers to the
         // inner `RCQueuePair`.
         let inner =
-            unsafe { RCQueuePair::from_parts(parts, context, config, access_flags, domain) };
+            unsafe { RCQueuePair::from_parts(parts, context, config, gid, access_flags, domain) };
         Ok(MlxQueuePair(inner))
     }
 

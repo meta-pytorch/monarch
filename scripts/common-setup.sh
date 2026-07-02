@@ -111,14 +111,57 @@ setup_sccache() {
     fi
 
     echo "Setting up sccache..."
-    pip install sccache
+    if ! pip install sccache; then
+        echo "Warning: failed to install sccache; continuing without Rust compiler cache"
+        unset RUSTC_WRAPPER
+        return
+    fi
 
-    export RUSTC_WRAPPER=sccache
     export SCCACHE_BUCKET=ossci-compiler-cache
     export SCCACHE_REGION=us-east-1
     export SCCACHE_S3_KEY_PREFIX=monarch
+    export SCCACHE_FALLBACK_DISABLE_FILE="${RUNNER_TEMP:-/tmp}/monarch-sccache-disabled"
+    rm -f "${SCCACHE_FALLBACK_DISABLE_FILE}" 2>/dev/null || true
 
-    echo "sccache configured: bucket=${SCCACHE_BUCKET}, prefix=${SCCACHE_S3_KEY_PREFIX}"
+    # Validate sccache before handing it to cargo. sccache starts its server on
+    # first use and verifies the remote S3 cache by reading .sccache_check; if
+    # S3 returns a transient 5xx here, cargo would otherwise fail before the
+    # build begins (for example while probing `rustc -vV`).
+    local rustc_path
+    rustc_path=$(rustup which rustc 2>/dev/null || command -v rustc || true)
+    if [ -z "${rustc_path}" ]; then
+        echo "Warning: could not locate rustc; continuing without Rust compiler cache"
+        unset RUSTC_WRAPPER
+        unset SCCACHE_BUCKET
+        unset SCCACHE_REGION
+        unset SCCACHE_S3_KEY_PREFIX
+        unset SCCACHE_FALLBACK_DISABLE_FILE
+        return
+    fi
+    local sccache_check_log
+    sccache_check_log=$(mktemp -t monarch-sccache-check.XXXXXX)
+    if ! sccache "${rustc_path}" -vV >"${sccache_check_log}" 2>&1; then
+        echo "Warning: sccache failed its startup/cache check; continuing without Rust compiler cache"
+        cat "${sccache_check_log}"
+        rm -f "${sccache_check_log}"
+        unset RUSTC_WRAPPER
+        unset SCCACHE_BUCKET
+        unset SCCACHE_REGION
+        unset SCCACHE_S3_KEY_PREFIX
+        unset SCCACHE_FALLBACK_DISABLE_FILE
+        return
+    fi
+    rm -f "${sccache_check_log}"
+
+    local common_setup_dir
+    common_setup_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+    local sccache_wrapper="${common_setup_dir}/sccache-rustc-wrapper.sh"
+    # The wrapper is committed executable (0755); ensure the bit survives odd
+    # checkouts without aborting setup on a read-only mount.
+    chmod +x "${sccache_wrapper}" 2>/dev/null || true
+    export RUSTC_WRAPPER="${sccache_wrapper}"
+
+    echo "sccache configured: bucket=${SCCACHE_BUCKET}, prefix=${SCCACHE_S3_KEY_PREFIX}, wrapper=${RUSTC_WRAPPER}"
 }
 
 # Install Python test dependencies

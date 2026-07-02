@@ -274,6 +274,10 @@ impl HostShutdownHandle {
 /// - `listener`: when `Some`, it is used as the frontend listening socket
 ///   instead of binding a new one.
 /// - `gateway`: the gateway this host will multiplex traffic through.
+/// - `via`: when `Some`, attach `gateway` to this remote duplex address
+///   with `serve_via` during bootstrap — after the local serves but
+///   before any ref is minted — so refs advertise the routable `Via`
+///   location (used by out-of-cluster clients).
 pub async fn host(
     addr: ChannelAddr,
     command: Option<BootstrapCommand>,
@@ -281,6 +285,7 @@ pub async fn host(
     exit_on_shutdown: bool,
     listener: Option<std::net::TcpListener>,
     gateway: Gateway,
+    via: Option<ChannelAddr>,
 ) -> anyhow::Result<(ActorHandle<HostAgent>, HostShutdownHandle)> {
     if let Some(attrs) = config {
         hyperactor_config::global::set(hyperactor_config::global::Source::Runtime, attrs);
@@ -295,7 +300,7 @@ pub async fn host(
     };
     let manager = BootstrapProcManager::new(command)?;
 
-    let host = Host::new_with_gateway(manager, addr, listener, gateway).await?;
+    let host = Host::new_with_gateway(manager, addr, listener, gateway, via).await?;
     let addr = host.addr().clone();
 
     // The ShutdownHost handler will send the gateway serve handle back here
@@ -556,6 +561,7 @@ impl Bootstrap {
                     exit_on_shutdown,
                     None,
                     Gateway::global().clone(),
+                    None,
                 )
                 .await?;
                 shutdown.join().await;
@@ -3167,6 +3173,7 @@ mod tests {
             false,
             None,
             Gateway::global().clone(),
+            None,
         )
         .await
         .unwrap();
