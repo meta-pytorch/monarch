@@ -9,6 +9,29 @@
 
 set -ex
 
+# Retry a command with a fixed backoff. CI fetches from download.pytorch.org
+# (the torch wheels and libtorch) intermittently fail the TLS handshake on the
+# self-hosted runners' network path to the CDN (SSLV3_ALERT_HANDSHAKE_FAILURE);
+# pip/wget exhaust their own retries inside a single bad window, so re-run the
+# whole command a few times spaced far enough apart to outlast a transient one.
+retry() {
+    local -r -i max_attempts=5
+    local -r -i delay_secs=30
+    local -i attempt=1
+    local -i status=0
+    while (( attempt <= max_attempts )); do
+        "$@" && return 0
+        status=$?
+        if (( attempt < max_attempts )); then
+            echo "retry: attempt ${attempt}/${max_attempts} of '$*' failed (exit ${status}); retrying in ${delay_secs}s" >&2
+            sleep "${delay_secs}"
+        fi
+        attempt=$(( attempt + 1 ))
+    done
+    echo "retry: '$*' failed after ${max_attempts} attempts (last exit ${status})" >&2
+    return "${status}"
+}
+
 # Ensure conda is available. Checks common locations first, then
 # installs Miniconda if conda is not found anywhere.
 initialize_conda() {
@@ -218,7 +241,7 @@ setup_pytorch_with_headers() {
     local libtorch_url="https://download.pytorch.org/libtorch/nightly/${libtorch_variant}/${libtorch_filename}"
 
     echo "Downloading libtorch from: ${libtorch_url}"
-    wget -q "${libtorch_url}"
+    retry wget -q "${libtorch_url}"
     unzip -q "${libtorch_filename}"
 
     # Set environment variables for libtorch
@@ -228,7 +251,9 @@ setup_pytorch_with_headers() {
 
     # Install PyTorch Python package using provided torch-spec
     echo "Installing PyTorch Python package with: ${torch_spec}"
-    pip install ${torch_spec}
+    # torch_spec is a multi-word install spec (flags + index URL); it must word-split.
+    # shellcheck disable=SC2086
+    retry pip install ${torch_spec}
 
     # Verify installation
     echo "LibTorch C++ headers available at: $LIBTORCH_ROOT/include"
