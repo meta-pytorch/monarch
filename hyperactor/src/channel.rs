@@ -30,6 +30,7 @@ use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 
 use crate as hyperactor;
 use crate::RemoteMessage;
@@ -462,8 +463,33 @@ impl ChannelTransport {
         }
     }
 
+    /// Returns true if this transport is served by the `net` module
+    /// (i.e., a kernel-level socket: TCP, Unix, or a TLS variant
+    /// thereof). The only non-net transport is the in-process
+    /// [`Local`](ChannelTransport::Local) channel.
+    pub fn is_net(&self) -> bool {
+        match self {
+            ChannelTransport::Tcp(_) => true,
+            ChannelTransport::MetaTls(_) => true,
+            ChannelTransport::Tls => true,
+            ChannelTransport::Quic => false,
+            ChannelTransport::MetaQuic(_) => false,
+            ChannelTransport::Unix => true,
+            ChannelTransport::Local => false,
+        }
+    }
+
+    /// Returns true if this transport uses TLS encryption.
+    pub fn is_tls(&self) -> bool {
+        matches!(self, ChannelTransport::Tls | ChannelTransport::MetaTls(_))
+    }
+
     /// Returns true if this transport can carry the duplex byte-stream
-    /// protocol (see [`crate::channel::net::duplex`]).
+    /// protocol (see [`crate::channel::net::duplex`]). This is a
+    /// distinct predicate from [`is_net`](Self::is_net): the in-process
+    /// [`Local`](ChannelTransport::Local) transport is not a kernel
+    /// socket (so `is_net` is false) yet is still served over the net
+    /// stack and carries duplex.
     pub fn supports_duplex(&self) -> bool {
         match self {
             ChannelTransport::Tcp(_) => true,
@@ -1183,6 +1209,7 @@ pub fn dial<M: RemoteMessage>(addr: ChannelAddr) -> Result<ChannelTx<M>, Channel
         addr,
         net::SessionId::random(),
         0,
+        net::ProtocolKind::Simplex,
     )?))
 }
 
@@ -1244,7 +1271,14 @@ pub mod unordered {
         let addr = addr.into_dial_addr();
         let session_id = net::SessionId::random();
         let links: Vec<net::NetLink> = (1..=num_streams)
-            .map(|i| net::link(addr.clone(), session_id, i as u8))
+            .map(|i| {
+                net::link(
+                    addr.clone(),
+                    session_id,
+                    i as u8,
+                    net::ProtocolKind::Simplex,
+                )
+            })
             .collect::<Result<_, _>>()?;
         Ok(net::spawn_unordered::<M>(links))
     }
@@ -1300,6 +1334,238 @@ pub fn serve_with_listener<M: RemoteMessage>(
         );
         (addr, rx)
     })
+}
+
+/// Serve a muxed listener on `addr`. Simplex clients (dialed via
+/// [`channel::dial`](dial)) deliver into the bundled [`ChannelRx<M>`];
+/// duplex clients (dialed via [`channel::duplex::dial`](net::duplex::dial))
+/// populate the bundled [`DuplexServer<In, Out>`]. Only net transports
+/// are supported; the caller picks transports that implement both
+/// protocol styles.
+///
+/// The returned [`MuxServer`] owns both halves and a shared
+/// [`MuxShutdown`]. Dropping or stopping any of these tears down the
+/// listener and the other half together — see [`MuxServer`] for the
+/// full lifecycle contract.
+#[track_caller]
+pub fn serve_mux<M: RemoteMessage, In: RemoteMessage, Out: RemoteMessage>(
+    addr: ChannelAddr,
+    prebound_listener: Option<std::net::TcpListener>,
+) -> Result<MuxServer<M, In, Out>, ChannelError> {
+    if !addr.transport().is_net() {
+        return Err(ChannelError::InvalidAddress(format!(
+            "serve_mux requires a net transport; got {}",
+            addr
+        )));
+    }
+    let parts = net::mux::serve::<M, In, Out>(addr, prebound_listener)?;
+    Ok(MuxServer {
+        addr: parts.addr,
+        simplex: parts.simplex,
+        duplex: parts.duplex,
+        shutdown: MuxShutdown {
+            join_handle: parts.join_handle,
+            cancel: parts.cancel,
+        },
+    })
+}
+
+/// A muxed server bundling a simplex receiver, a duplex accept
+/// server, and the shared shutdown signal that ties them together.
+///
+/// All three components share one underlying listener. Lifecycle:
+///
+/// - Dropping the [`MuxServer`] cancels the shared shutdown and
+///   tears down the listener and any in-flight sessions.
+/// - [`MuxServer::stop`] does the same explicitly.
+/// - [`MuxServer::split`] hands out the address, simplex half,
+///   duplex half, and a [`MuxShutdown`] separately. After splitting,
+///   dropping the simplex half, the duplex half, or the
+///   [`MuxShutdown`] guard cancels the shared shutdown. The address
+///   is a plain value and does not own any resources.
+///
+/// The simplex half is a [`ChannelRx<M>`] you `recv()` on; the duplex
+/// half is a [`DuplexServer<In, Out>`] you `accept()` on. Neither is
+/// `join()`-able — there is no separate per-half task to await.
+pub struct MuxServer<M: RemoteMessage, In: RemoteMessage, Out: RemoteMessage> {
+    addr: ChannelAddr,
+    simplex: ChannelRx<M>,
+    duplex: net::duplex::DuplexServer<In, Out>,
+    shutdown: MuxShutdown,
+}
+
+impl<M: RemoteMessage, In: RemoteMessage, Out: RemoteMessage> MuxServer<M, In, Out> {
+    /// The address the muxed listener is bound to.
+    pub fn addr(&self) -> &ChannelAddr {
+        &self.addr
+    }
+
+    /// Borrow the simplex receiver.
+    pub fn simplex_mut(&mut self) -> &mut ChannelRx<M> {
+        &mut self.simplex
+    }
+
+    /// Borrow the duplex accept server.
+    pub fn duplex_mut(&mut self) -> &mut net::duplex::DuplexServer<In, Out> {
+        &mut self.duplex
+    }
+
+    /// Cancel the shared shutdown and tear down both halves.
+    pub fn stop(&self, reason: &str) {
+        self.shutdown.stop(reason);
+    }
+
+    /// Move the bound address, simplex half, duplex half, and a
+    /// [`MuxShutdown`] guard out of this wrapper. After splitting,
+    /// dropping the simplex half, the duplex half, or the
+    /// [`MuxShutdown`] guard cancels the shared shutdown and tears
+    /// the rest down. The address is a plain value and does not own
+    /// any resources.
+    pub fn split(
+        self,
+    ) -> (
+        ChannelAddr,
+        ChannelRx<M>,
+        net::duplex::DuplexServer<In, Out>,
+        MuxShutdown,
+    ) {
+        (self.addr, self.simplex, self.duplex, self.shutdown)
+    }
+
+    /// Wire up handlers for both halves, spawn a background task that
+    /// owns the orderly shutdown (duplex drain → simplex pump → listener),
+    /// and return a [`MailboxServerHandle`](crate::mailbox::MailboxServerHandle).
+    /// Calling `.stop()` on the handle drives the drain.
+    ///
+    /// `simplex_handler` consumes the simplex receiver and produces
+    /// the simplex pump's `MailboxServerHandle` (typically by calling
+    /// [`MailboxServer::serve`](crate::mailbox::MailboxServer::serve)
+    /// on a forwarder). `duplex_handler` receives the
+    /// [`DuplexServer`](net::duplex::DuplexServer) and a stop signal,
+    /// and returns the future driving the duplex pump.
+    ///
+    /// **Shutdown ordering.** On stop, the coordinator awaits
+    /// `duplex_task` first so the duplex handler can drive its own
+    /// internal drain (e.g., the host's per-connection forwarder
+    /// pumps stop and drop their `AttachSender`s, which lets
+    /// `send_connected` flush queued outbound naturally as
+    /// `SendLoopError::AppClosed`, before the handler's terminal
+    /// `duplex_server.stop` signals listener shutdown and `join`
+    /// waits for it). Stopping the simplex pump and listener happens
+    /// after the duplex drain to avoid cascading cancellation through
+    /// `dispatch_duplex_stream`'s `select!` while the duplex side
+    /// still has queued sends.
+    ///
+    /// Mirrors [`MailboxServer::serve`](crate::mailbox::MailboxServer::serve)'s
+    /// shape: take the work to do, return a `MailboxServerHandle`.
+    pub fn serve<SH, DH, DF>(
+        self,
+        simplex_handler: SH,
+        duplex_handler: DH,
+    ) -> crate::mailbox::MailboxServerHandle
+    where
+        SH: FnOnce(ChannelRx<M>) -> crate::mailbox::MailboxServerHandle,
+        DH: FnOnce(net::duplex::DuplexServer<In, Out>, tokio::sync::watch::Receiver<bool>) -> DF,
+        DF: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let (stopped_tx, mut stopped_rx) = tokio::sync::watch::channel(false);
+        let duplex_stop = stopped_rx.clone();
+        let simplex_handle = simplex_handler(self.simplex);
+        let duplex_task = tokio::spawn(duplex_handler(self.duplex, duplex_stop));
+        let shutdown = self.shutdown;
+        let join_handle = tokio::spawn(async move {
+            // Pend forever if `stopped_tx` is silently dropped (caller
+            // discarded the handle without `stop()`). Mirrors the
+            // existing `MailboxServer::serve` behavior of holding the
+            // server open absent an explicit stop signal — otherwise
+            // we'd tear down the mux as soon as the handle drops.
+            let ok = stopped_rx.wait_for(|stopped| *stopped).await.is_ok();
+            if !ok {
+                std::future::pending::<()>().await;
+            }
+            const REASON: &str = "MuxServer shutdown";
+            // 1. Wait for the duplex handler to complete its own drain.
+            //    The handler already saw `duplex_stop` (a clone of our
+            //    `stopped_rx`) at the same instant we did, so it is
+            //    already winding down. Awaiting before any cancel fires
+            //    preserves the natural app-closed path through
+            //    `send_connected` so queued outbound is not abandoned.
+            let _ = duplex_task.await;
+            // 2. The duplex handler's drop fires `cancel_token`, which
+            //    cascades to simplex per-session cancels and closes
+            //    `simplex_rx`; the simplex pump then exits naturally
+            //    via its `rx.recv()` returning `Closed`. We only need
+            //    to await it. Calling `simplex_handle.stop` here would
+            //    race the natural exit and panic on the watch send if
+            //    the pump's receiver has already dropped.
+            let _ = simplex_handle.await;
+            // 3. Backstop: cancel the listener explicitly (idempotent
+            //    if already cancelled), then await the accept-loop's
+            //    full drain.
+            shutdown.stop(REASON);
+            let _ = shutdown.await;
+            Ok::<(), crate::mailbox::MailboxServerError>(())
+        });
+        crate::mailbox::MailboxServerHandle::from_parts(join_handle, stopped_tx)
+    }
+}
+
+/// Awaitable shutdown handle for a [`MuxServer`]. Wraps the muxed
+/// listener's accept-loop [`JoinHandle`](tokio::task::JoinHandle); the
+/// caller signals teardown with [`stop`](Self::stop) and then `.await`s
+/// the handle to confirm the listener task has fully exited. Drop
+/// cancels the shared signal as a backstop, so a forgotten handle does
+/// not leak the listener.
+///
+/// Mirrors the [`MailboxServerHandle`](crate::mailbox::MailboxServerHandle)
+/// shape: signal stop, then await the handle.
+pub struct MuxShutdown {
+    join_handle: tokio::task::JoinHandle<Result<(), net::ServerError>>,
+    cancel: CancellationToken,
+}
+
+impl MuxShutdown {
+    /// Signal the muxed listener to stop accepting new connections and
+    /// tear down. The caller should subsequently `.await` the handle
+    /// to confirm shutdown.
+    pub fn stop(&self, reason: &str) {
+        tracing::info!(
+            name = "MuxServerStatus",
+            status = "Stop::Sent",
+            reason,
+            "muxed frontend stop signalled",
+        );
+        self.cancel.cancel();
+    }
+
+    /// Resolve when the shared shutdown has been cancelled (without
+    /// awaiting the listener task itself). Useful for outer tasks that
+    /// drive per-half pumps and need to wake on teardown.
+    pub async fn cancelled(&self) {
+        self.cancel.cancelled().await;
+    }
+}
+
+impl std::future::Future for MuxShutdown {
+    type Output =
+        <tokio::task::JoinHandle<Result<(), net::ServerError>> as std::future::Future>::Output;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        // `JoinHandle` is `Unpin`, so we can re-pin a mutable borrow of
+        // it without unsafe pin projection. `MuxShutdown` is `Unpin` by
+        // virtue of its `Unpin` fields, which lets us reach through the
+        // outer `Pin`.
+        std::pin::Pin::new(&mut self.join_handle).poll(cx)
+    }
+}
+
+impl Drop for MuxShutdown {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
 }
 
 fn serve_inner<M: RemoteMessage>(

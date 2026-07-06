@@ -111,6 +111,7 @@ pub(crate) mod stream {
     use crate::channel::net::ClientError;
     use crate::channel::net::Link;
     use crate::channel::net::Listener;
+    use crate::channel::net::ProtocolKind;
     use crate::channel::net::ServerError;
     use crate::channel::net::SessionId;
     use crate::channel::net::write_link_init;
@@ -120,14 +121,21 @@ pub(crate) mod stream {
         port: u64,
         session_id: SessionId,
         stream_id: u8,
+        kind: ProtocolKind,
     }
 
     impl LocalLink {
-        pub(crate) fn new(port: u64, session_id: SessionId, stream_id: u8) -> Self {
+        pub(crate) fn new(
+            port: u64,
+            session_id: SessionId,
+            stream_id: u8,
+            kind: ProtocolKind,
+        ) -> Self {
             Self {
                 port,
                 session_id,
                 stream_id,
+                kind,
             }
         }
 
@@ -199,7 +207,7 @@ pub(crate) mod stream {
         async fn next(&mut self) -> Result<Self::Stream, ClientError> {
             let (mut client, server) = self.pair()?;
             self.connect(server)?;
-            write_link_init(&mut client, self.session_id, self.stream_id)
+            write_link_init(&mut client, self.session_id, self.stream_id, self.kind)
                 .await
                 .map_err(|err| ClientError::Io(self.dest(), err))?;
             Ok(client)
@@ -270,8 +278,13 @@ pub(crate) mod stream {
         Ok((LocalListener { accept_rx, port }, addr))
     }
 
-    pub(crate) fn link(port: u64, session_id: SessionId, stream_id: u8) -> LocalLink {
-        LocalLink::new(port, session_id, stream_id)
+    pub(crate) fn link(
+        port: u64,
+        session_id: SessionId,
+        stream_id: u8,
+        kind: ProtocolKind,
+    ) -> LocalLink {
+        LocalLink::new(port, session_id, stream_id, kind)
     }
 }
 

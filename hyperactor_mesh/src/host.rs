@@ -232,7 +232,22 @@ impl<M: ProcManager> Host<M> {
         let mut backend_handle = Gateway::serve(&gateway, ChannelAddr::any(manager.transport()))?;
         let backend_addr = gateway.default_location().addr().clone();
 
-        let mut frontend_handle = match gateway.serve_with_listener(addr, listener) {
+        // Serve the frontend. Kernel-socket (net) transports use a muxed
+        // listener so simplex clients and duplex attach clients share one
+        // address; the gateway owns both the simplex and (`AttachWire`)
+        // duplex accept paths, so there is a single attach protocol whether
+        // a frontend is muxed or a plain duplex endpoint. `serve_mux`
+        // requires a net transport, so we branch on `is_net()` rather than
+        // `supports_duplex()` (the in-process `Local` transport supports
+        // duplex but is not a kernel socket). Both paths register the bound
+        // address as the gateway's active serve location.
+        let frontend_result: Result<GatewayServeHandle, ChannelError> = if addr.transport().is_net()
+        {
+            gateway.serve_mux_with_listener(addr, listener)
+        } else {
+            gateway.serve_with_listener(addr, listener)
+        };
+        let mut frontend_handle = match frontend_result {
             Ok(handle) => handle,
             Err(error) => {
                 backend_handle.stop("host setup failed");

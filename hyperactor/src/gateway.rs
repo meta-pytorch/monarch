@@ -669,6 +669,20 @@ impl Gateway {
                 "serve_duplex requires a duplex-capable transport, but {addr} does not support duplex"
             )));
         }
+        // A gateway duplex endpoint doubles as a relay: peers attach over
+        // duplex (see `serve_via`), while a third party with no peer
+        // relationship reaches via-addressed refs by dialing the raw
+        // address with a plain *simplex* channel. Now that the link layer
+        // distinguishes the two protocols on the wire, a strict duplex
+        // server would reject those simplex dials. Serve net endpoints
+        // through the mux instead, so one address accepts both protocols:
+        // simplex posts are dispatched into the gateway, duplex attaches
+        // run the shared `AttachWire` accept loop. The in-process `Local`
+        // transport is not a kernel socket and cannot be muxed, so it
+        // keeps the plain duplex accept path.
+        if addr.transport().is_net() {
+            return self.serve_mux_with_listener(addr, listener);
+        }
         let server = PreboundAcceptServer::duplex(addr, listener)
             .map_err(|e| ChannelError::Other(anyhow::anyhow!("{e}")))?;
         Ok(self.serve_duplex_with_server(server))
@@ -705,6 +719,60 @@ impl Gateway {
                 cancel_token,
             },
         }
+    }
+
+    /// Serve this gateway on `addr` (optionally with a pre-bound TCP
+    /// listener) using a *muxed* listener: simplex clients (dialed via
+    /// [`channel::dial`]) and duplex attach clients (dialed via
+    /// [`channel::duplex::dial`]) share one address, demultiplexed at
+    /// the link layer by [`channel::serve_mux`].
+    ///
+    /// Simplex traffic is served straight into this gateway; duplex
+    /// connections run the *same* [`AttachWire`] accept path as
+    /// [`serve_duplex`](Self::serve_duplex) — i.e. there is a single
+    /// attach protocol regardless of whether a frontend is muxed or a
+    /// plain duplex endpoint. Requires a net transport (`serve_mux`
+    /// rejects non-net addresses).
+    ///
+    /// Like [`serve_with_listener`](Self::serve_with_listener), this
+    /// registers the bound address as an active serve location (so the
+    /// gateway delivers frontend-addressed traffic in-process and adopts
+    /// it as the default location).
+    pub fn serve_mux_with_listener(
+        &self,
+        addr: ChannelAddr,
+        listener: Option<std::net::TcpListener>,
+    ) -> Result<GatewayServeHandle, ChannelError> {
+        let mux =
+            channel::serve_mux::<MessageEnvelope, MessageEnvelope, AttachWire>(addr, listener)?;
+        let bound_addr = mux.addr().clone();
+        let simplex_gateway = self.clone();
+        let duplex_gateway = self.clone();
+        let duplex_addr = bound_addr.clone();
+        let raw = mux.serve(
+            move |rx| simplex_gateway.serve(rx),
+            move |duplex_server, mut stop_rx| async move {
+                // The mux signals shutdown through a watch channel, but
+                // `duplex_accept_loop` drains on a `CancellationToken`.
+                // Bridge the two: cancel only on an explicit stop, and
+                // pend (leaving the token uncancelled) if the watch
+                // sender is dropped without stopping, matching the
+                // detach-on-drop convention of the serve handles.
+                let cancel_token = CancellationToken::new();
+                let loop_token = cancel_token.clone();
+                tokio::spawn(async move {
+                    if stop_rx.wait_for(|stopped| *stopped).await.is_ok() {
+                        cancel_token.cancel();
+                    }
+                });
+                duplex_accept_loop(duplex_server, duplex_addr, duplex_gateway, loop_token).await;
+            },
+        );
+        Ok(GatewayServeHandle::from_mailbox_handle(
+            self.clone(),
+            bound_addr,
+            raw,
+        ))
     }
 
     /// Serve this gateway on `addr`, optionally using an already-bound
@@ -1006,6 +1074,23 @@ impl GatewayServeHandle {
         }
     }
 
+    /// Wrap an externally-produced [`MailboxServerHandle`] — e.g. a
+    /// host's muxed frontend accept loop driven outside the gateway —
+    /// as a gateway serve handle. Registers `addr` as an active serve
+    /// location (via [`add_server`](Gateway::add_server)) so the gateway
+    /// delivers traffic addressed to the frontend in-process instead of
+    /// dialing it, and advertises it as the default location — mirroring
+    /// [`Gateway::serve_with_listener`]. The active-serve entry is removed
+    /// when the handle is stopped.
+    pub fn from_mailbox_handle(
+        gateway: Gateway,
+        addr: ChannelAddr,
+        handle: MailboxServerHandle,
+    ) -> Self {
+        let serve_id = gateway.add_server(Location::from(addr));
+        Self::from_simplex(gateway, handle, Some(serve_id))
+    }
+
     /// Signal the underlying server to stop and run the flavor-specific
     /// cleanup: remove the active-serve entry for `Serve`, `ServeDuplex`,
     /// or `ServeVia`. Idempotent: later calls are no-ops. Call
@@ -1127,6 +1212,15 @@ async fn duplex_accept_loop(
     }
 
     while tasks.join_next().await.is_some() {}
+    // Tear down the server now that the accept loop has exited. The loop
+    // broke on its own `cancel_token`, which is distinct from the server's
+    // listener cancel, so we must signal the listener explicitly: `stop`
+    // cancels it (for a muxed frontend that is the shared listener, so it
+    // also closes the simplex half and lets simplex peers observe a clean
+    // `Closed`), then `join` awaits the teardown. Stopping before joining
+    // — rather than relying on `join` to cancel — keeps the teardown
+    // correct regardless of how the underlying handle implements `join`.
+    duplex_server.stop("duplex accept loop draining");
     duplex_server.join().await;
 }
 

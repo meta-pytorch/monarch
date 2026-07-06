@@ -90,6 +90,7 @@ pub(crate) struct QuicLink {
     addr_type: QuicAddrType,
     session_id: SessionId,
     stream_id: u8,
+    kind: ProtocolKind,
 }
 
 impl std::fmt::Debug for QuicLink {
@@ -146,7 +147,7 @@ impl Link for QuicLink {
                 Ok(connecting) => match connecting.await {
                     Ok(connection) => match connection.open_bi().await {
                         Ok((mut send, recv)) => {
-                            write_link_init(&mut send, self.session_id, self.stream_id)
+                            write_link_init(&mut send, self.session_id, self.stream_id, self.kind)
                                 .await
                                 .map_err(|err| ClientError::Io(self.dest(), err))?;
                             return Ok(QuicStream::new(send, recv));
@@ -240,6 +241,7 @@ pub(crate) fn link(
     addr_type: QuicAddrType,
     session_id: SessionId,
     stream_id: u8,
+    kind: ProtocolKind,
 ) -> Result<QuicLink, ClientError> {
     let client_config = client_config(addr_type).map_err(|e| {
         ClientError::Connect(
@@ -256,6 +258,7 @@ pub(crate) fn link(
         addr_type,
         session_id,
         stream_id,
+        kind,
     })
 }
 

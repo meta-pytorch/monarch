@@ -71,6 +71,7 @@ use crate::RemoteMessage;
 
 pub mod duplex;
 mod framed;
+pub(super) mod mux;
 pub(crate) mod quic;
 pub(super) mod server;
 pub(super) mod session;
@@ -107,15 +108,29 @@ pub(crate) const INITIATOR_TO_ACCEPTOR: u8 = 0;
 /// Logical channel tag for acceptor→initiator traffic.
 pub(crate) const ACCEPTOR_TO_INITIATOR: u8 = 1;
 
+/// Wire-level protocol kind carried by [`ProtocolKind`] in the
+/// [`LinkInit`](write_link_init) header. Distinguishes simplex
+/// (one-direction byte stream carrying tag `0x00` frames) from
+/// duplex (bidirectional byte stream carrying both `0x00` and
+/// `0x01` frames) so a server listening on a single address can
+/// demultiplex both styles without peeking at application payloads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProtocolKind {
+    Simplex,
+    Duplex,
+}
+
+const SIMPLEX_MAGIC: [u8; 4] = *b"SMP\0";
+const DUPLEX_MAGIC: [u8; 4] = *b"DPX\0";
+
 /// Fixed-size header sent at the start of every physical connection.
-/// This is written/read directly on the wire (not framed), before
-/// any session framing begins.
+/// Written/read directly on the wire (not framed), before any session
+/// framing begins.
 ///
 /// Wire format (13 bytes, big-endian):
 /// ```text
-/// [magic: 4B "LNK\0"] [session_id: 8B u64 BE] [stream_id: 1B u8]
+/// [magic: 4B ("SMP\0" | "DPX\0")] [session_id: 8B u64 BE] [stream_id: 1B u8]
 /// ```
-const LINK_INIT_MAGIC: [u8; 4] = *b"LNK\0";
 const LINK_INIT_SIZE: usize = 4 + 8 + 1;
 
 /// Parsed LinkInit header.
@@ -123,37 +138,119 @@ const LINK_INIT_SIZE: usize = 4 + 8 + 1;
 pub(crate) struct LinkInit {
     pub session_id: SessionId,
     pub stream_id: u8,
+    pub kind: ProtocolKind,
 }
 
-/// Write a LinkInit header to the stream.
+/// Write a LinkInit header to the stream, tagged by `kind`.
 pub(crate) async fn write_link_init<S: AsyncWrite + Unpin>(
     stream: &mut S,
     session_id: SessionId,
     stream_id: u8,
+    kind: ProtocolKind,
 ) -> Result<(), std::io::Error> {
     let mut buf = [0u8; LINK_INIT_SIZE];
-    buf[0..4].copy_from_slice(&LINK_INIT_MAGIC);
+    let magic = match kind {
+        ProtocolKind::Simplex => &SIMPLEX_MAGIC,
+        ProtocolKind::Duplex => &DUPLEX_MAGIC,
+    };
+    buf[0..4].copy_from_slice(magic);
     buf[4..12].copy_from_slice(&session_id.0.to_be_bytes());
     buf[12] = stream_id;
     stream.write_all(&buf).await
 }
 
-/// Read a LinkInit header from the stream.
+/// Read a LinkInit header from the stream, recovering the session
+/// id and protocol kind the client wrote.
 async fn read_link_init<S: AsyncRead + Unpin>(stream: &mut S) -> Result<LinkInit, std::io::Error> {
     let mut buf = [0u8; LINK_INIT_SIZE];
     stream.read_exact(&mut buf).await?;
-    if buf[0..4] != LINK_INIT_MAGIC {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("invalid LinkInit magic: expected LNK, got {:?}", &buf[0..4]),
-        ));
-    }
+    let kind = match &buf[0..4] {
+        m if m == SIMPLEX_MAGIC => ProtocolKind::Simplex,
+        m if m == DUPLEX_MAGIC => ProtocolKind::Duplex,
+        other => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "invalid LinkInit magic: expected {:?} or {:?}, got {:?}",
+                    SIMPLEX_MAGIC, DUPLEX_MAGIC, other
+                ),
+            ));
+        }
+    };
     let session_id = SessionId(u64::from_be_bytes(buf[4..12].try_into().unwrap()));
     let stream_id = buf[12];
     Ok(LinkInit {
         session_id,
         stream_id,
+        kind,
     })
+}
+
+/// Prepare an accepted byte stream for dispatch: optionally negotiate
+/// TLS for TLS transports, read the [`LinkInit`] header, and (when
+/// `expected_kind` is set) validate the client's [`ProtocolKind`].
+///
+/// Shared by the simplex, duplex, and muxed accept loops so each
+/// `prepare` closure stays a thin wrapper over this function. Pass
+/// `expected_kind = None` to accept either kind (used by the mux
+/// listener, which dispatches by kind after the header is read).
+pub(super) async fn prepare_accepted_stream(
+    stream: Box<dyn Stream>,
+    source: ChannelAddr,
+    dest: ChannelAddr,
+    expected_kind: Option<ProtocolKind>,
+) -> Result<(LinkInit, Box<dyn Stream>), anyhow::Error> {
+    let is_tls = dest.transport().is_tls();
+    let (link_init, stream): (LinkInit, Box<dyn Stream>) = if is_tls {
+        let tls_acceptor = match dest.transport() {
+            ChannelTransport::Tls => tls::tls_acceptor()?,
+            _ => meta::tls_acceptor(true)?,
+        };
+        let mut tls_stream = tls_acceptor.accept(stream).await?;
+        let link_init = read_link_init(&mut tls_stream)
+            .await
+            .map_err(|e| anyhow::anyhow!("LinkInit read failed from {}: {}", source, e))?;
+        (link_init, Box::new(tls_stream))
+    } else {
+        let mut stream = stream;
+        let link_init = read_link_init(&mut stream)
+            .await
+            .map_err(|e| anyhow::anyhow!("LinkInit read failed from {}: {}", source, e))?;
+        (link_init, stream)
+    };
+    if let Some(expected) = expected_kind
+        && link_init.kind != expected
+    {
+        return Err(anyhow::anyhow!(
+            "{:?} server received {:?} client from {}",
+            expected,
+            link_init.kind,
+            source
+        ));
+    }
+    Ok((link_init, stream))
+}
+
+/// Future type produced by [`preparer_for`]'s closure.
+type PreparedStreamFut = std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = Result<(LinkInit, Box<dyn Stream>), anyhow::Error>> + Send,
+    >,
+>;
+
+/// Build a `prepare` closure suitable for [`server::accept_loop`] that
+/// wraps [`prepare_accepted_stream`] with the given destination address
+/// and expected [`ProtocolKind`]. Pass `expected_kind = None` for the
+/// muxed listener path, which dispatches on `link_init.kind` after the
+/// header is read instead of validating up front.
+pub(super) fn preparer_for(
+    dest: ChannelAddr,
+    expected_kind: Option<ProtocolKind>,
+) -> impl Fn(Box<dyn Stream>, ChannelAddr) -> PreparedStreamFut + Clone + Send + 'static {
+    move |stream, source| {
+        let dest = dest.clone();
+        Box::pin(prepare_accepted_stream(stream, source, dest, expected_kind))
+    }
 }
 
 /// Link represents a network link through which connections may be
@@ -758,39 +855,48 @@ pub(crate) enum NetLink {
 /// Create a link for the given channel address with the given
 /// `session_id` and `stream_id`. Single-stream callers pass a fresh
 /// `SessionId::random()` and `stream_id = 0`.
+/// Tagged with the protocol kind the client intends to speak.
 pub(crate) fn link(
     addr: ChannelAddr,
     session_id: SessionId,
     stream_id: u8,
+    kind: ProtocolKind,
 ) -> Result<NetLink, ClientError> {
     match addr {
-        ChannelAddr::Tcp(socket_addr) => {
-            Ok(NetLink::Tcp(tcp::link(socket_addr, session_id, stream_id)))
-        }
-        ChannelAddr::Unix(unix_addr) => {
-            Ok(NetLink::Unix(unix::link(unix_addr, session_id, stream_id)))
-        }
+        ChannelAddr::Tcp(socket_addr) => Ok(NetLink::Tcp(tcp::link(
+            socket_addr,
+            session_id,
+            stream_id,
+            kind,
+        ))),
+        ChannelAddr::Unix(unix_addr) => Ok(NetLink::Unix(unix::link(
+            unix_addr, session_id, stream_id, kind,
+        ))),
         ChannelAddr::Local(port) => {
             local::stream::check(port)?;
             Ok(NetLink::Local(local::stream::link(
-                port, session_id, stream_id,
+                port, session_id, stream_id, kind,
             )))
         }
-        ChannelAddr::Tls(tls_addr) => Ok(NetLink::Tls(tls::link(tls_addr, session_id, stream_id)?)),
-        ChannelAddr::MetaTls(meta_addr) => {
-            Ok(NetLink::Tls(meta::link(meta_addr, session_id, stream_id)?))
-        }
+        ChannelAddr::Tls(tls_addr) => Ok(NetLink::Tls(tls::link(
+            tls_addr, session_id, stream_id, kind,
+        )?)),
+        ChannelAddr::MetaTls(meta_addr) => Ok(NetLink::Tls(meta::link(
+            meta_addr, session_id, stream_id, kind,
+        )?)),
         ChannelAddr::Quic(quic_addr) => Ok(NetLink::Quic(quic::link(
             quic_addr,
             quic::QuicAddrType::Quic,
             session_id,
             stream_id,
+            kind,
         )?)),
         ChannelAddr::MetaQuic(meta_addr) => Ok(NetLink::Quic(quic::link(
             meta_addr,
             quic::QuicAddrType::MetaQuic,
             session_id,
             stream_id,
+            kind,
         )?)),
         other => Err(ClientError::Connect(
             other,
@@ -1124,6 +1230,7 @@ pub(crate) mod unix {
         pub(super) addr: SocketAddr,
         pub(super) session_id: SessionId,
         pub(super) stream_id: u8,
+        pub(super) kind: ProtocolKind,
     }
 
     #[async_trait]
@@ -1159,7 +1266,7 @@ pub(crate) mod unix {
                             .map_err(|err| ClientError::Io(self.dest(), err))?;
                         let mut stream = UnixStream::from_std(std_stream)
                             .map_err(|err| ClientError::Io(self.dest(), err))?;
-                        write_link_init(&mut stream, session_id, self.stream_id)
+                        write_link_init(&mut stream, session_id, self.stream_id, self.kind)
                             .await
                             .map_err(|err| ClientError::Io(self.dest(), err))?;
                         return Ok(stream);
@@ -1199,11 +1306,17 @@ pub(crate) mod unix {
     }
 
     /// Create a unix link to the given socket address.
-    pub(crate) fn link(addr: SocketAddr, session_id: SessionId, stream_id: u8) -> UnixLink {
+    pub(crate) fn link(
+        addr: SocketAddr,
+        session_id: SessionId,
+        stream_id: u8,
+        kind: ProtocolKind,
+    ) -> UnixLink {
         UnixLink {
             addr,
             session_id,
             stream_id,
+            kind,
         }
     }
 
@@ -1417,6 +1530,7 @@ pub(crate) mod tcp {
         pub(super) addr: SocketAddr,
         pub(super) session_id: SessionId,
         pub(super) stream_id: u8,
+        pub(super) kind: ProtocolKind,
     }
 
     #[async_trait]
@@ -1453,7 +1567,7 @@ pub(crate) mod tcp {
                             )
                         })?;
                         set_tcp_keepalive(&stream);
-                        write_link_init(&mut stream, session_id, self.stream_id)
+                        write_link_init(&mut stream, session_id, self.stream_id, self.kind)
                             .await
                             .map_err(|err| ClientError::Io(self.dest(), err))?;
                         return Ok(stream);
@@ -1502,11 +1616,17 @@ pub(crate) mod tcp {
     }
 
     /// Create a TCP link to the given socket address.
-    pub(crate) fn link(addr: SocketAddr, session_id: SessionId, stream_id: u8) -> TcpLink {
+    pub(crate) fn link(
+        addr: SocketAddr,
+        session_id: SessionId,
+        stream_id: u8,
+        kind: ProtocolKind,
+    ) -> TcpLink {
         TcpLink {
             addr,
             session_id,
             stream_id,
+            kind,
         }
     }
 }
@@ -1619,6 +1739,7 @@ pub(crate) mod meta {
         addr: TlsAddr,
         session_id: SessionId,
         stream_id: u8,
+        kind: ProtocolKind,
     ) -> Result<tls::TlsLink, ClientError> {
         let connector = tls_connector().map_err(|e| {
             ClientError::Connect(
@@ -1635,6 +1756,7 @@ pub(crate) mod meta {
             addr_type: tls::TlsAddrType::MetaTls,
             session_id,
             stream_id,
+            kind,
         })
     }
 }
@@ -1823,6 +1945,7 @@ pub(crate) mod tls {
         pub(crate) addr_type: TlsAddrType,
         pub(crate) session_id: SessionId,
         pub(crate) stream_id: u8,
+        pub(crate) kind: ProtocolKind,
     }
 
     impl std::fmt::Debug for TlsLink {
@@ -1900,7 +2023,7 @@ pub(crate) mod tls {
                                     format!("cannot establish TLS connection to {:?}", server_name),
                                 )
                             })?;
-                        write_link_init(&mut tls_stream, session_id, self.stream_id)
+                        write_link_init(&mut tls_stream, session_id, self.stream_id, self.kind)
                             .await
                             .map_err(|err| ClientError::Io(self.dest(), err))?;
                         return Ok(tls_stream);
@@ -1928,6 +2051,7 @@ pub(crate) mod tls {
         addr: TlsAddr,
         session_id: SessionId,
         stream_id: u8,
+        kind: ProtocolKind,
     ) -> Result<TlsLink, ClientError> {
         let connector = tls_connector().map_err(|e| {
             ClientError::Connect(
@@ -1944,6 +2068,7 @@ pub(crate) mod tls {
             addr_type: TlsAddrType::Tls,
             session_id,
             stream_id,
+            kind,
         })
     }
 
@@ -2070,6 +2195,7 @@ u19txmtkiMEH+aNmekk=
                     },
                     SessionId::random(),
                     0,
+                    super::ProtocolKind::Simplex,
                 )
                 .expect("failed to create link"),
             );
@@ -2157,6 +2283,7 @@ u19txmtkiMEH+aNmekk=
                     },
                     SessionId::random(),
                     0,
+                    super::ProtocolKind::Simplex,
                 )
                 .expect("failed to create link"),
             );
@@ -2375,6 +2502,7 @@ mod tests {
     use rand::distr::Alphanumeric;
     use rand::rngs::SysRng;
     use timed_test::async_timed_test;
+    use tokio::io::AsyncRead;
     use tokio::io::AsyncWrite;
     use tokio::io::DuplexStream;
     use tokio::io::ReadHalf;
@@ -2939,7 +3067,7 @@ mod tests {
             // Write LinkInit on server_relay so it's readable from `server`.
             // This simulates the client sending LinkInit over the wire before
             // the frame-level relay begins.
-            write_link_init(&mut server_relay, session_id, 0)
+            write_link_init(&mut server_relay, session_id, 0, ProtocolKind::Simplex)
                 .await
                 .map_err(|err| ClientError::Io(self.dest(), err))?;
 
@@ -3974,7 +4102,12 @@ mod tests {
             ChannelAddr::Tcp(a) => a,
             _ => panic!("unexpected channel type"),
         };
-        let tx: ChannelTx<u64> = spawn(tcp::link(socket_addr, SessionId::random(), 0));
+        let tx: ChannelTx<u64> = spawn(tcp::link(
+            socket_addr,
+            SessionId::random(),
+            0,
+            ProtocolKind::Simplex,
+        ));
         // ChannelTx will not establish a connection until it sends the 1st message.
         // Without a live connection, ChannelTx cannot received the Closed message
         // from ChannelRx. Therefore, we need to send a message to establish the
@@ -4017,6 +4150,106 @@ mod tests {
         }
     }
 
+    /// Stream wrapper that gates writes (server-side terminal cleanup)
+    /// until the test releases the gate. Reads pass through. Used by
+    /// the mux drain-aware regression tests to make the dispatch's
+    /// final ack/Closed write blockable, so a cancel-only handle's
+    /// "join returns before cleanup" race is observable.
+    #[derive(Debug)]
+    pub(super) struct GatedWriteStream {
+        inner: DuplexStream,
+        gate: Arc<GateState>,
+    }
+
+    #[derive(Debug)]
+    pub(super) struct GateState {
+        open: AtomicBool,
+        waker: std::sync::Mutex<Option<std::task::Waker>>,
+    }
+
+    impl GateState {
+        pub(super) fn new() -> Arc<Self> {
+            Arc::new(Self {
+                open: AtomicBool::new(false),
+                waker: std::sync::Mutex::new(None),
+            })
+        }
+
+        /// Open the gate so any pending writes can proceed.
+        pub(super) fn open(&self) {
+            self.open.store(true, Ordering::Release);
+            if let Some(w) = self.waker.lock().unwrap().take() {
+                w.wake();
+            }
+        }
+    }
+
+    impl GatedWriteStream {
+        pub(super) fn new(inner: DuplexStream, gate: Arc<GateState>) -> Self {
+            Self { inner, gate }
+        }
+    }
+
+    impl AsyncRead for GatedWriteStream {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
+        }
+    }
+
+    impl AsyncWrite for GatedWriteStream {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            if !self.gate.open.load(Ordering::Acquire) {
+                *self.gate.waker.lock().unwrap() = Some(cx.waker().clone());
+                if !self.gate.open.load(Ordering::Acquire) {
+                    return std::task::Poll::Pending;
+                }
+            }
+            std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
+        }
+
+        fn poll_flush(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+        }
+
+        fn poll_shutdown(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+        }
+    }
+
+    /// `Listener` over a single pre-prepared `GatedWriteStream`. Used
+    /// to drive the mux drain-aware regression tests with a stream
+    /// whose terminal write is blockable.
+    struct GatedQueueListener {
+        streams: std::collections::VecDeque<GatedWriteStream>,
+        addr: ChannelAddr,
+    }
+
+    #[async_trait]
+    impl super::Listener for GatedQueueListener {
+        type Stream = GatedWriteStream;
+
+        async fn accept(&mut self) -> Result<(GatedWriteStream, ChannelAddr), ServerError> {
+            match self.streams.pop_front() {
+                Some(s) => Ok((s, self.addr.clone())),
+                None => std::future::pending().await,
+            }
+        }
+    }
+
     /// In-memory connection: server end goes into the listener; the
     /// test reads from `client_r`.
     struct PreparedConnection {
@@ -4029,16 +4262,20 @@ mod tests {
     }
 
     /// Write `LinkInit` and the framed `Frame::Message(seq, value)`
-    /// payloads on the client side; return both halves.
+    /// payloads on the client side; return both halves. The caller
+    /// chooses the [`ProtocolKind`] so simplex tests can stamp
+    /// `Simplex` and duplex tests can stamp `Duplex`, matching
+    /// production handshake validation.
     async fn prepare_connection(
         session_id: SessionId,
         stream_id: u8,
+        kind: super::ProtocolKind,
         messages: &[(u64, u64)],
     ) -> PreparedConnection {
         let (client_side, server_side) = tokio::io::duplex(8192);
         let (client_r, mut client_w) = tokio::io::split(client_side);
 
-        super::write_link_init(&mut client_w, session_id, stream_id)
+        super::write_link_init(&mut client_w, session_id, stream_id, kind)
             .await
             .unwrap();
         let max_len = hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH);
@@ -4096,7 +4333,15 @@ mod tests {
                 expected_messages.insert(*value);
             }
             expected_acks.push(plan.messages.iter().map(|(s, _)| *s).max().unwrap());
-            conns.push(prepare_connection(plan.session_id, plan.stream_id, &plan.messages).await);
+            conns.push(
+                prepare_connection(
+                    plan.session_id,
+                    plan.stream_id,
+                    super::ProtocolKind::Simplex,
+                    &plan.messages,
+                )
+                .await,
+            );
         }
 
         let addr = ChannelAddr::Local(u64::MAX);
@@ -4258,7 +4503,15 @@ mod tests {
             for (_, v) in &messages {
                 expected_messages.insert(*v);
             }
-            conns.push(prepare_connection(session_id, stream_id, &messages).await);
+            conns.push(
+                prepare_connection(
+                    session_id,
+                    stream_id,
+                    super::ProtocolKind::Simplex,
+                    &messages,
+                )
+                .await,
+            );
         }
         let highest_seq = num_streams as u64 * msgs_per_stream - 1;
 
@@ -4360,6 +4613,32 @@ mod tests {
         );
     }
 
+    /// `duplex::serve_with_listener` (the test-only duplex server)
+    /// must enforce the same `ProtocolKind::Duplex` handshake check as
+    /// production `duplex::serve`. Otherwise the duplex ack-flush
+    /// tests below could pass with a wire header that the real server
+    /// would reject — weakening coverage exactly where shutdown
+    /// behavior is most sensitive.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn duplex_test_listener_rejects_simplex_link_init() {
+        let conn =
+            prepare_connection(SessionId(1), 0, super::ProtocolKind::Simplex, &[(0, 123)]).await;
+        let addr = ChannelAddr::Local(u64::MAX);
+        let listener = QueueListener {
+            streams: std::collections::VecDeque::from([conn.server_side]),
+            addr: addr.clone(),
+        };
+
+        let mut server = super::duplex::serve_with_listener::<u64, u64, _>(listener, addr).unwrap();
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(500), server.accept())
+                .await
+                .is_err(),
+            "duplex test server accepted a simplex LinkInit",
+        );
+    }
+
     /// Duplex analog of `rx_join_flushes_pending_ack_single_stream`.
     /// Three independent duplex sessions, each with three framed
     /// messages. Verifies every `dispatch_duplex_stream`'s terminal
@@ -4387,7 +4666,9 @@ mod tests {
                 expected_messages.insert(*v);
             }
             expected_acks.push(messages.iter().map(|(s, _)| *s).max().unwrap());
-            conns.push(prepare_connection(SessionId(sid), 0, &messages).await);
+            conns.push(
+                prepare_connection(SessionId(sid), 0, super::ProtocolKind::Duplex, &messages).await,
+            );
         }
 
         let addr = ChannelAddr::Local(u64::MAX);
@@ -4539,9 +4820,14 @@ mod tests {
         async fn next(&mut self) -> Result<DuplexStream, ClientError> {
             match self.streams.pop_front() {
                 Some(mut stream) => {
-                    super::write_link_init(&mut stream, self.session_id, 0)
-                        .await
-                        .map_err(|err| ClientError::Io(self.dest(), err))?;
+                    super::write_link_init(
+                        &mut stream,
+                        self.session_id,
+                        0,
+                        super::ProtocolKind::Duplex,
+                    )
+                    .await
+                    .map_err(|err| ClientError::Io(self.dest(), err))?;
                     Ok(stream)
                 }
                 None => Err(ClientError::Connect(
@@ -4571,7 +4857,7 @@ mod tests {
         let session_id = SessionId(1);
         let messages: Vec<(u64, u64)> = vec![(0, 100), (1, 200), (2, 300)];
         let expected_ack: u64 = 2;
-        let conn = prepare_connection(session_id, 0, &messages).await;
+        let conn = prepare_connection(session_id, 0, super::ProtocolKind::Duplex, &messages).await;
 
         let addr = ChannelAddr::Local(u64::MAX);
         let listener = QueueListener {
@@ -4648,13 +4934,276 @@ mod tests {
         server.join().await;
     }
 
-    /// [`DuplexClient::join`] cancels the recv/send loop's
-    /// cancellation token. The `select!`s observe cancel and the
-    /// loop exits via the flush + `Closed` + break path. Verifies
-    /// the cumulative ack and the terminal `Closed` are written on
+    /// Wire-level regression for the mux per-half drain-aware
+    /// `ServerHandle`. After `DuplexServer::stop()` is called on the
+    /// mux's duplex half, `DuplexServer::join()` must wait for every
+    /// dispatched session's terminal cleanup (final ack flush +
+    /// `Closed` emit) to reach the wire — not merely for the
+    /// cancellation token to fire. Adversarial test #4 from the AI
+    /// review's coverage gap. Prior to the drain-aware handle
+    /// (`cancel_only_handle`), `join` could report shutdown complete
+    /// before the dispatch's flush reached the wire.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn mux_duplex_join_flushes_pending_ack_for_session() {
+        let config = hyperactor_config::global::lock();
+        let _g_msg = config.override_key(config::MESSAGE_ACK_EVERY_N_MESSAGES, 1_000_000);
+        let _g_time =
+            config.override_key(config::MESSAGE_ACK_TIME_INTERVAL, Duration::from_secs(3600));
+
+        let session_id = SessionId(1);
+        let messages: Vec<(u64, u64)> = vec![(0, 100), (1, 200), (2, 300)];
+        let expected_ack: u64 = 2;
+        let conn = prepare_connection(session_id, 0, super::ProtocolKind::Duplex, &messages).await;
+
+        let addr = ChannelAddr::Local(u64::MAX);
+        let listener = QueueListener {
+            streams: std::collections::VecDeque::from([conn.server_side]),
+            addr: addr.clone(),
+        };
+
+        let mut parts =
+            super::mux::serve_with_listener::<u64, u64, u64, _>(listener, addr).unwrap();
+
+        // Accept the duplex session and drain the inbound messages.
+        // Hold `_server_tx` alive across the shutdown so the dispatch
+        // is parked on the cancel branch (not `AppClosed`); the
+        // adversarial path is precisely the cancel-driven cleanup.
+        let (mut server_rx, _server_tx) = parts.duplex.accept().await.unwrap();
+        for _ in &messages {
+            server_rx.recv().await.unwrap();
+        }
+
+        // No spontaneous ack expected before shutdown.
+        let max_len = hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH);
+        let mut reader = FrameReader::new(conn.client_r, max_len);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        match tokio::time::timeout(Duration::from_millis(10), reader.next()).await {
+            Err(_) => {} // timeout expected.
+            Ok(Err(e)) => panic!("mux: frame reader error before shutdown: {e}"),
+            Ok(Ok(None)) => panic!("mux: wire closed before shutdown"),
+            Ok(Ok(Some((_, bytes)))) => {
+                let resp = super::deserialize_response(bytes).unwrap();
+                panic!("mux: unexpectedly received {resp:?} before shutdown");
+            }
+        }
+
+        // `DuplexServer::stop` fires the shared cancel; `join`
+        // awaits the per-half handle's join_handle. With the
+        // drain-aware handle, that resolves only after the
+        // coordinator signals `drained` — i.e., after the
+        // dispatch's terminal cleanup has reached the wire.
+        parts.duplex.stop("test mux duplex join flush");
+        parts.duplex.join().await;
+
+        let bytes = tokio::time::timeout(Duration::from_millis(100), reader.next())
+            .await
+            .unwrap_or_else(|_| panic!("mux: produced no Ack frame within 100ms after join"))
+            .expect("frame reader error")
+            .expect("frame reader returned None");
+        let acked = super::deserialize_response(bytes.1)
+            .unwrap()
+            .into_ack()
+            .unwrap_or_else(|other| panic!("mux: expected Ack, got {other:?}"));
+        assert_eq!(
+            acked, expected_ack,
+            "mux: ack should cover the highest seq received"
+        );
+
+        let bytes = tokio::time::timeout(Duration::from_millis(100), reader.next())
+            .await
+            .unwrap_or_else(|_| panic!("mux: produced no Closed frame within 100ms after join"))
+            .expect("frame reader error")
+            .expect("frame reader returned None");
+        assert!(
+            super::deserialize_response(bytes.1).unwrap().is_closed(),
+            "mux: expected Closed terminal frame after Ack"
+        );
+
+        // Tear down the listener after asserting on the wire.
+        let _ = parts.simplex;
+        let _ = parts.join_handle.await;
+    }
+
+    /// Strict adversarial regression for the mux per-half drain-aware
+    /// `ServerHandle`. Uses a [`GatedWriteStream`] to block the
+    /// dispatch's terminal write so that — under the old
+    /// `cancel_only_handle` behavior — `DuplexServer::join()` after
+    /// `DuplexServer::stop()` would return *before* the Ack reached
+    /// the wire. With the drain-aware handle, `join` waits for the
+    /// listener's accept-loop to drain, which awaits the dispatch's
+    /// blocked write; thus `join` is pinned `Pending` until the test
+    /// opens the gate.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn mux_duplex_join_blocks_until_terminal_write_completes() {
+        let config = hyperactor_config::global::lock();
+        let _g_msg = config.override_key(config::MESSAGE_ACK_EVERY_N_MESSAGES, 1_000_000);
+        let _g_time =
+            config.override_key(config::MESSAGE_ACK_TIME_INTERVAL, Duration::from_secs(3600));
+
+        let session_id = SessionId(1);
+        let messages: Vec<(u64, u64)> = vec![(0, 100), (1, 200), (2, 300)];
+        let expected_ack: u64 = 2;
+        let conn = prepare_connection(session_id, 0, super::ProtocolKind::Duplex, &messages).await;
+
+        // Wrap the server side so its writes (the dispatch's terminal
+        // ack/Closed) are gated.
+        let gate = GateState::new();
+        let server_side_gated = GatedWriteStream::new(conn.server_side, gate.clone());
+
+        let addr = ChannelAddr::Local(u64::MAX);
+        let listener = GatedQueueListener {
+            streams: std::collections::VecDeque::from([server_side_gated]),
+            addr: addr.clone(),
+        };
+
+        let mut parts =
+            super::mux::serve_with_listener::<u64, u64, u64, _>(listener, addr).unwrap();
+
+        let (mut server_rx, _server_tx) = parts.duplex.accept().await.unwrap();
+        for _ in &messages {
+            server_rx.recv().await.unwrap();
+        }
+
+        // Stop + spawn join. With the drain-aware handle, join
+        // should be pinned Pending until the gate opens. With a
+        // `cancel_only_handle`, join would return immediately on
+        // cancel — observable here as a non-Pending poll despite
+        // the blocked write.
+        parts
+            .duplex
+            .stop("test mux duplex join blocks until terminal write");
+        let mut join_task = tokio::spawn(async move { parts.duplex.join().await });
+
+        let blocked = tokio::time::timeout(Duration::from_millis(200), &mut join_task).await;
+        assert!(
+            blocked.is_err(),
+            "duplex.join() returned before the gated terminal write could complete"
+        );
+
+        // Open the gate so dispatch's Ack/Closed writes proceed; join
+        // should resolve once the accept loop drains.
+        gate.open();
+
+        tokio::time::timeout(Duration::from_secs(5), join_task)
+            .await
+            .expect("duplex.join() did not resolve after gate opened")
+            .expect("join task panicked");
+
+        // Verify the wire actually received Ack and Closed.
+        let max_len = hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH);
+        let mut reader = FrameReader::new(conn.client_r, max_len);
+
+        let bytes = tokio::time::timeout(Duration::from_millis(200), reader.next())
+            .await
+            .expect("no Ack frame")
+            .expect("frame reader error")
+            .expect("frame reader returned None");
+        let acked = super::deserialize_response(bytes.1)
+            .unwrap()
+            .into_ack()
+            .unwrap_or_else(|other| panic!("expected Ack, got {other:?}"));
+        assert_eq!(acked, expected_ack);
+
+        let bytes = tokio::time::timeout(Duration::from_millis(200), reader.next())
+            .await
+            .expect("no Closed frame")
+            .expect("frame reader error")
+            .expect("frame reader returned None");
+        assert!(super::deserialize_response(bytes.1).unwrap().is_closed());
+    }
+
+    /// Wire-level regression for the per-half `ServerHandle`'s
+    /// drain-aware contract. Calling `ChannelRx::join()` on the mux's
+    /// simplex half must wait for the dispatch's terminal cleanup
+    /// (final ack flush + `Closed` emit) to reach the wire — not
+    /// merely for the cancellation token to fire. Adversarial test
+    /// #2 from the AI review.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn mux_split_simplex_join_flushes_final_ack() {
+        let config = hyperactor_config::global::lock();
+        let _g_msg = config.override_key(config::MESSAGE_ACK_EVERY_N_MESSAGES, 1_000_000);
+        let _g_time =
+            config.override_key(config::MESSAGE_ACK_TIME_INTERVAL, Duration::from_secs(3600));
+
+        let session_id = SessionId(1);
+        let messages: Vec<(u64, u64)> = vec![(0, 100), (1, 200), (2, 300)];
+        let expected_ack: u64 = 2;
+        let conn = prepare_connection(session_id, 0, super::ProtocolKind::Simplex, &messages).await;
+
+        let addr = ChannelAddr::Local(u64::MAX);
+        let listener = QueueListener {
+            streams: std::collections::VecDeque::from([conn.server_side]),
+            addr: addr.clone(),
+        };
+
+        let mut parts =
+            super::mux::serve_with_listener::<u64, u64, u64, _>(listener, addr).unwrap();
+
+        // Drain inbound through the simplex half.
+        for _ in &messages {
+            parts.simplex.recv().await.unwrap();
+        }
+
+        // No spontaneous ack expected.
+        let max_len = hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH);
+        let mut reader = FrameReader::new(conn.client_r, max_len);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        match tokio::time::timeout(Duration::from_millis(10), reader.next()).await {
+            Err(_) => {}
+            Ok(Err(e)) => panic!("mux split: frame reader error before join: {e}"),
+            Ok(Ok(None)) => panic!("mux split: wire closed before join"),
+            Ok(Ok(Some((_, bytes)))) => {
+                let resp = super::deserialize_response(bytes).unwrap();
+                panic!("mux split: unexpectedly received {resp:?} before join");
+            }
+        }
+
+        // `ChannelRx::join` consumes the `ChannelRx`; with the drain-aware
+        // handle it must wait for the dispatch's terminal cleanup.
+        // Once join returns, the Ack and Closed frames must already
+        // be on the wire.
+        parts.simplex.join().await;
+
+        let bytes = tokio::time::timeout(Duration::from_millis(100), reader.next())
+            .await
+            .unwrap_or_else(|_| panic!("mux split: produced no Ack frame within 100ms after join"))
+            .expect("frame reader error")
+            .expect("frame reader returned None");
+        let acked = super::deserialize_response(bytes.1)
+            .unwrap()
+            .into_ack()
+            .unwrap_or_else(|other| panic!("mux split: expected Ack, got {other:?}"));
+        assert_eq!(
+            acked, expected_ack,
+            "mux split: simplex.join must flush the final ack before returning"
+        );
+
+        let bytes = tokio::time::timeout(Duration::from_millis(100), reader.next())
+            .await
+            .unwrap_or_else(|_| {
+                panic!("mux split: produced no Closed frame within 100ms after join")
+            })
+            .expect("frame reader error")
+            .expect("frame reader returned None");
+        assert!(
+            super::deserialize_response(bytes.1).unwrap().is_closed(),
+            "mux split: expected Closed terminal frame after Ack"
+        );
+
+        // Tear down the listener after asserting on the wire.
+        let _ = parts.duplex;
+        parts.cancel.cancel();
+        let _ = parts.join_handle.await;
+    }
+
+    /// [`DuplexClient::stop`] cancels the recv/send loop's
+    /// cancellation token, and [`DuplexClient::join`] waits for the
+    /// spawned task to finish. The `select!`s observe cancel and the
+    /// loop exits via the flush + `Closed` + break path. Verifies the
+    /// cumulative ack and the terminal `Closed` are written on
     /// `ACCEPTOR_TO_INITIATOR` before the spawned task ends.
     #[async_timed_test(timeout_secs = 30)]
-    async fn duplex_client_join_flushes_pending_ack() {
+    async fn duplex_client_stop_then_join_flushes_pending_ack() {
         let config = hyperactor_config::global::lock();
         let _g_msg = config.override_key(config::MESSAGE_ACK_EVERY_N_MESSAGES, 1_000_000);
         let _g_time =
@@ -4724,11 +5273,10 @@ mod tests {
             }
         }
 
-        // Trigger graceful shutdown via the structured-concurrency
-        // join handle. Cancel propagates into the spawn loop's
-        // `select!`s; the loop exits via Cancelled (terminal) and
-        // the flush logic writes the cumulative ack and the
-        // `Closed` terminal frame before the task ends.
+        // Trigger graceful shutdown. `stop` propagates cancellation
+        // into the spawn loop's `select!`s; `join` waits until the
+        // loop exits via Cancelled (terminal) and the flush logic
+        // writes the cumulative ack and the `Closed` terminal frame.
         dial_client.join().await;
 
         let bytes = tokio::time::timeout(Duration::from_millis(100), reader.next())
@@ -4764,12 +5312,13 @@ mod tests {
 
     /// Verifies that an in-progress [`DuplexRx::recv`] on the
     /// receiver returned by [`DuplexClient::take_rx`] resolves with
-    /// [`ChannelError::Closed`] when [`DuplexClient::join`] is
-    /// called concurrently. Structured concurrency guarantees the
-    /// spawned task drops `inbound_tx` before `join` returns, so
-    /// the receiver observes the close deterministically.
+    /// [`ChannelError::Closed`] when [`DuplexClient::stop`] is called
+    /// and [`DuplexClient::join`] waits concurrently. Structured
+    /// concurrency guarantees the spawned task drops `inbound_tx`
+    /// before `join` returns, so the receiver observes the close
+    /// deterministically.
     #[async_timed_test(timeout_secs = 30)]
-    async fn duplex_client_join_terminates_in_progress_recv() {
+    async fn duplex_client_stop_then_join_terminates_in_progress_recv() {
         let session_id = SessionId(123);
         let (client_side, server_side) = tokio::io::duplex(8192);
         let (mut test_r, _test_w) = tokio::io::split(server_side);
@@ -4788,8 +5337,8 @@ mod tests {
 
         // Park a recv() in a separate task; the dial-side hasn't
         // forwarded any inbound frames so this future will sit in
-        // `inbound_rx.recv().await` indefinitely until `join`
-        // drops the spawned task's `inbound_tx`.
+        // `inbound_rx.recv().await` indefinitely until stop/join
+        // makes the spawned task drop its `inbound_tx`.
         let recv_handle: tokio::task::JoinHandle<Result<u64, ChannelError>> =
             tokio::spawn(async move { dial_rx.recv().await });
 
