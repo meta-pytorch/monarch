@@ -27,7 +27,7 @@ python python/examples/dining_philosophers.py --dashboard
 
 The example prints the dashboard URL on startup:
 
-```
+```text
 Monarch Dashboard: http://localhost:8265
 ```
 
@@ -70,7 +70,7 @@ the top to jump back to a parent level.
 
 The navigation levels are:
 
-```
+```text
 Host Meshes
   └─ Host Units (individual hosts)
        └─ Proc Meshes
@@ -97,7 +97,7 @@ Selecting an individual actor opens its detail page with three sections:
 
 The DAG view renders the entire job as an interactive directed graph, helping you to understand your job better.  It also shows message flows between your user actors.
 
-```
+```text
 Host → Proc → Actor
 ```
 
