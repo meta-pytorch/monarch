@@ -793,6 +793,9 @@ pub enum ActorStatus {
     Stopped(String),
     /// The actor failed with the provided actor error.
     Failed(ActorErrorKind),
+    /// The actor did not respond to hard kill, and teardown stopped waiting on
+    /// it normally.
+    Zombie(String),
 }
 
 impl ActorStatus {
@@ -843,6 +846,7 @@ impl fmt::Display for ActorStatus {
             Self::Stopping => write!(f, "stopping"),
             Self::Stopped(reason) => write!(f, "stopped: {}", reason),
             Self::Failed(err) => write!(f, "failed: {}", err),
+            Self::Zombie(reason) => write!(f, "zombie: {}", reason),
         }
     }
 }
@@ -3193,5 +3197,13 @@ mod tests {
             "CI-2: snapshot actor_status should be stopped, got: {}",
             actor_status
         );
+    }
+
+    #[test]
+    fn zombie_status_is_not_terminal() {
+        let status = ActorStatus::Zombie("hard kill did not finish".to_string());
+
+        assert!(!status.is_terminal(), "zombie status is not terminal");
+        assert!(status.is_zombie(), "zombie predicate should match");
     }
 }

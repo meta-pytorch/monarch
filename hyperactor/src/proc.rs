@@ -2460,7 +2460,8 @@ impl<A: Actor> Instance<A> {
     }
 
     fn is_stopping(&self) -> bool {
-        self.inner.cell.status().borrow().is_stopping()
+        let status = self.inner.cell.status().borrow();
+        status.is_stopping() || status.is_zombie()
     }
 
     /// This instance's actor address.
@@ -2935,6 +2936,15 @@ impl<A: Actor> Instance<A> {
             },
         };
 
+        // A zombie was already detached from its parent and reported through proc teardown.
+        // Its eventual task result still closes local resources, but must not create a second
+        // supervision event.
+        let event = if self.inner.cell.status().borrow().is_zombie() {
+            None
+        } else {
+            event
+        };
+
         self.mailbox().close(terminal_status.clone());
         // FI-1: store supervision_event BEFORE change_status.
         if let Some(event) = &event {
@@ -3013,7 +3023,11 @@ impl<A: Actor> Instance<A> {
         };
 
         assert!(!self.is_terminal());
-        self.change_status(ActorStatus::Stopping);
+        // `Zombie` is an out-of-band teardown verdict. Preserve it until the actor task
+        // publishes its true terminal status.
+        if !self.inner.cell.status().borrow().is_zombie() {
+            self.change_status(ActorStatus::Stopping);
+        }
         if let Err(err) = &result {
             tracing::error!("{}: actor failure: {}", self.self_addr(), err);
         }
@@ -3904,6 +3918,31 @@ fn select_eviction_candidates(
     to_remove
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum IllegalStatusChange {
+    LinkedZombie,
+    TerminalRewrite,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum StatusChange {
+    Apply,
+    Ignore,
+    Illegal(IllegalStatusChange),
+}
+
+fn classify_status_change(old: &ActorStatus, new: &ActorStatus) -> StatusChange {
+    // This classifier only covers status ordering. Actor-topology checks belong
+    // at the mutation site that can inspect the instance tree.
+    if old == new || old.is_zombie() && !new.is_terminal() || old.is_terminal() && new.is_zombie() {
+        StatusChange::Ignore
+    } else if old.is_terminal() {
+        StatusChange::Illegal(IllegalStatusChange::TerminalRewrite)
+    } else {
+        StatusChange::Apply
+    }
+}
+
 impl InstanceCell {
     /// Creates a new instance cell with the provided internal state. If a parent
     /// is provided, it is linked to this cell.
@@ -3998,58 +4037,70 @@ impl InstanceCell {
         &self.inner.status
     }
 
-    fn publish_dropped_status(&self, terminal_status: ActorStatus) {
-        let proc = self.proc().clone();
-        let actor_addr = self.actor_addr().clone();
-        let actor_id = actor_addr.id().clone();
-        self.inner.status_tx.send_if_modified(|status| {
-            if status.is_terminal() {
-                false
-            } else {
-                proc.inner
-                    .actor_tombstones
-                    .insert(actor_id.clone(), terminal_status.clone());
-                tracing::info!(
-                    name = "ActorStatus",
-                    actor_id = %actor_addr,
-                    actor_name = actor_addr.log_name(),
-                    status = "Stopped",
-                    prev_status = status.arm().unwrap_or("unknown"),
-                    "instance is dropped",
-                );
-                *status = terminal_status.clone();
-                true
-            }
-        });
-    }
-
     /// Notify subscribers of a change in the actors status and bump counters with the duration which
     /// the last status was active for.
     #[track_caller]
     fn change_status(&self, new: ActorStatus) {
-        if new.is_terminal() {
-            self.inner
-                .proc
-                .inner
-                .actor_tombstones
-                .insert(self.actor_addr().id().clone(), new.clone());
+        let mut old_status = None;
+        let mut illegal_status = None;
+        let actor_id = self.actor_addr().id().clone();
+        let changed = self.inner.status_tx.send_if_modified(|status| {
+            let old = status.clone();
+            let mut status_change = classify_status_change(&old, &new);
+            if status_change == StatusChange::Apply && new.is_zombie() && self.parent().is_some() {
+                status_change = StatusChange::Illegal(IllegalStatusChange::LinkedZombie);
+            }
+
+            match status_change {
+                StatusChange::Apply => {}
+                StatusChange::Ignore => return false,
+                StatusChange::Illegal(reason) => {
+                    // Leave the watch update closure before panicking so the
+                    // status lock is not held during unwind.
+                    illegal_status = Some((old, reason));
+                    return false;
+                }
+            }
+
+            if new.is_terminal() {
+                self.inner
+                    .proc
+                    .inner
+                    .actor_tombstones
+                    .insert(actor_id.clone(), new.clone());
+            }
+            old_status = Some(old);
+            *status = new.clone();
+            true
+        });
+
+        if let Some((old, reason)) = illegal_status {
+            match reason {
+                IllegalStatusChange::LinkedZombie => {
+                    panic!(
+                        "zombie actor must be detached from parent before status update: actor_id={}, prev_status={}, status={}",
+                        self.actor_addr(),
+                        old,
+                        new
+                    );
+                }
+                IllegalStatusChange::TerminalRewrite => {
+                    panic!(
+                        "actor changing status illegally, only allow non-terminal -> non-terminal \
+                        and non-terminal -> terminal statuses. actor_id={}, prev_status={}, status={}",
+                        self.actor_addr(),
+                        old,
+                        new
+                    );
+                }
+            }
         }
-        let old = self.inner.status_tx.send_replace(new.clone());
-        // 2 cases are allowed:
-        // * non-terminal -> non-terminal
-        // * non-terminal -> terminal
-        // terminal -> terminal is not allowed unless it is the same status (no-op).
-        // terminal -> non-terminal is never allowed.
-        assert!(
-            !old.is_terminal() && !new.is_terminal()
-                || !old.is_terminal() && new.is_terminal()
-                || old == new,
-            "actor changing status illegally, only allow non-terminal -> non-terminal \
-            and non-terminal -> terminal statuses. actor_id={}, prev_status={}, status={}",
-            self.actor_addr(),
-            old,
-            new
-        );
+
+        if !changed {
+            return;
+        }
+        let old = old_status.expect("status change should capture previous status");
+
         // Actor status changes between Idle and Processing when handling every
         // message. It creates too many logs if we want to log these 2 states.
         // Also, sometimes the actor transitions from Processing -> Processing.
@@ -4062,6 +4113,7 @@ impl InstanceCell {
             let change_reason = match &new {
                 ActorStatus::Failed(reason) => reason.to_string(),
                 ActorStatus::Stopped(reason) => reason.clone(),
+                ActorStatus::Zombie(reason) => reason.clone(),
                 _ => "".to_string(),
             };
             tracing::info!(
@@ -4086,6 +4138,32 @@ impl InstanceCell {
                 },
             });
         }
+    }
+
+    fn publish_dropped_status(&self, terminal_status: ActorStatus) {
+        let actor_id = self.actor_addr().id().clone();
+        let actor_addr = self.actor_addr().clone();
+        self.inner.status_tx.send_if_modified(|status| {
+            if status.is_terminal() {
+                false
+            } else {
+                self.inner
+                    .proc
+                    .inner
+                    .actor_tombstones
+                    .insert(actor_id.clone(), terminal_status.clone());
+                tracing::info!(
+                    name = "ActorStatus",
+                    actor_id = %actor_addr,
+                    actor_name = actor_addr.log_name(),
+                    status = "Stopped",
+                    prev_status = status.arm().unwrap_or("unknown"),
+                    "instance is dropped",
+                );
+                *status = terminal_status.clone();
+                true
+            }
+        });
     }
 
     /// The supervision event stored when this actor failed.
@@ -4741,6 +4819,86 @@ mod tests {
             .await
             .expect("status reply should arrive")
             .expect("status reply port should remain open")
+    }
+
+    #[test]
+    fn classify_status_change_table() {
+        let cases = [
+            (
+                ActorStatus::Idle,
+                ActorStatus::Processing(SystemTime::UNIX_EPOCH, None),
+                StatusChange::Apply,
+                "idle to processing",
+            ),
+            (
+                ActorStatus::Processing(SystemTime::UNIX_EPOCH, None),
+                ActorStatus::Idle,
+                StatusChange::Apply,
+                "processing to idle",
+            ),
+            (
+                ActorStatus::Idle,
+                ActorStatus::Stopped("done".to_string()),
+                StatusChange::Apply,
+                "non-terminal to terminal",
+            ),
+            (
+                ActorStatus::Stopping,
+                ActorStatus::Zombie("hard kill did not finish".to_string()),
+                StatusChange::Apply,
+                "non-terminal to zombie",
+            ),
+            (
+                ActorStatus::Zombie("hard kill did not finish".to_string()),
+                ActorStatus::Stopped("done".to_string()),
+                StatusChange::Apply,
+                "zombie to terminal",
+            ),
+            (
+                ActorStatus::Zombie("hard kill did not finish".to_string()),
+                ActorStatus::Idle,
+                StatusChange::Ignore,
+                "zombie to idle",
+            ),
+            (
+                ActorStatus::Zombie("hard kill did not finish".to_string()),
+                ActorStatus::Stopping,
+                StatusChange::Ignore,
+                "zombie to stopping",
+            ),
+            (
+                ActorStatus::Stopped("done".to_string()),
+                ActorStatus::Zombie("hard kill did not finish".to_string()),
+                StatusChange::Ignore,
+                "terminal to zombie",
+            ),
+            (
+                ActorStatus::Stopped("done".to_string()),
+                ActorStatus::Idle,
+                StatusChange::Illegal(IllegalStatusChange::TerminalRewrite),
+                "terminal to idle",
+            ),
+            (
+                ActorStatus::Stopped("done".to_string()),
+                ActorStatus::Stopped("other".to_string()),
+                StatusChange::Illegal(IllegalStatusChange::TerminalRewrite),
+                "terminal to terminal",
+            ),
+            (
+                ActorStatus::Idle,
+                ActorStatus::Idle,
+                StatusChange::Ignore,
+                "same status",
+            ),
+        ];
+
+        for (old, new, expected, label) in cases {
+            assert_eq!(
+                classify_status_change(&old, &new),
+                expected,
+                "{label}: {old} -> {new}"
+            );
+        }
     }
 
     #[derive(Debug)]
@@ -6036,6 +6194,123 @@ mod tests {
         first.drain_and_stop("test").unwrap();
         first.await;
         assert!(first_cell.inner.children.is_empty());
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn zombie_status_sets_unless_terminal() {
+        let proc = Proc::isolated();
+        let alive = proc.spawn_with_label::<TestActor>("alive", TestActor);
+        alive
+            .status()
+            .clone()
+            .wait_for(ActorStatus::is_idle)
+            .await
+            .unwrap();
+        alive
+            .cell()
+            .change_status(ActorStatus::Zombie("hard kill did not finish".into()));
+        assert!(alive.cell().status().borrow().is_zombie());
+
+        alive.cell().change_status(ActorStatus::Idle);
+        assert!(alive.cell().status().borrow().is_zombie());
+
+        let stopped = proc.spawn_with_label::<TestActor>("stopped", TestActor);
+        let stopped_cell = stopped.cell().clone();
+        stopped.drain_and_stop("test").unwrap();
+        let terminal_status = stopped.await;
+        assert!(terminal_status.is_terminal());
+
+        stopped_cell.change_status(ActorStatus::Zombie("hard kill did not finish".into()));
+        assert_eq!(*stopped_cell.status().borrow(), terminal_status);
+
+        alive.drain_and_stop("test").unwrap();
+        alive.await;
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn change_status_rejects_zombie_for_linked_child() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let parent = proc.spawn_with_label::<TestActor>("parent", TestActor);
+        let child = TestActor::spawn_child(&client, &parent).await;
+        child
+            .status()
+            .clone()
+            .wait_for(ActorStatus::is_idle)
+            .await
+            .unwrap();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            child
+                .cell()
+                .change_status(ActorStatus::Zombie("hard kill did not finish".to_string()));
+        }));
+        assert!(
+            result.is_err(),
+            "`change_status` must reject zombie status for linked children"
+        );
+
+        parent.drain_and_stop("test").unwrap();
+        assert_matches!(parent.await, ActorStatus::Stopped(reason) if reason == "test");
+        assert_matches!(child.await, ActorStatus::Stopped(reason) if reason == "parent draining");
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn zombie_status_does_not_complete_actor_handle() {
+        let proc = Proc::isolated();
+        let handle = proc.spawn_with_label::<TestActor>("alive", TestActor);
+        handle
+            .status()
+            .clone()
+            .wait_for(ActorStatus::is_idle)
+            .await
+            .unwrap();
+        handle
+            .cell()
+            .change_status(ActorStatus::Zombie("hard kill did not finish".to_string()));
+
+        let await_handle = handle.clone();
+        let result = tokio::time::timeout(
+            Duration::from_millis(100),
+            async move { await_handle.await },
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "zombie actor must not complete ActorHandle::await"
+        );
+        handle.drain_and_stop("test").unwrap();
+        assert_matches!(handle.await, ActorStatus::Stopped(reason) if reason == "test");
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn zombie_task_failure_does_not_report_supervision_event() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let (mut reported_event, _coordinator) =
+            ProcSupervisionCoordinator::set(&proc).await.unwrap();
+        let handle = proc.spawn_with_label::<TestActor>("alive", TestActor);
+        handle
+            .status()
+            .clone()
+            .wait_for(ActorStatus::is_idle)
+            .await
+            .unwrap();
+        handle
+            .cell()
+            .change_status(ActorStatus::Zombie("hard kill did not finish".to_string()));
+
+        handle
+            .fail(&client, anyhow::anyhow!("zombie failure"))
+            .await
+            .unwrap();
+        assert_matches!(handle.await, ActorStatus::Failed(_));
+
+        let result = tokio::time::timeout(Duration::from_millis(100), reported_event.recv()).await;
+        assert!(
+            result.is_err(),
+            "zombie actor task failure must not report a second supervision event"
+        );
     }
 
     #[async_timed_test(timeout_secs = 30)]

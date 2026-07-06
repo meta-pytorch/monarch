@@ -410,6 +410,7 @@ impl HostAgent {
                 ActorStatus::Idle | ActorStatus::Processing(_, _) => return Ok(()),
                 ActorStatus::Failed(err) => anyhow::bail!("host agent init failed: {err}"),
                 ActorStatus::Stopped(reason) => anyhow::bail!("host agent stopped: {reason}"),
+                ActorStatus::Zombie(reason) => anyhow::bail!("host agent zombie: {reason}"),
                 ActorStatus::Unknown
                 | ActorStatus::Created
                 | ActorStatus::Initializing
