@@ -160,7 +160,12 @@ pub struct Host<M> {
     /// [`PeerAttachGuard`] keeps the gateway peer route for the child
     /// alive; dropping it removes the entry (used by
     /// [`Host::terminate_children`] to free slots).
-    procs: HashMap<String, PeerAttachGuard>,
+    ///
+    /// Behind a `Mutex` so [`Host::spawn`] can take `&self`: this lets a
+    /// caller spawn many procs concurrently, since the long readiness wait
+    /// no longer holds an exclusive borrow of the host. The lock is only
+    /// held for the brief map operations, never across an await.
+    procs: std::sync::Mutex<HashMap<String, PeerAttachGuard>>,
     frontend_addr: ChannelAddr,
     backend_addr: ChannelAddr,
     /// Connectivity for every proc owned by this host.
@@ -310,7 +315,7 @@ impl<M: ProcManager> Host<M> {
         );
 
         Ok(Host {
-            procs: HashMap::new(),
+            procs: std::sync::Mutex::new(HashMap::new()),
             frontend_addr,
             backend_addr,
             gateway,
@@ -354,11 +359,16 @@ impl<M: ProcManager> Host<M> {
     /// advertised through this host's frontend gateway using a `Via(child_uid,
     /// host_location)` source route.
     pub async fn spawn(
-        &mut self,
+        &self,
         name: String,
         config: M::Config,
     ) -> Result<(ProcAddr, ActorRef<ManagerAgent<M>>), HostError> {
-        if self.procs.contains_key(&name) {
+        if self
+            .procs
+            .lock()
+            .expect("procs mutex poisoned")
+            .contains_key(&name)
+        {
             return Err(HostError::ProcExists(name));
         }
 
@@ -399,13 +409,21 @@ impl<M: ProcManager> Host<M> {
                 anyhow::anyhow!("failed to dial spawned proc at {}: {}", ready.addr(), e),
             )
         })?;
-        // The proc id derives from `name`, and we rejected a duplicate
-        // `name` above, so this peer uid is unique.
+        // The gateway's peer table is the atomic uniqueness authority: the
+        // `procs` check above is a best-effort fast path, so `spawn` taking
+        // `&self` (to allow concurrent spawns of distinct names) does not make
+        // check-and-insert atomic. Under a same-name race the loser is rejected
+        // here — propagate that as an error rather than panicking. The child
+        // handle is dropped on the early return, killing the spawned proc, same
+        // as the readiness/dial failure paths above.
         let guard = self
             .gateway
             .attach_peer(proc_uid, child_sender.into_boxed())
-            .expect("spawned proc uid is unique: duplicate name rejected above");
-        self.procs.insert(name.clone(), guard);
+            .map_err(|_| HostError::ProcExists(name.clone()))?;
+        self.procs
+            .lock()
+            .expect("procs mutex poisoned")
+            .insert(name.clone(), guard);
 
         Ok((proc_id, ready.agent_ref().clone()))
     }
@@ -668,7 +686,7 @@ impl<M: ProcManager + BulkTerminate> Host<M> {
             .await;
         // Detach procs from the gateway by dropping their attach
         // guards, freeing the name slots for any future respawns.
-        self.procs.clear();
+        self.procs.lock().expect("procs mutex poisoned").clear();
         summary
     }
 }
@@ -1574,7 +1592,7 @@ mod tests {
             Ok(proc.spawn_with_label::<()>("host_agent", ()))
         });
         let procs = Arc::clone(&proc_manager.procs);
-        let mut host = Host::new(proc_manager, ChannelAddr::any(ChannelTransport::Unix))
+        let host = Host::new(proc_manager, ChannelAddr::any(ChannelTransport::Unix))
             .await
             .unwrap();
 
@@ -1645,7 +1663,7 @@ mod tests {
         let process_manager = ProcessProcManager::<EchoActor>::new(
             buck_resources::get("monarch/hyperactor_mesh/host_bootstrap").unwrap(),
         );
-        let mut host = Host::new(process_manager, ChannelAddr::any(ChannelTransport::Unix))
+        let host = Host::new(process_manager, ChannelAddr::any(ChannelTransport::Unix))
             .await
             .unwrap();
 
@@ -1873,7 +1891,7 @@ mod tests {
             Duration::from_millis(10),
         );
 
-        let mut host = Host::new(
+        let host = Host::new(
             TestManager::local(ReadyMode::Pending),
             ChannelAddr::any(ChannelTransport::Local),
         )
@@ -1892,7 +1910,7 @@ mod tests {
             Duration::from_secs(0),
         );
 
-        let mut host = Host::new(
+        let host = Host::new(
             TestManager::local(ReadyMode::OkAfter(Duration::from_millis(20))),
             ChannelAddr::any(ChannelTransport::Local),
         )
@@ -1901,12 +1919,12 @@ mod tests {
 
         let (pid, agent) = host.spawn("ok".into(), ()).await.expect("must succeed");
         assert_eq!(agent.actor_addr().proc_addr(), pid);
-        assert!(host.procs.contains_key("ok"));
+        assert!(host.procs.lock().unwrap().contains_key("ok"));
     }
 
     #[tokio::test]
     async fn host_spawn_maps_channel_closed_ready_error_to_config_failure() {
-        let mut host = Host::new(
+        let host = Host::new(
             TestManager::local(ReadyMode::ErrChannelClosed),
             ChannelAddr::any(ChannelTransport::Local),
         )
@@ -1919,7 +1937,7 @@ mod tests {
 
     #[tokio::test]
     async fn host_spawn_maps_terminal_ready_error_to_config_failure() {
-        let mut host = Host::new(
+        let host = Host::new(
             TestManager::local(ReadyMode::ErrTerminal),
             ChannelAddr::any(ChannelTransport::Local),
         )
@@ -1932,7 +1950,7 @@ mod tests {
 
     #[tokio::test]
     async fn host_spawn_fails_if_ready_but_missing_addr() {
-        let mut host = Host::new(
+        let host = Host::new(
             TestManager::local(ReadyMode::OkAfter(Duration::ZERO)).with_omissions(true, false),
             ChannelAddr::any(ChannelTransport::Local),
         )
@@ -1948,7 +1966,7 @@ mod tests {
 
     #[tokio::test]
     async fn host_spawn_fails_if_ready_but_missing_agent() {
-        let mut host = Host::new(
+        let host = Host::new(
             TestManager::local(ReadyMode::OkAfter(Duration::ZERO)).with_omissions(false, true),
             ChannelAddr::any(ChannelTransport::Local),
         )
@@ -2203,7 +2221,7 @@ mod tests {
         let attached_location = Location::from(attached_host_addr).with_via(attached_uid);
         gateway.set_default_location(attached_location.clone());
 
-        let mut host = Host::new_with_gateway(
+        let host = Host::new_with_gateway(
             proc_manager,
             ChannelAddr::any(ChannelTransport::Unix),
             None,
@@ -2230,7 +2248,7 @@ mod tests {
             Ok(proc.spawn_with_label::<()>("host_agent", ()))
         });
 
-        let mut host = Host::new_with_gateway(
+        let host = Host::new_with_gateway(
             proc_manager,
             ChannelAddr::any(ChannelTransport::Unix),
             None,

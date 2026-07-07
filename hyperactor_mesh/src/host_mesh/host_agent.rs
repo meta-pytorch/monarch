@@ -25,6 +25,8 @@ use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
+use futures::StreamExt;
+use futures::stream;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::ActorRef;
@@ -789,8 +791,27 @@ pub struct SpawnProcs {
 }
 wirevalue::register_type!(SpawnProcs);
 
+/// Post a single rank's `status` to a reduced `status_reply` overlay port. A
+/// single-rank run is always a valid overlay, so construction cannot fail.
+fn post_rank_status(
+    cx: &Context<'_, HostAgent>,
+    reply: &PortRef<crate::StatusOverlay>,
+    rank: usize,
+    status: Status,
+) {
+    if let Ok(overlay) = crate::StatusOverlay::try_from_runs(vec![(rank..(rank + 1), status)]) {
+        reply.post(cx, overlay);
+    }
+}
+
 #[async_trait]
 impl Handler<SpawnProcs> for HostAgent {
+    /// Infallible by contract: returns `Ok(())` even when individual procs fail
+    /// to spawn. Per-rank outcomes — `Failed` on spawn error — are reported
+    /// through `status_reply`, and failures are also logged. `Err` is returned
+    /// only if building the status overlay fails. A caller that passes no
+    /// `status_reply` observes spawn failures only in the logs, not the return
+    /// value.
     #[tracing::instrument("HostAgent::SpawnProcs", level = "info", skip_all, fields(host_rank, num = spawn.num_per_host))]
     async fn handle(&mut self, cx: &Context<Self>, spawn: SpawnProcs) -> anyhow::Result<()> {
         let host_rank = spawn
@@ -800,78 +821,92 @@ impl Handler<SpawnProcs> for HostAgent {
 
         tracing::Span::current().record("host_rank", host_rank);
 
-        let mut spawn_result = Ok(());
-
-        for per_host_rank in 0..spawn.num_per_host {
-            let rank = spawn.num_per_host * host_rank + per_host_rank;
-
-            let id = proc_name(&spawn.proc_mesh_id, rank);
-
-            let bootstrap_command = spawn
-                .bootstrap_commands
-                .as_ref()
-                .and_then(|commands| commands.get(rank).cloned().flatten())
-                .or_else(|| spawn.default_bootstrap_command.clone());
-
-            let proc_bind = spawn
-                .proc_bind
-                .as_ref()
-                .and_then(|binds| binds.get(per_host_rank).cloned());
-
-            if let Err(e) = <Self as Handler<resource::CreateOrUpdate<ProcSpec>>>::handle(
-                self,
-                cx,
-                resource::CreateOrUpdate {
-                    id,
-                    rank: resource::Rank::new(rank),
-                    spec: ProcSpec {
-                        client_config_override: spawn.client_config_override.clone(),
-                        proc_bind,
-                        bootstrap_command,
-                        host_mesh_id: spawn.host_mesh_id.clone(),
-                        proc_mesh_id: Some(spawn.proc_mesh_id.clone()),
-                    },
-                },
-            )
-            .await
-            {
-                // Stop spawning, but fall through to report the result below.
-                spawn_result = Err(e);
-                break;
-            }
-        }
-
-        // Report this host's full rank range in a single multi-rank overlay. The
-        // caller's readiness barrier only completes once *every* rank has moved
-        // off NotExist, so on the error path the ranks we never created are
-        // reported as Failed too — otherwise the caller would wait out its whole
-        // idle timeout instead of failing fast on the error we return below.
-        if let Some(reply) = &spawn.status_reply {
-            let mut runs = Vec::with_capacity(spawn.num_per_host);
-
-            for per_host_rank in 0..spawn.num_per_host {
+        // Spawn every slot for this host concurrently, streaming the results so
+        // each rank's outcome is posted to `status_reply` the moment it's known.
+        // This lets the caller's readiness barrier advance per-proc — a slow or
+        // failed proc no longer holds up reporting the ranks that are already
+        // done. Recording needs `&mut self`, so it's deferred to a serial pass
+        // after the (shared-`&self`) stream drains.
+        let host_agent = &*self;
+        let status_reply = spawn.status_reply.as_ref();
+        let spawned: Vec<(ResourceId, ProcCreationState)> =
+            stream::iter((0..spawn.num_per_host).map(|per_host_rank| {
                 let rank = spawn.num_per_host * host_rank + per_host_rank;
 
                 let id = proc_name(&spawn.proc_mesh_id, rank);
 
-                let status = match self.proc_rank_status(&id).await {
-                    (resolved, status) if resolved != usize::MAX => status,
-                    // Unknown to this host: not yet attempted, or its creation
-                    // errored before being recorded. Mark Failed on the error
-                    // path; on success every rank is created so this is moot.
-                    _ => match &spawn_result {
-                        Err(e) => Status::Failed(e.to_string()),
-                        Ok(()) => continue,
-                    },
+                let bootstrap_command = spawn
+                    .bootstrap_commands
+                    .as_ref()
+                    .and_then(|commands| commands.get(rank).cloned().flatten())
+                    .or_else(|| spawn.default_bootstrap_command.clone());
+
+                let proc_bind = spawn
+                    .proc_bind
+                    .as_ref()
+                    .and_then(|binds| binds.get(per_host_rank).cloned());
+
+                let spec = ProcSpec {
+                    client_config_override: spawn.client_config_override.clone(),
+                    proc_bind,
+                    bootstrap_command,
+                    host_mesh_id: spawn.host_mesh_id.clone(),
+                    proc_mesh_id: Some(spawn.proc_mesh_id.clone()),
                 };
 
-                runs.push((rank..(rank + 1), status));
-            }
+                async move {
+                    assert!(
+                        !host_agent.created.contains_key(&id),
+                        "SpawnProcs slot for rank {rank} ({id}) already exists — \
+                         SpawnProcs must be delivered at most once per mesh",
+                    );
 
-            reply.post(cx, crate::StatusOverlay::try_from_runs(runs)?);
+                    let result = host_agent
+                        .spawn_proc(&resource::CreateOrUpdate {
+                            id: id.clone(),
+                            rank: resource::Rank::new(rank),
+                            spec,
+                        })
+                        .await;
+
+                    // Post this rank's outcome as soon as the spawn resolves.
+                    // A `None` means the host shut down mid-batch; report it as
+                    // Failed so the barrier fails fast instead of hanging.
+                    if let Some(reply) = status_reply {
+                        let status = match &result {
+                            Some(state) => match &state.created {
+                                Ok(_) => Status::Running,
+                                Err(e) => Status::Failed(e.to_string()),
+                            },
+                            None => {
+                                Status::Failed("host shut down before proc was created".to_string())
+                            }
+                        };
+                        post_rank_status(cx, reply, rank, status);
+                    }
+
+                    result.map(|state| (id, state))
+                }
+            }))
+            .buffer_unordered(spawn.num_per_host.max(1))
+            .filter_map(|result| async move { result })
+            .collect()
+            .await;
+
+        // Recording is the only phase that needs `&mut self`; do it serially
+        // once all spawns have completed.
+        let recorded_any = !spawned.is_empty();
+        for (id, state) in spawned {
+            self.record_proc(cx, id, state).await;
+        }
+        // Only republish introspect state if we actually recorded procs; an
+        // empty batch (every id already created, or `num_per_host == 0`)
+        // changed nothing.
+        if recorded_any {
+            self.publish_introspect_properties(cx);
         }
 
-        spawn_result
+        Ok(())
     }
 }
 
@@ -891,16 +926,30 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
             return Ok(());
         }
 
-        let host = match self.host_mut() {
-            Some(h) => h,
-            None => {
-                tracing::warn!(
-                    id = %create_or_update.id,
-                    "ignoring CreateOrUpdate: HostAgent has already shut down"
-                );
-                return Ok(());
-            }
+        let Some(state) = self.spawn_proc(&create_or_update).await else {
+            tracing::warn!(
+                id = %create_or_update.id,
+                "ignoring CreateOrUpdate: HostAgent has already shut down"
+            );
+            return Ok(());
         };
+
+        self.record_proc(cx, create_or_update.id.clone(), state)
+            .await;
+        self.publish_introspect_properties(cx);
+        Ok(())
+    }
+}
+
+impl HostAgent {
+    /// Spawn a single proc on the host and return its creation state, without
+    /// recording it in `self.created`. Takes `&self` so callers can run many
+    /// spawns concurrently. Returns `None` if the host has already shut down.
+    async fn spawn_proc(
+        &self,
+        create_or_update: &resource::CreateOrUpdate<ProcSpec>,
+    ) -> Option<ProcCreationState> {
+        let host = self.host()?;
         let created = match host {
             HostAgentMode::Process { host, .. } => {
                 host.spawn(
@@ -920,22 +969,43 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
             HostAgentMode::Local(host) => host.spawn(create_or_update.id.to_string(), ()).await,
         };
 
-        let rank = create_or_update.rank.unwrap();
-
         if let Err(e) = &created {
             tracing::error!("failed to spawn proc {}: {}", create_or_update.id, e);
         }
+
+        Some(ProcCreationState {
+            rank: create_or_update.rank.unwrap(),
+            host_mesh_id: create_or_update.spec.host_mesh_id.clone(),
+            proc_mesh_id: create_or_update.spec.proc_mesh_id.clone(),
+            created,
+            expiry_time: None,
+        })
+    }
+
+    /// Record a freshly spawned proc in `self.created` and wire up its
+    /// lifecycle bookkeeping: the Detached → Attached transition, pending
+    /// `WaitRankStatus` waiter fixups, and the status watch bridge. Does not
+    /// publish introspect properties — the caller does so once, after
+    /// recording all procs in a batch.
+    async fn record_proc(
+        &mut self,
+        cx: &Context<'_, Self>,
+        id: ResourceId,
+        state: ProcCreationState,
+    ) {
+        // Defensive guard: the batch path filters already-created ids and the
+        // direct `CreateOrUpdate` handler guards with `contains_key`, so a
+        // duplicate should never reach here. If one ever did, overwriting would
+        // discard the existing entry's bookkeeping (rank, pending waiters, watch
+        // state); skip instead of clobbering.
+        if self.created.contains_key(&id) {
+            tracing::warn!(id = %id, "record_proc: id already recorded; ignoring duplicate");
+            return;
+        }
+
+        let rank = state.rank;
         let was_empty = self.created.is_empty();
-        self.created.insert(
-            create_or_update.id.clone(),
-            ProcCreationState {
-                rank,
-                host_mesh_id: create_or_update.spec.host_mesh_id.clone(),
-                proc_mesh_id: create_or_update.spec.proc_mesh_id.clone(),
-                created,
-                expiry_time: None,
-            },
-        );
+        self.created.insert(id.clone(), state);
 
         // Transition Detached → Attached on first proc creation.
         if was_empty && let HostAgentState::Detached(_) = &self.state {
@@ -946,18 +1016,17 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
             self.state = HostAgentState::Attached(host);
         }
 
-        // If any WaitRankStatus messages arrived before this proc
-        // existed, their waiters were stashed with a sentinel rank.
-        // Now that we know the real rank, fix them up and start a
-        // watch bridge.
+        // If any WaitRankStatus messages arrived before this proc existed,
+        // their waiters were stashed with a sentinel rank. Now that we know
+        // the real rank, fix them up and start a watch bridge.
         // Extract the proc_id before mutably borrowing pending_proc_waiters.
         let proc_id = self
             .created
-            .get(&create_or_update.id)
+            .get(&id)
             .and_then(|s| s.created.as_ref().ok())
             .map(|(pid, _)| pid.clone());
 
-        if let Some(waiters) = self.pending_proc_waiters.get_mut(&create_or_update.id) {
+        if let Some(waiters) = self.pending_proc_waiters.get_mut(&id) {
             for (_, waiter_rank, _) in waiters.iter_mut() {
                 if *waiter_rank == usize::MAX {
                     *waiter_rank = rank;
@@ -966,15 +1035,12 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
         }
 
         // Start a bridge and send ourselves an initial check.
-        if self.pending_proc_waiters.contains_key(&create_or_update.id) {
+        if self.pending_proc_waiters.contains_key(&id) {
             if let Some(proc_id) = &proc_id {
-                self.start_watch_bridge(&create_or_update.id, proc_id).await;
+                self.start_watch_bridge(&id, proc_id).await;
             }
-            self.flush_proc_waiters(cx, &create_or_update.id).await;
+            self.flush_proc_waiters(cx, &id).await;
         }
-
-        self.publish_introspect_properties(cx);
-        Ok(())
     }
 }
 
