@@ -9,13 +9,37 @@
 from importlib import import_module as _import_module
 from typing import TYPE_CHECKING
 
+# Opt-in torch preload, BEFORE monarch._rust_bindings.
+#
+# On ROCm, monarch's native extension links the system libamdhip64 while torch
+# bundles its own copy. If monarch._rust_bindings loads first, the system HIP
+# runtime wins rocprofiler-register and the first HIP runtime call afterward
+# aborts (hip.cpp:512 "hipApiName has non-null function pointer ... first
+# instance of the library being copied", SIGABRT). Importing torch first makes
+# torch's runtime win.
+#
+# This is opt-in via MONARCH_PRELOAD_TORCH so monarch stays importable -- and
+# torch-free -- for non-torch frameworks. _get_bootstrap_args() sets it on
+# spawned procs only when the launching process itself uses torch, so CPU /
+# no-torch workloads never pull torch in.
+import os as _os
+
+if _os.environ.get("MONARCH_PRELOAD_TORCH") == "1":
+    try:
+        import torch  # @manual  # noqa: F401
+    except ImportError:
+        pass
+
 # Import before monarch to pre-load torch DSOs as, in exploded wheel flows,
 # our RPATHs won't correctly find them.
 try:
-    import torch  # @manual  # noqa: F401
+    import monarch._rust_bindings  # @manual  # noqa: F401
 except ImportError:
-    pass
-import monarch._rust_bindings  # @manual  # noqa: F401
+    try:
+        import torch  # @manual  # noqa: F401
+    except ImportError:
+        pass
+    import monarch._rust_bindings  # @manual  # noqa: F401
 
 # submodules of monarch should not be imported in this
 # top-level file because it will cause them to get

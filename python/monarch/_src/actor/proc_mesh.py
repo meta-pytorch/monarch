@@ -1002,4 +1002,12 @@ def _get_bootstrap_args() -> tuple[str, Optional[list[str]], dict[str, str]]:
         args = ["-m", _BOOTSTRAP_MAIN]
         env = {}
 
+    # If the launching process uses torch, tell spawned procs to import torch
+    # before monarch._rust_bindings (see monarch/__init__.py). This keeps the
+    # torch HIP runtime ahead of monarch's system libamdhip64 on ROCm, avoiding
+    # a fatal rocprofiler-register abort. Gated on the parent actually using
+    # torch so CPU / no-torch workloads never import it.
+    if "torch" in sys.modules:
+        env["MONARCH_PRELOAD_TORCH"] = "1"
+
     return cmd, args, env
