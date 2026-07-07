@@ -33,6 +33,7 @@ use crate::RemoteHandles;
 use crate::RemoteMessage;
 use crate::accum::ReducerSpec;
 use crate::accum::StreamingReducerOpts;
+use crate::actor::Binds;
 use crate::actor::Referable;
 use crate::context;
 use crate::context::MailboxExt;
@@ -88,6 +89,16 @@ impl<A: Referable> ActorRef<A> {
         A: Actor,
     {
         cx.instance().proc().resolve_actor_ref(self)
+    }
+}
+
+impl<A, B> From<&ActorRef<A>> for ActorRef<B>
+where
+    A: Actor + Referable,
+    B: Binds<A>,
+{
+    fn from(value: &ActorRef<A>) -> Self {
+        ActorRef::attest(value.actor_addr().clone())
     }
 }
 
