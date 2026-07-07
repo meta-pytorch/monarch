@@ -38,6 +38,7 @@ use serde::Serialize;
 use typeuri::Named;
 
 use crate::StatusOverlay;
+use crate::ValueMesh;
 use crate::bootstrap;
 use crate::bootstrap::BootstrapCommand;
 use crate::bootstrap::ProcBind;
@@ -242,48 +243,64 @@ pub struct WaitRankStatus {
     pub reply: PortRef<StatusOverlay>,
 }
 
+/// Collect an accumulated [`ValueMesh<T>`] from `rx` until every rank has been
+/// reported or `max_idle_time` elapses with no update.
+///
+/// `reported` decides whether a rank's current value counts as "reported" (e.g.
+/// moved off a `NotExist`/`Timeout` placeholder). The accumulator emits the full
+/// mesh over the target region, so completion is "every cell reported". Returns
+/// `Ok(mesh)` once all ranks are reported, or `Err(mesh)` carrying the latest
+/// snapshot (or `fallback` if nothing arrived) on idle timeout / channel close.
+pub async fn wait_mesh<T>(
+    mut rx: PortReceiver<ValueMesh<T>>,
+    max_idle_time: Duration,
+    fallback: ValueMesh<T>,
+    reported: impl Fn(&T) -> bool,
+) -> Result<ValueMesh<T>, ValueMesh<T>>
+where
+    T: Send + Sync + Clone + 'static,
+{
+    let mut alarm = hyperactor::time::Alarm::new();
+    alarm.arm(max_idle_time);
+
+    // Latest-wins snapshot; `fallback` stands in until the first update arrives.
+    let mut snapshot = fallback;
+
+    loop {
+        let mut sleeper = alarm.sleeper();
+        tokio::select! {
+            _ = sleeper.sleep() => return Err(snapshot),
+            next = rx.recv() => {
+                match next {
+                    Ok(mesh) => { snapshot = mesh; }   // latest-wins snapshot
+                    Err(_)   => return Err(snapshot),
+                }
+            }
+        }
+
+        alarm.arm(max_idle_time);
+
+        // Short-circuit: done as soon as no rank is still unreported.
+        if snapshot.values().all(|v| reported(&v)) {
+            break Ok(snapshot);
+        }
+    }
+}
+
 impl GetRankStatus {
     pub async fn wait(
-        mut rx: PortReceiver<crate::StatusMesh>,
+        rx: PortReceiver<crate::StatusMesh>,
         num_ranks: usize,
         max_idle_time: Duration,
         region: Region, // used only for fallback
     ) -> Result<crate::StatusMesh, crate::StatusMesh> {
         debug_assert_eq!(region.num_ranks(), num_ranks, "region/num_ranks mismatch");
 
-        let mut alarm = hyperactor::time::Alarm::new();
-        alarm.arm(max_idle_time);
-
-        // Fallback snapshot if we time out before receiving anything.
-        let mut snapshot =
-            crate::StatusMesh::from_single(region, crate::resource::Status::NotExist);
-
-        loop {
-            let mut sleeper = alarm.sleeper();
-            tokio::select! {
-                _ = sleeper.sleep() => return Err(snapshot),
-                next = rx.recv() => {
-                    match next {
-                        Ok(mesh) => { snapshot = mesh; }   // latest-wins snapshot
-                        Err(_)   => return Err(snapshot),
-                    }
-                }
-            }
-
-            alarm.arm(max_idle_time);
-
-            // Completion: once every expected rank has reported at least
-            // something (i.e. moved off NotExist). Sliced meshes may report at
-            // non-zero base ranks, so do not assume the relevant ranks occupy
-            // the first `num_ranks` dense slots.
-            let reported = snapshot
-                .values()
-                .filter(|s| !matches!(s, crate::resource::Status::NotExist))
-                .count();
-            if reported >= num_ranks {
-                break Ok(snapshot);
-            }
-        }
+        let fallback = crate::StatusMesh::from_single(region, crate::resource::Status::NotExist);
+        wait_mesh(rx, max_idle_time, fallback, |s| {
+            !matches!(s, crate::resource::Status::NotExist)
+        })
+        .await
     }
 }
 

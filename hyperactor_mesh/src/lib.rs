@@ -9,7 +9,6 @@
 //! This crate provides hyperactor's mesh abstractions.
 
 #![feature(associated_type_defaults)]
-#![feature(exit_status_error)]
 #![feature(impl_trait_in_bindings)]
 #![feature(get_disjoint_mut_helpers)]
 #![feature(exact_size_is_empty)]
@@ -117,10 +116,19 @@ pub type StatusMesh = ValueMesh<Status>;
 /// Construct via `ValueOverlay::try_from_runs` after normalizing.
 pub type StatusOverlay = value_mesh::ValueOverlay<Status>;
 
-hyperactor::internal_macro_support::inventory::submit! {
+inventory::submit! {
     hyperactor::accum::ReducerFactory {
         typehash_f: <hyperactor::value_mesh::ValueOverlayReducer<crate::resource::Status> as typeuri::Named>::typehash,
         builder_f: |_| Ok(Box::new(hyperactor::value_mesh::ValueOverlayReducer::<crate::resource::Status>::new())),
+    }
+}
+
+// Reducer for per-proc `State<ProcState>` overlays, so `ProcMeshRef::states`
+// can reduce partial per-host meshes up the cast tree (see `GetHostProcStates`).
+inventory::submit! {
+    hyperactor::accum::ReducerFactory {
+        typehash_f: <hyperactor::value_mesh::ValueOverlayReducer<crate::resource::State<crate::host_mesh::host_agent::ProcState>> as typeuri::Named>::typehash,
+        builder_f: |_| Ok(Box::new(hyperactor::value_mesh::ValueOverlayReducer::<crate::resource::State<crate::host_mesh::host_agent::ProcState>>::new())),
     }
 }
 

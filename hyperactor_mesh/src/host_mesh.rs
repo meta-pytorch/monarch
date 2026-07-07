@@ -1520,6 +1520,14 @@ impl HostMeshRef {
         &self.id
     }
 
+    /// The `ActorMesh<HostAgent>` backing this host mesh. Casting to it routes
+    /// through the host mesh's cast tree (root = its cast actor 0), so replies
+    /// to a bound port reduce up the tree instead of every host dialing the
+    /// caller directly.
+    pub(crate) fn agent_mesh(&self) -> &ActorMeshRef<HostAgent> {
+        &self.host_agent_mesh
+    }
+
     /// The host channel addresses in rank order.
     pub fn host_addrs(&self) -> Vec<ChannelAddr> {
         self.host_agent_mesh
