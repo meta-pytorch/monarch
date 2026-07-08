@@ -35,7 +35,6 @@ use async_trait::async_trait;
 use futures::StreamExt as _;
 use serde::Deserialize;
 use serde::Serialize;
-use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -171,33 +170,25 @@ impl channel::Tx<MessageEnvelope> for AttachTx {
     fn do_post(
         &self,
         envelope: MessageEnvelope,
-        return_channel: Option<oneshot::Sender<channel::SendError<MessageEnvelope>>>,
+        completion: channel::CompletionSink<MessageEnvelope>,
     ) {
-        let return_channel = return_channel.map(|return_channel| {
-            let (wire_return_tx, wire_return_rx) =
-                oneshot::channel::<channel::SendError<AttachWire>>();
-            tokio::spawn(async move {
-                let Ok(channel::SendError {
-                    error,
-                    message,
-                    reason,
-                }) = wire_return_rx.await
-                else {
-                    return;
-                };
+        let completion = completion.contramap_rejected(
+            |channel::SendError {
+                 error,
+                 message,
+                 reason,
+             }| {
                 let AttachWire::Envelope(envelope) = message else {
-                    return;
+                    return None;
                 };
-                let _ = return_channel.send(channel::SendError {
+                Some(channel::SendError {
                     error,
                     message: envelope,
                     reason,
-                });
-            });
-            wire_return_tx
-        });
-        self.0
-            .do_post(AttachWire::Envelope(envelope), return_channel);
+                })
+            },
+        );
+        self.0.do_post(AttachWire::Envelope(envelope), completion);
     }
 
     fn addr(&self) -> ChannelAddr {
