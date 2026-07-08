@@ -32,6 +32,15 @@ if _os.environ.get("MONARCH_PRELOAD_TORCH") == "1":
 
 # Import before monarch to pre-load torch DSOs as, in exploded wheel flows,
 # our RPATHs won't correctly find them.
+import sys as _sys
+
+# Record whether torch's HIP runtime was already loaded when we load our native
+# extension. On ROCm, if our extension (which links the system libamdhip64)
+# loads before torch's bundled copy, the first HIP call aborts
+# (hip.cpp:512 "hipApiName ..."). The RDMA path checks this flag to raise a
+# clear, actionable error instead of a hard SIGABRT. See
+# monarch/_src/rdma/rdma.py:_ensure_hip_runtime_ordering.
+_TORCH_PRELOADED_BEFORE_BINDINGS = "torch" in _sys.modules
 try:
     import monarch._rust_bindings  # @manual  # noqa: F401
 except ImportError:
@@ -39,6 +48,8 @@ except ImportError:
         import torch  # @manual  # noqa: F401
     except ImportError:
         pass
+    # The fallback imports torch before retrying, so torch's runtime wins here.
+    _TORCH_PRELOADED_BEFORE_BINDINGS = "torch" in _sys.modules
     import monarch._rust_bindings  # @manual  # noqa: F401
 
 # submodules of monarch should not be imported in this
