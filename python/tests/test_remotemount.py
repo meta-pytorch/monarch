@@ -9,18 +9,16 @@
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import errno
 import mmap
 import os
 import shutil
 import stat
-import sys
 import tempfile
 import threading
 import time
 from collections.abc import Generator
-from types import SimpleNamespace
-from typing import cast
 
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
@@ -28,12 +26,7 @@ from monarch._rust_bindings.monarch_extension.chunked_fuse import (
     FuseMountHandle,
     mount_chunked_fuse,
 )
-from monarch.remotemount.remotemount import (
-    BLOCK_SIZE,
-    build_index,
-    materialise_block,
-    MountHandlerClient,
-)
+from monarch.remotemount.remotemount import BLOCK_SIZE, build_index, materialise_block
 
 # Freshness is driven by per-file (size, mtime_ns) recorded in the layout
 # rather than xxhash block hashing. The FUSE tests pack a source dir into
@@ -459,67 +452,6 @@ class TestMaterialiseSourceDiverged:
             assert diverged == []
 
 
-class TestDeliverRouting:
-    """MountHandlerClient._deliver materialises the block and broadcasts it via a
-    single ``receive_block`` call carrying both the bytes and the stale-file list (the
-    files ``materialise_block`` reports as diverged) -- one atomic delivery, no separate
-    ``mark_stale``. ``_deliver`` is a plain sync method (only its ``enqueue`` wrapper
-    is an @endpoint, and the actor's endpoints are all sync), so it is driven directly
-    against a duck-typed ``self`` -- no actor runtime or FUSE mount needed."""
-
-    class _RecordingEndpoint:
-        """Stand-in for an actor-mesh endpoint handle: records the args of each
-        ``ep.call(...).get()`` instead of dispatching to a worker."""
-
-        def __init__(self) -> None:
-            self.calls: list[tuple] = []
-
-        def call(self, *args: object) -> SimpleNamespace:
-            self.calls.append(args)
-            return SimpleNamespace(get=lambda: None)
-
-    def _fake_self(self) -> SimpleNamespace:
-        return SimpleNamespace(
-            index={"/": {"total_size": BLOCK_SIZE}},
-            _delivered=set(),
-            fuse_actors=SimpleNamespace(receive_block=self._RecordingEndpoint()),
-        )
-
-    def test_deliver_ships_block_with_empty_stale_when_all_fresh(
-        self, monkeypatch
-    ) -> None:
-        """All files reproduce -> one ``receive_block`` with an empty stale list."""
-        s = self._fake_self()
-        # Patch the module object, not the dotted string: the ``monarch.remotemount``
-        # package re-exports the ``remotemount`` factory, which shadows the
-        # ``remotemount`` submodule on the string path. ``_deliver`` looks up
-        # ``materialise_block`` in this module's globals, which this rebinds.
-        monkeypatch.setattr(
-            sys.modules[MountHandlerClient.__module__],
-            "materialise_block",
-            lambda index, block: (b"block-bytes", []),
-        )
-        # Call the unbound method with ``s`` as ``self`` (it only touches the attrs
-        # set on the stand-in). ``cast`` is a runtime no-op; it just satisfies pyre's
-        # ``self: MountHandlerClient`` at the call site.
-        MountHandlerClient._deliver(cast(MountHandlerClient, s), 7)
-        assert s.fuse_actors.receive_block.calls == [(7, b"block-bytes", [])]
-        assert s._delivered == {7}  # remembered permanently, never cleared
-
-    def test_deliver_ships_stale_set_with_the_block(self, monkeypatch) -> None:
-        """Diverged files ride along in the same ``receive_block`` call (atomic with the
-        bytes -- no separate mark_stale), and the path does not abort the actor."""
-        s = self._fake_self()
-        monkeypatch.setattr(
-            sys.modules[MountHandlerClient.__module__],
-            "materialise_block",
-            lambda index, block: (b"block-bytes", ["/f.bin"]),
-        )
-        MountHandlerClient._deliver(cast(MountHandlerClient, s), 3)
-        assert s.fuse_actors.receive_block.calls == [(3, b"block-bytes", ["/f.bin"])]
-        assert s._delivered == {3}
-
-
 def _check_fuse_available() -> bool:
     """Check if FUSE mounts actually work, not just that the binary exists."""
     if shutil.which("fusermount3") is None or not os.path.exists("/dev/fuse"):
@@ -583,14 +515,29 @@ def _symlink_attr(target_len: int) -> dict[str, object]:
     return _make_attr(mode=0o120777, size=target_len)
 
 
+def _publish_block(
+    handle: FuseMountHandle, block_id: int, data: bytes, stale: list[str]
+) -> None:
+    """Deliver *data* as block *block_id* the way a worker does: write it into the mount's
+    own buffer through ``block_ptr(block_id)`` (as an RDMA read would land it), then
+    ``receive_block`` to freeze that buffer into the served block with no copy. ``data``
+    may be shorter than ``BLOCK_SIZE``; the buffer's tail stays zeroed, exactly as
+    production zero-pads the last block past ``total_size``."""
+    mv = memoryview(
+        (ctypes.c_char * BLOCK_SIZE).from_address(handle.block_ptr(block_id))
+    ).cast("B")
+    mv[: len(data)] = data
+    handle.receive_block(block_id, stale)
+
+
 def _deliver_blocks(handle: FuseMountHandle, data: bytes) -> None:
-    """Hand *data* to the in-memory FUSE mount one block at a time via
-    ``receive_block`` (one BLOCK_SIZE-or-shorter block per id), exactly as
-    the worker's ``receive_block`` endpoint does when a read faults."""
+    """Hand *data* to the in-memory FUSE mount one block at a time via ``_publish_block``
+    (one BLOCK_SIZE-or-shorter block per id) -- the delivery path the tests use in place
+    of the worker's RDMA fan-out."""
     n_blocks = (len(data) + BLOCK_SIZE - 1) // BLOCK_SIZE
     for block_id in range(n_blocks):
         lo = block_id * BLOCK_SIZE
-        handle.receive_block(block_id, data[lo : lo + BLOCK_SIZE], [])
+        _publish_block(handle, block_id, data[lo : lo + BLOCK_SIZE], [])
 
 
 def _pack_for_test(
@@ -623,8 +570,7 @@ def _fuse_mount(
     mount_point: str,
 ) -> Generator[FuseMountHandle, None, None]:
     """Mount the FUSE filesystem (in-memory: it starts with no block data),
-    deliver the packed chunks via ``receive_block`` as the worker would, and
-    unmount on exit."""
+    deliver the packed chunks via ``_deliver_blocks``, and unmount on exit."""
     data = b"".join(bytes(c) for c in chunks)
     handle = mount_chunked_fuse(metadata, len(data), mount_point, None)
     _deliver_blocks(handle, data)
@@ -643,9 +589,8 @@ def _refresh(
 ) -> None:
     """Adapt the old ``handle.refresh(meta, chunk_buf, dirty_ranges, total)``
     call to the in-memory delivery: hand each block's bytes to the mount via
-    ``receive_block`` (as the worker would), then swap the metadata.
-    ``dirty_ranges`` is ignored -- every block is re-delivered, which is fine for
-    these tests.
+    ``_deliver_blocks``, then swap the metadata. ``dirty_ranges`` is ignored -- every
+    block is re-delivered, which is fine for these tests.
     """
     _deliver_blocks(handle, bytes(chunk_buf)[:total])
     handle.refresh(meta, total)
@@ -675,6 +620,33 @@ class TestFuseMount:
         ):
             with open(os.path.join(mnt, "a.txt"), "rb") as f:
                 assert f.read() == content
+
+    def test_zero_copy_block_ptr_receive_block(self) -> None:
+        """The zero-copy delivery path at the binding level: get a mount-owned buffer's
+        address via ``block_ptr`` (which reserves it lazily), write the block into it
+        through a ctypes memoryview (as an RDMA read would), ``receive_block`` to freeze
+        it into the served block with no copy, and read the file back."""
+        content = b"zero copy delivery works"
+        metadata: dict[str, object] = {
+            "/": {"attr": _dir_attr(), "children": ["z.txt"]},
+            "/z.txt": {
+                "attr": _file_attr(len(content)),
+                "global_offset": 0,
+                "file_len": len(content),
+            },
+        }
+        with tempfile.TemporaryDirectory() as mnt:
+            handle = mount_chunked_fuse(metadata, len(content), mnt, None)
+            try:
+                mv = memoryview(
+                    (ctypes.c_char * BLOCK_SIZE).from_address(handle.block_ptr(0))
+                ).cast("B")
+                mv[: len(content)] = content  # write as RDMA would, into mount memory
+                handle.receive_block(0, [])  # zero-copy freeze into the served block
+                with open(os.path.join(mnt, "z.txt"), "rb") as f:
+                    assert f.read() == content
+            finally:
+                handle.unmount()
 
     def test_multiple_files(self) -> None:
         """Mount multiple files and verify each has correct content."""
@@ -1412,7 +1384,7 @@ class TestFuseStaleFileEio:
             )
             try:
                 # Deliver the (garbage) block with f.bin flagged stale.
-                handle.receive_block(0, os.urandom(file_len), ["/f.bin"])
+                _publish_block(handle, 0, os.urandom(file_len), ["/f.bin"])
                 with pytest.raises(OSError) as ei:
                     with open(os.path.join(mnt, "f.bin"), "rb") as f:
                         f.read()
@@ -1436,7 +1408,7 @@ class TestFuseStaleFileEio:
                 t.start()
                 time.sleep(0.5)  # let the read fault and park on block 0
                 assert t.is_alive(), "read should be parked on the missing block"
-                handle.receive_block(0, content, [])
+                _publish_block(handle, 0, content, [])
                 t.join(timeout=10)
                 hung = t.is_alive()
             finally:
@@ -1464,7 +1436,7 @@ class TestFuseStaleFileEio:
                 time.sleep(0.5)  # let the read fault and park on block 0
                 assert t.is_alive(), "read should be parked on the missing block"
                 # Deliver the garbage block with f.bin stale -- one atomic call.
-                handle.receive_block(0, os.urandom(file_len), ["/f.bin"])
+                _publish_block(handle, 0, os.urandom(file_len), ["/f.bin"])
                 t.join(timeout=10)
                 hung = t.is_alive()
             finally:
@@ -1492,7 +1464,7 @@ class TestFuseStaleFileEio:
             )
             try:
                 # Deliver block 0 = a's real bytes ++ b's garbage, with only b stale.
-                handle.receive_block(0, valid + garbage, ["/b.bin"])
+                _publish_block(handle, 0, valid + garbage, ["/b.bin"])
                 with open(os.path.join(mnt, "a.bin"), "rb") as f:
                     assert f.read() == valid  # co-located valid file still serves
                 with pytest.raises(OSError) as ei:
@@ -1515,7 +1487,7 @@ class TestFuseStaleFileEio:
             faulted.set()
             handle = holder.get("handle")
             if handle is not None:
-                handle.receive_block(int(block_id), os.urandom(file_len), ["/f.bin"])
+                _publish_block(handle, int(block_id), os.urandom(file_len), ["/f.bin"])
 
         with tempfile.TemporaryDirectory() as mnt:
             handle = mount_chunked_fuse(
@@ -1593,184 +1565,6 @@ class TestDirtyBlockUnion:
             {0: [0, 1, 2], 1: [1, 2, 3], 2: [2, 3, 4]}, num_blocks=5
         )
         assert dirty == [0, 1, 2, 3, 4]
-
-
-class TestTreeFanOut:
-    """Tests for the tree-based RDMA fan-out scheduling.
-
-    Concurrent reads from the same RDMABuffer are not safe (see disabled
-    test_rdma_buffer_read_into_concurrent in test_rdma_unit.py). The tree
-    fan-out ensures each source sends to at most ONE destination per level.
-    """
-
-    @staticmethod
-    def _simulate_tree(
-        leader_rank: int, peer_ranks: list[int]
-    ) -> list[list[tuple[int, int]]]:
-        """Reproduce the tree fan-out logic from _transfer_fanout.
-
-        Returns list of levels, each level is a list of (src, dst) pairs.
-        """
-        have_data = [leader_rank]
-        need_data = list(peer_ranks)
-        levels = []
-
-        while need_data:
-            pairs = []
-            for src_rank in have_data:
-                if not need_data:
-                    break
-                dst_rank = need_data.pop(0)
-                pairs.append((src_rank, dst_rank))
-            levels.append(pairs)
-            for _, dst in pairs:
-                have_data.append(dst)
-
-        return levels
-
-    def test_single_peer(self) -> None:
-        """One peer → one level, one pair."""
-        levels = self._simulate_tree(0, [1])
-        assert levels == [[(0, 1)]]
-
-    def test_two_peers(self) -> None:
-        """Two peers → level 1: [0]→1, level 2: [0,1]→2."""
-        levels = self._simulate_tree(0, [1, 2])
-        assert levels == [[(0, 1)], [(0, 2)]]
-
-    def test_seven_peers(self) -> None:
-        """7 peers → log2(7)≈3 levels, doubling each level."""
-        levels = self._simulate_tree(0, [1, 2, 3, 4, 5, 6, 7])
-        # Level 0: [0]→1               (1 pair)
-        # Level 1: [0,1]→2,3           (2 pairs)
-        # Level 2: [0,1,2,3]→4,5,6,7   (4 pairs)
-        assert len(levels) == 3
-        assert len(levels[0]) == 1
-        assert len(levels[1]) == 2
-        assert len(levels[2]) == 4
-
-    def test_no_concurrent_reads_from_same_source(self) -> None:
-        """No source appears twice in the same level."""
-        levels = self._simulate_tree(0, list(range(1, 64)))
-        for level_idx, level in enumerate(levels):
-            sources = [src for src, _dst in level]
-            assert len(sources) == len(set(sources)), (
-                f"Level {level_idx} has duplicate sources: {sources}"
-            )
-
-    def test_all_peers_receive_data(self) -> None:
-        """Every peer receives data exactly once."""
-        peer_ranks = list(range(1, 64))
-        levels = self._simulate_tree(0, peer_ranks)
-        received = set()
-        for level in levels:
-            for _src, dst in level:
-                assert dst not in received, f"Peer {dst} received data twice"
-                received.add(dst)
-        assert received == set(peer_ranks)
-
-    def test_sources_have_data_before_sending(self) -> None:
-        """Every source in a level must have received data in a prior level."""
-        levels = self._simulate_tree(0, list(range(1, 64)))
-        have_data = {0}  # leader starts with data
-        for level_idx, level in enumerate(levels):
-            for src, _dst in level:
-                assert src in have_data, (
-                    f"Level {level_idx}: source {src} doesn't have data yet"
-                )
-            for _, dst in level:
-                have_data.add(dst)
-
-    def test_logarithmic_depth(self) -> None:
-        """63 peers should complete in ~6 levels (log2(64))."""
-        levels = self._simulate_tree(0, list(range(1, 64)))
-        assert len(levels) <= 7  # ceil(log2(64)) = 6, allow 7 for rounding
-
-    @staticmethod
-    def _simulate_chunked_tree(
-        leader_rank: int, peer_ranks: list[int], num_chunks: int
-    ) -> list[list[tuple[int, int, int]]]:
-        """Simulate chunked pipelined tree fan-out.
-
-        Returns list of rounds, each round is a list of (src, dst, chunk_idx).
-        Mirrors the scheduling logic in _transfer_fanout.
-        """
-        chunk_owners: dict[int, set[int]] = {
-            c: {leader_rank} for c in range(num_chunks)
-        }
-        completed_peers: set[int] = set()
-        rounds = []
-
-        while len(completed_peers) < len(peer_ranks):
-            busy: set[int] = set()
-            pairs: list[tuple[int, int, int]] = []
-            for chunk_idx in range(num_chunks):
-                for src_rank in list(chunk_owners[chunk_idx]):
-                    if src_rank in busy:
-                        continue
-                    dst_rank = None
-                    for c in peer_ranks:
-                        if (
-                            c not in completed_peers
-                            and c not in chunk_owners[chunk_idx]
-                            and c not in busy
-                        ):
-                            dst_rank = c
-                            break
-                    if dst_rank is None:
-                        continue
-                    busy.add(src_rank)
-                    busy.add(dst_rank)
-                    pairs.append((src_rank, dst_rank, chunk_idx))
-
-            if not pairs:
-                break
-            rounds.append(pairs)
-            for _, dst, chunk_idx in pairs:
-                chunk_owners[chunk_idx].add(dst)
-                if all(dst in chunk_owners[c] for c in range(num_chunks)):
-                    completed_peers.add(dst)
-
-        return rounds
-
-    def test_chunked_no_node_both_src_and_dst_in_same_round(self) -> None:
-        """No node is both source and destination in the same round.
-
-        get_blocks_rdma_buffer (source) and replace_blocks (destination)
-        share _rdma_staging on the same actor. Using the same node as
-        both source and destination in one round causes data corruption.
-        """
-        rounds = self._simulate_chunked_tree(0, list(range(1, 64)), num_chunks=8)
-        for round_idx, round_pairs in enumerate(rounds):
-            sources = {src for src, _, _ in round_pairs}
-            destinations = {dst for _, dst, _ in round_pairs}
-            overlap = sources & destinations
-            assert not overlap, (
-                f"Round {round_idx}: nodes {overlap} are both source and "
-                f"destination — _rdma_staging would be corrupted"
-            )
-
-    def test_chunked_no_source_sends_twice_in_same_round(self) -> None:
-        """No source appears twice in the same round."""
-        rounds = self._simulate_chunked_tree(0, list(range(1, 64)), num_chunks=8)
-        for round_idx, round_pairs in enumerate(rounds):
-            sources = [src for src, _, _ in round_pairs]
-            assert len(sources) == len(set(sources)), (
-                f"Round {round_idx} has duplicate sources"
-            )
-
-    def test_chunked_all_peers_receive_all_chunks(self) -> None:
-        """Every peer receives every chunk."""
-        peer_ranks = list(range(1, 64))
-        rounds = self._simulate_chunked_tree(0, peer_ranks, num_chunks=8)
-        received: dict[int, set[int]] = {r: set() for r in peer_ranks}
-        for round_pairs in rounds:
-            for _, dst, chunk_idx in round_pairs:
-                received[dst].add(chunk_idx)
-        for rank in peer_ranks:
-            assert received[rank] == set(range(8)), (
-                f"Peer {rank} missing chunks: {set(range(8)) - received[rank]}"
-            )
 
 
 class TestEnsureStorageLogic:
@@ -1900,6 +1694,70 @@ class TestReceiveBlockPreservesCache:
             os.close(fd)
             mv2 = memoryview(m2)
             assert mv2[:4] == b"\x00\x00\x00\x00", "O_TRUNC should zero the file"
+
+
+@pytest.mark.skipif(not _fuse_available, reason="FUSE not available")
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
+def test_actor_rdma_fanout_to_all_peers() -> None:
+    """The leader's ``broadcast`` fans a block out to every peer over RDMA, and each
+    peer's mount then serves it -- exercising ``setup_leader`` + ``broadcast`` +
+    ``receive_rdma`` + the mesh-cast across a real multi-proc mesh (RDMA over the TCP
+    fallback locally). Reading through each worker's own mount confirms delivery."""
+    from monarch.actor import this_host
+    from monarch.remotemount.remotemount import FUSEActor
+
+    # A host with no RDMA device (e.g. OSS CI) reports backend "none" and RDMABuffer()
+    # raises. Allow the TCP fallback via the env var, which the spawned worker procs
+    # inherit -- a parent-process monarch.configure() does NOT reach spawned procs. Must
+    # be set before spawn_procs.
+    os.environ["MONARCH_RDMA_ALLOW_TCP_FALLBACK"] = "1"
+
+    content = b"rdma fan-out reaches every peer"
+    # ``broadcast`` stages a full BLOCK_SIZE buffer (mv[:] = data), so pad the block.
+    block = content + bytes(BLOCK_SIZE - len(content))
+    meta: dict[str, object] = {
+        "/": {"attr": _dir_attr(), "children": ["f.bin"], "total_size": len(content)},
+        "/f.bin": {
+            "attr": _file_attr(len(content)),
+            "global_offset": 0,
+            "file_len": len(content),
+        },
+    }
+
+    n = 3  # rank 0 = leader, ranks 1..2 = its RDMA fan-out peers
+    procs = this_host().spawn_procs(per_host={"cpus": n})
+    # handler=None: no fault callback needed -- the block is broadcast before any read.
+    fuse_actors = procs.spawn("FUSEActor", FUSEActor, None)
+    flat = fuse_actors.flatten("rank")
+
+    with tempfile.TemporaryDirectory() as base:
+        mnts = [os.path.join(base, f"rank{r}") for r in range(n)]
+        try:
+            # Each worker mounts at its own path (all procs share this host, so one
+            # shared mount point would collide).
+            for r in range(n):
+                actor = flat.slice(rank=r)
+                actor.mkdir.call_one(mnts[r]).get()
+                actor.mount.call_one(mnts[r], meta).get()
+
+            # Rank 0 leads; ranks 1.. are its fan-out peers.
+            leader = flat.slice(rank=0)
+            leader.setup_leader.call_one(flat.slice(rank=slice(1, None))).get()
+
+            # Deliver block 0 to the leader; broadcast commits it locally and mesh-casts
+            # it to every peer over RDMA.
+            leader.broadcast.call_one(0, block, []).get()
+
+            # Every worker -- leader and peers -- now serves the block from its own mount.
+            for r in range(n):
+                with open(os.path.join(mnts[r], "f.bin"), "rb") as f:
+                    assert f.read() == content, f"rank {r} did not receive the block"
+        finally:
+            for r in range(n):
+                with contextlib.suppress(Exception):
+                    flat.slice(rank=r).unmount.call_one(mnts[r]).get()
+            procs.stop().get()
 
 
 @pytest.mark.skipif(not _fuse_available, reason="FUSE not available")

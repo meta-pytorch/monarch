@@ -16,10 +16,11 @@
 //! block id (`global_offset / block`); a `None` entry is a not-yet-delivered block.
 //! Each block has a paired `tokio::sync::Notify` in `block_notifys`. A FUSE read
 //! that touches a `None` block fires `fault_callback` (briefly acquiring the GIL) to
-//! signal the client and then parks on that block's `Notify`; the client
-//! materialises the block and calls `receive_block`, which stores `Some(bytes)` at
-//! the slot and wakes the block's waiters. The parked read then re-reads. There is
-//! no on-disk cache.
+//! signal the client and then parks on that block's `Notify`; the client materialises
+//! the block into a mount-owned buffer (`block_ptr`, wrapped as a memoryview and
+//! written via RDMA), then calls `receive_block`, which stores `Some(bytes)` at the
+//! slot (a zero-copy freeze of that buffer) and wakes the block's waiters. The parked
+//! read then re-reads. There is no on-disk cache.
 //!
 //! Staleness is per FILE, not per block: a file whose source diverged under the
 //! freshness fence cannot be reproduced, so the client garbage-fills that file's
@@ -46,6 +47,7 @@ use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 use bytes::Bytes;
+use bytes::BytesMut;
 use fuse3::Errno;
 use fuse3::FileType;
 use fuse3::MountOptions;
@@ -116,6 +118,14 @@ struct FsState {
     block_notifys: Vec<Arc<Notify>>,
     /// Total concatenated layout size.
     total_size: usize,
+    /// Mount-owned writable staging buffers, parallel to ``blocks`` and keyed by the same
+    /// block id: ``reserved[id]`` is the buffer block ``id`` is delivered into, or ``None``
+    /// when no delivery is outstanding for it. ``block_ptr`` provisions ``Some(zeroed
+    /// BLOCK_SIZE)`` on demand and hands the client its address (wrapped as a memoryview
+    /// and written via RDMA / staging); ``receive_block`` ``take``s it and freezes it
+    /// (zero-copy) into ``blocks[id]``, leaving the slot ``None`` again. Grown with
+    /// ``None`` (no eager allocation), so only outstanding blocks hold a 64 MiB buffer.
+    reserved: Vec<Option<BytesMut>>,
 }
 
 impl FsState {
@@ -132,6 +142,51 @@ impl FsState {
         }
         while self.block_notifys.len() < self.blocks.len() {
             self.block_notifys.push(Arc::new(Notify::new()));
+        }
+    }
+
+    /// Store a delivered block's ``bytes`` at its slot, set the ``stale`` bit on any
+    /// files whose source diverged under the fence, and return the block's ``Notify``
+    /// (so the caller can wake parked reads after releasing the lock).
+    fn install_block(&mut self, block_id: usize, bytes: Bytes, stale: Vec<String>) -> Arc<Notify> {
+        // Defensive: a delivery that races ahead of the refresh that grew the table
+        // still lands (the block id is bounded by the layout size).
+        self.grow_to(block_id + 1);
+        self.blocks[block_id] = Some(bytes);
+        for path in stale {
+            if let Some(FsEntry::File { stale, .. }) = self.metadata.get_mut(OsStr::new(&path)) {
+                *stale = true;
+            }
+        }
+        self.block_notifys[block_id].clone()
+    }
+
+    /// The staging-buffer slot for block ``block_id``, growing the array with ``None`` to
+    /// cover it if needed (no eager allocation -- only outstanding blocks hold a buffer).
+    /// ``block_ptr`` calls this then ``get_or_insert_with`` to provision the buffer;
+    /// ``receive_block`` calls it then ``take`` to consume it, leaving the slot ``None``
+    /// so a later re-delivery (e.g. a refresh) re-provisions cleanly.
+    fn reserved_slot(&mut self, block_id: usize) -> &mut Option<BytesMut> {
+        if block_id >= self.reserved.len() {
+            self.reserved.resize_with(block_id + 1, || None);
+        }
+        &mut self.reserved[block_id]
+    }
+
+    /// Commit block ``block_id``: freeze its staged buffer into ``blocks`` (zero-copy) and
+    /// return its ``Notify`` so the caller can wake parked reads. With no staged buffer, an
+    /// already-served block is a duplicate/stray commit -> no-op (``None``), never
+    /// clobbering the served bytes with zeros; a never-delivered block lands a zeroed
+    /// buffer rather than panicking.
+    fn commit_block(&mut self, block_id: usize, stale: Vec<String>) -> Option<Arc<Notify>> {
+        match self.reserved_slot(block_id).take() {
+            Some(buf) => Some(self.install_block(block_id, buf.freeze(), stale)),
+            None if self.blocks.get(block_id).is_some_and(|b| b.is_some()) => None,
+            None => Some(self.install_block(
+                block_id,
+                BytesMut::zeroed(AVAILABILITY_BLOCK_SIZE).freeze(),
+                stale,
+            )),
         }
     }
 }
@@ -721,34 +776,41 @@ impl PyMountHandle {
         })
     }
 
-    /// Store a just-delivered block's bytes at its slot, mark any files the client
-    /// could not reproduce, and wake the reads parked on that block. ``data`` is
-    /// borrowed from the Python ``bytes`` (no extra copy) and copied once into a fresh
-    /// per-block ``Bytes``. ``stale`` carries the vpaths of files in this block whose
-    /// source diverged under the fence (their bytes here are garbage) -- shipped WITH
-    /// the bytes so delivery is atomic, with no separate signal to order. Each such
-    /// file's ``stale`` bit is set so its reads EIO while co-located fresh files in
-    /// the block still serve. The bit is sticky: it stays set until a ``refresh``
-    /// rebuilds the metadata. We never store the converse ("fresh") -- a file that
-    /// later turns stale is caught by the next delivery/refresh, never trusted as
-    /// fresh from a past one.
-    fn receive_block(&self, block_id: usize, data: &[u8], stale: Vec<String>) {
-        let notify = {
-            let mut state = self.state.write().unwrap();
-            // Defensive: a delivery that races ahead of the refresh that grew the
-            // table still lands (the block id is bounded by the layout size).
-            state.grow_to(block_id + 1);
-            state.blocks[block_id] = Some(Bytes::copy_from_slice(data));
-            for path in stale {
-                if let Some(FsEntry::File { stale, .. }) = state.metadata.get_mut(OsStr::new(&path))
-                {
-                    *stale = true;
-                }
-            }
-            state.block_notifys[block_id].clone()
-        };
-        // Wake outside the lock: parked reads re-acquire the read lock to re-read.
-        notify.notify_waiters();
+    /// The stable heap address of block ``block_id``'s staging buffer, provisioning a
+    /// zeroed ``BLOCK_SIZE`` buffer for it if none is outstanding. The client wraps this
+    /// address as a writable memoryview (e.g. via ``ctypes``), writes the block into it
+    /// (RDMA read / staged copy), then commits it with ``receive_block``. Valid for the
+    /// buffer's life: the allocation does not move, and ``receive_block``'s freeze is
+    /// zero-copy (the same address carries into the served ``Bytes``).
+    fn block_ptr(&self, block_id: usize) -> usize {
+        let mut state = self.state.write().unwrap();
+        state
+            .reserved_slot(block_id)
+            .get_or_insert_with(|| BytesMut::zeroed(AVAILABILITY_BLOCK_SIZE))
+            .as_ptr() as usize
+    }
+
+    /// Commit block ``block_id``'s staging buffer with NO copy: ``take`` the ``BytesMut``
+    /// (already written via its ``block_ptr`` memoryview) and freeze it into ``blocks``,
+    /// mark diverged files stale, and wake parked reads. If no buffer is outstanding: a
+    /// duplicate/stray commit of an already-served block is a no-op -- it must not clobber
+    /// the served bytes with zeros; a call for a never-delivered block (no preceding
+    /// ``block_ptr``, nothing served) lands a zeroed buffer rather than panicking. A
+    /// legitimate re-delivery (e.g. after a refresh) always provisions a fresh buffer via
+    /// ``block_ptr`` first, so it takes the normal path and overwrites cleanly. The freeze
+    /// hands the buffer's allocation to ``blocks`` and leaves the staging slot ``None``, so
+    /// the memoryview the client still holds aliases the served bytes -- the client must
+    /// not write it again after committing. ``stale`` carries the vpaths whose source
+    /// diverged under the fence (their bytes here are garbage) so their reads EIO while
+    /// co-located fresh files serve; the bit is sticky until a ``refresh`` rebuilds the
+    /// metadata.
+    fn receive_block(&self, block_id: usize, stale: Vec<String>) {
+        // Commit under the write lock, then wake parked reads after releasing it. A no-op
+        // commit (a duplicate/stray call) returns no notify, so there is nothing to wake.
+        let notify = self.state.write().unwrap().commit_block(block_id, stale);
+        if let Some(notify) = notify {
+            notify.notify_waiters();
+        }
     }
 }
 
@@ -759,9 +821,9 @@ impl PyMountHandle {
 ///         the layout builder), including each file's `global_offset`.
 ///     total_size: total concatenated layout size (for block-count bounds).
 ///     mount_point: path to mount the filesystem.
-/// Returns a FuseMountHandle. Call handle.unmount() to unmount,
-/// handle.refresh() to swap metadata, or handle.receive_block() to store a
-/// delivered block in memory and flip its availability without a meta swap.
+/// Returns a FuseMountHandle. Call handle.unmount() to unmount, handle.refresh() to
+/// swap metadata, or block_ptr + receive_block to deliver a block into memory (write
+/// it into block_ptr's buffer, then receive_block to freeze it in and serve it).
 #[pyfunction]
 fn mount_chunked_fuse(
     py: Python<'_>,
@@ -788,6 +850,7 @@ fn mount_chunked_fuse(
         blocks: vec![None; num_blocks],
         block_notifys: (0..num_blocks).map(|_| Arc::new(Notify::new())).collect(),
         total_size,
+        reserved: Vec::new(),
     }));
 
     let fs = ChunkedFuseFs {
@@ -912,6 +975,7 @@ mod tests {
             blocks: Vec::new(),
             block_notifys: Vec::new(),
             total_size: 0,
+            reserved: Vec::new(),
         }
     }
 
@@ -1003,6 +1067,103 @@ mod tests {
             first_missing_block(&state.blocks, 0, 2),
             Some(1),
             "faults the first not-yet-delivered touched block"
+        );
+    }
+
+    #[test]
+    fn install_block_serves_frozen_buffer_zero_copy() {
+        // A reserved BytesMut, written then frozen via install_block, serves the exact
+        // bytes AND shares the same allocation -- proving the freeze is zero-copy (no
+        // memcpy from the RDMA/staged buffer into the served Bytes).
+        let mut state = new_state();
+        let payload: Vec<u8> = (0..64u8).collect();
+        let mut buf = BytesMut::zeroed(payload.len());
+        buf.copy_from_slice(&payload);
+        let ptr_before = buf.as_ptr();
+
+        let _notify = state.install_block(0, std::mem::take(&mut buf).freeze(), Vec::new());
+
+        let Some(b) = &state.blocks[0] else {
+            panic!("block 0 should hold bytes after install_block");
+        };
+        assert_eq!(
+            &b[..],
+            &payload[..],
+            "the served block returns exactly what was written"
+        );
+        assert_eq!(
+            b.as_ptr(),
+            ptr_before,
+            "freeze is zero-copy: the served Bytes reuses the BytesMut allocation"
+        );
+    }
+
+    #[test]
+    fn commit_block_duplicate_is_noop_and_keeps_served_bytes() {
+        // A stray/duplicate commit with nothing staged must be a no-op (return no Notify)
+        // and must NOT overwrite the already-served block with a zeroed buffer.
+        let mut state = new_state();
+
+        // First delivery: provision the staging buffer (as block_ptr does), write a
+        // recognizable head, then commit -- freezing it into blocks[0].
+        {
+            let buf = state
+                .reserved_slot(0)
+                .get_or_insert_with(|| BytesMut::zeroed(AVAILABILITY_BLOCK_SIZE));
+            buf[..4].copy_from_slice(&[7u8; 4]);
+        }
+        assert!(
+            state.commit_block(0, Vec::new()).is_some(),
+            "first commit serves the block and returns its notify"
+        );
+        assert_eq!(
+            state.blocks[0].as_ref().map(|b| b[..4].to_vec()),
+            Some(vec![7u8; 4]),
+            "block 0 serves the written bytes"
+        );
+
+        // Duplicate commit: block_ptr was not called again, so nothing is staged and the
+        // block is already served -- it must no-op and leave the served bytes intact.
+        assert!(
+            state.commit_block(0, Vec::new()).is_none(),
+            "duplicate commit is a no-op (no waiters to wake)"
+        );
+        assert_eq!(
+            state.blocks[0].as_ref().map(|b| b[..4].to_vec()),
+            Some(vec![7u8; 4]),
+            "duplicate commit must not clobber the served bytes with zeros"
+        );
+    }
+
+    #[test]
+    fn reserved_slot_grows_with_none_and_take_consumes() {
+        // block_ptr provisions a block's staging buffer on demand; receive_block takes it,
+        // leaving the slot None so a re-delivery (e.g. a refresh) re-provisions cleanly.
+        // Growth uses None placeholders -- a high block id must NOT eagerly allocate a
+        // 64 MiB buffer for every lower slot.
+        let mut state = new_state();
+
+        assert_eq!(
+            state
+                .reserved_slot(0)
+                .get_or_insert_with(|| BytesMut::zeroed(AVAILABILITY_BLOCK_SIZE))
+                .len(),
+            AVAILABILITY_BLOCK_SIZE,
+            "block_ptr provisions an empty slot to a full-size writable buffer"
+        );
+
+        let taken = state.reserved_slot(0).take();
+        assert!(taken.is_some(), "receive_block takes the staging buffer");
+        assert!(
+            state.reserved[0].is_none(),
+            "the committed slot is left None (re-delivery re-provisions)"
+        );
+
+        let _ = state.reserved_slot(5);
+        assert_eq!(state.reserved.len(), 6, "the array grows to cover block 5");
+        assert!(
+            state.reserved[3].is_none(),
+            "intermediate slots stay None, not 64 MiB buffers"
         );
     }
 }

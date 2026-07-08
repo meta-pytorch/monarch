@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import contextvars
+import ctypes
 import logging
 import os
 import subprocess
@@ -307,16 +308,20 @@ def _resolve_path(path: str) -> str:
 
 class FUSEActor(Actor):
     """The worker side of a mount: it owns the FUSE handle, signals the blocks
-    its FUSE reads are blocked on to the client, and receives the bytes the
-    client materialises for them -- held in memory by the Rust mount.
+    its FUSE reads are blocked on to the client, and delivers the bytes the client
+    materialises into the mount's own block buffers.
 
-    The data plane is intentionally simple: when a FUSE read faults a new block,
-    the Rust mount fires a callback (built in ``mount``) that sends the faulted
-    blocks to the client; the client materialises each block from the source and
-    ships the bytes back with ``receive_block``, which hands them to the Rust
-    mount (which keeps them in memory) and wakes the parked read. There is no
-    leader, dedup, fan-out, or RDMA -- each worker is served directly (duplicate
-    cross-DC pulls are acceptable).
+    Delivery is a leader-mediated broadcast. A read fault fires the callback built in
+    ``mount``, which asks the client's ``enqueue`` for the block; the client
+    materialises it and sends it ONCE to the leader worker over the actor bus
+    (``broadcast``). Each worker gets buffers from its Rust mount (``block_ptr``, which
+    reserves them lazily) and wraps them as memoryviews; the RDMA write lands directly in
+    that mount-owned memory, and ``receive_block`` freezes it into the served block with
+    no copy. The leader stages the block into a buffer, commits it, and RDMA-fans that
+    same buffer out to the peers over InfiniBand; each peer reads it into a buffer of its
+    own (``receive_rdma``) and commits it. So the venv crosses the DC boundary once
+    (client->leader, over the bus) and the bulk fan-out rides the fast intra-cluster
+    fabric.
     """
 
     def __init__(self, handler):
@@ -325,13 +330,31 @@ class FUSEActor(Actor):
         # On a fault the Rust mount fires a callback (built in ``mount``) that calls
         # ``handler.enqueue`` to queue the faulted blocks for delivery.
         self._handler = handler
+        # Delivery is keyed by block id: the mount owns each block's staging buffer
+        # (``block_ptr(block_id)`` provisions it lazily), the RDMA write lands in it, and
+        # ``receive_block(block_id, ...)`` freezes it into the served block with no copy.
+        # On the leader, ``broadcast`` wraps a block's buffer in a per-call ``RDMABuffer``
+        # fan-out source and drops it once the (synchronous) fan-out completes, so at most
+        # one block's memory is RDMA-registered at a time -- not one MR per delivered block
+        # held for the mount's life. ``_peers`` is the peer sub-mesh, set by
+        # ``setup_leader`` (``None`` until then, and on non-leader workers).
+        self._peers = None
+        self._is_leader = False
+
+    def _wrap(self, block_id: int) -> memoryview:
+        """A writable memoryview over block ``block_id``'s mount-owned staging buffer (a
+        ctypes view of the Rust pointer; ``block_ptr`` provisions the buffer lazily). RDMA
+        / staging writes land directly in the mount's memory; ``receive_block`` then
+        freezes it into the served block with no copy."""
+        addr = self._fuse_handle.block_ptr(block_id)
+        return memoryview((ctypes.c_char * BLOCK_SIZE).from_address(addr)).cast("B")
 
     @endpoint
     def mount(self, mount_point, meta):
         """Mount the FUSE filesystem from ``meta`` (the full directory tree).
 
         The Rust mount starts with no block data; every block faults in on
-        demand (its bytes arrive via ``receive_block`` and are held in memory).
+        demand (its bytes are delivered via ``receive_block`` and held in memory).
         This FUSEActor is freshly spawned per open (``close`` tears the previous
         mesh down), so it never holds a prior handle. The total size is read from
         ``meta["/"]["total_size"]``.
@@ -377,20 +400,59 @@ class FUSEActor(Actor):
         self._fuse_handle.refresh(meta, meta["/"]["total_size"])
 
     @endpoint
-    def receive_block(self, block_id, data, stale) -> None:
-        """Hand a just-materialised block's bytes to the Rust mount, which holds
-        them in memory and wakes any parked read. The client sends a full
-        ``BLOCK_SIZE`` block (the tail block zero-padded past ``total_size``).
-        ``data`` is passed straight through to Rust (borrowed there as ``&[u8]``
-        and copied once into its per-block slot in the table), so there is no extra
-        copy here. ``stale`` is the vpaths of files in this block the client could not
-        reproduce (their bytes here are garbage); the mount marks them so their reads
-        EIO while co-located fresh files serve -- shipped WITH the block so the bytes
-        and which-files-are-stale arrive atomically (no separate call to order). A
-        block is only delivered to a mounted actor, so a missing handle is a bug --
-        assert rather than silently drop it (which would hang the parked read)."""
-        assert self._fuse_handle is not None, "receive_block on an unmounted FUSEActor"
-        self._fuse_handle.receive_block(int(block_id), data, [str(p) for p in stale])
+    def setup_leader(self, peers) -> None:
+        """Promote this worker to the leader and store the peer sub-mesh (``None`` for a
+        single-host mount with no peers). The client sends each block to the leader
+        (``broadcast``); the leader wraps that block's buffer in an ``RDMABuffer`` (lazily,
+        per block) and mesh-casts it to ``peers`` over RDMA. Peers need no ``RDMABuffer``
+        -- ``read_into`` takes a plain memoryview as the local dest."""
+        self._peers = peers
+        self._is_leader = True
+
+    @endpoint
+    def broadcast(self, block_id, data, stale) -> None:
+        """Leader entry point: the client sent this block's bytes over the actor bus
+        (the one cross-DC copy). Stage them into block ``block_id``'s mount-owned buffer,
+        commit it as the leader's own block via ``receive_block`` (zero-copy freeze), then
+        wrap that (now committed) buffer as an RDMA fan-out source and mesh-cast
+        ``receive_rdma`` to the peer sub-mesh so they RDMA-read it. Every block is a full
+        BLOCK_SIZE buffer (the last block zero-padded past ``total_size``). ``stale`` (the
+        vpaths that diverged under the fence) rides along so the mount marks them
+        atomically. The cast's ``.get()`` means the block is delivered everywhere before
+        this returns."""
+        assert self._fuse_handle is not None, "broadcast on an unmounted FUSEActor"
+        stale_s = [str(p) for p in stale]
+        bid = int(block_id)
+        mv = self._wrap(bid)
+        mv[:] = data  # stage into the mount-owned buffer
+        self._fuse_handle.receive_block(bid, stale_s)  # zero-copy freeze into blocks
+        if self._peers is None:
+            return  # single-host mount: block committed locally, no peers to fan out to
+        from monarch.rdma import RDMABuffer
+
+        # The freeze is zero-copy (same address), so wrap the now-committed block as the
+        # RDMA fan-out source.
+        rdma = RDMABuffer(mv)
+        # One mesh-cast: monarch tree-fans ``receive_rdma`` to every peer over its comm
+        # tree; ``.get()`` blocks until all peers have read the block. A failing cast is a
+        # real delivery error -- let it propagate.
+        self._peers.receive_rdma.call(rdma, block_id, stale_s).get()
+        # Free the fan-out MR: RDMABuffer has no finalizer and the manager does no liveness
+        # GC, so an explicit drop keeps the leader at one pinned MR at a time. (On the error
+        # path above this is skipped; that MR is reclaimed when the mount tears down.)
+        rdma.drop().get()
+
+    @endpoint
+    def receive_rdma(self, source, block_id, stale) -> None:
+        """Peer entry point: RDMA-read the block from the leader's buffer (``source``)
+        directly into block ``block_id``'s mount-owned buffer over InfiniBand, then commit
+        it as this worker's block via ``receive_block`` (a zero-copy freeze -- no
+        ``bytes()`` copy). Every block is a full BLOCK_SIZE buffer, delivered as-is."""
+        assert self._fuse_handle is not None, "receive_rdma on an unmounted FUSEActor"
+        bid = int(block_id)
+        mv = self._wrap(bid)
+        source.read_into(mv).get()
+        self._fuse_handle.receive_block(bid, [str(p) for p in stale])
 
     @endpoint
     def mkdir(self, path):
@@ -445,51 +507,36 @@ class MountHandlerClient(Actor):
         # append-only baseline for the next refresh.
         self.index: Optional[dict] = None
         # The block ids delivered to the current worker mesh, so a re-fault for a block
-        # the workers already hold is a no-op instead of a redundant re-broadcast to all
-        # of them. ``open`` resets it when it spawns a fresh mesh (a re-open re-delivers);
-        # within a mount it is never cleared. See ``_deliver`` for why this is safe.
+        # the workers already hold is a no-op instead of a redundant re-delivery.
+        # ``open`` resets it when it spawns a fresh mesh (a re-open re-delivers); within
+        # a mount it is never cleared. See ``_deliver`` for why this is safe.
         self._delivered: set[int] = set()
+        # The leader FUSEActor slice, wired at open(). The client sends each block to
+        # the leader over the actor bus; the leader RDMA-fans it out to the peers.
+        self._leader = None
 
     def _deliver(self, block: int) -> None:
-        """Materialise ``block`` once, broadcast it to every worker's ``receive_block``
-        (each stores the bytes and wakes its parked read), and record it as delivered
-        so it is never re-sent.
+        """Materialise ``block`` once and deliver it to every worker, then remember it
+        so a re-fault for it is a no-op.
 
-        Dedup is by ``self._delivered``, the set of every block id this client has
-        successfully broadcast. A re-fault for an already-delivered block -- a worker
-        that re-reads it, or a straggler whose fault lands after the block was already
-        broadcast to it -- is a no-op: every worker already holds it. This set is
-        kept for the whole mount, not a per-delivery in-flight window. The previous
-        design added the block before the broadcast and cleared it after, so the instant
-        a delivery finished a fresh re-fault re-materialised and re-broadcast the block
-        to ALL workers again; under a cross-worker import storm that redelivered the hot
-        library blocks several times over, which measured as the bulk of the cold
-        import (a 4-worker import cost ~4x a single worker's). Remembering delivered
-        blocks instead is exactly as reliable as the two things it depends on:
-          (a) the ``receive_block.call`` broadcast -- it awaits every worker, so a
-              returned call means all workers have stored the block; and
-          (b) the worker-mount lifetime -- blocks live in worker memory for the life of
-              the mount, and ``open`` clears this set when it (re-)spawns the worker
-              mesh, so a re-open (or a restart after the workers die) re-delivers from
-              empty. Within a mount we never re-deliver a block the current workers
-              already hold; they do not evict mid-life.
-        Synchronous on purpose: with the delivered set the async interleaving the old
-        in-flight dedup relied on buys nothing, and a sync endpoint serialises
-        deliveries so the first fault for a block broadcasts it to all workers and the
-        rest skip -- and since monarch requires an actor's endpoints to be all-sync or
-        all-async, open/close/refresh are sync here too. (A fuller version -- async
-        pipelining over the delivered set, to overlap the cross-region broadcasts -- is
-        a fast follow-up; this is the quick, correct fix for the redelivery.)
+        Delivery ships the block to the leader over the actor bus; the leader hands it
+        to its own mount and RDMA-fans it out to the peers (``broadcast``). ``.get()``
+        awaits the whole fan-out, so a returned call means every worker holds the block
+        -- which is what makes the ``_delivered`` set safe: blocks live in worker memory
+        for the life of the mount, and ``open`` clears the set when it (re-)spawns the
+        mesh, so we never re-deliver a block the current workers already hold. Dedup is
+        by block, so a cross-worker fault storm for one block collapses to one delivery.
+        Delivery is synchronous (one block at a time); overlapping deliveries would be a
+        follow-up.
 
-        Files that diverged under the fence can't be reproduced: ``materialise_block``
-        garbage-fills their bytes and returns their vpaths, shipped in the SAME
-        ``receive_block`` call (bytes + staleness atomic, no separate call to order) so
-        the mount marks them stale (their reads EIO) while co-located fresh files serve.
-        An out-of-range block is a stale-index bug, not a no-op: ``materialise_block``
-        raises ``ValueError`` and ``enqueue`` logs it."""
+        A file that diverged under the fence can't be reproduced: ``materialise_block``
+        garbage-fills its bytes and returns its vpath, shipped in the SAME call so the
+        mount marks it stale (its reads EIO) while co-located fresh files serve. An
+        out-of-range block raises ``ValueError`` in ``materialise_block``; ``enqueue``
+        logs it."""
         if block in self._delivered:
             return
-        assert self.index is not None
+        assert self.index is not None and self._leader is not None
         data, stale = materialise_block(self.index, block)
         if stale:
             logger.warning(
@@ -498,10 +545,10 @@ class MountHandlerClient(Actor):
                 len(stale),
                 stale,
             )
-        # One atomic broadcast carries the bytes + the stale set; ``.get()`` blocks
-        # until every worker's ``receive_block`` has stored it. Record the block as
-        # delivered only AFTER that succeeds, so a failed broadcast is not remembered.
-        self.fuse_actors.receive_block.call(block, data, stale).get()
+        # Ship the block to the leader over the actor bus (the one cross-DC copy); the
+        # leader delivers it locally and RDMA-fans it out to the peers. Record it
+        # delivered only AFTER the call returns, so a failed delivery is not remembered.
+        self._leader.broadcast.call_one(block, data, stale).get()
         self._delivered.add(block)
 
     @endpoint
@@ -530,10 +577,10 @@ class MountHandlerClient(Actor):
 
     @endpoint
     def open(self, self_handle):
-        """Spawn the workers, build the index, mount, and deliver the code
-        prefix, then RETURN. The index (the whole tree) ships first as a 0-block
-        ``find``; the small code blocks are delivered here; the big libraries
-        stream in on demand when an import faults them.
+        """Spawn the workers, build the index, mount, wire the RDMA fan-out, and
+        deliver the code prefix, then RETURN. The index (the whole tree) ships first
+        as a 0-block ``find``; the small code blocks are delivered here; the big
+        libraries stream in on demand when an import faults them.
 
         ``self_handle`` is this actor's own handle, passed by the caller (which
         holds it) so the workers can be spawned with it -- an actor can't obtain a
@@ -553,9 +600,17 @@ class MountHandlerClient(Actor):
         # workers hold blocks only in memory, so there is no prior index to extend).
         self.index = build_index(self.sourcepath, {})
 
-        # Mount with the full tree: a 0-block ``find`` works immediately; data
-        # faults in afterwards.
+        # Mount with the full tree: a 0-block ``find`` works immediately; data faults in
+        # afterwards.
         self.fuse_actors.mount.call(self.mntpoint, self.index).get()
+
+        # Rank 0 is the leader; the rest are its RDMA fan-out peers. ``setup_leader`` hands
+        # the leader the peer sub-mesh (ranks 1..n-1 as one mesh, so it can mesh-cast the
+        # fan-out), or ``None`` for a single-host mount with no peers.
+        flat = self.fuse_actors.flatten("rank")
+        self._leader = flat.slice(rank=0)
+        peers = flat.slice(rank=slice(1, None)) if flat.size("rank") > 1 else None
+        self._leader.setup_leader.call_one(peers).get()
 
         # Deliver the code blocks (the small-file region), then return. Big files
         # (libraries, data) stream in on demand when a worker's read faults them
@@ -579,6 +634,7 @@ class MountHandlerClient(Actor):
             self.procs.stop().get()
             self.fuse_actors = None
             self.procs = None
+        self._leader = None
 
     @endpoint
     def refresh(self):
@@ -655,7 +711,7 @@ class MountHandler:
         )
 
     def open(self) -> None:
-        """Spawn the workers, mount, and deliver the code prefill."""
+        """Spawn the workers, mount, wire the RDMA fan-out, and deliver the prefill."""
         # ``open`` takes the client's own handle (to spawn the FUSEActors with),
         # which an actor cannot obtain for itself -- so pass ``self._client`` in.
         self._client.open.call_one(self._client).get()
@@ -683,6 +739,9 @@ def remotemount(
 
     The full directory tree (the FUSE meta) ships immediately, small "code"
     files are prefilled, and big libraries/data stream in when a read faults
-    them. ``refresh()`` advances the freshness fence.
+    them. Each block is delivered as a leader-mediated broadcast: the client sends
+    it to the leader worker over the actor bus, and the leader RDMA-fans it out to
+    the peers over InfiniBand, so the venv crosses the DC boundary once.
+    ``refresh()`` advances the freshness fence.
     """
     return MountHandler(host_mesh, sourcepath, mntpoint)

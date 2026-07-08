@@ -1,21 +1,21 @@
 name: Test FUSE Python
 
-# Real FUSE integration tests (the remotemount on-demand mount: per-block delivery,
-# the EIO / SourceDiverged paths) need a working /dev/fuse and fusermount3. The
-# pytorch/test-infra container runners the other CPU lanes use do not provide
-# /dev/fuse, so this lane runs on a GitHub-hosted ubuntu-latest runner (which does)
-# with fuse3 installed. Invoked from ci.yml after the CPU wheel is built; it installs
-# that wheel rather than building from source.
+# Real FUSE integration tests (the remotemount on-demand mount: per-block delivery, the
+# EIO / SourceDiverged paths) need a working /dev/fuse and fusermount3. The
+# pytorch/test-infra container the other Linux lanes use does NOT provide /dev/fuse (its
+# docker run adds only --cap-add=SYS_PTRACE), so the tests run on a GitHub-hosted
+# ubuntu-latest VM. But the remotemount fan-out test needs the RDMA extension
+# (monarch._rust_bindings.rdma), which only builds with a CUDA toolchain -- present in
+# the container, not on ubuntu-latest. So this workflow is self-contained: an in-container
+# build job produces the RDMA-enabled wheel, and the ubuntu-latest test job consumes it.
+# Kept here (rather than reusing build-cpu.yml) so the FUSE lane's RDMA build stays local
+# to this file and off the shared CPU wheel.
 
 on:
   workflow_call:
     inputs:
-      artifact-name:
-        description: 'Wheel artifact name from the build workflow'
-        required: true
-        type: string
       python-version:
-        description: 'Python version to test with'
+        description: 'Python version to build and test with'
         type: string
         default: '3.10'
 
@@ -24,13 +24,48 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Build a CPU wheel WITH the RDMA extension in the test-infra container (dnf toolchain +
+  # a build-only CUDA toolkit). Mirrors build-cpu.yml's build but is kept local to the
+  # FUSE lane so the shared CPU wheel stays RDMA-free. FUSE is not needed to build, so the
+  # container (which has no /dev/fuse) is fine here; the fuse tests run in the next job.
+  build-rdma-wheel:
+    name: Build CPU wheel (RDMA)
+    uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+    with:
+      timeout: 60
+      runner: linux.4xlarge
+      submodules: recursive
+      upload-artifact: monarch-cpu-rdma-fuse-${{ github.sha }}-py3.10
+      script: |
+        # Source common setup functions
+        source scripts/common-setup.sh
+
+        # Setup build environment (conda + system deps + rust + build deps)
+        setup_build_environment ${{ inputs.python-version }}
+
+        # Install torch nightly (CPU version)
+        pip install --pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cpu
+        pip install -r build-requirements.txt
+
+        # RDMA (monarch._rust_bindings.rdma) only builds with a CUDA/ROCm toolchain --
+        # setup.py sets build_rdma = has_cuda or has_rocm (rdmaxcel-sys compiles device
+        # code). The remotemount fan-out test needs RDMABuffer, so install the build-only
+        # CUDA toolkit (statically linked, so no GPU or CUDA runtime is needed to import).
+        command -v nvcc &> /dev/null || setup_cuda_toolkit
+
+        # Build monarch (No tensor engine, CPU version)
+        USE_TENSOR_ENGINE=0 python setup.py bdist_wheel
+
+        echo "=== sccache stats ==="
+        sccache --show-stats || true
+        echo "=== end sccache stats ==="
+
   test-fuse-python:
     name: Test FUSE Python - remotemount
-    # GitHub-hosted ubuntu runners are full VMs with /dev/fuse and allow
-    # unprivileged FUSE mounts via the setuid fusermount3 helper. The
-    # pytorch/test-infra linux_job_v2 container used by the other Linux lanes
-    # does NOT expose /dev/fuse (its docker run only adds --cap-add=SYS_PTRACE),
-    # so the real-FUSE mount tests run here instead.
+    needs: build-rdma-wheel
+    # GitHub-hosted ubuntu runners are full VMs with /dev/fuse and allow unprivileged
+    # FUSE mounts via the setuid fusermount3 helper; the test-infra container does not
+    # (its docker run adds only --cap-add=SYS_PTRACE), so the real-FUSE tests run here.
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -49,6 +84,11 @@ jobs:
         run: |
           set -eux
           sudo apt-get update
+          # fuse3 only. Do NOT install the ibverbs provider libs (rdma-core /
+          # ibverbs-providers): on this Azure-hosted runner they let monarch enumerate a
+          # non-functional Mellanox device, so its RDMA layer selects the ibverbs backend
+          # and dies at ibv_reg_mr. Without them (plus MONARCH_RDMA_DISABLE_IBVERBS in the
+          # test step) the fan-out test uses the working TCP fallback.
           sudo apt-get install -y fuse3
           sudo modprobe fuse || true
           # Some mounts may use allow_other; internal devservers set this in
@@ -77,7 +117,7 @@ jobs:
       - name: Download wheel artifact
         uses: actions/download-artifact@v4
         with:
-          name: ${{ inputs.artifact-name }}
+          name: monarch-cpu-rdma-fuse-${{ github.sha }}-py3.10
           path: ${{ runner.temp }}/wheel-artifact
 
       - name: Install wheel
@@ -98,6 +138,12 @@ jobs:
           set -eux
           mkdir -p test-results
           export USE_TENSOR_ENGINE=0
+          # This Azure runner exposes a non-functional Mellanox ibverbs device; monarch's
+          # RDMA layer would select the ibverbs backend and die at ibv_reg_mr ("failed to
+          # register standard MR"). Force the TCP fallback (works CPU-only, no GPU) by
+          # disabling ibverbs; the fan-out test also sets MONARCH_RDMA_ALLOW_TCP_FALLBACK
+          # before spawn_procs, and both env vars are inherited by the worker procs.
+          export MONARCH_RDMA_DISABLE_IBVERBS=1
           LC_ALL=C pytest python/tests/test_remotemount.py -s -v \
             --junit-xml=test-results/test-results.xml
 

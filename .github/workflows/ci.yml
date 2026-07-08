@@ -41,15 +41,13 @@ jobs:
     with:
       artifact-name: monarch-cpu-${{ github.sha }}-py3.10
 
-  # Runs the real FUSE integration tests on a GitHub-hosted ubuntu-latest runner
-  # (the only lane with /dev/fuse); reuses the CPU wheel built above.
+  # Real FUSE integration tests on a GitHub-hosted ubuntu-latest runner (the only lane
+  # with /dev/fuse). Self-contained: it builds its own RDMA-enabled CPU wheel in the
+  # test-infra container, then tests on ubuntu -- see test-fuse-python.yml.
   test-fuse-python:
     name: Test FUSE Python
     if: ${{ !startsWith(github.ref, 'refs/tags/ciflow/rocm/') }}
-    needs: build-cpu
     uses: ./.github/workflows/test-fuse-python.yml
-    with:
-      artifact-name: monarch-cpu-${{ github.sha }}-py3.10
 
   # Runs pyright as its own check so type errors surface as a separate
   # signal. This job is intentionally omitted from status-check.needs so type
