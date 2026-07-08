@@ -609,9 +609,9 @@ struct GradientGenerator {
   Arena arena_;
 };
 
-typedef struct {
+struct PyGradientGenerator {
   PyObject_HEAD GradientGenerator* obj;
-} PyGradientGenerator;
+};
 
 // shared_ptr<Node> in older PyTorch, intrusive_ptr<Node> in newer PyTorch
 using node_ptr_t = decltype(std::declval<THPCppFunction>().cdata);
