@@ -2593,11 +2593,9 @@ mod tests {
             let tx = channel::dial::<u64>(addr).unwrap();
             drop(rx);
 
-            let (return_tx, return_rx) = oneshot::channel();
-            tx.try_post(123, return_tx);
             assert_matches!(
-                return_rx.await,
-                Ok(SendError {
+                tx.try_post(123).await,
+                Err(SendError {
                     error: ChannelError::Closed,
                     message: 123,
                     ..
@@ -2668,11 +2666,9 @@ mod tests {
             let tx = channel::dial::<u64>(addr).unwrap();
             drop(rx);
 
-            let (return_tx, return_rx) = oneshot::channel();
-            tx.try_post(123, return_tx);
             assert_matches!(
-                return_rx.await,
-                Ok(SendError {
+                tx.try_post(123).await,
+                Err(SendError {
                     error: ChannelError::Closed,
                     message: 123,
                     ..
@@ -2739,10 +2735,8 @@ mod tests {
         }
         // Bigger than the default size will fail.
         {
-            let (return_channel, return_receiver) = oneshot::channel();
             let message = "a".repeat(default_size_in_bytes + 1024);
-            tx.try_post(message.clone(), return_channel);
-            let returned = return_receiver.await.unwrap();
+            let returned = tx.try_post(message.clone()).await.unwrap_err();
             assert_eq!(message, returned.message);
         }
     }
@@ -2762,13 +2756,10 @@ mod tests {
         let (addr, mut net_rx) =
             server::serve::<u64>(ChannelAddr::Tcp("[::1]:0".parse().unwrap()), None).unwrap();
         let net_tx = channel::dial::<u64>(addr.clone()).unwrap();
-        let (tx, rx) = oneshot::channel();
-        net_tx.try_post(1, tx);
+        let receipt = net_tx.try_post(1);
         assert_eq!(net_rx.recv().await.unwrap(), 1);
         drop(net_rx);
-        // Using `is_err` to confirm the message is delivered/acked is confusing,
-        // but is correct. See how send is implemented: https://fburl.com/code/ywt8lip2
-        assert!(rx.await.is_err());
+        assert!(receipt.await.is_ok());
     }
 
     #[async_timed_test(timeout_secs = 60)]
@@ -2804,11 +2795,9 @@ mod tests {
             let tx = channel::dial::<u64>(local_addr).unwrap();
             drop(rx);
 
-            let (return_tx, return_rx) = oneshot::channel();
-            tx.try_post(123, return_tx);
             assert_matches!(
-                return_rx.await,
-                Ok(SendError {
+                tx.try_post(123).await,
+                Err(SendError {
                     error: ChannelError::Closed,
                     message: 123,
                     ..
@@ -3421,8 +3410,7 @@ mod tests {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(1));
         let mut tx_receiver = tx.status().clone();
-        let (return_channel, _return_receiver) = oneshot::channel();
-        tx.try_post(123, return_channel);
+        let _receipt = tx.try_post(123);
         verify_tx_closed(&mut tx_receiver, "failed to deliver message within timeout").await;
     }
 
@@ -3729,8 +3717,7 @@ mod tests {
 
         // Verify sent-and-ack a message. This is necessary for the test to
         // trigger a connection.
-        let (return_channel_tx, return_channel_rx) = oneshot::channel();
-        net_tx.try_post(100, return_channel_tx);
+        let receipt = net_tx.try_post(100);
         let (mut reader, mut writer) = take_receiver(&receiver_storage).await;
         verify_stream(&mut reader, &[(0u64, 100u64)], None, line!()).await;
         // ack it
@@ -3744,10 +3731,7 @@ mod tests {
         .map_err(|(_, e)| e)
         .unwrap();
         // confirm Tx received ack
-        //
-        // Using `is_err` to confirm the message is delivered/acked is confusing,
-        // but is correct. See how send is implemented: https://fburl.com/code/ywt8lip2
-        assert!(return_channel_rx.await.is_err());
+        assert!(receipt.await.is_ok());
 
         // Now fake an unknown delivery for Tx:
         // Although Tx did not actually send seq=1, we still ack it from Rx to
@@ -3763,17 +3747,14 @@ mod tests {
         .map_err(|(_, e)| e)
         .unwrap();
 
-        let (return_channel_tx, return_channel_rx) = oneshot::channel();
-        net_tx.try_post(101, return_channel_tx);
+        let receipt = net_tx.try_post(101);
         // Verify the message is sent to Rx.
         verify_message(&mut reader, (1u64, 101u64), line!()).await;
         // although we did not ack the message after it is sent, since we already
         // acked it previously, Tx will treat it as acked, and considered the
         // message delivered successfully.
         //
-        // Using `is_err` to confirm the message is delivered/acked is confusing,
-        // but is correct. See how send is implemented: https://fburl.com/code/ywt8lip2
-        assert!(return_channel_rx.await.is_err());
+        assert!(receipt.await.is_ok());
     }
 
     async fn verify_ack_exceeded_limit(disconnect_before_ack: bool) {
