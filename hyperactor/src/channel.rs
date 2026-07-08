@@ -20,6 +20,8 @@ use std::os::unix::io::RawFd;
 use std::panic::Location;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 
 use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
@@ -133,18 +135,37 @@ pub struct SendError<M: RemoteMessage> {
     pub reason: Option<SendErrorReason>,
 }
 
-/// Terminal outcome for a posted message.
-pub enum SendCompletion<M: RemoteMessage> {
-    /// The channel accepted responsibility for the message.
-    Accepted,
-    /// The channel rejected the message and returned ownership to the sender.
-    Rejected(SendError<M>),
+/// Shared completion counter for sinks that need to wake flush waiters.
+pub(crate) struct CompletionTracker {
+    completed: Arc<AtomicUsize>,
+    completed_notify: Arc<tokio::sync::Notify>,
+}
+
+impl CompletionTracker {
+    pub(crate) fn new(
+        completed: Arc<AtomicUsize>,
+        completed_notify: Arc<tokio::sync::Notify>,
+    ) -> Self {
+        Self {
+            completed,
+            completed_notify,
+        }
+    }
+
+    fn complete(&self) {
+        self.completed.fetch_add(1, Ordering::SeqCst);
+        self.completed_notify.notify_waiters();
+    }
 }
 
 enum CompletionSinkInner<M: RemoteMessage> {
-    OneShot(oneshot::Sender<SendError<M>>),
-    Callback(Box<dyn FnOnce(SendCompletion<M>) + Send + Sync>),
     Ignore,
+    OneShot(oneshot::Sender<SendError<M>>),
+    OnReject(Box<dyn FnOnce(SendError<M>) + Send + Sync>),
+    Tracked {
+        tracker: CompletionTracker,
+        on_reject: Box<dyn FnOnce(SendError<M>) + Send + Sync>,
+    },
 }
 
 /// Sink for the terminal outcome of a posted message.
@@ -156,9 +177,9 @@ impl<M: RemoteMessage> CompletionSink<M> {
         Self(CompletionSinkInner::Ignore)
     }
 
-    /// Invoke `f` when the message completes.
-    pub fn callback(f: impl FnOnce(SendCompletion<M>) + Send + Sync + 'static) -> Self {
-        Self(CompletionSinkInner::Callback(Box::new(f)))
+    /// Invoke `f` only when the channel rejects the message.
+    pub fn on_reject(f: impl FnOnce(SendError<M>) + Send + Sync + 'static) -> Self {
+        Self(CompletionSinkInner::OnReject(Box::new(f)))
     }
 
     /// Adapt a legacy oneshot send-error sender into a completion sink.
@@ -166,40 +187,66 @@ impl<M: RemoteMessage> CompletionSink<M> {
         Self(CompletionSinkInner::OneShot(sender))
     }
 
+    /// Track every completion and invoke `on_reject` only for rejected messages.
+    pub(crate) fn tracked(
+        tracker: CompletionTracker,
+        on_reject: impl FnOnce(SendError<M>) + Send + Sync + 'static,
+    ) -> Self {
+        Self(CompletionSinkInner::Tracked {
+            tracker,
+            on_reject: Box::new(on_reject),
+        })
+    }
+
     /// Adapt rejected send errors for a wrapped message type.
     pub fn contramap_rejected<N: RemoteMessage>(
         self,
         f: impl FnOnce(SendError<N>) -> Option<SendError<M>> + Send + Sync + 'static,
     ) -> CompletionSink<N> {
-        CompletionSink::callback(move |completion| match completion {
-            SendCompletion::Accepted => self.accept(),
-            SendCompletion::Rejected(error) => {
+        match self.0 {
+            CompletionSinkInner::Ignore => CompletionSink::ignore(),
+            CompletionSinkInner::OneShot(sender) => CompletionSink::on_reject(move |error| {
                 if let Some(error) = f(error) {
-                    self.reject(error);
-                } else {
-                    self.accept();
+                    let _ = sender.send(error);
                 }
+            }),
+            CompletionSinkInner::OnReject(on_reject) => CompletionSink::on_reject(move |error| {
+                if let Some(error) = f(error) {
+                    on_reject(error);
+                }
+            }),
+            CompletionSinkInner::Tracked { tracker, on_reject } => {
+                CompletionSink::tracked(tracker, move |error| {
+                    if let Some(error) = f(error) {
+                        on_reject(error);
+                    }
+                })
             }
-        })
+        }
     }
 
     /// Report that the channel accepted the message.
     pub fn accept(self) {
         match self.0 {
-            CompletionSinkInner::OneShot(_) => {}
-            CompletionSinkInner::Callback(f) => f(SendCompletion::Accepted),
             CompletionSinkInner::Ignore => {}
+            CompletionSinkInner::OneShot(_) => {}
+            CompletionSinkInner::OnReject(_) => {}
+            CompletionSinkInner::Tracked { tracker, .. } => tracker.complete(),
         }
     }
 
     /// Report that the channel rejected the message.
     pub fn reject(self, error: SendError<M>) {
         match self.0 {
+            CompletionSinkInner::Ignore => {}
             CompletionSinkInner::OneShot(sender) => {
                 let _ = sender.send(error);
             }
-            CompletionSinkInner::Callback(f) => f(SendCompletion::Rejected(error)),
-            CompletionSinkInner::Ignore => {}
+            CompletionSinkInner::OnReject(on_reject) => on_reject(error),
+            CompletionSinkInner::Tracked { tracker, on_reject } => {
+                on_reject(error);
+                tracker.complete();
+            }
         }
     }
 }
