@@ -15,16 +15,6 @@ from pathlib import Path
 
 import pytest
 
-# ROCm: import torch before anything imports monarch._rust_bindings.
-# monarch links the system libamdhip64 while torch bundles its own; if
-# monarch loads first the system HIP runtime wins rocprofiler-register and
-# the first HIP call aborts (hip.cpp:512). The crash-recovery worker imports
-# monarch via test modules during collection, so ensure torch wins here.
-try:
-    import torch  # noqa: F401
-except ImportError:
-    pass
-
 _THIS_DIR = Path(__file__).parent
 
 collect_ignore: list[str] = []

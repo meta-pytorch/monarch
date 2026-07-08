@@ -233,7 +233,7 @@ def _ensure_hip_runtime_ordering() -> None:
     actionable exception. No-op on CUDA/CPU and whenever torch's runtime won.
     """
     monarch_pkg = sys.modules.get("monarch")
-    if getattr(monarch_pkg, "_TORCH_PRELOADED_BEFORE_BINDINGS", True):
+    if getattr(monarch_pkg, "_TORCH_HIP_RUNTIME_PRELOADED", True):
         return  # torch's HIP runtime loaded first (or preloaded): safe
     torch_mod = sys.modules.get("torch")
     if torch_mod is None:
