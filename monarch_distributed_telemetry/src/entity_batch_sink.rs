@@ -147,9 +147,7 @@ impl EntityBatchSinkInner {
 
 /// Collects entity lifecycle events into Arrow RecordBatches.
 ///
-/// This is the current in-process materializer for `TraceEvent::Entity`. It
-/// keeps today's `DatabaseScanner` query path working while entity production
-/// moves onto the unified trace dispatcher queue.
+/// This materializes `TraceEvent::Entity` rows for `DatabaseScanner` queries.
 #[derive(Clone)]
 pub struct EntityBatchSink {
     inner: Arc<Mutex<EntityBatchSinkInner>>,

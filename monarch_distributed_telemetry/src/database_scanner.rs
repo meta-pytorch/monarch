@@ -309,11 +309,9 @@ impl DatabaseScanner {
         scanner.sink = Some(sink.clone());
         hyperactor_telemetry::register_sink(Box::new(sink));
 
-        // Current in-process telemetry now consumes entity events from the
-        // same `TraceEvent` dispatcher queue as spans and log events.
         let entity_sink = scanner.create_entity_batch_sink(batch_size);
         scanner.entity_sink = Some(entity_sink.clone());
-        hyperactor_telemetry::register_entity_sink(Box::new(entity_sink));
+        hyperactor_telemetry::register_sink(Box::new(entity_sink));
 
         // Pre-register py-spy tables so QueryEngine discovers them at setup time
         for (name, batch) in [
@@ -665,7 +663,7 @@ impl DatabaseScanner {
 
     /// Create an entity batch sink that pushes batches to this scanner's tables.
     ///
-    /// The sink can be registered with `hyperactor_telemetry::register_entity_sink`
+    /// The sink can be registered with `hyperactor_telemetry::register_sink`
     /// to receive `TraceEvent::Entity` events and store them as queryable tables.
     pub fn create_entity_batch_sink(&self, batch_size: usize) -> EntityBatchSink {
         let table_data = self.table_data.clone();

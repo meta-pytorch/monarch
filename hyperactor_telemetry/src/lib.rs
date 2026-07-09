@@ -9,9 +9,7 @@
 #![allow(internal_features)]
 #![feature(sync_unsafe_cell)]
 #![feature(mpmc_channel)]
-#![feature(cfg_version)]
 #![feature(formatting_options)]
-#![feature(thread_id_value)]
 #![recursion_limit = "256"]
 
 // Environment variable for job name (used for environment detection)
@@ -239,15 +237,6 @@ static SINK_CONTROL_CHANNEL: LazyLock<(
     (sender, Mutex::new(Some(receiver)))
 });
 
-/// Short bootstrap buffer for entity events that fire before the current
-/// in-process entity materializer has registered as a `TraceEventSink`.
-///
-/// Sidecar sinks receive live `TraceEvent::Entity` events directly through
-/// the dispatcher. This buffer only preserves legacy in-process scanner
-/// visibility until that path is removed.
-static ENTITY_EVENT_BUFFER: LazyLock<Mutex<EntityEventBuffer>> =
-    LazyLock::new(|| Mutex::new(EntityEventBuffer::default()));
-
 const SYNTHETIC_USER_SPAN_ID_BASE: u64 = 1 << 63;
 static USER_SPAN_SEQ: AtomicU64 = AtomicU64::new(SYNTHETIC_USER_SPAN_ID_BASE);
 const SYNTHETIC_USER_SPAN_TRACK_NAME: &str = "python";
@@ -255,13 +244,9 @@ const SYNTHETIC_USER_SPAN_TRACK_NAME: &str = "python";
 /// Install the sender for the active dispatcher so synthesized events can join the
 /// same pipeline as events captured from native `tracing` callbacks.
 pub(crate) fn set_synthetic_trace_event_sender(sender: mpsc::SyncSender<TraceEvent>) {
-    let mut buffer = ENTITY_EVENT_BUFFER
-        .lock()
-        .expect("ENTITY_EVENT_BUFFER mutex should not be poisoned");
     *SYNTHETIC_TRACE_EVENT_SENDER
         .lock()
-        .expect("SYNTHETIC_TRACE_EVENT_SENDER mutex should not be poisoned") = Some(sender.clone());
-    buffer.drain_registered_events(&sender);
+        .expect("SYNTHETIC_TRACE_EVENT_SENDER mutex should not be poisoned") = Some(sender);
 }
 
 /// Sends a synthesized trace event to the active dispatcher queue.
@@ -525,76 +510,9 @@ pub enum EntityEvent {
     MessageStatus(MessageStatusEvent),
 }
 
-const MAX_BUFFERED_ENTITY_EVENTS: usize = 1000;
-
-enum EntityEventBuffer {
-    WaitingForEntitySink(Vec<EntityEvent>),
-    EntitySinkRegistered(Vec<EntityEvent>),
-}
-
-impl Default for EntityEventBuffer {
-    fn default() -> Self {
-        Self::WaitingForEntitySink(Vec::new())
-    }
-}
-
-impl EntityEventBuffer {
-    fn event_to_send(
-        &mut self,
-        event: EntityEvent,
-        sender: Option<mpsc::SyncSender<TraceEvent>>,
-    ) -> Option<(mpsc::SyncSender<TraceEvent>, EntityEvent)> {
-        match (self, sender) {
-            (Self::WaitingForEntitySink(events), Some(sender)) => {
-                // Keep a copy for the temporary legacy replay path.
-                Self::push_bounded(events, event.clone());
-                Some((sender, event))
-            }
-            (Self::EntitySinkRegistered(_), Some(sender)) => Some((sender, event)),
-            (Self::WaitingForEntitySink(events), None)
-            | (Self::EntitySinkRegistered(events), None) => {
-                Self::push_bounded(events, event);
-                None
-            }
-        }
-    }
-
-    fn push_bounded(events: &mut Vec<EntityEvent>, event: EntityEvent) {
-        if events.len() < MAX_BUFFERED_ENTITY_EVENTS {
-            events.push(event);
-            if events.len() == MAX_BUFFERED_ENTITY_EVENTS {
-                tracing::warn!(
-                    "entity event buffer full ({MAX_BUFFERED_ENTITY_EVENTS}); dropping further replay events"
-                );
-            }
-        }
-    }
-
-    fn register_entity_sink(&mut self) {
-        if let Self::WaitingForEntitySink(events) = self {
-            *self = Self::EntitySinkRegistered(std::mem::take(events));
-        }
-    }
-
-    fn drain_registered_events(&mut self, sender: &mpsc::SyncSender<TraceEvent>) {
-        if let Self::EntitySinkRegistered(events) = self {
-            for event in std::mem::take(events) {
-                let _ = sender.try_send(TraceEvent::Entity(event));
-            }
-        }
-    }
-}
-
 /// Emit an entity event through the unified trace dispatcher queue.
 fn emit_entity_event(event: EntityEvent) {
-    let event_to_send = {
-        let mut buffer = ENTITY_EVENT_BUFFER
-            .lock()
-            .expect("ENTITY_EVENT_BUFFER mutex should not be poisoned");
-        buffer.event_to_send(event, synthetic_trace_event_sender())
-    };
-
-    if let Some((sender, event)) = event_to_send {
+    if let Some(sender) = synthetic_trace_event_sender() {
         let _ = sender.try_send(TraceEvent::Entity(event));
     }
 }
@@ -626,25 +544,6 @@ pub fn register_sink(sink: Box<dyn TraceEventSink>) {
     let sender = &SINK_CONTROL_CHANNEL.0;
     if let Err(e) = sender.send(DispatcherControl::AddSink(sink)) {
         eprintln!("[telemetry] failed to register sink: {}", e);
-    }
-}
-
-/// Register the current `DatabaseScanner` entity sink.
-///
-/// This keeps the legacy in-process scanner populated while entity events move
-/// through the unified `TraceEvent` queue. Sidecar `UnixSocketSink`s receive
-/// live entity events through regular sink registration; the buffered replay
-/// here is only for early events that predate the legacy entity sink.
-pub fn register_entity_sink(sink: Box<dyn TraceEventSink>) {
-    register_sink(sink);
-
-    let mut buffer = ENTITY_EVENT_BUFFER
-        .lock()
-        .expect("ENTITY_EVENT_BUFFER mutex should not be poisoned");
-    let sender = synthetic_trace_event_sender();
-    buffer.register_entity_sink();
-    if let Some(sender) = sender {
-        buffer.drain_registered_events(&sender);
     }
 }
 
