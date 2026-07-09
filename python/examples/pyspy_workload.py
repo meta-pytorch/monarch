@@ -142,7 +142,6 @@ async def async_main() -> None:
             TelemetryConfig(
                 dashboard_port=0,
                 snapshot_interval_secs=30.0,
-                use_sidecar=True,
             )
         )
         .enable_admin()

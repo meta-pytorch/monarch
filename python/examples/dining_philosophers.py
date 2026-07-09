@@ -183,7 +183,6 @@ async def async_main(
                 include_dashboard=dashboard,
                 dashboard_port=resolved_dashboard_port,
                 snapshot_interval_secs=30.0,
-                use_sidecar=True,
             )
         )
     state = job.state(cached_path=None)

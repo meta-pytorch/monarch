@@ -26,9 +26,7 @@ from monarch.mesh_controller import spawn_tensor_engine
 
 job = (
     ProcessJob({"hosts": 1})
-    .enable_telemetry(
-        TelemetryConfig(dashboard_port=0, snapshot_interval_secs=30.0, use_sidecar=True)
-    )
+    .enable_telemetry(TelemetryConfig(dashboard_port=0, snapshot_interval_secs=30.0))
     .enable_admin()
 )
 job_state = job.state(cached_path=None)

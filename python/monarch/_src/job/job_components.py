@@ -45,8 +45,6 @@ from monarch._src.job.telemetry_config import (
     TelemetryConfig,
 )
 from monarch.actor import HostMesh
-from monarch.distributed_telemetry.actor import start_telemetry
-from monarch.distributed_telemetry.engine import QueryEngine
 
 if TYPE_CHECKING:
     from monarch._src.job.job import JobState, JobTrait
@@ -170,58 +168,15 @@ class MountComponent(JobComponent):
         )
 
 
-class TelemetryComponent(JobComponent):
-    """Start the legacy in-process telemetry collector once per allocation.
-
-    Owns the query engine, collector URL, and scanner. Dependent components
-    receive this component explicitly instead of reading telemetry state from
-    ``JobTrait``. ``JobComponents`` resets this runtime when config drifts so
-    the next ``state`` starts a collector with the new config.
-    """
-
-    def __init__(self, config: TelemetryConfig) -> None:
-        self._config = config
-        self._query_engine: Optional[QueryEngine] = None
-        self._telemetry_url: Optional[str] = None
-        self._scanner: Any = None
-
-    def reset_runtime(self) -> None:
-        self._query_engine = None
-        self._telemetry_url = None
-        self._scanner = None
-
-    def __getstate__(self) -> Dict[str, Any]:
-        state = self.__dict__.copy()
-        state["_query_engine"] = None
-        state["_telemetry_url"] = None
-        state["_scanner"] = None
-        return state
-
-    def state(self, job: "JobTrait", job_state: "JobState") -> None:
-        if self._query_engine is None:
-            cfg = self._config
-            self._query_engine, self._telemetry_url, self._scanner = start_telemetry(
-                batch_size=cfg.batch_size,
-                retention_secs=cfg.retention_secs,
-                include_dashboard=cfg.include_dashboard,
-                dashboard_port=cfg.dashboard_port,
-            )
-        job_state.query_engine = self._query_engine
-        job_state.telemetry_url = self._telemetry_url
-
-
 class SidecarTelemetryComponent(JobComponent):
-    """Host telemetry in the job sidecar instead of in-process.
+    """Host telemetry in the job sidecar.
 
-    Opted into via ``TelemetryConfig.use_sidecar``; mutually exclusive with
-    ``TelemetryComponent``. ``before_connect`` opens the sidecar's
-    telemetry handle and installs the client-process Unix socket sink *before*
-    raw host meshes are materialized so host-mesh creation events are captured.
-    ``connect`` asks the sidecar to fan worker collectors out across the
-    materialized host meshes. Config drift clears parent-side handles, but
-    the sidecar keeps its in-memory telemetry store for the same ``apply_id``.
-    Switching between sidecar and in-process telemetry replaces the telemetry
-    component slot.
+    ``before_connect`` opens the sidecar's telemetry handle and installs the
+    client-process Unix socket sink *before* raw host meshes are materialized
+    so host-mesh creation events are captured. ``connect`` asks the sidecar to
+    fan worker collectors out across the materialized host meshes. Config drift
+    clears parent-side handles, but the sidecar keeps its in-memory telemetry
+    store for the same ``apply_id``.
     Telemetry is best-effort: any failure is logged and leaves telemetry
     disabled for this job rather than failing ``state()``.
     """
@@ -320,7 +275,7 @@ class AdminComponent(JobComponent):
     def __init__(
         self,
         config: MeshAdminConfig,
-        telemetry: Optional[TelemetryComponent | SidecarTelemetryComponent],
+        telemetry: Optional[SidecarTelemetryComponent],
     ) -> None:
         self._config = config
         self._telemetry = telemetry
@@ -371,7 +326,7 @@ class SnapshotComponent(JobComponent):
 
     def __init__(
         self,
-        telemetry: TelemetryComponent | SidecarTelemetryComponent,
+        telemetry: SidecarTelemetryComponent,
         admin: AdminComponent,
     ) -> None:
         self._telemetry = telemetry
@@ -399,34 +354,15 @@ class SnapshotComponent(JobComponent):
         from monarch.actor import context
 
         instance = context().actor_instance._as_rust()
-        if isinstance(self._telemetry, SidecarTelemetryComponent):
-            # Sidecar telemetry has no in-process scanner; publish snapshots to
-            # the sidecar over HTTP instead.
-            telemetry_url = self._telemetry._telemetry_url
-            if telemetry_url is None:
-                return
-            from monarch._rust_bindings.monarch_extension.snapshot_integration import (
-                _start_periodic_snapshots_http,
-            )
-
-            _start_periodic_snapshots_http(
-                base_url=telemetry_url,
-                admin_ref=admin_ref,
-                instance=instance,
-                interval_secs=snapshot_interval_secs,
-            )
-            self._started = True
-            return
-
-        scanner = self._telemetry._scanner
-        if scanner is None:
+        telemetry_url = self._telemetry._telemetry_url
+        if telemetry_url is None:
             return
         from monarch._rust_bindings.monarch_extension.snapshot_integration import (
-            _start_periodic_snapshots,
+            _start_periodic_snapshots_http,
         )
 
-        _start_periodic_snapshots(
-            scanner=scanner,
+        _start_periodic_snapshots_http(
+            base_url=telemetry_url,
             admin_ref=admin_ref,
             instance=instance,
             interval_secs=snapshot_interval_secs,
@@ -443,7 +379,7 @@ class JobComponents:
     """
 
     mounts: MountComponent = field(default_factory=MountComponent)
-    telemetry: Optional[TelemetryComponent | SidecarTelemetryComponent] = None
+    telemetry: Optional[SidecarTelemetryComponent] = None
     admin: Optional[AdminComponent] = None
     snapshot: Optional[SnapshotComponent] = None
 
@@ -477,13 +413,8 @@ class JobComponents:
             component.reset_runtime()
 
     def configure_telemetry(self, config: TelemetryConfig) -> None:
-        target_cls = (
-            SidecarTelemetryComponent if config.use_sidecar else TelemetryComponent
-        )
-        if not isinstance(self.telemetry, target_cls):
-            if self.telemetry is not None:
-                self.telemetry.reset_runtime()
-            self.telemetry = target_cls(config)
+        if self.telemetry is None:
+            self.telemetry = SidecarTelemetryComponent(config)
             telemetry_changed = True
         else:
             telemetry_changed = self.telemetry._config != config
