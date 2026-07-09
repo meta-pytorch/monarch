@@ -168,8 +168,8 @@ class MountComponent(JobComponent):
         )
 
 
-class SidecarTelemetryComponent(JobComponent):
-    """Host telemetry in the job sidecar.
+class TelemetryComponent(JobComponent):
+    """Host telemetry for a job.
 
     ``before_connect`` opens the sidecar's telemetry handle and installs the
     client-process Unix socket sink *before* raw host meshes are materialized
@@ -275,7 +275,7 @@ class AdminComponent(JobComponent):
     def __init__(
         self,
         config: MeshAdminConfig,
-        telemetry: Optional[SidecarTelemetryComponent],
+        telemetry: Optional[TelemetryComponent],
     ) -> None:
         self._config = config
         self._telemetry = telemetry
@@ -326,7 +326,7 @@ class SnapshotComponent(JobComponent):
 
     def __init__(
         self,
-        telemetry: SidecarTelemetryComponent,
+        telemetry: TelemetryComponent,
         admin: AdminComponent,
     ) -> None:
         self._telemetry = telemetry
@@ -379,7 +379,7 @@ class JobComponents:
     """
 
     mounts: MountComponent = field(default_factory=MountComponent)
-    telemetry: Optional[SidecarTelemetryComponent] = None
+    telemetry: Optional[TelemetryComponent] = None
     admin: Optional[AdminComponent] = None
     snapshot: Optional[SnapshotComponent] = None
 
@@ -414,7 +414,7 @@ class JobComponents:
 
     def configure_telemetry(self, config: TelemetryConfig) -> None:
         if self.telemetry is None:
-            self.telemetry = SidecarTelemetryComponent(config)
+            self.telemetry = TelemetryComponent(config)
             telemetry_changed = True
         else:
             telemetry_changed = self.telemetry._config != config
