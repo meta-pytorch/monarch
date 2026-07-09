@@ -11,6 +11,7 @@ import asyncio
 import collections
 import contextvars
 import functools
+import importlib
 import inspect
 import logging
 import threading
@@ -80,9 +81,7 @@ from monarch._src.actor.endpoint import (
     Selection,
 )
 from monarch._src.actor.future import Future
-from monarch._src.actor.mpsc import (  # noqa: F401 - import runs @rust_struct patching
-    Receiver,
-)
+from monarch._src.actor.mpsc import Receiver  # noqa: F401 - used in annotations
 from monarch._src.actor.python_extension_methods import rust_struct
 from monarch._src.actor.shape import MeshTrait, NDSlice
 from monarch._src.actor.sync_state import fake_sync_state
@@ -108,6 +107,23 @@ if TYPE_CHECKING:
 
 
 logger: logging.Logger = logging.getLogger(__name__)
+
+# `@rust_struct` (see `python_extension_methods.rust_struct`) attaches Python
+# methods to a Rust pyclass as a side effect of importing the module that
+# declares them. The queue-dispatch loop below calls `Receiver.recv` (from
+# `mpsc`), which awaits `Event.wait`/`Event.clear` (from `waker`); all three are
+# such patched methods. Under lazy imports (native-python builds) a plain
+# `from ... import` is deferred until the imported *symbol* is used, but the
+# loop only calls these methods on Rust-created *instances* and never touches
+# the symbols, so the patches never run and the calls fail with `AttributeError:
+# 'Receiver' object has no attribute 'recv'`. Force the modules to load here so
+# their patches are applied before any actor dispatches a message.
+#
+# TODO: ideally `@rust_struct` would make a patched method resolve (and run) its
+# defining module on first access, removing the need for these explicit imports.
+# That likely requires a change to the lazy-import machinery outside monarch.
+importlib.import_module("monarch._src.actor.mpsc")
+importlib.import_module("monarch._src.actor.waker")
 
 try:
     from __manifest__ import fbmake  # noqa
