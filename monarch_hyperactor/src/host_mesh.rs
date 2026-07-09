@@ -600,7 +600,7 @@ fn shutdown_local_host_mesh() -> PyResult<PyPythonTask> {
 /// Opaque capability token for `ActorRef<MeshAdminAgent>` across the
 /// Python boundary. No methods, no getters — Python never inspects
 /// this. It exists solely to transport the typed ref from
-/// `_spawn_admin` to `_start_periodic_snapshots`.
+/// `_spawn_admin` to `_start_periodic_snapshots_http`.
 #[pyclass(
     name = "PyMeshAdminRef",
     module = "monarch._rust_bindings.monarch_hyperactor.host_mesh"

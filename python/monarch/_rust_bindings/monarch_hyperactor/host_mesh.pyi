@@ -157,7 +157,7 @@ def shutdown_local_host_mesh() -> PythonTask[None]:
 class PyMeshAdminRef:
     """Opaque capability token for ActorRef<MeshAdminAgent>.
     No methods — used only to transport the typed ref across the
-    Python boundary from _spawn_admin to _start_periodic_snapshots."""
+    Python boundary from _spawn_admin to _start_periodic_snapshots_http."""
 
     ...
 

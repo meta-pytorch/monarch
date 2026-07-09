@@ -454,7 +454,7 @@ class JobComponents:
         allocation, so a restarted telemetry or admin runtime leaves it bound to
         the old runtime. See :class:`SnapshotComponent`.
 
-        TODO: give ``_start_periodic_snapshots`` an abort handle so
+        TODO: give periodic snapshot capture an abort handle so
         ``SnapshotComponent.reset_runtime`` can stop the old actor; then reset
         the snapshot in this drift cascade alongside telemetry and admin.
         """
