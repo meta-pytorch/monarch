@@ -17,9 +17,6 @@
 //!
 //! For entity lifecycle events (actors, meshes), see EntityBatchSink.
 
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering;
-
 use datafusion::arrow::record_batch::RecordBatch;
 use hyperactor_telemetry::FieldValue;
 use hyperactor_telemetry::TraceEvent;
@@ -34,20 +31,6 @@ pub use monarch_telemetry_schema::trace_tables::Span;
 pub use monarch_telemetry_schema::trace_tables::SpanBuffer;
 pub use monarch_telemetry_schema::trace_tables::SpanEvent;
 pub use monarch_telemetry_schema::trace_tables::SpanEventBuffer;
-
-/// Global counter for the number of batches flushed by the counting sink.
-/// This can be checked from tests to verify that the sink is active.
-static FLUSH_COUNT: AtomicUsize = AtomicUsize::new(0);
-
-/// Get the total number of batches flushed by counting sinks.
-pub fn get_flush_count() -> usize {
-    FLUSH_COUNT.load(Ordering::SeqCst)
-}
-
-/// Reset the flush counter to zero. Useful for tests.
-pub fn reset_flush_count() {
-    FLUSH_COUNT.store(0, Ordering::SeqCst);
-}
 
 use crate::timestamp_to_micros;
 
@@ -186,27 +169,6 @@ impl RecordBatchSink {
             .lock()
             .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
         inner.flush()
-    }
-
-    /// Create a new RecordBatchSink that prints batches to stdout.
-    pub fn new_printing(batch_size: usize) -> Self {
-        Self::new(
-            batch_size,
-            Box::new(|table_name, batch| {
-                FLUSH_COUNT.fetch_add(1, Ordering::SeqCst);
-                println!(
-                    "[RecordBatchSink] Table: {}, rows: {}, schema: {:?}",
-                    table_name,
-                    batch.num_rows(),
-                    batch
-                        .schema()
-                        .fields()
-                        .iter()
-                        .map(|f| f.name())
-                        .collect::<Vec<_>>()
-                );
-            }),
-        )
     }
 }
 

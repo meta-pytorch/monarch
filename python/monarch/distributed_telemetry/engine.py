@@ -9,7 +9,7 @@
 """
 QueryEngine - Wrapper for the Rust QueryEngine.
 
-Provides SQL query execution over distributed telemetry actors.
+Provides SQL query execution over sidecar telemetry actors.
 """
 
 from typing import Any, Optional, Tuple, Type
@@ -24,7 +24,7 @@ class QueryEngine:
     """
     SQL query engine for distributed telemetry data.
 
-    Takes a singleton DistributedTelemetryActor (ActorMesh) and provides SQL
+    Takes a singleton TelemetryActor (ActorMesh) and provides SQL
     query capabilities using DataFusion as the query planner and executor.
 
     The Rust QueryEngine is created lazily on first query to allow this object
@@ -36,8 +36,7 @@ class QueryEngine:
         Create a QueryEngine.
 
         Args:
-            actor: A singleton DistributedTelemetryActor (ActorMesh with one element)
-                   that has all children added.
+            actor: A singleton TelemetryActor actor mesh.
         """
         self._actor: Any = actor
         self._engine: Optional[_QueryEngine] = None

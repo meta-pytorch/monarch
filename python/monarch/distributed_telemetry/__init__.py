@@ -7,11 +7,11 @@
 # pyre-strict
 
 """
-Distributed Telemetry - SQL queries over distributed MemTable databases.
+Distributed Telemetry - SQL queries over sidecar telemetry tables.
 
-Three-component architecture:
+Sidecar architecture:
 1. DatabaseScanner (Rust): Local MemTable operations with child stream merging
-2. DistributedTelemetryActor (Python): Orchestrates children, wraps DatabaseScanner
+2. TelemetryActor (Python): Sidecar-owned actor that wraps DatabaseScanner
 3. QueryEngine (Rust): DataFusion query execution
 
 Usage:

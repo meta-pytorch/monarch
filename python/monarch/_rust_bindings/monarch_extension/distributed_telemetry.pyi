@@ -93,7 +93,7 @@ class QueryEngine:
         Create a QueryEngine.
 
         Args:
-            actor: A DistributedTelemetryActor (ActorMesh) to query
+            actor: A TelemetryActor actor mesh to query
         """
         ...
 
