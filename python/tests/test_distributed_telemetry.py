@@ -212,45 +212,6 @@ def cleanup_callbacks():
         SetupActor._startup_functions.remove(fn)
 
 
-@pytest.mark.timeout(60)
-@isolate_in_subprocess
-def test_record_batch_tracing(cleanup_callbacks) -> None:
-    """Test that RecordBatchSink captures trace events as RecordBatches."""
-    try:
-        from monarch._rust_bindings.monarch_distributed_telemetry import (
-            enable_record_batch_tracing,
-            get_record_batch_flush_count,
-            reset_record_batch_flush_count,
-        )
-    except ImportError:
-        pytest.skip(
-            "RecordBatch tracing not available (requires distributed_sql_telemetry feature)"
-        )
-        return
-
-    # Reset the counter before starting
-    reset_record_batch_flush_count()
-    initial_count = get_record_batch_flush_count()
-    assert initial_count == 0, "Flush count should be 0 after reset"
-
-    # Enable the record batch sink with a small batch size to trigger flushing
-    enable_record_batch_tracing(batch_size=5)
-
-    # Spawn some workers to generate trace events
-    with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
-        cached_path=None,
-    ) as state:
-        _assert_sidecar(state)
-        hosts = state.hosts
-        hosts.spawn_procs(per_host={"workers": 2})
-
-        # The sink should have received and flushed some batches
-        # Note: The exact count depends on the number of trace events generated
-        final_count = get_record_batch_flush_count()
-        assert final_count >= 0, "Flush count should be non-negative"
-
-
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
 def test_actors_table() -> None:

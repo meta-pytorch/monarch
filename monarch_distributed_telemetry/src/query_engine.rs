@@ -393,7 +393,7 @@ impl QueryEngine {
     /// Create a new QueryEngine.
     ///
     /// Args:
-    ///     actor: A singleton DistributedTelemetryActor (ActorMesh) to query
+    ///     actor: A singleton TelemetryActor actor mesh to query
     #[new]
     fn new(py: Python<'_>, actor: Py<PyAny>) -> PyResult<Self> {
         // Get actor instance from current Python context
