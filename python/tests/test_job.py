@@ -583,40 +583,33 @@ def test_state_query_engine_none_without_telemetry():
     assert state.telemetry_url is None
 
 
-@patch("monarch._src.job.job_components.start_telemetry")
-def test_state_query_engine_set_with_telemetry(mock_start):
-    """Test that query_engine is set when telemetry is configured."""
-    mock_engine = MagicMock()
-    mock_url = "http://localhost:8265"
-    mock_start.return_value = (mock_engine, mock_url, MagicMock())
+def test_state_query_client_set_with_telemetry():
+    """Test that the sidecar query client is set when telemetry is configured."""
+    with _patched_sidecar() as m:
+        job = MockJobTrait().enable_telemetry(TelemetryConfig())
+        state = job.state(cached_path=None)
 
-    job = MockJobTrait().enable_telemetry(TelemetryConfig())
-    state = job.state(cached_path=None)
-
-    assert state.query_engine is not None
-    assert state.query_engine is mock_engine
-    assert state.telemetry_url == mock_url
+    assert state.query_engine is None
+    assert state.query_engine_client is m.query_engine_client_cls.return_value
+    assert state.telemetry_url == "http://sidecar"
 
 
-@patch("monarch._src.job.job_components.start_telemetry")
-def test_component_configuration_after_apply_adds_telemetry(mock_start):
-    mock_engine = MagicMock()
-    mock_url = "http://localhost:8265"
-    mock_start.return_value = (mock_engine, mock_url, MagicMock())
+def test_component_configuration_after_apply_adds_telemetry():
+    with _patched_sidecar() as m:
+        job = MockJobTrait()
+        job.apply()
+        components = job._components
+        assert components is not None
+        assert components.telemetry is None
 
-    job = MockJobTrait()
-    job.apply()
-    components = job._components
-    assert components is not None
-    assert components.telemetry is None
-
-    job.enable_telemetry(TelemetryConfig())
-    state = job.state(cached_path=None)
+        job.enable_telemetry(TelemetryConfig())
+        state = job.state(cached_path=None)
 
     assert job._components is components
     assert components.telemetry is not None
-    assert state.query_engine is mock_engine
-    assert state.telemetry_url == mock_url
+    assert state.query_engine is None
+    assert state.query_engine_client is m.query_engine_client_cls.return_value
+    assert state.telemetry_url == "http://sidecar"
 
 
 def test_mount_configuration_after_apply_reuses_mount_component_on_connect():
@@ -636,36 +629,27 @@ def test_mount_configuration_after_apply_reuses_mount_component_on_connect():
     ensure_open.assert_called_once()
 
 
-@patch("monarch._src.job.job_components.start_telemetry")
-def test_telemetry_config_change_restarts_telemetry_runtime(mock_start):
-    mock_start.return_value = (MagicMock(), "http://localhost:8265", MagicMock())
+def test_telemetry_config_change_restarts_telemetry_runtime():
+    with _patched_sidecar() as m:
+        job = MockJobTrait().enable_telemetry(TelemetryConfig(retention_secs=1))
+        job.state(cached_path=None)
+        components = job._components
+        assert components is not None
+        mount_component = components.mounts
+        telemetry_component = components.telemetry
+        assert telemetry_component is not None
 
-    job = MockJobTrait().enable_telemetry(TelemetryConfig(batch_size=1))
-    job.state(cached_path=None)
-    components = job._components
-    assert components is not None
-    mount_component = components.mounts
-    telemetry_component = components.telemetry
-    assert telemetry_component is not None
-
-    job.enable_telemetry(TelemetryConfig(batch_size=2))
-    job.state(cached_path=None)
+        job.enable_telemetry(TelemetryConfig(retention_secs=2))
+        job.state(cached_path=None)
 
     assert job._components is components
     assert components.mounts is mount_component
     assert components.telemetry is telemetry_component
-    assert mock_start.call_count == 2
+    assert m.query_engine_client_cls.call_count == 2
 
 
-@patch("monarch._src.job.job_components.start_telemetry")
-def test_cached_running_job_uses_current_component_configuration(mock_start):
-    mock_engine = MagicMock()
-    mock_url = "http://current-telemetry"
-    mock_start.return_value = (mock_engine, mock_url, MagicMock())
-
-    cached_job = MockJobTrait(host_names=["cached"]).enable_telemetry(
-        TelemetryConfig(batch_size=1)
-    )
+def test_cached_running_job_uses_current_component_configuration():
+    cached_job = MockJobTrait(host_names=["cached"]).enable_telemetry(TelemetryConfig())
     cached_job.apply()
 
     with tempfile.NamedTemporaryFile(delete=False) as tmp:
@@ -674,42 +658,34 @@ def test_cached_running_job_uses_current_component_configuration(mock_start):
     try:
         cached_job.dump(cache_path)
 
-        new_job = MockJobTrait(host_names=["new"]).enable_telemetry(
-            TelemetryConfig(batch_size=2)
-        )
-        state = new_job.state(cached_path=cache_path)
+        with _patched_sidecar() as m:
+            new_job = MockJobTrait(host_names=["new"]).enable_telemetry(
+                TelemetryConfig(retention_secs=2)
+            )
+            state = new_job.state(cached_path=cache_path)
 
         assert not new_job.create_called
         assert state.cached.name == "cached"
-        assert state.query_engine is mock_engine
-        assert state.telemetry_url == mock_url
-        mock_start.assert_called_once_with(
-            batch_size=2,
-            retention_secs=600,
-            include_dashboard=False,
-            dashboard_port=8265,
-        )
+        assert state.query_engine is None
+        assert state.query_engine_client is m.query_engine_client_cls.return_value
+        m.telemetry_cls.assert_any_call(TelemetryConfig(retention_secs=2))
     finally:
         if os.path.exists(cache_path):
             os.unlink(cache_path)
 
 
-@patch("monarch._src.job.job_components.start_telemetry")
-def test_unpickled_running_job_accepts_component_configuration(mock_start):
-    mock_engine = MagicMock()
-    mock_url = "http://localhost:8265"
-    mock_start.return_value = (mock_engine, mock_url, MagicMock())
-
+def test_unpickled_running_job_accepts_component_configuration():
     original_job = MockJobTrait()
     original_job.apply()
     loaded_job = job_loads(original_job.dumps())
 
-    loaded_job.enable_telemetry(TelemetryConfig())
-    state = loaded_job.state(cached_path=None)
+    with _patched_sidecar() as m:
+        loaded_job.enable_telemetry(TelemetryConfig())
+        state = loaded_job.state(cached_path=None)
 
-    mock_start.assert_called_once()
-    assert state.query_engine is mock_engine
-    assert state.telemetry_url == mock_url
+    assert state.query_engine is None
+    assert state.query_engine_client is m.query_engine_client_cls.return_value
+    assert state.telemetry_url == "http://sidecar"
 
 
 def test_lifecycle_component_hooks_use_job_context():
@@ -820,52 +796,51 @@ def test_batch_job_runs_component_lifecycle_on_wrapped_job():
     state = batch.state(cached_path=None)
 
     assert state.raw.name == "raw"
-    assert all(seen_job is job for seen_job in probe.jobs)
+    assert all(seen_job is batch for seen_job in probe.jobs)
+    assert batch.apply_id is not None
     assert probe.events == ["before_connect", "connect", "state"]
 
 
-@patch("monarch._src.job.job_components.start_telemetry")
-def test_lifecycle_component_runtime_reset_on_job_teardown(mock_start):
+def test_lifecycle_component_runtime_reset_on_job_teardown():
     """Job teardown resets component runtime while preserving config."""
-    mock_start.return_value = (MagicMock(), "http://localhost:8265", MagicMock())
+    with _patched_sidecar() as m:
+        job = MockJobTrait().enable_telemetry(TelemetryConfig())
+        job.state(cached_path=None)
+        components = job._components
+        apply_id = job.apply_id
 
-    job = MockJobTrait().enable_telemetry(TelemetryConfig())
-    job.state(cached_path=None)
-    components = job._components
-    apply_id = job.apply_id
+        job.state(cached_path=None)
+        assert job._components is components
+        assert m.query_engine_client_cls.call_count == 1
 
-    job.state(cached_path=None)
-    assert job._components is components
-    mock_start.assert_called_once()
-
-    with patch("monarch._src.job.job.stop_job_sidecar") as stop_sidecar:
-        job.kill()
+        with patch("monarch._src.job.job.stop_job_sidecar") as stop_sidecar:
+            job.kill()
 
     stop_sidecar.assert_called_once_with(apply_id)
     assert job._components is components
 
-    job.state(cached_path=None)
+    with _patched_sidecar() as m:
+        job.state(cached_path=None)
     assert job._components is components
-    assert mock_start.call_count == 2
+    assert m.query_engine_client_cls.call_count == 1
 
 
-@patch("monarch._src.job.job_components.start_telemetry")
-def test_telemetry_dropped_on_pickle(mock_start):
-    """Test that query_engine is dropped during pickling and restored after."""
-    mock_start.return_value = (MagicMock(), "http://localhost:8265", MagicMock())
-
-    job = MockJobTrait().enable_telemetry(TelemetryConfig())
-    job.state(cached_path=None)
-    assert mock_start.call_count == 1
+def test_telemetry_dropped_on_pickle():
+    """Test that query client is dropped during pickling and restored after."""
+    with _patched_sidecar() as m:
+        job = MockJobTrait().enable_telemetry(TelemetryConfig())
+        job.state(cached_path=None)
+        assert m.query_engine_client_cls.call_count == 1
 
     # Serialize and deserialize — live handles should be dropped
     loaded_job = job_loads(job.dumps())
     assert loaded_job._components.telemetry is not None
 
     # Getting state again should re-initialize telemetry
-    state = loaded_job.state(cached_path=None)
-    assert mock_start.call_count == 2
-    assert state.query_engine is not None
+    with _patched_sidecar() as m:
+        state = loaded_job.state(cached_path=None)
+    assert m.query_engine_client_cls.call_count == 1
+    assert state.query_engine_client is not None
 
 
 def test_state_admin_url_none_without_mesh_admin():
@@ -943,39 +918,29 @@ def test_mesh_admin_receives_custom_addr(mock_spawn):
 
 
 @patch("monarch._src.job.job_components._spawn_admin")
-@patch("monarch._src.job.job_components.start_telemetry")
-def test_mesh_admin_receives_telemetry_url(mock_start, mock_spawn):
+def test_mesh_admin_receives_telemetry_url(mock_spawn):
     """Test that admin links to telemetry when both are configured."""
-    mock_engine = MagicMock()
-    mock_scanner = MagicMock()
-    mock_start.return_value = (mock_engine, "http://localhost:8265", mock_scanner)
-
     mock_future = MagicMock()
     mock_admin_ref = MagicMock()
     mock_future.get.return_value = ("http://localhost:1729", mock_admin_ref)
     mock_spawn.return_value = mock_future
 
-    job = (
-        MockJobTrait()
-        .enable_telemetry(TelemetryConfig())
-        .enable_admin(MeshAdminConfig())
-    )
-    state = job.state(cached_path=None)
+    with _patched_sidecar():
+        job = (
+            MockJobTrait()
+            .enable_telemetry(TelemetryConfig())
+            .enable_admin(MeshAdminConfig())
+        )
+        state = job.state(cached_path=None)
 
     _, kwargs = mock_spawn.call_args
-    assert kwargs.get("telemetry_url") == "http://localhost:8265"
-    assert state.telemetry_url == "http://localhost:8265"
+    assert kwargs.get("telemetry_url") == "http://sidecar"
+    assert state.telemetry_url == "http://sidecar"
     assert state.admin_url == "http://localhost:1729"
 
 
 @patch("monarch._src.job.job_components._spawn_admin")
-@patch("monarch._src.job.job_components.start_telemetry")
-def test_mesh_admin_restarts_when_telemetry_config_changes(mock_start, mock_spawn):
-    mock_start.side_effect = [
-        (MagicMock(), "http://telemetry-one", MagicMock()),
-        (MagicMock(), "http://telemetry-two", MagicMock()),
-    ]
-
+def test_mesh_admin_restarts_when_telemetry_config_changes(mock_spawn):
     mock_future = MagicMock()
     mock_admin_ref = MagicMock()
     mock_future.get.side_effect = [
@@ -983,22 +948,39 @@ def test_mesh_admin_restarts_when_telemetry_config_changes(mock_start, mock_spaw
         ("http://admin-two", mock_admin_ref),
     ]
     mock_spawn.return_value = mock_future
+    telemetry_one = {
+        "telemetry_url": "http://telemetry-one",
+        "dashboard_url": "http://dashboard-one",
+        "socket_path": "/tmp/telemetry-one.sock",
+    }
+    telemetry_two = {
+        "telemetry_url": "http://telemetry-two",
+        "dashboard_url": "http://dashboard-two",
+        "socket_path": "/tmp/telemetry-two.sock",
+    }
 
-    job = (
-        MockJobTrait()
-        .enable_telemetry(TelemetryConfig(batch_size=1))
-        .enable_admin(MeshAdminConfig())
-    )
-    state = job.state(cached_path=None)
-    assert state.telemetry_url == "http://telemetry-one"
-    assert state.admin_url == "http://admin-one"
+    with _patched_sidecar(
+        ensure_open_side_effect=[
+            telemetry_one,
+            telemetry_one,
+            telemetry_two,
+            telemetry_two,
+        ]
+    ):
+        job = (
+            MockJobTrait()
+            .enable_telemetry(TelemetryConfig(retention_secs=1))
+            .enable_admin(MeshAdminConfig())
+        )
+        state = job.state(cached_path=None)
+        assert state.telemetry_url == "http://telemetry-one"
+        assert state.admin_url == "http://admin-one"
 
-    job.enable_telemetry(TelemetryConfig(batch_size=2))
-    state = job.state(cached_path=None)
+        job.enable_telemetry(TelemetryConfig(retention_secs=2))
+        state = job.state(cached_path=None)
 
     assert state.telemetry_url == "http://telemetry-two"
     assert state.admin_url == "http://admin-two"
-    assert mock_start.call_count == 2
     assert mock_spawn.call_count == 2
     assert [call.kwargs["telemetry_url"] for call in mock_spawn.call_args_list] == [
         "http://telemetry-one",
@@ -1007,36 +989,33 @@ def test_mesh_admin_restarts_when_telemetry_config_changes(mock_start, mock_spaw
 
 
 @patch(
-    "monarch._rust_bindings.monarch_extension.snapshot_integration._start_periodic_snapshots"
+    "monarch._rust_bindings.monarch_extension.snapshot_integration._start_periodic_snapshots_http"
 )
 @patch("monarch.actor.context")
 @patch("monarch._src.job.job_components._spawn_admin")
-@patch("monarch._src.job.job_components.start_telemetry")
 def test_snapshot_component_starts_once_after_telemetry_and_admin(
-    mock_start,
     mock_spawn,
     mock_context,
     mock_start_snapshots,
 ):
-    mock_scanner = MagicMock()
     mock_admin_ref = MagicMock()
     mock_instance = MagicMock()
-    mock_start.return_value = (MagicMock(), "http://localhost:8265", mock_scanner)
     mock_future = MagicMock()
     mock_future.get.return_value = ("http://localhost:1729", mock_admin_ref)
     mock_spawn.return_value = mock_future
     mock_context.return_value.actor_instance._as_rust.return_value = mock_instance
 
-    job = (
-        MockJobTrait()
-        .enable_telemetry(TelemetryConfig(snapshot_interval_secs=5.0))
-        .enable_admin(MeshAdminConfig())
-    )
-    job.state(cached_path=None)
-    job.state(cached_path=None)
+    with _patched_sidecar():
+        job = (
+            MockJobTrait()
+            .enable_telemetry(TelemetryConfig(snapshot_interval_secs=5.0))
+            .enable_admin(MeshAdminConfig())
+        )
+        job.state(cached_path=None)
+        job.state(cached_path=None)
 
     mock_start_snapshots.assert_called_once_with(
-        scanner=mock_scanner,
+        base_url="http://sidecar",
         admin_ref=mock_admin_ref,
         instance=mock_instance,
         interval_secs=5.0,
@@ -1044,33 +1023,30 @@ def test_snapshot_component_starts_once_after_telemetry_and_admin(
 
 
 @patch("monarch._src.job.job_components._spawn_admin")
-@patch("monarch._src.job.job_components.start_telemetry")
-def test_batch_job_shares_component_runtime_with_wrapped_job(mock_start, mock_spawn):
-    mock_engine = MagicMock()
-    mock_scanner = MagicMock()
-    mock_start.return_value = (mock_engine, "http://localhost:8265", mock_scanner)
-
+def test_batch_job_shares_component_runtime_with_wrapped_job(mock_spawn):
     mock_future = MagicMock()
     mock_admin_ref = MagicMock()
     mock_future.get.return_value = ("http://localhost:1729", mock_admin_ref)
     mock_spawn.return_value = mock_future
 
-    job = (
-        MockJobTrait(host_names=["hosts"])
-        .enable_telemetry(TelemetryConfig())
-        .enable_admin(MeshAdminConfig())
-    )
-    batch = BatchJob(job)
-    batch_state = batch.state(cached_path=None)
-    job_state = job.state(cached_path=None)
+    with _patched_sidecar() as m:
+        job = (
+            MockJobTrait(host_names=["hosts"])
+            .enable_telemetry(TelemetryConfig())
+            .enable_admin(MeshAdminConfig())
+        )
+        batch = BatchJob(job)
+        batch_state = batch.state(cached_path=None)
+        job_state = job.state(cached_path=None)
 
-    assert batch_state.query_engine is mock_engine
-    assert batch_state.telemetry_url == "http://localhost:8265"
+    assert batch_state.query_engine is None
+    assert batch_state.query_engine_client is m.query_engine_client_cls.return_value
+    assert batch_state.telemetry_url == "http://sidecar"
     assert batch_state.admin_url == "http://localhost:1729"
-    assert job_state.query_engine is mock_engine
-    assert job_state.telemetry_url == "http://localhost:8265"
+    assert job_state.query_engine is None
+    assert job_state.query_engine_client is m.query_engine_client_cls.return_value
+    assert job_state.telemetry_url == "http://sidecar"
     assert job_state.admin_url == "http://localhost:1729"
-    mock_start.assert_called_once()
     mock_spawn.assert_called_once()
 
 
@@ -1082,9 +1058,7 @@ def _patched_sidecar(ensure_open_side_effect=None, ensure_open_return=None):
             "monarch._src.job.job_components.install_sidecar_socket_sink"
         ) as install_sink,
         patch("monarch._src.job.job_components.QueryEngineClient") as qec_cls,
-        patch("monarch._src.job.job_components.start_telemetry") as start_legacy,
     ):
-        start_legacy.return_value = (MagicMock(), "http://legacy", MagicMock())
         ensure_open = telemetry_cls.return_value.ensure_open
         if ensure_open_side_effect is not None:
             ensure_open.side_effect = ensure_open_side_effect
@@ -1098,14 +1072,14 @@ def _patched_sidecar(ensure_open_side_effect=None, ensure_open_return=None):
             ensure_open=ensure_open,
             install_sink=install_sink,
             query_engine_client_cls=qec_cls,
-            start_legacy=start_legacy,
+            telemetry_cls=telemetry_cls,
         )
 
 
 def test_mesh_admin_receives_sidecar_telemetry_url():
     """Admin links to sidecar telemetry when the sidecar path is configured."""
     with (
-        _patched_sidecar() as m,
+        _patched_sidecar(),
         patch("monarch._src.job.job_components._spawn_admin") as mock_spawn,
     ):
         mock_future = MagicMock()
@@ -1115,29 +1089,23 @@ def test_mesh_admin_receives_sidecar_telemetry_url():
 
         job = (
             MockJobTrait(host_names=["hosts"])
-            .enable_telemetry(TelemetryConfig(use_sidecar=True))
+            .enable_telemetry(TelemetryConfig())
             .enable_admin(MeshAdminConfig())
         )
         state = job.state(cached_path=None)
 
-    m.start_legacy.assert_not_called()
     _, kwargs = mock_spawn.call_args
     assert kwargs.get("telemetry_url") == "http://sidecar"
     assert state.telemetry_url == "http://sidecar"
     assert state.admin_url == "http://localhost:1729"
 
 
-def test_sidecar_replaces_legacy_when_opted_in():
-    """use_sidecar=True exposes the sidecar query client and skips the legacy
-    in-process collector (the two are mutually exclusive)."""
+def test_telemetry_uses_sidecar():
+    """Telemetry exposes the sidecar query client."""
     with _patched_sidecar() as m:
-        job = MockJobTrait(host_names=["hosts"]).enable_telemetry(
-            TelemetryConfig(use_sidecar=True)
-        )
+        job = MockJobTrait(host_names=["hosts"]).enable_telemetry(TelemetryConfig())
         state = job.state(cached_path=None)
 
-    # Legacy path skipped; sidecar client exposed instead.
-    m.start_legacy.assert_not_called()
     assert state.query_engine is None
     assert state.query_engine_client is m.query_engine_client_cls.return_value
     assert state.telemetry_url == "http://sidecar"
@@ -1150,9 +1118,7 @@ def test_sidecar_bootstrap_then_fanout_carry_host_meshes():
     """state() bootstraps the sidecar with empty host_meshes, then fans out
     workers with the materialized host meshes."""
     with _patched_sidecar() as m:
-        job = MockJobTrait(host_names=["hosts"]).enable_telemetry(
-            TelemetryConfig(use_sidecar=True)
-        )
+        job = MockJobTrait(host_names=["hosts"]).enable_telemetry(TelemetryConfig())
         job.state(cached_path=None)
 
     assert m.ensure_open.call_count == 2
@@ -1167,9 +1133,7 @@ def test_sidecar_bootstrap_then_fanout_carry_host_meshes():
 def test_local_job_sidecar_skips_worker_collector_actors():
     """Local sidecar telemetry keeps fan-out procs without collector actors."""
     with _patched_sidecar() as m:
-        job = LocalJob(hosts=["hosts"]).enable_telemetry(
-            TelemetryConfig(use_sidecar=True)
-        )
+        job = LocalJob(hosts=["hosts"]).enable_telemetry(TelemetryConfig())
         state = job.state(cached_path=None)
 
     assert m.ensure_open.call_count == 2
@@ -1194,9 +1158,7 @@ def test_process_job_sidecar_skips_worker_collector_actors():
             return_value=JobState({"hosts": mock_host_mesh}),
         ),
     ):
-        job = ProcessJob({"hosts": 1}).enable_telemetry(
-            TelemetryConfig(use_sidecar=True)
-        )
+        job = ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig())
         state = job.state(cached_path=None)
 
     assert m.ensure_open.call_count == 2
@@ -1214,9 +1176,7 @@ def test_sidecar_worker_fanout_uses_configured_host_meshes():
     mesh configuration that state() returns to user code."""
     python_exe = "/mnt/app/.venv/bin/python"
     with _patched_sidecar() as m:
-        job = MockJobTrait(host_names=["hosts"]).enable_telemetry(
-            TelemetryConfig(use_sidecar=True)
-        )
+        job = MockJobTrait(host_names=["hosts"]).enable_telemetry(TelemetryConfig())
         job._components.mounts._default_python_exe = python_exe
         state = job.state(cached_path=None)
 
@@ -1228,13 +1188,11 @@ def test_sidecar_worker_fanout_uses_configured_host_meshes():
 def test_sidecar_bootstrap_failure_is_isolated():
     """A sidecar bootstrap failure disables telemetry and never fails state()."""
     with _patched_sidecar(ensure_open_side_effect=RuntimeError("boom")) as m:
-        job = MockJobTrait(host_names=["hosts"]).enable_telemetry(
-            TelemetryConfig(use_sidecar=True)
-        )
+        job = MockJobTrait(host_names=["hosts"]).enable_telemetry(TelemetryConfig())
         state = job.state(cached_path=None)  # must not raise
 
     assert state.query_engine_client is None
-    assert state.query_engine is None  # legacy stays skipped under use_sidecar
+    assert state.query_engine is None
     m.query_engine_client_cls.assert_not_called()
 
 
@@ -1249,35 +1207,29 @@ def test_sidecar_worker_fanout_failure_is_isolated():
     with _patched_sidecar(
         ensure_open_side_effect=[good, RuntimeError("fanout boom")]
     ) as m:
-        job = MockJobTrait(host_names=["hosts"]).enable_telemetry(
-            TelemetryConfig(use_sidecar=True)
-        )
+        job = MockJobTrait(host_names=["hosts"]).enable_telemetry(TelemetryConfig())
         state = job.state(cached_path=None)  # must not raise
 
     assert m.ensure_open.call_count == 2
     assert state.query_engine_client is m.query_engine_client_cls.return_value
 
 
-def test_sidecar_not_bootstrapped_without_opt_in():
-    """Default (use_sidecar=False) never touches the sidecar; legacy runs."""
+def test_telemetry_bootstraps_sidecar_by_default():
+    """Telemetry always uses the sidecar."""
     with _patched_sidecar() as m:
         job = MockJobTrait(host_names=["hosts"]).enable_telemetry(TelemetryConfig())
         state = job.state(cached_path=None)
 
-    m.ensure_open.assert_not_called()
-    m.query_engine_client_cls.assert_not_called()
-    assert state.query_engine_client is None
-    m.start_legacy.assert_called_once()  # legacy collector ran instead
-    assert state.query_engine is not None
+    assert m.ensure_open.call_count == 2
+    assert state.query_engine is None
+    assert state.query_engine_client is m.query_engine_client_cls.return_value
 
 
 def test_sidecar_query_client_dropped_on_pickle():
     """The sidecar query client is dropped on pickle and re-bootstrapped on the
     next state() (mirrors the legacy query_engine behavior)."""
     with _patched_sidecar() as m:
-        job = MockJobTrait(host_names=["hosts"]).enable_telemetry(
-            TelemetryConfig(use_sidecar=True)
-        )
+        job = MockJobTrait(host_names=["hosts"]).enable_telemetry(TelemetryConfig())
         state = job.state(cached_path=None)
         assert state.query_engine_client is m.query_engine_client_cls.return_value
 

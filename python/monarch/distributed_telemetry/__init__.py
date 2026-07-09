@@ -18,8 +18,8 @@ Usage:
     from monarch.job import ProcessJob, TelemetryConfig
 
     state = ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig()).state()
-    engine = state.query_engine
-    assert engine is not None
+    client = state.query_engine_client
+    assert client is not None
     # ... spawn procs, they're automatically tracked ...
-    result = engine.query("SELECT * FROM metrics")
+    result = client.query("SELECT * FROM metrics")
 """

@@ -76,7 +76,6 @@ class TelemetryConfig:
     (and optionally a dashboard) is started when ``state()`` is called.
 
     Args:
-        batch_size: Number of rows to buffer before flushing to a RecordBatch.
         retention_secs: Retention window in seconds for message tables.
             0 disables retention.
         include_dashboard: Whether to start the monarch dashboard web server.
@@ -87,19 +86,12 @@ class TelemetryConfig:
             (default). When ``include_dashboard`` is True and this is 0,
             it is automatically set to 30s because the dashboard requires
             snapshot data for system actor filtering.
-        use_sidecar: Opt in to telemetry hosted by the job sidecar, which
-            *replaces* the legacy in-process collector for this job (the two
-            never run together). Transitional flag for the migration; defaults
-            to the legacy path. When True, ``state.query_engine`` is None and
-            ``state.query_engine_client`` serves queries instead.
     """
 
-    batch_size: int = 1000
     retention_secs: int = 600
     include_dashboard: bool = False
     dashboard_port: int = 8265
     snapshot_interval_secs: float = 0  # 0 = disabled
-    use_sidecar: bool = False
 
     def __post_init__(self) -> None:
         if self.include_dashboard and self.snapshot_interval_secs <= 0:

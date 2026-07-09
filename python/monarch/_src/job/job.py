@@ -40,7 +40,6 @@ from monarch.actor import (
     Port,
     this_host,
 )
-from monarch.distributed_telemetry.engine import QueryEngine
 from typing_extensions import Self
 
 
@@ -312,7 +311,7 @@ class JobState:
     def __init__(
         self,
         hosts: Dict[str, HostMesh],
-        query_engine: Optional[QueryEngine] = None,
+        query_engine: Optional[Any] = None,
         query_engine_client: Optional[QueryEngineClient] = None,
         telemetry_url: Optional[str] = None,
         dashboard_url: Optional[str] = None,
@@ -1035,15 +1034,21 @@ class BatchJob(JobTrait):
         # BatchJob is a scheduler-state proxy; component config and runtime stay
         # owned by the wrapped job so there is only one source of truth.
         self._components = job._components
+        self._apply_id = job.apply_id or str(uuid.uuid4())
+
+    def _should_spawn_telemetry_worker_collector_actors(self) -> bool:
+        return self._job._should_spawn_telemetry_worker_collector_actors()
 
     def _connect_host_meshes(self, running_job: "JobTrait") -> Dict[str, HostMesh]:
-        return self._job._connect_host_meshes(running_job)
+        self._components.before_connect(self)
+        host_meshes = dict(running_job._state()._hosts)
+        return self._components.connect(self, host_meshes)
 
     def state(
         self, cached_path: Optional[str] = ".monarch/job_state.pkl"
     ) -> "JobState":
         job_state = self._connect(cached_path)
-        self._job._components.state(self._job, job_state)
+        self._components.state(self, job_state)
         return job_state
 
     def can_run(self, spec: JobTrait):

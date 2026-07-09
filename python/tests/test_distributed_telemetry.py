@@ -18,7 +18,6 @@ import uuid
 from typing import Any, cast
 
 import monarch._src.job.telemetry_actor as job_telemetry_actor
-import monarch.distributed_telemetry.actor as telemetry_actor
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr
@@ -56,9 +55,8 @@ def _telemetry_config(**kwargs: Any) -> TelemetryConfig:
 
 
 def _sidecar_telemetry_config(**kwargs: Any) -> TelemetryConfig:
-    kwargs.setdefault("batch_size", 10)
     kwargs.setdefault("retention_secs", 0)
-    return _telemetry_config(use_sidecar=True, **kwargs)
+    return _telemetry_config(**kwargs)
 
 
 def _assert_sidecar(state) -> None:
@@ -212,11 +210,6 @@ def cleanup_callbacks():
     ]
     for fn in startup_to_remove:
         SetupActor._startup_functions.remove(fn)
-    # Reset module-level state for next test
-    telemetry_actor._scanner = None
-    telemetry_actor._scanner_startup_impl = None
-    telemetry_actor._spawned_procs = []
-    telemetry_actor._spawn_callback_registered = False
 
 
 @pytest.mark.timeout(60)
@@ -321,44 +314,6 @@ def test_actors_table() -> None:
         assert "<root>" in root_display_names, (
             f"Expected bootstrap client actor with display_name '<root>', got: {root_display_names}"
         )
-
-
-@pytest.mark.timeout(120)
-@isolate_in_subprocess
-def test_legacy_query_engine_receives_entity_events(cleanup_callbacks) -> None:
-    """Legacy `DatabaseScanner` still consumes `TraceEvent::Entity`."""
-    with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(
-            _telemetry_config(batch_size=1, retention_secs=0)
-        ),
-        cached_path=None,
-    ) as state:
-        engine = state.query_engine
-        assert engine is not None
-        assert state.query_engine_client is None
-
-        hosts = state.hosts
-        worker_procs = hosts.spawn_procs(
-            per_host={"workers": 2}, name="legacy_workers_procs"
-        )
-        workers = worker_procs.spawn("legacy_worker", WorkerActor)
-        workers.initialized.get()
-        workers.ping.call().get()
-
-        actors = engine.query(
-            "SELECT a.id FROM actors a "
-            "JOIN meshes mesh ON a.mesh_id = mesh.id "
-            "WHERE mesh.given_name = 'legacy_worker'"
-        ).to_pydict()
-        assert len(actors.get("id", [])) == 2, actors
-
-        sent_messages = engine.query(
-            "SELECT COUNT(*) AS cnt FROM sent_messages sm "
-            "JOIN meshes mesh ON sm.actor_mesh_id = mesh.id "
-            "WHERE mesh.given_name = 'legacy_worker' "
-            "HAVING COUNT(*) = 1"
-        ).to_pydict()
-        assert sent_messages["cnt"][0] == 1, sent_messages
 
 
 @pytest.mark.timeout(120)
@@ -1855,7 +1810,7 @@ def test_per_table_row_retention(cleanup_callbacks) -> None:
     # Use a 1-second retention window so rows expire quickly.
     with scoped_state(
         ProcessJob({"hosts": 1}).enable_telemetry(
-            _sidecar_telemetry_config(batch_size=2, retention_secs=1)
+            _sidecar_telemetry_config(retention_secs=1)
         ),
         cached_path=None,
     ) as state:
@@ -1928,7 +1883,7 @@ def test_scan_timeout_on_dead_child(cleanup_callbacks) -> None:
 
         # Patch the timeout to a short value so the test doesn't wait 10s
         with unittest.mock.patch.object(
-            telemetry_actor, "_SCAN_CHILD_TIMEOUT_SECS", 1.0
+            job_telemetry_actor, "_SCAN_WORKER_TIMEOUT_SECS", 1.0
         ):
             start = time.monotonic()
             result_dict = _query(state, "SELECT * FROM actors")
@@ -2024,9 +1979,7 @@ def test_snapshot_periodic_capture_populates_tables(cleanup_callbacks) -> None:
     """
     with scoped_state(
         ProcessJob({"hosts": 1})
-        .enable_telemetry(
-            _sidecar_telemetry_config(batch_size=10, snapshot_interval_secs=5)
-        )
+        .enable_telemetry(_sidecar_telemetry_config(snapshot_interval_secs=5))
         .enable_admin(
             MeshAdminConfig(
                 # Use an ephemeral admin port so concurrent --stress-runs

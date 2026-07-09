@@ -24,14 +24,8 @@ class QueryEngineAdapter(DBAdapter):
     Provides the same query interface as db.py's _query() but backed by
     the distributed telemetry system instead of a local SQLite file.
 
-    Usage::
-
-        from monarch.job import ProcessJob, TelemetryConfig
-        state = ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig()).state()
-        engine = state.query_engine
-        assert engine is not None
-        adapter = QueryEngineAdapter(engine)
-        rows = adapter.query("SELECT * FROM actors LIMIT 10")
+    The job sidecar constructs this adapter with the internal query engine
+    that backs the dashboard HTTP API.
     """
 
     def __init__(self, engine: QueryEngine) -> None:
