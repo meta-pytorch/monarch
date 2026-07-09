@@ -27,7 +27,7 @@
 - In Rust code, error messages are concise lowercase sentences without trailing punctuation
 - The same is true for all *log* (tracing) messages: they should begin with a lowercase letter, and be concise sentences without trailing punctuation; use ":" to denote context, e.g., "operation xyz: disk i/o error"; use structured logging whenever possible
 - In Rust, avoid creating type aliases in `use` statements; prefer to use qualified identifiers to disambiguate
-
+- Commit messages should follow the standard 'sl' template; subjects should begin with the 'area' enclosed in brackets, e.g., `[monarch]` for project-wide changes; otherwise more specific areas, e.g. `[hyperactor]`. the remainder of the subject should be a short sentence describing the change; it should not begin with a capital letter nor end with a period. Example: "[hyperactor] improve net channel performance by reducing copies".
 
 ## Workflow
 
