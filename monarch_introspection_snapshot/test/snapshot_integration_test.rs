@@ -17,6 +17,14 @@
 //! production than the in-process variant. The `mesh_admin.rs`
 //! white-box tests use `pub(crate)` shortcuts not available here.
 
+use std::io::Read;
+use std::io::Write;
+use std::net::TcpListener;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -36,10 +44,10 @@ use hyperactor_mesh::introspect::NodeRef;
 use hyperactor_mesh::mesh_admin::ResolveReferenceMessageClient;
 use monarch_distributed_telemetry::database_scanner::TableStore;
 use monarch_introspection_snapshot::capture::capture_snapshot;
-use monarch_introspection_snapshot::integration::register_snapshot_schemas;
 use monarch_introspection_snapshot::integration::start_periodic_snapshots;
+use monarch_introspection_snapshot::push::SNAPSHOT_TABLE_NAMES;
 use monarch_introspection_snapshot::push::push_snapshot;
-use monarch_introspection_snapshot::service::SnapshotSink;
+use monarch_introspection_snapshot::service::HttpPublisher;
 use ndslice::extent;
 use ndslice::view::Ranked;
 
@@ -125,6 +133,69 @@ fn is_null(batch: &RecordBatch, col: &str, row: usize) -> bool {
         .column_by_name(col)
         .unwrap_or_else(|| panic!("column '{col}' not found"))
         .is_null(row)
+}
+
+fn http_request_complete(buf: &[u8]) -> bool {
+    let Some(header_end) = buf.windows(4).position(|window| window == b"\r\n\r\n") else {
+        return false;
+    };
+    let headers = String::from_utf8_lossy(&buf[..header_end]);
+    let content_len = headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            if name.eq_ignore_ascii_case("content-length") {
+                value.trim().parse::<usize>().ok()
+            } else {
+                None
+            }
+        })
+        .unwrap_or(0);
+    buf.len() >= header_end + 4 + content_len
+}
+
+fn spawn_snapshot_http_counter() -> (String, Arc<AtomicUsize>, Arc<AtomicBool>, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let addr = listener.local_addr().unwrap();
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_count = request_count.clone();
+    let thread_stop = stop.clone();
+    let handle = std::thread::spawn(move || {
+        while !thread_stop.load(Ordering::Acquire) {
+            let (mut stream, _) = match listener.accept() {
+                Ok(accepted) => accepted,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
+                Err(error) => panic!("snapshot HTTP test server failed: {error}"),
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut request = Vec::new();
+            loop {
+                let mut chunk = [0_u8; 4096];
+                let read = stream.read(&mut chunk).unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..read]);
+                if http_request_complete(&request) {
+                    break;
+                }
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .unwrap();
+            thread_count.fetch_add(1, Ordering::AcqRel);
+        }
+    });
+    (format!("http://{}", addr), request_count, stop, handle)
 }
 
 // -- The integration test --
@@ -443,11 +514,10 @@ async fn test_pt1_rejects_zero_interval() -> Result<()> {
     let instance = cx.actor_instance;
     let host_mesh = HostMesh::local().await?;
     let admin_ref = spawn_admin([&host_mesh], &instance, Some("[::]:0".parse()?), None).await?;
-    let table_store = TableStore::new_empty();
 
     let err = start_periodic_snapshots(
         &instance,
-        SnapshotSink::table_store(table_store),
+        HttpPublisher::new("http://127.0.0.1:1"),
         admin_ref.clone(),
         Duration::ZERO,
     );
@@ -470,13 +540,12 @@ async fn test_pt3_immediate_first_capture() -> Result<()> {
     let host_mesh = HostMesh::local().await?;
     let admin_ref = spawn_admin([&host_mesh], &instance, Some("[::]:0".parse()?), None).await?;
 
-    let table_store = TableStore::new_empty();
-    register_snapshot_schemas(&table_store).await?;
+    let (base_url, request_count, stop_server, server) = spawn_snapshot_http_counter();
 
     // Use a long interval so only the initial immediate capture fires.
     start_periodic_snapshots(
         &instance,
-        SnapshotSink::table_store(table_store.clone()),
+        HttpPublisher::new(base_url),
         admin_ref.clone(),
         Duration::from_secs(600),
     )?;
@@ -484,13 +553,10 @@ async fn test_pt3_immediate_first_capture() -> Result<()> {
     // Give the immediate capture time to complete.
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    let ctx = SessionContext::new();
-    register_all(&table_store, &ctx).await?;
-    let batch = query_batch(&ctx, "SELECT COUNT(*) AS cnt FROM snapshots").await?;
-    let count = col_i64(&batch, "cnt", 0);
+    let count = request_count.load(Ordering::Acquire);
     assert!(
-        count >= 1,
-        "PT-3: at least one capture should fire immediately, got {}",
+        count >= SNAPSHOT_TABLE_NAMES.len(),
+        "PT-3: at least one capture should fire immediately, got {} HTTP requests",
         count,
     );
 
@@ -502,6 +568,8 @@ async fn test_pt3_immediate_first_capture() -> Result<()> {
 
     let mut host_mesh = host_mesh;
     host_mesh.shutdown(&instance).await?;
+    stop_server.store(true, Ordering::Release);
+    server.join().unwrap();
     Ok(())
 }
 
@@ -515,13 +583,12 @@ async fn test_pt5_drain_halts_future_captures() -> Result<()> {
     let host_mesh = HostMesh::local().await?;
     let admin_ref = spawn_admin([&host_mesh], &instance, Some("[::]:0".parse()?), None).await?;
 
-    let table_store = TableStore::new_empty();
-    register_snapshot_schemas(&table_store).await?;
+    let (base_url, request_count, stop_server, server) = spawn_snapshot_http_counter();
 
     // Start periodic capture with a short interval.
     start_periodic_snapshots(
         &instance,
-        SnapshotSink::table_store(table_store.clone()),
+        HttpPublisher::new(base_url),
         admin_ref.clone(),
         Duration::from_millis(200),
     )?;
@@ -530,15 +597,10 @@ async fn test_pt5_drain_halts_future_captures() -> Result<()> {
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     // Verify captures actually ran before stopping.
-    let count_before_stop = {
-        let ctx = SessionContext::new();
-        register_all(&table_store, &ctx).await?;
-        let batch = query_batch(&ctx, "SELECT COUNT(*) AS cnt FROM snapshots").await?;
-        col_i64(&batch, "cnt", 0)
-    };
+    let count_before_stop = request_count.load(Ordering::Acquire);
     assert!(
-        count_before_stop > 0,
-        "PT-5: expected positive snapshot count before stop, got {}",
+        count_before_stop >= SNAPSHOT_TABLE_NAMES.len(),
+        "PT-5: expected positive snapshot HTTP request count before stop, got {}",
         count_before_stop,
     );
 
@@ -558,30 +620,22 @@ async fn test_pt5_drain_halts_future_captures() -> Result<()> {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Record snapshot count after actor stop.
-    let count_at_shutdown = {
-        let ctx = SessionContext::new();
-        register_all(&table_store, &ctx).await?;
-        let batch = query_batch(&ctx, "SELECT COUNT(*) AS cnt FROM snapshots").await?;
-        col_i64(&batch, "cnt", 0)
-    };
+    let count_at_shutdown = request_count.load(Ordering::Acquire);
 
     // Wait to verify no further captures fire.
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    let count_after_wait = {
-        let ctx = SessionContext::new();
-        register_all(&table_store, &ctx).await?;
-        let batch = query_batch(&ctx, "SELECT COUNT(*) AS cnt FROM snapshots").await?;
-        col_i64(&batch, "cnt", 0)
-    };
+    let count_after_wait = request_count.load(Ordering::Acquire);
 
     // PT-5: snapshot count must not keep increasing after shutdown.
     assert_eq!(
         count_at_shutdown, count_after_wait,
-        "PT-5: snapshot count should stabilize after shutdown \
+        "PT-5: snapshot HTTP request count should stabilize after shutdown \
          (got {} at shutdown, {} after 2s wait)",
         count_at_shutdown, count_after_wait,
     );
 
+    stop_server.store(true, Ordering::Release);
+    server.join().unwrap();
     Ok(())
 }

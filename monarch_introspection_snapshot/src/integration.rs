@@ -69,8 +69,8 @@ use crate::schema::ResolutionErrorRowBuffer;
 use crate::schema::RootNodeRowBuffer;
 use crate::schema::SnapshotRowBuffer;
 use crate::service::CaptureSnapshot;
+use crate::service::HttpPublisher;
 use crate::service::SnapshotCaptureActor;
-use crate::service::SnapshotSink;
 
 /// Pre-register the 13 snapshot table schemas into `table_store`.
 ///
@@ -152,11 +152,11 @@ pub async fn register_snapshot_schemas(table_store: &TableStore) -> anyhow::Resu
 /// `CaptureSnapshot` message to the spawned actor.
 pub fn start_periodic_snapshots(
     cx: &impl hyperactor::context::Actor,
-    sink: SnapshotSink,
+    publisher: HttpPublisher,
     admin_ref: hyperactor::ActorRef<MeshAdminAgent>,
     interval: Duration,
 ) -> anyhow::Result<()> {
-    let actor = SnapshotCaptureActor::new(sink, admin_ref, interval);
+    let actor = SnapshotCaptureActor::new(publisher, admin_ref, interval);
     start_periodic_snapshot_actor(cx, actor, interval)
 }
 

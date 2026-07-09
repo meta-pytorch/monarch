@@ -1419,7 +1419,7 @@ def test_query_after_stopping_actor_mesh(cleanup_callbacks) -> None:
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 def test_store_pyspy_dump_and_query(cleanup_callbacks) -> None:
-    """Store a py-spy dump via actor endpoint, query it back via SQL."""
+    """Store a py-spy dump via the sidecar API, query it back via SQL."""
     with scoped_state(
         ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
         cached_path=None,

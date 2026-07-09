@@ -9,12 +9,12 @@
 //! Snapshot capture service.
 //!
 //! [`SnapshotService`] owns the capture pipeline as a single
-//! operation and publishes to a live sink ([`TableStore`] or HTTP),
-//! a durable bundle, or both.
+//! operation and publishes to the telemetry HTTP API, a durable bundle,
+//! or both.
 //!
 //! The service captures once via BFS, drains to `RecordBatch` pairs
 //! once via [`drain_to_batches`], and publishes the same batches to
-//! whichever sinks are active.
+//! whichever destinations are active.
 //!
 //! # Usage
 //!
@@ -38,20 +38,20 @@
 //!     }
 //! };
 //!
-//! let service = SnapshotService::new(Some(SnapshotSink::table_store(table_store)));
+//! let service = SnapshotService::new(Some(HttpPublisher::new(base_url)));
 //! let result = service.capture(resolve, None).await?;
 //! println!("{} nodes captured", result.node_counts.nodes);
 //! ```
 //!
 //! [`capture`](SnapshotService::capture) is the full pipeline: BFS
 //! traversal, drain to `RecordBatch` pairs, publish to the configured
-//! live sink and/or bundle export.
+//! live publisher and/or bundle export.
 //!
 //! **Periodic capture** — spawn a [`SnapshotCaptureActor`]:
 //!
 //! ```ignore
 //! let actor = SnapshotCaptureActor::new(
-//!     SnapshotSink::table_store(table_store),
+//!     HttpPublisher::new(base_url),
 //!     admin_ref,
 //!     Duration::from_secs(30),
 //! );
@@ -97,8 +97,8 @@
 //!
 //! - **PT-1 (positive interval):** Zero interval rejected before
 //!   spawn.
-//! - **PT-2 (live sink by construction):** The periodic path takes a
-//!   concrete `SnapshotSink`, not an `Option`. A live sink is guaranteed
+//! - **PT-2 (live publisher by construction):** The periodic path takes a
+//!   concrete `HttpPublisher`, not an `Option`. A live publisher is guaranteed
 //!   by the API shape.
 //! - **PT-3 (immediate first fire):** First capture fires at spawn
 //!   time. Subsequent captures fire after each interval.
@@ -136,7 +136,6 @@ use hyperactor_mesh::introspect::NodePayload;
 use hyperactor_mesh::introspect::NodeRef;
 use hyperactor_mesh::mesh_admin::MeshAdminAgent;
 use hyperactor_mesh::mesh_admin::ResolveReferenceMessageClient;
-use monarch_distributed_telemetry::database_scanner::TableStore;
 use monarch_distributed_telemetry::serialize_batch;
 use reqwest::header::CONTENT_TYPE;
 use serde::Deserialize;
@@ -157,7 +156,8 @@ pub struct HttpPublisher {
 }
 
 impl HttpPublisher {
-    fn new(base_url: impl Into<String>) -> Self {
+    /// Build a publisher that writes to the telemetry sidecar HTTP API.
+    pub fn new(base_url: impl Into<String>) -> Self {
         Self {
             base_url: base_url.into().trim_end_matches('/').to_owned(),
             client: reqwest::Client::new(),
@@ -178,55 +178,27 @@ impl HttpPublisher {
     }
 }
 
-/// Destination for live snapshot publication.
-#[derive(Clone)]
-pub enum SnapshotSink {
-    /// Publish directly into the in-process telemetry table store.
-    TableStore(TableStore),
-    /// Publish to the telemetry sidecar HTTP ingest API.
-    Http(HttpPublisher),
-}
-
 /// Snapshot capture service.
 ///
 /// Owns the capture-and-publish pipeline. Captures once per call and
 /// publishes to configured destinations.
 #[derive(Clone)]
 pub struct SnapshotService {
-    /// Live telemetry sink. `None` means bundle export only.
-    sink: Option<SnapshotSink>,
+    /// Live telemetry publisher. `None` means bundle export only.
+    publisher: Option<HttpPublisher>,
     /// Overlap guard for the periodic trigger. CAS to acquire, reset
     /// on completion.
     in_flight: Arc<AtomicBool>,
 }
 
-impl SnapshotSink {
-    /// Build a live sink that publishes into a `TableStore`.
-    pub fn table_store(table_store: TableStore) -> Self {
-        Self::TableStore(table_store)
-    }
-
-    /// Build a live sink that publishes to the telemetry sidecar HTTP API.
-    pub fn http(base_url: impl Into<String>) -> Self {
-        Self::Http(HttpPublisher::new(base_url))
-    }
-
-    async fn publish(&self, table_name: &str, batch: &RecordBatch) -> anyhow::Result<()> {
-        match self {
-            Self::TableStore(store) => store.ingest_batch(table_name, batch.clone()).await,
-            Self::Http(publisher) => publisher.publish_batch(table_name, batch).await,
-        }
-    }
-}
-
 impl SnapshotService {
     /// Create a new snapshot service.
     ///
-    /// When `sink` is `Some`, captured snapshots are published into
+    /// When `publisher` is `Some`, captured snapshots are published into
     /// live telemetry storage. When `None`, only bundle export is available.
-    pub fn new(sink: Option<SnapshotSink>) -> Self {
+    pub fn new(publisher: Option<HttpPublisher>) -> Self {
         Self {
-            sink,
+            publisher,
             in_flight: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -235,11 +207,11 @@ impl SnapshotService {
     ///
     /// Captures once via BFS, drains to `RecordBatch` pairs once,
     /// then publishes to whichever destinations are active:
-    /// - If `self.sink` is `Some`, publish to live telemetry storage.
+    /// - If `self.publisher` is `Some`, publish to live telemetry storage.
     /// - If `export_root` is `Some`, write a durable bundle to
     ///   `{export_root}/snapshot-{snapshot_id}/`.
     ///
-    /// At least one destination must be active (`sink` or
+    /// At least one destination must be active (`publisher` or
     /// `export_root`), otherwise the capture has no destination and
     /// returns an error (SV-1).
     pub async fn capture<F, Fut>(
@@ -252,7 +224,7 @@ impl SnapshotService {
         Fut: Future<Output = anyhow::Result<NodePayload>>,
     {
         // SV-1: at least one destination must be active.
-        if self.sink.is_none() && export_root.is_none() {
+        if self.publisher.is_none() && export_root.is_none() {
             anyhow::bail!(
                 "snapshot capture requires at least one active destination \
                  (live telemetry or export_root)"
@@ -270,9 +242,9 @@ impl SnapshotService {
         // same batches.
         let batches = drain_to_batches(data)?;
 
-        if let Some(ref sink) = self.sink {
+        if let Some(ref publisher) = self.publisher {
             for (name, batch) in &batches {
-                sink.publish(name, batch).await?;
+                publisher.publish_batch(name, batch).await?;
             }
         }
 
@@ -377,7 +349,7 @@ wirevalue::register_type!(CaptureSnapshot);
 /// Stopped by framework lifecycle (`DrainAndStop` on proc teardown).
 #[hyperactor::export(handlers = [CaptureSnapshot])]
 pub struct SnapshotCaptureActor {
-    /// Shared snapshot capture pipeline and live-ingest sink.
+    /// Shared snapshot capture pipeline and live-ingest publisher.
     service: SnapshotService,
     /// Typed admin actor reference used to resolve `NodeRef`s during
     /// capture.
@@ -423,12 +395,12 @@ impl SnapshotCaptureActor {
     /// Create a new snapshot capture actor. Call `proc.spawn()` to
     /// start it.
     pub fn new(
-        sink: SnapshotSink,
+        publisher: HttpPublisher,
         admin_ref: ActorRef<MeshAdminAgent>,
         interval: Duration,
     ) -> Self {
         Self {
-            service: SnapshotService::new(Some(sink)),
+            service: SnapshotService::new(Some(publisher)),
             admin_ref,
             interval,
         }
@@ -900,18 +872,17 @@ mod tests {
 
     // --- SnapshotService::capture tests ---
 
-    // SV-2, SV-3, SV-4, SV-5: capture with table_store populates the
-    // store and returns correct metadata.
+    // SV-2, SV-3, SV-4, SV-5: capture with live HTTP telemetry publishes
+    // all tables and returns correct metadata.
     #[tokio::test]
-    async fn test_capture_with_table_store() {
+    async fn test_capture_with_http_publisher() {
+        let (base_url, server) = spawn_snapshot_http_server(SNAPSHOT_TABLE_NAMES.len());
         let payloads = minimal_mesh_payloads();
         let resolve = stub_resolver(payloads);
-        let store = TableStore::new_empty();
-        let service = SnapshotService::new(Some(SnapshotSink::table_store(store.clone())));
+        let service = SnapshotService::new(Some(HttpPublisher::new(base_url)));
 
         let result = service.capture(resolve, None).await.unwrap();
 
-        // CaptureResult metadata.
         assert!(!result.snapshot_id.is_empty());
         assert!(result.snapshot_ts > 0);
         assert!(result.capture_duration_ms >= 0.0);
@@ -928,25 +899,8 @@ mod tests {
         assert_eq!(result.node_counts.ordering_sessions, 0);
         assert_eq!(result.node_counts.resolution_errors, 0);
 
-        // Verify store is populated — all 13 tables registered.
-        let names = store.table_names().unwrap();
-        assert_eq!(names.len(), 13);
-
-        // Verify data is queryable — snapshot row exists.
-        let ctx = datafusion::prelude::SessionContext::new();
-        if let Some(provider) = store.table_provider("snapshots").unwrap() {
-            ctx.register_table("snapshots", provider).unwrap();
-        }
-        let df = ctx
-            .sql(&format!(
-                "SELECT snapshot_id FROM snapshots WHERE snapshot_id = '{}'",
-                result.snapshot_id
-            ))
-            .await
-            .unwrap();
-        let batches = df.collect().await.unwrap();
-        assert_eq!(batches.len(), 1);
-        assert_eq!(batches[0].num_rows(), 1);
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), SNAPSHOT_TABLE_NAMES.len());
     }
 
     // SV-1: capture with no destinations errors.
@@ -985,20 +939,20 @@ mod tests {
         assert!(bundle_path.join("manifest.json").exists());
     }
 
-    // SV-7: live telemetry and bundle export active: table_store populated and bundle
-    // written.
+    // SV-7: live telemetry and bundle export active: HTTP publisher runs and
+    // bundle writes.
     #[tokio::test]
-    async fn test_capture_live_sink_and_bundle_export() {
+    async fn test_capture_live_publisher_and_bundle_export() {
         let dir = tempfile::tempdir().unwrap();
+        let (base_url, server) = spawn_snapshot_http_server(SNAPSHOT_TABLE_NAMES.len());
         let payloads = minimal_mesh_payloads();
         let resolve = stub_resolver(payloads);
-        let store = TableStore::new_empty();
-        let service = SnapshotService::new(Some(SnapshotSink::table_store(store.clone())));
+        let service = SnapshotService::new(Some(HttpPublisher::new(base_url)));
 
         let result = service.capture(resolve, Some(dir.path())).await.unwrap();
 
-        // Table store populated.
-        assert_eq!(store.table_names().unwrap().len(), 13);
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), SNAPSHOT_TABLE_NAMES.len());
 
         // Bundle written.
         let bundle_path = result.bundle_path.as_ref().unwrap();
@@ -1011,11 +965,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_capture_with_http_publisher() {
+    async fn test_http_publisher_request_shape() {
         let (base_url, server) = spawn_snapshot_http_server(SNAPSHOT_TABLE_NAMES.len());
         let payloads = minimal_mesh_payloads();
         let resolve = stub_resolver(payloads);
-        let service = SnapshotService::new(Some(SnapshotSink::http(base_url)));
+        let service = SnapshotService::new(Some(HttpPublisher::new(base_url)));
 
         let result = service.capture(resolve, None).await.unwrap();
 
@@ -1046,8 +1000,7 @@ mod tests {
     // PT-4: CAS skip when in_flight is already set.
     #[tokio::test]
     async fn test_periodic_tick_skips_when_in_flight() {
-        let store = TableStore::new_empty();
-        let service = SnapshotService::new(Some(SnapshotSink::table_store(store.clone())));
+        let service = SnapshotService::new(Some(HttpPublisher::new("http://127.0.0.1:1")));
         let payloads = minimal_mesh_payloads();
         let resolve = stub_resolver(payloads);
 
@@ -1057,9 +1010,6 @@ mod tests {
         let attempted = run_periodic_tick(&service, resolve).await;
         assert!(!attempted, "PT-4: tick should be skipped when in_flight");
 
-        // Store should be empty — no capture ran.
-        assert_eq!(store.table_names().unwrap().len(), 0);
-
         // in_flight should still be true (guard did not run).
         assert!(service.in_flight.load(Ordering::Acquire));
     }
@@ -1067,16 +1017,16 @@ mod tests {
     // PT-4: CAS succeeds and guard resets in_flight after capture.
     #[tokio::test]
     async fn test_periodic_tick_captures_and_resets_guard() {
-        let store = TableStore::new_empty();
-        let service = SnapshotService::new(Some(SnapshotSink::table_store(store.clone())));
+        let (base_url, server) = spawn_snapshot_http_server(SNAPSHOT_TABLE_NAMES.len());
+        let service = SnapshotService::new(Some(HttpPublisher::new(base_url)));
         let payloads = minimal_mesh_payloads();
         let resolve = stub_resolver(payloads);
 
         let attempted = run_periodic_tick(&service, resolve).await;
         assert!(attempted, "PT-4: tick should attempt capture");
 
-        // Store should be populated.
-        assert_eq!(store.table_names().unwrap().len(), 13);
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), SNAPSHOT_TABLE_NAMES.len());
 
         // in_flight should be reset to false.
         assert!(!service.in_flight.load(Ordering::Acquire));
@@ -1086,8 +1036,8 @@ mod tests {
     // and the guard is still reset.
     #[tokio::test]
     async fn test_periodic_tick_survives_resolver_error() {
-        let store = TableStore::new_empty();
-        let service = SnapshotService::new(Some(SnapshotSink::table_store(store.clone())));
+        let (base_url, server) = spawn_snapshot_http_server(SNAPSHOT_TABLE_NAMES.len());
+        let service = SnapshotService::new(Some(HttpPublisher::new(base_url)));
 
         let resolve = |_: &NodeRef| std::future::ready(Err(anyhow::anyhow!("simulated failure")));
 
@@ -1100,30 +1050,28 @@ mod tests {
         // in_flight should be reset to false despite the error.
         assert!(!service.in_flight.load(Ordering::Acquire));
 
-        // Store should be empty — capture failed before ingestion.
-        assert_eq!(store.table_names().unwrap().len(), 0);
-
         // PT-6 continued: a later tick on the same service succeeds
         // after an earlier failure.
         let payloads = minimal_mesh_payloads();
         let resolve = stub_resolver(payloads);
         let attempted = run_periodic_tick(&service, resolve).await;
         assert!(attempted, "PT-6: second tick should succeed");
-        assert_eq!(store.table_names().unwrap().len(), 13);
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), SNAPSHOT_TABLE_NAMES.len());
     }
 
     // PT-7: run_periodic_tick always passes export_root = None.
     #[tokio::test]
     async fn test_periodic_tick_no_bundle_export() {
-        let store = TableStore::new_empty();
-        let service = SnapshotService::new(Some(SnapshotSink::table_store(store.clone())));
+        let (base_url, server) = spawn_snapshot_http_server(SNAPSHOT_TABLE_NAMES.len());
+        let service = SnapshotService::new(Some(HttpPublisher::new(base_url)));
         let payloads = minimal_mesh_payloads();
         let resolve = stub_resolver(payloads);
 
         run_periodic_tick(&service, resolve).await;
 
-        // Verify store was populated (live ingest happened).
-        assert_eq!(store.table_names().unwrap().len(), 13);
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), SNAPSHOT_TABLE_NAMES.len());
 
         // PT-7 is structural: run_periodic_tick calls
         // service.capture(resolve, None). No bundle directory
