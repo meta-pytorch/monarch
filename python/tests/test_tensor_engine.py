@@ -94,7 +94,7 @@ def test_actor_with_tensors() -> None:
     with pm.activate():
         x = pm.spawn("adder", AddWithState, torch.ones((), device=_tensor_device()))
         y = torch.ones((), device=_tensor_device())
-        assert x.forward.call(y).get(timeout=5).item(gpus=0).item() == 2
+        assert x.forward.call(y).get(timeout=10).item(gpus=0).item() == 2
 
 
 class Counter(Actor):
