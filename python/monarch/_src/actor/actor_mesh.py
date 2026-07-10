@@ -1674,6 +1674,14 @@ class Actor(MeshTrait):
         further sent to the owner of this Actor.
         Note that this is *not* called for errors within this Actor.
 
+        Rank failures in an owned ``ActorMesh`` are reported independently. A
+        mesh with ``N`` ranks may call this method multiple times for that mesh,
+        but it will call at most once per failed rank, for at most ``N`` total
+        rank-scoped failure callbacks. Once ``N`` callbacks have arrived for a
+        mesh, no more rank-scoped failure callbacks should arrive for that mesh.
+        If only some ranks fail, the mesh remains usable through slices that
+        exclude the failed ranks.
+
         Overrides may be declared with either ``def`` or ``async def``. An
         ``async def`` override is awaited on the actor's asyncio event loop --
         the same loop that runs endpoint coroutines -- so it can ``await``

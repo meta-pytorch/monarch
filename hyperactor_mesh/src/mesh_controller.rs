@@ -164,6 +164,28 @@ impl HealthState {
         self.statuses.values().any(|(s, _)| s.is_terminating())
     }
 
+    /// The lowest rank that has not yet consumed one terminal state slot.
+    fn first_non_terminating_rank(&self) -> Option<usize> {
+        self.statuses
+            .iter()
+            .filter(|(_, (status, _))| !status.is_terminating())
+            .map(|(point, _)| point.rank())
+            .min()
+    }
+
+    /// Mark `rank` with a terminal status. Returns `true` only if this rank
+    /// was not already terminal.
+    fn mark_rank_terminating(&mut self, rank: usize, status: resource::Status) -> bool {
+        assert!(status.is_terminating(), "rank status must be terminating");
+        let point = self
+            .statuses
+            .keys()
+            .find(|point| point.rank() == rank)
+            .cloned()
+            .unwrap_or_else(|| panic!("rank {rank} is not tracked by health state"));
+        self.maybe_update(point, status, u64::MAX)
+    }
+
     /// Apply status updates from polled resource states and invoke `on_change`
     /// for each rank whose status actually changed. The point passed to
     /// `on_change` is the created rank, *not* the rank of the possibly sliced
@@ -190,6 +212,8 @@ impl HealthState {
 pub enum PollResult {
     /// An error or early condition was handled internally; just reschedule.
     Reschedule,
+    /// A terminal polling failure was reported; stop periodic polling.
+    StopMonitoring,
     /// States were polled and processed. `did_notify` is true if at least
     /// one subscriber/owner notification was sent.
     Processed { did_notify: bool },
@@ -320,6 +344,20 @@ fn send_state_change(
     for subscriber in health_state.subscribers.iter() {
         send_subscriber_message(cx, subscriber, failure_message.clone());
     }
+}
+
+fn send_poll_failure(
+    cx: &impl context::Actor,
+    event: ActorSupervisionEvent,
+    mesh_name: &ResourceId,
+    health_state: &mut HealthState,
+) -> PollResult {
+    let Some(rank) = health_state.first_non_terminating_rank() else {
+        return PollResult::StopMonitoring;
+    };
+    health_state.mark_rank_terminating(rank, resource::Status::Failed(event.to_string()));
+    send_state_change(cx, rank, event, mesh_name, false, health_state);
+    PollResult::StopMonitoring
 }
 
 fn actor_state_to_supervision_events(
@@ -692,6 +730,9 @@ impl<T: Controlled> ResourceController<T> {
         match result {
             PollResult::Reschedule => {
                 self.schedule_next_check(|msg, delay| cx.post_after(cx, msg, delay));
+            }
+            PollResult::StopMonitoring => {
+                self.monitor.take();
             }
             PollResult::Processed { did_notify } => {
                 // Suppress heartbeats once any rank is terminating: the mesh is on
@@ -1087,9 +1128,8 @@ impl<A: Referable> Controlled for ActorMeshControlPlane<A> {
         // trying to query their agents.
         let proc_states = self.proc_mesh.states(cx, None).await;
         if let Err(e) = proc_states {
-            send_state_change(
+            return send_poll_failure(
                 cx,
-                0,
                 ActorSupervisionEvent::new(
                     cx.instance().self_addr().clone(),
                     None,
@@ -1100,10 +1140,8 @@ impl<A: Referable> Controlled for ActorMeshControlPlane<A> {
                     None,
                 ),
                 mesh_name,
-                false,
                 health_state,
             );
-            return PollResult::Reschedule;
         }
         if let Some(proc_states) = proc_states.unwrap() {
             // Check if the proc mesh is still alive.
@@ -1116,27 +1154,32 @@ impl<A: Referable> Controlled for ActorMeshControlPlane<A> {
                 // the correct status based on process exit status.
                 let actor_status =
                     proc_status_to_actor_status(state.state.and_then(|s| s.proc_status));
+                let stop_monitoring = actor_status.is_failed();
                 let display = crate::actor_display_name(supervision_display_name, &point);
-                send_state_change(
-                    cx,
-                    point.rank(),
-                    ActorSupervisionEvent::new(
-                        // Attribute this to the monitored actor, even if the underlying
-                        // cause is a proc_failure. We propagate the cause explicitly.
-                        self.actor_mesh
-                            .get(point.rank())
-                            .unwrap()
-                            .actor_addr()
-                            .clone(),
-                        Some(display),
-                        actor_status,
-                        None,
-                    ),
-                    mesh_name,
-                    true,
-                    health_state,
+                let event = ActorSupervisionEvent::new(
+                    // Attribute this to the monitored actor, even if the underlying
+                    // cause is a proc_failure. We propagate the cause explicitly.
+                    self.actor_mesh
+                        .get(point.rank())
+                        .unwrap()
+                        .actor_addr()
+                        .clone(),
+                    Some(display),
+                    actor_status,
+                    None,
                 );
-                return PollResult::Reschedule;
+                if stop_monitoring {
+                    if health_state.mark_rank_terminating(
+                        point.rank(),
+                        resource::Status::Failed(event.to_string()),
+                    ) {
+                        send_state_change(cx, point.rank(), event, mesh_name, true, health_state);
+                    }
+                    return PollResult::StopMonitoring;
+                } else {
+                    send_state_change(cx, point.rank(), event, mesh_name, true, health_state);
+                    return PollResult::Reschedule;
+                }
             }
         }
 
@@ -1146,25 +1189,20 @@ impl<A: Referable> Controlled for ActorMeshControlPlane<A> {
             .actor_states_with_keepalive(cx, self.actor_mesh.id().clone(), compute_keepalive())
             .await;
         match actor_states {
-            Err(e) => {
-                send_state_change(
-                    cx,
-                    0,
-                    ActorSupervisionEvent::new(
-                        cx.instance().self_addr().clone(),
-                        Some(supervision_display_name.to_string()),
-                        ActorStatus::generic_failure(format!(
-                            "unable to query for actor states: {:?}",
-                            e
-                        )),
-                        None,
-                    ),
-                    mesh_name,
-                    false,
-                    health_state,
-                );
-                PollResult::Reschedule
-            }
+            Err(e) => send_poll_failure(
+                cx,
+                ActorSupervisionEvent::new(
+                    cx.instance().self_addr().clone(),
+                    Some(supervision_display_name.to_string()),
+                    ActorStatus::generic_failure(format!(
+                        "unable to query for actor states: {:?}",
+                        e
+                    )),
+                    None,
+                ),
+                mesh_name,
+                health_state,
+            ),
             Ok(states) => {
                 let did_notify =
                     health_state.apply_updates_and_notify(&states, |state, health_state| {
@@ -1378,25 +1416,20 @@ impl Controlled for ProcMeshRef {
         let mesh_name = Controlled::id(self);
 
         match self.states(cx, compute_keepalive()).await {
-            Err(e) => {
-                send_state_change(
-                    cx,
-                    0,
-                    ActorSupervisionEvent::new(
-                        cx.instance().self_addr().clone(),
-                        Some(supervision_display_name.to_string()),
-                        ActorStatus::generic_failure(format!(
-                            "unable to query for proc states: {:?}",
-                            e
-                        )),
-                        None,
-                    ),
-                    mesh_name,
-                    false,
-                    health_state,
-                );
-                PollResult::Reschedule
-            }
+            Err(e) => send_poll_failure(
+                cx,
+                ActorSupervisionEvent::new(
+                    cx.instance().self_addr().clone(),
+                    Some(supervision_display_name.to_string()),
+                    ActorStatus::generic_failure(format!(
+                        "unable to query for proc states: {:?}",
+                        e
+                    )),
+                    None,
+                ),
+                mesh_name,
+                health_state,
+            ),
             Ok(None) => PollResult::Processed { did_notify: false },
             Ok(Some(states)) => {
                 let did_notify =
@@ -1562,14 +1595,21 @@ mod tests {
     use std::ops::Deref;
     use std::time::Duration;
 
+    use hyperactor::actor::ActorErrorKind;
     use hyperactor::actor::ActorStatus;
+    use hyperactor::channel::ChannelAddr;
     use hyperactor::id::Label;
+    use hyperactor::supervision::ActorSupervisionEvent;
     use ndslice::Extent;
     use ndslice::ViewExt;
 
+    use super::HealthState;
+    use super::PollResult;
     #[cfg(fbcode_build)]
     use super::SUPERVISION_POLL_FREQUENCY;
     use super::proc_status_to_actor_status;
+    use super::send_poll_failure;
+    use super::send_state_change;
     use crate::ActorMesh;
     use crate::bootstrap::ProcStatus;
     #[cfg(fbcode_build)]
@@ -1577,13 +1617,102 @@ mod tests {
     use crate::mesh_id::ActorMeshId;
     #[cfg(fbcode_build)]
     use crate::mesh_id::HostMeshId;
+    use crate::mesh_id::ResourceId;
     use crate::proc_agent::MESH_ORPHAN_TIMEOUT;
     use crate::resource;
-    #[cfg(fbcode_build)]
     use crate::supervision::MeshFailure;
     use crate::test_utils::local_host_mesh;
     use crate::testactor;
     use crate::testing;
+
+    #[tokio::test]
+    async fn poll_failure_consumes_one_terminal_rank_for_owner_notification_bound() {
+        let instance = testing::instance();
+        let (owner_port, mut owner_rx) = instance.open_port::<MeshFailure>();
+        let mesh_name = ResourceId::instance(Label::new("workers").unwrap());
+        let region: ndslice::Region = ndslice::extent!(gpus = 3).into();
+        let statuses = (0..3)
+            .map(|rank| {
+                (
+                    region.extent().point_of_rank(rank).unwrap(),
+                    resource::Status::Running,
+                )
+            })
+            .collect();
+        let mut health_state = HealthState::new(statuses, Some(owner_port.bind()));
+
+        let rank0_event = failed_event(0, "rank 0 failed");
+        assert!(
+            health_state
+                .mark_rank_terminating(0, resource::Status::Failed("rank 0 failed".to_string()))
+        );
+        send_state_change(
+            &instance,
+            0,
+            rank0_event.clone(),
+            &mesh_name,
+            false,
+            &mut health_state,
+        );
+        let rank0_failure = owner_rx.recv().await.unwrap();
+        assert_eq!(rank0_failure.crashed_ranks, vec![0]);
+        assert_eq!(rank0_failure.event, rank0_event);
+
+        let poll_event = failed_event(99, "unable to query for actor states");
+        assert!(matches!(
+            send_poll_failure(&instance, poll_event.clone(), &mesh_name, &mut health_state),
+            PollResult::StopMonitoring
+        ));
+        let poll_failure = owner_rx.recv().await.unwrap();
+        assert_eq!(poll_failure.crashed_ranks, vec![1]);
+        assert_eq!(poll_failure.event, poll_event);
+
+        let late_rank1_event = failed_event(1, "late rank 1 failure");
+        if health_state.mark_rank_terminating(
+            1,
+            resource::Status::Failed("late rank 1 failure".to_string()),
+        ) {
+            send_state_change(
+                &instance,
+                1,
+                late_rank1_event,
+                &mesh_name,
+                false,
+                &mut health_state,
+            );
+        }
+        assert_eq!(owner_rx.try_recv().unwrap(), None);
+
+        let rank2_event = failed_event(2, "rank 2 failed");
+        assert!(
+            health_state
+                .mark_rank_terminating(2, resource::Status::Failed("rank 2 failed".to_string()))
+        );
+        send_state_change(
+            &instance,
+            2,
+            rank2_event.clone(),
+            &mesh_name,
+            false,
+            &mut health_state,
+        );
+        let rank2_failure = owner_rx.recv().await.unwrap();
+        assert_eq!(rank2_failure.crashed_ranks, vec![2]);
+        assert_eq!(rank2_failure.event, rank2_event);
+
+        assert_eq!(health_state.first_non_terminating_rank(), None);
+        assert_eq!(owner_rx.try_recv().unwrap(), None);
+    }
+
+    fn failed_event(rank: usize, message: &str) -> ActorSupervisionEvent {
+        ActorSupervisionEvent::new(
+            ResourceId::proc_addr_from_name(ChannelAddr::Local(0), "test_proc")
+                .actor_addr(format!("worker_{rank}")),
+            None,
+            ActorStatus::Failed(ActorErrorKind::Generic(message.to_string())),
+            None,
+        )
+    }
 
     /// Wraps a host mesh's shutdown guard and the spawned host child
     /// processes so tests can simulate an unclean host crash by killing
