@@ -526,7 +526,7 @@ class BuildPyWithFrontend(build_py):
 
 # Actual Setup
 package_name = os.environ.get("MONARCH_PACKAGE_NAME", "torchmonarch")
-package_version = os.environ.get("MONARCH_VERSION", "0.6.0.dev0")
+package_version = os.environ.get("MONARCH_VERSION", "0.7.0.dev0")
 
 setup(
     name=package_name,
