@@ -180,15 +180,27 @@ pub struct WorkerActor {
 
 impl WorkerActor {
     fn runtime_has_cuda() -> bool {
+        // NOTE: use `torch.backends.cuda.is_built()`, NOT `torch.cuda.is_available()`.
+        // `is_available()` calls `torch.cuda.device_count()`, which memoizes the
+        // count in c10 on first call (c10/cuda/CUDAFunctions.cpp `device_count()`),
+        // reading the visible-device env vars at that moment. This runs during
+        // worker construction, before `_initialize_env` applies the per-worker GPU
+        // mask (CUDA_VISIBLE_DEVICES), so that early memoization would latch the
+        // full host device count and every worker would keep seeing all GPUs after
+        // masking (observed on multi-GPU ROCm: `get_rng_state_all()` returned one
+        // state per host GPU). `is_built()` reports build support without
+        // enumerating devices, so the first (masked) enumeration happens later.
         monarch_with_gil_blocking(GilSite::WorkerInit, |py| {
             py.import("torch")
                 .expect("torch must be importable in a worker")
+                .getattr("backends")
+                .expect("torch.backends must exist")
                 .getattr("cuda")
-                .expect("torch.cuda attribute must exist")
-                .call_method0("is_available")
-                .expect("torch.cuda.is_available() must be callable")
+                .expect("torch.backends.cuda must exist")
+                .call_method0("is_built")
+                .expect("torch.backends.cuda.is_built() must be callable")
                 .extract::<bool>()
-                .expect("torch.cuda.is_available() must return bool")
+                .expect("torch.backends.cuda.is_built() must return bool")
         })
     }
 
