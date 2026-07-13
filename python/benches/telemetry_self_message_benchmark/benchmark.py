@@ -336,7 +336,6 @@ def main() -> None:
             TelemetryConfig(
                 include_dashboard=True,
                 dashboard_port=0,
-                use_sidecar=True,
             )
         )
     payload = bytes(args.payload_bytes)
