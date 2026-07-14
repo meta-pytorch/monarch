@@ -17,7 +17,10 @@
 //! - Device selection and PCI-to-RDMA device mapping
 
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::fmt::Write as _;
+use std::hash::Hash;
+use std::hash::Hasher;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -45,13 +48,13 @@ use super::IbvOp;
 use super::device::IbvDevice;
 use super::device::IbvDeviceImpl;
 use super::device_selection::resolve_target;
+use super::device_selection::select_optimal_ibv_devices;
 use super::domain::IbvDomain;
 use super::domain::IbvDomainImpl;
 use super::efa_device::EfaDevice;
 use super::memory_region::IbvMemoryRegionView;
 use super::mlx_device::MlxDevice;
 use super::primitives::IbvConfig;
-use super::primitives::IbvDeviceInfo;
 use super::primitives::IbvQpInfo;
 use super::primitives::ibverbs_supported;
 use super::queue_pair::IbvQueuePair;
@@ -65,6 +68,7 @@ use crate::RdmaTransportLevel;
 use crate::backend::RdmaBackend;
 use crate::backend::RdmaConfig;
 use crate::backend::ResolveRemoteBackendContext;
+use crate::device_selection::MemoryLocation;
 use crate::local_memory::KeepaliveLocalMemory;
 use crate::local_memory::is_device_ptr;
 use crate::rdma_components::RdmaRemoteBuffer;
@@ -313,10 +317,11 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
     }
 
     /// Resolve `mem` to an [`IbvMemoryRegionView`] using the slot shared by
-    /// every clone of `mem`. On a cold slot, picks the RDMA device (the
-    /// CUDA-co-located NIC for device memory, else the config fallback) and
-    /// registers the region through that device's [`IbvDomainImpl`] strategy,
-    /// installing the result; on a warm slot, returns the cached view.
+    /// every clone of `mem`. On a cold slot, picks the RDMA device (an explicit
+    /// `config.target` if set, else the CUDA-co-located NIC for device memory,
+    /// else a hash-assigned NIC for host memory) and registers the region
+    /// through that device's [`IbvDomainImpl`] strategy, installing the result;
+    /// on a warm slot, returns the cached view.
     fn resolve_local_mr(
         &mut self,
         mem: &KeepaliveLocalMemory,
@@ -326,35 +331,74 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
         }
         let addr = mem.addr();
 
-        // Pick the RDMA device: for device memory, the CUDA-co-located NIC;
-        // otherwise the configured fallback.
-        let cuda_nic = if is_device_ptr(addr) {
-            let mut device_ordinal: i32 = -1;
-            // SAFETY: `addr` is a CUDA device pointer (per `is_device_ptr`); the
-            // FFI call writes the owning device ordinal through the out-pointer.
-            let err = unsafe {
-                rdmaxcel_sys::rdmaxcel_cuPointerGetAttribute(
-                    &mut device_ordinal as *mut _ as *mut std::ffi::c_void,
-                    rdmaxcel_sys::CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL,
-                    addr as rdmaxcel_sys::CUdeviceptr,
-                )
-            };
-            // A non-success code yields no NIC.
-            let ordinal = (err == rdmaxcel_sys::CUDA_SUCCESS).then_some(device_ordinal);
-            ordinal.filter(|o| *o >= 0).and_then(|o| {
-                super::device_selection::get_cuda_device_to_ibv_device::<I>()
-                    .get(o as usize)
-                    .and_then(|d| d.clone())
-            })
-        } else {
-            None
-        };
-        let device_name = cuda_nic.map(|info| info.name().clone()).unwrap_or_else(|| {
-            resolve_target::<I>(&self.config.target)
-                .unwrap_or_else(|| IbvDeviceInfo::default::<I>())
+        // Device selection, in priority order:
+        //   1. an explicit `config.target`, resolved to its NIC;
+        //   2. otherwise the CUDA-co-located NIC for device memory;
+        //   3. otherwise a host-memory NIC assigned by hashing (addr, size).
+        let device_name = if let Some(target) = &self.config.target {
+            resolve_target::<I>(target)
+                .ok_or_else(|| anyhow::anyhow!("configured device target {:?} not found", target))?
                 .name()
                 .clone()
-        });
+        } else {
+            let cuda_nic = if is_device_ptr(addr) {
+                let mut device_ordinal: i32 = -1;
+                // SAFETY: `addr` is a CUDA device pointer (per `is_device_ptr`);
+                // the FFI call writes the owning device ordinal through the
+                // out-pointer.
+                let err = unsafe {
+                    rdmaxcel_sys::rdmaxcel_cuPointerGetAttribute(
+                        &mut device_ordinal as *mut _ as *mut std::ffi::c_void,
+                        rdmaxcel_sys::CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL,
+                        addr as rdmaxcel_sys::CUdeviceptr,
+                    )
+                };
+                let ordinal = (err == rdmaxcel_sys::CUDA_SUCCESS)
+                    .then_some(device_ordinal)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "could not get CUDA device ordinal for device memory at 0x{:x}: {}",
+                            addr,
+                            err
+                        )
+                    })?;
+                assert!(ordinal >= 0, "CUDA device ordinal must be non-negative");
+                Some(
+                    super::device_selection::get_cuda_device_to_ibv_device::<I>()
+                        .get(ordinal as usize)
+                        .and_then(|d| d.clone())
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "no RDMA device found for CUDA device ordinal {}",
+                                ordinal
+                            )
+                        })?,
+                )
+            } else {
+                None
+            };
+            match cuda_nic {
+                Some(info) => info.name().clone(),
+                None => {
+                    // Host memory has no co-located GPU NIC. Rather than funnel
+                    // every host registration through a single device, spread them
+                    // across all NICs that tie for the best CPU path by hashing the
+                    // region's (addr, size); the NICs share the load for host
+                    // memory, increasing aggregate throughput.
+                    let devices = select_optimal_ibv_devices::<I>(MemoryLocation::Cpu(None));
+                    match devices.len() {
+                        0 => anyhow::bail!("no RDMA devices found"),
+                        n => {
+                            let mut hasher = DefaultHasher::new();
+                            (mem.addr(), mem.size()).hash(&mut hasher);
+                            devices[(hasher.finish() % n as u64) as usize]
+                                .name()
+                                .clone()
+                        }
+                    }
+                }
+            }
+        };
         tracing::debug!(
             "Using RDMA device: {} for memory at 0x{:x}",
             device_name,

@@ -257,9 +257,11 @@ pub fn resolve_qp_type(qp_type: IbvQpType) -> u32 {
 /// parameters.
 #[derive(Debug, Named, Clone, Serialize, Deserialize)]
 pub struct IbvConfig {
-    /// `target` - Which RDMA device to use. A consumer resolves this to a
-    /// concrete device for its backend via [`resolve_target`].
-    pub target: IbvDeviceTarget,
+    /// `target` - An explicit RDMA device target, resolved to a concrete
+    /// device via [`resolve_target`]. When `None`, the consumer picks the
+    /// device itself (the co-located NIC for GPU memory, or a hash-assigned
+    /// NIC for host memory).
+    pub target: Option<IbvDeviceTarget>,
     /// `cq_entries` - The number of completion queue entries.
     pub cq_entries: i32,
     /// `port_num` - The physical port number on the device.
@@ -306,12 +308,12 @@ wirevalue::register_type!(IbvConfig);
 
 /// rdma-core defaults below come from common rdma-core examples; tune for
 /// production based on `ibv_query_device()` results and workload
-/// characteristics. The default target is CPU NUMA node 0; a consumer
-/// resolves it to a concrete device for its backend via [`resolve_target`].
+/// characteristics. The default target is `None`, leaving device selection to
+/// the consumer.
 impl Default for IbvConfig {
     fn default() -> Self {
         Self {
-            target: IbvDeviceTarget::MemoryLocation(MemoryLocation::Cpu(Some(0))),
+            target: None,
             cq_entries: 1024,
             port_num: 1,
             max_send_wr: 512,
@@ -340,7 +342,7 @@ impl IbvConfig {
     /// [`target`](Self::target) is `target` (see [`IbvDeviceTarget`]).
     pub fn targeting(target: IbvDeviceTarget) -> Self {
         Self {
-            target,
+            target: Some(target),
             ..Default::default()
         }
     }

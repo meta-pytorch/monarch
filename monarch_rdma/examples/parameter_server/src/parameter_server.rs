@@ -476,13 +476,13 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
     // Quick check for H100
     if devices.len() > 4 {
         ps_ibv_config = IbvConfig {
-            target: IbvDeviceTarget::nic(devices[0].name().clone()),
+            target: Some(IbvDeviceTarget::nic(devices[0].name().clone())),
             ..Default::default()
         };
         // The second device used is the 3rd. Main reason is because 0 and 3 are both backend
         // devices on gtn H100 devices.
         worker_ibv_config = IbvConfig {
-            target: IbvDeviceTarget::nic(devices[3].name().clone()),
+            target: Some(IbvDeviceTarget::nic(devices[3].name().clone())),
             ..Default::default()
         };
     } else {

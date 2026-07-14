@@ -1347,6 +1347,7 @@ mod tests {
     use super::*;
     use crate::backend::ibverbs::device::IbvDevice;
     use crate::backend::ibverbs::device::list_all_devices;
+    use crate::backend::ibverbs::device_selection::IbvDeviceTarget;
     use crate::backend::ibverbs::device_selection::resolve_target;
     use crate::backend::ibverbs::mlx_device::MlxDevice;
     use crate::backend::ibverbs::primitives::IbvConfig;
@@ -1362,7 +1363,7 @@ mod tests {
             use_gpu_direct: false,
             ..Default::default()
         };
-        let device_info = resolve_target::<MlxDevice>(&config.target).unwrap();
+        let device_info = resolve_target::<MlxDevice>(&IbvDeviceTarget::cpu(0)).unwrap();
         let mut device = IbvDevice::<MlxDevice>::open(device_info.name(), config.clone())
             .expect("resolved device should open");
         let domain = device
@@ -1388,14 +1389,14 @@ mod tests {
             ..Default::default()
         };
 
-        let server_info = resolve_target::<MlxDevice>(&server_config.target).unwrap();
+        let server_info = resolve_target::<MlxDevice>(&IbvDeviceTarget::cpu(0)).unwrap();
         let mut server_device =
             IbvDevice::<MlxDevice>::open(server_info.name(), server_config.clone())
                 .expect("server device should open");
         let server_domain = server_device
             .get_or_create_domain("test")
             .expect("server domain creation should succeed");
-        let client_info = resolve_target::<MlxDevice>(&client_config.target).unwrap();
+        let client_info = resolve_target::<MlxDevice>(&IbvDeviceTarget::cpu(0)).unwrap();
         let mut client_device =
             IbvDevice::<MlxDevice>::open(client_info.name(), client_config.clone())
                 .expect("client device should open");

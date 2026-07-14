@@ -822,13 +822,13 @@ pub async fn run() -> Result<(), anyhow::Error> {
     if devices.len() > 4 {
         // Use separate backend devices for H100 configuration
         device_1_ibv_config = IbvConfig {
-            target: IbvDeviceTarget::nic(devices[0].name().clone()),
+            target: Some(IbvDeviceTarget::nic(devices[0].name().clone())),
             ..Default::default()
         };
         // The second device used is the 3rd. Main reason is because 0 and 3 are both backend
         // devices on gtn H100 devices.
         device_2_ibv_config = IbvConfig {
-            target: IbvDeviceTarget::nic(devices[3].name().clone()),
+            target: Some(IbvDeviceTarget::nic(devices[3].name().clone())),
             ..Default::default()
         };
     } else {
