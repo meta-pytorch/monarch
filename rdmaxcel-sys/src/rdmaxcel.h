@@ -176,18 +176,19 @@ int deregister_segments();
 //
 // Binds the given MR list onto an indirect mkey using `qp`'s WR builder (a
 // connected loopback QP), so the bound MRs are addressable as a single flat
-// zero-based region. Creates the mkey when `*mkey` is NULL and writes it
-// back through `mkey`; the caller reads `lkey`/`rkey` off the returned
-// `mlx5dv_mkey`. Returns 0 on success, otherwise a negative
-// `rdmaxcel_error_code_t`; the body catches any C++ exception and reports it
-// as `RDMAXCEL_EXCEPTION`. Declared `noexcept` as a hard backstop so an escape
-// terminates rather than unwinding across the C ABI into Rust.
+// zero-based region. Creates the mkey sized to hold `mkey_max_entries` entries
+// when `*mkey` is NULL and writes it back through `mkey`; the caller reads
+// `lkey`/`rkey` off the returned `mlx5dv_mkey`. Returns 0 on success, otherwise
+// a negative `rdmaxcel_error_code_t`; the body catches any C++ exception and
+// reports it as `RDMAXCEL_EXCEPTION`. Declared `noexcept` as a hard backstop so
+// an escape terminates rather than unwinding across the C ABI into Rust.
 int rdmaxcel_bind_mr_list(
     struct ibv_pd* pd,
     struct ibv_qp* qp,
     int access_flags,
     struct ibv_mr** mrs,
     size_t mrs_cnt,
+    size_t mkey_max_entries,
     struct mlx5dv_mkey** mkey) RDMAXCEL_NOEXCEPT;
 
 // Destroy an mkey created by `rdmaxcel_bind_mr_list`. No-op when NULL.

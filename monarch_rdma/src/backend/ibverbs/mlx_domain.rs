@@ -153,9 +153,10 @@ pub(super) trait MlxDomainOps: Send + Sync + 'static {
         config: &IbvConfig,
     ) -> anyhow::Result<IbvQp>;
 
-    /// Bind `mrs` to a freshly created indirect key using `qp`'s work-request
-    /// builder, returning it as a [`Mlx5dvMkey`] owning those MR references. On
-    /// failure the `mrs` are dropped.
+    /// Bind `mrs` to a freshly created indirect key (sized to hold
+    /// `mkey_max_entries` MRs) using `qp`'s work-request builder, returning it
+    /// as a [`Mlx5dvMkey`] owning those MR references. On failure the `mrs` are
+    /// dropped.
     ///
     /// # Safety
     ///
@@ -168,6 +169,7 @@ pub(super) trait MlxDomainOps: Send + Sync + 'static {
         qp: &IbvQp,
         access: i32,
         mrs: Vec<Arc<IbvMr>>,
+        mkey_max_entries: usize,
     ) -> anyhow::Result<Mlx5dvMkey>;
 }
 
@@ -274,6 +276,7 @@ impl MlxDomainOps for ProdMlxDomainOps {
         qp: &IbvQp,
         access: i32,
         mrs: Vec<Arc<IbvMr>>,
+        mkey_max_entries: usize,
     ) -> anyhow::Result<Mlx5dvMkey> {
         if pd.as_ptr().is_null() || qp.as_ptr().is_null() {
             anyhow::bail!("bind_mr_list called with a null protection domain or queue pair");
@@ -302,6 +305,7 @@ impl MlxDomainOps for ProdMlxDomainOps {
                 access,
                 ptrs.as_ptr() as *mut *mut rdmaxcel_sys::ibv_mr,
                 ptrs.len(),
+                mkey_max_entries,
                 &mut mkey,
             )
         };
@@ -422,6 +426,8 @@ struct RegisteredSegmentState {
 struct RegisteredSegment {
     ops: Arc<dyn MlxDomainOps>,
     base_virtual_addr: usize,
+    /// The most MRs that can bind to this segment's indirect key.
+    mkey_max_entries: usize,
     state: Mutex<RegisteredSegmentState>,
 }
 
@@ -439,11 +445,17 @@ impl std::fmt::Debug for RegisteredSegment {
 
 impl RegisteredSegment {
     /// An unbound segment for `base_virtual_addr`: no MRs, no key, zero size.
-    /// [`Self::grow`] binds its first generation.
-    fn empty(ops: Arc<dyn MlxDomainOps>, base_virtual_addr: usize) -> Self {
+    /// [`Self::grow`] binds its first generation. `mkey_max_entries` caps the
+    /// MRs bound to the segment's key.
+    fn empty(
+        ops: Arc<dyn MlxDomainOps>,
+        base_virtual_addr: usize,
+        mkey_max_entries: usize,
+    ) -> Self {
         Self {
             ops,
             base_virtual_addr,
+            mkey_max_entries,
             state: Mutex::new(RegisteredSegmentState {
                 stale_mkeys: Vec::new(),
                 mkey: None,
@@ -524,8 +536,23 @@ impl RegisteredSegment {
             .map(|k| k.mrs().clone())
             .unwrap_or_default();
         all.extend(new_tail);
+        // A single indirect key binds at most `mkey_max_entries` MRs; exceeding
+        // it would fault at transfer time. Fail here instead; the caller falls
+        // back to per-region dmabuf registration. The freshly-registered tail
+        // drops as `all` unwinds, leaving the segment unchanged.
+        if all.len() > self.mkey_max_entries {
+            anyhow::bail!(
+                "segment at 0x{:x} needs {} MRs, exceeding mkey max entries {}",
+                self.base_virtual_addr,
+                all.len(),
+                self.mkey_max_entries
+            );
+        }
         // SAFETY: same contract; `all` are this segment's live MRs.
-        let new_mkey = unsafe { self.ops.bind_mr_list(pd, qp, access, all) }?;
+        let new_mkey = unsafe {
+            self.ops
+                .bind_mr_list(pd, qp, access, all, self.mkey_max_entries)
+        }?;
 
         // Retire the prior key (kept for in-flight ops built against it) and
         // install the new one.
@@ -624,6 +651,8 @@ pub struct MlxDomain {
     /// CUDA ordinals whose optimal NIC is this device. Only segments on
     /// these ordinals are bound here.
     cuda_ordinals: Vec<i32>,
+    /// Caps the MRs bound to each segment's indirect key.
+    mkey_max_entries: usize,
     /// Lazily-created loopback QP (an [`IbvQp`] owning its completion queues and
     /// PD) used to post key-binding work requests, destroyed when this domain
     /// drops.
@@ -646,8 +675,13 @@ impl std::fmt::Debug for MlxDomain {
 
 impl MlxDomain {
     /// Build a domain over the given ops, deriving mlx5dv support and the
-    /// served CUDA ordinals from them.
-    fn new_with_ops(ops: Arc<dyn MlxDomainOps>, config: IbvConfig) -> Self {
+    /// served CUDA ordinals from them. `mkey_max_entries` caps the MRs bound to
+    /// every segment's indirect key.
+    fn new_with_ops(
+        ops: Arc<dyn MlxDomainOps>,
+        config: IbvConfig,
+        mkey_max_entries: usize,
+    ) -> Self {
         let mlx5dv_enabled = ops.mlx5dv_enabled();
         let cuda_ordinals = ops.assigned_cuda_devices();
         Self {
@@ -655,6 +689,7 @@ impl MlxDomain {
             config,
             mlx5dv_enabled,
             cuda_ordinals,
+            mkey_max_entries,
             loopback: OnceLock::new(),
             segments: Mutex::new(HashMap::new()),
         }
@@ -730,6 +765,7 @@ impl MlxDomain {
                     let fresh = Arc::new(RegisteredSegment::empty(
                         self.ops.clone(),
                         scanned_seg.address,
+                        self.mkey_max_entries,
                     ));
                     // SAFETY: as above.
                     unsafe { fresh.grow(pd, qp, access, scanned_seg) }?;
@@ -766,6 +802,8 @@ impl IbvDomainImpl for MlxDomain {
         Self::new_with_ops(
             Arc::new(ProdMlxDomainOps::new(context, device_info)),
             config.clone(),
+            // An indirect mkey cannot bind more MRs than its device's `max_sge`.
+            device_info.max_sge().max(0) as usize,
         )
     }
 
@@ -941,6 +979,7 @@ mod tests {
             _qp: &IbvQp,
             _access: i32,
             mrs: Vec<Arc<IbvMr>>,
+            _mkey_max_entries: usize,
         ) -> anyhow::Result<Mlx5dvMkey> {
             let mut s = self.lock();
             if s.fail_bind {
@@ -954,11 +993,15 @@ mod tests {
         }
     }
 
+    /// `mkey_max_entries` for tests: large enough that the small MR counts here
+    /// never trip the segment cap (that limit has its own test).
+    const TEST_MKEY_MAX_ENTRIES: usize = 32;
+
     /// A domain wrapping the mock-driven [`MlxDomain`] under test. Its `pd`
     /// (and, through it, its context) is null (no-op `Drop`). Drive the strategy
     /// via [`IbvDomain::domain_impl`].
     fn domain(mock: Arc<MockOps>) -> Arc<IbvDomain<MlxDomain>> {
-        let mlx = MlxDomain::new_with_ops(mock, IbvConfig::default());
+        let mlx = MlxDomain::new_with_ops(mock, IbvConfig::default(), TEST_MKEY_MAX_ENTRIES);
         // SAFETY: `IbvPd::null()` holds a null PD (and, through it, a null
         // context) whose `Drop`s are no-ops.
         unsafe {
@@ -1001,7 +1044,11 @@ mod tests {
 
     /// Bind a fresh segment `[base, base + size)`: an empty segment grown once.
     fn bind_fresh(ops: &Arc<MockOps>, base: usize, size: usize) -> Arc<RegisteredSegment> {
-        let segment = Arc::new(RegisteredSegment::empty(dyn_ops(ops), base));
+        let segment = Arc::new(RegisteredSegment::empty(
+            dyn_ops(ops),
+            base,
+            TEST_MKEY_MAX_ENTRIES,
+        ));
         // SAFETY: `MockOps` ignores the `pd`/`qp`; the nulls are never deref'd.
         unsafe { segment.grow(&null_pd(), &null_qp(), 0, &seg(base, size, 0)) }
             .expect("fresh bind should succeed");
@@ -1237,7 +1284,7 @@ mod tests {
         let ops = MockOps::new(SERVED_NIC, true, &[0]);
         ops.lock().fail_dmabuf_after = Some(1);
         let base = 0x10_0000_0000;
-        let segment = RegisteredSegment::empty(dyn_ops(&ops), base);
+        let segment = RegisteredSegment::empty(dyn_ops(&ops), base, TEST_MKEY_MAX_ENTRIES);
 
         // Two chunks; the second dmabuf registration fails.
         // SAFETY: `MockOps` ignores the `pd`/`qp`; the nulls are never deref'd.
@@ -1261,7 +1308,7 @@ mod tests {
         let ops = MockOps::new(SERVED_NIC, true, &[0]);
         ops.lock().fail_bind = true;
         let base = 0x10_0000_0000;
-        let segment = RegisteredSegment::empty(dyn_ops(&ops), base);
+        let segment = RegisteredSegment::empty(dyn_ops(&ops), base, TEST_MKEY_MAX_ENTRIES);
 
         // SAFETY: `MockOps` ignores the `pd`/`qp`; the nulls are never deref'd.
         let result = unsafe { segment.grow(&null_pd(), &null_qp(), 0, &seg(base, MIB2, 0)) };
@@ -1270,6 +1317,27 @@ mod tests {
         assert!(
             segment.state.lock().unwrap().mkey.is_none(),
             "no key installed on bind failure"
+        );
+    }
+
+    #[test]
+    fn test_grow_exceeding_mkey_max_entries_errors() {
+        let ops = MockOps::new(SERVED_NIC, true, &[0]);
+        let base = 0x10_0000_0000;
+        // Cap at one MR; a two-chunk segment needs two, so grow must reject it
+        // rather than bind an over-capacity (and silently truncated) key.
+        let segment = RegisteredSegment::empty(dyn_ops(&ops), base, 1);
+        // SAFETY: `MockOps` ignores the `pd`/`qp`; the nulls are never deref'd.
+        let result =
+            unsafe { segment.grow(&null_pd(), &null_qp(), 0, &seg(base, MAX_MR_SIZE + MIB2, 0)) };
+        assert!(
+            result.is_err(),
+            "grow must reject a segment needing more MRs than mkey max entries"
+        );
+        assert_eq!(segment.size(), 0, "the segment is left unchanged");
+        assert!(
+            ops.lock().bind_calls.is_empty(),
+            "no bind attempted past the cap"
         );
     }
 

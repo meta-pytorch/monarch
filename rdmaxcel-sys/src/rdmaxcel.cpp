@@ -218,6 +218,7 @@ int bind_mrs(
     struct ibv_qp* qp,
     int access_flags,
     const std::vector<ibv_mr*>& mrs,
+    size_t mkey_max_entries,
     struct mlx5dv_mkey** mkey) {
   auto mrs_cnt = mrs.size();
   // Defensive: these are passed across the C ABI from Rust; validate rather
@@ -256,7 +257,8 @@ int bind_mrs(
     struct mlx5dv_mkey_init_attr mkey_attr = {};
     mkey_attr.pd = pd;
     mkey_attr.create_flags = MLX5DV_MKEY_INIT_ATTR_FLAGS_INDIRECT;
-    mkey_attr.max_entries = 32;
+    mkey_attr.max_entries =
+        static_cast<decltype(mkey_attr.max_entries)>(mkey_max_entries);
     auto new_mkey = mlx5dv_create_mkey(&mkey_attr);
     if (!new_mkey) {
       return RDMAXCEL_MKEY_CREATE_FAILED;
@@ -307,6 +309,7 @@ int rdmaxcel_bind_mr_list(
     int access_flags,
     struct ibv_mr** mrs,
     size_t mrs_cnt,
+    size_t mkey_max_entries,
     struct mlx5dv_mkey** mkey) noexcept {
   // The vector copy and `bind_mrs` allocate; catch every exception and return
   // an error code so none unwinds across the C ABI into Rust (UB).
@@ -318,7 +321,7 @@ int rdmaxcel_bind_mr_list(
     std::vector<ibv_mr*> mr_vec(mrs, mrs + mrs_cnt);
     // `bind_mrs` validates the remaining pointers and, on failure, cleans up
     // any mkey it created.
-    return bind_mrs(pd, qp, access_flags, mr_vec, mkey);
+    return bind_mrs(pd, qp, access_flags, mr_vec, mkey_max_entries, mkey);
   } catch (const std::exception& e) {
     fprintf(stderr, "[RdmaXcel] rdmaxcel_bind_mr_list failed: %s\n", e.what());
     return RDMAXCEL_EXCEPTION;
@@ -525,7 +528,7 @@ int register_segments(
     // bind_mrs creates the mkey when `mkey` is null and, on failure, destroys
     // any mkey it created (clearing `mkey`), so we only clean up the MRs we
     // registered here on failure.
-    auto err = bind_mrs(pd, qp->ibv_qp, access_flags, all_mrs, &mkey);
+    auto err = bind_mrs(pd, qp->ibv_qp, access_flags, all_mrs, max_sge, &mkey);
     if (err != 0) {
       return fail(err);
     }
