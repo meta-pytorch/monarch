@@ -188,8 +188,17 @@ impl Drop for ShutdownGuard<'_> {
 /// Discover workload procs that contain actors matching
 /// `pyspy_worker`. Retries until count ≥ `expected`. MIT-8
 /// (pyspy-worker-discovery).
+///
+/// The retry budget must absorb concurrent workload startup: when this
+/// integration test runs in parallel with other scenarios, multiple
+/// workloads spawn dozens of procs at once and pyspy_worker actor
+/// registration can lag well past a minute under that contention.
 async fn discover_pyspy_workers(fixture: &WorkloadFixture, expected: usize) -> Result<Vec<String>> {
-    for _attempt in 1..=60 {
+    const MAX_ATTEMPTS: usize = 180;
+    let mut last_seen_procs: usize = 0;
+    let mut last_seen_pyspy: usize = 0;
+
+    for _attempt in 1..=MAX_ATTEMPTS {
         let root: NodePayload = match fixture.get_node_payload("/v1/root").await {
             Ok(r) => r,
             Err(_) => {
@@ -198,6 +207,7 @@ async fn discover_pyspy_workers(fixture: &WorkloadFixture, expected: usize) -> R
             }
         };
         let mut procs = Vec::new();
+        let mut total_procs_seen = 0usize;
 
         for host_ref in &root.children {
             let host_str = host_ref.to_string();
@@ -209,6 +219,7 @@ async fn discover_pyspy_workers(fixture: &WorkloadFixture, expected: usize) -> R
             };
 
             for proc_ref in &host.children {
+                total_procs_seen += 1;
                 let proc_str = proc_ref.to_string();
                 let encoded = urlencoding::encode(&proc_str);
                 let proc_node: NodePayload =
@@ -233,10 +244,14 @@ async fn discover_pyspy_workers(fixture: &WorkloadFixture, expected: usize) -> R
         if procs.len() >= expected {
             return Ok(procs);
         }
+        last_seen_procs = total_procs_seen;
+        last_seen_pyspy = procs.len();
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
 
-    bail!("MIT-8: pyspy worker procs not found after 60 attempts (expected {expected})");
+    bail!(
+        "MIT-8: pyspy worker procs not found after {MAX_ATTEMPTS} attempts (expected {expected}, last saw {last_seen_pyspy} pyspy procs out of {last_seen_procs} total procs)"
+    );
 }
 
 // Mode-specific evidence (ported from verify_pyspy.py)
