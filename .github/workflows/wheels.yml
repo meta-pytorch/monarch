@@ -24,6 +24,11 @@ on:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
   cancel-in-progress: true
+
+permissions:
+  id-token: write
+  contents: read
+
 jobs:
   build-x86_64:
     uses: ./.github/workflows/build-dist.yml
@@ -47,7 +52,8 @@ jobs:
       torch-spec: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu132'
       gpu-arch-type: cpu
       gpu-arch-version: ''
-      arch-label: cuda13.2
+      desired-cuda: cu132
+      version-suffix: cu132
       platform: x86_64
 
   build-arm64:
@@ -59,7 +65,22 @@ jobs:
       torch-spec: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu132'
       gpu-arch-type: cuda
       gpu-arch-version: '13.2'
+      desired-cuda: cu132
+      version-suffix: cu132
       platform: aarch64
+
+  build-rocm-x86_64:
+    uses: ./.github/workflows/build-dist.yml
+    with:
+      python-versions: '["3.10", "3.11", "3.12", "3.13"]'
+      runner: linux.rocm.gpu.gfx942.1.meta-pytorch
+      docker-image: 'pytorch/manylinux2_28-builder:rocm7.2'
+      torch-spec: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm7.2'
+      gpu-arch-type: rocm
+      gpu-arch-version: '7.2'
+      desired-cuda: rocm7.2
+      version-suffix: rocm7.2
+      platform: x86_64
 
   build-macos:
     uses: ./.github/workflows/build-macos.yml
@@ -68,29 +89,86 @@ jobs:
       runner: macos-latest
       torch-spec: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cpu'
 
-  publish-to-pypi:
-    name: Publish to PyPI
-    needs: [build-x86_64, build-arm64, build-macos]
-    runs-on: ubuntu-latest
-    environment: nightly
+  upload-linux-x86_64:
+    name: Upload Linux x86_64 wheels
+    needs: [build-x86_64, build-rocm-x86_64]
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
-    permissions:
-      id-token: write  # Required for PyPI trusted publishing
-      contents: read
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
+    uses: pytorch/test-infra/.github/workflows/_binary_upload.yml@main
+    with:
+      repository: meta-pytorch/monarch
+      ref: ""
+      test-infra-repository: pytorch/test-infra
+      test-infra-ref: main
+      architecture: x86_64
+      trigger-event: ${{ github.event_name == 'workflow_dispatch' && 'schedule' || github.event_name }}
+      build-matrix: |
+        {
+          "include": [
+            {"python_version": "3.10", "desired_cuda": "cu132", "upload_to_base_bucket": "no", "build_name": "monarch-py3_10-cu132-x86_64"},
+            {"python_version": "3.11", "desired_cuda": "cu132", "upload_to_base_bucket": "no", "build_name": "monarch-py3_11-cu132-x86_64"},
+            {"python_version": "3.12", "desired_cuda": "cu132", "upload_to_base_bucket": "no", "build_name": "monarch-py3_12-cu132-x86_64"},
+            {"python_version": "3.13", "desired_cuda": "cu132", "upload_to_base_bucket": "no", "build_name": "monarch-py3_13-cu132-x86_64"},
+            {"python_version": "3.10", "desired_cuda": "rocm7.2", "upload_to_base_bucket": "no", "build_name": "monarch-py3_10-rocm7_2-x86_64"},
+            {"python_version": "3.11", "desired_cuda": "rocm7.2", "upload_to_base_bucket": "no", "build_name": "monarch-py3_11-rocm7_2-x86_64"},
+            {"python_version": "3.12", "desired_cuda": "rocm7.2", "upload_to_base_bucket": "no", "build_name": "monarch-py3_12-rocm7_2-x86_64"},
+            {"python_version": "3.13", "desired_cuda": "rocm7.2", "upload_to_base_bucket": "no", "build_name": "monarch-py3_13-rocm7_2-x86_64"}
+          ]
+        }
+    secrets:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
 
-      - name: Display structure of downloaded files
-        run: ls -R dist/
+  upload-linux-aarch64:
+    name: Upload Linux aarch64 wheels
+    needs: build-arm64
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    uses: pytorch/test-infra/.github/workflows/_binary_upload.yml@main
+    with:
+      repository: meta-pytorch/monarch
+      ref: ""
+      test-infra-repository: pytorch/test-infra
+      test-infra-ref: main
+      architecture: aarch64
+      trigger-event: ${{ github.event_name == 'workflow_dispatch' && 'schedule' || github.event_name }}
+      build-matrix: |
+        {
+          "include": [
+            {"python_version": "3.10", "desired_cuda": "cu132", "upload_to_base_bucket": "no", "build_name": "monarch-py3_10-cu132-aarch64"},
+            {"python_version": "3.11", "desired_cuda": "cu132", "upload_to_base_bucket": "no", "build_name": "monarch-py3_11-cu132-aarch64"},
+            {"python_version": "3.12", "desired_cuda": "cu132", "upload_to_base_bucket": "no", "build_name": "monarch-py3_12-cu132-aarch64"},
+            {"python_version": "3.13", "desired_cuda": "cu132", "upload_to_base_bucket": "no", "build_name": "monarch-py3_13-cu132-aarch64"}
+          ]
+        }
+    secrets:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
 
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          verbose: true
+  upload-macos:
+    name: Upload macOS CPU wheels
+    needs: build-macos
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    uses: pytorch/test-infra/.github/workflows/_binary_upload.yml@main
+    with:
+      repository: meta-pytorch/monarch
+      ref: ""
+      test-infra-repository: pytorch/test-infra
+      test-infra-ref: main
+      trigger-event: ${{ github.event_name == 'workflow_dispatch' && 'schedule' || github.event_name }}
+      build-matrix: |
+        {
+          "include": [
+            {"python_version": "3.10", "desired_cuda": "cpu", "upload_to_base_bucket": "no", "build_name": "monarch-py3_10-cpu-macos"},
+            {"python_version": "3.11", "desired_cuda": "cpu", "upload_to_base_bucket": "no", "build_name": "monarch-py3_11-cpu-macos"},
+            {"python_version": "3.12", "desired_cuda": "cpu", "upload_to_base_bucket": "no", "build_name": "monarch-py3_12-cpu-macos"},
+            {"python_version": "3.13", "desired_cuda": "cpu", "upload_to_base_bucket": "no", "build_name": "monarch-py3_13-cpu-macos"}
+          ]
+        }
+    secrets:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
 
   publish-to-container-registry:
     name: Publish to Github Container Registry
@@ -116,7 +194,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           # Docker container only has python 3.12, so we need to use the x86_64 3.12 wheel.
-          name: monarch-py3.12-cuda13.2-x86_64
+          name: meta-pytorch_monarch__3.12_cu132_x86_64
           path: ${{ runner.temp }}/monarch_wheels
           merge-multiple: true
 

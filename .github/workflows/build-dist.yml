@@ -19,6 +19,10 @@ on:
         description: 'GPU architecture version'
         type: string
         default: '13.2'
+      desired-cuda:
+        description: 'PyTorch binary index arch id used by test-infra upload jobs (e.g. cu132, rocm7.2, cpu)'
+        type: string
+        default: 'cu132'
       runner:
         description: 'Runner to use for the build'
         type: string
@@ -35,8 +39,8 @@ on:
         description: 'Target platform architecture (e.g., x86_64, aarch64)'
         type: string
         default: 'x86_64'
-      arch-label:
-        description: 'Label used in the artifact name to identify the build arch (e.g. cuda13.2, rocm7.1). Defaults to gpu-arch-type + gpu-arch-version when empty. Set explicitly when those inputs do not describe the toolkit baked into docker-image (e.g. CUDA wheel built on a CPU runner with gpu-arch-type=cpu).'
+      version-suffix:
+        description: 'Optional local version suffix without leading +, e.g. cu132 or rocm7.2'
         type: string
         default: ''
       timeout:
@@ -59,7 +63,7 @@ jobs:
       gpu-arch-type: ${{ inputs.gpu-arch-type }}
       gpu-arch-version: ${{ inputs.gpu-arch-version }}
       submodules: recursive
-      upload-artifact: monarch-py${{ matrix.python-version }}-${{ inputs.arch-label != '' && inputs.arch-label || format('{0}{1}', inputs.gpu-arch-type, inputs.gpu-arch-version) }}-${{ inputs.platform }}
+      upload-artifact: meta-pytorch_monarch__${{ matrix.python-version }}_${{ inputs.desired-cuda }}_${{ inputs.platform }}
       script: |
         source scripts/common-setup.sh
         setup_build_environment ${{ matrix.python-version }}
@@ -71,8 +75,11 @@ jobs:
         # Setup Tensor Engine dependencies
         setup_tensor_engine
 
-        # Install CUDA toolkit if not already present (ARM64 runners lack GPU/CUDA)
-        if ! command -v nvcc &> /dev/null; then
+        if [[ "${{ inputs.gpu-arch-type }}" == "rocm" ]]; then
+            setup_rocm_environment
+            export MONARCH_GPU_PLATFORM=rocm
+        elif ! command -v nvcc &> /dev/null; then
+            # Install CUDA toolkit if not already present (ARM64 runners lack GPU/CUDA)
             setup_cuda_toolkit
         fi
 
@@ -95,13 +102,16 @@ jobs:
         else
           export MONARCH_VERSION=0.6.0.dev$(date +'%Y%m%d')
         fi
+        if [ -n "${{ inputs.version-suffix }}" ]; then
+          export MONARCH_VERSION="${MONARCH_VERSION}+${{ inputs.version-suffix }}"
+        fi
         python setup.py bdist_wheel
 
         echo "=== sccache stats ==="
         sccache --show-stats || true
         echo "=== end sccache stats ==="
 
-        # Rename to manylinux2014 for PyPI compatibility
+        # Rename to manylinux2014 for package index compatibility
         for f in dist/*linux_*.whl; do
             mv "$f" "$(echo "$f" | sed 's/linux_/manylinux2014_/')"
         done
