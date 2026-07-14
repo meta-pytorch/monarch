@@ -42,6 +42,7 @@ use hyperactor::RefClient;
 use hyperactor::RemoteEndpoint as _;
 use hyperactor::Uid;
 use hyperactor::actor::ActorStatus;
+use hyperactor::actor::ActorStoppingReason;
 use hyperactor::context;
 use hyperactor::gateway::GatewayServeHandle;
 use hyperactor::id::Label;
@@ -413,12 +414,14 @@ impl HostAgent {
                 ActorStatus::Idle | ActorStatus::Processing(_, _) => return Ok(()),
                 ActorStatus::Failed(err) => anyhow::bail!("host agent init failed: {err}"),
                 ActorStatus::Stopped(reason) => anyhow::bail!("host agent stopped: {reason}"),
-                ActorStatus::Zombie(reason) => anyhow::bail!("host agent zombie: {reason}"),
+                ActorStatus::Stopping(ActorStoppingReason::Zombie(reason)) => {
+                    anyhow::bail!("host agent zombie: {reason}")
+                }
                 ActorStatus::Unknown
                 | ActorStatus::Created
                 | ActorStatus::Initializing
                 | ActorStatus::Client
-                | ActorStatus::Stopping => {}
+                | ActorStatus::Stopping(_) => {}
             }
             if status.changed().await.is_err() {
                 anyhow::bail!("host agent status channel closed before init completed");

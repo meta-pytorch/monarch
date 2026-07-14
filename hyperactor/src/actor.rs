@@ -760,6 +760,25 @@ impl fmt::Display for HandlerInfo {
     }
 }
 
+/// Why an actor is stopping.
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
+pub enum ActorStoppingReason {
+    /// The actor is stopping through the normal cooperative shutdown path.
+    Requested,
+    /// The actor did not respond to hard kill, and teardown stopped waiting on
+    /// it normally.
+    Zombie(String),
+}
+
+impl fmt::Display for ActorStoppingReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Requested => write!(f, "requested"),
+            Self::Zombie(reason) => write!(f, "zombie: {}", reason),
+        }
+    }
+}
+
 /// The runtime status of an actor.
 #[derive(
     Debug,
@@ -787,21 +806,33 @@ pub enum ActorStatus {
     /// instant. The message handler info is included.
     Processing(SystemTime, Option<HandlerInfo>),
     /// The actor is stopping. It is draining messages.
-    Stopping,
+    Stopping(ActorStoppingReason),
     /// The actor is stopped with a provided reason.
     /// It is no longer processing messages.
     Stopped(String),
     /// The actor failed with the provided actor error.
     Failed(ActorErrorKind),
-    /// The actor did not respond to hard kill, and teardown stopped waiting on
-    /// it normally.
-    Zombie(String),
 }
 
 impl ActorStatus {
     /// Tells whether the status is a terminal state.
     pub fn is_terminal(&self) -> bool {
         self.is_stopped() || self.is_failed()
+    }
+
+    /// Create a normal stopping status.
+    pub fn stopping() -> Self {
+        Self::Stopping(ActorStoppingReason::Requested)
+    }
+
+    /// Create a zombie stopping status.
+    pub fn zombie(reason: impl Into<String>) -> Self {
+        Self::Stopping(ActorStoppingReason::Zombie(reason.into()))
+    }
+
+    /// Tells whether the status is a zombie stopping state.
+    pub fn is_zombie(&self) -> bool {
+        matches!(self, Self::Stopping(ActorStoppingReason::Zombie(_)))
     }
 
     /// Create a generic failure status with the provided error message.
@@ -843,10 +874,10 @@ impl fmt::Display for ActorStatus {
                         .as_millis()
                 )
             }
-            Self::Stopping => write!(f, "stopping"),
+            Self::Stopping(ActorStoppingReason::Requested) => write!(f, "stopping"),
+            Self::Stopping(ActorStoppingReason::Zombie(reason)) => write!(f, "zombie: {}", reason),
             Self::Stopped(reason) => write!(f, "stopped: {}", reason),
             Self::Failed(err) => write!(f, "failed: {}", err),
-            Self::Zombie(reason) => write!(f, "zombie: {}", reason),
         }
     }
 }
@@ -3201,9 +3232,10 @@ mod tests {
 
     #[test]
     fn zombie_status_is_not_terminal() {
-        let status = ActorStatus::Zombie("hard kill did not finish".to_string());
+        let status = ActorStatus::zombie("hard kill did not finish");
 
         assert!(!status.is_terminal(), "zombie status is not terminal");
+        assert!(status.is_stopping(), "zombie status is stopping");
         assert!(status.is_zombie(), "zombie predicate should match");
     }
 }

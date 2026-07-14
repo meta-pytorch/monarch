@@ -167,6 +167,7 @@ use crate::actor::ActorError;
 use crate::actor::ActorErrorKind;
 use crate::actor::ActorHandle;
 use crate::actor::ActorStatus;
+use crate::actor::ActorStoppingReason;
 use crate::actor::AnyActorHandle;
 use crate::actor::Binds;
 use crate::actor::HandlerInfo;
@@ -2461,8 +2462,7 @@ impl<A: Actor> Instance<A> {
     }
 
     fn is_stopping(&self) -> bool {
-        let status = self.inner.cell.status().borrow();
-        status.is_stopping() || status.is_zombie()
+        self.inner.cell.status().borrow().is_stopping()
     }
 
     /// This instance's actor address.
@@ -2937,11 +2937,17 @@ impl<A: Actor> Instance<A> {
             },
         };
 
-        // A zombie was already detached from its parent and reported through proc teardown.
-        // Its eventual task result still closes local resources, but must not create a second
-        // supervision event.
-        let event = if self.inner.cell.status().borrow().is_zombie() {
-            None
+        // Supervision policy is driven by the event status, not the live cell status.
+        // After teardown marks an actor zombie, publish that lifecycle verdict instead
+        // of a late task failure so default supervision treats it as non-error.
+        let current_status = self.inner.cell.status().borrow().clone();
+        let event = if current_status.is_zombie() {
+            Some(ActorSupervisionEvent::new(
+                self.inner.cell.actor_addr().clone(),
+                actor.display_name(),
+                current_status,
+                None,
+            ))
         } else {
             event
         };
@@ -3027,7 +3033,7 @@ impl<A: Actor> Instance<A> {
         // `Zombie` is an out-of-band teardown verdict. Preserve it until the actor task
         // publishes its true terminal status.
         if !self.inner.cell.status().borrow().is_zombie() {
-            self.change_status(ActorStatus::Stopping);
+            self.change_status(ActorStatus::stopping());
         }
         if let Err(err) = &result {
             tracing::error!("{}: actor failure: {}", self.self_addr(), err);
@@ -3171,7 +3177,7 @@ impl<A: Actor> Instance<A> {
                     match signal {
                         Signal::Stop(reason) => {
                             stop_mode = StopMode::Stop;
-                            self.change_status(ActorStatus::Stopping);
+                            self.change_status(ActorStatus::stopping());
                             self.inner
                                 .proc
                                 .with_current(actor.handle_stop(self, StopMode::Stop, &reason))
@@ -3180,7 +3186,7 @@ impl<A: Actor> Instance<A> {
                         },
                         Signal::DrainAndStop(reason) => {
                             stop_mode = StopMode::DrainAndStop;
-                            self.change_status(ActorStatus::Stopping);
+                            self.change_status(ActorStatus::stopping());
                             self.inner
                                 .proc
                                 .with_current(actor.handle_stop(self, StopMode::DrainAndStop, &reason))
@@ -4113,8 +4119,8 @@ impl InstanceCell {
             let new_status = new.arm().unwrap_or("unknown");
             let change_reason = match &new {
                 ActorStatus::Failed(reason) => reason.to_string(),
+                ActorStatus::Stopping(ActorStoppingReason::Zombie(reason)) => reason.clone(),
                 ActorStatus::Stopped(reason) => reason.clone(),
-                ActorStatus::Zombie(reason) => reason.clone(),
                 _ => "".to_string(),
             };
             tracing::info!(
@@ -4844,32 +4850,32 @@ mod tests {
                 "non-terminal to terminal",
             ),
             (
-                ActorStatus::Stopping,
-                ActorStatus::Zombie("hard kill did not finish".to_string()),
+                ActorStatus::stopping(),
+                ActorStatus::zombie("hard kill did not finish"),
                 StatusChange::Apply,
                 "non-terminal to zombie",
             ),
             (
-                ActorStatus::Zombie("hard kill did not finish".to_string()),
+                ActorStatus::zombie("hard kill did not finish"),
                 ActorStatus::Stopped("done".to_string()),
                 StatusChange::Apply,
                 "zombie to terminal",
             ),
             (
-                ActorStatus::Zombie("hard kill did not finish".to_string()),
+                ActorStatus::zombie("hard kill did not finish"),
                 ActorStatus::Idle,
                 StatusChange::Ignore,
                 "zombie to idle",
             ),
             (
-                ActorStatus::Zombie("hard kill did not finish".to_string()),
-                ActorStatus::Stopping,
+                ActorStatus::zombie("hard kill did not finish"),
+                ActorStatus::stopping(),
                 StatusChange::Ignore,
                 "zombie to stopping",
             ),
             (
                 ActorStatus::Stopped("done".to_string()),
-                ActorStatus::Zombie("hard kill did not finish".to_string()),
+                ActorStatus::zombie("hard kill did not finish"),
                 StatusChange::Ignore,
                 "terminal to zombie",
             ),
@@ -6209,7 +6215,7 @@ mod tests {
             .unwrap();
         alive
             .cell()
-            .change_status(ActorStatus::Zombie("hard kill did not finish".into()));
+            .change_status(ActorStatus::zombie("hard kill did not finish"));
         assert!(alive.cell().status().borrow().is_zombie());
 
         alive.cell().change_status(ActorStatus::Idle);
@@ -6221,7 +6227,7 @@ mod tests {
         let terminal_status = stopped.await;
         assert!(terminal_status.is_terminal());
 
-        stopped_cell.change_status(ActorStatus::Zombie("hard kill did not finish".into()));
+        stopped_cell.change_status(ActorStatus::zombie("hard kill did not finish"));
         assert_eq!(*stopped_cell.status().borrow(), terminal_status);
 
         alive.drain_and_stop("test").unwrap();
@@ -6244,7 +6250,7 @@ mod tests {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             child
                 .cell()
-                .change_status(ActorStatus::Zombie("hard kill did not finish".to_string()));
+                .change_status(ActorStatus::zombie("hard kill did not finish"));
         }));
         assert!(
             result.is_err(),
@@ -6268,7 +6274,7 @@ mod tests {
             .unwrap();
         handle
             .cell()
-            .change_status(ActorStatus::Zombie("hard kill did not finish".to_string()));
+            .change_status(ActorStatus::zombie("hard kill did not finish"));
 
         let await_handle = handle.clone();
         let result = tokio::time::timeout(
@@ -6285,7 +6291,7 @@ mod tests {
     }
 
     #[async_timed_test(timeout_secs = 30)]
-    async fn zombie_task_failure_does_not_report_supervision_event() {
+    async fn zombie_task_failure_reports_non_error_supervision_event() {
         let proc = Proc::isolated();
         let client = proc.client("client");
         let (mut reported_event, _coordinator) =
@@ -6299,7 +6305,7 @@ mod tests {
             .unwrap();
         handle
             .cell()
-            .change_status(ActorStatus::Zombie("hard kill did not finish".to_string()));
+            .change_status(ActorStatus::zombie("hard kill did not finish"));
 
         handle
             .fail(&client, anyhow::anyhow!("zombie failure"))
@@ -6307,10 +6313,16 @@ mod tests {
             .unwrap();
         assert_matches!(handle.await, ActorStatus::Failed(_));
 
-        let result = tokio::time::timeout(Duration::from_millis(100), reported_event.recv()).await;
+        let event = tokio::time::timeout(Duration::from_secs(1), reported_event.recv())
+            .await
+            .expect("zombie supervision event should arrive");
         assert!(
-            result.is_err(),
-            "zombie actor task failure must not report a second supervision event"
+            event.actor_status.is_zombie(),
+            "zombie actor task failure should report zombie status"
+        );
+        assert!(
+            !event.is_error(),
+            "zombie actor task failure should report a non-error supervision event"
         );
     }
 
@@ -6513,10 +6525,7 @@ mod tests {
         let mut status = handle.status();
         handle.stop("test").unwrap();
         stop_started.notified().await;
-        status
-            .wait_for(|state| matches!(state, ActorStatus::Stopping))
-            .await
-            .unwrap();
+        status.wait_for(ActorStatus::is_stopping).await.unwrap();
 
         release_stop.notify_one();
         assert_matches!(handle.await, ActorStatus::Stopped(reason) if reason == "test");
