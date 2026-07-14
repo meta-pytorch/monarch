@@ -43,6 +43,9 @@ import collections
 import logging
 import random
 
+from monarch._rust_bindings.monarch_hyperactor.config import (  # @manual=//monarch/monarch_extension:monarch_extension
+    reload_config_from_env,
+)
 from monarch._src.actor.telemetry import TracingForwarder
 from monarch.actor import Actor, concurrent_endpoint, context, endpoint
 from monarch.job import ProcessJob
@@ -54,6 +57,21 @@ logger.setLevel(logging.INFO)
 # Slight per-flight startup offset so the fleet does not enter in lockstep
 # bursts; steady-state spread comes from the randomized phase durations.
 _STARTUP_STAGGER_S: float = 0.4
+
+
+def _disable_queue_dispatch() -> None:
+    """Proc bootstrap: force direct dispatch for actors spawned here.
+
+    This demo currently depends on plain async endpoints overlapping: resource
+    managers can block in a capacity-acquire handler while a later release
+    message frees capacity. Queue dispatch is now the global default, so pin
+    direct dispatch locally until the demo migrates to ``@concurrent_endpoint``.
+
+    The reload is required because the environment config layer is materialized
+    before this bootstrap runs in the worker process.
+    """
+    os.environ["MONARCH_ACTOR_QUEUE_DISPATCH"] = "0"
+    reload_config_from_env()
 
 
 class GateManager(Actor):
@@ -260,11 +278,21 @@ async def async_main(args: argparse.Namespace) -> None:
     # Flights are one named proc mesh sliced per replica; each manager is its
     # own named singleton proc mesh — all distinct, findable nodes in the TUI.
     # (Without `name=`, the flight procs show up anonymous, e.g. `anon-1`.)
-    flight_procs = host.spawn_procs(per_host={"replica": args.flights}, name="flights")
-    gate_proc = host.spawn_procs(name="gate_manager")
-    runway_proc = host.spawn_procs(name="runway_controller")
-    fuel_proc = host.spawn_procs(name="fuel_truck_pool")
-    baggage_proc = host.spawn_procs(name="baggage_crew_pool")
+    flight_procs = host.spawn_procs(
+        per_host={"replica": args.flights},
+        name="flights",
+        bootstrap=_disable_queue_dispatch,
+    )
+    gate_proc = host.spawn_procs(name="gate_manager", bootstrap=_disable_queue_dispatch)
+    runway_proc = host.spawn_procs(
+        name="runway_controller", bootstrap=_disable_queue_dispatch
+    )
+    fuel_proc = host.spawn_procs(
+        name="fuel_truck_pool", bootstrap=_disable_queue_dispatch
+    )
+    baggage_proc = host.spawn_procs(
+        name="baggage_crew_pool", bootstrap=_disable_queue_dispatch
+    )
 
     gates = gate_proc.spawn("gate_manager", GateManager, args.gates)
     runways = runway_proc.spawn(
