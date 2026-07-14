@@ -1,0 +1,114 @@
+# Frontend Lockfile Version Check
+
+The OSS build uses `npm ci` with `package-lock.json`. The Buck build still
+uses Yarn with `yarn.lock`. When changing `package.json`, refresh both
+lockfiles and verify that they resolve the same package versions.
+
+From this directory, run:
+
+```bash
+node <<'EOF'
+const fs = require("fs");
+
+function addVersion(versionsByName, name, version) {
+  if (!versionsByName.has(name)) {
+    versionsByName.set(name, new Set());
+  }
+  versionsByName.get(name).add(version);
+}
+
+function npmPackageName(packagePath) {
+  const parts = packagePath.split("node_modules/");
+  return parts[parts.length - 1];
+}
+
+function npmVersions() {
+  const lock = JSON.parse(fs.readFileSync("package-lock.json", "utf8"));
+  const versionsByName = new Map();
+
+  for (const [packagePath, metadata] of Object.entries(lock.packages || {})) {
+    if (!packagePath.includes("node_modules/") || !metadata.version) {
+      continue;
+    }
+    addVersion(versionsByName, npmPackageName(packagePath), metadata.version);
+  }
+
+  function visitDependencies(dependencies) {
+    for (const [name, metadata] of Object.entries(dependencies || {})) {
+      if (metadata.version) {
+        addVersion(versionsByName, name, metadata.version);
+      }
+      visitDependencies(metadata.dependencies);
+    }
+  }
+  visitDependencies(lock.dependencies);
+
+  return versionsByName;
+}
+
+function yarnPackageName(selector) {
+  if (selector.startsWith("@")) {
+    const versionSeparator = selector.indexOf("@", selector.indexOf("/") + 1);
+    return versionSeparator === -1 ? selector : selector.slice(0, versionSeparator);
+  }
+  const versionSeparator = selector.indexOf("@");
+  return versionSeparator === -1 ? selector : selector.slice(0, versionSeparator);
+}
+
+function yarnVersions() {
+  const versionsByName = new Map();
+  let currentNames = [];
+
+  for (const line of fs.readFileSync("yarn.lock", "utf8").split(/\r?\n/)) {
+    if (!line || line.startsWith("#")) {
+      continue;
+    }
+    if (!line.startsWith(" ") && line.endsWith(":")) {
+      currentNames = line
+        .slice(0, -1)
+        .split(/,\s*/)
+        .map((selector) => selector.trim().replace(/^"|"$/g, ""))
+        .map(yarnPackageName);
+      continue;
+    }
+
+    const match = line.match(/^  version "([^"]+)"$/);
+    if (!match) {
+      continue;
+    }
+    for (const name of currentNames) {
+      addVersion(versionsByName, name, match[1]);
+    }
+  }
+
+  return versionsByName;
+}
+
+function formatVersions(versionsByName, name) {
+  const versions = versionsByName.get(name);
+  return versions ? [...versions].sort().join(", ") : "<missing>";
+}
+
+const npm = npmVersions();
+const yarn = yarnVersions();
+const packageNames = [...new Set([...npm.keys(), ...yarn.keys()])].sort();
+const mismatches = packageNames.filter(
+  (name) => formatVersions(npm, name) !== formatVersions(yarn, name),
+);
+
+if (mismatches.length > 0) {
+  for (const name of mismatches) {
+    console.error(
+      `${name}: npm=[${formatVersions(npm, name)}] yarn=[${formatVersions(yarn, name)}]`,
+    );
+  }
+  process.exit(1);
+}
+
+console.log(`Lockfiles resolve the same versions for ${packageNames.length} packages.`);
+EOF
+```
+
+If the check fails, refresh both lockfiles from the same `package.json` change.
+If npm and Yarn still choose different versions, pin the dependency range more
+tightly in `package.json` before regenerating the lockfiles.

@@ -457,7 +457,7 @@ class BuildFrontend(Command):
 
         print("Building dashboard frontend...")
         try:
-            subprocess.check_call([npm_cmd, "install"], cwd=frontend_dir)
+            subprocess.check_call([npm_cmd, "ci"], cwd=frontend_dir)
             os.makedirs(os.path.join(build_dir, "static", "css"), exist_ok=True)
             subprocess.check_call([npm_cmd, "run", "build"], cwd=frontend_dir)
             # esbuild puts CSS next to JS; move it to static/css/
@@ -480,7 +480,7 @@ class BuildFrontend(Command):
                 "or use pre-built assets."
             )
         except subprocess.CalledProcessError as e:
-            print("Frontend build failed with error:", e)
+            raise RuntimeError("frontend build failed") from e
 
 
 # Clean command
