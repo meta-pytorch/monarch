@@ -573,6 +573,13 @@ pub(crate) fn spawn_unordered<M: RemoteMessage>(
                                     };
                                     let framed = queued.message.clone().framed();
                                     stream.write(framed).drive().await.map_err(|e| {
+                                        tracing::warn!(
+                                            seq,
+                                            %dest,
+                                            stream = i,
+                                            error = %e,
+                                            "multi-stream writer dropped message on write failure",
+                                        );
                                         session::SendLoopError::Io(e.into())
                                     })?;
                                     queued.sent_at = Some(tokio::time::Instant::now());
