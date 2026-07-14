@@ -132,6 +132,19 @@ kubernetes = [
 
 # Modern dependency groups for uv
 [dependency-groups]
+docs = [
+    "sphinx>=6.2.1",
+    "pytorch-sphinx-theme2",
+    "sphinxcontrib.katex>=0.9.10",
+    "docutils>=0.18.1,<0.21",
+    "sphinx-design>=0.6.0",
+    "sphinxcontrib-mermaid>=0.9.2",
+    "myst-parser",
+    "sphinx-gallery>=0.14.0",
+    "sphinx-sitemap>=2.7.1",
+    "sphinxext-opengraph",
+    "pillow",
+]
 dev = [
     "pytest>=7.0",
     "pytest-timeout>=2.0",
