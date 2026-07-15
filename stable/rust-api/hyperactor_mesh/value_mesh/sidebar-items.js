@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["BuildError"],"mod":["rle"],"struct":["ValueMesh","ValueOverlay"]};
+window.SIDEBAR_ITEMS = {"enum":["BuildError","ValueMeshError"],"mod":["rle"],"struct":["ValueMesh","ValueOverlay","ValueOverlayReducer"]};

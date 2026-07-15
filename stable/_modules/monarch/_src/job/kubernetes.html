@@ -1,13 +1,14 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>monarch._src.job.kubernetes &#8212; Monarch v0.5.0 documentation</title>
+    <title>monarch._src.job.kubernetes &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -27,37 +28,31 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
-    <script type="module" src="https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs"></script>
-    <script type="module" src="https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0.1.4/dist/mermaid-layout-elk.esm.min.mjs"></script>
-    <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs";import elkLayouts from "https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0.1.4/dist/mermaid-layout-elk.esm.min.mjs";mermaid.registerLayoutLoaders(elkLayouts);mermaid.initialize({startOnLoad:false});</script>
-    <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
-    <script type="module">
-import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs";
-window.addEventListener("load", () => mermaid.run());
-</script>
+    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
+    <script src="../../../../_static/doctools.js"></script>
+    <script src="../../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../../_static/design-tabs.js"></script>
+    <script src="https://unpkg.com/mermaid@10.2.0/dist/mermaid.min.js"></script>
+    <script>mermaid.initialize({startOnLoad:true});</script>
     <script>DOCUMENTATION_OPTIONS.pagename = '_modules/monarch/_src/job/kubernetes';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/_modules/monarch/_src/job/kubernetes.html" />
@@ -81,7 +76,7 @@ window.addEventListener("load", () => mermaid.run());
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -195,7 +190,7 @@ window.addEventListener("load", () => mermaid.run());
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1307,13 +1302,19 @@ document.write(`
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">dataclasses</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">re</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">select</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">shutil</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">subprocess</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">sys</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">textwrap</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Any</span><span class="p">,</span> <span class="n">Dict</span><span class="p">,</span> <span class="n">List</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Any</span><span class="p">,</span> <span class="n">TypedDict</span>
 
 <span class="k">try</span><span class="p">:</span>
     <span class="kn">from</span><span class="w"> </span><span class="nn">kubernetes</span><span class="w"> </span><span class="kn">import</span> <span class="n">client</span><span class="p">,</span> <span class="n">config</span><span class="p">,</span> <span class="n">watch</span>
     <span class="kn">from</span><span class="w"> </span><span class="nn">kubernetes.client.rest</span><span class="w"> </span><span class="kn">import</span> <span class="n">ApiException</span>
+    <span class="kn">from</span><span class="w"> </span><span class="nn">kubernetes.config.kube_config</span><span class="w"> </span><span class="kn">import</span> <span class="n">KubeConfigMerger</span>
 <span class="k">except</span> <span class="ne">ImportError</span><span class="p">:</span>
     <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span>
         <span class="s2">&quot;please install kubernetes to use KubernetesJob. `pip install kubernetes`&quot;</span>
@@ -1323,6 +1324,7 @@ document.write(`
 <span class="kn">from</span><span class="w"> </span><span class="nn">monarch._rust_bindings.monarch_hyperactor.config</span><span class="w"> </span><span class="kn">import</span> <span class="n">configure</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.actor.bootstrap</span><span class="w"> </span><span class="kn">import</span> <span class="n">attach_to_workers</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.job.job</span><span class="w"> </span><span class="kn">import</span> <span class="n">JobState</span><span class="p">,</span> <span class="n">JobTrait</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">monarch.actor</span><span class="w"> </span><span class="kn">import</span> <span class="n">attach</span>
 
 
 <span class="n">logger</span><span class="p">:</span> <span class="n">logging</span><span class="o">.</span><span class="n">Logger</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
@@ -1333,6 +1335,10 @@ document.write(`
 <span class="c1"># Default monarch port for worker communication</span>
 <span class="n">_DEFAULT_MONARCH_PORT</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">26600</span>
 <span class="n">_RFC_1123_MAX_LEN</span> <span class="o">=</span> <span class="mi">63</span>
+
+<span class="c1"># Seconds to wait for `kubectl port-forward` to report it is ready before giving</span>
+<span class="c1"># up, so a silently hung forward cannot stall job initialization indefinitely.</span>
+<span class="n">_PORT_FORWARD_START_TIMEOUT_SECONDS</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">30</span>
 
 <span class="c1"># MonarchMesh CRD coordinates</span>
 <span class="n">_MONARCHMESH_GROUP</span> <span class="o">=</span> <span class="s2">&quot;monarch.pytorch.org&quot;</span>
@@ -1347,7 +1353,7 @@ document.write(`
 <span class="s2">    from monarch.actor import run_worker_loop_forever</span>
 <span class="s2">    port = os.environ.get(&quot;MONARCH_PORT&quot;, &quot;26600&quot;)</span>
 <span class="s2">    hostname = socket.getfqdn()</span>
-<span class="s2">    address = f&quot;tcp://</span><span class="si">{hostname}</span><span class="s2">:</span><span class="si">{port}</span><span class="s2">&quot;</span>
+<span class="s2">    address = f&quot;tcp://</span><span class="si">{hostname}</span><span class="s2">:</span><span class="si">{port}</span><span class="s2">@tcp://0.0.0.0:</span><span class="si">{port}</span><span class="s2">&quot;</span>
 <span class="s2">    run_worker_loop_forever(address=address, ca=&quot;trust_all_connections&quot;)</span>
 <span class="s2">&quot;&quot;&quot;</span><span class="p">)</span>
 
@@ -1376,9 +1382,106 @@ document.write(`
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Optional K8s resource requests/limits (e.g. ``{&quot;nvidia.com/gpu&quot;: 4}``).&quot;&quot;&quot;</span>
 
 
-<div class="viewcode-block" id="KubernetesJob">
-<a class="viewcode-back" href="../../../../api/monarch.job.html#monarch.job.kubernetes.KubernetesJob">[docs]</a>
-<span class="k">class</span><span class="w"> </span><span class="nc">KubernetesJob</span><span class="p">(</span><span class="n">JobTrait</span><span class="p">):</span>
+<span class="nd">@dataclasses</span><span class="o">.</span><span class="n">dataclass</span><span class="p">(</span><span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">KubeConfig</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Kubernetes configuration for connecting to the cluster.</span>
+
+<span class="sd">    Use this to specify a kubeconfig file for out-of-cluster usage of</span>
+<span class="sd">    KubernetesJob::</span>
+
+<span class="sd">        KubeConfig.from_path(&quot;/path/to/kubeconfig&quot;)</span>
+
+<span class="sd">    If both local and remote are none, in-cluster configuration is used.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">local</span><span class="p">:</span> <span class="n">Path</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">remote</span><span class="p">:</span> <span class="n">client</span><span class="o">.</span><span class="n">Configuration</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+
+    <span class="nd">@classmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">from_path</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">path</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="s2">&quot;KubeConfig&quot;</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Create a KubeConfig from a local file path.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">cls</span><span class="p">(</span><span class="n">local</span><span class="o">=</span><span class="n">Path</span><span class="p">(</span><span class="n">path</span><span class="p">)</span><span class="o">.</span><span class="n">expanduser</span><span class="p">())</span>
+
+    <span class="nd">@classmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">from_config</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">config</span><span class="p">:</span> <span class="n">client</span><span class="o">.</span><span class="n">Configuration</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="s2">&quot;KubeConfig&quot;</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Create a KubeConfig from a remote host&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">cls</span><span class="p">(</span><span class="n">remote</span><span class="o">=</span><span class="n">config</span><span class="p">)</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">out_of_cluster</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Whether this kubeconfig is for out-of-cluster usage.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">remote</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">local</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">load</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">local</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">config</span><span class="o">.</span><span class="n">load_kube_config</span><span class="p">(</span><span class="n">config_file</span><span class="o">=</span><span class="nb">str</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">local</span><span class="p">))</span>
+                <span class="n">proxy_url</span> <span class="o">=</span> <span class="n">_get_kubeconfig_proxy_url</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">local</span><span class="p">)</span>
+            <span class="k">except</span> <span class="n">config</span><span class="o">.</span><span class="n">ConfigException</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span>
+                    <span class="sa">f</span><span class="s2">&quot;Failed to load kubeconfig file &#39;</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">local</span><span class="si">}</span><span class="s2">&#39;&quot;</span>
+                <span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">e</span>
+            <span class="k">if</span> <span class="n">proxy_url</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="n">configuration</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">Configuration</span><span class="o">.</span><span class="n">get_default_copy</span><span class="p">()</span>
+                <span class="n">configuration</span><span class="o">.</span><span class="n">proxy</span> <span class="o">=</span> <span class="n">proxy_url</span>
+                <span class="n">client</span><span class="o">.</span><span class="n">Configuration</span><span class="o">.</span><span class="n">set_default</span><span class="p">(</span><span class="n">configuration</span><span class="p">)</span>
+        <span class="k">elif</span> <span class="bp">self</span><span class="o">.</span><span class="n">remote</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">client</span><span class="o">.</span><span class="n">Configuration</span><span class="o">.</span><span class="n">set_default</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">remote</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">config</span><span class="o">.</span><span class="n">load_incluster_config</span><span class="p">()</span>
+            <span class="k">except</span> <span class="n">config</span><span class="o">.</span><span class="n">ConfigException</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span>
+                    <span class="s2">&quot;Failed to load in-cluster Kubernetes config. &quot;</span>
+                    <span class="s2">&quot;KubernetesJob must run inside a Kubernetes cluster.&quot;</span>
+                <span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">e</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_get_kubeconfig_proxy_url</span><span class="p">(</span><span class="n">path</span><span class="p">:</span> <span class="n">Path</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
+    <span class="n">merged_config</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="n">KubeConfigMerger</span><span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="n">path</span><span class="p">))</span><span class="o">.</span><span class="n">config</span>
+    <span class="k">if</span> <span class="n">merged_config</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">return</span> <span class="kc">None</span>
+
+    <span class="c1"># A malformed kubeconfig (e.g. missing current-context or a dangling</span>
+    <span class="c1"># cluster reference) raises KeyError/TypeError/AttributeError here. Surface</span>
+    <span class="c1"># it as a ConfigException so KubeConfig.load transforms it into a clear</span>
+    <span class="c1"># RuntimeError rather than leaking a raw traceback.</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">context</span> <span class="o">=</span> <span class="n">merged_config</span><span class="p">[</span><span class="s2">&quot;contexts&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">get_with_name</span><span class="p">(</span>
+            <span class="n">merged_config</span><span class="p">[</span><span class="s2">&quot;current-context&quot;</span><span class="p">]</span>
+        <span class="p">)[</span><span class="s2">&quot;context&quot;</span><span class="p">]</span>
+        <span class="n">cluster</span> <span class="o">=</span> <span class="n">merged_config</span><span class="p">[</span><span class="s2">&quot;clusters&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">get_with_name</span><span class="p">(</span><span class="n">context</span><span class="p">[</span><span class="s2">&quot;cluster&quot;</span><span class="p">])[</span><span class="s2">&quot;cluster&quot;</span><span class="p">]</span>
+        <span class="n">proxy_url</span> <span class="o">=</span> <span class="n">cluster</span><span class="o">.</span><span class="n">safe_get</span><span class="p">(</span><span class="s2">&quot;proxy-url&quot;</span><span class="p">)</span>
+    <span class="k">except</span> <span class="p">(</span><span class="ne">KeyError</span><span class="p">,</span> <span class="ne">TypeError</span><span class="p">,</span> <span class="ne">AttributeError</span><span class="p">)</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">config</span><span class="o">.</span><span class="n">ConfigException</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;malformed kubeconfig &#39;</span><span class="si">{</span><span class="n">path</span><span class="si">}</span><span class="s2">&#39;: </span><span class="si">{</span><span class="n">e</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">e</span>
+    <span class="k">if</span> <span class="n">proxy_url</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">proxy_url</span><span class="p">,</span> <span class="nb">str</span><span class="p">):</span>
+        <span class="k">raise</span> <span class="n">config</span><span class="o">.</span><span class="n">ConfigException</span><span class="p">(</span><span class="s2">&quot;kubeconfig proxy-url must be a string&quot;</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">proxy_url</span>
+
+
+<span class="nd">@dataclasses</span><span class="o">.</span><span class="n">dataclass</span><span class="p">(</span><span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">_MonarchMeshPod</span><span class="p">:</span>
+    <span class="n">name</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">ip</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">port</span><span class="p">:</span> <span class="nb">int</span>
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">_MeshConfigRequired</span><span class="p">(</span><span class="n">TypedDict</span><span class="p">):</span>
+    <span class="n">service_name</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">label_selector</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">num_replicas</span><span class="p">:</span> <span class="nb">int</span>
+    <span class="n">pod_rank_label</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">provisioned</span><span class="p">:</span> <span class="nb">bool</span>
+    <span class="n">port</span><span class="p">:</span> <span class="nb">int</span>
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">_MeshConfig</span><span class="p">(</span><span class="n">_MeshConfigRequired</span><span class="p">,</span> <span class="n">total</span><span class="o">=</span><span class="kc">False</span><span class="p">):</span>
+    <span class="n">labels</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span>
+    <span class="n">annotations</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span>
+    <span class="n">pod_template</span><span class="p">:</span> <span class="n">client</span><span class="o">.</span><span class="n">V1PodTemplateSpec</span>
+
+
+<div class="viewcode-block" id="KubernetesJob"><a class="viewcode-back" href="../../../../api/monarch.job.html#monarch.job.kubernetes.KubernetesJob">[docs]</a><span class="k">class</span><span class="w"> </span><span class="nc">KubernetesJob</span><span class="p">(</span><span class="n">JobTrait</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">    Job implementation for Kubernetes that discovers and connects to pods.</span>
 
@@ -1401,6 +1504,8 @@ document.write(`
         <span class="bp">self</span><span class="p">,</span>
         <span class="n">namespace</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
         <span class="n">timeout</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">kubeconfig</span><span class="p">:</span> <span class="n">KubeConfig</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">attach_to</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        Initialize a KubernetesJob.</span>
@@ -1408,17 +1513,26 @@ document.write(`
 <span class="sd">        Args:</span>
 <span class="sd">            namespace: Kubernetes namespace for all meshes</span>
 <span class="sd">            timeout: Maximum seconds to wait for pods to be ready for each mesh (default: None, wait indefinitely)</span>
+<span class="sd">            kubeconfig: Path to a kubeconfig file for out-of-cluster configuration (default: None, use in-cluster config)</span>
+<span class="sd">            attach_to: ZMQ-style address of a worker&#39;s monarch port for out-of-cluster</span>
+<span class="sd">                access (e.g. `&quot;tcp://127.0.0.1:26600&quot;`). The monarch port doubles</span>
+<span class="sd">                as the duplex attach address. Use</span>
+<span class="sd">                ``kubectl port-forward pod/&lt;pod-name&gt; &lt;local&gt;:26600``</span>
+<span class="sd">                to forward the pod to localhost.</span>
+<span class="sd">                When ``kubeconfig`` is provided (out-of-cluster mode) and this is</span>
+<span class="sd">                not set, port-forwarding is set up automatically.</span>
 <span class="sd">        &quot;&quot;&quot;</span>
         <span class="n">configure</span><span class="p">(</span><span class="n">default_transport</span><span class="o">=</span><span class="n">ChannelTransport</span><span class="o">.</span><span class="n">TcpWithHostname</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_namespace</span> <span class="o">=</span> <span class="n">namespace</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_timeout</span> <span class="o">=</span> <span class="n">timeout</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">_meshes</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]]</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_kubeconfig</span><span class="p">:</span> <span class="n">KubeConfig</span> <span class="o">=</span> <span class="n">kubeconfig</span> <span class="ow">or</span> <span class="n">KubeConfig</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_attach_to</span> <span class="o">=</span> <span class="n">attach_to</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_meshes</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">_MeshConfig</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_port_forward_processes</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">subprocess</span><span class="o">.</span><span class="n">Popen</span><span class="p">[</span><span class="nb">str</span><span class="p">]]</span> <span class="o">=</span> <span class="p">[]</span>
         <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">()</span>
 
     <span class="c1"># TODO: Consider adding monarch-rank label instead of relying on StatefulSet index by default if using MonarchMesh CRD.</span>
-<div class="viewcode-block" id="KubernetesJob.add_mesh">
-<a class="viewcode-back" href="../../../../api/monarch.job.html#monarch.job.kubernetes.KubernetesJob.add_mesh">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">add_mesh</span><span class="p">(</span>
+<div class="viewcode-block" id="KubernetesJob.add_mesh"><a class="viewcode-back" href="../../../../api/monarch.job.html#monarch.job.kubernetes.KubernetesJob.add_mesh">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="nf">add_mesh</span><span class="p">(</span>
         <span class="bp">self</span><span class="p">,</span>
         <span class="n">name</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
         <span class="n">num_replicas</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
@@ -1496,7 +1610,9 @@ document.write(`
         <span class="k">if</span> <span class="ow">not</span> <span class="n">provisioned</span> <span class="ow">and</span> <span class="n">annotations</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
             <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;&#39;annotations&#39; can only be set when provisioning.&quot;</span><span class="p">)</span>
 
-        <span class="n">mesh_entry</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span>
+        <span class="n">mesh_entry</span><span class="p">:</span> <span class="n">_MeshConfig</span> <span class="o">=</span> <span class="p">{</span>
+            <span class="c1"># The service name has a suffix appended to it controlled by the MonarchMesh config.</span>
+            <span class="s2">&quot;service_name&quot;</span><span class="p">:</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">-svc&quot;</span><span class="p">,</span>
             <span class="s2">&quot;label_selector&quot;</span><span class="p">:</span> <span class="n">label_selector</span>
             <span class="ow">or</span> <span class="sa">f</span><span class="s2">&quot;app.kubernetes.io/name=monarch-worker,monarch.pytorch.org/mesh-name=</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
             <span class="s2">&quot;num_replicas&quot;</span><span class="p">:</span> <span class="n">num_replicas</span><span class="p">,</span>
@@ -1520,7 +1636,6 @@ document.write(`
 
         <span class="bp">self</span><span class="o">.</span><span class="n">_meshes</span><span class="p">[</span><span class="n">name</span><span class="p">]</span> <span class="o">=</span> <span class="n">mesh_entry</span></div>
 
-
     <span class="k">def</span><span class="w"> </span><span class="nf">_create</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">client_script</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        Create MonarchMesh CRDs for provisioned meshes.</span>
@@ -1542,23 +1657,16 @@ document.write(`
         <span class="k">if</span> <span class="ow">not</span> <span class="n">provisioned</span><span class="p">:</span>
             <span class="k">return</span>
 
-        <span class="c1"># TODO: Add support for out-of-cluster config</span>
-        <span class="k">try</span><span class="p">:</span>
-            <span class="n">config</span><span class="o">.</span><span class="n">load_incluster_config</span><span class="p">()</span>
-        <span class="k">except</span> <span class="n">config</span><span class="o">.</span><span class="n">ConfigException</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
-            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span>
-                <span class="s2">&quot;Failed to load in-cluster Kubernetes config. &quot;</span>
-                <span class="s2">&quot;KubernetesJob must run inside a Kubernetes cluster.&quot;</span>
-            <span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">e</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_kubeconfig</span><span class="o">.</span><span class="n">load</span><span class="p">()</span>
 
-        <span class="n">api</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">CustomObjectsApi</span><span class="p">()</span>
         <span class="n">api_client</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">ApiClient</span><span class="p">()</span>
+        <span class="n">api</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">CustomObjectsApi</span><span class="p">(</span><span class="n">api_client</span><span class="p">)</span>
 
         <span class="k">for</span> <span class="n">mesh_name</span><span class="p">,</span> <span class="n">mesh_config</span> <span class="ow">in</span> <span class="n">provisioned</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
             <span class="n">pod_template_dict</span> <span class="o">=</span> <span class="n">api_client</span><span class="o">.</span><span class="n">sanitize_for_serialization</span><span class="p">(</span>
                 <span class="n">mesh_config</span><span class="p">[</span><span class="s2">&quot;pod_template&quot;</span><span class="p">]</span>
             <span class="p">)</span>
-            <span class="n">metadata</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span>
+            <span class="n">metadata</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span>
                 <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="n">mesh_name</span><span class="p">,</span>
                 <span class="s2">&quot;namespace&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_namespace</span><span class="p">,</span>
             <span class="p">}</span>
@@ -1567,7 +1675,7 @@ document.write(`
             <span class="k">if</span> <span class="s2">&quot;annotations&quot;</span> <span class="ow">in</span> <span class="n">mesh_config</span><span class="p">:</span>
                 <span class="n">metadata</span><span class="p">[</span><span class="s2">&quot;annotations&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">mesh_config</span><span class="p">[</span><span class="s2">&quot;annotations&quot;</span><span class="p">]</span>
 
-            <span class="n">body</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span>
+            <span class="n">body</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span>
                 <span class="s2">&quot;apiVersion&quot;</span><span class="p">:</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">_MONARCHMESH_GROUP</span><span class="si">}</span><span class="s2">/</span><span class="si">{</span><span class="n">_MONARCHMESH_VERSION</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
                 <span class="s2">&quot;kind&quot;</span><span class="p">:</span> <span class="s2">&quot;MonarchMesh&quot;</span><span class="p">,</span>
                 <span class="s2">&quot;metadata&quot;</span><span class="p">:</span> <span class="n">metadata</span><span class="p">,</span>
@@ -1627,11 +1735,12 @@ document.write(`
                 <span class="n">requests</span><span class="o">=</span><span class="n">k8s_resources</span><span class="p">,</span>
                 <span class="n">limits</span><span class="o">=</span><span class="n">k8s_resources</span><span class="p">,</span>
             <span class="p">)</span>
+        <span class="n">env</span> <span class="o">=</span> <span class="p">[</span><span class="n">client</span><span class="o">.</span><span class="n">V1EnvVar</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;MONARCH_PORT&quot;</span><span class="p">,</span> <span class="n">value</span><span class="o">=</span><span class="nb">str</span><span class="p">(</span><span class="n">port</span><span class="p">))]</span>
         <span class="n">container</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">V1Container</span><span class="p">(</span>
             <span class="n">name</span><span class="o">=</span><span class="s2">&quot;worker&quot;</span><span class="p">,</span>
             <span class="n">image</span><span class="o">=</span><span class="n">image_spec</span><span class="o">.</span><span class="n">image</span><span class="p">,</span>
             <span class="n">command</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;python&quot;</span><span class="p">,</span> <span class="s2">&quot;-u&quot;</span><span class="p">,</span> <span class="s2">&quot;-c&quot;</span><span class="p">,</span> <span class="n">_WORKER_BOOTSTRAP_SCRIPT</span><span class="p">],</span>
-            <span class="n">env</span><span class="o">=</span><span class="p">[</span><span class="n">client</span><span class="o">.</span><span class="n">V1EnvVar</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;MONARCH_PORT&quot;</span><span class="p">,</span> <span class="n">value</span><span class="o">=</span><span class="nb">str</span><span class="p">(</span><span class="n">port</span><span class="p">))],</span>
+            <span class="n">env</span><span class="o">=</span><span class="n">env</span><span class="p">,</span>
             <span class="n">resources</span><span class="o">=</span><span class="n">resources</span><span class="p">,</span>
         <span class="p">)</span>
         <span class="k">return</span> <span class="n">client</span><span class="o">.</span><span class="n">V1PodTemplateSpec</span><span class="p">(</span>
@@ -1696,7 +1805,7 @@ document.write(`
         <span class="n">num_replicas</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
         <span class="n">pod_rank_label</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
         <span class="n">timeout</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-    <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">List</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">int</span><span class="p">]]:</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">_MonarchMeshPod</span><span class="p">]:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        Wait for all required pod ranks to be ready matching the label selector.</span>
 
@@ -1714,16 +1823,10 @@ document.write(`
 <span class="sd">        Raises:</span>
 <span class="sd">            RuntimeError: If timeout reached, missing ranks, or watch error</span>
 <span class="sd">        &quot;&quot;&quot;</span>
-        <span class="n">ready_pods_by_rank</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">int</span><span class="p">]]</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="n">ready_pods_by_rank</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="n">_MonarchMeshPod</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
 
-        <span class="c1"># Load in-cluster Kubernetes configuration</span>
-        <span class="k">try</span><span class="p">:</span>
-            <span class="n">config</span><span class="o">.</span><span class="n">load_incluster_config</span><span class="p">()</span>
-        <span class="k">except</span> <span class="n">config</span><span class="o">.</span><span class="n">ConfigException</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
-            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span>
-                <span class="s2">&quot;Failed to load in-cluster Kubernetes config. &quot;</span>
-                <span class="s2">&quot;KubernetesJob must run inside a Kubernetes cluster.&quot;</span>
-            <span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">e</span>
+        <span class="c1"># Load Kubernetes configuration</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_kubeconfig</span><span class="o">.</span><span class="n">load</span><span class="p">()</span>
 
         <span class="n">c</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">CoreV1Api</span><span class="p">()</span>
         <span class="n">w</span> <span class="o">=</span> <span class="n">watch</span><span class="o">.</span><span class="n">Watch</span><span class="p">()</span>
@@ -1746,6 +1849,9 @@ document.write(`
                 <span class="k">try</span><span class="p">:</span>
                     <span class="n">pod_rank</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_pod_rank</span><span class="p">(</span><span class="n">pod</span><span class="p">,</span> <span class="n">pod_rank_label</span><span class="p">)</span>
                 <span class="k">except</span> <span class="ne">ValueError</span><span class="p">:</span>
+                    <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
+                        <span class="sa">f</span><span class="s2">&quot;Skipping pod </span><span class="si">{</span><span class="n">pod</span><span class="o">.</span><span class="n">metadata</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2"> due to missing or invalid pod rank label &#39;</span><span class="si">{</span><span class="n">pod_rank_label</span><span class="si">}</span><span class="s2">&#39;&quot;</span>
+                    <span class="p">)</span>
                     <span class="k">continue</span>
 
                 <span class="c1"># Skip pods outside expected range</span>
@@ -1766,9 +1872,10 @@ document.write(`
 
                 <span class="c1"># Update ready pods based on current state</span>
                 <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_is_pod_worker_ready</span><span class="p">(</span><span class="n">pod</span><span class="p">):</span>
-                    <span class="n">ready_pods_by_rank</span><span class="p">[</span><span class="n">pod_rank</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span>
-                        <span class="n">pod</span><span class="o">.</span><span class="n">status</span><span class="o">.</span><span class="n">pod_ip</span><span class="p">,</span>
-                        <span class="bp">self</span><span class="o">.</span><span class="n">_discover_monarch_port</span><span class="p">(</span><span class="n">pod</span><span class="p">),</span>
+                    <span class="n">ready_pods_by_rank</span><span class="p">[</span><span class="n">pod_rank</span><span class="p">]</span> <span class="o">=</span> <span class="n">_MonarchMeshPod</span><span class="p">(</span>
+                        <span class="n">name</span><span class="o">=</span><span class="n">pod</span><span class="o">.</span><span class="n">metadata</span><span class="o">.</span><span class="n">name</span><span class="p">,</span>
+                        <span class="n">ip</span><span class="o">=</span><span class="n">pod</span><span class="o">.</span><span class="n">status</span><span class="o">.</span><span class="n">pod_ip</span><span class="p">,</span>
+                        <span class="n">port</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_discover_monarch_port</span><span class="p">(</span><span class="n">pod</span><span class="p">),</span>
                     <span class="p">)</span>
 
                     <span class="c1"># Check if we have all required ranks (0 to num_replicas-1)</span>
@@ -1821,6 +1928,102 @@ document.write(`
 
         <span class="k">return</span> <span class="n">_DEFAULT_MONARCH_PORT</span>
 
+    <span class="k">def</span><span class="w"> </span><span class="nf">_port_forward_to_pod</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">pod</span><span class="p">:</span> <span class="n">_MonarchMeshPod</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Start kubectl port-forward to the pod&#39;s monarch port.</span>
+
+<span class="sd">        The frontend address doubles as the duplex attach address, so</span>
+<span class="sd">        port-forwarding the monarch port is sufficient for both regular</span>
+<span class="sd">        messaging and out-of-cluster client attachment.</span>
+
+<span class="sd">        Returns the local ``tcp://127.0.0.1:&lt;local_port&gt;`` address.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="n">shutil</span><span class="o">.</span><span class="n">which</span><span class="p">(</span><span class="s2">&quot;kubectl&quot;</span><span class="p">)</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span>
+                <span class="s2">&quot;kubectl is required for out-of-cluster port forwarding but was not found in PATH&quot;</span>
+            <span class="p">)</span>
+
+        <span class="n">cmd</span> <span class="o">=</span> <span class="p">[</span>
+            <span class="s2">&quot;kubectl&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;port-forward&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;--namespace&quot;</span><span class="p">,</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_namespace</span><span class="p">,</span>
+            <span class="sa">f</span><span class="s2">&quot;pod/</span><span class="si">{</span><span class="n">pod</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+            <span class="sa">f</span><span class="s2">&quot;:</span><span class="si">{</span><span class="n">pod</span><span class="o">.</span><span class="n">port</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+        <span class="p">]</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_kubeconfig</span><span class="o">.</span><span class="n">local</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">cmd</span><span class="o">.</span><span class="n">extend</span><span class="p">([</span><span class="s2">&quot;--kubeconfig&quot;</span><span class="p">,</span> <span class="nb">str</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_kubeconfig</span><span class="o">.</span><span class="n">local</span><span class="p">)])</span>
+
+        <span class="n">process</span> <span class="o">=</span> <span class="n">subprocess</span><span class="o">.</span><span class="n">Popen</span><span class="p">(</span>
+            <span class="n">cmd</span><span class="p">,</span>
+            <span class="n">stdout</span><span class="o">=</span><span class="n">subprocess</span><span class="o">.</span><span class="n">PIPE</span><span class="p">,</span>
+            <span class="n">stderr</span><span class="o">=</span><span class="n">subprocess</span><span class="o">.</span><span class="n">PIPE</span><span class="p">,</span>
+            <span class="n">text</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+        <span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">process</span><span class="o">.</span><span class="n">stdout</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">&quot;failed to open stdout for kubectl port-forward to pod </span><span class="si">{</span><span class="n">pod</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">&quot;</span>
+            <span class="p">)</span>
+
+        <span class="c1"># kubectl prints &quot;Forwarding from ...&quot; to stdout once the tunnel is up.</span>
+        <span class="c1"># Guard the blocking read so a silently hung forward cannot stall job</span>
+        <span class="c1"># initialization indefinitely.</span>
+        <span class="n">ready</span><span class="p">,</span> <span class="n">_</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">select</span><span class="o">.</span><span class="n">select</span><span class="p">(</span>
+            <span class="p">[</span><span class="n">process</span><span class="o">.</span><span class="n">stdout</span><span class="p">],</span> <span class="p">[],</span> <span class="p">[],</span> <span class="n">_PORT_FORWARD_START_TIMEOUT_SECONDS</span>
+        <span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">ready</span><span class="p">:</span>
+            <span class="n">process</span><span class="o">.</span><span class="n">kill</span><span class="p">()</span>
+            <span class="n">process</span><span class="o">.</span><span class="n">wait</span><span class="p">()</span>
+            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">&quot;kubectl port-forward to pod </span><span class="si">{</span><span class="n">pod</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2"> did not start within &quot;</span>
+                <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">_PORT_FORWARD_START_TIMEOUT_SECONDS</span><span class="si">}</span><span class="s2">s&quot;</span>
+            <span class="p">)</span>
+
+        <span class="n">first_line</span> <span class="o">=</span> <span class="n">process</span><span class="o">.</span><span class="n">stdout</span><span class="o">.</span><span class="n">readline</span><span class="p">()</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">first_line</span><span class="p">:</span>
+            <span class="c1"># kubectl closed stdout without announcing readiness. Terminate it</span>
+            <span class="c1"># and drain stderr with a deadline so a process that closed stdout</span>
+            <span class="c1"># while still running cannot block us.</span>
+            <span class="n">process</span><span class="o">.</span><span class="n">terminate</span><span class="p">()</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">_</span><span class="p">,</span> <span class="n">stderr_output</span> <span class="o">=</span> <span class="n">process</span><span class="o">.</span><span class="n">communicate</span><span class="p">(</span>
+                    <span class="n">timeout</span><span class="o">=</span><span class="n">_PORT_FORWARD_START_TIMEOUT_SECONDS</span>
+                <span class="p">)</span>
+            <span class="k">except</span> <span class="n">subprocess</span><span class="o">.</span><span class="n">TimeoutExpired</span><span class="p">:</span>
+                <span class="n">process</span><span class="o">.</span><span class="n">kill</span><span class="p">()</span>
+                <span class="n">_</span><span class="p">,</span> <span class="n">stderr_output</span> <span class="o">=</span> <span class="n">process</span><span class="o">.</span><span class="n">communicate</span><span class="p">()</span>
+            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">&quot;kubectl port-forward produced no output for pod </span><span class="si">{</span><span class="n">pod</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">: &quot;</span>
+                <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">stderr_output</span><span class="si">}</span><span class="s2">&quot;</span>
+            <span class="p">)</span>
+
+        <span class="n">match</span> <span class="o">=</span> <span class="n">re</span><span class="o">.</span><span class="n">search</span><span class="p">(</span>
+            <span class="sa">r</span><span class="s2">&quot;Forwarding from (?:127\.0\.0\.1|\[::1\]):(\d+) -&gt;&quot;</span><span class="p">,</span> <span class="n">first_line</span>
+        <span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">match</span><span class="p">:</span>
+            <span class="n">process</span><span class="o">.</span><span class="n">kill</span><span class="p">()</span>
+            <span class="n">process</span><span class="o">.</span><span class="n">wait</span><span class="p">()</span>
+            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">&quot;could not parse local port from kubectl output for pod </span><span class="si">{</span><span class="n">pod</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">first_line</span><span class="si">}</span><span class="s2">&quot;</span>
+            <span class="p">)</span>
+
+        <span class="n">local_port</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">match</span><span class="o">.</span><span class="n">group</span><span class="p">(</span><span class="mi">1</span><span class="p">))</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_port_forward_processes</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">process</span><span class="p">)</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
+            <span class="s2">&quot;Port forwarding established to pod/</span><span class="si">%s</span><span class="s2"> on local port </span><span class="si">%d</span><span class="s2">&quot;</span><span class="p">,</span>
+            <span class="n">pod</span><span class="o">.</span><span class="n">name</span><span class="p">,</span>
+            <span class="n">local_port</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="k">return</span> <span class="sa">f</span><span class="s2">&quot;tcp://127.0.0.1:</span><span class="si">{</span><span class="n">local_port</span><span class="si">}</span><span class="s2">&quot;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_terminate_port_forwards</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Terminate any running ``kubectl port-forward`` subprocesses.&quot;&quot;&quot;</span>
+        <span class="k">for</span> <span class="n">process</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_port_forward_processes</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">process</span><span class="o">.</span><span class="n">poll</span><span class="p">()</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="n">process</span><span class="o">.</span><span class="n">terminate</span><span class="p">()</span>
+                <span class="n">process</span><span class="o">.</span><span class="n">wait</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_port_forward_processes</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
+
     <span class="k">def</span><span class="w"> </span><span class="nf">_state</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">JobState</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        Get the current state by connecting to ready pods for each mesh.</span>
@@ -1829,33 +2032,61 @@ document.write(`
 <span class="sd">            JobState containing HostMesh objects for each configured mesh</span>
 <span class="sd">        &quot;&quot;&quot;</span>
         <span class="n">host_meshes</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="n">attach_to</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_attach_to</span>
 
+        <span class="c1"># Discover all mesh pods first so we can set up port-forwarding</span>
+        <span class="c1"># before attaching to any workers.</span>
+        <span class="n">all_mesh_pods</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">list</span><span class="p">[</span><span class="n">_MonarchMeshPod</span><span class="p">]]</span> <span class="o">=</span> <span class="p">{}</span>
         <span class="k">for</span> <span class="n">mesh_name</span><span class="p">,</span> <span class="n">mesh_config</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_meshes</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
-            <span class="n">label_selector</span> <span class="o">=</span> <span class="n">mesh_config</span><span class="p">[</span><span class="s2">&quot;label_selector&quot;</span><span class="p">]</span>
-            <span class="n">num_replicas</span> <span class="o">=</span> <span class="n">mesh_config</span><span class="p">[</span><span class="s2">&quot;num_replicas&quot;</span><span class="p">]</span>
-            <span class="n">pod_rank_label</span> <span class="o">=</span> <span class="n">mesh_config</span><span class="p">[</span><span class="s2">&quot;pod_rank_label&quot;</span><span class="p">]</span>
-
             <span class="c1"># Wait for pods to be ready and discover their ports</span>
-            <span class="n">pod_endpoints</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_wait_for_ready_pods</span><span class="p">(</span>
-                <span class="n">label_selector</span><span class="p">,</span> <span class="n">num_replicas</span><span class="p">,</span> <span class="n">pod_rank_label</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_timeout</span>
+            <span class="n">pods</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_wait_for_ready_pods</span><span class="p">(</span>
+                <span class="n">mesh_config</span><span class="p">[</span><span class="s2">&quot;label_selector&quot;</span><span class="p">],</span>
+                <span class="n">mesh_config</span><span class="p">[</span><span class="s2">&quot;num_replicas&quot;</span><span class="p">],</span>
+                <span class="n">mesh_config</span><span class="p">[</span><span class="s2">&quot;pod_rank_label&quot;</span><span class="p">],</span>
+                <span class="n">timeout</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_timeout</span><span class="p">,</span>
             <span class="p">)</span>
+            <span class="n">all_mesh_pods</span><span class="p">[</span><span class="n">mesh_name</span><span class="p">]</span> <span class="o">=</span> <span class="n">pods</span>
 
-            <span class="c1"># Create worker addresses using discovered IPs and ports</span>
-            <span class="n">workers</span> <span class="o">=</span> <span class="p">[</span><span class="sa">f</span><span class="s2">&quot;tcp://</span><span class="si">{</span><span class="n">pod_ip</span><span class="si">}</span><span class="s2">:</span><span class="si">{</span><span class="n">port</span><span class="si">}</span><span class="s2">&quot;</span> <span class="k">for</span> <span class="n">pod_ip</span><span class="p">,</span> <span class="n">port</span> <span class="ow">in</span> <span class="n">pod_endpoints</span><span class="p">]</span>
+        <span class="c1"># Set up out-of-cluster client attachment before connecting to workers.</span>
+        <span class="c1"># If anything below fails after a port-forward subprocess is started,</span>
+        <span class="c1"># terminate it so we do not leak kubectl processes and bound ports.</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_kubeconfig</span><span class="o">.</span><span class="n">out_of_cluster</span> <span class="ow">and</span> <span class="n">attach_to</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="c1"># No explicit attach_to — auto-forward to the first pod&#39;s</span>
+                <span class="c1"># monarch port (which doubles as the duplex attach address).</span>
+                <span class="k">for</span> <span class="n">pods</span> <span class="ow">in</span> <span class="n">all_mesh_pods</span><span class="o">.</span><span class="n">values</span><span class="p">():</span>
+                    <span class="k">if</span> <span class="n">pods</span><span class="p">:</span>
+                        <span class="n">attach_to</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_port_forward_to_pod</span><span class="p">(</span><span class="n">pods</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
+                        <span class="k">break</span>
+                <span class="k">if</span> <span class="n">attach_to</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+                    <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span>
+                        <span class="s2">&quot;out-of-cluster mode requires at least one ready pod &quot;</span>
+                        <span class="s2">&quot;and no attach_to was provided&quot;</span>
+                    <span class="p">)</span>
 
-            <span class="c1"># Create host mesh by attaching to workers</span>
-            <span class="n">host_mesh</span> <span class="o">=</span> <span class="n">attach_to_workers</span><span class="p">(</span>
-                <span class="n">name</span><span class="o">=</span><span class="n">mesh_name</span><span class="p">,</span>
-                <span class="n">ca</span><span class="o">=</span><span class="s2">&quot;trust_all_connections&quot;</span><span class="p">,</span>
-                <span class="n">workers</span><span class="o">=</span><span class="n">workers</span><span class="p">,</span>  <span class="c1"># type: ignore[arg-type]</span>
-            <span class="p">)</span>
-            <span class="n">host_meshes</span><span class="p">[</span><span class="n">mesh_name</span><span class="p">]</span> <span class="o">=</span> <span class="n">host_mesh</span>
+            <span class="k">if</span> <span class="n">attach_to</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
+                    <span class="s2">&quot;Attaching client gateway via duplex address: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">attach_to</span>
+                <span class="p">)</span>
+                <span class="n">attach</span><span class="p">(</span><span class="n">attach_to</span><span class="p">)</span>
+
+            <span class="k">for</span> <span class="n">mesh_name</span><span class="p">,</span> <span class="n">pods</span> <span class="ow">in</span> <span class="n">all_mesh_pods</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+                <span class="c1"># Create worker addresses using discovered IPs and ports</span>
+                <span class="n">workers</span> <span class="o">=</span> <span class="p">[</span><span class="sa">f</span><span class="s2">&quot;tcp://</span><span class="si">{</span><span class="n">pod</span><span class="o">.</span><span class="n">ip</span><span class="si">}</span><span class="s2">:</span><span class="si">{</span><span class="n">pod</span><span class="o">.</span><span class="n">port</span><span class="si">}</span><span class="s2">&quot;</span> <span class="k">for</span> <span class="n">pod</span> <span class="ow">in</span> <span class="n">pods</span><span class="p">]</span>
+                <span class="c1"># Create host mesh by attaching to workers</span>
+                <span class="n">host_mesh</span> <span class="o">=</span> <span class="n">attach_to_workers</span><span class="p">(</span>
+                    <span class="n">name</span><span class="o">=</span><span class="n">mesh_name</span><span class="p">,</span>
+                    <span class="n">ca</span><span class="o">=</span><span class="s2">&quot;trust_all_connections&quot;</span><span class="p">,</span>
+                    <span class="n">workers</span><span class="o">=</span><span class="n">workers</span><span class="p">,</span>  <span class="c1"># type: ignore[arg-type]</span>
+                <span class="p">)</span>
+                <span class="n">host_meshes</span><span class="p">[</span><span class="n">mesh_name</span><span class="p">]</span> <span class="o">=</span> <span class="n">host_mesh</span>
+        <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_terminate_port_forwards</span><span class="p">()</span>
+            <span class="k">raise</span>
 
         <span class="k">return</span> <span class="n">JobState</span><span class="p">(</span><span class="n">host_meshes</span><span class="p">)</span>
 
-<div class="viewcode-block" id="KubernetesJob.can_run">
-<a class="viewcode-back" href="../../../../api/monarch.job.html#monarch.job.kubernetes.KubernetesJob.can_run">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">can_run</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">spec</span><span class="p">:</span> <span class="s2">&quot;JobTrait&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<div class="viewcode-block" id="KubernetesJob.can_run"><a class="viewcode-back" href="../../../../api/monarch.job.html#monarch.job.kubernetes.KubernetesJob.can_run">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="nf">can_run</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">spec</span><span class="p">:</span> <span class="s2">&quot;JobTrait&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        Check if this job can run the given spec.</span>
 
@@ -1889,7 +2120,6 @@ document.write(`
         <span class="k">except</span> <span class="ne">RuntimeError</span><span class="p">:</span>
             <span class="k">return</span> <span class="kc">False</span></div>
 
-
     <span class="k">def</span><span class="w"> </span><span class="nf">_kill</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        Delete MonarchMesh CRDs for provisioned meshes.</span>
@@ -1898,6 +2128,8 @@ document.write(`
 <span class="sd">            NotImplementedError: If no provisioned meshes exist (all</span>
 <span class="sd">                meshes are attach-only).</span>
 <span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_terminate_port_forwards</span><span class="p">()</span>
+
         <span class="n">provisioned</span> <span class="o">=</span> <span class="p">[</span>
             <span class="n">name</span> <span class="k">for</span> <span class="n">name</span><span class="p">,</span> <span class="n">cfg</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_meshes</span><span class="o">.</span><span class="n">items</span><span class="p">()</span> <span class="k">if</span> <span class="n">cfg</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;provisioned&quot;</span><span class="p">)</span>
         <span class="p">]</span>
@@ -1906,14 +2138,7 @@ document.write(`
                 <span class="s2">&quot;KubernetesJob currently does not support killing pods.&quot;</span>
             <span class="p">)</span>
 
-        <span class="k">try</span><span class="p">:</span>
-            <span class="n">config</span><span class="o">.</span><span class="n">load_incluster_config</span><span class="p">()</span>
-        <span class="k">except</span> <span class="n">config</span><span class="o">.</span><span class="n">ConfigException</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
-            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span>
-                <span class="s2">&quot;Failed to load in-cluster Kubernetes config. &quot;</span>
-                <span class="s2">&quot;KubernetesJob must run inside a Kubernetes cluster.&quot;</span>
-            <span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">e</span>
-
+        <span class="bp">self</span><span class="o">.</span><span class="n">_kubeconfig</span><span class="o">.</span><span class="n">load</span><span class="p">()</span>
         <span class="n">api</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">CustomObjectsApi</span><span class="p">()</span>
 
         <span class="k">for</span> <span class="n">mesh_name</span> <span class="ow">in</span> <span class="n">provisioned</span><span class="p">:</span>
@@ -1931,7 +2156,6 @@ document.write(`
                     <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;MonarchMesh &#39;</span><span class="si">%s</span><span class="s2">&#39; already deleted&quot;</span><span class="p">,</span> <span class="n">mesh_name</span><span class="p">)</span>
                 <span class="k">else</span><span class="p">:</span>
                     <span class="k">raise</span></div>
-
 </pre></div>
 
                 </article>
@@ -2084,7 +2308,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>
@@ -2113,7 +2337,7 @@ document.write(`
        "headline": "monarch._src.job.kubernetes",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/_modules/monarch/_src/job/kubernetes.html",
-       "articleBody": "Source code for monarch._src.job.kubernetes # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-strict import dataclasses import logging import sys import textwrap from typing import Any, Dict, List try: from kubernetes import client, config, watch from kubernetes.client.rest import ApiException except ImportError: raise RuntimeError( \"please install kubernetes to use KubernetesJob. `pip install kubernetes`\" ) from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport from monarch._rust_bindings.monarch_hyperactor.config import configure from monarch._src.actor.bootstrap import attach_to_workers from monarch._src.job.job import JobState, JobTrait logger: logging.Logger = logging.getLogger(__name__) logger.setLevel(logging.INFO) logger.addHandler(logging.StreamHandler(sys.stderr)) logger.propagate = False # Default monarch port for worker communication _DEFAULT_MONARCH_PORT: int = 26600 _RFC_1123_MAX_LEN = 63 # MonarchMesh CRD coordinates _MONARCHMESH_GROUP = \"monarch.pytorch.org\" _MONARCHMESH_VERSION = \"v1alpha1\" _MONARCHMESH_PLURAL = \"monarchmeshes\" # Bootstrap script for provisioned worker pods. # Each worker discovers its own FQDN and starts listening for connections. _WORKER_BOOTSTRAP_SCRIPT: str = textwrap.dedent(\"\"\"\\ import os import socket from monarch.actor import run_worker_loop_forever port = os.environ.get(\"MONARCH_PORT\", \"26600\") hostname = socket.getfqdn() address = f\"tcp://{hostname}:{port}\" run_worker_loop_forever(address=address, ca=\"trust_all_connections\") \"\"\") @dataclasses.dataclass(frozen=True) class ImageSpec: \"\"\"Container image specification for provisioning worker pods. Use this to provision MonarchMesh workers with a specific container image and optional K8s resource requests/limits:: # Simple \u2014 image only ImageSpec(\"ghcr.io/meta-pytorch/monarch:latest\") # With GPU resources ImageSpec(\"ghcr.io/meta-pytorch/monarch:latest\", resources={\"nvidia.com/gpu\": 4}) Pass the resulting object to ``KubernetesJob.add_mesh(image_spec=...)``. \"\"\" image: str \"\"\"Required container image to use for worker pods.\"\"\" resources: dict[str, str | int] | None = None \"\"\"Optional K8s resource requests/limits (e.g. ``{\"nvidia.com/gpu\": 4}``).\"\"\" [docs] class KubernetesJob(JobTrait): \"\"\" Job implementation for Kubernetes that discovers and connects to pods. Supports two modes: *Pre-provisioned* -- connect to pre-provisioned pods discovered via label selectors. Compatible with the MonarchMesh operator, third-party schedulers, or manually created pods. Used when ``image_spec`` or ``pod_template`` is not specified in ``add_mesh``. *Provisioning* -- create MonarchMesh CRDs via the K8s API so the pre-installed operator provisions StatefulSets and Services automatically. Pass ``image_spec`` or ``pod_template`` (a ``V1PodTemplateSpec``) to ``add_mesh`` to enable provisioning for that mesh. If the MonarchMesh CRD already exists, it is patched instead of created. \"\"\" def __init__( self, namespace: str, timeout: int | None = None, ) -\u003e None: \"\"\" Initialize a KubernetesJob. Args: namespace: Kubernetes namespace for all meshes timeout: Maximum seconds to wait for pods to be ready for each mesh (default: None, wait indefinitely) \"\"\" configure(default_transport=ChannelTransport.TcpWithHostname) self._namespace = namespace self._timeout = timeout self._meshes: Dict[str, Dict[str, Any]] = {} super().__init__() # TODO: Consider adding monarch-rank label instead of relying on StatefulSet index by default if using MonarchMesh CRD. [docs] def add_mesh( self, name: str, num_replicas: int, label_selector: str | None = None, pod_rank_label: str = \"apps.kubernetes.io/pod-index\", image_spec: ImageSpec | None = None, port: int = _DEFAULT_MONARCH_PORT, pod_template: client.V1PodTemplateSpec | None = None, labels: dict[str, str] | None = None, annotations: dict[str, str] | None = None, ) -\u003e None: \"\"\" Add a mesh specification. In *attach-only* mode (default), meshes are discovered by label selector. In *provisioning* mode (``image_spec`` or ``pod_template`` supplied), a MonarchMesh CRD is created so the operator can provision the pods. Args: name: Name of the mesh. Must follow RFC 1123 DNS label standard and Monarch hostname restriction: * At most 63 characters * only lowercase alphanumeric characters * must start with an alphabetic character, * and end with an alphanumeric character. num_replicas: Number of pod replicas (expects all ranks 0 to num_replicas-1) label_selector: Custom label selector for pod discovery. Cannot be set when provisioning. pod_rank_label: Label key containing the pod rank. Cannot be customized when provisioning. image_spec: ``ImageSpec`` with container image and optional resources for simple provisioning. Mutually exclusive with ``pod_template``. port: Monarch worker port (default: 26600). pod_template: ``V1PodTemplateSpec`` for advanced provisioning (e.g. custom volumes, sidecars, pod-level labels/annotations). Mutually exclusive with ``image_spec``. labels: Optional labels to apply to the MonarchMesh CRD metadata. Propagated by the operator to the StatefulSet metadata. To set labels on the worker pods, use ``pod_template.metadata.labels``. Only used when provisioning (``image_spec`` or ``pod_template`` supplied). annotations: Optional annotations to apply to the MonarchMesh CRD metadata. Propagated by the operator to the StatefulSet metadata. To set annotations on the worker pods, use ``pod_template.metadata.annotations``. Only used when provisioning (``image_spec`` or ``pod_template`` supplied). Raises: ValueError: On invalid name or conflicting parameters. \"\"\" if len(name) == 0: raise ValueError(\"Empty mesh name is invalid.\") if len(name) \u003e _RFC_1123_MAX_LEN: raise ValueError( f\"Mesh name \u0027{name}\u0027 is invalid. Name must contain at most 63 characters.\" ) if not name.isalnum() or not name.islower(): raise ValueError( f\"Mesh name \u0027{name}\u0027 is invalid. Name must contain only lowercase alphanumeric characters.\" ) if not name[0].isalpha(): raise ValueError( f\"Mesh name \u0027{name}\u0027 is invalid. Name must start with an alphabetic character.\" ) if not name[-1].isalnum(): raise ValueError( f\"Mesh name \u0027{name}\u0027 is invalid. Name must end with an alphanumeric character.\" ) provisioned = image_spec is not None or pod_template is not None if image_spec is not None and pod_template is not None: raise ValueError(\"\u0027image_spec\u0027 and \u0027pod_template\u0027 are mutually exclusive.\") if provisioned and label_selector is not None: raise ValueError(\"\u0027label_selector\u0027 cannot be customized when provisioning.\") if provisioned and pod_rank_label != \"apps.kubernetes.io/pod-index\": raise ValueError(\"\u0027pod_rank_label\u0027 cannot be customized when provisioning.\") if not provisioned and labels is not None: raise ValueError(\"\u0027labels\u0027 can only be set when provisioning.\") if not provisioned and annotations is not None: raise ValueError(\"\u0027annotations\u0027 can only be set when provisioning.\") mesh_entry: Dict[str, Any] = { \"label_selector\": label_selector or f\"app.kubernetes.io/name=monarch-worker,monarch.pytorch.org/mesh-name={name}\", \"num_replicas\": num_replicas, \"pod_rank_label\": pod_rank_label, \"provisioned\": provisioned, \"port\": port, } if labels is not None: mesh_entry[\"labels\"] = labels if annotations is not None: mesh_entry[\"annotations\"] = annotations if image_spec is not None: mesh_entry[\"pod_template\"] = self._build_worker_pod_template( image_spec, port ) elif pod_template is not None: mesh_entry[\"pod_template\"] = pod_template self._meshes[name] = mesh_entry def _create(self, client_script: str | None) -\u003e None: \"\"\" Create MonarchMesh CRDs for provisioned meshes. Attach-only meshes are a no-op. For provisioned meshes, the MonarchMesh custom resource is created (or patched if it already exists) so the operator can provision the StatefulSet and headless Service. \"\"\" if client_script is not None: raise RuntimeError(\"KubernetesJob cannot run batch-mode scripts\") if not self._meshes: raise ValueError(\"At least one mesh must be added using add_mesh()\") provisioned = { name: cfg for name, cfg in self._meshes.items() if cfg.get(\"provisioned\") } if not provisioned: return # TODO: Add support for out-of-cluster config try: config.load_incluster_config() except config.ConfigException as e: raise RuntimeError( \"Failed to load in-cluster Kubernetes config. \" \"KubernetesJob must run inside a Kubernetes cluster.\" ) from e api = client.CustomObjectsApi() api_client = client.ApiClient() for mesh_name, mesh_config in provisioned.items(): pod_template_dict = api_client.sanitize_for_serialization( mesh_config[\"pod_template\"] ) metadata: Dict[str, Any] = { \"name\": mesh_name, \"namespace\": self._namespace, } if \"labels\" in mesh_config: metadata[\"labels\"] = mesh_config[\"labels\"] if \"annotations\" in mesh_config: metadata[\"annotations\"] = mesh_config[\"annotations\"] body: Dict[str, Any] = { \"apiVersion\": f\"{_MONARCHMESH_GROUP}/{_MONARCHMESH_VERSION}\", \"kind\": \"MonarchMesh\", \"metadata\": metadata, \"spec\": { \"replicas\": mesh_config[\"num_replicas\"], \"port\": mesh_config[\"port\"], \"podTemplate\": pod_template_dict, }, } try: api.create_namespaced_custom_object( group=_MONARCHMESH_GROUP, version=_MONARCHMESH_VERSION, namespace=self._namespace, plural=_MONARCHMESH_PLURAL, body=body, ) logger.info(\"Created MonarchMesh \u0027%s\u0027\", mesh_name) except ApiException as e: if e.status == 409: # TODO: Consider throwing an error instead of patching if the CRD already exists. api.patch_namespaced_custom_object( group=_MONARCHMESH_GROUP, version=_MONARCHMESH_VERSION, namespace=self._namespace, plural=_MONARCHMESH_PLURAL, name=mesh_name, body=body, ) logger.info(\"MonarchMesh \u0027%s\u0027 already exists, patched\", mesh_name) else: raise @staticmethod def _build_worker_pod_template( image_spec: ImageSpec, port: int, ) -\u003e client.V1PodTemplateSpec: \"\"\" Build a V1PodTemplateSpec for the MonarchMesh CRD. Generates a single-container pod template with a worker bootstrap script that starts ``run_worker_loop_forever``. Args: image_spec: ImageSpec with container image and optional resources. port: Monarch worker port. Returns: V1PodTemplateSpec suitable for the ``podTemplate`` CRD field. \"\"\" resources = None if image_spec.resources is not None: k8s_resources = {str(k): str(v) for k, v in image_spec.resources.items()} resources = client.V1ResourceRequirements( requests=k8s_resources, limits=k8s_resources, ) container = client.V1Container( name=\"worker\", image=image_spec.image, command=[\"python\", \"-u\", \"-c\", _WORKER_BOOTSTRAP_SCRIPT], env=[client.V1EnvVar(name=\"MONARCH_PORT\", value=str(port))], resources=resources, ) return client.V1PodTemplateSpec( spec=client.V1PodSpec(containers=[container]), ) def _is_pod_worker_ready(self, pod: client.V1Pod) -\u003e bool: \"\"\" Check if a pod is ready using pod status conditions. Args: pod: Kubernetes pod object Returns: True if pod has Ready condition with status True \"\"\" if not pod.status.conditions: return False for condition in pod.status.conditions: if condition.type == \"Ready\": return condition.status == \"True\" return False def _get_pod_rank(self, pod: client.V1Pod, pod_rank_label: str) -\u003e int: \"\"\" Extract the pod rank from the specified label. Args: pod: Kubernetes pod object pod_rank_label: Label key containing the pod rank Returns: Pod rank as an integer Raises: ValueError: If pod rank label is missing or invalid \"\"\" if not pod.metadata.labels: raise ValueError( f\"Pod {pod.metadata.name} has no labels, cannot determine pod rank\" ) pod_rank_str = pod.metadata.labels.get(pod_rank_label) if pod_rank_str is None: raise ValueError( f\"Pod {pod.metadata.name} missing required label \u0027{pod_rank_label}\u0027\" ) try: return int(pod_rank_str) except ValueError as e: raise ValueError( f\"Pod {pod.metadata.name} has invalid pod rank \u0027{pod_rank_str}\u0027: {e}\" ) from e def _wait_for_ready_pods( self, label_selector: str, num_replicas: int, pod_rank_label: str, timeout: int | None = None, ) -\u003e List[tuple[str, int]]: \"\"\" Wait for all required pod ranks to be ready matching the label selector. Ensures all ranks from 0 to num_replicas-1 are available before returning and ignores any pod outside this range. Args: label_selector: Kubernetes label selector num_replicas: Number of pod replicas (expects ranks 0 to num_replicas-1) pod_rank_label: Label key containing the pod rank for ordering timeout: Maximum seconds to wait (None for no timeout) Returns: List of (pod_ip, monarch_port) tuples sorted by pod rank (0 to num_replicas-1) Raises: RuntimeError: If timeout reached, missing ranks, or watch error \"\"\" ready_pods_by_rank: Dict[int, tuple[str, int]] = {} # Load in-cluster Kubernetes configuration try: config.load_incluster_config() except config.ConfigException as e: raise RuntimeError( \"Failed to load in-cluster Kubernetes config. \" \"KubernetesJob must run inside a Kubernetes cluster.\" ) from e c = client.CoreV1Api() w = watch.Watch() try: for event in w.stream( c.list_namespaced_pod, namespace=self._namespace, label_selector=label_selector, timeout_seconds=timeout, ): event_type = event[\"type\"] pod = event[\"object\"] # Handle ERROR events immediately if event_type == \"ERROR\": raise RuntimeError(f\"Watch error: {event.get(\u0027object\u0027, {})}\") # Extract pod rank (skip pods without valid rank label) try: pod_rank = self._get_pod_rank(pod, pod_rank_label) except ValueError: continue # Skip pods outside expected range if pod_rank \u003c 0 or pod_rank \u003e= num_replicas: logger.warning( f\"Pod {pod.metadata.name} has rank {pod_rank} outside expected range [0, {num_replicas - 1}]\" ) continue # Handle DELETED events if event_type == \"DELETED\": ready_pods_by_rank.pop(pod_rank, None) continue # Only process ADDED/MODIFIED events from here if event_type not in (\"ADDED\", \"MODIFIED\"): continue # Update ready pods based on current state if self._is_pod_worker_ready(pod): ready_pods_by_rank[pod_rank] = ( pod.status.pod_ip, self._discover_monarch_port(pod), ) # Check if we have all required ranks (0 to num_replicas-1) if len(ready_pods_by_rank) == num_replicas: return [ ready_pods_by_rank[rank] for rank in range(num_replicas) ] else: # Pod is no longer ready, remove its rank ready_pods_by_rank.pop(pod_rank, None) # Watch ended without finding all required ranks missing_ranks = set(range(num_replicas)) - set(ready_pods_by_rank.keys()) raise RuntimeError( f\"Watch ended with {len(ready_pods_by_rank)}/{num_replicas} ranks. \" f\"Missing ranks: {sorted(missing_ranks)}\" ) except ApiException as e: raise RuntimeError(f\"Failed to watch pods: {e}\") from e finally: w.stop() # TODO: Consider using named port instead of env var for monarch port def _discover_monarch_port(self, pod: client.V1Pod) -\u003e int: \"\"\" Discover the monarch port from the pod specification. Checks in order: 1. MONARCH_PORT environment variable in container spec 2. Falls back to default monarch_port Args: pod: Kubernetes pod object Returns: Port number for monarch communication \"\"\" for container in pod.spec.containers: # Check for MONARCH_PORT env var if container.env: for env_var in container.env: if env_var.name == \"MONARCH_PORT\" and env_var.value: try: return int(env_var.value) except ValueError: logger.warning( f\"Invalid MONARCH_PORT \u0027{env_var.value}\u0027 in pod {pod.metadata.name}\" ) break return _DEFAULT_MONARCH_PORT def _state(self) -\u003e JobState: \"\"\" Get the current state by connecting to ready pods for each mesh. Returns: JobState containing HostMesh objects for each configured mesh \"\"\" host_meshes = {} for mesh_name, mesh_config in self._meshes.items(): label_selector = mesh_config[\"label_selector\"] num_replicas = mesh_config[\"num_replicas\"] pod_rank_label = mesh_config[\"pod_rank_label\"] # Wait for pods to be ready and discover their ports pod_endpoints = self._wait_for_ready_pods( label_selector, num_replicas, pod_rank_label, timeout=self._timeout ) # Create worker addresses using discovered IPs and ports workers = [f\"tcp://{pod_ip}:{port}\" for pod_ip, port in pod_endpoints] # Create host mesh by attaching to workers host_mesh = attach_to_workers( name=mesh_name, ca=\"trust_all_connections\", workers=workers, # type: ignore[arg-type] ) host_meshes[mesh_name] = host_mesh return JobState(host_meshes) [docs] def can_run(self, spec: \"JobTrait\") -\u003e bool: \"\"\" Check if this job can run the given spec. Verifies that: 1. The spec is a KubernetesJob with matching configuration 2. The required pods are available and ready Args: spec: JobTrait specification to check Returns: True if this job matches the spec and all required pods are available \"\"\" if not ( isinstance(spec, KubernetesJob) and spec._namespace == self._namespace and spec._meshes == self._meshes and self.active ): return False try: for mesh_config in self._meshes.values(): self._wait_for_ready_pods( mesh_config[\"label_selector\"], mesh_config[\"num_replicas\"], mesh_config[\"pod_rank_label\"], timeout=5, ) return True except RuntimeError: return False def _kill(self) -\u003e None: \"\"\" Delete MonarchMesh CRDs for provisioned meshes. Raises: NotImplementedError: If no provisioned meshes exist (all meshes are attach-only). \"\"\" provisioned = [ name for name, cfg in self._meshes.items() if cfg.get(\"provisioned\") ] if not provisioned: raise NotImplementedError( \"KubernetesJob currently does not support killing pods.\" ) try: config.load_incluster_config() except config.ConfigException as e: raise RuntimeError( \"Failed to load in-cluster Kubernetes config. \" \"KubernetesJob must run inside a Kubernetes cluster.\" ) from e api = client.CustomObjectsApi() for mesh_name in provisioned: try: api.delete_namespaced_custom_object( group=_MONARCHMESH_GROUP, version=_MONARCHMESH_VERSION, namespace=self._namespace, plural=_MONARCHMESH_PLURAL, name=mesh_name, ) logger.info(\"Deleted MonarchMesh \u0027%s\u0027\", mesh_name) except ApiException as e: if e.status == 404: logger.info(\"MonarchMesh \u0027%s\u0027 already deleted\", mesh_name) else: raise",
+       "articleBody": "Source code for monarch._src.job.kubernetes # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-strict import dataclasses import logging import re import select import shutil import subprocess import sys import textwrap from pathlib import Path from typing import Any, TypedDict try: from kubernetes import client, config, watch from kubernetes.client.rest import ApiException from kubernetes.config.kube_config import KubeConfigMerger except ImportError: raise RuntimeError( \"please install kubernetes to use KubernetesJob. `pip install kubernetes`\" ) from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport from monarch._rust_bindings.monarch_hyperactor.config import configure from monarch._src.actor.bootstrap import attach_to_workers from monarch._src.job.job import JobState, JobTrait from monarch.actor import attach logger: logging.Logger = logging.getLogger(__name__) logger.setLevel(logging.INFO) logger.addHandler(logging.StreamHandler(sys.stderr)) logger.propagate = False # Default monarch port for worker communication _DEFAULT_MONARCH_PORT: int = 26600 _RFC_1123_MAX_LEN = 63 # Seconds to wait for `kubectl port-forward` to report it is ready before giving # up, so a silently hung forward cannot stall job initialization indefinitely. _PORT_FORWARD_START_TIMEOUT_SECONDS: int = 30 # MonarchMesh CRD coordinates _MONARCHMESH_GROUP = \"monarch.pytorch.org\" _MONARCHMESH_VERSION = \"v1alpha1\" _MONARCHMESH_PLURAL = \"monarchmeshes\" # Bootstrap script for provisioned worker pods. # Each worker discovers its own FQDN and starts listening for connections. _WORKER_BOOTSTRAP_SCRIPT: str = textwrap.dedent(\"\"\"\\ import os import socket from monarch.actor import run_worker_loop_forever port = os.environ.get(\"MONARCH_PORT\", \"26600\") hostname = socket.getfqdn() address = f\"tcp://{hostname}:{port}@tcp://0.0.0.0:{port}\" run_worker_loop_forever(address=address, ca=\"trust_all_connections\") \"\"\") @dataclasses.dataclass(frozen=True) class ImageSpec: \"\"\"Container image specification for provisioning worker pods. Use this to provision MonarchMesh workers with a specific container image and optional K8s resource requests/limits:: # Simple \u2014 image only ImageSpec(\"ghcr.io/meta-pytorch/monarch:latest\") # With GPU resources ImageSpec(\"ghcr.io/meta-pytorch/monarch:latest\", resources={\"nvidia.com/gpu\": 4}) Pass the resulting object to ``KubernetesJob.add_mesh(image_spec=...)``. \"\"\" image: str \"\"\"Required container image to use for worker pods.\"\"\" resources: dict[str, str | int] | None = None \"\"\"Optional K8s resource requests/limits (e.g. ``{\"nvidia.com/gpu\": 4}``).\"\"\" @dataclasses.dataclass(frozen=True) class KubeConfig: \"\"\"Kubernetes configuration for connecting to the cluster. Use this to specify a kubeconfig file for out-of-cluster usage of KubernetesJob:: KubeConfig.from_path(\"/path/to/kubeconfig\") If both local and remote are none, in-cluster configuration is used. \"\"\" local: Path | None = None remote: client.Configuration | None = None @classmethod def from_path(cls, path: str) -\u003e \"KubeConfig\": \"\"\"Create a KubeConfig from a local file path.\"\"\" return cls(local=Path(path).expanduser()) @classmethod def from_config(cls, config: client.Configuration) -\u003e \"KubeConfig\": \"\"\"Create a KubeConfig from a remote host\"\"\" return cls(remote=config) @property def out_of_cluster(self) -\u003e bool: \"\"\"Whether this kubeconfig is for out-of-cluster usage.\"\"\" return self.remote is not None or self.local is not None def load(self) -\u003e None: if self.local is not None: try: config.load_kube_config(config_file=str(self.local)) proxy_url = _get_kubeconfig_proxy_url(self.local) except config.ConfigException as e: raise RuntimeError( f\"Failed to load kubeconfig file \u0027{self.local}\u0027\" ) from e if proxy_url is not None: configuration = client.Configuration.get_default_copy() configuration.proxy = proxy_url client.Configuration.set_default(configuration) elif self.remote is not None: client.Configuration.set_default(self.remote) else: try: config.load_incluster_config() except config.ConfigException as e: raise RuntimeError( \"Failed to load in-cluster Kubernetes config. \" \"KubernetesJob must run inside a Kubernetes cluster.\" ) from e def _get_kubeconfig_proxy_url(path: Path) -\u003e str | None: merged_config: Any = KubeConfigMerger(str(path)).config if merged_config is None: return None # A malformed kubeconfig (e.g. missing current-context or a dangling # cluster reference) raises KeyError/TypeError/AttributeError here. Surface # it as a ConfigException so KubeConfig.load transforms it into a clear # RuntimeError rather than leaking a raw traceback. try: context = merged_config[\"contexts\"].get_with_name( merged_config[\"current-context\"] )[\"context\"] cluster = merged_config[\"clusters\"].get_with_name(context[\"cluster\"])[\"cluster\"] proxy_url = cluster.safe_get(\"proxy-url\") except (KeyError, TypeError, AttributeError) as e: raise config.ConfigException(f\"malformed kubeconfig \u0027{path}\u0027: {e}\") from e if proxy_url is not None and not isinstance(proxy_url, str): raise config.ConfigException(\"kubeconfig proxy-url must be a string\") return proxy_url @dataclasses.dataclass(frozen=True) class _MonarchMeshPod: name: str ip: str port: int class _MeshConfigRequired(TypedDict): service_name: str label_selector: str num_replicas: int pod_rank_label: str provisioned: bool port: int class _MeshConfig(_MeshConfigRequired, total=False): labels: dict[str, str] annotations: dict[str, str] pod_template: client.V1PodTemplateSpec [docs]class KubernetesJob(JobTrait): \"\"\" Job implementation for Kubernetes that discovers and connects to pods. Supports two modes: *Pre-provisioned* -- connect to pre-provisioned pods discovered via label selectors. Compatible with the MonarchMesh operator, third-party schedulers, or manually created pods. Used when ``image_spec`` or ``pod_template`` is not specified in ``add_mesh``. *Provisioning* -- create MonarchMesh CRDs via the K8s API so the pre-installed operator provisions StatefulSets and Services automatically. Pass ``image_spec`` or ``pod_template`` (a ``V1PodTemplateSpec``) to ``add_mesh`` to enable provisioning for that mesh. If the MonarchMesh CRD already exists, it is patched instead of created. \"\"\" def __init__( self, namespace: str, timeout: int | None = None, kubeconfig: KubeConfig | None = None, attach_to: str | None = None, ) -\u003e None: \"\"\" Initialize a KubernetesJob. Args: namespace: Kubernetes namespace for all meshes timeout: Maximum seconds to wait for pods to be ready for each mesh (default: None, wait indefinitely) kubeconfig: Path to a kubeconfig file for out-of-cluster configuration (default: None, use in-cluster config) attach_to: ZMQ-style address of a worker\u0027s monarch port for out-of-cluster access (e.g. `\"tcp://127.0.0.1:26600\"`). The monarch port doubles as the duplex attach address. Use ``kubectl port-forward pod/\u003cpod-name\u003e \u003clocal\u003e:26600`` to forward the pod to localhost. When ``kubeconfig`` is provided (out-of-cluster mode) and this is not set, port-forwarding is set up automatically. \"\"\" configure(default_transport=ChannelTransport.TcpWithHostname) self._namespace = namespace self._timeout = timeout self._kubeconfig: KubeConfig = kubeconfig or KubeConfig() self._attach_to = attach_to self._meshes: dict[str, _MeshConfig] = {} self._port_forward_processes: list[subprocess.Popen[str]] = [] super().__init__() # TODO: Consider adding monarch-rank label instead of relying on StatefulSet index by default if using MonarchMesh CRD. [docs] def add_mesh( self, name: str, num_replicas: int, label_selector: str | None = None, pod_rank_label: str = \"apps.kubernetes.io/pod-index\", image_spec: ImageSpec | None = None, port: int = _DEFAULT_MONARCH_PORT, pod_template: client.V1PodTemplateSpec | None = None, labels: dict[str, str] | None = None, annotations: dict[str, str] | None = None, ) -\u003e None: \"\"\" Add a mesh specification. In *attach-only* mode (default), meshes are discovered by label selector. In *provisioning* mode (``image_spec`` or ``pod_template`` supplied), a MonarchMesh CRD is created so the operator can provision the pods. Args: name: Name of the mesh. Must follow RFC 1123 DNS label standard and Monarch hostname restriction: * At most 63 characters * only lowercase alphanumeric characters * must start with an alphabetic character, * and end with an alphanumeric character. num_replicas: Number of pod replicas (expects all ranks 0 to num_replicas-1) label_selector: Custom label selector for pod discovery. Cannot be set when provisioning. pod_rank_label: Label key containing the pod rank. Cannot be customized when provisioning. image_spec: ``ImageSpec`` with container image and optional resources for simple provisioning. Mutually exclusive with ``pod_template``. port: Monarch worker port (default: 26600). pod_template: ``V1PodTemplateSpec`` for advanced provisioning (e.g. custom volumes, sidecars, pod-level labels/annotations). Mutually exclusive with ``image_spec``. labels: Optional labels to apply to the MonarchMesh CRD metadata. Propagated by the operator to the StatefulSet metadata. To set labels on the worker pods, use ``pod_template.metadata.labels``. Only used when provisioning (``image_spec`` or ``pod_template`` supplied). annotations: Optional annotations to apply to the MonarchMesh CRD metadata. Propagated by the operator to the StatefulSet metadata. To set annotations on the worker pods, use ``pod_template.metadata.annotations``. Only used when provisioning (``image_spec`` or ``pod_template`` supplied). Raises: ValueError: On invalid name or conflicting parameters. \"\"\" if len(name) == 0: raise ValueError(\"Empty mesh name is invalid.\") if len(name) \u003e _RFC_1123_MAX_LEN: raise ValueError( f\"Mesh name \u0027{name}\u0027 is invalid. Name must contain at most 63 characters.\" ) if not name.isalnum() or not name.islower(): raise ValueError( f\"Mesh name \u0027{name}\u0027 is invalid. Name must contain only lowercase alphanumeric characters.\" ) if not name[0].isalpha(): raise ValueError( f\"Mesh name \u0027{name}\u0027 is invalid. Name must start with an alphabetic character.\" ) if not name[-1].isalnum(): raise ValueError( f\"Mesh name \u0027{name}\u0027 is invalid. Name must end with an alphanumeric character.\" ) provisioned = image_spec is not None or pod_template is not None if image_spec is not None and pod_template is not None: raise ValueError(\"\u0027image_spec\u0027 and \u0027pod_template\u0027 are mutually exclusive.\") if provisioned and label_selector is not None: raise ValueError(\"\u0027label_selector\u0027 cannot be customized when provisioning.\") if provisioned and pod_rank_label != \"apps.kubernetes.io/pod-index\": raise ValueError(\"\u0027pod_rank_label\u0027 cannot be customized when provisioning.\") if not provisioned and labels is not None: raise ValueError(\"\u0027labels\u0027 can only be set when provisioning.\") if not provisioned and annotations is not None: raise ValueError(\"\u0027annotations\u0027 can only be set when provisioning.\") mesh_entry: _MeshConfig = { # The service name has a suffix appended to it controlled by the MonarchMesh config. \"service_name\": f\"{name}-svc\", \"label_selector\": label_selector or f\"app.kubernetes.io/name=monarch-worker,monarch.pytorch.org/mesh-name={name}\", \"num_replicas\": num_replicas, \"pod_rank_label\": pod_rank_label, \"provisioned\": provisioned, \"port\": port, } if labels is not None: mesh_entry[\"labels\"] = labels if annotations is not None: mesh_entry[\"annotations\"] = annotations if image_spec is not None: mesh_entry[\"pod_template\"] = self._build_worker_pod_template( image_spec, port ) elif pod_template is not None: mesh_entry[\"pod_template\"] = pod_template self._meshes[name] = mesh_entry def _create(self, client_script: str | None) -\u003e None: \"\"\" Create MonarchMesh CRDs for provisioned meshes. Attach-only meshes are a no-op. For provisioned meshes, the MonarchMesh custom resource is created (or patched if it already exists) so the operator can provision the StatefulSet and headless Service. \"\"\" if client_script is not None: raise RuntimeError(\"KubernetesJob cannot run batch-mode scripts\") if not self._meshes: raise ValueError(\"At least one mesh must be added using add_mesh()\") provisioned = { name: cfg for name, cfg in self._meshes.items() if cfg.get(\"provisioned\") } if not provisioned: return self._kubeconfig.load() api_client = client.ApiClient() api = client.CustomObjectsApi(api_client) for mesh_name, mesh_config in provisioned.items(): pod_template_dict = api_client.sanitize_for_serialization( mesh_config[\"pod_template\"] ) metadata: dict[str, Any] = { \"name\": mesh_name, \"namespace\": self._namespace, } if \"labels\" in mesh_config: metadata[\"labels\"] = mesh_config[\"labels\"] if \"annotations\" in mesh_config: metadata[\"annotations\"] = mesh_config[\"annotations\"] body: dict[str, Any] = { \"apiVersion\": f\"{_MONARCHMESH_GROUP}/{_MONARCHMESH_VERSION}\", \"kind\": \"MonarchMesh\", \"metadata\": metadata, \"spec\": { \"replicas\": mesh_config[\"num_replicas\"], \"port\": mesh_config[\"port\"], \"podTemplate\": pod_template_dict, }, } try: api.create_namespaced_custom_object( group=_MONARCHMESH_GROUP, version=_MONARCHMESH_VERSION, namespace=self._namespace, plural=_MONARCHMESH_PLURAL, body=body, ) logger.info(\"Created MonarchMesh \u0027%s\u0027\", mesh_name) except ApiException as e: if e.status == 409: # TODO: Consider throwing an error instead of patching if the CRD already exists. api.patch_namespaced_custom_object( group=_MONARCHMESH_GROUP, version=_MONARCHMESH_VERSION, namespace=self._namespace, plural=_MONARCHMESH_PLURAL, name=mesh_name, body=body, ) logger.info(\"MonarchMesh \u0027%s\u0027 already exists, patched\", mesh_name) else: raise @staticmethod def _build_worker_pod_template( image_spec: ImageSpec, port: int, ) -\u003e client.V1PodTemplateSpec: \"\"\" Build a V1PodTemplateSpec for the MonarchMesh CRD. Generates a single-container pod template with a worker bootstrap script that starts ``run_worker_loop_forever``. Args: image_spec: ImageSpec with container image and optional resources. port: Monarch worker port. Returns: V1PodTemplateSpec suitable for the ``podTemplate`` CRD field. \"\"\" resources = None if image_spec.resources is not None: k8s_resources = {str(k): str(v) for k, v in image_spec.resources.items()} resources = client.V1ResourceRequirements( requests=k8s_resources, limits=k8s_resources, ) env = [client.V1EnvVar(name=\"MONARCH_PORT\", value=str(port))] container = client.V1Container( name=\"worker\", image=image_spec.image, command=[\"python\", \"-u\", \"-c\", _WORKER_BOOTSTRAP_SCRIPT], env=env, resources=resources, ) return client.V1PodTemplateSpec( spec=client.V1PodSpec(containers=[container]), ) def _is_pod_worker_ready(self, pod: client.V1Pod) -\u003e bool: \"\"\" Check if a pod is ready using pod status conditions. Args: pod: Kubernetes pod object Returns: True if pod has Ready condition with status True \"\"\" if not pod.status.conditions: return False for condition in pod.status.conditions: if condition.type == \"Ready\": return condition.status == \"True\" return False def _get_pod_rank(self, pod: client.V1Pod, pod_rank_label: str) -\u003e int: \"\"\" Extract the pod rank from the specified label. Args: pod: Kubernetes pod object pod_rank_label: Label key containing the pod rank Returns: Pod rank as an integer Raises: ValueError: If pod rank label is missing or invalid \"\"\" if not pod.metadata.labels: raise ValueError( f\"Pod {pod.metadata.name} has no labels, cannot determine pod rank\" ) pod_rank_str = pod.metadata.labels.get(pod_rank_label) if pod_rank_str is None: raise ValueError( f\"Pod {pod.metadata.name} missing required label \u0027{pod_rank_label}\u0027\" ) try: return int(pod_rank_str) except ValueError as e: raise ValueError( f\"Pod {pod.metadata.name} has invalid pod rank \u0027{pod_rank_str}\u0027: {e}\" ) from e def _wait_for_ready_pods( self, label_selector: str, num_replicas: int, pod_rank_label: str, timeout: int | None = None, ) -\u003e list[_MonarchMeshPod]: \"\"\" Wait for all required pod ranks to be ready matching the label selector. Ensures all ranks from 0 to num_replicas-1 are available before returning and ignores any pod outside this range. Args: label_selector: Kubernetes label selector num_replicas: Number of pod replicas (expects ranks 0 to num_replicas-1) pod_rank_label: Label key containing the pod rank for ordering timeout: Maximum seconds to wait (None for no timeout) Returns: List of (pod_ip, monarch_port) tuples sorted by pod rank (0 to num_replicas-1) Raises: RuntimeError: If timeout reached, missing ranks, or watch error \"\"\" ready_pods_by_rank: dict[int, _MonarchMeshPod] = {} # Load Kubernetes configuration self._kubeconfig.load() c = client.CoreV1Api() w = watch.Watch() try: for event in w.stream( c.list_namespaced_pod, namespace=self._namespace, label_selector=label_selector, timeout_seconds=timeout, ): event_type = event[\"type\"] pod = event[\"object\"] # Handle ERROR events immediately if event_type == \"ERROR\": raise RuntimeError(f\"Watch error: {event.get(\u0027object\u0027, {})}\") # Extract pod rank (skip pods without valid rank label) try: pod_rank = self._get_pod_rank(pod, pod_rank_label) except ValueError: logger.warning( f\"Skipping pod {pod.metadata.name} due to missing or invalid pod rank label \u0027{pod_rank_label}\u0027\" ) continue # Skip pods outside expected range if pod_rank \u003c 0 or pod_rank \u003e= num_replicas: logger.warning( f\"Pod {pod.metadata.name} has rank {pod_rank} outside expected range [0, {num_replicas - 1}]\" ) continue # Handle DELETED events if event_type == \"DELETED\": ready_pods_by_rank.pop(pod_rank, None) continue # Only process ADDED/MODIFIED events from here if event_type not in (\"ADDED\", \"MODIFIED\"): continue # Update ready pods based on current state if self._is_pod_worker_ready(pod): ready_pods_by_rank[pod_rank] = _MonarchMeshPod( name=pod.metadata.name, ip=pod.status.pod_ip, port=self._discover_monarch_port(pod), ) # Check if we have all required ranks (0 to num_replicas-1) if len(ready_pods_by_rank) == num_replicas: return [ ready_pods_by_rank[rank] for rank in range(num_replicas) ] else: # Pod is no longer ready, remove its rank ready_pods_by_rank.pop(pod_rank, None) # Watch ended without finding all required ranks missing_ranks = set(range(num_replicas)) - set(ready_pods_by_rank.keys()) raise RuntimeError( f\"Watch ended with {len(ready_pods_by_rank)}/{num_replicas} ranks. \" f\"Missing ranks: {sorted(missing_ranks)}\" ) except ApiException as e: raise RuntimeError(f\"Failed to watch pods: {e}\") from e finally: w.stop() # TODO: Consider using named port instead of env var for monarch port def _discover_monarch_port(self, pod: client.V1Pod) -\u003e int: \"\"\" Discover the monarch port from the pod specification. Checks in order: 1. MONARCH_PORT environment variable in container spec 2. Falls back to default monarch_port Args: pod: Kubernetes pod object Returns: Port number for monarch communication \"\"\" for container in pod.spec.containers: # Check for MONARCH_PORT env var if container.env: for env_var in container.env: if env_var.name == \"MONARCH_PORT\" and env_var.value: try: return int(env_var.value) except ValueError: logger.warning( f\"Invalid MONARCH_PORT \u0027{env_var.value}\u0027 in pod {pod.metadata.name}\" ) break return _DEFAULT_MONARCH_PORT def _port_forward_to_pod(self, pod: _MonarchMeshPod) -\u003e str: \"\"\"Start kubectl port-forward to the pod\u0027s monarch port. The frontend address doubles as the duplex attach address, so port-forwarding the monarch port is sufficient for both regular messaging and out-of-cluster client attachment. Returns the local ``tcp://127.0.0.1:\u003clocal_port\u003e`` address. \"\"\" if shutil.which(\"kubectl\") is None: raise RuntimeError( \"kubectl is required for out-of-cluster port forwarding but was not found in PATH\" ) cmd = [ \"kubectl\", \"port-forward\", \"--namespace\", self._namespace, f\"pod/{pod.name}\", f\":{pod.port}\", ] if self._kubeconfig.local is not None: cmd.extend([\"--kubeconfig\", str(self._kubeconfig.local)]) process = subprocess.Popen( cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, ) if process.stdout is None: raise RuntimeError( f\"failed to open stdout for kubectl port-forward to pod {pod.name}\" ) # kubectl prints \"Forwarding from ...\" to stdout once the tunnel is up. # Guard the blocking read so a silently hung forward cannot stall job # initialization indefinitely. ready, _, _ = select.select( [process.stdout], [], [], _PORT_FORWARD_START_TIMEOUT_SECONDS ) if not ready: process.kill() process.wait() raise RuntimeError( f\"kubectl port-forward to pod {pod.name} did not start within \" f\"{_PORT_FORWARD_START_TIMEOUT_SECONDS}s\" ) first_line = process.stdout.readline() if not first_line: # kubectl closed stdout without announcing readiness. Terminate it # and drain stderr with a deadline so a process that closed stdout # while still running cannot block us. process.terminate() try: _, stderr_output = process.communicate( timeout=_PORT_FORWARD_START_TIMEOUT_SECONDS ) except subprocess.TimeoutExpired: process.kill() _, stderr_output = process.communicate() raise RuntimeError( f\"kubectl port-forward produced no output for pod {pod.name}: \" f\"{stderr_output}\" ) match = re.search( r\"Forwarding from (?:127\\.0\\.0\\.1|\\[::1\\]):(\\d+) -\u003e\", first_line ) if not match: process.kill() process.wait() raise RuntimeError( f\"could not parse local port from kubectl output for pod {pod.name}: {first_line}\" ) local_port = int(match.group(1)) self._port_forward_processes.append(process) logger.info( \"Port forwarding established to pod/%s on local port %d\", pod.name, local_port, ) return f\"tcp://127.0.0.1:{local_port}\" def _terminate_port_forwards(self) -\u003e None: \"\"\"Terminate any running ``kubectl port-forward`` subprocesses.\"\"\" for process in self._port_forward_processes: if process.poll() is None: process.terminate() process.wait() self._port_forward_processes.clear() def _state(self) -\u003e JobState: \"\"\" Get the current state by connecting to ready pods for each mesh. Returns: JobState containing HostMesh objects for each configured mesh \"\"\" host_meshes = {} attach_to = self._attach_to # Discover all mesh pods first so we can set up port-forwarding # before attaching to any workers. all_mesh_pods: dict[str, list[_MonarchMeshPod]] = {} for mesh_name, mesh_config in self._meshes.items(): # Wait for pods to be ready and discover their ports pods = self._wait_for_ready_pods( mesh_config[\"label_selector\"], mesh_config[\"num_replicas\"], mesh_config[\"pod_rank_label\"], timeout=self._timeout, ) all_mesh_pods[mesh_name] = pods # Set up out-of-cluster client attachment before connecting to workers. # If anything below fails after a port-forward subprocess is started, # terminate it so we do not leak kubectl processes and bound ports. try: if self._kubeconfig.out_of_cluster and attach_to is None: # No explicit attach_to \u2014 auto-forward to the first pod\u0027s # monarch port (which doubles as the duplex attach address). for pods in all_mesh_pods.values(): if pods: attach_to = self._port_forward_to_pod(pods[0]) break if attach_to is None: raise RuntimeError( \"out-of-cluster mode requires at least one ready pod \" \"and no attach_to was provided\" ) if attach_to is not None: logger.info( \"Attaching client gateway via duplex address: %s\", attach_to ) attach(attach_to) for mesh_name, pods in all_mesh_pods.items(): # Create worker addresses using discovered IPs and ports workers = [f\"tcp://{pod.ip}:{pod.port}\" for pod in pods] # Create host mesh by attaching to workers host_mesh = attach_to_workers( name=mesh_name, ca=\"trust_all_connections\", workers=workers, # type: ignore[arg-type] ) host_meshes[mesh_name] = host_mesh except Exception: self._terminate_port_forwards() raise return JobState(host_meshes) [docs] def can_run(self, spec: \"JobTrait\") -\u003e bool: \"\"\" Check if this job can run the given spec. Verifies that: 1. The spec is a KubernetesJob with matching configuration 2. The required pods are available and ready Args: spec: JobTrait specification to check Returns: True if this job matches the spec and all required pods are available \"\"\" if not ( isinstance(spec, KubernetesJob) and spec._namespace == self._namespace and spec._meshes == self._meshes and self.active ): return False try: for mesh_config in self._meshes.values(): self._wait_for_ready_pods( mesh_config[\"label_selector\"], mesh_config[\"num_replicas\"], mesh_config[\"pod_rank_label\"], timeout=5, ) return True except RuntimeError: return False def _kill(self) -\u003e None: \"\"\" Delete MonarchMesh CRDs for provisioned meshes. Raises: NotImplementedError: If no provisioned meshes exist (all meshes are attach-only). \"\"\" self._terminate_port_forwards() provisioned = [ name for name, cfg in self._meshes.items() if cfg.get(\"provisioned\") ] if not provisioned: raise NotImplementedError( \"KubernetesJob currently does not support killing pods.\" ) self._kubeconfig.load() api = client.CustomObjectsApi() for mesh_name in provisioned: try: api.delete_namespaced_custom_object( group=_MONARCHMESH_GROUP, version=_MONARCHMESH_VERSION, namespace=self._namespace, plural=_MONARCHMESH_PLURAL, name=mesh_name, ) logger.info(\"Deleted MonarchMesh \u0027%s\u0027\", mesh_name) except ApiException as e: if e.status == 404: logger.info(\"MonarchMesh \u0027%s\u0027 already deleted\", mesh_name) else: raise",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

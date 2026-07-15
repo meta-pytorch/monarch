@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["ReducerMode"],"fn":["join_semilattice","sum"],"struct":["GCounterUpdate","Max","Min","PNCounterUpdate","ReducerFactory","ReducerSpec","StreamingReducerOpts","WatermarkUpdate"],"trait":["Accumulator","CommReducer","ErasedCommReducer"]};
+window.SIDEBAR_ITEMS = {"enum":["ReducerMode"],"fn":["join_semilattice","sum","unit"],"struct":["GCounterUpdate","Max","Min","PNCounterUpdate","ReducerFactory","ReducerSpec","StreamingReducerOpts","WatermarkUpdate"],"trait":["Accumulator","CommReducer","ErasedCommReducer"]};

@@ -34,53 +34,26 @@ Return the RDMA backend in use ('ibverbs').
 
 size()[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMABuffer.size)
 
-read_into(*dst*, ***, *timeout=3*)[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMABuffer.read_into)
+read_into(*dst*, ***, *timeout=60*)[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMABuffer.read_into)
 
-Read data from the RDMABuffer into a destination tensor.
+Read data from this RDMABuffer into `dst`.
 
-The destination tensor must be contiguous (including tensor views/slices).
-:param dst: Destination tensor or memoryview to read into.
-
-Keyword Arguments:
-
-**timeout** ([*int*](https://docs.python.org/3/library/functions.html#int)*,**optional*) - Timeout in seconds for the operation. Defaults to 3s.
-
-Returns:
-
-A Monarch Future that can be awaited or called with .get() for blocking operation.
-
-Return type:
-
-[Future](monarch.html#monarch.Future)[Optional[[int](https://docs.python.org/3/library/functions.html#int)]]
-
-Raises:
-
-[**ValueError**](https://docs.python.org/3/library/exceptions.html#ValueError) - If the destination tensor size is smaller than the RDMA buffer size.
-
-Note
-
-Currently only CPU tensors are fully supported. GPU tensors will be temporarily
-copied to CPU, which may impact performance.
-
-write_from(*src*, ***, *timeout=3*)[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMABuffer.write_from)
-
-Write data from a source tensor into the RDMABuffer.
+`dst` must be a 1D contiguous tensor or c-contiguous memoryview
+whose byte-size is at least `self.size()`.
 
 Parameters:
 
-**src** ([*torch.Tensor*](https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor)*|*[*memoryview*](https://docs.python.org/3/library/stdtypes.html#memoryview)) - Source tensor containing data to be written to the RDMA buffer.
-Must be a contiguous tensor (including tensor views/slices).
-Either src or addr/size must be provided.
+**dst** ([*torch.Tensor*](https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor)*|*[*memoryview*](https://docs.python.org/3/library/stdtypes.html#memoryview)) - Destination tensor or memoryview to read into.
 
 Keyword Arguments:
 
-**timeout** ([*int*](https://docs.python.org/3/library/functions.html#int)*,**optional*) - Timeout in seconds for the operation. Defaults to 3s.
+**timeout** ([*int*](https://docs.python.org/3/library/functions.html#int)*,**optional*) - Timeout in seconds. Defaults to 60s.
 
 Returns:
 
-A Monarch Future object that can be awaited or called with .get()
+A Monarch Future that resolves to `None` when
 
-for blocking operation. Returns None when completed successfully.
+the read completes.
 
 Return type:
 
@@ -88,12 +61,37 @@ Return type:
 
 Raises:
 
-[**ValueError**](https://docs.python.org/3/library/exceptions.html#ValueError) - If the source tensor size exceeds the RDMA buffer size.
+[**ValueError**](https://docs.python.org/3/library/exceptions.html#ValueError) - If `dst` is smaller than the RDMA buffer.
 
-Note
+write_from(*src*, ***, *timeout=60*)[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMABuffer.write_from)
 
-Currently only CPU tensors are fully supported. GPU tensors will be temporarily
-copied to CPU, which may impact performance.
+Write data from `src` into this RDMABuffer.
+
+`src` must be a 1D contiguous tensor or c-contiguous memoryview
+whose byte-size is at most `self.size()`.
+
+Parameters:
+
+**src** ([*torch.Tensor*](https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor)*|*[*memoryview*](https://docs.python.org/3/library/stdtypes.html#memoryview)) - Source tensor or memoryview containing the bytes to
+write to the RDMA buffer.
+
+Keyword Arguments:
+
+**timeout** ([*int*](https://docs.python.org/3/library/functions.html#int)*,**optional*) - Timeout in seconds. Defaults to 60s.
+
+Returns:
+
+A Monarch Future that resolves to `None` when
+
+the write completes.
+
+Return type:
+
+[Future](monarch.html#monarch.Future)[None]
+
+Raises:
+
+[**ValueError**](https://docs.python.org/3/library/exceptions.html#ValueError) - If `src` exceeds the RDMA buffer size.
 
 drop()[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMABuffer.drop)
 
@@ -109,90 +107,33 @@ The owner reference (str)
 
 Bases: [`object`](https://docs.python.org/3/library/functions.html#object)
 
-Schedule a bunch of actions at once. This provides an opportunity to
-optimize bulk RDMA transactions without exposing complexity to users.
+Schedule a batch of RDMA operations and submit them as one unit.
 
-*class*RDMAOp(*value*, *names=<not given>*, **values*, *module=None*, *qualname=None*, *type=None*, *start=1*, *boundary=None*)[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMAAction.RDMAOp)
-
-Bases: [`Enum`](https://docs.python.org/3/library/enum.html#enum.Enum)
-
-Enumeration of RDMA operation types.
-
-READ_INTO*= 'read_into'*
-
-WRITE_FROM*= 'write_from'*
-
-FETCH_ADD*= 'fetch_add'*
-
-COMPARE_AND_SWAP*= 'compare_and_swap'*
+All bookkeeping (per-op validation, intra-batch local-memory race
+detection, backend grouping, parallel dispatch) lives in the Rust
+_RdmaAction; this class is a thin wrapper around it.
 
 __init__()[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMAAction.__init__)
 
-read_into(*src*, *dst*)[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMAAction.read_into)
+read_remote(*dst*, *src*)[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMAAction.read_remote)
 
-Read from src RDMA buffer into dst memory.
+Queue a read from RDMA buffer `src` into local memory `dst`.
 
-Parameters:
+write_remote(*dst*, *src*)[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMAAction.write_remote)
 
-- **src** (*RDMABuffer*) - Source RDMA buffer to read from
-- **dst** (*LocalMemory**|**List**[**LocalMemory**]*) - Destination local memory to read into
-If dst is a list, it is the concatenation of the data in the list
-
-write_from(*src*, *dst*)[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMAAction.write_from)
-
-Write from dst memory to src RDMA buffer.
-
-Parameters:
-
-- **src** (*RDMABuffer*) - Destination RDMA buffer to write to
-- **dst** (*LocalMemory**|**List**[**LocalMemory**]*) - Source local memory to write from
-If local is a list, it is the concatenation of the data in the list
+Queue a write from local memory `src` into RDMA buffer `dst`.
 
 fetch_add(*src*, *dst*, *add*)[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMAAction.fetch_add)
 
-Perform atomic fetch-and-add operation on src RDMA buffer.
-
-Parameters:
-
-- **src** (*RDMABuffer*) - src RDMA buffer to perform operation on
-- **dst** (*LocalMemory*) - Local memory to store the original value
-- **add** ([*int*](https://docs.python.org/3/library/functions.html#int)) - Value to add to the src buffer
-
-Atomically:
-
-*dst = *src
-*src = *src + add
-
-Note: src/dst are 8 bytes
-
 compare_and_swap(*src*, *dst*, *compare*, *swap*)[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMAAction.compare_and_swap)
 
-Perform atomic compare-and-swap operation on src RDMA buffer.
+submit(***, *timeout=60*)[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMAAction.submit)
 
-Parameters:
+Schedule the queued ops. Safe to call multiple times.
 
-- **src** (*RDMABuffer*) - src RDMA buffer to perform operation on
-- **dst** (*LocalMemory*) - Local memory to store the original value
-- **compare** ([*int*](https://docs.python.org/3/library/functions.html#int)) - Value to compare against
-- **swap** ([*int*](https://docs.python.org/3/library/functions.html#int)) - Value to swap in if comparison succeeds
-
-Atomically:
-
-*dst = *src;
-if (*src == compare) {
-
-> *src = swap
-
-}
-
-Note: src/dst are 8 bytes
-
-submit()[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMAAction.submit)
-
-Schedules the work (can be called multiple times to schedule the same work more than once).
-Future completes when all the work is done.
-
-Executes futures for each src actor independently and concurrently for optimal performance.
+The returned Future does not resolve until every op in the batch
+completes, or until the timeout is reached. If any op fails, the
+Future resolves with an exception.
 
 # Utility Functions
 

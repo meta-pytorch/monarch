@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["CaptureResult","CaptureSnapshot","NodeCounts","SnapshotCaptureActor","SnapshotService"]};
+window.SIDEBAR_ITEMS = {"struct":["CaptureResult","CaptureSnapshot","HttpPublisher","NodeCounts","SnapshotCaptureActor","SnapshotService"]};

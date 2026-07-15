@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["get_cuda_device_to_ibv_device","resolve_ibv_device","select_optimal_ibv_device"]};
+window.SIDEBAR_ITEMS = {"enum":["IbvDeviceTarget"],"fn":["get_cuda_device_to_ibv_device","get_pci_address","resolve_target","select_optimal_ibv_devices"]};

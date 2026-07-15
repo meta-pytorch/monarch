@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -16,7 +17,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="In the runtime, a host is the thing that owns “all the procs on this machine” and gives them a single front door. The Rust type looks like this: Visually, you can think of it like this:* is the hos..." />
 
-    <title>Host &amp; agents (control plane &amp; mux) &#8212; Monarch v0.5.0 documentation</title>
+    <title>Host &amp; agents (control plane &amp; mux) &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
+    <script src="../../../../_static/doctools.js"></script>
+    <script src="../../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../../_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-mesh-book/src/meshes/host-and-agents';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-mesh-book/src/meshes/host-and-agents.html" />
@@ -82,7 +83,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +197,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1293,7 +1294,7 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="host-agents-control-plane-mux">
-<h1>Host &amp; agents (control plane &amp; mux)<a class="headerlink" href="#host-agents-control-plane-mux" title="Link to this heading">#</a></h1>
+<h1>Host &amp; agents (control plane &amp; mux)<a class="headerlink" href="#host-agents-control-plane-mux" title="Permalink to this heading">#</a></h1>
 <p>In the runtime, a <strong>host</strong> is the thing that owns “all the procs on this machine” <em>and</em> gives them a single front door. The Rust type looks like this:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// from hyperactor/src/host.rs</span>
 
@@ -1330,7 +1331,7 @@ document.write(`
 <li><p>Each box <code class="docutils literal notranslate"><span class="pre">proc</span> <span class="pre">*,N</span></code> is a proc that is direct-addressed via the host — its id is essentially “proc at <code class="docutils literal notranslate"><span class="pre">*</span></code> named <code class="docutils literal notranslate"><span class="pre">N</span></code>”.</p></li>
 </ul>
 <section id="what-the-fields-mean">
-<h2>What the fields mean<a class="headerlink" href="#what-the-fields-mean" title="Link to this heading">#</a></h2>
+<h2>What the fields mean<a class="headerlink" href="#what-the-fields-mean" title="Permalink to this heading">#</a></h2>
 <ul class="simple">
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">frontend_addr</span></code></strong>: the single, public entry point. Messages from the rest of the mesh arrive here.</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">procs</span></code></strong>: a set of proc names managed by this host.</p></li>
@@ -1342,7 +1343,7 @@ document.write(`
 </ul>
 </section>
 <section id="why-this-matters-for-bootstrapping">
-<h2>Why this matters for bootstrapping<a class="headerlink" href="#why-this-matters-for-bootstrapping" title="Link to this heading">#</a></h2>
+<h2>Why this matters for bootstrapping<a class="headerlink" href="#why-this-matters-for-bootstrapping" title="Permalink to this heading">#</a></h2>
 <p>When, in chapter 4, we say “now ask each host to spawn a proc,” this is the piece that makes it possible. The host already has:</p>
 <ol class="arabic simple">
 <li><p>a public address (<code class="docutils literal notranslate"><span class="pre">*</span></code>),</p></li>
@@ -1353,7 +1354,7 @@ document.write(`
 </section>
 <hr class="docutils" />
 <section id="code-level-view">
-<h2>Code-level view<a class="headerlink" href="#code-level-view" title="Link to this heading">#</a></h2>
+<h2>Code-level view<a class="headerlink" href="#code-level-view" title="Permalink to this heading">#</a></h2>
 <p>At the control plane we have the mesh-facing actor:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// hyperactor_mesh/src/host_mesh/host_agent.rs</span>
 <span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">HostAgent</span><span class="w"> </span><span class="p">{</span>
@@ -1397,14 +1398,14 @@ document.write(`
 </ol>
 </section>
 <section id="hostagent-message-handling">
-<h2>HostAgent message handling<a class="headerlink" href="#hostagent-message-handling" title="Link to this heading">#</a></h2>
+<h2>HostAgent message handling<a class="headerlink" href="#hostagent-message-handling" title="Permalink to this heading">#</a></h2>
 <p>The agent is exported with exactly these handlers:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="cp">#[hyperactor::export(</span>
 <span class="cp">    handlers = [</span>
 <span class="cp">        resource::CreateOrUpdate&lt;ProcSpec&gt;,</span>
 <span class="cp">        resource::Stop,</span>
 <span class="cp">        resource::GetState&lt;ProcState&gt;,</span>
-<span class="cp">        resource::GetRankStatus { cast = true },</span>
+<span class="cp">        resource::GetRankStatus,</span>
 <span class="cp">        resource::List,</span>
 <span class="cp">        ShutdownHost,</span>
 <span class="cp">    ]</span>
@@ -1418,7 +1419,7 @@ document.write(`
 </div>
 <p>So everything it does is one of those 6 messages.</p>
 <section id="createorupdate">
-<h3>1. CreateOrUpdate<ProcSpec><a class="headerlink" href="#createorupdate" title="Link to this heading">#</a></h3>
+<h3>1. CreateOrUpdate<ProcSpec><a class="headerlink" href="#createorupdate" title="Permalink to this heading">#</a></h3>
 <ul class="simple">
 <li><p>If we already have <code class="docutils literal notranslate"><span class="pre">created[name]</span></code>, do nothing (idempotent).</p></li>
 <li><p>Otherwise call <code class="docutils literal notranslate"><span class="pre">host.spawn(name,</span> <span class="pre">...)</span></code> — process-backed hosts get a <code class="docutils literal notranslate"><span class="pre">BootstrapProcConfig</span></code>, local hosts get <code class="docutils literal notranslate"><span class="pre">()</span></code>.</p></li>
@@ -1426,7 +1427,7 @@ document.write(`
 </ul>
 </section>
 <section id="stop">
-<h3>2. Stop<a class="headerlink" href="#stop" title="Link to this heading">#</a></h3>
+<h3>2. Stop<a class="headerlink" href="#stop" title="Permalink to this heading">#</a></h3>
 <ul class="simple">
 <li><p>Look up <code class="docutils literal notranslate"><span class="pre">created[name]</span></code>.</p></li>
 <li><p>If it was successfully created, call <code class="docutils literal notranslate"><span class="pre">host.terminate_proc(...,</span> <span class="pre">timeout)</span></code> and mark it <code class="docutils literal notranslate"><span class="pre">stopped</span> <span class="pre">=</span> <span class="pre">true</span></code>.</p></li>
@@ -1434,7 +1435,7 @@ document.write(`
 </ul>
 </section>
 <section id="getrankstatus">
-<h3>3. GetRankStatus<a class="headerlink" href="#getrankstatus" title="Link to this heading">#</a></h3>
+<h3>3. GetRankStatus<a class="headerlink" href="#getrankstatus" title="Permalink to this heading">#</a></h3>
 <ul class="simple">
 <li><p>Look up <code class="docutils literal notranslate"><span class="pre">created[name]</span></code>.</p></li>
 <li><p>If present, return that rank with <code class="docutils literal notranslate"><span class="pre">Running</span></code> / <code class="docutils literal notranslate"><span class="pre">Stopped</span></code> / <code class="docutils literal notranslate"><span class="pre">Failed</span></code> (depending on what we know).</p></li>
@@ -1442,7 +1443,7 @@ document.write(`
 </ul>
 </section>
 <section id="getstate">
-<h3>4. GetState<ProcState><a class="headerlink" href="#getstate" title="Link to this heading">#</a></h3>
+<h3>4. GetState<ProcState><a class="headerlink" href="#getstate" title="Permalink to this heading">#</a></h3>
 <ul class="simple">
 <li><p>Same lookup, but return the richer state:</p>
 <ul>
@@ -1455,13 +1456,13 @@ document.write(`
 </ul>
 </section>
 <section id="list">
-<h3>5. List<a class="headerlink" href="#list" title="Link to this heading">#</a></h3>
+<h3>5. List<a class="headerlink" href="#list" title="Permalink to this heading">#</a></h3>
 <ul class="simple">
 <li><p>Return all the proc names that have been created on this host (the keys from the <code class="docutils literal notranslate"><span class="pre">created</span></code> map).</p></li>
 </ul>
 </section>
 <section id="shutdownhost">
-<h3>6. ShutdownHost<a class="headerlink" href="#shutdownhost" title="Link to this heading">#</a></h3>
+<h3>6. ShutdownHost<a class="headerlink" href="#shutdownhost" title="Permalink to this heading">#</a></h3>
 <ul class="simple">
 <li><p>Ack first so the caller can await.</p></li>
 <li><p>Take the host out of <code class="docutils literal notranslate"><span class="pre">self</span></code>.</p></li>
@@ -1470,11 +1471,11 @@ document.write(`
 </section>
 </section>
 <section id="why-this-exists">
-<h2>Why this exists<a class="headerlink" href="#why-this-exists" title="Link to this heading">#</a></h2>
+<h2>Why this exists<a class="headerlink" href="#why-this-exists" title="Permalink to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">Host</span></code> is local; <code class="docutils literal notranslate"><span class="pre">HostAgent</span></code> is the remote handle for it. Bootstrap code just sends <code class="docutils literal notranslate"><span class="pre">CreateOrUpdate/Stop/GetState</span></code> to the agent; the agent is the one that actually owns the <code class="docutils literal notranslate"><span class="pre">Host</span></code> and can spawn/stop procs. That’s why all handlers use the shared <code class="docutils literal notranslate"><span class="pre">resource</span></code> messages.</p>
 </section>
 <section id="procspec-what-we-tell-the-host-to-run">
-<h2>1. <code class="docutils literal notranslate"><span class="pre">ProcSpec</span></code> (what we tell the host to run)<a class="headerlink" href="#procspec-what-we-tell-the-host-to-run" title="Link to this heading">#</a></h2>
+<h2>1. <code class="docutils literal notranslate"><span class="pre">ProcSpec</span></code> (what we tell the host to run)<a class="headerlink" href="#procspec-what-we-tell-the-host-to-run" title="Permalink to this heading">#</a></h2>
 <p>In all the examples above we sent <code class="docutils literal notranslate"><span class="pre">resource::CreateOrUpdate&lt;ProcSpec&gt;</span></code>, and in the code that really is what’s happening — but the current <code class="docutils literal notranslate"><span class="pre">ProcSpec</span></code> is intentionally very thin.</p>
 <p>From <code class="docutils literal notranslate"><span class="pre">hyperactor_mesh/src/resource.rs</span></code>:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="sd">/// Spec for a host mesh agent to use when spawning a new proc.</span>
@@ -1493,7 +1494,6 @@ document.write(`
 </ul>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">CreateOrUpdate</span><span class="o">&lt;</span><span class="n">S</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="n">name</span><span class="p">:</span><span class="w"> </span><span class="nc">Name</span><span class="p">,</span>
-<span class="w">    </span><span class="cp">#[binding(include)]</span>
 <span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="n">rank</span><span class="p">:</span><span class="w"> </span><span class="nc">Rank</span><span class="p">,</span>
 <span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="n">spec</span><span class="p">:</span><span class="w"> </span><span class="nc">S</span><span class="p">,</span>
 <span class="p">}</span>
@@ -1529,7 +1529,7 @@ document.write(`
 <p>That’s why the current <code class="docutils literal notranslate"><span class="pre">ProcSpec</span></code> can stay small: the outer resource message carries the mesh-y things (name, rank), and the spec only has to carry the “what should this proc’s client config look like” part.</p>
 </section>
 <section id="how-the-host-actually-spawns">
-<h2>2. How the host actually spawns<a class="headerlink" href="#how-the-host-actually-spawns" title="Link to this heading">#</a></h2>
+<h2>2. How the host actually spawns<a class="headerlink" href="#how-the-host-actually-spawns" title="Permalink to this heading">#</a></h2>
 <p>When the agent calls <code class="docutils literal notranslate"><span class="pre">host.spawn(name,</span> <span class="pre">…)</span></code>, the <strong>host itself</strong> is not doing the OS-level work. The host delegates to its configured <em>proc manager</em>:</p>
 <ul class="simple">
 <li><p>process-backed host → <code class="docutils literal notranslate"><span class="pre">Host&lt;BootstrapProcManager&gt;</span></code></p></li>
@@ -1539,7 +1539,7 @@ document.write(`
 <p>We’re not going to unpack the process-backed path here — that lives in <strong>“BootstrapProcManager (process-backed hosts)”</strong> where we can talk about commands, ready signals, and termination.</p>
 </section>
 <section id="v1-bootstrap-in-one-pass">
-<h2>v1 bootstrap in one pass<a class="headerlink" href="#v1-bootstrap-in-one-pass" title="Link to this heading">#</a></h2>
+<h2>v1 bootstrap in one pass<a class="headerlink" href="#v1-bootstrap-in-one-pass" title="Permalink to this heading">#</a></h2>
 <p>The reason the <code class="docutils literal notranslate"><span class="pre">HostAgent</span></code> has those five messages (create, stop, get-state, get-rank-status, shutdown) is that the v1 protocol treats “things on a host” as <strong>resources</strong>. A typical sequence is:</p>
 <ol class="arabic simple">
 <li><p><strong>Coordinator → hosts:</strong> send <code class="docutils literal notranslate"><span class="pre">CreateOrUpdate&lt;ProcSpec&gt;</span></code> to every host agent in the mesh (“each of you should have a proc called <code class="docutils literal notranslate"><span class="pre">p0</span></code> with this rank/config”).</p></li>
@@ -1789,7 +1789,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>
@@ -1818,7 +1818,7 @@ document.write(`
        "headline": "Host \u0026 agents (control plane \u0026 mux)",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/books/hyperactor-mesh-book/src/meshes/host-and-agents.html",
-       "articleBody": "Host \u0026 agents (control plane \u0026 mux)# In the runtime, a host is the thing that owns \u201call the procs on this machine\u201d and gives them a single front door. The Rust type looks like this: // from hyperactor/src/host.rs pub struct Host\u003cM\u003e { procs: HashSet\u003cString\u003e, frontend_addr: ChannelAddr, backend_addr: ChannelAddr, router: DialMailboxRouter, manager: M, service_proc: Proc, local_proc: Proc, frontend_rx: Option\u003cChannelRx\u003cMessageEnvelope\u003e\u003e, } Visually, you can think of it like this: \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510 \u250c\u2500\u2500\u2500\u25b6 proc *,1 \u2502 \u2502 #1\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518 \u2502 \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510 \u2502 \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510 \u2502 Host \u2502\u25c0\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u25b6 proc *,2 \u2502 *\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518# \u2502 #2\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518 \u2502 \u2502 \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510 \u2514\u2500\u2500\u2500\u25b6 proc *,3 \u2502 #3\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518 * is the host\u2019s frontend address (frontend_addr). This is the address other mesh participants know. # is the host\u2019s backend address (backend_addr). Procs talk to the host here. #1, #2, #3 are the per-proc backend channels the host records in router: DialMailboxRouter Each box proc *,N is a proc that is direct-addressed via the host \u2014 its id is essentially \u201cproc at * named N\u201d. What the fields mean# frontend_addr: the single, public entry point. Messages from the rest of the mesh arrive here. procs: a set of proc names managed by this host. router: DialMailboxRouter: the machinery that actually multiplexes/demultiplexes between * and the per-proc channels. manager: M: the thing that can create and destroy procs on this host. In the real bootstrapped case this is a BootstrapProcManager; in tests it can be a local manager. service_proc: the host\u2019s system proc handle, so the host can participate in the same message world it is hosting. local_proc: an additional local proc for in-process operations. frontend_rx: the optional channel receiver for the frontend address (consumed when serving starts). Why this matters for bootstrapping# When, in chapter 4, we say \u201cnow ask each host to spawn a proc,\u201d this is the piece that makes it possible. The host already has: a public address (*), a routing table for its existing procs, and a manager capable of creating new ones. So the host-mesh agent can receive a \u201ccreate proc\u201d request over the mesh protocol and hand it to the host, and the host will add another box to the diagram above. Code-level view# At the control plane we have the mesh-facing actor: // hyperactor_mesh/src/host_mesh/host_agent.rs pub struct HostAgent { host: Option\u003cHostAgentMode\u003e, created: HashMap\u003cName, ProcCreationState\u003e, } The reason it\u2019s an Option is that the agent can exist before (or after) the host is actually running. The host field is one of two shapes: // \"How are we running this host?\" pub enum HostAgentMode { // Real OS process, uses BootstrapProcManager underneath. Process(Host\u003cBootstrapProcManager\u003e), // In-process/testing host, uses a local proc manager. Local(Host\u003cLocalProcManager\u003cProcManagerSpawnFn\u003e\u003e), } Both variants wrap a Host\u003c\u2026\u003e, and that Host is the thing we drew earlier as the mux: // hyperactor/src/host.rs (simplified) pub struct Host\u003cM\u003e { procs: HashSet\u003cString\u003e, frontend_addr: ChannelAddr, backend_addr: ChannelAddr, router: DialMailboxRouter, manager: M, // e.g. BootstrapProcManager service_proc: Proc, local_proc: Proc, frontend_rx: Option\u003cChannelRx\u003cMessageEnvelope\u003e\u003e, } So the layering from the code\u2019s point of view is: HostAgent (actor you message over v1) \u2192 maybe a HostAgentMode \u2192 definitely a Host\u003c...\u003e once materialized \u2192 which, through its manager (e.g. BootstrapProcManager), owns/spawns the procs and does the */#n routing. HostAgent message handling# The agent is exported with exactly these handlers: #[hyperactor::export( handlers = [ resource::CreateOrUpdate\u003cProcSpec\u003e, resource::Stop, resource::GetState\u003cProcState\u003e, resource::GetRankStatus { cast = true }, resource::List, ShutdownHost, ] )] pub struct HostAgent { host: Option\u003cHostAgentMode\u003e, created: HashMap\u003cName, ProcCreationState\u003e, local_mesh_agent: OnceCell\u003canyhow::Result\u003cActorHandle\u003cProcAgent\u003e\u003e\u003e, } So everything it does is one of those 6 messages. 1. CreateOrUpdate# If we already have created[name], do nothing (idempotent). Otherwise call host.spawn(name, ...) \u2014 process-backed hosts get a BootstrapProcConfig, local hosts get (). Store { rank, created_result, stopped: false } in created. 2. Stop# Look up created[name]. If it was successfully created, call host.terminate_proc(..., timeout) and mark it stopped = true. Reply with a StatusOverlay for that rank (or empty if we never had it). 3. GetRankStatus# Look up created[name]. If present, return that rank with Running / Stopped / Failed (depending on what we know). Otherwise return NotExist. 4. GetState# Same lookup, but return the richer state: the proc\u2019s direct id at the host, the rank we used, the proc\u2019s own ProcAgent ref, and any bootstrap/process status the host\u2019s manager could provide. 5. List# Return all the proc names that have been created on this host (the keys from the created map). 6. ShutdownHost# Ack first so the caller can await. Take the host out of self. Call host.terminate_children(...) (process vs local path) with the provided timeout and concurrency. Why this exists# Host is local; HostAgent is the remote handle for it. Bootstrap code just sends CreateOrUpdate/Stop/GetState to the agent; the agent is the one that actually owns the Host and can spawn/stop procs. That\u2019s why all handlers use the shared resource messages. 1. ProcSpec (what we tell the host to run)# In all the examples above we sent resource::CreateOrUpdate\u003cProcSpec\u003e, and in the code that really is what\u2019s happening \u2014 but the current ProcSpec is intentionally very thin. From hyperactor_mesh/src/resource.rs: /// Spec for a host mesh agent to use when spawning a new proc. #[derive(Clone, Debug, Serialize, Deserialize, Named, Default)] pub(crate) struct ProcSpec { /// Config values to set on the spawned proc\u0027s global config, /// at the `ClientOverride` layer. pub(crate) client_config_override: Attrs, } So right now: the spec is private (pub(crate)) and has exactly one field: client_config_override: Attrs; the rank is not here \u2014 it\u2019s on the outer message: pub struct CreateOrUpdate\u003cS\u003e { pub name: Name, #[binding(include)] pub rank: Rank, pub spec: S, } What the HostAgent actually does matches this shape: if the host is process-backed (HostAgentMode::Process(...)), it builds a BootstrapProcConfig using the rank from CreateOrUpdate::\u003cProcSpec\u003e, and the client_config_override from ProcSpec, and passes that to host.spawn(...); if the host is local (HostAgentMode::Local(...)), it just calls host.spawn(name, ()) and ignores the override. Here is the bit of real code that does exactly that (abridged to just the decision): // from hyperactor_mesh/src/host_mesh/host_agent.rs (`impl Handler\u003cresource::CreateOrUpdate\u003cProcSpec\u003e\u003e for HostAgent`) let created = match host { HostAgentMode::Process(host) =\u003e { host.spawn( msg.name.to_string(), BootstrapProcConfig { create_rank: msg.rank.unwrap(), client_config_override: msg.spec.client_config_override.clone(), }, ) .await } HostAgentMode::Local(host) =\u003e { host.spawn(msg.name.to_string(), ()).await } }; That\u2019s why the current ProcSpec can stay small: the outer resource message carries the mesh-y things (name, rank), and the spec only has to carry the \u201cwhat should this proc\u2019s client config look like\u201d part. 2. How the host actually spawns# When the agent calls host.spawn(name, \u2026), the host itself is not doing the OS-level work. The host delegates to its configured proc manager: process-backed host \u2192 Host\u003cBootstrapProcManager\u003e in-proc/test host \u2192 Host\u003cLocalProcManager\u003c...\u003e\u003e The manager is the thing that can \u201cmake a proc real\u201d (fork/spawn, run the bootstrap command, wire the backchannel) and hand the host the proc name so the host can add it to the procs: HashSet\u003cString\u003e table and expose it as ProcId(frontend_addr, name). We\u2019re not going to unpack the process-backed path here \u2014 that lives in \u201cBootstrapProcManager (process-backed hosts)\u201d where we can talk about commands, ready signals, and termination. v1 bootstrap in one pass# The reason the HostAgent has those five messages (create, stop, get-state, get-rank-status, shutdown) is that the v1 protocol treats \u201cthings on a host\u201d as resources. A typical sequence is: Coordinator \u2192 hosts: send CreateOrUpdate\u003cProcSpec\u003e to every host agent in the mesh (\u201ceach of you should have a proc called p0 with this rank/config\u201d). Coordinator \u2192 hosts (later): send GetState\u003cProcState\u003e (or GetRankStatus) to see which hosts actually brought that proc up and what address/command it got. Coordinator \u2192 hosts (teardown): send ShutdownHost to have each agent tell its host to terminate all children and drop the host. Because everyone speaks this same resource shape \u2014 CreateOrUpdate\u003cT\u003e, GetState\u003cT\u003e, Stop, StopAll/ShutdownHost \u2014 the handlers on HostAgent all look the same, and the coordinator can fan the same message out to N hosts.",
+       "articleBody": "Host \u0026 agents (control plane \u0026 mux)# In the runtime, a host is the thing that owns \u201call the procs on this machine\u201d and gives them a single front door. The Rust type looks like this: // from hyperactor/src/host.rs pub struct Host\u003cM\u003e { procs: HashSet\u003cString\u003e, frontend_addr: ChannelAddr, backend_addr: ChannelAddr, router: DialMailboxRouter, manager: M, service_proc: Proc, local_proc: Proc, frontend_rx: Option\u003cChannelRx\u003cMessageEnvelope\u003e\u003e, } Visually, you can think of it like this: \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510 \u250c\u2500\u2500\u2500\u25b6 proc *,1 \u2502 \u2502 #1\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518 \u2502 \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510 \u2502 \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510 \u2502 Host \u2502\u25c0\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u25b6 proc *,2 \u2502 *\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518# \u2502 #2\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518 \u2502 \u2502 \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510 \u2514\u2500\u2500\u2500\u25b6 proc *,3 \u2502 #3\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518 * is the host\u2019s frontend address (frontend_addr). This is the address other mesh participants know. # is the host\u2019s backend address (backend_addr). Procs talk to the host here. #1, #2, #3 are the per-proc backend channels the host records in router: DialMailboxRouter Each box proc *,N is a proc that is direct-addressed via the host \u2014 its id is essentially \u201cproc at * named N\u201d. What the fields mean# frontend_addr: the single, public entry point. Messages from the rest of the mesh arrive here. procs: a set of proc names managed by this host. router: DialMailboxRouter: the machinery that actually multiplexes/demultiplexes between * and the per-proc channels. manager: M: the thing that can create and destroy procs on this host. In the real bootstrapped case this is a BootstrapProcManager; in tests it can be a local manager. service_proc: the host\u2019s system proc handle, so the host can participate in the same message world it is hosting. local_proc: an additional local proc for in-process operations. frontend_rx: the optional channel receiver for the frontend address (consumed when serving starts). Why this matters for bootstrapping# When, in chapter 4, we say \u201cnow ask each host to spawn a proc,\u201d this is the piece that makes it possible. The host already has: a public address (*), a routing table for its existing procs, and a manager capable of creating new ones. So the host-mesh agent can receive a \u201ccreate proc\u201d request over the mesh protocol and hand it to the host, and the host will add another box to the diagram above. Code-level view# At the control plane we have the mesh-facing actor: // hyperactor_mesh/src/host_mesh/host_agent.rs pub struct HostAgent { host: Option\u003cHostAgentMode\u003e, created: HashMap\u003cName, ProcCreationState\u003e, } The reason it\u2019s an Option is that the agent can exist before (or after) the host is actually running. The host field is one of two shapes: // \"How are we running this host?\" pub enum HostAgentMode { // Real OS process, uses BootstrapProcManager underneath. Process(Host\u003cBootstrapProcManager\u003e), // In-process/testing host, uses a local proc manager. Local(Host\u003cLocalProcManager\u003cProcManagerSpawnFn\u003e\u003e), } Both variants wrap a Host\u003c\u2026\u003e, and that Host is the thing we drew earlier as the mux: // hyperactor/src/host.rs (simplified) pub struct Host\u003cM\u003e { procs: HashSet\u003cString\u003e, frontend_addr: ChannelAddr, backend_addr: ChannelAddr, router: DialMailboxRouter, manager: M, // e.g. BootstrapProcManager service_proc: Proc, local_proc: Proc, frontend_rx: Option\u003cChannelRx\u003cMessageEnvelope\u003e\u003e, } So the layering from the code\u2019s point of view is: HostAgent (actor you message over v1) \u2192 maybe a HostAgentMode \u2192 definitely a Host\u003c...\u003e once materialized \u2192 which, through its manager (e.g. BootstrapProcManager), owns/spawns the procs and does the */#n routing. HostAgent message handling# The agent is exported with exactly these handlers: #[hyperactor::export( handlers = [ resource::CreateOrUpdate\u003cProcSpec\u003e, resource::Stop, resource::GetState\u003cProcState\u003e, resource::GetRankStatus, resource::List, ShutdownHost, ] )] pub struct HostAgent { host: Option\u003cHostAgentMode\u003e, created: HashMap\u003cName, ProcCreationState\u003e, local_mesh_agent: OnceCell\u003canyhow::Result\u003cActorHandle\u003cProcAgent\u003e\u003e\u003e, } So everything it does is one of those 6 messages. 1. CreateOrUpdate# If we already have created[name], do nothing (idempotent). Otherwise call host.spawn(name, ...) \u2014 process-backed hosts get a BootstrapProcConfig, local hosts get (). Store { rank, created_result, stopped: false } in created. 2. Stop# Look up created[name]. If it was successfully created, call host.terminate_proc(..., timeout) and mark it stopped = true. Reply with a StatusOverlay for that rank (or empty if we never had it). 3. GetRankStatus# Look up created[name]. If present, return that rank with Running / Stopped / Failed (depending on what we know). Otherwise return NotExist. 4. GetState# Same lookup, but return the richer state: the proc\u2019s direct id at the host, the rank we used, the proc\u2019s own ProcAgent ref, and any bootstrap/process status the host\u2019s manager could provide. 5. List# Return all the proc names that have been created on this host (the keys from the created map). 6. ShutdownHost# Ack first so the caller can await. Take the host out of self. Call host.terminate_children(...) (process vs local path) with the provided timeout and concurrency. Why this exists# Host is local; HostAgent is the remote handle for it. Bootstrap code just sends CreateOrUpdate/Stop/GetState to the agent; the agent is the one that actually owns the Host and can spawn/stop procs. That\u2019s why all handlers use the shared resource messages. 1. ProcSpec (what we tell the host to run)# In all the examples above we sent resource::CreateOrUpdate\u003cProcSpec\u003e, and in the code that really is what\u2019s happening \u2014 but the current ProcSpec is intentionally very thin. From hyperactor_mesh/src/resource.rs: /// Spec for a host mesh agent to use when spawning a new proc. #[derive(Clone, Debug, Serialize, Deserialize, Named, Default)] pub(crate) struct ProcSpec { /// Config values to set on the spawned proc\u0027s global config, /// at the `ClientOverride` layer. pub(crate) client_config_override: Attrs, } So right now: the spec is private (pub(crate)) and has exactly one field: client_config_override: Attrs; the rank is not here \u2014 it\u2019s on the outer message: pub struct CreateOrUpdate\u003cS\u003e { pub name: Name, pub rank: Rank, pub spec: S, } What the HostAgent actually does matches this shape: if the host is process-backed (HostAgentMode::Process(...)), it builds a BootstrapProcConfig using the rank from CreateOrUpdate::\u003cProcSpec\u003e, and the client_config_override from ProcSpec, and passes that to host.spawn(...); if the host is local (HostAgentMode::Local(...)), it just calls host.spawn(name, ()) and ignores the override. Here is the bit of real code that does exactly that (abridged to just the decision): // from hyperactor_mesh/src/host_mesh/host_agent.rs (`impl Handler\u003cresource::CreateOrUpdate\u003cProcSpec\u003e\u003e for HostAgent`) let created = match host { HostAgentMode::Process(host) =\u003e { host.spawn( msg.name.to_string(), BootstrapProcConfig { create_rank: msg.rank.unwrap(), client_config_override: msg.spec.client_config_override.clone(), }, ) .await } HostAgentMode::Local(host) =\u003e { host.spawn(msg.name.to_string(), ()).await } }; That\u2019s why the current ProcSpec can stay small: the outer resource message carries the mesh-y things (name, rank), and the spec only has to carry the \u201cwhat should this proc\u2019s client config look like\u201d part. 2. How the host actually spawns# When the agent calls host.spawn(name, \u2026), the host itself is not doing the OS-level work. The host delegates to its configured proc manager: process-backed host \u2192 Host\u003cBootstrapProcManager\u003e in-proc/test host \u2192 Host\u003cLocalProcManager\u003c...\u003e\u003e The manager is the thing that can \u201cmake a proc real\u201d (fork/spawn, run the bootstrap command, wire the backchannel) and hand the host the proc name so the host can add it to the procs: HashSet\u003cString\u003e table and expose it as ProcId(frontend_addr, name). We\u2019re not going to unpack the process-backed path here \u2014 that lives in \u201cBootstrapProcManager (process-backed hosts)\u201d where we can talk about commands, ready signals, and termination. v1 bootstrap in one pass# The reason the HostAgent has those five messages (create, stop, get-state, get-rank-status, shutdown) is that the v1 protocol treats \u201cthings on a host\u201d as resources. A typical sequence is: Coordinator \u2192 hosts: send CreateOrUpdate\u003cProcSpec\u003e to every host agent in the mesh (\u201ceach of you should have a proc called p0 with this rank/config\u201d). Coordinator \u2192 hosts (later): send GetState\u003cProcState\u003e (or GetRankStatus) to see which hosts actually brought that proc up and what address/command it got. Coordinator \u2192 hosts (teardown): send ShutdownHost to have each agent tell its host to terminate all children and drop the host. Because everyone speaks this same resource shape \u2014 CreateOrUpdate\u003cT\u003e, GetState\u003cT\u003e, Stop, StopAll/ShutdownHost \u2014 the handlers on HostAgent all look the same, and the coordinator can fan the same message out to N hosts.",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

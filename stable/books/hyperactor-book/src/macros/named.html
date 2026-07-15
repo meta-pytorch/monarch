@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -16,7 +17,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="The#[derive(Named)] macro implements the typeuri::Named trait for a type, making it identifiable at runtime through a globally unique string and stable hash. The Named trait: The typeuri::Named tra..." />
 
-    <title>#[derive(Named)] &#8212; Monarch v0.5.0 documentation</title>
+    <title>#[derive(Named)] &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
+    <script src="../../../../_static/doctools.js"></script>
+    <script src="../../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../../_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-book/src/macros/named';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/macros/named.html" />
@@ -82,7 +83,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +197,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1293,10 +1294,10 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="derive-named">
-<h1><code class="docutils literal notranslate"><span class="pre">#[derive(Named)]</span></code><a class="headerlink" href="#derive-named" title="Link to this heading">#</a></h1>
+<h1><code class="docutils literal notranslate"><span class="pre">#[derive(Named)]</span></code><a class="headerlink" href="#derive-named" title="Permalink to this heading">#</a></h1>
 <p>The <code class="docutils literal notranslate"><span class="pre">#[derive(Named)]</span></code> macro implements the <code class="docutils literal notranslate"><span class="pre">typeuri::Named</span></code> trait for a type, making it identifiable at runtime through a globally unique string and stable hash.</p>
 <section id="the-named-trait">
-<h2>The <code class="docutils literal notranslate"><span class="pre">Named</span></code> trait<a class="headerlink" href="#the-named-trait" title="Link to this heading">#</a></h2>
+<h2>The <code class="docutils literal notranslate"><span class="pre">Named</span></code> trait<a class="headerlink" href="#the-named-trait" title="Permalink to this heading">#</a></h2>
 <p>The <code class="docutils literal notranslate"><span class="pre">typeuri::Named</span></code> trait is the foundation of type identification in hyperactor. It gives each type a globally unique identity based on its name used in routing.</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">pub</span><span class="w"> </span><span class="k">trait</span><span class="w"> </span><span class="n">Named</span><span class="p">:</span><span class="w"> </span><span class="nb">Sized</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="o">&#39;</span><span class="nb">static</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">typename</span><span class="p">()</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="kp">&amp;</span><span class="o">&#39;</span><span class="nb">static</span><span class="w"> </span><span class="kt">str</span><span class="p">;</span>
@@ -1309,27 +1310,27 @@ document.write(`
 </pre></div>
 </div>
 <section id="trait-methods">
-<h3>Trait Methods<a class="headerlink" href="#trait-methods" title="Link to this heading">#</a></h3>
+<h3>Trait Methods<a class="headerlink" href="#trait-methods" title="Permalink to this heading">#</a></h3>
 <section id="typename-static-str">
-<h4><code class="docutils literal notranslate"><span class="pre">typename()</span> <span class="pre">-&gt;</span> <span class="pre">&amp;'static</span> <span class="pre">str</span></code><a class="headerlink" href="#typename-static-str" title="Link to this heading">#</a></h4>
+<h4><code class="docutils literal notranslate"><span class="pre">typename()</span> <span class="pre">-&gt;</span> <span class="pre">&amp;'static</span> <span class="pre">str</span></code><a class="headerlink" href="#typename-static-str" title="Permalink to this heading">#</a></h4>
 <p>Returns the globally unique, fully-qualified type name for the type. This should typically look like:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="s">&quot;foo::bar::Corge&lt;quux::garpy::Waldo&gt;&quot;</span>
 </pre></div>
 </div>
 </section>
 <section id="typehash-u64">
-<h4><code class="docutils literal notranslate"><span class="pre">typehash()</span> <span class="pre">-&gt;</span> <span class="pre">u64</span></code><a class="headerlink" href="#typehash-u64" title="Link to this heading">#</a></h4>
+<h4><code class="docutils literal notranslate"><span class="pre">typehash()</span> <span class="pre">-&gt;</span> <span class="pre">u64</span></code><a class="headerlink" href="#typehash-u64" title="Permalink to this heading">#</a></h4>
 <p>Returns a stable hash derived from <code class="docutils literal notranslate"><span class="pre">typename()</span></code>. This value is used for handler port derivation.</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="n">cityhasher</span><span class="p">::</span><span class="n">hash</span><span class="p">(</span><span class="bp">Self</span><span class="p">::</span><span class="n">typename</span><span class="p">())</span>
 </pre></div>
 </div>
 </section>
 <section id="typeid-typeid">
-<h4><code class="docutils literal notranslate"><span class="pre">typeid()</span> <span class="pre">-&gt;</span> <span class="pre">TypeId</span></code><a class="headerlink" href="#typeid-typeid" title="Link to this heading">#</a></h4>
+<h4><code class="docutils literal notranslate"><span class="pre">typeid()</span> <span class="pre">-&gt;</span> <span class="pre">TypeId</span></code><a class="headerlink" href="#typeid-typeid" title="Permalink to this heading">#</a></h4>
 <p>Returns the Rust <code class="docutils literal notranslate"><span class="pre">TypeId</span></code> for the type (, which is only unique within a single binary).</p>
 </section>
 <section id="port-u64">
-<h4><code class="docutils literal notranslate"><span class="pre">port()</span> <span class="pre">-&gt;</span> <span class="pre">u64</span></code><a class="headerlink" href="#port-u64" title="Link to this heading">#</a></h4>
+<h4><code class="docutils literal notranslate"><span class="pre">port()</span> <span class="pre">-&gt;</span> <span class="pre">u64</span></code><a class="headerlink" href="#port-u64" title="Permalink to this heading">#</a></h4>
 <p>Returns a globally unique port number for the type:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="bp">Self</span><span class="p">::</span><span class="n">typehash</span><span class="p">()</span><span class="w"> </span><span class="o">|</span><span class="w"> </span><span class="p">(</span><span class="mi">1</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="mi">63</span><span class="p">)</span>
 </pre></div>
@@ -1338,16 +1339,16 @@ document.write(`
 </section>
 </section>
 <section id="arm-self-option-static-str">
-<h3><code class="docutils literal notranslate"><span class="pre">arm(&amp;self)</span> <span class="pre">-&gt;</span> <span class="pre">Option&lt;&amp;'static</span> <span class="pre">str&gt;</span></code><a class="headerlink" href="#arm-self-option-static-str" title="Link to this heading">#</a></h3>
+<h3><code class="docutils literal notranslate"><span class="pre">arm(&amp;self)</span> <span class="pre">-&gt;</span> <span class="pre">Option&lt;&amp;'static</span> <span class="pre">str&gt;</span></code><a class="headerlink" href="#arm-self-option-static-str" title="Permalink to this heading">#</a></h3>
 <p>For enum types, this returns the name of the current variant, e.g., “Add” or “Remove”.</p>
 </section>
 <section id="unsafe-fn-arm-unchecked-ptr-const-option-static-str">
-<h3><code class="docutils literal notranslate"><span class="pre">unsafe</span> <span class="pre">fn</span> <span class="pre">arm_unchecked(ptr:</span> <span class="pre">*const</span> <span class="pre">())</span> <span class="pre">-&gt;</span> <span class="pre">Option&lt;&amp;'static</span> <span class="pre">str&gt;</span></code><a class="headerlink" href="#unsafe-fn-arm-unchecked-ptr-const-option-static-str" title="Link to this heading">#</a></h3>
+<h3><code class="docutils literal notranslate"><span class="pre">unsafe</span> <span class="pre">fn</span> <span class="pre">arm_unchecked(ptr:</span> <span class="pre">*const</span> <span class="pre">())</span> <span class="pre">-&gt;</span> <span class="pre">Option&lt;&amp;'static</span> <span class="pre">str&gt;</span></code><a class="headerlink" href="#unsafe-fn-arm-unchecked-ptr-const-option-static-str" title="Permalink to this heading">#</a></h3>
 <p>The type-erased version of <code class="docutils literal notranslate"><span class="pre">arm()</span></code>. Casts ptr back to <code class="docutils literal notranslate"><span class="pre">&amp;Self</span></code> and calls <code class="docutils literal notranslate"><span class="pre">arm()</span></code>.</p>
 <p>Useful for dynamic reflection when the concrete type isn’t statically known</p>
 </section>
 <section id="runtime-registration">
-<h3>Runtime Registration<a class="headerlink" href="#runtime-registration" title="Link to this heading">#</a></h3>
+<h3>Runtime Registration<a class="headerlink" href="#runtime-registration" title="Permalink to this heading">#</a></h3>
 <p>In addition to implementing the <code class="docutils literal notranslate"><span class="pre">Named</span></code> trait, the macro registers the type’s metadata at startup using the <code class="docutils literal notranslate"><span class="pre">inventory</span></code> crate:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">const</span><span class="w"> </span><span class="n">_</span><span class="p">:</span><span class="w"> </span><span class="p">()</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="k">static</span><span class="w"> </span><span class="n">__INVENTORY</span><span class="p">:</span><span class="w"> </span><span class="p">::</span><span class="n">inventory</span><span class="p">::</span><span class="n">Node</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">::</span><span class="n">inventory</span><span class="p">::</span><span class="n">Node</span><span class="w"> </span><span class="p">{</span>
@@ -1608,7 +1609,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>

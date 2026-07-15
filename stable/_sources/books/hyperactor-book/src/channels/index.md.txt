@@ -6,6 +6,6 @@ The following pages explore the key aspects of channels, from basic usage to tra
 
 - [Transmits and Receives](tx_rx.md)
 - [Channel Addresses](addresses.md)
-- [Transports](transports.md)
+- [Transports](transports/index.md)
 - [Frames](frames.md)
 - [Network Internals](net_internals.md)

@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -16,7 +17,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="A Proc is a container for actors and provides the runtime context for actor execution, message routing, and lifecycle management. In hyperactor’s architecture, procs serve as the fundamental unit o..." />
 
-    <title>Procs &#8212; Monarch v0.5.0 documentation</title>
+    <title>Procs &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
+    <script src="../../../../_static/doctools.js"></script>
+    <script src="../../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../../_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-book/src/procs/index';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/procs/index.html" />
@@ -82,7 +83,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +197,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -841,9 +842,7 @@ document.write(`
       
       
       
-        
-      
-      <div class="bd-sidebar-primary bd-sidebar hide-on-wide">
+      <div class="bd-sidebar-primary bd-sidebar">
         
 
 
@@ -1204,6 +1203,26 @@ document.write(`
     
   </div>
   
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<nav class="bd-docs-nav bd-links"
+     aria-label="Section Navigation">
+  <p class="bd-links__title" role="heading" aria-level="1">Section Navigation</p>
+  <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">Chapters</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../actors/index.html">Actors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../macros/index.html">Macros</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../channels/index.html">Channels</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../mailboxes/index.html">Mailboxes and Routers</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Procs</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../references/index.html">References</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../remote_supervision.html">Remote Supervision and Rendezvous</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../appendix/index.html">Appendix</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
   
   <div class="sidebar-primary-items__end sidebar-primary__section">
   </div>
@@ -1293,54 +1312,44 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="procs">
-<h1>Procs<a class="headerlink" href="#procs" title="Link to this heading">#</a></h1>
+<h1>Procs<a class="headerlink" href="#procs" title="Permalink to this heading">#</a></h1>
 <p>A <code class="docutils literal notranslate"><span class="pre">Proc</span></code> is a container for actors and provides the runtime context for actor execution, message routing, and lifecycle management. In hyperactor’s architecture, procs serve as the fundamental unit of deployment and isolation.</p>
 <section id="overview">
-<h2>Overview<a class="headerlink" href="#overview" title="Link to this heading">#</a></h2>
-<p>Procs bridge the gap between actors (local computation) and the distributed system (remote communication). Each proc:</p>
+<h2>Overview<a class="headerlink" href="#overview" title="Permalink to this heading">#</a></h2>
+<p>Procs bridge the gap between actors (local computation) and the distributed system (remote communication). The three types in this section fit together as follows:</p>
 <ul class="simple">
-<li><p><strong>Hosts actors</strong>: Spawns and manages actor instances within its process</p></li>
-<li><p><strong>Routes messages</strong>: Provides a forwarder that determines how outbound messages reach their destinations</p></li>
-<li><p><strong>Identifies actors</strong>: All actors within a proc share the proc’s identity as part of their <code class="docutils literal notranslate"><span class="pre">ActorId</span></code></p></li>
-<li><p><strong>Manages lifecycle</strong>: Coordinates actor startup, supervision, and shutdown</p></li>
+<li><p>A <strong><code class="docutils literal notranslate"><span class="pre">Proc</span></code></strong> hosts actors and manages their lifecycle, but is not itself a network endpoint.</p></li>
+<li><p>A <strong><code class="docutils literal notranslate"><span class="pre">Gateway</span></code></strong> is the connectivity layer a proc attaches to: it multiplexes inbound traffic to the right local proc and routes outbound traffic on the proc’s behalf.</p></li>
+<li><p>A <strong><code class="docutils literal notranslate"><span class="pre">Host</span></code></strong> manages the procs on one machine and owns the single gateway through which they are reached.</p></li>
 </ul>
 </section>
 <section id="key-components">
-<h2>Key Components<a class="headerlink" href="#key-components" title="Link to this heading">#</a></h2>
+<h2>Key Components<a class="headerlink" href="#key-components" title="Permalink to this heading">#</a></h2>
 <section id="proc">
-<h3>Proc<a class="headerlink" href="#proc" title="Link to this heading">#</a></h3>
-<p>The <code class="docutils literal notranslate"><span class="pre">Proc</span></code> struct represents a single runtime instance. It’s created with:</p>
-<ul class="simple">
-<li><p>A <code class="docutils literal notranslate"><span class="pre">ProcId</span></code> that uniquely identifies it (see <a class="reference internal" href="../references/proc_id.html"><span class="std std-doc">ProcId</span></a>)</p></li>
-<li><p>A forwarder (<code class="docutils literal notranslate"><span class="pre">BoxedMailboxSender</span></code>) for routing outbound messages</p></li>
-</ul>
+<h3>Proc<a class="headerlink" href="#proc" title="Permalink to this heading">#</a></h3>
+<p>The <code class="docutils literal notranslate"><span class="pre">Proc</span></code> struct represents a single actor runtime. It owns actor lifecycle and identity (all actors within a proc share its <code class="docutils literal notranslate"><span class="pre">ProcId</span></code> as part of their <code class="docutils literal notranslate"><span class="pre">ActorId</span></code>) and reaches the outside world only through its gateway.</p>
 <p>See <a class="reference internal" href="proc.html"><span class="std std-doc">Proc</span></a> for details on construction and usage.</p>
 </section>
-<section id="host">
-<h3>Host<a class="headerlink" href="#host" title="Link to this heading">#</a></h3>
-<p>The <code class="docutils literal notranslate"><span class="pre">Host</span></code> manages multiple spawned procs and provides the infrastructure for:</p>
-<ul class="simple">
-<li><p>Accepting external connections (frontend)</p></li>
-<li><p>Coordinating message routing between procs (backend)</p></li>
-<li><p>Managing a service proc for system-level coordination</p></li>
-<li><p>Managing a local proc for user-level actors</p></li>
-</ul>
-<p>See <a class="reference internal" href="host.html"><span class="std std-doc">Host</span></a> for the complete hosting architecture.</p>
+<section id="gateway">
+<h3>Gateway<a class="headerlink" href="#gateway" title="Permalink to this heading">#</a></h3>
+<p>The <code class="docutils literal notranslate"><span class="pre">Gateway</span></code> is the connectivity layer for procs. It has one table for local
+in-process procs, one table for peer gateways keyed by <code class="docutils literal notranslate"><span class="pre">Via(uid)</span></code> hops, and a
+forwarder for everything else. The same routing decision handles local delivery,
+spawned children, attached clients, and ordinary egress.</p>
+<p>See <a class="reference internal" href="gateway.html"><span class="std std-doc">Gateway</span></a> for the type and its routing decision.</p>
 </section>
-<section id="procordial-router">
-<h3>ProcOrDial Router<a class="headerlink" href="#procordial-router" title="Link to this heading">#</a></h3>
-<p>A specialized router that enables bidirectional communication by distinguishing between:</p>
-<ul class="simple">
-<li><p>Messages destined for the service proc (delivered locally)</p></li>
-<li><p>Messages destined for the local proc (delivered locally)</p></li>
-<li><p>Messages destined for spawned procs (dialed remotely)</p></li>
-</ul>
-<p>See <a class="reference internal" href="proc_or_dial.html"><span class="std std-doc">ProcOrDial Router</span></a> for routing implementation details.</p>
+<section id="host">
+<h3>Host<a class="headerlink" href="#host" title="Permalink to this heading">#</a></h3>
+<p>The <code class="docutils literal notranslate"><span class="pre">Host</span></code> manages the lifecycle of the procs on one machine. It owns exactly
+one gateway and delegates all connectivity to it: <code class="docutils literal notranslate"><span class="pre">service</span></code> and <code class="docutils literal notranslate"><span class="pre">local</span></code> attach
+as in-process procs, while spawned children attach as gateway peers.</p>
+<p>See <a class="reference internal" href="host.html"><span class="std std-doc">Host</span></a> for the complete hosting architecture.</p>
 </section>
 </section>
 <section id="see-also">
-<h2>See Also<a class="headerlink" href="#see-also" title="Link to this heading">#</a></h2>
+<h2>See Also<a class="headerlink" href="#see-also" title="Permalink to this heading">#</a></h2>
 <ul class="simple">
+<li><p><a class="reference internal" href="gateway.html"><span class="std std-doc">Gateway</span></a> - The connectivity layer procs attach to</p></li>
 <li><p><a class="reference internal" href="../references/proc_id.html"><span class="std std-doc">ProcId</span></a> - Proc identity and addressing</p></li>
 <li><p><a class="reference internal" href="../references/actor_id.html"><span class="std std-doc">ActorId</span></a> - How actors inherit proc identity</p></li>
 <li><p><a class="reference internal" href="../channels/index.html"><span class="std std-doc">Channels</span></a> - Transport layer for inter-proc communication</p></li>
@@ -1433,8 +1442,8 @@ document.write(`
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#overview">Overview</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#key-components">Key Components</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#proc">Proc</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#gateway">Gateway</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#host">Host</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#procordial-router">ProcOrDial Router</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#see-also">See Also</a></li>
@@ -1580,7 +1589,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>
@@ -1609,7 +1618,7 @@ document.write(`
        "headline": "Procs",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/books/hyperactor-book/src/procs/index.html",
-       "articleBody": "Procs# A Proc is a container for actors and provides the runtime context for actor execution, message routing, and lifecycle management. In hyperactor\u2019s architecture, procs serve as the fundamental unit of deployment and isolation. Overview# Procs bridge the gap between actors (local computation) and the distributed system (remote communication). Each proc: Hosts actors: Spawns and manages actor instances within its process Routes messages: Provides a forwarder that determines how outbound messages reach their destinations Identifies actors: All actors within a proc share the proc\u2019s identity as part of their ActorId Manages lifecycle: Coordinates actor startup, supervision, and shutdown Key Components# Proc# The Proc struct represents a single runtime instance. It\u2019s created with: A ProcId that uniquely identifies it (see ProcId) A forwarder (BoxedMailboxSender) for routing outbound messages See Proc for details on construction and usage. Host# The Host manages multiple spawned procs and provides the infrastructure for: Accepting external connections (frontend) Coordinating message routing between procs (backend) Managing a service proc for system-level coordination Managing a local proc for user-level actors See Host for the complete hosting architecture. ProcOrDial Router# A specialized router that enables bidirectional communication by distinguishing between: Messages destined for the service proc (delivered locally) Messages destined for the local proc (delivered locally) Messages destined for spawned procs (dialed remotely) See ProcOrDial Router for routing implementation details. See Also# ProcId - Proc identity and addressing ActorId - How actors inherit proc identity Channels - Transport layer for inter-proc communication Routers - Message routing infrastructure",
+       "articleBody": "Procs# A Proc is a container for actors and provides the runtime context for actor execution, message routing, and lifecycle management. In hyperactor\u2019s architecture, procs serve as the fundamental unit of deployment and isolation. Overview# Procs bridge the gap between actors (local computation) and the distributed system (remote communication). The three types in this section fit together as follows: A Proc hosts actors and manages their lifecycle, but is not itself a network endpoint. A Gateway is the connectivity layer a proc attaches to: it multiplexes inbound traffic to the right local proc and routes outbound traffic on the proc\u2019s behalf. A Host manages the procs on one machine and owns the single gateway through which they are reached. Key Components# Proc# The Proc struct represents a single actor runtime. It owns actor lifecycle and identity (all actors within a proc share its ProcId as part of their ActorId) and reaches the outside world only through its gateway. See Proc for details on construction and usage. Gateway# The Gateway is the connectivity layer for procs. It has one table for local in-process procs, one table for peer gateways keyed by Via(uid) hops, and a forwarder for everything else. The same routing decision handles local delivery, spawned children, attached clients, and ordinary egress. See Gateway for the type and its routing decision. Host# The Host manages the lifecycle of the procs on one machine. It owns exactly one gateway and delegates all connectivity to it: service and local attach as in-process procs, while spawned children attach as gateway peers. See Host for the complete hosting architecture. See Also# Gateway - The connectivity layer procs attach to ProcId - Proc identity and addressing ActorId - How actors inherit proc identity Channels - Transport layer for inter-proc communication Routers - Message routing infrastructure",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

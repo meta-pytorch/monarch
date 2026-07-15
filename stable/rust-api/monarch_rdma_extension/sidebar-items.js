@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["register_python_bindings"],"struct":["PyLocalMemoryHandle","PyRdmaManager"]};
+window.SIDEBAR_ITEMS = {"fn":["register_python_bindings"],"struct":["PyLocalMemoryHandle","PyRdmaAction","PyRdmaManager","PyWeakLocalMemoryHandle"]};

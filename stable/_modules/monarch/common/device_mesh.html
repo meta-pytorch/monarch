@@ -1,13 +1,14 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>monarch.common.device_mesh &#8212; Monarch v0.5.0 documentation</title>
+    <title>monarch.common.device_mesh &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -27,37 +28,31 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../_static/design-tabs.js?v=f930bc37"></script>
-    <script type="module" src="https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs"></script>
-    <script type="module" src="https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0.1.4/dist/mermaid-layout-elk.esm.min.mjs"></script>
-    <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs";import elkLayouts from "https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0.1.4/dist/mermaid-layout-elk.esm.min.mjs";mermaid.registerLayoutLoaders(elkLayouts);mermaid.initialize({startOnLoad:false});</script>
-    <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
-    <script type="module">
-import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs";
-window.addEventListener("load", () => mermaid.run());
-</script>
+    <script data-url_root="../../../" id="documentation_options" src="../../../_static/documentation_options.js"></script>
+    <script src="../../../_static/doctools.js"></script>
+    <script src="../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../_static/design-tabs.js"></script>
+    <script src="https://unpkg.com/mermaid@10.2.0/dist/mermaid.min.js"></script>
+    <script>mermaid.initialize({startOnLoad:true});</script>
     <script>DOCUMENTATION_OPTIONS.pagename = '_modules/monarch/common/device_mesh';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/_modules/monarch/common/device_mesh.html" />
@@ -81,7 +76,7 @@ window.addEventListener("load", () => mermaid.run());
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -195,7 +190,7 @@ window.addEventListener("load", () => mermaid.run());
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1344,16 +1339,12 @@ document.write(`
 <span class="n">logger</span><span class="p">:</span> <span class="n">Logger</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
 
 
-<div class="viewcode-block" id="RemoteProcessGroup">
-<a class="viewcode-back" href="../../../api/monarch.html#monarch.RemoteProcessGroup">[docs]</a>
-<span class="k">class</span><span class="w"> </span><span class="nc">RemoteProcessGroup</span><span class="p">(</span><span class="n">Referenceable</span><span class="p">):</span>
+<div class="viewcode-block" id="RemoteProcessGroup"><a class="viewcode-back" href="../../../api/monarch.html#monarch.RemoteProcessGroup">[docs]</a><span class="k">class</span><span class="w"> </span><span class="nc">RemoteProcessGroup</span><span class="p">(</span><span class="n">Referenceable</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">    Client&#39;s view of a process group.</span>
 <span class="sd">    &quot;&quot;&quot;</span>
 
-<div class="viewcode-block" id="RemoteProcessGroup.__init__">
-<a class="viewcode-back" href="../../../api/monarch.html#monarch.RemoteProcessGroup.__init__">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">dims</span><span class="p">,</span> <span class="n">device_mesh</span><span class="p">):</span>
+<div class="viewcode-block" id="RemoteProcessGroup.__init__"><a class="viewcode-back" href="../../../api/monarch.html#monarch.RemoteProcessGroup.__init__">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">dims</span><span class="p">,</span> <span class="n">device_mesh</span><span class="p">):</span>
         <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;creating process group for </span><span class="si">{</span><span class="n">dims</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">dims</span> <span class="o">=</span> <span class="n">dims</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">device_mesh</span> <span class="o">=</span> <span class="n">device_mesh</span>
@@ -1362,14 +1353,11 @@ document.write(`
         <span class="c1"># A set of streams for which we&#39;ve sent the split-comm message.</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_split_comm_done</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span></div>
 
-
     <span class="k">def</span><span class="w"> </span><span class="nf">_create_remotely</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="n">msg</span> <span class="o">=</span> <span class="n">messages</span><span class="o">.</span><span class="n">CreateRemoteProcessGroup</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">device_mesh</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">dims</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">device_mesh</span><span class="o">.</span><span class="n">_send</span><span class="p">(</span><span class="n">msg</span><span class="p">)</span>
 
-<div class="viewcode-block" id="RemoteProcessGroup.ensure_split_comm_remotely">
-<a class="viewcode-back" href="../../../api/monarch.html#monarch.RemoteProcessGroup.ensure_split_comm_remotely">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">ensure_split_comm_remotely</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">stream</span><span class="p">):</span>
+<div class="viewcode-block" id="RemoteProcessGroup.ensure_split_comm_remotely"><a class="viewcode-back" href="../../../api/monarch.html#monarch.RemoteProcessGroup.ensure_split_comm_remotely">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="nf">ensure_split_comm_remotely</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">stream</span><span class="p">):</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        If we haven&#39;t already, send a message to the worker to split off a</span>
 <span class="sd">        communicator for this PG on the given stream.</span>
@@ -1383,6 +1371,7 @@ document.write(`
         <span class="bp">self</span><span class="o">.</span><span class="n">_split_comm_done</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">stream</span><span class="p">)</span>
 
         <span class="n">msg</span> <span class="o">=</span> <span class="n">messages</span><span class="o">.</span><span class="n">SplitCommForProcessGroup</span><span class="p">(</span>
+            <span class="c1"># pyrefly: ignore [bad-argument-type]</span>
             <span class="n">remote_process_group</span><span class="o">=</span><span class="bp">self</span><span class="p">,</span>
             <span class="n">stream</span><span class="o">=</span><span class="n">stream</span><span class="p">,</span>
         <span class="p">)</span>
@@ -1391,27 +1380,17 @@ document.write(`
             <span class="n">msg</span><span class="p">,</span>
         <span class="p">)</span></div>
 
-
-<div class="viewcode-block" id="RemoteProcessGroup.delete_ref">
-<a class="viewcode-back" href="../../../api/monarch.html#monarch.RemoteProcessGroup.delete_ref">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">delete_ref</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">ref</span><span class="p">:</span> <span class="nb">int</span><span class="p">):</span>
+<div class="viewcode-block" id="RemoteProcessGroup.delete_ref"><a class="viewcode-back" href="../../../api/monarch.html#monarch.RemoteProcessGroup.delete_ref">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="nf">delete_ref</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">ref</span><span class="p">:</span> <span class="nb">int</span><span class="p">):</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">device_mesh</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">has_shutdown</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">device_mesh</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">handle_deletes</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">device_mesh</span><span class="o">.</span><span class="n">processes</span><span class="p">,</span> <span class="p">[</span><span class="n">ref</span><span class="p">])</span></div>
 
-
-<div class="viewcode-block" id="RemoteProcessGroup.drop">
-<a class="viewcode-back" href="../../../api/monarch.html#monarch.RemoteProcessGroup.drop">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">drop</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<div class="viewcode-block" id="RemoteProcessGroup.drop"><a class="viewcode-back" href="../../../api/monarch.html#monarch.RemoteProcessGroup.drop">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="nf">drop</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">ref</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
             <span class="k">return</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_drop_ref</span><span class="p">()</span></div>
 
-
-<div class="viewcode-block" id="RemoteProcessGroup.size">
-<a class="viewcode-back" href="../../../api/monarch.html#monarch.RemoteProcessGroup.size">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">size</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<div class="viewcode-block" id="RemoteProcessGroup.size"><a class="viewcode-back" href="../../../api/monarch.html#monarch.RemoteProcessGroup.size">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="nf">size</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">device_mesh</span><span class="o">.</span><span class="n">size</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">dims</span><span class="p">)</span></div>
-
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_drop_ref</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">ref</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
@@ -1422,7 +1401,6 @@ document.write(`
     <span class="nd">@property</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">dropped</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">ref</span> <span class="ow">is</span> <span class="kc">None</span></div>
-
 
 
 <span class="k">class</span><span class="w"> </span><span class="nc">ActivateGuard</span><span class="p">:</span>
@@ -1638,13 +1616,10 @@ document.write(`
 <span class="n">_dispatch_enabled</span> <span class="o">=</span> <span class="kc">False</span>
 
 
-<div class="viewcode-block" id="get_active_mesh">
-<a class="viewcode-back" href="../../../api/monarch.html#monarch.get_active_mesh">[docs]</a>
-<span class="k">def</span><span class="w"> </span><span class="nf">get_active_mesh</span><span class="p">():</span>
+<div class="viewcode-block" id="get_active_mesh"><a class="viewcode-back" href="../../../api/monarch.html#monarch.get_active_mesh">[docs]</a><span class="k">def</span><span class="w"> </span><span class="nf">get_active_mesh</span><span class="p">():</span>
     <span class="k">if</span> <span class="n">_active</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;no device mesh is active&quot;</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">_active</span></div>
-
 
 
 <span class="k">class</span><span class="w"> </span><span class="nc">_ActiveMesh</span><span class="p">(</span><span class="n">TorchDispatchMode</span><span class="p">):</span>
@@ -1660,6 +1635,7 @@ document.write(`
         <span class="n">fnstr</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">func</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">fnstr</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">ignore</span><span class="p">:</span>
             <span class="k">return</span> <span class="n">func</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+        <span class="c1"># pyrefly: ignore [bad-index]</span>
         <span class="k">if</span> <span class="n">fnstr</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">allowed_local_accessors</span> <span class="ow">and</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">args</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">Tensor</span><span class="p">):</span>
             <span class="k">return</span> <span class="n">func</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
         <span class="k">return</span> <span class="n">_remote</span><span class="p">(</span><span class="n">func</span><span class="p">,</span> <span class="n">propagate</span><span class="o">=</span><span class="n">func</span><span class="p">)(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
@@ -1719,9 +1695,7 @@ document.write(`
     <span class="k">return</span> <span class="n">remote</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
 
 
-<div class="viewcode-block" id="to_mesh">
-<a class="viewcode-back" href="../../../api/monarch.html#monarch.to_mesh">[docs]</a>
-<span class="k">def</span><span class="w"> </span><span class="nf">to_mesh</span><span class="p">(</span>
+<div class="viewcode-block" id="to_mesh"><a class="viewcode-back" href="../../../api/monarch.html#monarch.to_mesh">[docs]</a><span class="k">def</span><span class="w"> </span><span class="nf">to_mesh</span><span class="p">(</span>
     <span class="n">tensors</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="s2">&quot;DeviceMesh&quot;</span><span class="p">,</span>
     <span class="n">stream</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Stream</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -1736,10 +1710,7 @@ document.write(`
     <span class="k">return</span> <span class="n">tree_map</span><span class="p">(</span><span class="n">_to_mesh</span><span class="p">,</span> <span class="n">tensors</span><span class="p">)</span></div>
 
 
-
-<div class="viewcode-block" id="slice_mesh">
-<a class="viewcode-back" href="../../../api/monarch.html#monarch.slice_mesh">[docs]</a>
-<span class="k">def</span><span class="w"> </span><span class="nf">slice_mesh</span><span class="p">(</span>
+<div class="viewcode-block" id="slice_mesh"><a class="viewcode-back" href="../../../api/monarch.html#monarch.slice_mesh">[docs]</a><span class="k">def</span><span class="w"> </span><span class="nf">slice_mesh</span><span class="p">(</span>
     <span class="n">tensors</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span>
     <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">slice</span><span class="p">],</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Any</span><span class="p">:</span>
@@ -1751,7 +1722,6 @@ document.write(`
         <span class="k">return</span> <span class="n">tensor</span><span class="o">.</span><span class="n">slice_mesh</span><span class="p">(</span><span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
 
     <span class="k">return</span> <span class="n">tree_map</span><span class="p">(</span><span class="n">_slice_mesh</span><span class="p">,</span> <span class="n">tensors</span><span class="p">)</span></div>
-
 </pre></div>
 
                 </article>
@@ -1904,7 +1874,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>
@@ -1933,7 +1903,7 @@ document.write(`
        "headline": "monarch.common.device_mesh",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/_modules/monarch/common/device_mesh.html",
-       "articleBody": "Source code for monarch.common.device_mesh # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-unsafe import logging import warnings from contextlib import AbstractContextManager, contextmanager from dataclasses import dataclass from enum import Enum from logging import Logger from typing import ( Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, TYPE_CHECKING, Union, ) import monarch.common.messages as messages import torch from monarch._src.actor.shape import MeshTrait, NDSlice, Shape from torch.utils._python_dispatch import TorchDispatchMode from torch.utils._pytree import tree_map from torch.utils.weak import weakref from ._tensor_to_table import tensor_to_table from .context_manager import activate_first_context_manager from .messages import Dims from .reference import Referenceable from .stream import Stream from .tensor import MeshSliceTensor, Tensor if TYPE_CHECKING: from monarch.common.client import Client logger: Logger = logging.getLogger(__name__) [docs] class RemoteProcessGroup(Referenceable): \"\"\" Client\u0027s view of a process group. \"\"\" [docs] def __init__(self, dims, device_mesh): logger.info(f\"creating process group for {dims}\") self.dims = dims self.device_mesh = device_mesh self.ref = self.device_mesh.client.new_ref() self._create_remotely() # A set of streams for which we\u0027ve sent the split-comm message. self._split_comm_done = set() def _create_remotely(self): msg = messages.CreateRemoteProcessGroup(self, self.device_mesh, self.dims) self.device_mesh._send(msg) [docs] def ensure_split_comm_remotely(self, stream): \"\"\" If we haven\u0027t already, send a message to the worker to split off a communicator for this PG on the given stream. \"\"\" # Currently, the worker will error if we try to do the split-comm more # than once, so check for that here to allow this function to be called # lazily. if stream in self._split_comm_done: return self._split_comm_done.add(stream) msg = messages.SplitCommForProcessGroup( remote_process_group=self, stream=stream, ) self.device_mesh.client.send_nocoalesce( self.device_mesh.client.all_ranks, msg, ) [docs] def delete_ref(self, ref: int): if not self.device_mesh.client.has_shutdown: self.device_mesh.client.handle_deletes(self.device_mesh.processes, [ref]) [docs] def drop(self): if self.ref is None: return self._drop_ref() [docs] def size(self): return self.device_mesh.size(self.dims) def _drop_ref(self): if self.ref is None: return self.delete_ref(self.ref) self.ref = None @property def dropped(self): return self.ref is None class ActivateGuard: def __init__(self, iter): self.iter = iter next(iter) def __enter__(self): return def __exit__(self, exc_type, exc_val, exc_tb): try: next(self.iter) except StopIteration: pass class DeviceMeshStatus(Enum): \"\"\" Enum representing the status of a device mesh. Attributes: LIVE (str): The mesh has enough processes than the world size specified and all of them are healthy. UNHEALTHY (str): Either the mesh does not have enough processes or some of the processes are unhealthy. AWAITING_CREATION (str): The mesh is still being created by the scheduler. \"\"\" LIVE = \"Live\" UNHEALTHY = \"Unhealthy\" AWAITING_CREATION = \"Awaiting Creation\" @dataclass class DeviceMeshInfo: \"\"\" Data class representing information about a device mesh. Attributes: mesh_labels (Dict[str, str]): Maps mesh labels to values. devices_labels (List[Dict[str, str]]): MAps device labels to values. \"\"\" mesh_labels: Dict[str, str] devices_labels: List[Dict[str, str]] class DeviceMesh(Referenceable, MeshTrait): \"\"\"A mesh of devices for distributed tensor operations. DeviceMesh represents a collection of devices arranged in a multidimensional grid for parallel computation. It manages communication between devices and enables distributed execution of operations across the mesh. Args: client (Client): The client connection to the mesh infrastructure processes (NDSlice): Multi-dimensional slice representing the process layout names (Dims): Names for each dimension of the mesh mesh_name (str, optional): Name identifier for the mesh. Default: \"default\" \"\"\" def __init__( self, client: \"Client\", processes: \"NDSlice\", names: Dims, mesh_name: str = \"default\", ): assert isinstance(processes, NDSlice) self.client = client assert processes.ndim == len(names) self.names = names self.mesh_name = mesh_name # processes are a list of processes that participate in this device mesh, encoded as an NDSlice self.processes = processes self.exit = lambda: None self.ref = None self._active_mesh_context = None self._subset_of: Optional[weakref.ReferenceType[\"DeviceMesh\"]] = None def define_remotely(self): if self.ref is None: self.ref = self.client.new_ref() msg = messages.CreateDeviceMesh(self, self.names, self.processes) self.client.send(self.processes, msg) def process_group(self, dims: str | Dims) -\u003e RemoteProcessGroup: self.define_remotely() if isinstance(dims, str): dims = (dims,) return RemoteProcessGroup(dims, self) def to_tensor(self): with no_mesh.activate(): vals = torch.tensor(list(self.processes), device=\"cpu\", dtype=torch.int) return vals.view(self.processes.sizes) def to_table(self): with no_mesh.activate(): tensor = self.to_tensor() names = list(self.names) labels = [list(str(i) for i in range(i)) for i in tensor.shape] gpus_per_host = self.client.gpu_per_host def format_data(x): return f\"{x // gpus_per_host}.gpu[{x % gpus_per_host}]\" return tensor_to_table( tensor, format_data=format_data, axis_names=names, axis_labels=labels ) def __repr__(self): return f\"\u003cDeviceMesh(names({self.names}), processes({list(self.processes)})) at {hex(id(self))}\u003e\" def delete_ref(self, ref: int): if not self.client.has_shutdown: self.client.handle_deletes(self.processes, [ref]) def _send(self, cmd: NamedTuple): self.client.flush_deletes() self.client.send(self.processes, cmd) def stack(self, **kwargs): raise NotImplementedError() @property def _ndslice(self) -\u003e NDSlice: return self.processes @property def _labels(self) -\u003e Tuple[str, ...]: return self.names def _new_with_shape(self, shape: Shape) -\u003e \"DeviceMesh\": mesh = DeviceMesh(self.client, shape.ndslice, tuple(shape.labels)) mesh.exit = self.exit mesh._subset_of = weakref.ref(self) return mesh def _is_subset_of(self, other: \"DeviceMesh\") -\u003e bool: p = self while p is not None: if p is other: return True p = None if p._subset_of is None else p._subset_of() return False def __call__(self, **kwargs) -\u003e \"DeviceMesh\": \"\"\" device_mesh(batch=3) or device_mesh(batch=slice(3, None)) \"\"\" warnings.warn( \"The use of this method is deprecated. Please use mesh.slice instead.\", DeprecationWarning, stacklevel=2, ) return self.slice(**kwargs) def rotate(self, **kwargs: Dict[str, int]): raise NotImplementedError() def rank(self, dims: Union[str, Sequence[str]]) -\u003e torch.Tensor: self.define_remotely() if isinstance(dims, str): if dims not in self.names: raise KeyError(f\"{self} does not have dimension {repr(dims)}\") return _remote( _rank, propagate=lambda _self, _dims: torch.full((), 0, dtype=torch.long), )(self, dims) combined_rank: Any = 0 for dim in dims: combined_rank *= self.size(dim) combined_rank += self.rank(dim) return combined_rank @property def ranks(self) -\u003e dict[str, torch.Tensor]: return {dim: self.rank(dim) for dim in self.names} def process_idx(self): self.define_remotely() return _remote( \"monarch.worker.worker._process_idx\", propagate=lambda _self: torch.full((), 0, dtype=torch.long), )(self) def _process(self, coordinates: Optional[Dict[str, int]]) -\u003e NDSlice: if coordinates is None: return NDSlice(offset=self.processes.offset, sizes=[1], strides=[1]) if len(coordinates) \u003e len(self.names): extra = set(coordinates.keys()) - set(self.names) raise KeyError(f\"{list(extra)}\") for name in self.names: if name not in coordinates: raise ValueError( f\"Missing key \u0027{name}\u0027 in shard map. Need all of {self.names}\" ) flat = [coordinates[name] for name in self.names] return NDSlice(offset=self.processes.nditem(flat), sizes=[1], strides=[1]) def activate(self) -\u003e AbstractContextManager: self._active_mesh_context = _active_mesh(self) return self._active_mesh_context def deactivate(self): if self._active_mesh_context is not None: self._active_mesh_context.__exit__(None, None, None) self._active_mesh_context = None _active: Optional[DeviceMesh] = None _dispatch_enabled = False [docs] def get_active_mesh(): if _active is None: raise ValueError(\"no device mesh is active\") return _active class _ActiveMesh(TorchDispatchMode): ignore = [\"profiler._record_function_exit._RecordFunction\"] allowed_local_accessors = [ \"aten._local_scalar_dense.default\", \"aten.set_.source_Storage_storage_offset\", ] def __torch_dispatch__(self, func, types, args=(), kwargs=None): if _active is None: return func(*args, **kwargs) fnstr = str(func) if fnstr in self.ignore: return func(*args, **kwargs) if fnstr in self.allowed_local_accessors and not isinstance(args[0], Tensor): return func(*args, **kwargs) return _remote(func, propagate=func)(*args, **kwargs) def _rank(mesh, dim): return torch.full((), mesh.dims[dim].rank, dtype=torch.long) @contextmanager def _dispatch(): global _dispatch_enabled if _dispatch_enabled: yield else: _dispatch_enabled = True try: with _ActiveMesh(): yield finally: _dispatch_enabled = False _on_change: List[Callable] = [] @activate_first_context_manager def _active_mesh(mesh: Optional[DeviceMesh]): global _active for on_change in _on_change: on_change(_active, mesh) _active, old = mesh, _active try: with _dispatch(): yield finally: for on_change in _on_change: on_change(_active, old) _active = old class _NoMesh: def activate(self): return _active_mesh(None) no_mesh = _NoMesh() def _remote(*args, **kwargs): # device_mesh \u003c-\u003e tensor \u003c-\u003e remote are mututally recursive # we break the dependency to allow for separate files by # having device_mesh and tensor locally import the `remote` # entrypoint from monarch.common.remote import remote return remote(*args, **kwargs) [docs] def to_mesh( tensors: Any, mesh: \"DeviceMesh\", stream: Optional[Stream] = None, ) -\u003e Any: \"\"\" Move all tensors in tensors to the given mesh. \"\"\" def _to_mesh(tensor: Union[\"Tensor\", \"MeshSliceTensor\"]) -\u003e \"Tensor\": return tensor.to_mesh(mesh, stream) return tree_map(_to_mesh, tensors) [docs] def slice_mesh( tensors: Any, **kwargs: Union[int, slice], ) -\u003e Any: \"\"\" Performs the slice_mesh operation for each tensor in tensors. \"\"\" def _slice_mesh(tensor: \"Tensor\") -\u003e \"MeshSliceTensor\": return tensor.slice_mesh(**kwargs) return tree_map(_slice_mesh, tensors)",
+       "articleBody": "Source code for monarch.common.device_mesh # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-unsafe import logging import warnings from contextlib import AbstractContextManager, contextmanager from dataclasses import dataclass from enum import Enum from logging import Logger from typing import ( Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, TYPE_CHECKING, Union, ) import monarch.common.messages as messages import torch from monarch._src.actor.shape import MeshTrait, NDSlice, Shape from torch.utils._python_dispatch import TorchDispatchMode from torch.utils._pytree import tree_map from torch.utils.weak import weakref from ._tensor_to_table import tensor_to_table from .context_manager import activate_first_context_manager from .messages import Dims from .reference import Referenceable from .stream import Stream from .tensor import MeshSliceTensor, Tensor if TYPE_CHECKING: from monarch.common.client import Client logger: Logger = logging.getLogger(__name__) [docs]class RemoteProcessGroup(Referenceable): \"\"\" Client\u0027s view of a process group. \"\"\" [docs] def __init__(self, dims, device_mesh): logger.info(f\"creating process group for {dims}\") self.dims = dims self.device_mesh = device_mesh self.ref = self.device_mesh.client.new_ref() self._create_remotely() # A set of streams for which we\u0027ve sent the split-comm message. self._split_comm_done = set() def _create_remotely(self): msg = messages.CreateRemoteProcessGroup(self, self.device_mesh, self.dims) self.device_mesh._send(msg) [docs] def ensure_split_comm_remotely(self, stream): \"\"\" If we haven\u0027t already, send a message to the worker to split off a communicator for this PG on the given stream. \"\"\" # Currently, the worker will error if we try to do the split-comm more # than once, so check for that here to allow this function to be called # lazily. if stream in self._split_comm_done: return self._split_comm_done.add(stream) msg = messages.SplitCommForProcessGroup( # pyrefly: ignore [bad-argument-type] remote_process_group=self, stream=stream, ) self.device_mesh.client.send_nocoalesce( self.device_mesh.client.all_ranks, msg, ) [docs] def delete_ref(self, ref: int): if not self.device_mesh.client.has_shutdown: self.device_mesh.client.handle_deletes(self.device_mesh.processes, [ref]) [docs] def drop(self): if self.ref is None: return self._drop_ref() [docs] def size(self): return self.device_mesh.size(self.dims) def _drop_ref(self): if self.ref is None: return self.delete_ref(self.ref) self.ref = None @property def dropped(self): return self.ref is None class ActivateGuard: def __init__(self, iter): self.iter = iter next(iter) def __enter__(self): return def __exit__(self, exc_type, exc_val, exc_tb): try: next(self.iter) except StopIteration: pass class DeviceMeshStatus(Enum): \"\"\" Enum representing the status of a device mesh. Attributes: LIVE (str): The mesh has enough processes than the world size specified and all of them are healthy. UNHEALTHY (str): Either the mesh does not have enough processes or some of the processes are unhealthy. AWAITING_CREATION (str): The mesh is still being created by the scheduler. \"\"\" LIVE = \"Live\" UNHEALTHY = \"Unhealthy\" AWAITING_CREATION = \"Awaiting Creation\" @dataclass class DeviceMeshInfo: \"\"\" Data class representing information about a device mesh. Attributes: mesh_labels (Dict[str, str]): Maps mesh labels to values. devices_labels (List[Dict[str, str]]): MAps device labels to values. \"\"\" mesh_labels: Dict[str, str] devices_labels: List[Dict[str, str]] class DeviceMesh(Referenceable, MeshTrait): \"\"\"A mesh of devices for distributed tensor operations. DeviceMesh represents a collection of devices arranged in a multidimensional grid for parallel computation. It manages communication between devices and enables distributed execution of operations across the mesh. Args: client (Client): The client connection to the mesh infrastructure processes (NDSlice): Multi-dimensional slice representing the process layout names (Dims): Names for each dimension of the mesh mesh_name (str, optional): Name identifier for the mesh. Default: \"default\" \"\"\" def __init__( self, client: \"Client\", processes: \"NDSlice\", names: Dims, mesh_name: str = \"default\", ): assert isinstance(processes, NDSlice) self.client = client assert processes.ndim == len(names) self.names = names self.mesh_name = mesh_name # processes are a list of processes that participate in this device mesh, encoded as an NDSlice self.processes = processes self.exit = lambda: None self.ref = None self._active_mesh_context = None self._subset_of: Optional[weakref.ReferenceType[\"DeviceMesh\"]] = None def define_remotely(self): if self.ref is None: self.ref = self.client.new_ref() msg = messages.CreateDeviceMesh(self, self.names, self.processes) self.client.send(self.processes, msg) def process_group(self, dims: str | Dims) -\u003e RemoteProcessGroup: self.define_remotely() if isinstance(dims, str): dims = (dims,) return RemoteProcessGroup(dims, self) def to_tensor(self): with no_mesh.activate(): vals = torch.tensor(list(self.processes), device=\"cpu\", dtype=torch.int) return vals.view(self.processes.sizes) def to_table(self): with no_mesh.activate(): tensor = self.to_tensor() names = list(self.names) labels = [list(str(i) for i in range(i)) for i in tensor.shape] gpus_per_host = self.client.gpu_per_host def format_data(x): return f\"{x // gpus_per_host}.gpu[{x % gpus_per_host}]\" return tensor_to_table( tensor, format_data=format_data, axis_names=names, axis_labels=labels ) def __repr__(self): return f\"\u003cDeviceMesh(names({self.names}), processes({list(self.processes)})) at {hex(id(self))}\u003e\" def delete_ref(self, ref: int): if not self.client.has_shutdown: self.client.handle_deletes(self.processes, [ref]) def _send(self, cmd: NamedTuple): self.client.flush_deletes() self.client.send(self.processes, cmd) def stack(self, **kwargs): raise NotImplementedError() @property def _ndslice(self) -\u003e NDSlice: return self.processes @property def _labels(self) -\u003e Tuple[str, ...]: return self.names def _new_with_shape(self, shape: Shape) -\u003e \"DeviceMesh\": mesh = DeviceMesh(self.client, shape.ndslice, tuple(shape.labels)) mesh.exit = self.exit mesh._subset_of = weakref.ref(self) return mesh def _is_subset_of(self, other: \"DeviceMesh\") -\u003e bool: p = self while p is not None: if p is other: return True p = None if p._subset_of is None else p._subset_of() return False def __call__(self, **kwargs) -\u003e \"DeviceMesh\": \"\"\" device_mesh(batch=3) or device_mesh(batch=slice(3, None)) \"\"\" warnings.warn( \"The use of this method is deprecated. Please use mesh.slice instead.\", DeprecationWarning, stacklevel=2, ) return self.slice(**kwargs) def rotate(self, **kwargs: Dict[str, int]): raise NotImplementedError() def rank(self, dims: Union[str, Sequence[str]]) -\u003e torch.Tensor: self.define_remotely() if isinstance(dims, str): if dims not in self.names: raise KeyError(f\"{self} does not have dimension {repr(dims)}\") return _remote( _rank, propagate=lambda _self, _dims: torch.full((), 0, dtype=torch.long), )(self, dims) combined_rank: Any = 0 for dim in dims: combined_rank *= self.size(dim) combined_rank += self.rank(dim) return combined_rank @property def ranks(self) -\u003e dict[str, torch.Tensor]: return {dim: self.rank(dim) for dim in self.names} def process_idx(self): self.define_remotely() return _remote( \"monarch.worker.worker._process_idx\", propagate=lambda _self: torch.full((), 0, dtype=torch.long), )(self) def _process(self, coordinates: Optional[Dict[str, int]]) -\u003e NDSlice: if coordinates is None: return NDSlice(offset=self.processes.offset, sizes=[1], strides=[1]) if len(coordinates) \u003e len(self.names): extra = set(coordinates.keys()) - set(self.names) raise KeyError(f\"{list(extra)}\") for name in self.names: if name not in coordinates: raise ValueError( f\"Missing key \u0027{name}\u0027 in shard map. Need all of {self.names}\" ) flat = [coordinates[name] for name in self.names] return NDSlice(offset=self.processes.nditem(flat), sizes=[1], strides=[1]) def activate(self) -\u003e AbstractContextManager: self._active_mesh_context = _active_mesh(self) return self._active_mesh_context def deactivate(self): if self._active_mesh_context is not None: self._active_mesh_context.__exit__(None, None, None) self._active_mesh_context = None _active: Optional[DeviceMesh] = None _dispatch_enabled = False [docs]def get_active_mesh(): if _active is None: raise ValueError(\"no device mesh is active\") return _active class _ActiveMesh(TorchDispatchMode): ignore = [\"profiler._record_function_exit._RecordFunction\"] allowed_local_accessors = [ \"aten._local_scalar_dense.default\", \"aten.set_.source_Storage_storage_offset\", ] def __torch_dispatch__(self, func, types, args=(), kwargs=None): if _active is None: return func(*args, **kwargs) fnstr = str(func) if fnstr in self.ignore: return func(*args, **kwargs) # pyrefly: ignore [bad-index] if fnstr in self.allowed_local_accessors and not isinstance(args[0], Tensor): return func(*args, **kwargs) return _remote(func, propagate=func)(*args, **kwargs) def _rank(mesh, dim): return torch.full((), mesh.dims[dim].rank, dtype=torch.long) @contextmanager def _dispatch(): global _dispatch_enabled if _dispatch_enabled: yield else: _dispatch_enabled = True try: with _ActiveMesh(): yield finally: _dispatch_enabled = False _on_change: List[Callable] = [] @activate_first_context_manager def _active_mesh(mesh: Optional[DeviceMesh]): global _active for on_change in _on_change: on_change(_active, mesh) _active, old = mesh, _active try: with _dispatch(): yield finally: for on_change in _on_change: on_change(_active, old) _active = old class _NoMesh: def activate(self): return _active_mesh(None) no_mesh = _NoMesh() def _remote(*args, **kwargs): # device_mesh \u003c-\u003e tensor \u003c-\u003e remote are mututally recursive # we break the dependency to allow for separate files by # having device_mesh and tensor locally import the `remote` # entrypoint from monarch.common.remote import remote return remote(*args, **kwargs) [docs]def to_mesh( tensors: Any, mesh: \"DeviceMesh\", stream: Optional[Stream] = None, ) -\u003e Any: \"\"\" Move all tensors in tensors to the given mesh. \"\"\" def _to_mesh(tensor: Union[\"Tensor\", \"MeshSliceTensor\"]) -\u003e \"Tensor\": return tensor.to_mesh(mesh, stream) return tree_map(_to_mesh, tensors) [docs]def slice_mesh( tensors: Any, **kwargs: Union[int, slice], ) -\u003e Any: \"\"\" Performs the slice_mesh operation for each tensor in tensors. \"\"\" def _slice_mesh(tensor: \"Tensor\") -\u003e \"MeshSliceTensor\": return tensor.slice_mesh(**kwargs) return tree_map(_slice_mesh, tensors)",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

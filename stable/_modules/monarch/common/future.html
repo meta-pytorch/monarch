@@ -1,13 +1,14 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>monarch.common.future &#8212; Monarch v0.5.0 documentation</title>
+    <title>monarch.common.future &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -27,37 +28,31 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../_static/design-tabs.js?v=f930bc37"></script>
-    <script type="module" src="https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs"></script>
-    <script type="module" src="https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0.1.4/dist/mermaid-layout-elk.esm.min.mjs"></script>
-    <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs";import elkLayouts from "https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0.1.4/dist/mermaid-layout-elk.esm.min.mjs";mermaid.registerLayoutLoaders(elkLayouts);mermaid.initialize({startOnLoad:false});</script>
-    <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
-    <script type="module">
-import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs";
-window.addEventListener("load", () => mermaid.run());
-</script>
+    <script data-url_root="../../../" id="documentation_options" src="../../../_static/documentation_options.js"></script>
+    <script src="../../../_static/doctools.js"></script>
+    <script src="../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../_static/design-tabs.js"></script>
+    <script src="https://unpkg.com/mermaid@10.2.0/dist/mermaid.min.js"></script>
+    <script>mermaid.initialize({startOnLoad:true});</script>
     <script>DOCUMENTATION_OPTIONS.pagename = '_modules/monarch/common/future';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/_modules/monarch/common/future.html" />
@@ -81,7 +76,7 @@ window.addEventListener("load", () => mermaid.run());
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -195,7 +190,7 @@ window.addEventListener("load", () => mermaid.run());
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1366,9 +1361,7 @@ document.write(`
 <span class="n">T</span> <span class="o">=</span> <span class="n">TypeVar</span><span class="p">(</span><span class="s2">&quot;T&quot;</span><span class="p">)</span>
 
 
-<div class="viewcode-block" id="Future">
-<a class="viewcode-back" href="../../../api/monarch.html#monarch.Future">[docs]</a>
-<span class="k">class</span><span class="w"> </span><span class="nc">Future</span><span class="p">(</span><span class="n">Generic</span><span class="p">[</span><span class="n">T</span><span class="p">]):</span>
+<div class="viewcode-block" id="Future"><a class="viewcode-back" href="../../../api/monarch.html#monarch.Future">[docs]</a><span class="k">class</span><span class="w"> </span><span class="nc">Future</span><span class="p">(</span><span class="n">Generic</span><span class="p">[</span><span class="n">T</span><span class="p">]):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;A future object representing the result of an asynchronous computation.</span>
 
 <span class="sd">    Future provides a way to access the result of a computation that may not</span>
@@ -1379,14 +1372,11 @@ document.write(`
 <span class="sd">        client (Client): The client connection for handling the future</span>
 <span class="sd">    &quot;&quot;&quot;</span>
 
-<div class="viewcode-block" id="Future.__init__">
-<a class="viewcode-back" href="../../../api/monarch.html#monarch.Future.__init__">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">client</span><span class="p">:</span> <span class="s2">&quot;Client&quot;</span><span class="p">):</span>
+<div class="viewcode-block" id="Future.__init__"><a class="viewcode-back" href="../../../api/monarch.html#monarch.Future.__init__">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">client</span><span class="p">:</span> <span class="s2">&quot;Client&quot;</span><span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_client</span> <span class="o">=</span> <span class="n">client</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_status</span> <span class="o">=</span> <span class="s2">&quot;incomplete&quot;</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_callbacks</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_result</span><span class="p">:</span> <span class="n">T</span> <span class="o">|</span> <span class="ne">Exception</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span></div>
-
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_set_result</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">r</span><span class="p">):</span>
         <span class="k">assert</span> <span class="bp">self</span><span class="o">.</span><span class="n">_status</span> <span class="o">==</span> <span class="s2">&quot;incomplete&quot;</span>
@@ -1399,6 +1389,7 @@ document.write(`
                 <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
                     <span class="n">logger</span><span class="o">.</span><span class="n">exception</span><span class="p">(</span><span class="s2">&quot;exception in controller&#39;s Future callback&quot;</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_callbacks</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="c1"># pyrefly: ignore [bad-assignment]</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_client</span> <span class="o">=</span> <span class="kc">None</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_wait</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">timeout</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">float</span><span class="p">]):</span>
@@ -1420,39 +1411,26 @@ document.write(`
 
         <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_status</span> <span class="o">!=</span> <span class="s2">&quot;incomplete&quot;</span>
 
-<div class="viewcode-block" id="Future.result">
-<a class="viewcode-back" href="../../../api/monarch.html#monarch.Future.result">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">result</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">timeout</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">T</span><span class="p">:</span>
+<div class="viewcode-block" id="Future.result"><a class="viewcode-back" href="../../../api/monarch.html#monarch.Future.result">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="nf">result</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">timeout</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">T</span><span class="p">:</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_wait</span><span class="p">(</span><span class="n">timeout</span><span class="p">):</span>
             <span class="k">raise</span> <span class="ne">TimeoutError</span><span class="p">()</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_status</span> <span class="o">==</span> <span class="s2">&quot;exception&quot;</span><span class="p">:</span>
             <span class="k">raise</span> <span class="n">cast</span><span class="p">(</span><span class="ne">Exception</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_result</span><span class="p">)</span>
         <span class="k">return</span> <span class="n">cast</span><span class="p">(</span><span class="n">T</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_result</span><span class="p">)</span></div>
 
-
-<div class="viewcode-block" id="Future.done">
-<a class="viewcode-back" href="../../../api/monarch.html#monarch.Future.done">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">done</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<div class="viewcode-block" id="Future.done"><a class="viewcode-back" href="../../../api/monarch.html#monarch.Future.done">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="nf">done</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
         <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_wait</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span></div>
 
-
-<div class="viewcode-block" id="Future.exception">
-<a class="viewcode-back" href="../../../api/monarch.html#monarch.Future.exception">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">exception</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">timeout</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">):</span>
+<div class="viewcode-block" id="Future.exception"><a class="viewcode-back" href="../../../api/monarch.html#monarch.Future.exception">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="nf">exception</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">timeout</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">):</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_wait</span><span class="p">(</span><span class="n">timeout</span><span class="p">):</span>
             <span class="k">raise</span> <span class="ne">TimeoutError</span><span class="p">()</span>
         <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_result</span> <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_status</span> <span class="o">==</span> <span class="s2">&quot;exception&quot;</span> <span class="k">else</span> <span class="kc">None</span></div>
 
-
-<div class="viewcode-block" id="Future.add_callback">
-<a class="viewcode-back" href="../../../api/monarch.html#monarch.Future.add_callback">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">add_callback</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">callback</span><span class="p">):</span>
+<div class="viewcode-block" id="Future.add_callback"><a class="viewcode-back" href="../../../api/monarch.html#monarch.Future.add_callback">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="nf">add_callback</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">callback</span><span class="p">):</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_callbacks</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_callbacks</span> <span class="o">=</span> <span class="p">[</span><span class="n">callback</span><span class="p">]</span>
         <span class="k">else</span><span class="p">:</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">_callbacks</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">callback</span><span class="p">)</span></div>
-</div>
-
+            <span class="bp">self</span><span class="o">.</span><span class="n">_callbacks</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">callback</span><span class="p">)</span></div></div>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">_wait</span><span class="p">(</span><span class="n">client</span><span class="p">:</span> <span class="s2">&quot;Client&quot;</span><span class="p">,</span> <span class="n">ttl</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[],</span> <span class="nb">float</span><span class="p">],</span> <span class="n">ttl_pyspy</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[],</span> <span class="nb">float</span><span class="p">]):</span>
@@ -1645,7 +1623,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>
@@ -1674,7 +1652,7 @@ document.write(`
        "headline": "monarch.common.future",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/_modules/monarch/common/future.html",
-       "articleBody": "Source code for monarch.common.future # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-unsafe import logging import math import os import subprocess from typing import ( Any, Callable, cast, Generic, Optional, Sequence, TYPE_CHECKING, TypeVar, ) from monarch_supervisor import TTL if TYPE_CHECKING: from monarch.common.client import Client from .invocation import RemoteException logger = logging.getLogger(__name__) try: PYSPY_REPORT_INTERVAL: Optional[float] = float( os.environ[\"CONTROLLER_PYSPY_REPORT_INTERVAL\"] ) except KeyError: PYSPY_REPORT_INTERVAL = None def _split(elems, cond): trues = [] falses = [] for elem in elems: if cond(elem): trues.append(elem) else: falses.append(elem) return trues, falses def _periodic_TTL(interval: Optional[float]) -\u003e Callable[[], float]: if interval is None: return lambda: math.inf ttl = TTL(interval) def _remaining(): nonlocal ttl rem = ttl() if rem == 0: ttl = TTL(interval) return rem return _remaining T = TypeVar(\"T\") [docs] class Future(Generic[T]): \"\"\"A future object representing the result of an asynchronous computation. Future provides a way to access the result of a computation that may not have completed yet. It allows for non-blocking execution and provides methods to wait for completion and retrieve results. Args: client (Client): The client connection for handling the future \"\"\" [docs] def __init__(self, client: \"Client\"): self._client = client self._status = \"incomplete\" self._callbacks = None self._result: T | Exception | None = None def _set_result(self, r): assert self._status == \"incomplete\" self._result = r self._status = \"exception\" if isinstance(r, RemoteException) else \"complete\" if self._callbacks: for cb in self._callbacks: try: cb(self) except Exception: logger.exception(\"exception in controller\u0027s Future callback\") self._callbacks = None self._client = None def _wait(self, timeout: Optional[float]): if self._status != \"incomplete\": return True assert self._client is not None # see if the future is done already # and we just haven\u0027t processed the messages while self._client.handle_next_message(0): if self._status != \"incomplete\": return True ttl = TTL(timeout) ttl_pyspy = _periodic_TTL(PYSPY_REPORT_INTERVAL) while self._status == \"incomplete\" and _wait(self._client, ttl, ttl_pyspy): ... return self._status != \"incomplete\" [docs] def result(self, timeout: Optional[float] = None) -\u003e T: if not self._wait(timeout): raise TimeoutError() if self._status == \"exception\": raise cast(Exception, self._result) return cast(T, self._result) [docs] def done(self) -\u003e bool: return self._wait(0) [docs] def exception(self, timeout: Optional[float] = None): if not self._wait(timeout): raise TimeoutError() return self._result if self._status == \"exception\" else None [docs] def add_callback(self, callback): if not self._callbacks: self._callbacks = [callback] else: self._callbacks.append(callback) def _wait(client: \"Client\", ttl: Callable[[], float], ttl_pyspy: Callable[[], float]): remaining = ttl() pyspy_remaining = ttl_pyspy() if pyspy_remaining == 0: try: logging.warning( f\"future has not finished in {PYSPY_REPORT_INTERVAL} seconds (remaining time to live is {remaining}), py-spying process to debug.\" ) subprocess.run([\"py-spy\", \"dump\", \"-s\", \"-p\", str(os.getpid())]) except FileNotFoundError: logging.warning(\"py-spy is not installed.\") timeout = min(remaining, pyspy_remaining) client.handle_next_message(timeout=None if timeout == math.inf else timeout) return remaining \u003e 0 def stream(futures: Sequence[Future], timeout: Optional[float] = None): \"\"\"Stream the provided futures as they complete. If a timeout is provided, it applies to the completion of the entire set of futures. \"\"\" assert len(futures) \u003e 0 ttl = TTL(timeout) pyspy_ttl = _periodic_TTL(PYSPY_REPORT_INTERVAL) assert len({f._client for f in futures if f._client is not None}) \u003c= 1, ( \"all futures must be from the same controller\" ) todo = futures while True: done, todo = _split(todo, lambda f: f._status != \"incomplete\") for f in done: yield f if len(todo) == 0 or not _wait(todo[0]._client, ttl, pyspy_ttl): break",
+       "articleBody": "Source code for monarch.common.future # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-unsafe import logging import math import os import subprocess from typing import ( Any, Callable, cast, Generic, Optional, Sequence, TYPE_CHECKING, TypeVar, ) from monarch_supervisor import TTL if TYPE_CHECKING: from monarch.common.client import Client from .invocation import RemoteException logger = logging.getLogger(__name__) try: PYSPY_REPORT_INTERVAL: Optional[float] = float( os.environ[\"CONTROLLER_PYSPY_REPORT_INTERVAL\"] ) except KeyError: PYSPY_REPORT_INTERVAL = None def _split(elems, cond): trues = [] falses = [] for elem in elems: if cond(elem): trues.append(elem) else: falses.append(elem) return trues, falses def _periodic_TTL(interval: Optional[float]) -\u003e Callable[[], float]: if interval is None: return lambda: math.inf ttl = TTL(interval) def _remaining(): nonlocal ttl rem = ttl() if rem == 0: ttl = TTL(interval) return rem return _remaining T = TypeVar(\"T\") [docs]class Future(Generic[T]): \"\"\"A future object representing the result of an asynchronous computation. Future provides a way to access the result of a computation that may not have completed yet. It allows for non-blocking execution and provides methods to wait for completion and retrieve results. Args: client (Client): The client connection for handling the future \"\"\" [docs] def __init__(self, client: \"Client\"): self._client = client self._status = \"incomplete\" self._callbacks = None self._result: T | Exception | None = None def _set_result(self, r): assert self._status == \"incomplete\" self._result = r self._status = \"exception\" if isinstance(r, RemoteException) else \"complete\" if self._callbacks: for cb in self._callbacks: try: cb(self) except Exception: logger.exception(\"exception in controller\u0027s Future callback\") self._callbacks = None # pyrefly: ignore [bad-assignment] self._client = None def _wait(self, timeout: Optional[float]): if self._status != \"incomplete\": return True assert self._client is not None # see if the future is done already # and we just haven\u0027t processed the messages while self._client.handle_next_message(0): if self._status != \"incomplete\": return True ttl = TTL(timeout) ttl_pyspy = _periodic_TTL(PYSPY_REPORT_INTERVAL) while self._status == \"incomplete\" and _wait(self._client, ttl, ttl_pyspy): ... return self._status != \"incomplete\" [docs] def result(self, timeout: Optional[float] = None) -\u003e T: if not self._wait(timeout): raise TimeoutError() if self._status == \"exception\": raise cast(Exception, self._result) return cast(T, self._result) [docs] def done(self) -\u003e bool: return self._wait(0) [docs] def exception(self, timeout: Optional[float] = None): if not self._wait(timeout): raise TimeoutError() return self._result if self._status == \"exception\" else None [docs] def add_callback(self, callback): if not self._callbacks: self._callbacks = [callback] else: self._callbacks.append(callback) def _wait(client: \"Client\", ttl: Callable[[], float], ttl_pyspy: Callable[[], float]): remaining = ttl() pyspy_remaining = ttl_pyspy() if pyspy_remaining == 0: try: logging.warning( f\"future has not finished in {PYSPY_REPORT_INTERVAL} seconds (remaining time to live is {remaining}), py-spying process to debug.\" ) subprocess.run([\"py-spy\", \"dump\", \"-s\", \"-p\", str(os.getpid())]) except FileNotFoundError: logging.warning(\"py-spy is not installed.\") timeout = min(remaining, pyspy_remaining) client.handle_next_message(timeout=None if timeout == math.inf else timeout) return remaining \u003e 0 def stream(futures: Sequence[Future], timeout: Optional[float] = None): \"\"\"Stream the provided futures as they complete. If a timeout is provided, it applies to the completion of the entire set of futures. \"\"\" assert len(futures) \u003e 0 ttl = TTL(timeout) pyspy_ttl = _periodic_TTL(PYSPY_REPORT_INTERVAL) assert len({f._client for f in futures if f._client is not None}) \u003c= 1, ( \"all futures must be from the same controller\" ) todo = futures while True: done, todo = _split(todo, lambda f: f._status != \"incomplete\") for f in done: yield f if len(todo) == 0 or not _wait(todo[0]._client, ttl, pyspy_ttl): break",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

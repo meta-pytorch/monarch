@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -11,12 +12,12 @@
 <meta property="og:type" content="website" />
 <meta property="og:url" content="http://pytorch.org/books/hyperactor-book/README.html" />
 <meta property="og:site_name" content="Monarch" />
-<meta property="og:description" content="This is the development documentation for the hyperactor system, built using mdBook. Contents: Hyperactor- Actors, Macros, Channels, Mailboxes and Routers, References, Appendix, Summary.. Running t..." />
+<meta property="og:description" content="This is the development documentation for the hyperactor system, built using mdBook. Contents: Hyperactor- Actors, Macros, Channels, Mailboxes and Routers, Procs, References, Remote Supervision and..." />
 <meta property="og:image" content="https://pytorch.org/assets/images/social-share.jpg" />
 <meta property="og:image:alt" content="Monarch" />
-<meta name="description" content="This is the development documentation for the hyperactor system, built using mdBook. Contents: Hyperactor- Actors, Macros, Channels, Mailboxes and Routers, References, Appendix, Summary.. Running t..." />
+<meta name="description" content="This is the development documentation for the hyperactor system, built using mdBook. Contents: Hyperactor- Actors, Macros, Channels, Mailboxes and Routers, Procs, References, Remote Supervision and..." />
 
-    <title>Hyperactor Documentation Book &#8212; Monarch v0.5.0 documentation</title>
+    <title>Hyperactor Documentation Book &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="../../" id="documentation_options" src="../../_static/documentation_options.js"></script>
+    <script src="../../_static/doctools.js"></script>
+    <script src="../../_static/sphinx_highlight.js"></script>
+    <script src="../../_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-book/README';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/README.html" />
@@ -82,7 +83,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +197,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1293,7 +1294,7 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="hyperactor-documentation-book">
-<h1>Hyperactor Documentation Book<a class="headerlink" href="#hyperactor-documentation-book" title="Link to this heading">#</a></h1>
+<h1>Hyperactor Documentation Book<a class="headerlink" href="#hyperactor-documentation-book" title="Permalink to this heading">#</a></h1>
 <p>This is the development documentation for the hyperactor system, built using <a class="reference external" href="https://rust-lang.github.io/mdBook/"><code class="docutils literal notranslate"><span class="pre">mdBook</span></code></a>.</p>
 <div class="toctree-wrapper compound">
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Contents</span></p>
@@ -1303,28 +1304,55 @@ document.write(`
 <li class="toctree-l2"><a class="reference internal" href="src/macros/index.html">Macros</a></li>
 <li class="toctree-l2"><a class="reference internal" href="src/channels/index.html">Channels</a></li>
 <li class="toctree-l2"><a class="reference internal" href="src/mailboxes/index.html">Mailboxes and Routers</a></li>
+<li class="toctree-l2"><a class="reference internal" href="src/procs/index.html">Procs</a></li>
 <li class="toctree-l2"><a class="reference internal" href="src/references/index.html">References</a></li>
+<li class="toctree-l2"><a class="reference internal" href="src/remote_supervision.html">Remote Supervision and Rendezvous</a></li>
 <li class="toctree-l2"><a class="reference internal" href="src/appendix/index.html">Appendix</a></li>
-<li class="toctree-l2"><a class="reference internal" href="src/SUMMARY.html">Summary</a></li>
 </ul>
 </li>
+<li class="toctree-l1"><a class="reference internal" href="src/references/index.html">References</a></li>
+<li class="toctree-l1"><a class="reference internal" href="src/mailboxes/index.html">Mailboxes and Routers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="src/channels/index.html">Channels</a></li>
+<li class="toctree-l1"><a class="reference internal" href="src/procs/index.html">Procs</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="src/procs/index.html#overview">Overview</a></li>
+<li class="toctree-l2"><a class="reference internal" href="src/procs/index.html#key-components">Key Components</a></li>
+<li class="toctree-l2"><a class="reference internal" href="src/procs/index.html#see-also">See Also</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="src/actors/index.html">Actors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="src/remote_supervision.html">Remote Supervision and Rendezvous</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="src/remote_supervision.html#intended-usage">Intended usage</a></li>
+<li class="toctree-l2"><a class="reference internal" href="src/remote_supervision.html#remote-supervision">Remote supervision</a></li>
+<li class="toctree-l2"><a class="reference internal" href="src/remote_supervision.html#link-protocol">Link protocol</a></li>
+<li class="toctree-l2"><a class="reference internal" href="src/remote_supervision.html#keepalive-link">Keepalive link</a></li>
+<li class="toctree-l2"><a class="reference internal" href="src/remote_supervision.html#child-and-link-failures">Child and link failures</a></li>
+<li class="toctree-l2"><a class="reference internal" href="src/remote_supervision.html#stop-and-unlink">Stop and unlink</a></li>
+<li class="toctree-l2"><a class="reference internal" href="src/remote_supervision.html#rendezvous-tokens">Rendezvous tokens</a></li>
+<li class="toctree-l2"><a class="reference internal" href="src/remote_supervision.html#public-surface">Public surface</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="src/macros/index.html">Macros</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="src/macros/index.html#macro-summary">Macro Summary</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="src/appendix/index.html">Appendix</a></li>
 </ul>
 </div>
 <section id="running-the-book">
-<h2>Running the Book<a class="headerlink" href="#running-the-book" title="Link to this heading">#</a></h2>
+<h2>Running the Book<a class="headerlink" href="#running-the-book" title="Permalink to this heading">#</a></h2>
 <section id="on-the-server">
-<h3>On the <strong>Server</strong><a class="headerlink" href="#on-the-server" title="Link to this heading">#</a></h3>
+<h3>On the <strong>Server</strong><a class="headerlink" href="#on-the-server" title="Permalink to this heading">#</a></h3>
 <p>To run the book on a remote server (e.g., <code class="docutils literal notranslate"><span class="pre">devgpu004</span></code>):</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>x2ssh<span class="w"> </span>devgpu004.rva5.facebook.com
 tmux<span class="w"> </span>new<span class="w"> </span>-s<span class="w"> </span>mdbook
-<span class="nb">cd</span><span class="w"> </span>~/fbsource/fbcode/monarch/books/hyperactor-book
+<span class="nb">cd</span><span class="w"> </span>~/fbsource/fbcode/monarch/docs/source/books/hyperactor-book
 mdbook<span class="w"> </span>serve
 </pre></div>
 </div>
 <p>Then detach with Ctrl+b, then d.</p>
 </section>
 <section id="on-the-client">
-<h3>On the <strong>Client</strong><a class="headerlink" href="#on-the-client" title="Link to this heading">#</a></h3>
+<h3>On the <strong>Client</strong><a class="headerlink" href="#on-the-client" title="Permalink to this heading">#</a></h3>
 <p>To access the remote book from your local browser:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>autossh<span class="w"> </span>-M<span class="w"> </span><span class="m">0</span><span class="w"> </span>-N<span class="w"> </span>-L<span class="w"> </span><span class="m">3000</span>:localhost:3000<span class="w"> </span>devgpu004.rva5.facebook.com
 </pre></div>
@@ -1336,7 +1364,7 @@ mdbook<span class="w"> </span>serve
 </div>
 </section>
 <section id="notes">
-<h3>Notes<a class="headerlink" href="#notes" title="Link to this heading">#</a></h3>
+<h3>Notes<a class="headerlink" href="#notes" title="Permalink to this heading">#</a></h3>
 <ul class="simple">
 <li><p>The source is located in src/, with structure defined in SUMMARY.md.</p></li>
 <li><p>The book will auto-reload in the browser on edits.</p></li>
@@ -1344,10 +1372,10 @@ mdbook<span class="w"> </span>serve
 </section>
 </section>
 <section id="cleaning-up">
-<h2>Cleaning Up<a class="headerlink" href="#cleaning-up" title="Link to this heading">#</a></h2>
+<h2>Cleaning Up<a class="headerlink" href="#cleaning-up" title="Permalink to this heading">#</a></h2>
 <p>To shut down the book server:</p>
 <section id="option-1-reattach-and-stop">
-<h3>Option 1: Reattach and stop<a class="headerlink" href="#option-1-reattach-and-stop" title="Link to this heading">#</a></h3>
+<h3>Option 1: Reattach and stop<a class="headerlink" href="#option-1-reattach-and-stop" title="Permalink to this heading">#</a></h3>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>x2ssh<span class="w"> </span>devgpu004.rva5.facebook.com
 tmux<span class="w"> </span>attach<span class="w"> </span>-t<span class="w"> </span>mdbook
 </pre></div>
@@ -1359,7 +1387,7 @@ tmux<span class="w"> </span>attach<span class="w"> </span>-t<span class="w"> </s
 </ul>
 </section>
 <section id="option-2-kill-the-session-directly">
-<h3>Option 2: Kill the session directly<a class="headerlink" href="#option-2-kill-the-session-directly" title="Link to this heading">#</a></h3>
+<h3>Option 2: Kill the session directly<a class="headerlink" href="#option-2-kill-the-session-directly" title="Permalink to this heading">#</a></h3>
 <p>If you don’t want to reattach, you can kill the session from a new shell:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>x2ssh<span class="w"> </span>devgpu004.rva5.facebook.com
 tmux<span class="w"> </span>kill-session<span class="w"> </span>-t<span class="w"> </span>mdbook
@@ -1367,7 +1395,7 @@ tmux<span class="w"> </span>kill-session<span class="w"> </span>-t<span class="w
 </div>
 </section>
 <section id="optional-view-active-tmux-sessions">
-<h3>Optional: View active tmux sessions<a class="headerlink" href="#optional-view-active-tmux-sessions" title="Link to this heading">#</a></h3>
+<h3>Optional: View active tmux sessions<a class="headerlink" href="#optional-view-active-tmux-sessions" title="Permalink to this heading">#</a></h3>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>tmux<span class="w"> </span>ls
 </pre></div>
 </div>
@@ -1611,7 +1639,7 @@ tmux<span class="w"> </span>kill-session<span class="w"> </span>-t<span class="w
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>
@@ -1640,7 +1668,7 @@ tmux<span class="w"> </span>kill-session<span class="w"> </span>-t<span class="w
        "headline": "Hyperactor Documentation Book",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/books/hyperactor-book/README.html",
-       "articleBody": "Hyperactor Documentation Book# This is the development documentation for the hyperactor system, built using mdBook. Contents Hyperactor Actors Macros Channels Mailboxes and Routers References Appendix Summary Running the Book# On the Server# To run the book on a remote server (e.g., devgpu004): x2ssh devgpu004.rva5.facebook.com tmux new -s mdbook cd ~/fbsource/fbcode/monarch/books/hyperactor-book mdbook serve Then detach with Ctrl+b, then d. On the Client# To access the remote book from your local browser: autossh -M 0 -N -L 3000:localhost:3000 devgpu004.rva5.facebook.com Then open http://localhost:3000 in your browser. Note: If you don\u2019t have autossh installed, you can install it with: brew install autossh Notes# The source is located in src/, with structure defined in SUMMARY.md. The book will auto-reload in the browser on edits. Cleaning Up# To shut down the book server: Option 1: Reattach and stop# x2ssh devgpu004.rva5.facebook.com tmux attach -t mdbook Inside the session: Press Ctrl+C to stop mdbook serve Then type exit to close the shell and terminate the tmux session Option 2: Kill the session directly# If you don\u2019t want to reattach, you can kill the session from a new shell: x2ssh devgpu004.rva5.facebook.com tmux kill-session -t mdbook Optional: View active tmux sessions# tmux ls Use this to check whether the mdbook session is still running.",
+       "articleBody": "Hyperactor Documentation Book# This is the development documentation for the hyperactor system, built using mdBook. Contents Hyperactor Actors Macros Channels Mailboxes and Routers Procs References Remote Supervision and Rendezvous Appendix References Mailboxes and Routers Channels Procs Overview Key Components See Also Actors Remote Supervision and Rendezvous Intended usage Remote supervision Link protocol Keepalive link Child and link failures Stop and unlink Rendezvous tokens Public surface Macros Macro Summary Appendix Running the Book# On the Server# To run the book on a remote server (e.g., devgpu004): x2ssh devgpu004.rva5.facebook.com tmux new -s mdbook cd ~/fbsource/fbcode/monarch/docs/source/books/hyperactor-book mdbook serve Then detach with Ctrl+b, then d. On the Client# To access the remote book from your local browser: autossh -M 0 -N -L 3000:localhost:3000 devgpu004.rva5.facebook.com Then open http://localhost:3000 in your browser. Note: If you don\u2019t have autossh installed, you can install it with: brew install autossh Notes# The source is located in src/, with structure defined in SUMMARY.md. The book will auto-reload in the browser on edits. Cleaning Up# To shut down the book server: Option 1: Reattach and stop# x2ssh devgpu004.rva5.facebook.com tmux attach -t mdbook Inside the session: Press Ctrl+C to stop mdbook serve Then type exit to close the shell and terminate the tmux session Option 2: Kill the session directly# If you don\u2019t want to reattach, you can kill the session from a new shell: x2ssh devgpu004.rva5.facebook.com tmux kill-session -t mdbook Optional: View active tmux sessions# tmux ls Use this to check whether the mdbook session is still running.",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

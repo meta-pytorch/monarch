@@ -120,7 +120,7 @@ The agent is exported with exactly these handlers:
  resource::CreateOrUpdate<ProcSpec>,
  resource::Stop,
  resource::GetState<ProcState>,
- resource::GetRankStatus { cast = true },
+ resource::GetRankStatus,
  resource::List,
  ShutdownHost,
  ]
@@ -199,7 +199,6 @@ So right now:
 ```
 pub struct CreateOrUpdate<S> {
  pub name: Name,
- #[binding(include)]
  pub rank: Rank,
  pub spec: S,
 }

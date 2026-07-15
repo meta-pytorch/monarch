@@ -1,224 +1,106 @@
 # Host
 
-A `Host` manages a collection of spawned procs and provides bidirectional routing between them. It serves as the entry point for external connections and coordinates message delivery across local and remote actors.
+A `Host` is the mesh concept of a host: it manages the lifecycle of the procs
+running on one machine. It is deliberately narrow--connectivity is *not* its
+job. A host owns exactly one [`Gateway`](gateway.html), and delegates all
+routing and multiplexing to it. The host serves its endpoints through
+the gateway and never inspects transports or rewrites locations itself.
 
-## Overview
+## How a host is put together
 
-The `Host` struct maintains two key channel endpoints:
+A host owns:
 
-- **Frontend address**: accepts connections from external clients
-- **Backend address**: receives messages from spawned procs
-
-Both endpoints feed into a unified routing layer that can deliver messages to either the service proc (running within the host) or to spawned procs.
-
-```
-┌────────────┐
- ┌───▶ proc *,1 │
- │ #1└────────────┘
- │
- ┌──────────┐ │ ┌────────────┐
- │ Host │◀───┼───▶ proc *,2 │
- *└──────────┘# │ #2└────────────┘
- │
- │ ┌────────────┐
- └───▶ proc *,3 │
- #3└────────────┘
-```
-
-Where:
-
-- `*` is the host's frontend address (`frontend_addr`)
-- `#` is the host's backend address (`backend_addr`)
-- `#1`, `#2`, `#3` are the per-proc backend channels
-- Each proc is direct-addressed via the host - its id is "proc at `*` named `N`"
-
-## Structure
+- **one `Gateway`** -- the connectivity layer for every proc on the host (see
+[Gateway](gateway.html));
+- **two built-in procs**, `service_proc` and `local_proc`, that run
+*in-process* and therefore sit in the gateway's `procs` table;
+- a **frontend address** (`*`), the gateway's bound listening address that the
+rest of the mesh uses to reach this host's procs;
+- a **backend address** (`#`), where spawned child procs dial back;
+- a **`ProcManager`** that knows how to make a proc real (fork a process, run
+the bootstrap command, wire the backchannel) or spawn it in-process for
+tests.
 
 ```
-pub struct Host<M> {
- procs: HashSet<String>,
- frontend_addr: ChannelAddr,
- backend_addr: ChannelAddr,
- router: DialMailboxRouter,
- manager: M,
- service_proc: Proc,
- local_proc: Proc,
- frontend_rx: Option<ChannelRx<MessageEnvelope>>,
-}
+┌─────────────────────────────────────────────┐
+ │ Host (one machine) │
+ │ frontend = * (gateway listens here) │
+ │ backend = # (children dial back here) │
+ │ │
+ │ ┌──────────────── Gateway ─────────────┐ │
+ │ │ local: service_proc, local_proc │ │ ┌─────────────────┐
+ │ │ peers: C1 → dial(child1) ──────────┼───┼──▶│ child gateway 1 │
+ │ │ C2 → dial(child2) ──────────┼───┼──▶│ child gateway 2 │
+ │ │ forwarder: DialMailboxRouter │ │ └─────────────────┘
+ │ └──────────────────────────────────────┘ │
+ └─────────────────────────────────────────────┘
 ```
 
-**Fields:**
+Spawned children use ids derived from their names and locations of the form
+`Via(child_uid, frontend_addr)`, so all children are reached through the one
+frontend address. The gateway peels the child uid and forwards to the child's
+registered peer sender.
 
-- `procs`: Stores proc names to avoid creating duplicates
-- `frontend_addr`: The address external clients connect to
-- `backend_addr`: The address spawned procs use to send messages back to the host
-- `router`: A [`DialMailboxRouter`](../mailboxes/routers.html#dialmailboxrouter-remote-and-serializable-routing) for prefix-based routing to spawned procs
-- `manager`: A `ProcManager` implementation that handles proc lifecycle
-- `service_proc`: The host's local proc for system-level actors
-- `local_proc`: The host's local proc for user-level actors
-- `frontend_rx`: Channel receiver for external connections (consumed during startup)
+## The two built-in procs
 
-## Creating a Host
+`service_proc` and `local_proc` are in-process and share the host's single
+gateway, so they reach each other--and the host reaches them--through the
+gateway's local `procs` table, with zero dialing.
 
-The `Host::new` constructor takes a `ProcManager` and a channel address to serve:
+Their ids are *legacy pseudo-singletons*: literally the names `"service"` and
+`"local"`, identical across every host. A gateway can hold at most one proc per
+id, so a gateway can host at most one `service`/`local` pair--i.e. at most one
+host. `Host::new` uses `Gateway::global()`; callers that need more than one
+host in the same process, or need a pre-attached gateway, must use
+`Host::new_with_gateway`.
 
-```
-impl<M: ProcManager> Host<M> {
- pub async fn new(manager: M, addr: ChannelAddr) -> Result<Self, HostError> {
- let (frontend_addr, frontend_rx) = channel::serve(addr)?;
- let (backend_addr, backend_rx) = channel::serve(
- ChannelAddr::any(manager.transport())
- )?;
+## Spawned children
 
- let router = DialMailboxRouter::new();
+Each spawned child has its own gateway endpoint. In production that usually
+means a separate OS process; `LocalProcManager` uses the same protocol
+in-process for tests.
 
- let service_proc_id = ProcAddr::instance(
- frontend_addr.clone(),
- "service",
- );
- let service_proc = Proc::configured(service_proc_id.clone(), router.boxed());
+`Host::spawn` advertises the child at `Via(child_uid, host_location)`, waits
+for the child to report its serving address, dials that address, and registers
+the sender with `Gateway::attach_peer(child_uid, sender)`. A message for that
+child arrives at the host gateway, matches the child uid in `peers`, has that
+via hop peeled, and is forwarded to the child gateway. The returned
+`PeerAttachGuard` keeps the route alive; dropping it frees the slot.
 
- let local_proc_id = ProcAddr::instance(
- frontend_addr.clone(),
- "local",
- );
- let local_proc = Proc::configured(local_proc_id.clone(), router.boxed());
+## Binding and serving
 
- let host = Host {
- procs: HashSet::new(),
- frontend_addr,
- backend_addr,
- router,
- manager,
- service_proc,
- local_proc,
- frontend_rx: Some(frontend_rx),
- };
-
- let _backend_handle = host.forwarder().serve(backend_rx);
-
- Ok(host)
- }
-}
-```
-
-### Understanding `channel::serve()`
-
-`channel::serve()` is the universal "bind and listen" operation across different transport types. It:
-
-- Takes a `ChannelAddr` (which can be a wildcard like `ChannelAddr::any()`)
-- Binds a server/listener on that address
-- Returns a tuple of:
-
-- The **actual bound address** (resolved from wildcards)
-- A **receiver** (`ChannelRx<MessageEnvelope>`) for incoming messages
-
-This is why both calls in `Host::new` capture the returned address:
+Connectivity lives in the gateway. `Host::new_with_gateway` starts both host
+servers during construction:
 
 ```
-let (frontend_addr, frontend_rx) = channel::serve(addr)?;
-let (backend_addr, backend_rx) = channel::serve(ChannelAddr::any(manager.transport()))?;
+let mut backend_handle = gateway.serve(ChannelAddr::any(manager.transport()))?;
+let backend_addr = gateway.default_location().addr().clone();
+
+let frontend_handle = gateway.serve_with_listener(addr, listener)?;
+let frontend_addr = gateway.default_location().addr().clone();
+
+let service_proc = Proc::legacy_service_pseudo_singleton_on_gateway(gateway.clone());
+let local_proc = Proc::legacy_local_pseudo_singleton_on_gateway(gateway.clone());
 ```
 
-The returned address is the **actual bound address** you can give to others to connect to. For example, when you pass `ChannelAddr::Tcp(127.0.0.1:0)`:
+The backend address is passed to each child as its fallback route back to the
+host. The frontend address is the host location used in public proc refs.
 
-- **Input**: "bind to localhost on any available port"
-- **Output**: `(ChannelAddr::Tcp(127.0.0.1:54321), rx)` - the OS-assigned port
+Because the gateway owns the advertised location, later gateway serves affect
+new refs. Host construction serves the backend and frontend, so built-in procs
+snapshot the frontend location. A `serve_via` session that already exists
+remains active as an outbound route and as a valid local-delivery location, but
+the frontend serve becomes the default location until a newer serve replaces it.
 
-See [Channel Addresses](../channels/addresses.html) and [Transmits and Receives](../channels/tx_rx.html) for more on channel semantics.
+## Local proc invariant (LP-1)
 
-### The Service Proc and Local Proc
+The local proc always exists as the singleton proc id `"local"` on the host
+gateway and is forwarded in-process, but it starts with zero actors. A
+`ProcAgent` and root client actor are added only when
+`HostMeshAgent::handle(GetLocalProc)` is first called.
 
-The host creates two procs identified by `ProcId`:
+## See Also
 
-**Service Proc:**
-
-```
-let service_proc_id = ProcId(
- frontend_addr.clone(),
- "service".to_string()
-);
-let service_proc = Proc::configured(service_proc_id, router.boxed());
-```
-
-**Local Proc:**
-
-```
-let local_proc_id = ProcId(
- frontend_addr.clone(),
- "local".to_string()
-);
-let local_proc = Proc::configured(local_proc_id, router.boxed());
-```
-
-Both procs:
-
-- Live within the host process
-- Use `ProcId(frontend_addr, name)` as their identity
-- Forward outbound messages through the `DialMailboxRouter`
-- The service proc hosts system-level actors that manage proc lifecycle and coordination
-- The local proc hosts user-level actors
-
-See [`ProcId`](../references/proc_id.html) for details on proc addressing.
-
-## Routing Architecture
-
-The host implements bidirectional routing using a specialized `ProcOrDial` router (see [ProcOrDial Router](proc_or_dial.html)). Both the frontend and backend receivers are served by this router:
-
-**Backend receiver** (from spawned procs):
-
-```
-let _backend_handle = host.forwarder().serve(backend_rx);
-```
-
-**Frontend receiver** (from external clients):
-
-```
-Some(self.forwarder().serve(self.frontend_rx.take()?))
-```
-
-### Complete Routing Flow
-
-```
-frontend_rx (external connections) ──┐
- ├──> serve() ──> ProcOrDial ──┬──> service proc
-backend_rx (from spawned procs) ──┘ ├──> local proc
- └──> DialMailboxRouter
- │
- └──> looks up proc by name
- └──> dials backend addr
-```
-
-Both receivers feed into the same `ProcOrDial` router, creating bidirectional routing:
-
-- **Inbound (frontend)**: External → ProcOrDial → service proc or local proc or spawned proc
-- **Inbound (backend)**: Spawned procs → ProcOrDial → service proc or local proc or other spawned procs
-- **Outbound (from service proc or local proc)**: `service_proc.forwarder` / `local_proc.forwarder` = DialMailboxRouter → spawned procs
-
-See [`MailboxServer::serve()`](../mailboxes/mailbox_server.html) for how receivers are bridged to routers.
-
-## Channel Receivers
-
-The `ChannelRx<M>` receiver returned from `channel::serve()` implements the `Rx<M>` trait:
-
-```
-trait Rx<M: RemoteMessage> {
- async fn recv(&mut self) -> Result<M, ChannelError>;
- fn addr(&self) -> ChannelAddr;
-}
-```
-
-It's a stream of incoming messages of type `M`. In the host context, `M = MessageEnvelope`, so it receives actor messages from the network.
-
-**How the host uses receivers:**
-
-- **Frontend**: Serves the user-provided `addr` → receives messages from external connections via `frontend_rx`
-- **Backend**: Serves a wildcard backend address → receives messages from spawned procs via `backend_rx`
-
-Both are consumed by calling `.serve()` on the `ProcOrDial` forwarder, which bridges the channel receivers to the mailbox routing system.
-
-## Next Steps
-
-- See [ProcOrDial Router](proc_or_dial.html) for the routing implementation
-- See [Routers](../mailboxes/routers.html) for `DialMailboxRouter` details
-- See [Proc](proc.html) for how procs integrate with routers, including the local proc bypass optimization
+- [Gateway](gateway.html) -- the connectivity layer a host owns and delegates to
+- [Proc](proc.html) -- the runtime managed by the host's `ProcManager`
+- [ProcId](../references/proc_id.html) -- proc identity

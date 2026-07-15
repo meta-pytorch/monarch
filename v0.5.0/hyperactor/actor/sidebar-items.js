@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["ActorErrorKind","ActorStatus","Signal","StopMode"],"fn":["handle_stop","handle_undeliverable_message"],"mod":["remote"],"struct":["ActorError","ActorHandle","AnyActorHandle","HandlerInfo"],"trait":["Actor","Binds","Handler","Referable","RemoteHandles","RemoteSpawn"]};

@@ -1,13 +1,14 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>monarch.fetch &#8212; Monarch v0.5.0 documentation</title>
+    <title>monarch.fetch &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -27,37 +28,31 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../_static/design-tabs.js?v=f930bc37"></script>
-    <script type="module" src="https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs"></script>
-    <script type="module" src="https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0.1.4/dist/mermaid-layout-elk.esm.min.mjs"></script>
-    <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs";import elkLayouts from "https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0.1.4/dist/mermaid-layout-elk.esm.min.mjs";mermaid.registerLayoutLoaders(elkLayouts);mermaid.initialize({startOnLoad:false});</script>
-    <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
-    <script type="module">
-import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs";
-window.addEventListener("load", () => mermaid.run());
-</script>
+    <script data-url_root="../../" id="documentation_options" src="../../_static/documentation_options.js"></script>
+    <script src="../../_static/doctools.js"></script>
+    <script src="../../_static/sphinx_highlight.js"></script>
+    <script src="../../_static/design-tabs.js"></script>
+    <script src="https://unpkg.com/mermaid@10.2.0/dist/mermaid.min.js"></script>
+    <script>mermaid.initialize({startOnLoad:true});</script>
     <script>DOCUMENTATION_OPTIONS.pagename = '_modules/monarch/fetch';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/_modules/monarch/fetch.html" />
@@ -81,7 +76,7 @@ window.addEventListener("load", () => mermaid.run());
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -195,7 +190,7 @@ window.addEventListener("load", () => mermaid.run());
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1317,9 +1312,7 @@ document.write(`
 <span class="n">T</span> <span class="o">=</span> <span class="n">TypeVar</span><span class="p">(</span><span class="s2">&quot;T&quot;</span><span class="p">)</span>
 
 
-<div class="viewcode-block" id="fetch_shard">
-<a class="viewcode-back" href="../../api/monarch.html#monarch.fetch_shard">[docs]</a>
-<span class="k">def</span><span class="w"> </span><span class="nf">fetch_shard</span><span class="p">(</span>
+<div class="viewcode-block" id="fetch_shard"><a class="viewcode-back" href="../../api/monarch.html#monarch.fetch_shard">[docs]</a><span class="k">def</span><span class="w"> </span><span class="nf">fetch_shard</span><span class="p">(</span>
     <span class="n">obj</span><span class="p">:</span> <span class="n">T</span><span class="p">,</span> <span class="n">shard</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">int</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="nb">int</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Future</span><span class="p">[</span><span class="n">T</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
@@ -1336,13 +1329,11 @@ document.write(`
             <span class="n">shard</span> <span class="o">=</span> <span class="p">{}</span>
         <span class="n">shard</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">kwargs</span><span class="p">)</span>
 
+    <span class="c1"># pyrefly: ignore [bad-argument-type]</span>
     <span class="k">return</span> <span class="n">cast</span><span class="p">(</span><span class="s2">&quot;Future[T]&quot;</span><span class="p">,</span> <span class="n">call_on_shard_and_fetch</span><span class="p">(</span><span class="n">remote_identity</span><span class="p">,</span> <span class="n">obj</span><span class="p">,</span> <span class="n">shard</span><span class="o">=</span><span class="n">shard</span><span class="p">))</span></div>
 
 
-
-<div class="viewcode-block" id="show">
-<a class="viewcode-back" href="../../api/monarch.html#monarch.show">[docs]</a>
-<span class="k">def</span><span class="w"> </span><span class="nf">show</span><span class="p">(</span><span class="n">obj</span><span class="p">:</span> <span class="n">T</span><span class="p">,</span> <span class="n">shard</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">int</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">object</span><span class="p">:</span>
+<div class="viewcode-block" id="show"><a class="viewcode-back" href="../../api/monarch.html#monarch.show">[docs]</a><span class="k">def</span><span class="w"> </span><span class="nf">show</span><span class="p">(</span><span class="n">obj</span><span class="p">:</span> <span class="n">T</span><span class="p">,</span> <span class="n">shard</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">int</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">object</span><span class="p">:</span>
     <span class="n">v</span> <span class="o">=</span> <span class="n">inspect</span><span class="p">(</span><span class="n">obj</span><span class="p">,</span> <span class="n">shard</span><span class="o">=</span><span class="n">shard</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
     <span class="c1"># pyre-ignore</span>
     <span class="kn">from</span><span class="w"> </span><span class="nn">torchshow</span><span class="w"> </span><span class="kn">import</span> <span class="n">show</span>  <span class="c1"># @manual</span>
@@ -1351,12 +1342,8 @@ document.write(`
         <span class="k">return</span> <span class="n">show</span><span class="p">(</span><span class="n">v</span><span class="p">)</span></div>
 
 
-
-<div class="viewcode-block" id="inspect">
-<a class="viewcode-back" href="../../api/monarch.html#monarch.inspect">[docs]</a>
-<span class="k">def</span><span class="w"> </span><span class="nf">inspect</span><span class="p">(</span><span class="n">obj</span><span class="p">:</span> <span class="n">T</span><span class="p">,</span> <span class="n">shard</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">int</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">T</span><span class="p">:</span>
+<div class="viewcode-block" id="inspect"><a class="viewcode-back" href="../../api/monarch.html#monarch.inspect">[docs]</a><span class="k">def</span><span class="w"> </span><span class="nf">inspect</span><span class="p">(</span><span class="n">obj</span><span class="p">:</span> <span class="n">T</span><span class="p">,</span> <span class="n">shard</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">int</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">T</span><span class="p">:</span>
     <span class="k">return</span> <span class="n">fetch_shard</span><span class="p">(</span><span class="n">obj</span><span class="p">,</span> <span class="n">shard</span><span class="o">=</span><span class="n">shard</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span><span class="o">.</span><span class="n">result</span><span class="p">()</span></div>
-
 </pre></div>
 
                 </article>
@@ -1509,7 +1496,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>
@@ -1538,7 +1525,7 @@ document.write(`
        "headline": "monarch.fetch",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/_modules/monarch/fetch.html",
-       "articleBody": "Source code for monarch.fetch # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-unsafe \"\"\" This is a utility file for fetching a shard of a tensor from remote. \"\"\" from typing import cast, TypeVar from monarch.actor import Future from monarch.common.device_mesh import no_mesh from monarch.common.remote import call_on_shard_and_fetch, remote_identity T = TypeVar(\"T\") [docs] def fetch_shard( obj: T, shard: dict[str, int] | None = None, **kwargs: int ) -\u003e Future[T]: \"\"\" Retrieve the shard at `coordinates` of the current device mesh of each tensor in obj. All tensors in `obj` will be fetched to the CPU device. obj - a pytree containing the tensors the fetch shard - a dictionary from mesh dimension name to coordinate of the shard If None, this will fetch from coordinate 0 for all dimensions (useful after all_reduce/all_gather) preprocess - a **kwargs - additional keyword arguments are added as entries to the shard dictionary \"\"\" if kwargs: if shard is None: shard = {} shard.update(kwargs) return cast(\"Future[T]\", call_on_shard_and_fetch(remote_identity, obj, shard=shard)) [docs] def show(obj: T, shard: dict[str, int] | None = None, **kwargs: int) -\u003e object: v = inspect(obj, shard=shard, **kwargs) # pyre-ignore from torchshow import show # @manual with no_mesh.activate(): return show(v) [docs] def inspect(obj: T, shard: dict[str, int] | None = None, **kwargs: int) -\u003e T: return fetch_shard(obj, shard=shard, **kwargs).result()",
+       "articleBody": "Source code for monarch.fetch # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-unsafe \"\"\" This is a utility file for fetching a shard of a tensor from remote. \"\"\" from typing import cast, TypeVar from monarch.actor import Future from monarch.common.device_mesh import no_mesh from monarch.common.remote import call_on_shard_and_fetch, remote_identity T = TypeVar(\"T\") [docs]def fetch_shard( obj: T, shard: dict[str, int] | None = None, **kwargs: int ) -\u003e Future[T]: \"\"\" Retrieve the shard at `coordinates` of the current device mesh of each tensor in obj. All tensors in `obj` will be fetched to the CPU device. obj - a pytree containing the tensors the fetch shard - a dictionary from mesh dimension name to coordinate of the shard If None, this will fetch from coordinate 0 for all dimensions (useful after all_reduce/all_gather) preprocess - a **kwargs - additional keyword arguments are added as entries to the shard dictionary \"\"\" if kwargs: if shard is None: shard = {} shard.update(kwargs) # pyrefly: ignore [bad-argument-type] return cast(\"Future[T]\", call_on_shard_and_fetch(remote_identity, obj, shard=shard)) [docs]def show(obj: T, shard: dict[str, int] | None = None, **kwargs: int) -\u003e object: v = inspect(obj, shard=shard, **kwargs) # pyre-ignore from torchshow import show # @manual with no_mesh.activate(): return show(v) [docs]def inspect(obj: T, shard: dict[str, int] | None = None, **kwargs: int) -\u003e T: return fetch_shard(obj, shard=shard, **kwargs).result()",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

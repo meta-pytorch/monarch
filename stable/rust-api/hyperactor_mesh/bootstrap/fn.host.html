@@ -1,18 +1,56 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Bootstrap a host in this process, returning a handle to the mesh agent."><title>host in hyperactor_mesh::bootstrap - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-b7b9f40b.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="hyperactor_mesh" data-themes="" data-resource-suffix="" data-rustdoc-version="1.95.0-nightly (3a70d0349 2026-02-27)" data-channel="nightly" data-search-js="search-63369b7b.js" data-stringdex-js="stringdex-b897f86f.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="sidebar-items.js"></script><script defer src="../../static.files/main-5013f961.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc fn"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">host</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../hyperactor_mesh/index.html">hyperactor_<wbr>mesh</a><span class="version">0.0.0</span></h2></div><div class="sidebar-elems"><div id="rustdoc-modnav"><h2><a href="index.html">In hyperactor_<wbr>mesh::<wbr>bootstrap</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">hyperactor_mesh</a>::<wbr><a href="index.html">bootstrap</a></div><h1>Function <span class="fn">host</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/hyperactor_mesh/bootstrap.rs.html#255-306">Source</a> </span></div><pre class="rust item-decl"><code>pub async fn host(
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Bootstrap a host in this process using a caller-provided gateway."><title>host in hyperactor_mesh::bootstrap - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-17e0aaed.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="hyperactor_mesh" data-themes="" data-resource-suffix="" data-rustdoc-version="1.96.0-nightly (02c7f9bec 2026-04-10)" data-channel="nightly" data-search-js="search-b5634cc7.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="sidebar-items.js"></script><script defer src="../../static.files/main-5013f961.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc fn"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">host</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../hyperactor_mesh/index.html">hyperactor_<wbr>mesh</a><span class="version">0.0.0</span></h2></div><div class="sidebar-elems"><div id="rustdoc-modnav"><h2><a href="index.html">In hyperactor_<wbr>mesh::<wbr>bootstrap</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">hyperactor_mesh</a>::<wbr><a href="index.html">bootstrap</a></div><h1>Function <span class="fn">host</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/hyperactor_mesh/bootstrap.rs.html#281-339">Source</a> </span></div><pre class="rust item-decl"><code>pub async fn host(
     addr: <a class="enum" href="../../hyperactor/channel/enum.ChannelAddr.html" title="enum hyperactor::channel::ChannelAddr">ChannelAddr</a>,
     command: <a class="enum" href="https://doc.rust-lang.org/nightly/core/option/enum.Option.html" title="enum core::option::Option">Option</a>&lt;<a class="struct" href="struct.BootstrapCommand.html" title="struct hyperactor_mesh::bootstrap::BootstrapCommand">BootstrapCommand</a>&gt;,
     config: <a class="enum" href="https://doc.rust-lang.org/nightly/core/option/enum.Option.html" title="enum core::option::Option">Option</a>&lt;<a class="struct" href="../../hyperactor_config/attrs/struct.Attrs.html" title="struct hyperactor_config::attrs::Attrs">Attrs</a>&gt;,
     exit_on_shutdown: <a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.bool.html">bool</a>,
     listener: <a class="enum" href="https://doc.rust-lang.org/nightly/core/option/enum.Option.html" title="enum core::option::Option">Option</a>&lt;<a class="struct" href="https://doc.rust-lang.org/nightly/std/net/tcp/struct.TcpListener.html" title="struct std::net::tcp::TcpListener">TcpListener</a>&gt;,
-) -&gt; <a class="type" href="https://docs.rs/anyhow/1.0.102/anyhow/type.Result.html" title="type anyhow::Result">Result</a>&lt;(<a class="struct" href="../../hyperactor/actor/struct.ActorHandle.html" title="struct hyperactor::actor::ActorHandle">ActorHandle</a>&lt;<a class="struct" href="../host_mesh/host_agent/struct.HostAgent.html" title="struct hyperactor_mesh::host_mesh::host_agent::HostAgent">HostAgent</a>&gt;, <a class="struct" href="struct.HostShutdownHandle.html" title="struct hyperactor_mesh::bootstrap::HostShutdownHandle">HostShutdownHandle</a>)&gt;</code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Bootstrap a host in this process, returning a handle to the mesh agent.</p>
-<p>To obtain the local proc, use <code>GetLocalProc</code> on the returned host mesh agent,
-then use <code>GetProc</code> on the returned proc mesh agent.</p>
+    gateway: <a class="struct" href="../../hyperactor/gateway/struct.Gateway.html" title="struct hyperactor::gateway::Gateway">Gateway</a>,
+    via: <a class="enum" href="https://doc.rust-lang.org/nightly/core/option/enum.Option.html" title="enum core::option::Option">Option</a>&lt;<a class="enum" href="../../hyperactor/channel/enum.ChannelAddr.html" title="enum hyperactor::channel::ChannelAddr">ChannelAddr</a>&gt;,
+) -&gt; <a class="type" href="https://docs.rs/anyhow/1.0.103/anyhow/type.Result.html" title="type anyhow::Result">Result</a>&lt;(<a class="struct" href="../../hyperactor/actor/struct.ActorHandle.html" title="struct hyperactor::actor::ActorHandle">ActorHandle</a>&lt;<a class="struct" href="../host_mesh/host_agent/struct.HostAgent.html" title="struct hyperactor_mesh::host_mesh::host_agent::HostAgent">HostAgent</a>&gt;, <a class="struct" href="struct.HostShutdownHandle.html" title="struct hyperactor_mesh::bootstrap::HostShutdownHandle">HostShutdownHandle</a>)&gt;</code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Bootstrap a host in this process using a caller-provided gateway.</p>
+<p>The caller passes the <a href="../../hyperactor/gateway/struct.Gateway.html" title="struct hyperactor::gateway::Gateway"><code>Gateway</code></a> in — typically <a href="../../hyperactor/gateway/struct.Gateway.html#method.new" title="associated function hyperactor::gateway::Gateway::new"><code>Gateway::new</code></a>,
+but it may have been pre-configured (e.g., via
+<a href="../../hyperactor/gateway/struct.Gateway.html#method.serve_via" title="method hyperactor::gateway::Gateway::serve_via"><code>Gateway::serve_via</code></a> or [<code>Gateway::attach</code>] to connect to
+another gateway) before this call. Host construction serves the
+gateway’s backend and frontend endpoints, so the host’s
+<code>system_proc</code>, <code>local_proc</code>, <code>HostAgent</code>, and handler ports
+snapshot the frontend location when minted. Any preconfigured
+<code>serve_via</code> session remains active as an outbound route and local
+delivery location.</p>
+<p>Returns <code>(host_mesh_agent, shutdown_handle)</code>:</p>
 <ul>
-<li><code>addr</code>: the listening address of the host; this is used to bind the frontend address;</li>
-<li><code>command</code>: optional bootstrap command to spawn procs, otherwise [<code>BootstrapProcManager::current</code>];</li>
-<li><code>config</code>: optional runtime config overlay.</li>
-<li><code>exit_on_shutdown</code>: if true, <a href="struct.HostShutdownHandle.html#method.join" title="method hyperactor_mesh::bootstrap::HostShutdownHandle::join"><code>HostShutdownHandle::join</code></a> will call <code>process::exit</code> after draining.</li>
-<li><code>listener</code>: when <code>Some</code>, it is used as the frontend listening socket
-instead of binding a new one.</li>
+<li>
+<p><code>host_mesh_agent</code> is the <a href="../host_mesh/host_agent/struct.HostAgent.html" title="struct hyperactor_mesh::host_mesh::host_agent::HostAgent"><code>HostAgent</code></a> actor handle. To obtain the
+local proc, use <code>GetLocalProc</code> on this agent, then <code>GetProc</code> on the
+returned proc mesh agent.</p>
+</li>
+<li>
+<p><code>shutdown_handle</code> joins the host’s accept loop and runs the
+drain protocol; see <a href="struct.HostShutdownHandle.html" title="struct hyperactor_mesh::bootstrap::HostShutdownHandle"><code>HostShutdownHandle</code></a>.</p>
+</li>
+<li>
+<p><code>addr</code>: the listening address of the host; this is used for the frontend server.</p>
+</li>
+<li>
+<p><code>command</code>: optional bootstrap command to spawn procs, otherwise [<code>BootstrapProcManager::current</code>].</p>
+</li>
+<li>
+<p><code>config</code>: optional runtime config overlay.</p>
+</li>
+<li>
+<p><code>exit_on_shutdown</code>: if true, <a href="struct.HostShutdownHandle.html#method.join" title="method hyperactor_mesh::bootstrap::HostShutdownHandle::join"><code>HostShutdownHandle::join</code></a> will call <code>process::exit</code> after draining.</p>
+</li>
+<li>
+<p><code>listener</code>: when <code>Some</code>, it is used as the frontend listening socket
+instead of binding a new one.</p>
+</li>
+<li>
+<p><code>gateway</code>: the gateway this host will multiplex traffic through.</p>
+</li>
+<li>
+<p><code>via</code>: when <code>Some</code>, attach <code>gateway</code> to this remote duplex address
+with <code>serve_via</code> during bootstrap — after the local serves but
+before any ref is minted — so refs advertise the routable <code>Via</code>
+location (used by out-of-cluster clients).</p>
+</li>
 </ul>
 </div></details></section></div></main></body></html>

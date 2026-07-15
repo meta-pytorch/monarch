@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["RoutingAction","RoutingStep"],"fn":["format_route","format_routing_tree","print_route","print_routing_tree","resolve_routing"],"struct":["Choice","RoutingFrame","RoutingFrameKey"]};

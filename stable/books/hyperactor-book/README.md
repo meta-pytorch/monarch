@@ -10,9 +10,33 @@ Contents
 - [Macros](src/macros/index.html)
 - [Channels](src/channels/index.html)
 - [Mailboxes and Routers](src/mailboxes/index.html)
+- [Procs](src/procs/index.html)
 - [References](src/references/index.html)
+- [Remote Supervision and Rendezvous](src/remote_supervision.html)
 - [Appendix](src/appendix/index.html)
-- [Summary](src/SUMMARY.html)
+- [References](src/references/index.html)
+- [Mailboxes and Routers](src/mailboxes/index.html)
+- [Channels](src/channels/index.html)
+- [Procs](src/procs/index.html)
+
+- [Overview](src/procs/index.html#overview)
+- [Key Components](src/procs/index.html#key-components)
+- [See Also](src/procs/index.html#see-also)
+- [Actors](src/actors/index.html)
+- [Remote Supervision and Rendezvous](src/remote_supervision.html)
+
+- [Intended usage](src/remote_supervision.html#intended-usage)
+- [Remote supervision](src/remote_supervision.html#remote-supervision)
+- [Link protocol](src/remote_supervision.html#link-protocol)
+- [Keepalive link](src/remote_supervision.html#keepalive-link)
+- [Child and link failures](src/remote_supervision.html#child-and-link-failures)
+- [Stop and unlink](src/remote_supervision.html#stop-and-unlink)
+- [Rendezvous tokens](src/remote_supervision.html#rendezvous-tokens)
+- [Public surface](src/remote_supervision.html#public-surface)
+- [Macros](src/macros/index.html)
+
+- [Macro Summary](src/macros/index.html#macro-summary)
+- [Appendix](src/appendix/index.html)
 
 ## Running the Book
 
@@ -23,7 +47,7 @@ To run the book on a remote server (e.g., `devgpu004`):
 ```
 x2ssh devgpu004.rva5.facebook.com
 tmux new -s mdbook
-cd ~/fbsource/fbcode/monarch/books/hyperactor-book
+cd ~/fbsource/fbcode/monarch/docs/source/books/hyperactor-book
 mdbook serve
 ```
 

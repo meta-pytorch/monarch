@@ -1,13 +1,14 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>monarch._src.actor.endpoint &#8212; Monarch v0.5.0 documentation</title>
+    <title>monarch._src.actor.endpoint &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -27,37 +28,31 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
-    <script type="module" src="https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs"></script>
-    <script type="module" src="https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0.1.4/dist/mermaid-layout-elk.esm.min.mjs"></script>
-    <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs";import elkLayouts from "https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0.1.4/dist/mermaid-layout-elk.esm.min.mjs";mermaid.registerLayoutLoaders(elkLayouts);mermaid.initialize({startOnLoad:false});</script>
-    <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
-    <script type="module">
-import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs";
-window.addEventListener("load", () => mermaid.run());
-</script>
+    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
+    <script src="../../../../_static/doctools.js"></script>
+    <script src="../../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../../_static/design-tabs.js"></script>
+    <script src="https://unpkg.com/mermaid@10.2.0/dist/mermaid.min.js"></script>
+    <script>mermaid.initialize({startOnLoad:true});</script>
     <script>DOCUMENTATION_OPTIONS.pagename = '_modules/monarch/_src/actor/endpoint';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/_modules/monarch/_src/actor/endpoint.html" />
@@ -81,7 +76,7 @@ window.addEventListener("load", () => mermaid.run());
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -195,7 +190,7 @@ window.addEventListener("load", () => mermaid.run());
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1349,9 +1344,16 @@ document.write(`
 <span class="n">Propagator</span> <span class="o">=</span> <span class="n">Union</span><span class="p">[</span><span class="kc">None</span><span class="p">,</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;cached&quot;</span><span class="p">,</span> <span class="s2">&quot;inspect&quot;</span><span class="p">,</span> <span class="s2">&quot;mocked&quot;</span><span class="p">],</span> <span class="n">Callable</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="n">Any</span><span class="p">]]</span>
 
 
-<div class="viewcode-block" id="Endpoint">
-<a class="viewcode-back" href="../../../../api/monarch.actor.html#monarch.actor.Endpoint">[docs]</a>
-<span class="k">class</span><span class="w"> </span><span class="nc">Endpoint</span><span class="p">(</span><span class="n">Protocol</span><span class="p">[</span><span class="n">P</span><span class="p">,</span> <span class="n">R</span><span class="p">]):</span>
+<div class="viewcode-block" id="Endpoint"><a class="viewcode-back" href="../../../../api/monarch.actor.html#monarch.actor.Endpoint">[docs]</a><span class="k">class</span><span class="w"> </span><span class="nc">Endpoint</span><span class="p">(</span><span class="n">Protocol</span><span class="p">[</span><span class="n">P</span><span class="p">,</span> <span class="n">R</span><span class="p">]):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;A callable endpoint on a spawned actor or actor mesh.</span>
+
+<span class="sd">    Accessing an ``@endpoint`` method on a spawned actor yields an ``Endpoint``</span>
+<span class="sd">    rather than calling the method directly. Its methods are the messaging</span>
+<span class="sd">    adverbs that send a message to the actor(s) and control how responses are</span>
+<span class="sd">    returned: ``call``, ``call_one``, ``choose``, ``stream``, ``broadcast``,</span>
+<span class="sd">    and ``rref``.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
     <span class="k">def</span><span class="w"> </span><span class="nf">_send</span><span class="p">(</span>
         <span class="bp">self</span><span class="p">,</span>
         <span class="n">args</span><span class="p">:</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="o">...</span><span class="p">],</span>
@@ -1384,19 +1386,11 @@ document.write(`
 <span class="sd">        &quot;&quot;&quot;</span>
         <span class="o">...</span>
 
-<div class="viewcode-block" id="Endpoint.call_one">
-<a class="viewcode-back" href="../../../../api/monarch.actor.html#monarch.actor.Endpoint.call_one">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">call_one</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">:</span> <span class="n">P</span><span class="o">.</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="n">P</span><span class="o">.</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Future</span><span class="p">[</span><span class="n">R</span><span class="p">]:</span> <span class="o">...</span></div>
+<div class="viewcode-block" id="Endpoint.call_one"><a class="viewcode-back" href="../../../../api/monarch.actor.html#monarch.actor.Endpoint.call_one">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="nf">call_one</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">:</span> <span class="n">P</span><span class="o">.</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="n">P</span><span class="o">.</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Future</span><span class="p">[</span><span class="n">R</span><span class="p">]:</span> <span class="o">...</span></div>
 
+<div class="viewcode-block" id="Endpoint.call"><a class="viewcode-back" href="../../../../api/monarch.actor.html#monarch.actor.Endpoint.call">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="nf">call</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">:</span> <span class="n">P</span><span class="o">.</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="n">P</span><span class="o">.</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="s2">&quot;Future[ValueMesh[R]]&quot;</span><span class="p">:</span> <span class="o">...</span></div>
 
-<div class="viewcode-block" id="Endpoint.call">
-<a class="viewcode-back" href="../../../../api/monarch.actor.html#monarch.actor.Endpoint.call">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">call</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">:</span> <span class="n">P</span><span class="o">.</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="n">P</span><span class="o">.</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="s2">&quot;Future[ValueMesh[R]]&quot;</span><span class="p">:</span> <span class="o">...</span></div>
-
-
-<div class="viewcode-block" id="Endpoint.stream">
-<a class="viewcode-back" href="../../../../api/monarch.actor.html#monarch.actor.Endpoint.stream">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">stream</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">:</span> <span class="n">P</span><span class="o">.</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="n">P</span><span class="o">.</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Iterator</span><span class="p">[</span><span class="n">Future</span><span class="p">[</span><span class="n">R</span><span class="p">]]:</span>
+<div class="viewcode-block" id="Endpoint.stream"><a class="viewcode-back" href="../../../../api/monarch.actor.html#monarch.actor.Endpoint.stream">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="nf">stream</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">:</span> <span class="n">P</span><span class="o">.</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="n">P</span><span class="o">.</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Iterator</span><span class="p">[</span><span class="n">Future</span><span class="p">[</span><span class="n">R</span><span class="p">]]:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        Broadcasts to all actors and yields their responses as a stream.</span>
 
@@ -1405,10 +1399,7 @@ document.write(`
 <span class="sd">        &quot;&quot;&quot;</span>
         <span class="o">...</span></div>
 
-
-<div class="viewcode-block" id="Endpoint.broadcast">
-<a class="viewcode-back" href="../../../../api/monarch.actor.html#monarch.actor.Endpoint.broadcast">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">broadcast</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">:</span> <span class="n">P</span><span class="o">.</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="n">P</span><span class="o">.</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<div class="viewcode-block" id="Endpoint.broadcast"><a class="viewcode-back" href="../../../../api/monarch.actor.html#monarch.actor.Endpoint.broadcast">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="nf">broadcast</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">:</span> <span class="n">P</span><span class="o">.</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="n">P</span><span class="o">.</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        Fire-and-forget broadcast to all actors without waiting for actors to</span>
 <span class="sd">        acknowledge receipt.</span>
@@ -1418,12 +1409,7 @@ document.write(`
 <span class="sd">        &quot;&quot;&quot;</span>
         <span class="o">...</span></div>
 
-
-<div class="viewcode-block" id="Endpoint.rref">
-<a class="viewcode-back" href="../../../../api/monarch.actor.html#monarch.actor.Endpoint.rref">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">rref</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">:</span> <span class="n">P</span><span class="o">.</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="n">P</span><span class="o">.</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">R</span><span class="p">:</span> <span class="o">...</span></div>
-</div>
-
+<div class="viewcode-block" id="Endpoint.rref"><a class="viewcode-back" href="../../../../api/monarch.actor.html#monarch.actor.Endpoint.rref">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="nf">rref</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">:</span> <span class="n">P</span><span class="o">.</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="n">P</span><span class="o">.</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">R</span><span class="p">:</span> <span class="o">...</span></div></div>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">_do_propagate</span><span class="p">(</span>
@@ -1595,15 +1581,57 @@ document.write(`
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">PortedEndpointIfy</span><span class="p">:</span> <span class="o">...</span>
 
 
-<div class="viewcode-block" id="endpoint">
-<a class="viewcode-back" href="../../../../api/monarch.actor.html#monarch.actor.endpoint">[docs]</a>
-<span class="k">def</span><span class="w"> </span><span class="nf">endpoint</span><span class="p">(</span>
+<div class="viewcode-block" id="endpoint"><a class="viewcode-back" href="../../../../api/monarch.actor.html#monarch.actor.endpoint">[docs]</a><span class="k">def</span><span class="w"> </span><span class="nf">endpoint</span><span class="p">(</span>
     <span class="n">method</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">propagate</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">explicit_response_port</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
     <span class="n">instrument</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Any</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Mark an ``Actor`` method as an endpoint callable from other actors.</span>
+
+<span class="sd">    An endpoint defines part of an actor&#39;s public API. Once the actor is</span>
+<span class="sd">    spawned onto a mesh, you invoke its endpoints through messaging adverbs</span>
+<span class="sd">    (``call``, ``call_one``, ``choose``, ``stream``, ``broadcast``, and</span>
+<span class="sd">    ``rref``) rather than calling the method directly. Each adverb controls how</span>
+<span class="sd">    the message is delivered and how the response is returned. Endpoint methods</span>
+<span class="sd">    may be synchronous or ``async``.</span>
+
+<span class="sd">    Apply it bare or with options::</span>
+
+<span class="sd">        class Counter(Actor):</span>
+<span class="sd">            @endpoint</span>
+<span class="sd">            def increment(self) -&gt; int:</span>
+<span class="sd">                ...</span>
+
+<span class="sd">            @endpoint(explicit_response_port=True)</span>
+<span class="sd">            async def stream_results(self, port: Port[int]) -&gt; None:</span>
+<span class="sd">                ...</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        method: The actor method to wrap. Supplied automatically when the</span>
+<span class="sd">            decorator is applied without parentheses; leave it unset when</span>
+<span class="sd">            passing options.</span>
+<span class="sd">        propagate: Controls how the tensor engine infers output tensor shapes</span>
+<span class="sd">            for ``rref`` without running the endpoint. Pass a callable that</span>
+<span class="sd">            takes the endpoint&#39;s arguments (excluding ``self``) and returns</span>
+<span class="sd">            tensors of the shapes the endpoint would produce, or one of the</span>
+<span class="sd">            strings ``&quot;cached&quot;``, ``&quot;inspect&quot;``, or ``&quot;mocked&quot;``. Defaults to</span>
+<span class="sd">            ``None``, which matters only for endpoints used with distributed</span>
+<span class="sd">            tensors.</span>
+<span class="sd">        explicit_response_port: When ``True``, the endpoint receives a ``Port``</span>
+<span class="sd">            as its first argument (after ``self``) and is responsible for</span>
+<span class="sd">            sending its result through that port instead of returning a value.</span>
+<span class="sd">            This supports custom response protocols, such as sending several</span>
+<span class="sd">            responses or deferring one. The method&#39;s return annotation should</span>
+<span class="sd">            be ``None``.</span>
+<span class="sd">        instrument: When ``True`` (the default), wrap each invocation in a</span>
+<span class="sd">            tracing span named for the method.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        An ``EndpointProperty`` descriptor. Accessing it on a spawned actor</span>
+<span class="sd">        yields an ``Endpoint`` exposing the messaging adverbs.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
     <span class="k">if</span> <span class="n">method</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">functools</span><span class="o">.</span><span class="n">partial</span><span class="p">(</span>
             <span class="n">endpoint</span><span class="p">,</span>
@@ -1617,7 +1645,6 @@ document.write(`
         <span class="n">explicit_response_port</span><span class="o">=</span><span class="n">explicit_response_port</span><span class="p">,</span>
         <span class="n">instrument</span><span class="o">=</span><span class="n">instrument</span><span class="p">,</span>
     <span class="p">)</span></div>
-
 </pre></div>
 
                 </article>
@@ -1770,7 +1797,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>
@@ -1799,7 +1826,7 @@ document.write(`
        "headline": "monarch._src.actor.endpoint",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/_modules/monarch/_src/actor/endpoint.html",
-       "articleBody": "Source code for monarch._src.actor.endpoint # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-strict import functools from typing import ( Any, Awaitable, Callable, cast, Concatenate, Dict, Generic, Iterator, Literal, Optional, overload, ParamSpec, Protocol, Tuple, TYPE_CHECKING, TypeVar, Union, ) from monarch._rust_bindings.monarch_hyperactor.shape import ( Extent, # noqa: F401 re-exports ) from monarch._src.actor.future import Future from monarch._src.actor.tensor_engine_shim import _cached_propagation, fake_call T = TypeVar(\"T\") if TYPE_CHECKING: from monarch._rust_bindings.monarch_hyperactor.mailbox import OncePortRef, PortRef from monarch._src.actor.actor_mesh import ActorMesh, Port, ValueMesh from monarch._src.actor.future import Future P = ParamSpec(\"P\") R = TypeVar(\"R\") Selection = Literal[\"all\", \"choose\"] Propagator = Union[None, Literal[\"cached\", \"inspect\", \"mocked\"], Callable[..., Any]] [docs] class Endpoint(Protocol[P, R]): def _send( self, args: Tuple[Any, ...], kwargs: Dict[str, Any], port: \"Optional[PortRef | OncePortRef]\" = None, selection: Selection = \"all\", ) -\u003e None: \"\"\" Implements sending a message to the endpoint. The return value of the endpoint will be sent to port if provided. If port is not provided, the return will be dropped, and any exception will cause the actor to fail. The return value is the (multi-dimension) size of the actors that were sent a message. For ActorEndpoints this will be the actor_meshes size. For free-function endpoints, this will be the size of the currently active proc_mesh. \"\"\" ... def _call_name(self) -\u003e Any: \"\"\" Something to use in InputChecker to represent calling this thingy. \"\"\" ... def choose(self, *args: P.args, **kwargs: P.kwargs) -\u003e Future[R]: \"\"\" Load balanced sends a message to one chosen actor and awaits a result. Load balanced RPC-style entrypoint for request/response messaging. \"\"\" ... [docs] def call_one(self, *args: P.args, **kwargs: P.kwargs) -\u003e Future[R]: ... [docs] def call(self, *args: P.args, **kwargs: P.kwargs) -\u003e \"Future[ValueMesh[R]]\": ... [docs] def stream(self, *args: P.args, **kwargs: P.kwargs) -\u003e Iterator[Future[R]]: \"\"\" Broadcasts to all actors and yields their responses as a stream. This enables processing results from multiple actors incrementally as they become available. Returns an iterator of Future values. \"\"\" ... [docs] def broadcast(self, *args: P.args, **kwargs: P.kwargs) -\u003e None: \"\"\" Fire-and-forget broadcast to all actors without waiting for actors to acknowledge receipt. In other words, the return of this method does not guarrantee the delivery of the message. \"\"\" ... [docs] def rref(self, *args: P.args, **kwargs: P.kwargs) -\u003e R: ... def _do_propagate( propagator_arg: Propagator, args: Tuple[Any, ...], kwargs: Dict[str, Any], fake_args: Tuple[Any, ...], fake_kwargs: Dict[str, Any], cache: Dict[Any, Any], resolvable: Optional[Any] = None, ) -\u003e Any: if propagator_arg is None or propagator_arg == \"cached\": if resolvable is None: raise NotImplementedError( \"Cached propagation is not implemented for actor endpoints.\" ) return _cached_propagation(cache, resolvable, args, kwargs) elif propagator_arg == \"inspect\": return None elif propagator_arg == \"mocked\": raise NotImplementedError(\"mocked propagation\") else: return fake_call(propagator_arg, *fake_args, **fake_kwargs) class EndpointProperty(Generic[P, R]): @overload def __init__( self, method: Callable[Concatenate[Any, P], Awaitable[R]], propagator: Propagator, explicit_response_port: bool, instrument: bool = True, ) -\u003e None: ... @overload def __init__( self, method: Callable[Concatenate[Any, P], R], propagator: Propagator, explicit_response_port: bool, instrument: bool = True, ) -\u003e None: ... def __init__( self, method: Any, propagator: Propagator, explicit_response_port: bool, instrument: bool = True, ) -\u003e None: self._method = method self._propagator = propagator self._explicit_response_port = explicit_response_port self._instrument = instrument def __get__(self, instance: Any, owner: Any) -\u003e Endpoint[P, R]: # this is a total lie, but we have to actually # recognize this was defined as an endpoint, # and also lookup the method return cast(Endpoint[P, R], self) class NotAnEndpoint: \"\"\" Used as the dynamic value of functions on an ActorMesh that were not marked as endpoints. This is used both to give a better error message (since we cannot prevent the type system from thinking they are methods), and to provide the oppurtunity for someone to do endpoint(x.foo) on something that wasn\u0027t marked as an endpoint. \"\"\" def __init__(self, ref: \"ActorMesh[Any]\", name: str) -\u003e None: self._ref = ref self._name = name def __call__(self, *args: Any, **kwargs: Any) -\u003e None: raise RuntimeError( f\"Actor {self._ref._class}.{self._name} is not annotated as an endpoint. To call it as one, add a @endpoint decorator to it, or directly wrap it in one as_endpoint(obj.method).call(...)\" ) # This can\u0027t just be Callable because otherwise we are not # allowed to use type arguments in the return value. class EndpointIfy: @overload def __call__( self, function: Callable[Concatenate[Any, P], Awaitable[R]] ) -\u003e Endpoint[P, R]: ... @overload def __call__( self, function: Callable[Concatenate[Any, P], R] ) -\u003e Endpoint[P, R]: ... def __call__(self, function: Any) -\u003e Any: pass class PortedEndpointIfy: @overload def __call__( self, function: Callable[Concatenate[Any, \"Port[R]\", P], Awaitable[None]], ) -\u003e Endpoint[P, R]: ... @overload def __call__( self, function: Callable[Concatenate[Any, \"Port[R]\", P], None] ) -\u003e Endpoint[P, R]: ... def __call__(self, function: Any) -\u003e Any: pass @overload def endpoint( method: Callable[Concatenate[Any, P], Awaitable[R]], *, propagate: Propagator = None, explicit_response_port: Literal[False] = False, instrument: bool = True, ) -\u003e EndpointProperty[P, R]: ... @overload def endpoint( method: Callable[Concatenate[Any, P], R], *, propagate: Propagator = None, explicit_response_port: Literal[False] = False, instrument: bool = True, ) -\u003e EndpointProperty[P, R]: ... @overload def endpoint( *, propagate: Propagator = None, explicit_response_port: Literal[False] = False, instrument: bool = True, ) -\u003e EndpointIfy: ... @overload def endpoint( method: Callable[Concatenate[Any, \"Port[R]\", P], Awaitable[None]], *, propagate: Propagator = None, explicit_response_port: Literal[True], instrument: bool = True, ) -\u003e EndpointProperty[P, R]: ... @overload def endpoint( method: Callable[Concatenate[Any, \"Port[R]\", P], None], *, propagate: Propagator = None, explicit_response_port: Literal[True], instrument: bool = True, ) -\u003e EndpointProperty[P, R]: ... @overload def endpoint( *, propagate: Propagator = None, explicit_response_port: Literal[True], instrument: bool = True, ) -\u003e PortedEndpointIfy: ... [docs] def endpoint( method: Any = None, *, propagate: Any = None, explicit_response_port: bool = False, instrument: bool = True, ) -\u003e Any: if method is None: return functools.partial( endpoint, propagate=propagate, explicit_response_port=explicit_response_port, instrument=instrument, ) return EndpointProperty( method, propagator=propagate, explicit_response_port=explicit_response_port, instrument=instrument, )",
+       "articleBody": "Source code for monarch._src.actor.endpoint # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-strict import functools from typing import ( Any, Awaitable, Callable, cast, Concatenate, Dict, Generic, Iterator, Literal, Optional, overload, ParamSpec, Protocol, Tuple, TYPE_CHECKING, TypeVar, Union, ) from monarch._rust_bindings.monarch_hyperactor.shape import ( Extent, # noqa: F401 re-exports ) from monarch._src.actor.future import Future from monarch._src.actor.tensor_engine_shim import _cached_propagation, fake_call T = TypeVar(\"T\") if TYPE_CHECKING: from monarch._rust_bindings.monarch_hyperactor.mailbox import OncePortRef, PortRef from monarch._src.actor.actor_mesh import ActorMesh, Port, ValueMesh from monarch._src.actor.future import Future P = ParamSpec(\"P\") R = TypeVar(\"R\") Selection = Literal[\"all\", \"choose\"] Propagator = Union[None, Literal[\"cached\", \"inspect\", \"mocked\"], Callable[..., Any]] [docs]class Endpoint(Protocol[P, R]): \"\"\"A callable endpoint on a spawned actor or actor mesh. Accessing an ``@endpoint`` method on a spawned actor yields an ``Endpoint`` rather than calling the method directly. Its methods are the messaging adverbs that send a message to the actor(s) and control how responses are returned: ``call``, ``call_one``, ``choose``, ``stream``, ``broadcast``, and ``rref``. \"\"\" def _send( self, args: Tuple[Any, ...], kwargs: Dict[str, Any], port: \"Optional[PortRef | OncePortRef]\" = None, selection: Selection = \"all\", ) -\u003e None: \"\"\" Implements sending a message to the endpoint. The return value of the endpoint will be sent to port if provided. If port is not provided, the return will be dropped, and any exception will cause the actor to fail. The return value is the (multi-dimension) size of the actors that were sent a message. For ActorEndpoints this will be the actor_meshes size. For free-function endpoints, this will be the size of the currently active proc_mesh. \"\"\" ... def _call_name(self) -\u003e Any: \"\"\" Something to use in InputChecker to represent calling this thingy. \"\"\" ... def choose(self, *args: P.args, **kwargs: P.kwargs) -\u003e Future[R]: \"\"\" Load balanced sends a message to one chosen actor and awaits a result. Load balanced RPC-style entrypoint for request/response messaging. \"\"\" ... [docs] def call_one(self, *args: P.args, **kwargs: P.kwargs) -\u003e Future[R]: ... [docs] def call(self, *args: P.args, **kwargs: P.kwargs) -\u003e \"Future[ValueMesh[R]]\": ... [docs] def stream(self, *args: P.args, **kwargs: P.kwargs) -\u003e Iterator[Future[R]]: \"\"\" Broadcasts to all actors and yields their responses as a stream. This enables processing results from multiple actors incrementally as they become available. Returns an iterator of Future values. \"\"\" ... [docs] def broadcast(self, *args: P.args, **kwargs: P.kwargs) -\u003e None: \"\"\" Fire-and-forget broadcast to all actors without waiting for actors to acknowledge receipt. In other words, the return of this method does not guarrantee the delivery of the message. \"\"\" ... [docs] def rref(self, *args: P.args, **kwargs: P.kwargs) -\u003e R: ... def _do_propagate( propagator_arg: Propagator, args: Tuple[Any, ...], kwargs: Dict[str, Any], fake_args: Tuple[Any, ...], fake_kwargs: Dict[str, Any], cache: Dict[Any, Any], resolvable: Optional[Any] = None, ) -\u003e Any: if propagator_arg is None or propagator_arg == \"cached\": if resolvable is None: raise NotImplementedError( \"Cached propagation is not implemented for actor endpoints.\" ) return _cached_propagation(cache, resolvable, args, kwargs) elif propagator_arg == \"inspect\": return None elif propagator_arg == \"mocked\": raise NotImplementedError(\"mocked propagation\") else: return fake_call(propagator_arg, *fake_args, **fake_kwargs) class EndpointProperty(Generic[P, R]): @overload def __init__( self, method: Callable[Concatenate[Any, P], Awaitable[R]], propagator: Propagator, explicit_response_port: bool, instrument: bool = True, ) -\u003e None: ... @overload def __init__( self, method: Callable[Concatenate[Any, P], R], propagator: Propagator, explicit_response_port: bool, instrument: bool = True, ) -\u003e None: ... def __init__( self, method: Any, propagator: Propagator, explicit_response_port: bool, instrument: bool = True, ) -\u003e None: self._method = method self._propagator = propagator self._explicit_response_port = explicit_response_port self._instrument = instrument def __get__(self, instance: Any, owner: Any) -\u003e Endpoint[P, R]: # this is a total lie, but we have to actually # recognize this was defined as an endpoint, # and also lookup the method return cast(Endpoint[P, R], self) class NotAnEndpoint: \"\"\" Used as the dynamic value of functions on an ActorMesh that were not marked as endpoints. This is used both to give a better error message (since we cannot prevent the type system from thinking they are methods), and to provide the oppurtunity for someone to do endpoint(x.foo) on something that wasn\u0027t marked as an endpoint. \"\"\" def __init__(self, ref: \"ActorMesh[Any]\", name: str) -\u003e None: self._ref = ref self._name = name def __call__(self, *args: Any, **kwargs: Any) -\u003e None: raise RuntimeError( f\"Actor {self._ref._class}.{self._name} is not annotated as an endpoint. To call it as one, add a @endpoint decorator to it, or directly wrap it in one as_endpoint(obj.method).call(...)\" ) # This can\u0027t just be Callable because otherwise we are not # allowed to use type arguments in the return value. class EndpointIfy: @overload def __call__( self, function: Callable[Concatenate[Any, P], Awaitable[R]] ) -\u003e Endpoint[P, R]: ... @overload def __call__( self, function: Callable[Concatenate[Any, P], R] ) -\u003e Endpoint[P, R]: ... def __call__(self, function: Any) -\u003e Any: pass class PortedEndpointIfy: @overload def __call__( self, function: Callable[Concatenate[Any, \"Port[R]\", P], Awaitable[None]], ) -\u003e Endpoint[P, R]: ... @overload def __call__( self, function: Callable[Concatenate[Any, \"Port[R]\", P], None] ) -\u003e Endpoint[P, R]: ... def __call__(self, function: Any) -\u003e Any: pass @overload def endpoint( method: Callable[Concatenate[Any, P], Awaitable[R]], *, propagate: Propagator = None, explicit_response_port: Literal[False] = False, instrument: bool = True, ) -\u003e EndpointProperty[P, R]: ... @overload def endpoint( method: Callable[Concatenate[Any, P], R], *, propagate: Propagator = None, explicit_response_port: Literal[False] = False, instrument: bool = True, ) -\u003e EndpointProperty[P, R]: ... @overload def endpoint( *, propagate: Propagator = None, explicit_response_port: Literal[False] = False, instrument: bool = True, ) -\u003e EndpointIfy: ... @overload def endpoint( method: Callable[Concatenate[Any, \"Port[R]\", P], Awaitable[None]], *, propagate: Propagator = None, explicit_response_port: Literal[True], instrument: bool = True, ) -\u003e EndpointProperty[P, R]: ... @overload def endpoint( method: Callable[Concatenate[Any, \"Port[R]\", P], None], *, propagate: Propagator = None, explicit_response_port: Literal[True], instrument: bool = True, ) -\u003e EndpointProperty[P, R]: ... @overload def endpoint( *, propagate: Propagator = None, explicit_response_port: Literal[True], instrument: bool = True, ) -\u003e PortedEndpointIfy: ... [docs]def endpoint( method: Any = None, *, propagate: Any = None, explicit_response_port: bool = False, instrument: bool = True, ) -\u003e Any: \"\"\"Mark an ``Actor`` method as an endpoint callable from other actors. An endpoint defines part of an actor\u0027s public API. Once the actor is spawned onto a mesh, you invoke its endpoints through messaging adverbs (``call``, ``call_one``, ``choose``, ``stream``, ``broadcast``, and ``rref``) rather than calling the method directly. Each adverb controls how the message is delivered and how the response is returned. Endpoint methods may be synchronous or ``async``. Apply it bare or with options:: class Counter(Actor): @endpoint def increment(self) -\u003e int: ... @endpoint(explicit_response_port=True) async def stream_results(self, port: Port[int]) -\u003e None: ... Args: method: The actor method to wrap. Supplied automatically when the decorator is applied without parentheses; leave it unset when passing options. propagate: Controls how the tensor engine infers output tensor shapes for ``rref`` without running the endpoint. Pass a callable that takes the endpoint\u0027s arguments (excluding ``self``) and returns tensors of the shapes the endpoint would produce, or one of the strings ``\"cached\"``, ``\"inspect\"``, or ``\"mocked\"``. Defaults to ``None``, which matters only for endpoints used with distributed tensors. explicit_response_port: When ``True``, the endpoint receives a ``Port`` as its first argument (after ``self``) and is responsible for sending its result through that port instead of returning a value. This supports custom response protocols, such as sending several responses or deferring one. The method\u0027s return annotation should be ``None``. instrument: When ``True`` (the default), wrap each invocation in a tracing span named for the method. Returns: An ``EndpointProperty`` descriptor. Accessing it on a spawned actor yields an ``Endpoint`` exposing the messaging adverbs. \"\"\" if method is None: return functools.partial( endpoint, propagate=propagate, explicit_response_port=explicit_response_port, instrument=instrument, ) return EndpointProperty( method, propagator=propagate, explicit_response_port=explicit_response_port, instrument=instrument, )",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

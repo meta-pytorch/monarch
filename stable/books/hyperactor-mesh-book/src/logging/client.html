@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -16,7 +17,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="What it does: Aggregates or prints log lines from all remote procs (stdout/stderr), optionally buckets similar lines within a time window, and participates in a versioned sync-flush barrier so the ..." />
 
-    <title>Client Actor &#8212; Monarch v0.5.0 documentation</title>
+    <title>Client Actor &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
+    <script src="../../../../_static/doctools.js"></script>
+    <script src="../../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../../_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-mesh-book/src/logging/client';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-mesh-book/src/logging/client.html" />
@@ -82,7 +83,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +197,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1293,16 +1294,16 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="client-actor">
-<h1>Client Actor<a class="headerlink" href="#client-actor" title="Link to this heading">#</a></h1>
+<h1>Client Actor<a class="headerlink" href="#client-actor" title="Permalink to this heading">#</a></h1>
 <section id="what-it-does">
-<h2>What it does<a class="headerlink" href="#what-it-does" title="Link to this heading">#</a></h2>
+<h2>What it does<a class="headerlink" href="#what-it-does" title="Permalink to this heading">#</a></h2>
 <p>Aggregates or prints log lines from all remote procs (stdout/stderr), optionally buckets similar lines within a time window, and participates in a versioned sync-flush barrier so the caller can deterministically wait until “all logs up to here” are delivered.</p>
 <blockquote>
 <div><p><strong>Placement:</strong> There is exactly one <code class="docutils literal notranslate"><span class="pre">LogClientActor</span></code>, and it runs inside the Python/driver process (e.g., your notebook/REPL). All per-proc <code class="docutils literal notranslate"><span class="pre">LogForwardActor</span></code>s send to this single client.</p>
 </div></blockquote>
 </section>
 <section id="message-types">
-<h2>Message types<a class="headerlink" href="#message-types" title="Link to this heading">#</a></h2>
+<h2>Message types<a class="headerlink" href="#message-types" title="Permalink to this heading">#</a></h2>
 <ul class="simple">
 <li><p><strong>Data (from forwarders)</strong></p>
 <ul>
@@ -1319,7 +1320,7 @@ document.write(`
 </ul>
 </section>
 <section id="lifecycle-fields">
-<h2>Lifecycle &amp; fields<a class="headerlink" href="#lifecycle-fields" title="Link to this heading">#</a></h2>
+<h2>Lifecycle &amp; fields<a class="headerlink" href="#lifecycle-fields" title="Permalink to this heading">#</a></h2>
 <ul class="simple">
 <li><p><strong>Fields</strong></p>
 <ul>
@@ -1341,7 +1342,7 @@ document.write(`
 </ul>
 </section>
 <section id="data-path-logmessage-log">
-<h2>Data path: <code class="docutils literal notranslate"><span class="pre">LogMessage::Log</span></code><a class="headerlink" href="#data-path-logmessage-log" title="Link to this heading">#</a></h2>
+<h2>Data path: <code class="docutils literal notranslate"><span class="pre">LogMessage::Log</span></code><a class="headerlink" href="#data-path-logmessage-log" title="Permalink to this heading">#</a></h2>
 <ol class="arabic simple">
 <li><p>Deserialize <code class="docutils literal notranslate"><span class="pre">payload</span></code> to <code class="docutils literal notranslate"><span class="pre">Vec&lt;Vec&lt;String&gt;&gt;</span></code> (lines).</p></li>
 <li><p>If <code class="docutils literal notranslate"><span class="pre">aggregate_window_sec</span> <span class="pre">==</span> <span class="pre">None</span></code>: print each line immediately with <code class="docutils literal notranslate"><span class="pre">[hostname</span> <span class="pre">pid]</span></code> prefix.</p></li>
@@ -1349,7 +1350,7 @@ document.write(`
 </ol>
 </section>
 <section id="aggregation-aggregator-logline">
-<h2>Aggregation: <code class="docutils literal notranslate"><span class="pre">Aggregator</span></code> + <code class="docutils literal notranslate"><span class="pre">LogLine</span></code><a class="headerlink" href="#aggregation-aggregator-logline" title="Link to this heading">#</a></h2>
+<h2>Aggregation: <code class="docutils literal notranslate"><span class="pre">Aggregator</span></code> + <code class="docutils literal notranslate"><span class="pre">LogLine</span></code><a class="headerlink" href="#aggregation-aggregator-logline" title="Permalink to this heading">#</a></h2>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">Aggregator</span></code> holds <code class="docutils literal notranslate"><span class="pre">Vec&lt;LogLine&gt;</span></code> and a <code class="docutils literal notranslate"><span class="pre">start_time</span></code>.</p></li>
 <li><p>Similarity via normalized Levenshtein; default threshold ≈ <code class="docutils literal notranslate"><span class="pre">0.15</span></code>.</p></li>
@@ -1358,7 +1359,7 @@ document.write(`
 </ul>
 </section>
 <section id="barrier-protocol-sync-flush">
-<h2>Barrier protocol: sync flush<a class="headerlink" href="#barrier-protocol-sync-flush" title="Link to this heading">#</a></h2>
+<h2>Barrier protocol: sync flush<a class="headerlink" href="#barrier-protocol-sync-flush" title="Permalink to this heading">#</a></h2>
 <ol class="arabic simple">
 <li><p>Caller requests flush → <code class="docutils literal notranslate"><span class="pre">StartSyncFlush</span></code> allocates <code class="docutils literal notranslate"><span class="pre">version</span> <span class="pre">=</span> <span class="pre">++current_flush_version</span></code>, records <code class="docutils literal notranslate"><span class="pre">expected_procs</span></code>, returns <code class="docutils literal notranslate"><span class="pre">version</span></code>.</p></li>
 <li><p>Python tells each forwarder <code class="docutils literal notranslate"><span class="pre">ForceSyncFlush</span> <span class="pre">{</span> <span class="pre">version</span> <span class="pre">}</span></code> (they inject <code class="docutils literal notranslate"><span class="pre">Flush(Some(version))</span></code> in-band).</p></li>
@@ -1367,7 +1368,7 @@ document.write(`
 </ol>
 </section>
 <section id="teardown-failures">
-<h2>Teardown &amp; failures<a class="headerlink" href="#teardown-failures" title="Link to this heading">#</a></h2>
+<h2>Teardown &amp; failures<a class="headerlink" href="#teardown-failures" title="Permalink to this heading">#</a></h2>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">drop</span></code>: prints remaining aggregates.</p></li>
 <li><p>Mismatched versions are logged and ignored (stale <code class="docutils literal notranslate"><span class="pre">Flush(Some(v))</span></code>).</p></li>
@@ -1376,7 +1377,7 @@ document.write(`
 </ul>
 </section>
 <section id="quick-reference-defaults-knobs">
-<h2>Quick reference (defaults &amp; knobs)<a class="headerlink" href="#quick-reference-defaults-knobs" title="Link to this heading">#</a></h2>
+<h2>Quick reference (defaults &amp; knobs)<a class="headerlink" href="#quick-reference-defaults-knobs" title="Permalink to this heading">#</a></h2>
 <ul class="simple">
 <li><p>Placement: <strong>single</strong> <code class="docutils literal notranslate"><span class="pre">LogClientActor</span></code> in the Python/driver process; <strong>one</strong> <code class="docutils literal notranslate"><span class="pre">LogForwardActor</span></code> per remote proc.</p></li>
 <li><p>Aggregation window: <strong>5s</strong> by default (<code class="docutils literal notranslate"><span class="pre">DEFAULT_AGGREGATE_WINDOW_SEC</span></code>).</p></li>
@@ -1387,7 +1388,7 @@ document.write(`
 </ul>
 </section>
 <section id="data-path-logmessage-log-source-excerpt">
-<h2>Data path: LogMessage::Log (source excerpt)<a class="headerlink" href="#data-path-logmessage-log-source-excerpt" title="Link to this heading">#</a></h2>
+<h2>Data path: LogMessage::Log (source excerpt)<a class="headerlink" href="#data-path-logmessage-log-source-excerpt" title="Permalink to this heading">#</a></h2>
 <blockquote>
 <div><p><strong>Where it runs:</strong> a single <code class="docutils literal notranslate"><span class="pre">LogClientActor</span></code> in the <strong>Python/driver process</strong> receives log data from all remote procs.
 <strong>Upstream:</strong> per-proc <code class="docutils literal notranslate"><span class="pre">LogForwardActor</span></code> (in each remote proc) forwards <code class="docutils literal notranslate"><span class="pre">LogMessage::Log</span></code> if streaming is enabled.</p>
@@ -1399,7 +1400,7 @@ document.write(`
 <code class="docutils literal notranslate"><span class="pre">OutputTarget</span></code> — <code class="docutils literal notranslate"><span class="pre">Stdout</span> <span class="pre">|</span> <span class="pre">Stderr</span></code></p>
 </div></blockquote>
 <section id="deserializing-payload-into-lines">
-<h3>1) Deserializing payload into lines<a class="headerlink" href="#deserializing-payload-into-lines" title="Link to this heading">#</a></h3>
+<h3>1) Deserializing payload into lines<a class="headerlink" href="#deserializing-payload-into-lines" title="Permalink to this heading">#</a></h3>
 <p><strong>File:</strong> <code class="docutils literal notranslate"><span class="pre">logging.rs</span></code>
 <strong>Item:</strong> free function <code class="docutils literal notranslate"><span class="pre">deserialize_message_lines(...)</span></code></p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">fn</span><span class="w"> </span><span class="nf">deserialize_message_lines</span><span class="p">(</span>
@@ -1426,7 +1427,7 @@ document.write(`
 </div>
 </section>
 <section id="immediate-print-helper-non-aggregated-path">
-<h3>2) Immediate print helper (non-aggregated path)<a class="headerlink" href="#immediate-print-helper-non-aggregated-path" title="Link to this heading">#</a></h3>
+<h3>2) Immediate print helper (non-aggregated path)<a class="headerlink" href="#immediate-print-helper-non-aggregated-path" title="Permalink to this heading">#</a></h3>
 <p><strong>File:</strong> logging.rs
 <strong>Type/impl:</strong> <code class="docutils literal notranslate"><span class="pre">impl</span> <span class="pre">LogClientActor</span></code>
 <strong>Item:</strong> <code class="docutils literal notranslate"><span class="pre">print_log_line(...)</span></code></p>
@@ -1442,7 +1443,7 @@ document.write(`
 </div>
 </section>
 <section id="the-handler-aggregate-or-print-and-schedule-flush-if-needed">
-<h3>3) The handler: aggregate or print, and schedule flush if needed<a class="headerlink" href="#the-handler-aggregate-or-print-and-schedule-flush-if-needed" title="Link to this heading">#</a></h3>
+<h3>3) The handler: aggregate or print, and schedule flush if needed<a class="headerlink" href="#the-handler-aggregate-or-print-and-schedule-flush-if-needed" title="Permalink to this heading">#</a></h3>
 <p><strong>File:</strong> logging.rs
 <strong>Type/impl:</strong> <code class="docutils literal notranslate"><span class="pre">impl</span> <span class="pre">LogMessageHandler</span> <span class="pre">for</span> <span class="pre">LogClientActor</span></code>
 <strong>Handler:</strong> <code class="docutils literal notranslate"><span class="pre">log(...)</span></code> (abridged)</p>
@@ -1510,7 +1511,7 @@ document.write(`
 </div>
 </section>
 <section id="notes">
-<h3>Notes<a class="headerlink" href="#notes" title="Link to this heading">#</a></h3>
+<h3>Notes<a class="headerlink" href="#notes" title="Permalink to this heading">#</a></h3>
 <ul class="simple">
 <li><p>Line truncation (4 KiB + “… [TRUNCATED]”) happens earlier in the bootstrap’s <code class="docutils literal notranslate"><span class="pre">tee(...)</span></code>; the client assumes safe UTF-8 after <code class="docutils literal notranslate"><span class="pre">deserialize_message_lines</span></code>.</p></li>
 <li><p>Aggregation runs per target (<code class="docutils literal notranslate"><span class="pre">Stdout</span></code> vs <code class="docutils literal notranslate"><span class="pre">Stderr</span></code>) with the default 5s window and ~0.15 similarity threshold.</p></li>
@@ -1519,7 +1520,7 @@ document.write(`
 </section>
 <hr class="docutils" />
 <section id="barrier-protocol-sync-flush-source-excerpts">
-<h2>Barrier protocol: sync flush (source excerpts)<a class="headerlink" href="#barrier-protocol-sync-flush-source-excerpts" title="Link to this heading">#</a></h2>
+<h2>Barrier protocol: sync flush (source excerpts)<a class="headerlink" href="#barrier-protocol-sync-flush-source-excerpts" title="Permalink to this heading">#</a></h2>
 <blockquote>
 <div><p><strong>Where it runs:</strong> the kickoff happens in <strong>Python</strong> via <code class="docutils literal notranslate"><span class="pre">LoggingMeshClient</span></code>, which triggers a barrier across <em>all per-proc</em> <code class="docutils literal notranslate"><span class="pre">LogForwardActor</span></code>s. The <strong>single</strong> <code class="docutils literal notranslate"><span class="pre">LogClientActor</span></code> in the Python process accounts arrivals of <code class="docutils literal notranslate"><span class="pre">Flush(Some(v))</span></code> and unblocks when all procs have acknowledged.</p>
 </div></blockquote>
@@ -1530,7 +1531,7 @@ document.write(`
 <code class="docutils literal notranslate"><span class="pre">OncePortRef&lt;T&gt;</span></code> — one-shot reply port for sync responses</p>
 </div></blockquote>
 <section id="kickoff-from-python-loggingmeshclient-flush-internal">
-<h3>1) Kickoff from Python: <code class="docutils literal notranslate"><span class="pre">LoggingMeshClient::flush_internal</span></code><a class="headerlink" href="#kickoff-from-python-loggingmeshclient-flush-internal" title="Link to this heading">#</a></h3>
+<h3>1) Kickoff from Python: <code class="docutils literal notranslate"><span class="pre">LoggingMeshClient::flush_internal</span></code><a class="headerlink" href="#kickoff-from-python-loggingmeshclient-flush-internal" title="Permalink to this heading">#</a></h3>
 <p><strong>File:</strong> <code class="docutils literal notranslate"><span class="pre">logging.rs</span></code>
 <strong>Type/impl:</strong> <code class="docutils literal notranslate"><span class="pre">impl</span> <span class="pre">LoggingMeshClient</span></code>
 <strong>Method:</strong> <code class="docutils literal notranslate"><span class="pre">async</span> <span class="pre">fn</span> <span class="pre">flush_internal(...)</span></code></p>
@@ -1563,7 +1564,7 @@ document.write(`
 <p>Why in-band? Each <code class="docutils literal notranslate"><span class="pre">LogForwardActor</span></code> posts <code class="docutils literal notranslate"><span class="pre">Flush(Some(version))</span></code> on the same ordered channel as its <code class="docutils literal notranslate"><span class="pre">Log</span></code> data, so the barrier marker is guaranteed to come after all prior lines.</p>
 </section>
 <section id="forwarder-injects-the-barrier-marker-in-band">
-<h3>2) Forwarder injects the barrier marker (in-band)<a class="headerlink" href="#forwarder-injects-the-barrier-marker-in-band" title="Link to this heading">#</a></h3>
+<h3>2) Forwarder injects the barrier marker (in-band)<a class="headerlink" href="#forwarder-injects-the-barrier-marker-in-band" title="Permalink to this heading">#</a></h3>
 <p><strong>File:</strong> logging.rs
 <strong>Type/impl:</strong> <code class="docutils literal notranslate"><span class="pre">impl</span> <span class="pre">LogForwardMessageHandler</span> <span class="pre">for</span> <span class="pre">LogForwardActor</span></code>
 <strong>Handler:</strong> <code class="docutils literal notranslate"><span class="pre">force_sync_flush(...)</span></code></p>
@@ -1597,7 +1598,7 @@ document.write(`
 </div>
 </section>
 <section id="client-actor-tracks-releases-the-barrier">
-<h3>3) Client actor tracks &amp; releases the barrier<a class="headerlink" href="#client-actor-tracks-releases-the-barrier" title="Link to this heading">#</a></h3>
+<h3>3) Client actor tracks &amp; releases the barrier<a class="headerlink" href="#client-actor-tracks-releases-the-barrier" title="Permalink to this heading">#</a></h3>
 <p><strong>File:</strong> logging.rs
 <strong>Type/impl:</strong> <code class="docutils literal notranslate"><span class="pre">impl</span> <span class="pre">LogClientMessageHandler</span> <span class="pre">for</span> <span class="pre">LogClientActor</span></code>
 <strong>Handler:</strong> <code class="docutils literal notranslate"><span class="pre">start_sync_flush(...)</span></code></p>
@@ -1675,7 +1676,7 @@ document.write(`
 </div>
 </section>
 <section id="summary">
-<h3>Summary:<a class="headerlink" href="#summary" title="Link to this heading">#</a></h3>
+<h3>Summary:<a class="headerlink" href="#summary" title="Permalink to this heading">#</a></h3>
 <ol class="arabic simple">
 <li><p>Python asks the client actor to start a barrier → gets version v.</p></li>
 <li><p>Python tells every forwarder to in-band post <code class="docutils literal notranslate"><span class="pre">Flush(Some(v))</span></code>.</p></li>
@@ -1931,7 +1932,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>

@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -16,7 +17,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="This example demonstrates how to use monarch.job.spmd( serve() and run_spmd()) to launch PyTorch DDP training. It shows single-node training with a local scheduler and multi-node training with slur..." />
 
-    <title>SPMD Job Example &#8212; Monarch v0.5.0 documentation</title>
+    <title>SPMD Job Example &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="../../../" id="documentation_options" src="../../../_static/documentation_options.js"></script>
+    <script src="../../../_static/doctools.js"></script>
+    <script src="../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'generated/examples/ddp/spmd_job';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/generated/examples/ddp/spmd_job.html" />
@@ -84,7 +85,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="api">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -198,7 +199,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1339,7 +1340,7 @@ document.write(`
 to download the full example code</p>
 </div>
 <section class="sphx-glr-example-title" id="spmd-job-example">
-<span id="sphx-glr-generated-examples-ddp-spmd-job-py"></span><h1>SPMD Job Example<a class="headerlink" href="#spmd-job-example" title="Link to this heading">#</a></h1>
+<span id="sphx-glr-generated-examples-ddp-spmd-job-py"></span><h1>SPMD Job Example<a class="headerlink" href="#spmd-job-example" title="Permalink to this heading">#</a></h1>
 <p>This example demonstrates how to use <code class="docutils literal notranslate"><span class="pre">monarch.job.spmd</span></code> (<code class="docutils literal notranslate"><span class="pre">serve()</span></code> and
 <code class="docutils literal notranslate"><span class="pre">run_spmd()</span></code>) to launch PyTorch DDP training. It shows single-node training
 with a local scheduler and multi-node training with slurm.</p>
@@ -1347,7 +1348,7 @@ with a local scheduler and multi-node training with slurm.</p>
 command list. The <code class="docutils literal notranslate"><span class="pre">run_spmd()</span></code> method executes the training script across
 all workers.</p>
 <section id="why-use-spmd-jobs">
-<h2>Why Use SPMD Jobs?<a class="headerlink" href="#why-use-spmd-jobs" title="Link to this heading">#</a></h2>
+<h2>Why Use SPMD Jobs?<a class="headerlink" href="#why-use-spmd-jobs" title="Permalink to this heading">#</a></h2>
 <p>The <code class="docutils literal notranslate"><span class="pre">serve()</span></code> + <code class="docutils literal notranslate"><span class="pre">run_spmd()</span></code> pattern enables an interactive development
 workflow to quickly re-run and debug SPMD training scripts:</p>
 <ul>
@@ -1379,7 +1380,7 @@ for details.</p>
 </ul>
 </section>
 <section id="training-script">
-<h2>Training Script<a class="headerlink" href="#training-script" title="Link to this heading">#</a></h2>
+<h2>Training Script<a class="headerlink" href="#training-script" title="Permalink to this heading">#</a></h2>
 <p>This example reuses the <code class="docutils literal notranslate"><span class="pre">train.py</span></code> script from the same directory:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
@@ -1416,7 +1417,7 @@ for details.</p>
 </div>
 </section>
 <section id="imports">
-<h2>Imports<a class="headerlink" href="#imports" title="Link to this heading">#</a></h2>
+<h2>Imports<a class="headerlink" href="#imports" title="Permalink to this heading">#</a></h2>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
 
 <span class="kn">from</span><span class="w"> </span><span class="nn">monarch.job.spmd</span><span class="w"> </span><span class="kn">import</span> <span class="n">serve</span>
@@ -1424,7 +1425,7 @@ for details.</p>
 </div>
 </section>
 <section id="configuration">
-<h2>Configuration<a class="headerlink" href="#configuration" title="Link to this heading">#</a></h2>
+<h2>Configuration<a class="headerlink" href="#configuration" title="Permalink to this heading">#</a></h2>
 <p>Configure the number of GPUs and paths.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">GPUS_PER_HOST</span> <span class="o">=</span> <span class="mi">4</span>
 
@@ -1435,7 +1436,7 @@ for details.</p>
 </div>
 </section>
 <section id="main-function">
-<h2>Main Function<a class="headerlink" href="#main-function" title="Link to this heading">#</a></h2>
+<h2>Main Function<a class="headerlink" href="#main-function" title="Permalink to this heading">#</a></h2>
 <p>The main function uses <code class="docutils literal notranslate"><span class="pre">serve()</span></code> with a command list to launch workers
 and <code class="docutils literal notranslate"><span class="pre">run_spmd()</span></code> to execute the training.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">():</span>
@@ -1467,7 +1468,7 @@ and <code class="docutils literal notranslate"><span class="pre">run_spmd()</spa
 </div>
 </section>
 <section id="multi-node-training-with-appdef">
-<h2>Multi-Node Training with AppDef<a class="headerlink" href="#multi-node-training-with-appdef" title="Link to this heading">#</a></h2>
+<h2>Multi-Node Training with AppDef<a class="headerlink" href="#multi-node-training-with-appdef" title="Permalink to this heading">#</a></h2>
 <p>For multi-node training, use an <code class="docutils literal notranslate"><span class="pre">AppDef</span></code> with a scheduler that manages
 node allocation (e.g., slurm). This example shows how to
 construct such an AppDef (not executed in this demo).</p>
@@ -1512,7 +1513,7 @@ construct such an AppDef (not executed in this demo).</p>
 </div>
 </section>
 <section id="iterating-on-your-training-script">
-<h2>Iterating on Your Training Script<a class="headerlink" href="#iterating-on-your-training-script" title="Link to this heading">#</a></h2>
+<h2>Iterating on Your Training Script<a class="headerlink" href="#iterating-on-your-training-script" title="Permalink to this heading">#</a></h2>
 <p>After the initial run, you can edit <code class="docutils literal notranslate"><span class="pre">train.py</span></code> and re-run without
 reprovisioning. The job state is cached, so reload and run again:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">monarch.job.spmd</span><span class="w"> </span><span class="kn">import</span> <span class="n">job_load</span>
@@ -1523,7 +1524,7 @@ reprovisioning. The job state is cached, so reload and run again:</p>
 </div>
 </section>
 <section id="running-the-example">
-<h2>Running the Example<a class="headerlink" href="#running-the-example" title="Link to this heading">#</a></h2>
+<h2>Running the Example<a class="headerlink" href="#running-the-example" title="Permalink to this heading">#</a></h2>
 <p>Run this example with:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">python</span> <span class="n">docs</span><span class="o">/</span><span class="n">source</span><span class="o">/</span><span class="n">examples</span><span class="o">/</span><span class="n">ddp</span><span class="o">/</span><span class="n">spmd_job</span><span class="o">.</span><span class="n">py</span>
 </pre></div>
@@ -1678,6 +1679,30 @@ reprovisioning. The job state is cached, so reload and run again:</p>
 </ul>
   </nav></div>
     
+       <div class="sidebar-secondary-item">
+
+  
+  <div class="tocsection editthispage">
+    <a href="https://github.com/meta-pytorch/monarch/edit/main/docs/source/generated/examples/ddp/spmd_job.rst">
+      <i class="fa-solid fa-pencil"></i>
+      
+      
+        
+          Edit on GitHub
+        
+      
+    </a>
+  </div>
+</div>
+    
+       <div class="sidebar-secondary-item">
+    <div class="tocsection sourcelink">
+      <a href="../../../_sources/generated/examples/ddp/spmd_job.rst.txt">
+        <i class="fa-solid fa-file-lines"></i> Show Source
+      </a>
+    </div>
+</div>
+    
 
 
 
@@ -1793,7 +1818,7 @@ reprovisioning. The job state is cached, so reload and run again:</p>
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>

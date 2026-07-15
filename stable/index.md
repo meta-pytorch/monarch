@@ -31,7 +31,10 @@ fut = trainers.train.call(step=0)
 fut.get()
 ```
 
-Note: Monarch is currently only supported on Linux systems
+Note: Monarch runs on Linux and macOS.
+
+- The CPU-only tensor engine works on macOS and on Linux hosts without a GPU
+- GPU features require Linux with a supported GPU toolchain
 
 ## Getting Started
 

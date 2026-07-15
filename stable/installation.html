@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="./" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -11,12 +12,12 @@
 <meta property="og:type" content="website" />
 <meta property="og:url" content="http://pytorch.org/installation.html" />
 <meta property="og:site_name" content="Monarch" />
-<meta property="og:description" content="Prerequisites: Before installing Monarch, ensure you have: A Linux system (Monarch is currently only supported on Linux), Python 3.10 or later, CUDA-compatible GPU(s), Basic familiarity with PyTorc..." />
+<meta property="og:description" content="Prerequisites: Before installing Monarch, ensure you have: Linux or macOS.- The CPU-only tensor engine builds on both; GPU features require Linux with a supported GPU toolchain., Python 3.10 or lat..." />
 <meta property="og:image" content="https://pytorch.org/assets/images/social-share.jpg" />
 <meta property="og:image:alt" content="Monarch" />
-<meta name="description" content="Prerequisites: Before installing Monarch, ensure you have: A Linux system (Monarch is currently only supported on Linux), Python 3.10 or later, CUDA-compatible GPU(s), Basic familiarity with PyTorc..." />
+<meta name="description" content="Prerequisites: Before installing Monarch, ensure you have: Linux or macOS.- The CPU-only tensor engine builds on both; GPU features require Linux with a supported GPU toolchain., Python 3.10 or lat..." />
 
-    <title>Installation &#8212; Monarch v0.5.0 documentation</title>
+    <title>Installation &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="_static/documentation_options.js?v=e663822d"></script>
-    <script src="_static/doctools.js?v=888ff710"></script>
-    <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="./" id="documentation_options" src="_static/documentation_options.js"></script>
+    <script src="_static/doctools.js"></script>
+    <script src="_static/sphinx_highlight.js"></script>
+    <script src="_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'installation';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/installation.html" />
@@ -84,7 +85,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -198,7 +199,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1293,21 +1294,25 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="installation">
-<h1>Installation<a class="headerlink" href="#installation" title="Link to this heading">#</a></h1>
+<h1>Installation<a class="headerlink" href="#installation" title="Permalink to this heading">#</a></h1>
 <section id="prerequisites">
-<h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading">#</a></h2>
+<h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Permalink to this heading">#</a></h2>
 <p>Before installing Monarch, ensure you have:</p>
 <ul class="simple">
-<li><p>A Linux system (Monarch is currently only supported on Linux)</p></li>
+<li><p>Linux or macOS.</p>
+<ul>
+<li><p>The CPU-only tensor engine builds on both; GPU features require Linux with a supported GPU toolchain</p></li>
+</ul>
+</li>
 <li><p>Python 3.10 or later</p></li>
-<li><p>CUDA-compatible GPU(s)</p></li>
+<li><p>Optional: CUDA-compatible GPU(s) for distributed tensor and RDMA features</p></li>
 <li><p>Basic familiarity with PyTorch</p></li>
 </ul>
 <p>See <a class="reference external" href="https://github.com/meta-pytorch/monarch?tab=readme-ov-file#installation">README</a> for install instructions.</p>
 </section>
 </section>
 <section id="next-steps">
-<h1>Next Steps<a class="headerlink" href="#next-steps" title="Link to this heading">#</a></h1>
+<h1>Next Steps<a class="headerlink" href="#next-steps" title="Permalink to this heading">#</a></h1>
 <p>Now that you’ve got the basics, you can:</p>
 <ol class="arabic simple">
 <li><p>Read the <a class="reference internal" href="generated/examples/getting_started.html"><span class="doc std std-doc">getting started</span></a> guide to understand the core concepts.</p></li>
@@ -1316,7 +1321,7 @@ document.write(`
 </ol>
 </section>
 <section id="troubleshooting">
-<h1>Troubleshooting<a class="headerlink" href="#troubleshooting" title="Link to this heading">#</a></h1>
+<h1>Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permalink to this heading">#</a></h1>
 <p>If you encounter issues:</p>
 <ul class="simple">
 <li><p>Make sure your CUDA environment is properly set up</p></li>
@@ -1593,7 +1598,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>
@@ -1622,7 +1627,7 @@ document.write(`
        "headline": "Installation",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/installation.html",
-       "articleBody": "Installation# Prerequisites# Before installing Monarch, ensure you have: A Linux system (Monarch is currently only supported on Linux) Python 3.10 or later CUDA-compatible GPU(s) Basic familiarity with PyTorch See README for install instructions. Next Steps# Now that you\u2019ve got the basics, you can: Read the getting started guide to understand the core concepts. Check out the Examples directory for more detailed demonstrations Explore the API documentation for a complete reference Troubleshooting# If you encounter issues: Make sure your CUDA environment is properly set up Check that you\u2019re using a compatible version of PyTorch Verify that all dependencies are installed correctly Consult the GitHub repository for known issues If you don\u2019t find an existing issue that matches, please file a new one",
+       "articleBody": "Installation# Prerequisites# Before installing Monarch, ensure you have: Linux or macOS. The CPU-only tensor engine builds on both; GPU features require Linux with a supported GPU toolchain Python 3.10 or later Optional: CUDA-compatible GPU(s) for distributed tensor and RDMA features Basic familiarity with PyTorch See README for install instructions. Next Steps# Now that you\u2019ve got the basics, you can: Read the getting started guide to understand the core concepts. Check out the Examples directory for more detailed demonstrations Explore the API documentation for a complete reference Troubleshooting# If you encounter issues: Make sure your CUDA environment is properly set up Check that you\u2019re using a compatible version of PyTorch Verify that all dependencies are installed correctly Consult the GitHub repository for known issues If you don\u2019t find an existing issue that matches, please file a new one",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

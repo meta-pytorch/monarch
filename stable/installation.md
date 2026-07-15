@@ -4,9 +4,11 @@
 
 Before installing Monarch, ensure you have:
 
-- A Linux system (Monarch is currently only supported on Linux)
+- Linux or macOS.
+
+- The CPU-only tensor engine builds on both; GPU features require Linux with a supported GPU toolchain
 - Python 3.10 or later
-- CUDA-compatible GPU(s)
+- Optional: CUDA-compatible GPU(s) for distributed tensor and RDMA features
 - Basic familiarity with PyTorch
 
 See [README](https://github.com/meta-pytorch/monarch?tab=readme-ov-file#installation) for install instructions.

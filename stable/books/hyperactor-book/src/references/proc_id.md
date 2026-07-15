@@ -20,14 +20,14 @@ pub struct ProcId {
 Fields are private; use named constructors:
 
 ```
-use hyperactor::id::{Label, ProcId};
+use hyperactor::{Label, ProcId};
 
 let anonymous = ProcId::anonymous();
 let worker = ProcId::instance(Label::new("worker").unwrap());
 let service = ProcId::singleton(Label::new("service").unwrap());
 ```
 
-See [Host](../procs/host.html) for how procs are used in the Host architecture.
+Use `ProcAddr` when you need a reachable proc reference; it pairs a `ProcId` with a `Location`. See [Host](../procs/host.html) for how proc addresses are used in the host architecture.
 
 ## Methods
 

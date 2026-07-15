@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["SeqInfo"],"static":["SEQ_INFO"],"struct":["Sequencer"]};
+window.SIDEBAR_ITEMS = {"enum":["SeqInfo"],"static":["SEQ_INFO"],"struct":["OrderingSessionSnapshot","OrderingSnapshot","Sequencer"]};

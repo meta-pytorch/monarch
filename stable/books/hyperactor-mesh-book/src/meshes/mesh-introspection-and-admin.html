@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -16,7 +17,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="This chapter is the “page me back in” overview of how mesh introspection works and how the mesh admin TUI sits on top of it. The short version is: the mesh exposes a reference-walking API,, every s..." />
 
-    <title>Mesh introspection &amp; mesh-admin &#8212; Monarch v0.5.0 documentation</title>
+    <title>Mesh introspection &amp; mesh-admin &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
+    <script src="../../../../_static/doctools.js"></script>
+    <script src="../../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../../_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-mesh-book/src/meshes/mesh-introspection-and-admin';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-mesh-book/src/meshes/mesh-introspection-and-admin.html" />
@@ -82,7 +83,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +197,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1293,7 +1294,7 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="mesh-introspection-mesh-admin">
-<h1>Mesh introspection &amp; mesh-admin<a class="headerlink" href="#mesh-introspection-mesh-admin" title="Link to this heading">#</a></h1>
+<h1>Mesh introspection &amp; mesh-admin<a class="headerlink" href="#mesh-introspection-mesh-admin" title="Permalink to this heading">#</a></h1>
 <p>This chapter is the “page me back in” overview of how mesh introspection works and how the mesh admin TUI sits on top of it.</p>
 <p>The short version is:</p>
 <ul class="simple">
@@ -1313,7 +1314,7 @@ document.write(`
 </div>
 <p>The TUI does not have privileged topology knowledge. It starts at <code class="docutils literal notranslate"><span class="pre">root</span></code>, follows <code class="docutils literal notranslate"><span class="pre">children</span></code>, and asks the server to resolve whatever opaque reference string it was given next.</p>
 <section id="the-data-model-nodepayload">
-<h2>The data model: <code class="docutils literal notranslate"><span class="pre">NodePayload</span></code><a class="headerlink" href="#the-data-model-nodepayload" title="Link to this heading">#</a></h2>
+<h2>The data model: <code class="docutils literal notranslate"><span class="pre">NodePayload</span></code><a class="headerlink" href="#the-data-model-nodepayload" title="Permalink to this heading">#</a></h2>
 <p>The entire mesh-admin surface is built around one response type:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">NodePayload</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="n">identity</span><span class="p">:</span><span class="w"> </span><span class="nb">String</span><span class="p">,</span>
@@ -1350,7 +1351,7 @@ document.write(`
 </div>
 </section>
 <section id="the-mental-model-what-is-actually-introspectable">
-<h2>The mental model: what is actually introspectable?<a class="headerlink" href="#the-mental-model-what-is-actually-introspectable" title="Link to this heading">#</a></h2>
+<h2>The mental model: what is actually introspectable?<a class="headerlink" href="#the-mental-model-what-is-actually-introspectable" title="Permalink to this heading">#</a></h2>
 <p>The runtime rule is not “everything that exists is visible.” The rule is “everything the routing layer can actually reach via actor messaging is visible.”</p>
 <p>That is why the module docs talk about <strong>routable</strong>, <strong>introspectable</strong>, and <strong>opaque</strong> nodes:</p>
 <ul class="simple">
@@ -1365,10 +1366,10 @@ document.write(`
 </ol>
 </section>
 <section id="who-provides-what">
-<h2>Who provides what<a class="headerlink" href="#who-provides-what" title="Link to this heading">#</a></h2>
+<h2>Who provides what<a class="headerlink" href="#who-provides-what" title="Permalink to this heading">#</a></h2>
 <p>There are three layers involved in a normal lookup.</p>
 <section id="meshadminagent-mesh-wide-resolver-and-http-bridge-target">
-<h3>1. <code class="docutils literal notranslate"><span class="pre">MeshAdminAgent</span></code>: mesh-wide resolver and HTTP bridge target<a class="headerlink" href="#meshadminagent-mesh-wide-resolver-and-http-bridge-target" title="Link to this heading">#</a></h3>
+<h3>1. <code class="docutils literal notranslate"><span class="pre">MeshAdminAgent</span></code>: mesh-wide resolver and HTTP bridge target<a class="headerlink" href="#meshadminagent-mesh-wide-resolver-and-http-bridge-target" title="Permalink to this heading">#</a></h3>
 <p><code class="docutils literal notranslate"><span class="pre">MeshAdminAgent</span></code> owns:</p>
 <ul class="simple">
 <li><p>the map of host address -&gt; <code class="docutils literal notranslate"><span class="pre">ActorRef&lt;HostAgent&gt;</span></code>,</p></li>
@@ -1389,7 +1390,7 @@ document.write(`
 <p>So <code class="docutils literal notranslate"><span class="pre">MeshAdminAgent</span></code> is the place where opaque references become typed navigation.</p>
 </section>
 <section id="hostagent-host-nodes-and-system-local-proc-resolution">
-<h3>2. <code class="docutils literal notranslate"><span class="pre">HostAgent</span></code>: host nodes and system/local proc resolution<a class="headerlink" href="#hostagent-host-nodes-and-system-local-proc-resolution" title="Link to this heading">#</a></h3>
+<h3>2. <code class="docutils literal notranslate"><span class="pre">HostAgent</span></code>: host nodes and system/local proc resolution<a class="headerlink" href="#hostagent-host-nodes-and-system-local-proc-resolution" title="Permalink to this heading">#</a></h3>
 <p><code class="docutils literal notranslate"><span class="pre">HostAgent</span></code> publishes host attrs such as:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">node_type</span> <span class="pre">=</span> <span class="pre">&quot;host&quot;</span></code></p></li>
@@ -1407,7 +1408,7 @@ document.write(`
 <p>So if <code class="docutils literal notranslate"><span class="pre">MeshAdminAgent</span></code> asks a <code class="docutils literal notranslate"><span class="pre">HostAgent</span></code> “tell me about this proc child”, the host can answer directly for system/local procs.</p>
 </section>
 <section id="procagent-user-proc-nodes-terminated-snapshots-proc-local-services">
-<h3>3. <code class="docutils literal notranslate"><span class="pre">ProcAgent</span></code>: user proc nodes, terminated snapshots, proc-local services<a class="headerlink" href="#procagent-user-proc-nodes-terminated-snapshots-proc-local-services" title="Link to this heading">#</a></h3>
+<h3>3. <code class="docutils literal notranslate"><span class="pre">ProcAgent</span></code>: user proc nodes, terminated snapshots, proc-local services<a class="headerlink" href="#procagent-user-proc-nodes-terminated-snapshots-proc-local-services" title="Permalink to this heading">#</a></h3>
 <p><code class="docutils literal notranslate"><span class="pre">ProcAgent</span></code> does the corresponding job for user procs.</p>
 <p>It publishes proc attrs such as:</p>
 <ul class="simple">
@@ -1433,10 +1434,10 @@ document.write(`
 </section>
 </section>
 <section id="how-a-normal-tree-walk-works">
-<h2>How a normal tree walk works<a class="headerlink" href="#how-a-normal-tree-walk-works" title="Link to this heading">#</a></h2>
+<h2>How a normal tree walk works<a class="headerlink" href="#how-a-normal-tree-walk-works" title="Permalink to this heading">#</a></h2>
 <p>The runtime walk that underlies the TUI looks like this.</p>
 <section id="step-1-root">
-<h3>Step 1: root<a class="headerlink" href="#step-1-root" title="Link to this heading">#</a></h3>
+<h3>Step 1: root<a class="headerlink" href="#step-1-root" title="Permalink to this heading">#</a></h3>
 <p>The client asks for <code class="docutils literal notranslate"><span class="pre">root</span></code>.</p>
 <p><code class="docutils literal notranslate"><span class="pre">MeshAdminAgent::build_root_payload()</span></code> returns a synthetic node whose children are host references:</p>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>root
@@ -1446,7 +1447,7 @@ document.write(`
 <p>The root is not a real actor or proc. It is purely a navigation anchor.</p>
 </section>
 <section id="step-2-host">
-<h3>Step 2: host<a class="headerlink" href="#step-2-host" title="Link to this heading">#</a></h3>
+<h3>Step 2: host<a class="headerlink" href="#step-2-host" title="Permalink to this heading">#</a></h3>
 <p>The client picks a host child and resolves it.</p>
 <p><code class="docutils literal notranslate"><span class="pre">MeshAdminAgent::resolve_host_node()</span></code> sends <code class="docutils literal notranslate"><span class="pre">IntrospectMessage::Query(Entity)</span></code> directly to that <code class="docutils literal notranslate"><span class="pre">HostAgent</span></code> and converts the returned attrs/children into <code class="docutils literal notranslate"><span class="pre">NodePayload</span></code>.</p>
 <p>At that point the client sees:</p>
@@ -1456,7 +1457,7 @@ document.write(`
 </ul>
 </section>
 <section id="step-3-proc">
-<h3>Step 3: proc<a class="headerlink" href="#step-3-proc" title="Link to this heading">#</a></h3>
+<h3>Step 3: proc<a class="headerlink" href="#step-3-proc" title="Permalink to this heading">#</a></h3>
 <p>The client picks a proc child and resolves it.</p>
 <p><code class="docutils literal notranslate"><span class="pre">MeshAdminAgent::resolve_proc_node()</span></code> does a two-stage attempt:</p>
 <ol class="arabic simple">
@@ -1472,7 +1473,7 @@ document.write(`
 <p>That is a recurring theme in this subsystem: the server hides topology quirks behind a single reference API.</p>
 </section>
 <section id="step-4-actor">
-<h3>Step 4: actor<a class="headerlink" href="#step-4-actor" title="Link to this heading">#</a></h3>
+<h3>Step 4: actor<a class="headerlink" href="#step-4-actor" title="Permalink to this heading">#</a></h3>
 <p>The client picks an actor child and resolves it.</p>
 <p><code class="docutils literal notranslate"><span class="pre">MeshAdminAgent::resolve_actor_node()</span></code> usually sends <code class="docutils literal notranslate"><span class="pre">IntrospectMessage::Query(Actor)</span></code> directly to that actor’s introspection port.</p>
 <p>There are some important special cases:</p>
@@ -1485,7 +1486,7 @@ document.write(`
 </section>
 </section>
 <section id="why-querychild-matters-so-much">
-<h2>Why <code class="docutils literal notranslate"><span class="pre">QueryChild</span></code> matters so much<a class="headerlink" href="#why-querychild-matters-so-much" title="Link to this heading">#</a></h2>
+<h2>Why <code class="docutils literal notranslate"><span class="pre">QueryChild</span></code> matters so much<a class="headerlink" href="#why-querychild-matters-so-much" title="Permalink to this heading">#</a></h2>
 <p>The reference API would be awkward without <code class="docutils literal notranslate"><span class="pre">QueryChild</span></code>.</p>
 <p>The admin layer needs answers to questions like:</p>
 <ul class="simple">
@@ -1498,7 +1499,7 @@ document.write(`
 <p>Without those handlers, the admin layer could still introspect live actors directly, but proc-level navigation would be much poorer and much more special-cased.</p>
 </section>
 <section id="the-http-layer-is-deliberately-thin">
-<h2>The HTTP layer is deliberately thin<a class="headerlink" href="#the-http-layer-is-deliberately-thin" title="Link to this heading">#</a></h2>
+<h2>The HTTP layer is deliberately thin<a class="headerlink" href="#the-http-layer-is-deliberately-thin" title="Permalink to this heading">#</a></h2>
 <p>The mesh admin HTTP server is not where the topology logic lives.</p>
 <p><code class="docutils literal notranslate"><span class="pre">MeshAdminAgent::init()</span></code>:</p>
 <ul class="simple">
@@ -1536,7 +1537,7 @@ document.write(`
 <p>The navigation route the TUI cares about is <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/v1/{reference}</span></code>.</p>
 </section>
 <section id="the-tui-is-a-lazy-reference-walker">
-<h2>The TUI is a lazy reference walker<a class="headerlink" href="#the-tui-is-a-lazy-reference-walker" title="Link to this heading">#</a></h2>
+<h2>The TUI is a lazy reference walker<a class="headerlink" href="#the-tui-is-a-lazy-reference-walker" title="Permalink to this heading">#</a></h2>
 <p>The admin TUI is intentionally not a “push the whole mesh over HTTP” client. It is a <strong>lazy tree walker</strong>.</p>
 <p>Its core fetch path is in <code class="docutils literal notranslate"><span class="pre">fetch.rs</span></code>:</p>
 <ul class="simple">
@@ -1547,7 +1548,7 @@ document.write(`
 </ul>
 <p>Two details matter when reading the TUI after time away:</p>
 <section id="it-is-reference-driven-not-type-driven">
-<h3>1. It is reference-driven, not type-driven<a class="headerlink" href="#it-is-reference-driven-not-type-driven" title="Link to this heading">#</a></h3>
+<h3>1. It is reference-driven, not type-driven<a class="headerlink" href="#it-is-reference-driven-not-type-driven" title="Permalink to this heading">#</a></h3>
 <p>The TUI does not infer topology from local heuristics. It trusts:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">identity</span></code></p></li>
@@ -1558,7 +1559,7 @@ document.write(`
 <p>That is why the navigation identity invariants in <code class="docutils literal notranslate"><span class="pre">mesh_admin.rs</span></code> matter so much: if <code class="docutils literal notranslate"><span class="pre">identity</span></code> and <code class="docutils literal notranslate"><span class="pre">parent</span></code> are wrong, the TUI cannot keep its tree coherent.</p>
 </section>
 <section id="it-is-lazy">
-<h3>2. It is lazy<a class="headerlink" href="#it-is-lazy" title="Link to this heading">#</a></h3>
+<h3>2. It is lazy<a class="headerlink" href="#it-is-lazy" title="Permalink to this heading">#</a></h3>
 <p>Proc and actor children are fetched when the user expands into them, not preloaded wholesale.</p>
 <p>That is why the TUI code talks so much about:</p>
 <ul class="simple">
@@ -1572,7 +1573,7 @@ document.write(`
 </section>
 </section>
 <section id="proc-oriented-side-endpoints">
-<h2>Proc-oriented side endpoints<a class="headerlink" href="#proc-oriented-side-endpoints" title="Link to this heading">#</a></h2>
+<h2>Proc-oriented side endpoints<a class="headerlink" href="#proc-oriented-side-endpoints" title="Permalink to this heading">#</a></h2>
 <p>The TUI also uses two proc-oriented endpoints:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/v1/pyspy/{proc_reference}</span></code></p></li>
@@ -1596,14 +1597,14 @@ document.write(`
 <p>These side endpoints are separate because they are operations on a proc, not tree navigation over <code class="docutils literal notranslate"><span class="pre">NodePayload</span></code>.</p>
 </section>
 <section id="why-this-design-is-nice-to-work-with">
-<h2>Why this design is nice to work with<a class="headerlink" href="#why-this-design-is-nice-to-work-with" title="Link to this heading">#</a></h2>
+<h2>Why this design is nice to work with<a class="headerlink" href="#why-this-design-is-nice-to-work-with" title="Permalink to this heading">#</a></h2>
 <p>Three properties make this subsystem easier to reason about than it first appears.</p>
 <section id="uniform-api-shape">
-<h3>1. Uniform API shape<a class="headerlink" href="#uniform-api-shape" title="Link to this heading">#</a></h3>
+<h3>1. Uniform API shape<a class="headerlink" href="#uniform-api-shape" title="Permalink to this heading">#</a></h3>
 <p>Everything navigational becomes “resolve a reference to <code class="docutils literal notranslate"><span class="pre">NodePayload</span></code>”. The client never has to switch protocols as it moves from host to proc to actor.</p>
 </section>
 <section id="topology-knowledge-stays-server-side">
-<h3>2. Topology knowledge stays server-side<a class="headerlink" href="#topology-knowledge-stays-server-side" title="Link to this heading">#</a></h3>
+<h3>2. Topology knowledge stays server-side<a class="headerlink" href="#topology-knowledge-stays-server-side" title="Permalink to this heading">#</a></h3>
 <p>The client does not need to know:</p>
 <ul class="simple">
 <li><p>which procs are system procs,</p></li>
@@ -1614,13 +1615,13 @@ document.write(`
 <p>That logic sits in <code class="docutils literal notranslate"><span class="pre">MeshAdminAgent</span></code>, <code class="docutils literal notranslate"><span class="pre">HostAgent</span></code>, and <code class="docutils literal notranslate"><span class="pre">ProcAgent</span></code>.</p>
 </section>
 <section id="it-reuses-the-actor-system-instead-of-bypassing-it">
-<h3>3. It reuses the actor system instead of bypassing it<a class="headerlink" href="#it-reuses-the-actor-system-instead-of-bypassing-it" title="Link to this heading">#</a></h3>
+<h3>3. It reuses the actor system instead of bypassing it<a class="headerlink" href="#it-reuses-the-actor-system-instead-of-bypassing-it" title="Permalink to this heading">#</a></h3>
 <p>The HTTP surface is not a side database or a separate control plane. It is a projection built by sending actor messages through the same routing model the mesh already uses.</p>
 <p>That is why the docs keep emphasizing “if you can send it a message, you can introspect it.”</p>
 </section>
 </section>
 <section id="practical-reading-order-in-the-code">
-<h2>Practical reading order in the code<a class="headerlink" href="#practical-reading-order-in-the-code" title="Link to this heading">#</a></h2>
+<h2>Practical reading order in the code<a class="headerlink" href="#practical-reading-order-in-the-code" title="Permalink to this heading">#</a></h2>
 <p>When you need to page this back in after a few days, read in this order:</p>
 <ol class="arabic simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">hyperactor_mesh/src/introspect.rs</span></code>
@@ -1640,7 +1641,7 @@ This shows how the TUI lazily walks the reference graph and turns responses into
 </div>
 </section>
 <section id="a-compact-end-to-end-call-flow">
-<h2>A compact end-to-end call flow<a class="headerlink" href="#a-compact-end-to-end-call-flow" title="Link to this heading">#</a></h2>
+<h2>A compact end-to-end call flow<a class="headerlink" href="#a-compact-end-to-end-call-flow" title="Permalink to this heading">#</a></h2>
 <p>This is the full “what happens when I expand a node in the TUI?” summary:</p>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>TUI
   -&gt; GET /v1/{reference}
@@ -1915,7 +1916,7 @@ This shows how the TUI lazily walks the reference graph and turns responses into
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>

@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["Bindings","ErasedUnbound","IndexedErasedUnbound","Unbound"],"trait":["Bind","Castable","Unbind"]};
+window.SIDEBAR_ITEMS = {};

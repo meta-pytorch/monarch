@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -16,7 +17,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="What it exposes: A small, explicit API to start logging for a ProcMesh, stream remote stdout/stderr back to your notebook/REPL, tune aggregation &amp; verbosity, and perform a versioned sync flush ..." />
 
-    <title>Python control surface &#8212; Monarch v0.5.0 documentation</title>
+    <title>Python control surface &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
+    <script src="../../../../_static/doctools.js"></script>
+    <script src="../../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../../_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-mesh-book/src/logging/python';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-mesh-book/src/logging/python.html" />
@@ -82,7 +83,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +197,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1293,18 +1294,18 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="python-control-surface">
-<h1>Python control surface<a class="headerlink" href="#python-control-surface" title="Link to this heading">#</a></h1>
+<h1>Python control surface<a class="headerlink" href="#python-control-surface" title="Permalink to this heading">#</a></h1>
 <section id="what-it-exposes">
-<h2>What it exposes<a class="headerlink" href="#what-it-exposes" title="Link to this heading">#</a></h2>
+<h2>What it exposes<a class="headerlink" href="#what-it-exposes" title="Permalink to this heading">#</a></h2>
 <p>A small, explicit API to start logging for a <code class="docutils literal notranslate"><span class="pre">ProcMesh</span></code>, stream remote <code class="docutils literal notranslate"><span class="pre">stdout/stderr</span></code> back to your notebook/REPL, tune aggregation &amp; verbosity, and perform a <strong>versioned sync flush</strong> before teardown.</p>
 <blockquote>
 <div><p><strong>Placement:</strong> There is exactly one <code class="docutils literal notranslate"><span class="pre">LogClientActor</span></code>, and it runs inside the Python/driver process (your notebook/REPL). Python calls fan out to per-proc forwarders and back.</p>
 </div></blockquote>
 </section>
 <section id="api-surface">
-<h2>API surface<a class="headerlink" href="#api-surface" title="Link to this heading">#</a></h2>
+<h2>API surface<a class="headerlink" href="#api-surface" title="Permalink to this heading">#</a></h2>
 <section id="loggingmeshclient-spawn-instance-proc-mesh-pypythontask">
-<h3><code class="docutils literal notranslate"><span class="pre">LoggingMeshClient.spawn(instance,</span> <span class="pre">proc_mesh)</span> <span class="pre">-&gt;</span> <span class="pre">PyPythonTask</span></code><a class="headerlink" href="#loggingmeshclient-spawn-instance-proc-mesh-pypythontask" title="Link to this heading">#</a></h3>
+<h3><code class="docutils literal notranslate"><span class="pre">LoggingMeshClient.spawn(instance,</span> <span class="pre">proc_mesh)</span> <span class="pre">-&gt;</span> <span class="pre">PyPythonTask</span></code><a class="headerlink" href="#loggingmeshclient-spawn-instance-proc-mesh-pypythontask" title="Permalink to this heading">#</a></h3>
 <p>Spawns:</p>
 <ul class="simple">
 <li><p>a single <code class="docutils literal notranslate"><span class="pre">LogClientActor</span></code> (in the Python/driver process),</p></li>
@@ -1313,7 +1314,7 @@ document.write(`
 </ul>
 </section>
 <section id="loggingmeshclient-set-mode-instance-stream-to-client-bool-aggregate-window-sec-optional-int-level-int-none">
-<h3><code class="docutils literal notranslate"><span class="pre">LoggingMeshClient.set_mode(instance,</span> <span class="pre">stream_to_client:</span> <span class="pre">bool,</span> <span class="pre">aggregate_window_sec:</span> <span class="pre">Optional[int],</span> <span class="pre">level:</span> <span class="pre">int)</span> <span class="pre">-&gt;</span> <span class="pre">None</span></code><a class="headerlink" href="#loggingmeshclient-set-mode-instance-stream-to-client-bool-aggregate-window-sec-optional-int-level-int-none" title="Link to this heading">#</a></h3>
+<h3><code class="docutils literal notranslate"><span class="pre">LoggingMeshClient.set_mode(instance,</span> <span class="pre">stream_to_client:</span> <span class="pre">bool,</span> <span class="pre">aggregate_window_sec:</span> <span class="pre">Optional[int],</span> <span class="pre">level:</span> <span class="pre">int)</span> <span class="pre">-&gt;</span> <span class="pre">None</span></code><a class="headerlink" href="#loggingmeshclient-set-mode-instance-stream-to-client-bool-aggregate-window-sec-optional-int-level-int-none" title="Permalink to this heading">#</a></h3>
 <ul class="simple">
 <li><p>Turns streaming on/off (<code class="docutils literal notranslate"><span class="pre">stream_to_client</span></code>).</p></li>
 <li><p>Sets aggregation window (seconds) <strong>only if</strong> streaming is enabled.</p></li>
@@ -1324,13 +1325,13 @@ document.write(`
 </div></blockquote>
 </section>
 <section id="loggingmeshclient-flush-instance-pypythontask">
-<h3><code class="docutils literal notranslate"><span class="pre">LoggingMeshClient.flush(instance)</span> <span class="pre">-&gt;</span> <span class="pre">PyPythonTask</span></code><a class="headerlink" href="#loggingmeshclient-flush-instance-pypythontask" title="Link to this heading">#</a></h3>
+<h3><code class="docutils literal notranslate"><span class="pre">LoggingMeshClient.flush(instance)</span> <span class="pre">-&gt;</span> <span class="pre">PyPythonTask</span></code><a class="headerlink" href="#loggingmeshclient-flush-instance-pypythontask" title="Permalink to this heading">#</a></h3>
 <p>Performs a <strong>versioned sync flush</strong> across all forwarders so the caller deterministically waits until “all logs up to now” are delivered.
 See: <a class="reference internal" href="client.html#barrier-protocol-sync-flush"><span class="std std-ref">Client actor → Barrier protocol</span></a> and <a class="reference internal" href="forwarder.html"><span class="std std-doc">Forwarder internals</span></a>.</p>
 </section>
 </section>
 <section id="minimal-example">
-<h2>Minimal example<a class="headerlink" href="#minimal-example" title="Link to this heading">#</a></h2>
+<h2>Minimal example<a class="headerlink" href="#minimal-example" title="Permalink to this heading">#</a></h2>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">monarch._rust_bindings.monarch_hyperactor.logging</span><span class="w"> </span><span class="kn">import</span> <span class="n">LoggingMeshClient</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
 
@@ -1344,7 +1345,7 @@ See: <a class="reference internal" href="client.html#barrier-protocol-sync-flush
 </div>
 </section>
 <section id="related">
-<h2>Related<a class="headerlink" href="#related" title="Link to this heading">#</a></h2>
+<h2>Related<a class="headerlink" href="#related" title="Permalink to this heading">#</a></h2>
 <ul class="simple">
 <li><p>Client actor — aggregation, similarity bucketing, barriers</p></li>
 <li><p>Forwarder internals — in-band <code class="docutils literal notranslate"><span class="pre">LogMessage::{Log,</span> <span class="pre">Flush}</span></code></p></li>
@@ -1585,7 +1586,7 @@ See: <a class="reference internal" href="client.html#barrier-protocol-sync-flush
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>

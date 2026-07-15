@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -16,7 +17,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="The LogForwardActor runs in every remote process of a ProcMesh. It is the in-band relay that receives per-proc logs over a hyperactor channel and forwards them to the client’s LogClientActor, prese..." />
 
-    <title>Forwarders &#8212; Monarch v0.5.0 documentation</title>
+    <title>Forwarders &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
+    <script src="../../../../_static/doctools.js"></script>
+    <script src="../../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../../_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-mesh-book/src/logging/forwarder';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-mesh-book/src/logging/forwarder.html" />
@@ -82,7 +83,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +197,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1293,10 +1294,10 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="forwarders">
-<h1>Forwarders<a class="headerlink" href="#forwarders" title="Link to this heading">#</a></h1>
+<h1>Forwarders<a class="headerlink" href="#forwarders" title="Permalink to this heading">#</a></h1>
 <p>The <code class="docutils literal notranslate"><span class="pre">LogForwardActor</span></code> runs in every remote process of a <code class="docutils literal notranslate"><span class="pre">ProcMesh</span></code>. It is the in-band relay that receives per-proc logs over a hyperactor channel and forwards them to the client’s <code class="docutils literal notranslate"><span class="pre">LogClientActor</span></code>, preserving ordering and enabling sync flush barriers.</p>
 <section id="what-problem-it-solves">
-<h2>What problem it solves<a class="headerlink" href="#what-problem-it-solves" title="Link to this heading">#</a></h2>
+<h2>What problem it solves<a class="headerlink" href="#what-problem-it-solves" title="Permalink to this heading">#</a></h2>
 <ul class="simple">
 <li><p>Receives the lines that the <strong>bootstrap</strong> captured from each child’s <code class="docutils literal notranslate"><span class="pre">stdout</span></code>/<code class="docutils literal notranslate"><span class="pre">stderr</span></code> (via <code class="docutils literal notranslate"><span class="pre">StreamFwder</span></code>).</p></li>
 <li><p>Keeps <strong>control</strong> ordered with <strong>data</strong> by using a single in-band channel carrying <code class="docutils literal notranslate"><span class="pre">LogMessage::{Log,</span> <span class="pre">Flush}</span></code>.</p></li>
@@ -1311,9 +1312,9 @@ document.write(`
 </ul>
 </section>
 <section id="topology-and-channel-negotiation">
-<h2>Topology and channel negotiation<a class="headerlink" href="#topology-and-channel-negotiation" title="Link to this heading">#</a></h2>
+<h2>Topology and channel negotiation<a class="headerlink" href="#topology-and-channel-negotiation" title="Permalink to this heading">#</a></h2>
 <section id="logging-components-and-ownership">
-<h3>Logging - components and ownership<a class="headerlink" href="#logging-components-and-ownership" title="Link to this heading">#</a></h3>
+<h3>Logging - components and ownership<a class="headerlink" href="#logging-components-and-ownership" title="Permalink to this heading">#</a></h3>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>[BootstrapProcManager on each host]
   └─ spawns N child procs
      └─ owns each child’s stdout/stderr pipes
@@ -1331,7 +1332,7 @@ document.write(`
 </div>
 </section>
 <section id="logging-wiring-and-message-flow">
-<h3>Logging - wiring and message flow<a class="headerlink" href="#logging-wiring-and-message-flow" title="Link to this heading">#</a></h3>
+<h3>Logging - wiring and message flow<a class="headerlink" href="#logging-wiring-and-message-flow" title="Permalink to this heading">#</a></h3>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>[host/bootstrap proc]                     [child/remote proc]
 StreamFwder ──LocalLogSender──►  (unix)  ──► LogForwardActor (serve)
 (stdout/stderr)                              ^   ^
@@ -1353,9 +1354,9 @@ StreamFwder ──LocalLogSender──►  (unix)  ──► LogForwardActor (se
 </section>
 <hr class="docutils" />
 <section id="message-protocol">
-<h2>Message Protocol<a class="headerlink" href="#message-protocol" title="Link to this heading">#</a></h2>
+<h2>Message Protocol<a class="headerlink" href="#message-protocol" title="Permalink to this heading">#</a></h2>
 <section id="data-plane-parent-forwarder">
-<h3>Data plane (parent → forwarder)<a class="headerlink" href="#data-plane-parent-forwarder" title="Link to this heading">#</a></h3>
+<h3>Data plane (parent → forwarder)<a class="headerlink" href="#data-plane-parent-forwarder" title="Permalink to this heading">#</a></h3>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">enum</span><span class="w"> </span><span class="nc">LogMessage</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="n">Log</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="n">hostname</span><span class="p">:</span><span class="w"> </span><span class="nb">String</span><span class="p">,</span>
@@ -1371,7 +1372,7 @@ StreamFwder ──LocalLogSender──►  (unix)  ──► LogForwardActor (se
 </div>
 </section>
 <section id="control-plane-client-forwarder">
-<h3>Control plane (client → forwarder)<a class="headerlink" href="#control-plane-client-forwarder" title="Link to this heading">#</a></h3>
+<h3>Control plane (client → forwarder)<a class="headerlink" href="#control-plane-client-forwarder" title="Permalink to this heading">#</a></h3>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">enum</span><span class="w"> </span><span class="nc">LogForwardMessage</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="n">Forward</span><span class="w"> </span><span class="p">{},</span><span class="w">                     </span><span class="c1">// pull-next from rx (drives the loop)</span>
 <span class="w">  </span><span class="n">SetMode</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">stream_to_client</span><span class="p">:</span><span class="w"> </span><span class="kt">bool</span><span class="w"> </span><span class="p">},</span>
@@ -1383,9 +1384,9 @@ StreamFwder ──LocalLogSender──►  (unix)  ──► LogForwardActor (se
 </section>
 <hr class="docutils" />
 <section id="lifecycle">
-<h2>Lifecycle<a class="headerlink" href="#lifecycle" title="Link to this heading">#</a></h2>
+<h2>Lifecycle<a class="headerlink" href="#lifecycle" title="Permalink to this heading">#</a></h2>
 <section id="spawn-init-trimmed">
-<h3>Spawn &amp; init (trimmed)<a class="headerlink" href="#spawn-init-trimmed" title="Link to this heading">#</a></h3>
+<h3>Spawn &amp; init (trimmed)<a class="headerlink" href="#spawn-init-trimmed" title="Permalink to this heading">#</a></h3>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="w"> </span><span class="n">Actor</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">LogForwardActor</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="k">type</span><span class="w"> </span><span class="nc">Params</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ActorRef</span><span class="o">&lt;</span><span class="n">LogClientActor</span><span class="o">&gt;</span><span class="p">;</span>
 
@@ -1427,7 +1428,7 @@ StreamFwder ──LocalLogSender──►  (unix)  ──► LogForwardActor (se
 </section>
 <hr class="docutils" />
 <section id="the-forward-loop-ordered-handling">
-<h2>The forward loop (ordered handling)<a class="headerlink" href="#the-forward-loop-ordered-handling" title="Link to this heading">#</a></h2>
+<h2>The forward loop (ordered handling)<a class="headerlink" href="#the-forward-loop-ordered-handling" title="Permalink to this heading">#</a></h2>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="w"> </span><span class="n">LogForwardMessageHandler</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">LogForwardActor</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="o">&amp;</span><span class="k">mut</span><span class="w"> </span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">ctx</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Context</span><span class="o">&lt;</span><span class="bp">Self</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="p">()</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="k">match</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">rx</span><span class="p">.</span><span class="n">recv</span><span class="p">().</span><span class="k">await</span><span class="o">?</span><span class="w"> </span><span class="p">{</span>
@@ -1491,7 +1492,7 @@ StreamFwder ──LocalLogSender──►  (unix)  ──► LogForwardActor (se
 </section>
 <hr class="docutils" />
 <section id="relationship-to-stream-forwarders-bootstrap-side">
-<h2>Relationship to stream forwarders (bootstrap side)<a class="headerlink" href="#relationship-to-stream-forwarders-bootstrap-side" title="Link to this heading">#</a></h2>
+<h2>Relationship to stream forwarders (bootstrap side)<a class="headerlink" href="#relationship-to-stream-forwarders-bootstrap-side" title="Permalink to this heading">#</a></h2>
 <ul class="simple">
 <li><p>The bootstrap process owns <code class="docutils literal notranslate"><span class="pre">StreamFwder</span></code> (one per stdout/stderr) which:</p>
 <ul>
@@ -1507,7 +1508,7 @@ StreamFwder ──LocalLogSender──►  (unix)  ──► LogForwardActor (se
 </section>
 <hr class="docutils" />
 <section id="sync-flush-barrier-end-to-end">
-<h2>Sync flush barrier end-to-end<a class="headerlink" href="#sync-flush-barrier-end-to-end" title="Link to this heading">#</a></h2>
+<h2>Sync flush barrier end-to-end<a class="headerlink" href="#sync-flush-barrier-end-to-end" title="Permalink to this heading">#</a></h2>
 <ol class="arabic simple">
 <li><p>Python calls <code class="docutils literal notranslate"><span class="pre">LoggingMeshClient.flush(...)</span></code>.</p></li>
 <li><p>Client actor allocates a version v, records <code class="docutils literal notranslate"><span class="pre">expected_procs</span></code>, and returns v to the caller.</p></li>
@@ -1760,7 +1761,7 @@ StreamFwder ──LocalLogSender──►  (unix)  ──► LogForwardActor (se
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>

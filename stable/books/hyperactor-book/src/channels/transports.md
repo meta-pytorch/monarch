@@ -1,3 +1,3 @@
 # Transports
 
-Different transports implement the channel abstraction: Local (in-process), Tcp, Unix, MetaTls, and Simulated.
+The transport overview lives in [transports/index.md](transports/index.html).

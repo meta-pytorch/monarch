@@ -1,13 +1,14 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>monarch._src.job.process &#8212; Monarch v0.5.0 documentation</title>
+    <title>monarch._src.job.process &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -27,37 +28,31 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
-    <script type="module" src="https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs"></script>
-    <script type="module" src="https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0.1.4/dist/mermaid-layout-elk.esm.min.mjs"></script>
-    <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs";import elkLayouts from "https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0.1.4/dist/mermaid-layout-elk.esm.min.mjs";mermaid.registerLayoutLoaders(elkLayouts);mermaid.initialize({startOnLoad:false});</script>
-    <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
-    <script type="module">
-import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs";
-window.addEventListener("load", () => mermaid.run());
-</script>
+    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
+    <script src="../../../../_static/doctools.js"></script>
+    <script src="../../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../../_static/design-tabs.js"></script>
+    <script src="https://unpkg.com/mermaid@10.2.0/dist/mermaid.min.js"></script>
+    <script>mermaid.initialize({startOnLoad:true});</script>
     <script>DOCUMENTATION_OPTIONS.pagename = '_modules/monarch/_src/job/process';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/_modules/monarch/_src/job/process.html" />
@@ -81,7 +76,7 @@ window.addEventListener("load", () => mermaid.run());
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -195,7 +190,7 @@ window.addEventListener("load", () => mermaid.run());
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1305,6 +1300,7 @@ document.write(`
 
 <span class="c1"># pyre-unsafe</span>
 
+<span class="kn">import</span><span class="w"> </span><span class="nn">contextlib</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">shutil</span>
@@ -1313,7 +1309,8 @@ document.write(`
 <span class="kn">import</span><span class="w"> </span><span class="nn">sys</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">tempfile</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">threading</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Dict</span><span class="p">,</span> <span class="n">List</span><span class="p">,</span> <span class="n">Optional</span><span class="p">,</span> <span class="n">Union</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">time</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Callable</span><span class="p">,</span> <span class="n">Dict</span><span class="p">,</span> <span class="n">List</span><span class="p">,</span> <span class="n">Optional</span><span class="p">,</span> <span class="n">Union</span>
 
 <span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.actor.bootstrap</span><span class="w"> </span><span class="kn">import</span> <span class="n">attach_to_workers</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.actor.future</span><span class="w"> </span><span class="kn">import</span> <span class="n">Future</span>
@@ -1329,11 +1326,75 @@ document.write(`
     <span class="n">_IN_PAR</span> <span class="o">=</span> <span class="kc">False</span>
 
 <span class="n">_PROCESS_WORKER_MODULE</span> <span class="o">=</span> <span class="s2">&quot;monarch._src.job._process_worker&quot;</span>
+<span class="n">_KILL_GRACE_SECONDS</span> <span class="o">=</span> <span class="mf">1.0</span>
 
 
-<div class="viewcode-block" id="ProcessJob">
-<a class="viewcode-back" href="../../../../api/monarch.job.html#monarch.job.ProcessJob">[docs]</a>
-<span class="k">class</span><span class="w"> </span><span class="nc">ProcessJob</span><span class="p">(</span><span class="n">JobTrait</span><span class="p">):</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">_group_alive</span><span class="p">(</span><span class="n">pgid</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">os</span><span class="o">.</span><span class="n">killpg</span><span class="p">(</span><span class="n">pgid</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span>
+    <span class="k">except</span> <span class="ne">OSError</span><span class="p">:</span>
+        <span class="k">return</span> <span class="kc">False</span>
+    <span class="k">return</span> <span class="kc">True</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_live_worker_pids</span><span class="p">(</span><span class="n">session_ids</span><span class="p">:</span> <span class="s2">&quot;set[int]&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Optional</span><span class="p">[</span><span class="n">List</span><span class="p">[</span><span class="nb">int</span><span class="p">]]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Live (non-zombie) pids whose session id is one of ``session_ids``, or</span>
+<span class="sd">    ``None`` when ``/proc`` cannot be enumerated.</span>
+
+<span class="sd">    Full reaping is Linux-only. Workers launch with ``start_new_session=True``,</span>
+<span class="sd">    so a worker&#39;s pid is its session id and the procs it spawns stay in that</span>
+<span class="sd">    session while sitting in their own process groups -- ``killpg`` of the worker</span>
+<span class="sd">    alone cannot reach them. Matching on session id (via ``/proc`` and</span>
+<span class="sd">    ``os.getsid``) catches the worker and its whole subtree, including procs</span>
+<span class="sd">    already reparented to init (session membership outlives the parent). Where</span>
+<span class="sd">    ``/proc`` is missing or unreadable this returns ``None`` so callers fall back</span>
+<span class="sd">    to best-effort signalling of the tracked worker pids, which does not reach</span>
+<span class="sd">    the spawned procs.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">own</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">getpid</span><span class="p">()</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">entries</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">listdir</span><span class="p">(</span><span class="s2">&quot;/proc&quot;</span><span class="p">)</span>
+    <span class="k">except</span> <span class="ne">OSError</span><span class="p">:</span>
+        <span class="k">return</span> <span class="kc">None</span>
+    <span class="n">pids</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="k">for</span> <span class="n">entry</span> <span class="ow">in</span> <span class="n">entries</span><span class="p">:</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">entry</span><span class="o">.</span><span class="n">isdigit</span><span class="p">():</span>
+            <span class="k">continue</span>
+        <span class="n">pid</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">entry</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">pid</span> <span class="o">==</span> <span class="n">own</span><span class="p">:</span>
+            <span class="k">continue</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">os</span><span class="o">.</span><span class="n">getsid</span><span class="p">(</span><span class="n">pid</span><span class="p">)</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">session_ids</span><span class="p">:</span>
+                <span class="k">continue</span>
+            <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;/proc/</span><span class="si">{</span><span class="n">pid</span><span class="si">}</span><span class="s2">/stat&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">stat</span><span class="p">:</span>
+                <span class="n">state</span> <span class="o">=</span> <span class="n">stat</span><span class="o">.</span><span class="n">read</span><span class="p">()</span><span class="o">.</span><span class="n">rsplit</span><span class="p">(</span><span class="s2">&quot;)&quot;</span><span class="p">,</span> <span class="mi">1</span><span class="p">)[</span><span class="mi">1</span><span class="p">]</span><span class="o">.</span><span class="n">split</span><span class="p">()[</span><span class="mi">0</span><span class="p">]</span>
+        <span class="k">except</span> <span class="ne">OSError</span><span class="p">:</span>
+            <span class="k">continue</span>
+        <span class="k">if</span> <span class="n">state</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">&quot;Z&quot;</span><span class="p">,</span> <span class="s2">&quot;X&quot;</span><span class="p">,</span> <span class="s2">&quot;x&quot;</span><span class="p">):</span>  <span class="c1"># skip procs that are already dead</span>
+            <span class="n">pids</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">pid</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">pids</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_terminate_with_grace</span><span class="p">(</span>
+    <span class="n">live_pids</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[],</span> <span class="n">List</span><span class="p">[</span><span class="nb">int</span><span class="p">]],</span>
+    <span class="n">signal_pids</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">List</span><span class="p">[</span><span class="nb">int</span><span class="p">],</span> <span class="nb">int</span><span class="p">],</span> <span class="kc">None</span><span class="p">],</span>
+    <span class="n">grace</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="n">_KILL_GRACE_SECONDS</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;SIGTERM the live targets, wait up to ``grace`` for them to exit, then</span>
+<span class="sd">    SIGKILL any stragglers.</span>
+
+<span class="sd">    Factored out so the poll-with-sleep is not copied around, and so it can be</span>
+<span class="sd">    swapped for an await-based wait later. ``live_pids`` is re-evaluated each</span>
+<span class="sd">    round so procs spawned mid-teardown are still caught before the SIGKILL.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">signal_pids</span><span class="p">(</span><span class="n">live_pids</span><span class="p">(),</span> <span class="n">signal</span><span class="o">.</span><span class="n">SIGTERM</span><span class="p">)</span>
+    <span class="n">deadline</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()</span> <span class="o">+</span> <span class="n">grace</span>
+    <span class="k">while</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()</span> <span class="o">&lt;</span> <span class="n">deadline</span> <span class="ow">and</span> <span class="n">live_pids</span><span class="p">():</span>
+        <span class="n">time</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mf">0.05</span><span class="p">)</span>
+    <span class="n">signal_pids</span><span class="p">(</span><span class="n">live_pids</span><span class="p">(),</span> <span class="n">signal</span><span class="o">.</span><span class="n">SIGKILL</span><span class="p">)</span>
+
+
+<div class="viewcode-block" id="ProcessJob"><a class="viewcode-back" href="../../../../api/monarch.job.html#monarch.job.ProcessJob">[docs]</a><span class="k">class</span><span class="w"> </span><span class="nc">ProcessJob</span><span class="p">(</span><span class="n">JobTrait</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Job where each host is a local subprocess communicating over IPC.</span>
 
 <span class="sd">    Suitable for local testing of multi-host scenarios without SSH or a</span>
@@ -1412,7 +1473,9 @@ document.write(`
                         <span class="n">addr</span><span class="p">,</span>
                     <span class="p">)</span>
                     <span class="bp">self</span><span class="o">.</span><span class="n">_watch_process</span><span class="p">(</span><span class="n">proc</span><span class="p">,</span> <span class="n">mesh_name</span><span class="p">,</span> <span class="n">i</span><span class="p">,</span> <span class="n">addr</span><span class="p">)</span>
-        <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+        <span class="k">except</span> <span class="ne">BaseException</span><span class="p">:</span>
+            <span class="c1"># BaseException, not Exception: a Ctrl-C / cancellation mid-startup</span>
+            <span class="c1"># must still reap the workers already spawned above, or they leak.</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_kill</span><span class="p">()</span>
             <span class="k">raise</span>
 
@@ -1478,15 +1541,15 @@ document.write(`
 
         <span class="k">return</span> <span class="n">JobState</span><span class="p">(</span><span class="n">host_meshes</span><span class="p">)</span>
 
-<div class="viewcode-block" id="ProcessJob.can_run">
-<a class="viewcode-back" href="../../../../api/monarch.job.html#monarch.job.ProcessJob.can_run">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">can_run</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">spec</span><span class="p">:</span> <span class="s2">&quot;JobTrait&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_should_spawn_telemetry_worker_collector_actors</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+        <span class="k">return</span> <span class="kc">False</span>
+
+<div class="viewcode-block" id="ProcessJob.can_run"><a class="viewcode-back" href="../../../../api/monarch.job.html#monarch.job.ProcessJob.can_run">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="nf">can_run</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">spec</span><span class="p">:</span> <span class="s2">&quot;JobTrait&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
         <span class="k">return</span> <span class="p">(</span>
             <span class="nb">isinstance</span><span class="p">(</span><span class="n">spec</span><span class="p">,</span> <span class="n">ProcessJob</span><span class="p">)</span>
             <span class="ow">and</span> <span class="n">spec</span><span class="o">.</span><span class="n">_meshes</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">_meshes</span>
             <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">_pids_active</span><span class="p">()</span>
         <span class="p">)</span></div>
-
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_pids_active</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">active</span><span class="p">:</span>
@@ -1499,19 +1562,40 @@ document.write(`
         <span class="k">return</span> <span class="kc">True</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_kill</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="c1"># Use SIGTERM to allow worker processes to shut down gracefully.</span>
-        <span class="c1"># The HostMesh objects are not stored here (they&#39;re returned to callers),</span>
-        <span class="c1"># so we rely on the worker processes handling SIGTERM for clean shutdown.</span>
-        <span class="k">for</span> <span class="n">p</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_host_to_pid</span><span class="o">.</span><span class="n">values</span><span class="p">():</span>
-            <span class="k">try</span><span class="p">:</span>
-                <span class="n">os</span><span class="o">.</span><span class="n">kill</span><span class="p">(</span><span class="n">p</span><span class="o">.</span><span class="n">pid</span><span class="p">,</span> <span class="n">signal</span><span class="o">.</span><span class="n">SIGTERM</span><span class="p">)</span>
-            <span class="k">except</span> <span class="ne">OSError</span><span class="p">:</span>
-                <span class="k">pass</span>
+        <span class="c1"># Reap each worker&#39;s whole session, not just its process group. Workers</span>
+        <span class="c1"># run in detached sessions (start_new_session=True), and the procs they</span>
+        <span class="c1"># spawn stay in that session but in their own process groups -- so</span>
+        <span class="c1"># signalling only the worker&#39;s group would orphan them. Session reaping</span>
+        <span class="c1"># needs /proc; without it we fall back to best-effort signalling of the</span>
+        <span class="c1"># tracked worker pids, which does not reach the spawned procs.</span>
+        <span class="n">worker_pids</span> <span class="o">=</span> <span class="p">[</span><span class="n">p</span><span class="o">.</span><span class="n">pid</span> <span class="k">for</span> <span class="n">p</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_host_to_pid</span><span class="o">.</span><span class="n">values</span><span class="p">()]</span>
+        <span class="n">session_ids</span> <span class="o">=</span> <span class="nb">set</span><span class="p">(</span><span class="n">worker_pids</span><span class="p">)</span>
+
+        <span class="k">def</span><span class="w"> </span><span class="nf">remaining</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n">List</span><span class="p">[</span><span class="nb">int</span><span class="p">]:</span>
+            <span class="n">live</span> <span class="o">=</span> <span class="n">_live_worker_pids</span><span class="p">(</span><span class="n">session_ids</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">live</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="c1"># /proc missing or unreadable: signal the worker pids we hold.</span>
+                <span class="k">return</span> <span class="p">[</span><span class="n">pid</span> <span class="k">for</span> <span class="n">pid</span> <span class="ow">in</span> <span class="n">worker_pids</span> <span class="k">if</span> <span class="n">_group_alive</span><span class="p">(</span><span class="n">pid</span><span class="p">)]</span>
+            <span class="k">return</span> <span class="n">live</span>
+
+        <span class="k">def</span><span class="w"> </span><span class="nf">signal_all</span><span class="p">(</span><span class="n">pids</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="nb">int</span><span class="p">],</span> <span class="n">sig</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="c1"># killpg reaps each enumerated group leader&#39;s whole group (catching</span>
+            <span class="c1"># children forked after the scan); the os.kill fallback covers pids</span>
+            <span class="c1"># that are not group leaders. A pid reaped and reused between scan and</span>
+            <span class="c1"># signal is at worst a stray no-op via the OSError fallback.</span>
+            <span class="k">for</span> <span class="n">pid</span> <span class="ow">in</span> <span class="n">pids</span><span class="p">:</span>
+                <span class="k">try</span><span class="p">:</span>
+                    <span class="n">os</span><span class="o">.</span><span class="n">killpg</span><span class="p">(</span><span class="n">pid</span><span class="p">,</span> <span class="n">sig</span><span class="p">)</span>
+                <span class="k">except</span> <span class="ne">OSError</span><span class="p">:</span>
+                    <span class="k">with</span> <span class="n">contextlib</span><span class="o">.</span><span class="n">suppress</span><span class="p">(</span><span class="ne">OSError</span><span class="p">):</span>
+                        <span class="n">os</span><span class="o">.</span><span class="n">kill</span><span class="p">(</span><span class="n">pid</span><span class="p">,</span> <span class="n">sig</span><span class="p">)</span>
+
+        <span class="n">_terminate_with_grace</span><span class="p">(</span><span class="n">remaining</span><span class="p">,</span> <span class="n">signal_all</span><span class="p">)</span>
+
         <span class="bp">self</span><span class="o">.</span><span class="n">_host_to_pid</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_tmpdir</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
             <span class="n">shutil</span><span class="o">.</span><span class="n">rmtree</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_tmpdir</span><span class="p">,</span> <span class="n">ignore_errors</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_tmpdir</span> <span class="o">=</span> <span class="kc">None</span></div>
-
 </pre></div>
 
                 </article>
@@ -1664,7 +1748,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>
@@ -1693,7 +1777,7 @@ document.write(`
        "headline": "monarch._src.job.process",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/_modules/monarch/_src/job/process.html",
-       "articleBody": "Source code for monarch._src.job.process # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-unsafe import logging import os import shutil import signal import subprocess import sys import tempfile import threading from typing import Dict, List, Optional, Union from monarch._src.actor.bootstrap import attach_to_workers from monarch._src.actor.future import Future from monarch._src.job.job import JobState, JobTrait, ProcessState logger = logging.getLogger(__name__) try: from __manifest__ import fbmake # noqa _IN_PAR = bool(fbmake.get(\"par_style\")) except ImportError: _IN_PAR = False _PROCESS_WORKER_MODULE = \"monarch._src.job._process_worker\" [docs] class ProcessJob(JobTrait): \"\"\"Job where each host is a local subprocess communicating over IPC. Suitable for local testing of multi-host scenarios without SSH or a scheduler. Each host runs ``run_worker_loop_forever`` in a child process, listening on a Unix socket. Example:: job = ProcessJob({\"trainers\": 2, \"dataloaders\": 1}) state = job.state(cached_path=None) state.trainers # HostMesh with 2 hosts state.dataloaders # HostMesh with 1 host \"\"\" def __init__( self, meshes: Dict[str, int], env: Optional[Dict[str, str]] = None, ) -\u003e None: \"\"\" Args: meshes: Mapping from mesh name to number of hosts. env: Extra environment variables for worker subprocesses. \"\"\" super().__init__() self._meshes = meshes self._env = env self._host_to_pid: Dict[str, ProcessState] = {} self._tmpdir: Optional[str] = None def _create(self, client_script: Optional[str]) -\u003e None: if client_script is not None: raise RuntimeError(\"ProcessJob cannot run batch-mode scripts\") self._tmpdir = tempfile.mkdtemp(prefix=\"monarch_process_job_\") try: for mesh_name, count in self._meshes.items(): for i in range(count): host_key = f\"{mesh_name}_{i}\" addr = f\"ipc://{self._tmpdir}/{host_key}\" env = {**os.environ, \"HYPERACTOR_PROCESS_NAME\": host_key} if self._env is not None: env.update(self._env) if _IN_PAR: # In PAR/XAR mode, sys.executable is the bare # Python interpreter which cannot import modules # from the archive. Re-invoke the PAR binary # (sys.argv[0]) with PAR_MAIN_OVERRIDE pointing # to the worker module. env[\"PAR_MAIN_OVERRIDE\"] = _PROCESS_WORKER_MODULE env[\"_MONARCH_WORKER_ADDR\"] = addr cmd = [sys.argv[0]] else: cmd = [ sys.executable, \"-c\", \"from monarch.actor import run_worker_loop_forever; \" f\u0027run_worker_loop_forever(address=\"{addr}\", \u0027 \u0027ca=\"trust_all_connections\")\u0027, ] proc = subprocess.Popen( cmd, env=env, start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, ) self._host_to_pid[host_key] = ProcessState(proc.pid, addr) logger.info( \"ProcessJob: spawned worker pid=%d mesh=%s rank=%d addr=%s\", proc.pid, mesh_name, i, addr, ) self._watch_process(proc, mesh_name, i, addr) except Exception: self._kill() raise @staticmethod def _watch_process( proc: subprocess.Popen, mesh_name: str, rank: int, addr: str, ) -\u003e None: def _waiter() -\u003e None: pid = proc.pid try: proc.wait() code = proc.returncode except Exception: logger.exception( \"ProcessJob: error waiting on pid=%d mesh=%s rank=%d addr=%s\", pid, mesh_name, rank, addr, ) return if code == 0 or code == -signal.SIGTERM: logger.info( \"ProcessJob: worker exited pid=%d exit_code=%d mesh=%s rank=%d addr=%s\", pid, code, mesh_name, rank, addr, ) else: logger.warning( \"ProcessJob: worker died unexpectedly pid=%d exit_code=%d mesh=%s rank=%d addr=%s\", pid, code, mesh_name, rank, addr, ) t = threading.Thread( target=_waiter, daemon=True, name=f\"watch-{mesh_name}_{rank}\" ) t.start() def _state(self) -\u003e JobState: if not self._pids_active(): raise RuntimeError(\"lost connection to worker processes\") host_meshes = {} for mesh_name, count in self._meshes.items(): workers: List[Union[str, Future[str]]] = [ self._host_to_pid[f\"{mesh_name}_{i}\"].channel for i in range(count) ] host_meshes[mesh_name] = attach_to_workers( name=mesh_name, ca=\"trust_all_connections\", workers=workers, ) return JobState(host_meshes) [docs] def can_run(self, spec: \"JobTrait\") -\u003e bool: return ( isinstance(spec, ProcessJob) and spec._meshes == self._meshes and self._pids_active() ) def _pids_active(self) -\u003e bool: if not self.active: return False for p in self._host_to_pid.values(): try: os.kill(p.pid, 0) except OSError: return False return True def _kill(self) -\u003e None: # Use SIGTERM to allow worker processes to shut down gracefully. # The HostMesh objects are not stored here (they\u0027re returned to callers), # so we rely on the worker processes handling SIGTERM for clean shutdown. for p in self._host_to_pid.values(): try: os.kill(p.pid, signal.SIGTERM) except OSError: pass self._host_to_pid.clear() if self._tmpdir is not None: shutil.rmtree(self._tmpdir, ignore_errors=True) self._tmpdir = None",
+       "articleBody": "Source code for monarch._src.job.process # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-unsafe import contextlib import logging import os import shutil import signal import subprocess import sys import tempfile import threading import time from typing import Callable, Dict, List, Optional, Union from monarch._src.actor.bootstrap import attach_to_workers from monarch._src.actor.future import Future from monarch._src.job.job import JobState, JobTrait, ProcessState logger = logging.getLogger(__name__) try: from __manifest__ import fbmake # noqa _IN_PAR = bool(fbmake.get(\"par_style\")) except ImportError: _IN_PAR = False _PROCESS_WORKER_MODULE = \"monarch._src.job._process_worker\" _KILL_GRACE_SECONDS = 1.0 def _group_alive(pgid: int) -\u003e bool: try: os.killpg(pgid, 0) except OSError: return False return True def _live_worker_pids(session_ids: \"set[int]\") -\u003e Optional[List[int]]: \"\"\"Live (non-zombie) pids whose session id is one of ``session_ids``, or ``None`` when ``/proc`` cannot be enumerated. Full reaping is Linux-only. Workers launch with ``start_new_session=True``, so a worker\u0027s pid is its session id and the procs it spawns stay in that session while sitting in their own process groups -- ``killpg`` of the worker alone cannot reach them. Matching on session id (via ``/proc`` and ``os.getsid``) catches the worker and its whole subtree, including procs already reparented to init (session membership outlives the parent). Where ``/proc`` is missing or unreadable this returns ``None`` so callers fall back to best-effort signalling of the tracked worker pids, which does not reach the spawned procs. \"\"\" own = os.getpid() try: entries = os.listdir(\"/proc\") except OSError: return None pids: List[int] = [] for entry in entries: if not entry.isdigit(): continue pid = int(entry) if pid == own: continue try: if os.getsid(pid) not in session_ids: continue with open(f\"/proc/{pid}/stat\") as stat: state = stat.read().rsplit(\")\", 1)[1].split()[0] except OSError: continue if state not in (\"Z\", \"X\", \"x\"): # skip procs that are already dead pids.append(pid) return pids def _terminate_with_grace( live_pids: Callable[[], List[int]], signal_pids: Callable[[List[int], int], None], grace: float = _KILL_GRACE_SECONDS, ) -\u003e None: \"\"\"SIGTERM the live targets, wait up to ``grace`` for them to exit, then SIGKILL any stragglers. Factored out so the poll-with-sleep is not copied around, and so it can be swapped for an await-based wait later. ``live_pids`` is re-evaluated each round so procs spawned mid-teardown are still caught before the SIGKILL. \"\"\" signal_pids(live_pids(), signal.SIGTERM) deadline = time.monotonic() + grace while time.monotonic() \u003c deadline and live_pids(): time.sleep(0.05) signal_pids(live_pids(), signal.SIGKILL) [docs]class ProcessJob(JobTrait): \"\"\"Job where each host is a local subprocess communicating over IPC. Suitable for local testing of multi-host scenarios without SSH or a scheduler. Each host runs ``run_worker_loop_forever`` in a child process, listening on a Unix socket. Example:: job = ProcessJob({\"trainers\": 2, \"dataloaders\": 1}) state = job.state(cached_path=None) state.trainers # HostMesh with 2 hosts state.dataloaders # HostMesh with 1 host \"\"\" def __init__( self, meshes: Dict[str, int], env: Optional[Dict[str, str]] = None, ) -\u003e None: \"\"\" Args: meshes: Mapping from mesh name to number of hosts. env: Extra environment variables for worker subprocesses. \"\"\" super().__init__() self._meshes = meshes self._env = env self._host_to_pid: Dict[str, ProcessState] = {} self._tmpdir: Optional[str] = None def _create(self, client_script: Optional[str]) -\u003e None: if client_script is not None: raise RuntimeError(\"ProcessJob cannot run batch-mode scripts\") self._tmpdir = tempfile.mkdtemp(prefix=\"monarch_process_job_\") try: for mesh_name, count in self._meshes.items(): for i in range(count): host_key = f\"{mesh_name}_{i}\" addr = f\"ipc://{self._tmpdir}/{host_key}\" env = {**os.environ, \"HYPERACTOR_PROCESS_NAME\": host_key} if self._env is not None: env.update(self._env) if _IN_PAR: # In PAR/XAR mode, sys.executable is the bare # Python interpreter which cannot import modules # from the archive. Re-invoke the PAR binary # (sys.argv[0]) with PAR_MAIN_OVERRIDE pointing # to the worker module. env[\"PAR_MAIN_OVERRIDE\"] = _PROCESS_WORKER_MODULE env[\"_MONARCH_WORKER_ADDR\"] = addr cmd = [sys.argv[0]] else: cmd = [ sys.executable, \"-c\", \"from monarch.actor import run_worker_loop_forever; \" f\u0027run_worker_loop_forever(address=\"{addr}\", \u0027 \u0027ca=\"trust_all_connections\")\u0027, ] proc = subprocess.Popen( cmd, env=env, start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, ) self._host_to_pid[host_key] = ProcessState(proc.pid, addr) logger.info( \"ProcessJob: spawned worker pid=%d mesh=%s rank=%d addr=%s\", proc.pid, mesh_name, i, addr, ) self._watch_process(proc, mesh_name, i, addr) except BaseException: # BaseException, not Exception: a Ctrl-C / cancellation mid-startup # must still reap the workers already spawned above, or they leak. self._kill() raise @staticmethod def _watch_process( proc: subprocess.Popen, mesh_name: str, rank: int, addr: str, ) -\u003e None: def _waiter() -\u003e None: pid = proc.pid try: proc.wait() code = proc.returncode except Exception: logger.exception( \"ProcessJob: error waiting on pid=%d mesh=%s rank=%d addr=%s\", pid, mesh_name, rank, addr, ) return if code == 0 or code == -signal.SIGTERM: logger.info( \"ProcessJob: worker exited pid=%d exit_code=%d mesh=%s rank=%d addr=%s\", pid, code, mesh_name, rank, addr, ) else: logger.warning( \"ProcessJob: worker died unexpectedly pid=%d exit_code=%d mesh=%s rank=%d addr=%s\", pid, code, mesh_name, rank, addr, ) t = threading.Thread( target=_waiter, daemon=True, name=f\"watch-{mesh_name}_{rank}\" ) t.start() def _state(self) -\u003e JobState: if not self._pids_active(): raise RuntimeError(\"lost connection to worker processes\") host_meshes = {} for mesh_name, count in self._meshes.items(): workers: List[Union[str, Future[str]]] = [ self._host_to_pid[f\"{mesh_name}_{i}\"].channel for i in range(count) ] host_meshes[mesh_name] = attach_to_workers( name=mesh_name, ca=\"trust_all_connections\", workers=workers, ) return JobState(host_meshes) def _should_spawn_telemetry_worker_collector_actors(self) -\u003e bool: return False [docs] def can_run(self, spec: \"JobTrait\") -\u003e bool: return ( isinstance(spec, ProcessJob) and spec._meshes == self._meshes and self._pids_active() ) def _pids_active(self) -\u003e bool: if not self.active: return False for p in self._host_to_pid.values(): try: os.kill(p.pid, 0) except OSError: return False return True def _kill(self) -\u003e None: # Reap each worker\u0027s whole session, not just its process group. Workers # run in detached sessions (start_new_session=True), and the procs they # spawn stay in that session but in their own process groups -- so # signalling only the worker\u0027s group would orphan them. Session reaping # needs /proc; without it we fall back to best-effort signalling of the # tracked worker pids, which does not reach the spawned procs. worker_pids = [p.pid for p in self._host_to_pid.values()] session_ids = set(worker_pids) def remaining() -\u003e List[int]: live = _live_worker_pids(session_ids) if live is None: # /proc missing or unreadable: signal the worker pids we hold. return [pid for pid in worker_pids if _group_alive(pid)] return live def signal_all(pids: List[int], sig: int) -\u003e None: # killpg reaps each enumerated group leader\u0027s whole group (catching # children forked after the scan); the os.kill fallback covers pids # that are not group leaders. A pid reaped and reused between scan and # signal is at worst a stray no-op via the OSError fallback. for pid in pids: try: os.killpg(pid, sig) except OSError: with contextlib.suppress(OSError): os.kill(pid, sig) _terminate_with_grace(remaining, signal_all) self._host_to_pid.clear() if self._tmpdir is not None: shutil.rmtree(self._tmpdir, ignore_errors=True) self._tmpdir = None",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

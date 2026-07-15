@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -16,7 +17,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="The#[hyperactor::export] macro turns a regular Actor implementation into a remotely addressable actor by generating its type information and supported message handlers. It also supports message cas..." />
 
-    <title>#[export] &#8212; Monarch v0.5.0 documentation</title>
+    <title>#[export] &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
+    <script src="../../../../_static/doctools.js"></script>
+    <script src="../../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../../_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-book/src/macros/export';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/macros/export.html" />
@@ -82,7 +83,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +197,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1293,11 +1294,11 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="export">
-<h1><code class="docutils literal notranslate"><span class="pre">#[export]</span></code><a class="headerlink" href="#export" title="Link to this heading">#</a></h1>
+<h1><code class="docutils literal notranslate"><span class="pre">#[export]</span></code><a class="headerlink" href="#export" title="Permalink to this heading">#</a></h1>
 <p>The <code class="docutils literal notranslate"><span class="pre">#[hyperactor::export]</span></code> macro turns a regular <code class="docutils literal notranslate"><span class="pre">Actor</span></code> implementation into a remotely addressable actor by generating its type information and supported message handlers.</p>
-<p>It also supports message casting (broadcasting to multiple actors) by specifying <code class="docutils literal notranslate"><span class="pre">cast</span> <span class="pre">=</span> <span class="pre">true</span></code> for individual handlers.</p>
+<p>It also supports message casting (broadcasting to multiple actors) for exported remote message handlers.</p>
 <section id="what-it-adds">
-<h2>What It Adds<a class="headerlink" href="#what-it-adds" title="Link to this heading">#</a></h2>
+<h2>What It Adds<a class="headerlink" href="#what-it-adds" title="Permalink to this heading">#</a></h2>
 <p>When applied to an actor type like this:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="cp">#[hyperactor::spawnable]</span>
 <span class="cp">#[hyperactor::export(ShoppingList)]</span>
@@ -1319,13 +1320,13 @@ document.write(`
 <p>To make a concrete actor remotely spawnable, add <code class="docutils literal notranslate"><span class="pre">#[hyperactor::spawnable]</span></code>. For generic instantiations, use <code class="docutils literal notranslate"><span class="pre">hyperactor::register_spawnable!(MyActor&lt;u64&gt;);</span></code>.</p>
 </section>
 <section id="casting-messages">
-<h2>Casting Messages<a class="headerlink" href="#casting-messages" title="Link to this heading">#</a></h2>
-<p>For message types that need to be broadcast to multiple actors in a mesh, use <code class="docutils literal notranslate"><span class="pre">cast</span> <span class="pre">=</span> <span class="pre">true</span></code>:</p>
+<h2>Casting Messages<a class="headerlink" href="#casting-messages" title="Permalink to this heading">#</a></h2>
+<p>Message types that need to be broadcast to multiple actors in a mesh must be exported remote message handlers:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="cp">#[hyperactor::export(</span>
 <span class="cp">    handlers = [</span>
-<span class="cp">        TestMessage { cast = true },</span>
-<span class="cp">        () { cast = true },</span>
-<span class="cp">        MyGeneric&lt;()&gt; { cast = true },</span>
+<span class="cp">        TestMessage,</span>
+<span class="cp">        (),</span>
+<span class="cp">        MyGeneric&lt;()&gt;,</span>
 <span class="cp">        u64,</span>
 <span class="cp">    ],</span>
 <span class="cp">)]</span>
@@ -1334,10 +1335,10 @@ document.write(`
 <span class="p">}</span>
 </pre></div>
 </div>
-<p>When <code class="docutils literal notranslate"><span class="pre">cast</span> <span class="pre">=</span> <span class="pre">true</span></code> is specified, the macro registers both the concrete message type and its <code class="docutils literal notranslate"><span class="pre">IndexedErasedUnbound&lt;T&gt;</span></code> wrapper. This enables the message to be multicast to a group of actors via <code class="docutils literal notranslate"><span class="pre">CastMessageEnvelope</span></code>, with proper handling of reply port mutation so replies can be relayed through intermediate nodes and aggregated.</p>
+<p>Cast routes send the message as multipart data to the destination’s ordinary typed handler port, with reply-port mutation handled by visiting typed multipart part representations while the message is in transit.</p>
 </section>
 <section id="generated-implementations-simplified">
-<h2>Generated Implementations (simplified)<a class="headerlink" href="#generated-implementations-simplified" title="Link to this heading">#</a></h2>
+<h2>Generated Implementations (simplified)<a class="headerlink" href="#generated-implementations-simplified" title="Permalink to this heading">#</a></h2>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="w"> </span><span class="n">Referable</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">ShoppingListActor</span><span class="w"> </span><span class="p">{}</span>
 
 <span class="k">impl</span><span class="w"> </span><span class="n">RemoteHandles</span><span class="o">&lt;</span><span class="n">ShoppingList</span><span class="o">&gt;</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">ShoppingListActor</span><span class="w"> </span><span class="p">{}</span>
@@ -1375,7 +1376,7 @@ document.write(`
 <p>This allows the actor to be discovered and spawned by name at runtime.</p>
 </section>
 <section id="summary">
-<h2>Summary<a class="headerlink" href="#summary" title="Link to this heading">#</a></h2>
+<h2>Summary<a class="headerlink" href="#summary" title="Permalink to this heading">#</a></h2>
 <p>The <code class="docutils literal notranslate"><span class="pre">#[export]</span></code> macro makes an actor remotely visible and routable by declaring:</p>
 <ul class="simple">
 <li><p>What messages it handles</p></li>
@@ -1613,7 +1614,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>
@@ -1642,7 +1643,7 @@ document.write(`
        "headline": "#[export]",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/books/hyperactor-book/src/macros/export.html",
-       "articleBody": "#[export]# The #[hyperactor::export] macro turns a regular Actor implementation into a remotely addressable actor by generating its type information and supported message handlers. It also supports message casting (broadcasting to multiple actors) by specifying cast = true for individual handlers. What It Adds# When applied to an actor type like this: #[hyperactor::spawnable] #[hyperactor::export(ShoppingList)] struct ShoppingListActor(HashSet\u003cString\u003e); The macro expands to include: A Named implementation for the actor A Binds\u003cSelf\u003e implementation that registers supported message types Implementations of RemoteHandles\u003cT\u003e for each type in the handlers = [...] list A Referable marker implementation This enables the actor to be: Routed to via typed messages Reflected on at runtime (for diagnostics, tools, and orchestration) To make a concrete actor remotely spawnable, add #[hyperactor::spawnable]. For generic instantiations, use hyperactor::register_spawnable!(MyActor\u003cu64\u003e);. Casting Messages# For message types that need to be broadcast to multiple actors in a mesh, use cast = true: #[hyperactor::export( handlers = [ TestMessage { cast = true }, () { cast = true }, MyGeneric\u003c()\u003e { cast = true }, u64, ], )] struct TestActor { forward_port: PortRef\u003cString\u003e, } When cast = true is specified, the macro registers both the concrete message type and its IndexedErasedUnbound\u003cT\u003e wrapper. This enables the message to be multicast to a group of actors via CastMessageEnvelope, with proper handling of reply port mutation so replies can be relayed through intermediate nodes and aggregated. Generated Implementations (simplified)# impl Referable for ShoppingListActor {} impl RemoteHandles\u003cShoppingList\u003e for ShoppingListActor {} impl RemoteHandles\u003cSignal\u003e for ShoppingListActor {} impl Binds\u003cShoppingListActor\u003e for ShoppingListActor { fn bind(ports: \u0026HandlerPorts\u003cSelf\u003e) { ports.bind::\u003cShoppingList\u003e(); } } impl Named for ShoppingListActor { fn typename() -\u003e \u0026\u0027static str { \"my_crate::ShoppingListActor\" } } Note: The Referable trait itself only requires Named. It does not automatically provide Send or Sync bounds. If your actor needs to be passed across threads or stored in shared contexts, those bounds will be enforced at the specific call sites that require them. If the actor is marked #[hyperactor::spawnable], that attribute emits: impl RemoteSpawn for ShoppingListActor {} This enables remote spawning via the default gspawn provided by a blanket implementation. It also registers the actor into inventory: inventory::submit!(SpawnableActor { name: ..., gspawn: ..., get_type_id: ..., }); This allows the actor to be discovered and spawned by name at runtime. Summary# The #[export] macro makes an actor remotely visible and routable by declaring: What messages it handles How to bind those messages What its globally unique name is (Optionally) which messages support multicast (broadcasting)",
+       "articleBody": "#[export]# The #[hyperactor::export] macro turns a regular Actor implementation into a remotely addressable actor by generating its type information and supported message handlers. It also supports message casting (broadcasting to multiple actors) for exported remote message handlers. What It Adds# When applied to an actor type like this: #[hyperactor::spawnable] #[hyperactor::export(ShoppingList)] struct ShoppingListActor(HashSet\u003cString\u003e); The macro expands to include: A Named implementation for the actor A Binds\u003cSelf\u003e implementation that registers supported message types Implementations of RemoteHandles\u003cT\u003e for each type in the handlers = [...] list A Referable marker implementation This enables the actor to be: Routed to via typed messages Reflected on at runtime (for diagnostics, tools, and orchestration) To make a concrete actor remotely spawnable, add #[hyperactor::spawnable]. For generic instantiations, use hyperactor::register_spawnable!(MyActor\u003cu64\u003e);. Casting Messages# Message types that need to be broadcast to multiple actors in a mesh must be exported remote message handlers: #[hyperactor::export( handlers = [ TestMessage, (), MyGeneric\u003c()\u003e, u64, ], )] struct TestActor { forward_port: PortRef\u003cString\u003e, } Cast routes send the message as multipart data to the destination\u2019s ordinary typed handler port, with reply-port mutation handled by visiting typed multipart part representations while the message is in transit. Generated Implementations (simplified)# impl Referable for ShoppingListActor {} impl RemoteHandles\u003cShoppingList\u003e for ShoppingListActor {} impl RemoteHandles\u003cSignal\u003e for ShoppingListActor {} impl Binds\u003cShoppingListActor\u003e for ShoppingListActor { fn bind(ports: \u0026HandlerPorts\u003cSelf\u003e) { ports.bind::\u003cShoppingList\u003e(); } } impl Named for ShoppingListActor { fn typename() -\u003e \u0026\u0027static str { \"my_crate::ShoppingListActor\" } } Note: The Referable trait itself only requires Named. It does not automatically provide Send or Sync bounds. If your actor needs to be passed across threads or stored in shared contexts, those bounds will be enforced at the specific call sites that require them. If the actor is marked #[hyperactor::spawnable], that attribute emits: impl RemoteSpawn for ShoppingListActor {} This enables remote spawning via the default gspawn provided by a blanket implementation. It also registers the actor into inventory: inventory::submit!(SpawnableActor { name: ..., gspawn: ..., get_type_id: ..., }); This allows the actor to be discovered and spawned by name at runtime. Summary# The #[export] macro makes an actor remotely visible and routable by declaring: What messages it handles How to bind those messages What its globally unique name is (Optionally) which messages support multicast (broadcasting)",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

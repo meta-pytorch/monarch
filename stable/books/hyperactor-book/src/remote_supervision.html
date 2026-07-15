@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -16,7 +17,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="The hyperactor_remote crate provides two related mechanisms: remote supervision, which projects a local Hyperactor supervision relationship across a process boundary, and, rendezvous tokens, which ..." />
 
-    <title>Remote Supervision and Rendezvous &#8212; Monarch v0.5.0 documentation</title>
+    <title>Remote Supervision and Rendezvous &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="../../../" id="documentation_options" src="../../../_static/documentation_options.js"></script>
+    <script src="../../../_static/doctools.js"></script>
+    <script src="../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-book/src/remote_supervision';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/remote_supervision.html" />
@@ -82,7 +83,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +197,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -841,9 +842,7 @@ document.write(`
       
       
       
-        
-      
-      <div class="bd-sidebar-primary bd-sidebar hide-on-wide">
+      <div class="bd-sidebar-primary bd-sidebar">
         
 
 
@@ -1204,6 +1203,26 @@ document.write(`
     
   </div>
   
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<nav class="bd-docs-nav bd-links"
+     aria-label="Section Navigation">
+  <p class="bd-links__title" role="heading" aria-level="1">Section Navigation</p>
+  <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">Chapters</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="actors/index.html">Actors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="macros/index.html">Macros</a></li>
+<li class="toctree-l1"><a class="reference internal" href="channels/index.html">Channels</a></li>
+<li class="toctree-l1"><a class="reference internal" href="mailboxes/index.html">Mailboxes and Routers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="procs/index.html">Procs</a></li>
+<li class="toctree-l1"><a class="reference internal" href="references/index.html">References</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Remote Supervision and Rendezvous</a></li>
+<li class="toctree-l1"><a class="reference internal" href="appendix/index.html">Appendix</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
   
   <div class="sidebar-primary-items__end sidebar-primary__section">
   </div>
@@ -1293,7 +1312,7 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="remote-supervision-and-rendezvous">
-<h1>Remote Supervision and Rendezvous<a class="headerlink" href="#remote-supervision-and-rendezvous" title="Link to this heading">#</a></h1>
+<h1>Remote Supervision and Rendezvous<a class="headerlink" href="#remote-supervision-and-rendezvous" title="Permalink to this heading">#</a></h1>
 <p>The <code class="docutils literal notranslate"><span class="pre">hyperactor_remote</span></code> crate provides two related mechanisms:</p>
 <ul class="simple">
 <li><p>remote supervision, which projects a local Hyperactor supervision relationship across a process boundary, and</p></li>
@@ -1301,13 +1320,13 @@ document.write(`
 </ul>
 <p>Use remote supervision when a parent actor must own the lifecycle of a child that runs behind another actor. Use rendezvous tokens when the actors do not yet have direct references to each other, or when a token must cross a boundary outside normal actor messaging.</p>
 <section id="intended-usage">
-<h2>Intended usage<a class="headerlink" href="#intended-usage" title="Link to this heading">#</a></h2>
+<h2>Intended usage<a class="headerlink" href="#intended-usage" title="Permalink to this heading">#</a></h2>
 <p>Remote supervision is for ownership. The parent should treat the <code class="docutils literal notranslate"><span class="pre">Supervisor</span></code> as the owned child and let failures propagate through normal supervision. The worker should wrap exactly one local child in <code class="docutils literal notranslate"><span class="pre">Worker&lt;C&gt;</span></code> and allow only the active session to control that child.</p>
 <p>Rendezvous tokens are for discovery. They exchange typed references, not ownership. The rendezvous actor is a child of the token creator, so the token remains useful only while the creator and its rendezvous child remain alive.</p>
 <p>Use <code class="docutils literal notranslate"><span class="pre">OrphanPolicy::Stop</span></code> when the remote child must not outlive its supervisor. Use <code class="docutils literal notranslate"><span class="pre">OrphanPolicy::LeaveRunning</span></code> only when the child has an independent lifecycle and losing the supervision channel should not stop useful work.</p>
 </section>
 <section id="remote-supervision">
-<h2>Remote supervision<a class="headerlink" href="#remote-supervision" title="Link to this heading">#</a></h2>
+<h2>Remote supervision<a class="headerlink" href="#remote-supervision" title="Permalink to this heading">#</a></h2>
 <p>Remote supervision connects one parent-side <code class="docutils literal notranslate"><span class="pre">Supervisor</span></code> actor to one worker-side <code class="docutils literal notranslate"><span class="pre">Worker&lt;C&gt;</span></code> actor. The worker owns and supervises the real child <code class="docutils literal notranslate"><span class="pre">C</span></code>. The supervisor is a proxy child of the parent that re-raises worker-reported lifecycle events through the ordinary <code class="docutils literal notranslate"><span class="pre">ActorSupervisionEvent</span></code> path.</p>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>parent proc                                      worker proc
 
@@ -1327,7 +1346,7 @@ KeepaliveSupervisor &lt;--- keepalive link ---&gt;   +-- KeepaliveWorker
 <p>The parent sees a conventional local child: the <code class="docutils literal notranslate"><span class="pre">Supervisor</span></code>. The worker sees conventional local children: the link actor and <code class="docutils literal notranslate"><span class="pre">C</span></code>, which are siblings under <code class="docutils literal notranslate"><span class="pre">Worker&lt;C&gt;</span></code>. <code class="docutils literal notranslate"><span class="pre">hyperactor_remote</span></code> translates between those local supervision trees with explicit protocol messages.</p>
 </section>
 <section id="link-protocol">
-<h2>Link protocol<a class="headerlink" href="#link-protocol" title="Link to this heading">#</a></h2>
+<h2>Link protocol<a class="headerlink" href="#link-protocol" title="Permalink to this heading">#</a></h2>
 <p>A session starts when <code class="docutils literal notranslate"><span class="pre">Supervisor::init</span></code> spawns the supervisor side of the link and sends <code class="docutils literal notranslate"><span class="pre">Link</span></code> to the worker.</p>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Supervisor                                   Worker&lt;C&gt;
     |                                            |
@@ -1350,7 +1369,7 @@ KeepaliveSupervisor &lt;--- keepalive link ---&gt;   +-- KeepaliveWorker
 <p><code class="docutils literal notranslate"><span class="pre">LinkSpec</span></code> describes a registered remote-spawnable actor and its serialized parameters. The worker spawns that actor as a supervised child. The actor’s lifecycle is the link lifecycle: if the link actor fails, ordinary Hyperactor supervision reports that failure to the actor that spawned it.</p>
 </section>
 <section id="keepalive-link">
-<h2>Keepalive link<a class="headerlink" href="#keepalive-link" title="Link to this heading">#</a></h2>
+<h2>Keepalive link<a class="headerlink" href="#keepalive-link" title="Permalink to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">KeepaliveLink</span></code> is the default link implementation. It creates a <code class="docutils literal notranslate"><span class="pre">KeepaliveSupervisor</span></code> on the parent side and a <code class="docutils literal notranslate"><span class="pre">KeepaliveWorker</span></code> specification for the worker side.</p>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>KeepaliveWorker                              KeepaliveSupervisor
     |                                            |
@@ -1366,7 +1385,7 @@ KeepaliveSupervisor &lt;--- keepalive link ---&gt;   +-- KeepaliveWorker
 <p>The worker side fails if an acknowledgment is not received before its timeout. The supervisor side fails if the next keepalive is not delivered before its timeout. Either failure becomes a supervision event for the side that owns the failed link actor.</p>
 </section>
 <section id="child-and-link-failures">
-<h2>Child and link failures<a class="headerlink" href="#child-and-link-failures" title="Link to this heading">#</a></h2>
+<h2>Child and link failures<a class="headerlink" href="#child-and-link-failures" title="Permalink to this heading">#</a></h2>
 <p>When the child <code class="docutils literal notranslate"><span class="pre">C</span></code> fails or stops, <code class="docutils literal notranslate"><span class="pre">Worker&lt;C&gt;</span></code> reports the event to the supervisor side with <code class="docutils literal notranslate"><span class="pre">RemoteActorDisposition::Terminal</span></code>, clears its child handle, and exits.</p>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Child C fails
     |
@@ -1402,7 +1421,7 @@ Worker&lt;C&gt;
 <p>When the parent-side link actor fails, <code class="docutils literal notranslate"><span class="pre">Supervisor</span></code> synthesizes an unreachable supervision event for the remote child if it already knows the child address. If the session was not linked yet, the event names the worker.</p>
 </section>
 <section id="stop-and-unlink">
-<h2>Stop and unlink<a class="headerlink" href="#stop-and-unlink" title="Link to this heading">#</a></h2>
+<h2>Stop and unlink<a class="headerlink" href="#stop-and-unlink" title="Permalink to this heading">#</a></h2>
 <p>Stopping the parent-side <code class="docutils literal notranslate"><span class="pre">Supervisor</span></code> mirrors the stop to the worker. If the stop arrives before the worker has replied with <code class="docutils literal notranslate"><span class="pre">Linked</span></code>, the supervisor records it and sends it once the session is established.</p>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Parent stops Supervisor
     |
@@ -1420,7 +1439,7 @@ Child C receives stop or drain-and-stop
 <p><code class="docutils literal notranslate"><span class="pre">SupervisedWorker::Unlink</span></code> tears down the session without treating it as a child failure. The worker stops the link actor, applies the configured orphan policy, and replies with <code class="docutils literal notranslate"><span class="pre">WorkerSupervisor::Unlinked</span></code>.</p>
 </section>
 <section id="rendezvous-tokens">
-<h2>Rendezvous tokens<a class="headerlink" href="#rendezvous-tokens" title="Link to this heading">#</a></h2>
+<h2>Rendezvous tokens<a class="headerlink" href="#rendezvous-tokens" title="Permalink to this heading">#</a></h2>
 <p>A token is a serializable capability that points at a supervised rendezvous actor. The token creator provides its own typed reference and a private port for join notifications. Token holders call <code class="docutils literal notranslate"><span class="pre">Token::join</span></code> with their typed reference and a result port.</p>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Creator actor
     |
@@ -1448,7 +1467,7 @@ Rendezvous&lt;C, J&gt;
 <p><code class="docutils literal notranslate"><span class="pre">TokenPolicy::Multi</span></code> accepts every join while the rendezvous actor is alive. <code class="docutils literal notranslate"><span class="pre">TokenPolicy::Once</span></code> accepts the first join and rejects later joins with <code class="docutils literal notranslate"><span class="pre">JoinResult::Rejected</span></code>.</p>
 </section>
 <section id="public-surface">
-<h2>Public surface<a class="headerlink" href="#public-surface" title="Link to this heading">#</a></h2>
+<h2>Public surface<a class="headerlink" href="#public-surface" title="Permalink to this heading">#</a></h2>
 <p>The crate exports these main types:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">Supervisor</span></code>, the parent-side proxy actor.</p></li>
@@ -1693,7 +1712,7 @@ Rendezvous&lt;C, J&gt;
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>

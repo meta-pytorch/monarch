@@ -1,13 +1,14 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>monarch.gradient_generator &#8212; Monarch v0.5.0 documentation</title>
+    <title>monarch.gradient_generator &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -27,37 +28,31 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../_static/design-tabs.js?v=f930bc37"></script>
-    <script type="module" src="https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs"></script>
-    <script type="module" src="https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0.1.4/dist/mermaid-layout-elk.esm.min.mjs"></script>
-    <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs";import elkLayouts from "https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0.1.4/dist/mermaid-layout-elk.esm.min.mjs";mermaid.registerLayoutLoaders(elkLayouts);mermaid.initialize({startOnLoad:false});</script>
-    <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
-    <script type="module">
-import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs";
-window.addEventListener("load", () => mermaid.run());
-</script>
+    <script data-url_root="../../" id="documentation_options" src="../../_static/documentation_options.js"></script>
+    <script src="../../_static/doctools.js"></script>
+    <script src="../../_static/sphinx_highlight.js"></script>
+    <script src="../../_static/design-tabs.js"></script>
+    <script src="https://unpkg.com/mermaid@10.2.0/dist/mermaid.min.js"></script>
+    <script>mermaid.initialize({startOnLoad:true});</script>
     <script>DOCUMENTATION_OPTIONS.pagename = '_modules/monarch/gradient_generator';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/_modules/monarch/gradient_generator.html" />
@@ -81,7 +76,7 @@ window.addEventListener("load", () => mermaid.run());
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -195,7 +190,7 @@ window.addEventListener("load", () => mermaid.run());
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1334,6 +1329,7 @@ document.write(`
             <span class="c1"># doesn&#39;t work correctly and somehow inactivates the device mesh</span>
             <span class="c1"># if it is already enabled. This is a temporary workaround for</span>
             <span class="c1"># the demo.</span>
+            <span class="c1"># pyrefly: ignore [missing-attribute]</span>
             <span class="n">activate_mesh</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">device_mesh</span><span class="o">.</span><span class="n">activate</span><span class="p">()</span>
         <span class="k">else</span><span class="p">:</span>
             <span class="n">activate_mesh</span> <span class="o">=</span> <span class="n">nullcontext</span><span class="p">()</span>
@@ -1371,9 +1367,7 @@ document.write(`
 <span class="p">)</span>
 
 
-<div class="viewcode-block" id="grad_generator">
-<a class="viewcode-back" href="../../api/monarch.html#monarch.grad_generator">[docs]</a>
-<span class="k">def</span><span class="w"> </span><span class="nf">grad_generator</span><span class="p">(</span>
+<div class="viewcode-block" id="grad_generator"><a class="viewcode-back" href="../../api/monarch.html#monarch.grad_generator">[docs]</a><span class="k">def</span><span class="w"> </span><span class="nf">grad_generator</span><span class="p">(</span>
     <span class="n">roots</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">,</span> <span class="n">Sequence</span><span class="p">[</span><span class="n">TensorOrEdge</span><span class="p">]]</span> <span class="o">=</span> <span class="p">(),</span>
     <span class="n">with_respect_to</span><span class="p">:</span> <span class="n">Sequence</span><span class="p">[</span><span class="n">TensorOrEdge</span><span class="p">]</span> <span class="o">=</span> <span class="p">(),</span>
     <span class="n">grad_roots</span><span class="p">:</span> <span class="n">Sequence</span><span class="p">[</span><span class="n">Optional</span><span class="p">[</span><span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">]]</span> <span class="o">=</span> <span class="p">(),</span>
@@ -1383,7 +1377,6 @@ document.write(`
     <span class="k">return</span> <span class="n">_GradientGenerator</span><span class="p">(</span>
         <span class="nb">list</span><span class="p">(</span><span class="n">roots</span><span class="p">),</span> <span class="nb">list</span><span class="p">(</span><span class="n">with_respect_to</span><span class="p">),</span> <span class="nb">list</span><span class="p">(</span><span class="n">grad_roots</span><span class="p">),</span> <span class="n">restore_context</span>
     <span class="p">)</span></div>
-
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">_gradient_edge</span><span class="p">(</span><span class="n">a</span><span class="p">:</span> <span class="n">TensorOrEdge</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">GradientEdge</span><span class="p">:</span>
@@ -1447,11 +1440,8 @@ document.write(`
             <span class="k">return</span> <span class="kc">None</span><span class="p">,</span> <span class="n">output</span>
 
 
-<div class="viewcode-block" id="grad_function">
-<a class="viewcode-back" href="../../api/monarch.html#monarch.grad_function">[docs]</a>
-<span class="k">def</span><span class="w"> </span><span class="nf">grad_function</span><span class="p">(</span><span class="n">fn</span><span class="p">):</span>
+<div class="viewcode-block" id="grad_function"><a class="viewcode-back" href="../../api/monarch.html#monarch.grad_function">[docs]</a><span class="k">def</span><span class="w"> </span><span class="nf">grad_function</span><span class="p">(</span><span class="n">fn</span><span class="p">):</span>
     <span class="k">return</span> <span class="n">partial</span><span class="p">(</span><span class="n">GradFunction</span><span class="o">.</span><span class="n">apply</span><span class="p">,</span> <span class="n">fn</span><span class="p">)</span></div>
-
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">gradient_execution_order</span><span class="p">(</span>
@@ -1481,7 +1471,6 @@ document.write(`
             <span class="n">to_scan</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">nnode</span><span class="p">)</span>
             <span class="n">value</span> <span class="o">=</span> <span class="n">min_sequence_nr</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">key</span><span class="p">)</span>
             <span class="k">if</span> <span class="n">value</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-                <span class="c1"># pyre-ignore</span>
                 <span class="n">min_sequence_nr</span><span class="p">[</span><span class="n">key</span><span class="p">]</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">_sequence_nr</span><span class="p">(),</span> <span class="n">value</span><span class="p">)</span>
 
     <span class="k">return</span> <span class="nb">sorted</span><span class="p">(</span>
@@ -1641,7 +1630,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>
@@ -1670,7 +1659,7 @@ document.write(`
        "headline": "monarch.gradient_generator",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/_modules/monarch/gradient_generator.html",
-       "articleBody": "Source code for monarch.gradient_generator # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-unsafe import math from contextlib import nullcontext from functools import partial from types import CellType, FunctionType from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union import torch import torch.autograd.graph from monarch.common import device_mesh, stream from monarch.common.tensor import Tensor from monarch.common.tree import flatten from monarch.gradient import GradientGenerator as _GradientGenerator from torch._C._autograd import _get_sequence_nr # @manual from torch.autograd.graph import get_gradient_edge, GradientEdge TensorOrEdge = Union[torch.Tensor, GradientEdge] class Context(NamedTuple): device_mesh: \"Optional[device_mesh.DeviceMesh]\" stream: \"stream.Stream\" def enable(self): if device_mesh is None: activate_mesh = device_mesh.no_mesh.activate() elif self.device_mesh is not device_mesh._active: # XXX: something about activating device meshes from this object # doesn\u0027t work correctly and somehow inactivates the device mesh # if it is already enabled. This is a temporary workaround for # the demo. activate_mesh = self.device_mesh.activate() else: activate_mesh = nullcontext() with activate_mesh, self.stream.activate(), torch.no_grad(): yield _sequence_nr_to_context: Dict[int, Context] = {} _sequence_nr_end = 0 def restore_context(t: Optional[Tensor], sn: Optional[int], last: bool): if sn is not None: _update_context_map(Context(device_mesh._active, stream._active)) ctx = _sequence_nr_to_context.pop(sn) if last else _sequence_nr_to_context[sn] return ctx.enable() if t is not None: return Context(t.mesh, t.stream).enable() return Context(device_mesh._active, stream._active).enable() def _update_context_map(ctx: Context): global _sequence_nr_end next_sequence_nr = _get_sequence_nr() for i in range(_sequence_nr_end, next_sequence_nr): _sequence_nr_to_context[i] = ctx _sequence_nr_end = _get_sequence_nr() device_mesh._on_change.append( lambda old, mesh: _update_context_map(Context(old, stream._active)) ) stream._on_change.append( lambda old, stream: _update_context_map(Context(device_mesh._active, old)) ) [docs] def grad_generator( roots: Union[torch.Tensor, Sequence[TensorOrEdge]] = (), with_respect_to: Sequence[TensorOrEdge] = (), grad_roots: Sequence[Optional[torch.Tensor]] = (), ): if isinstance(roots, torch.Tensor): roots = [roots] return _GradientGenerator( list(roots), list(with_respect_to), list(grad_roots), restore_context ) def _gradient_edge(a: TensorOrEdge) -\u003e GradientEdge: if isinstance(a, GradientEdge): return a return get_gradient_edge(a) class GradGenerator: def __init__(self): self.roots: List[torch.autograd.graph.GradientEdge] = [] self.with_respect_to: List[torch.autograd.graph.GradientEdge] = [] self.grad_roots: List[Optional[torch.Tensor]] = [] self.unflattens: List[Tuple[int, Any]] = [] def grad(self, tree: Any): tensors, unflatten = flatten(tree, lambda x: isinstance(x, torch.Tensor)) self.unflattens.append((len(tensors), unflatten)) self.with_respect_to.extend(_gradient_edge(t) for t in tensors) def root(self, r: TensorOrEdge, grad: Optional[torch.Tensor] = None): self.roots.append(_gradient_edge(r)) self.grad_roots.append(grad) def __iter__(self): gi = _GradientGenerator( self.roots, list(reversed(self.with_respect_to)), self.grad_roots, restore_context, ) for n, unflatten in reversed(self.unflattens): yield unflatten(reversed([next(gi) for _ in range(n)])) class GradFunction(torch.autograd.Function): @staticmethod def forward(ctx, fn, *args, **kwargs): result, backward_continuation = fn(*args, **kwargs) ctx.backward_continuation = backward_continuation values = [] if backward_continuation.__closure__ is not None: for cell in backward_continuation.__closure__: values.append(cell.cell_contents) cell.cell_contents = None tensors, ctx.unflatten = flatten(values, lambda x: isinstance(x, torch.Tensor)) ctx.save_for_backward(*tensors) return result @staticmethod def backward(ctx, *args, **kwargs): closure = tuple(CellType(v) for v in ctx.unflatten(ctx.saved_tensors)) orig = ctx.backward_continuation fn = FunctionType( orig.__code__, orig.__globals__, orig.__name__, orig.__defaults__, closure ) output = fn(*args, **kwargs) if isinstance(output, tuple): return None, *output else: return None, output [docs] def grad_function(fn): return partial(GradFunction.apply, fn) def gradient_execution_order( roots: Sequence[TensorOrEdge], with_respect_to: Sequence[Any] ) -\u003e List[int]: \"\"\" Returns the order in which the gradients for `with_respect_to` would become available if autograd were run on `roots`. This is the reverse order of each tensors first use in the gradient computation. \"\"\" with_respect_to = [ (g.node, g.output_nr) for g in map(_gradient_edge, with_respect_to) ] min_sequence_nr: Dict[Any, float] = {e: math.inf for e in with_respect_to} to_scan = [_gradient_edge(r).node for r in roots] scanned = set() while to_scan: node = to_scan.pop() if node in scanned: continue scanned.add(node) for key in node.next_functions: nnode = key[0] if nnode is None: continue to_scan.append(nnode) value = min_sequence_nr.get(key) if value is not None: # pyre-ignore min_sequence_nr[key] = min(node._sequence_nr(), value) return sorted( range(len(with_respect_to)), key=lambda i: min_sequence_nr[with_respect_to[i]], reverse=True, )",
+       "articleBody": "Source code for monarch.gradient_generator # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-unsafe import math from contextlib import nullcontext from functools import partial from types import CellType, FunctionType from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union import torch import torch.autograd.graph from monarch.common import device_mesh, stream from monarch.common.tensor import Tensor from monarch.common.tree import flatten from monarch.gradient import GradientGenerator as _GradientGenerator from torch._C._autograd import _get_sequence_nr # @manual from torch.autograd.graph import get_gradient_edge, GradientEdge TensorOrEdge = Union[torch.Tensor, GradientEdge] class Context(NamedTuple): device_mesh: \"Optional[device_mesh.DeviceMesh]\" stream: \"stream.Stream\" def enable(self): if device_mesh is None: activate_mesh = device_mesh.no_mesh.activate() elif self.device_mesh is not device_mesh._active: # XXX: something about activating device meshes from this object # doesn\u0027t work correctly and somehow inactivates the device mesh # if it is already enabled. This is a temporary workaround for # the demo. # pyrefly: ignore [missing-attribute] activate_mesh = self.device_mesh.activate() else: activate_mesh = nullcontext() with activate_mesh, self.stream.activate(), torch.no_grad(): yield _sequence_nr_to_context: Dict[int, Context] = {} _sequence_nr_end = 0 def restore_context(t: Optional[Tensor], sn: Optional[int], last: bool): if sn is not None: _update_context_map(Context(device_mesh._active, stream._active)) ctx = _sequence_nr_to_context.pop(sn) if last else _sequence_nr_to_context[sn] return ctx.enable() if t is not None: return Context(t.mesh, t.stream).enable() return Context(device_mesh._active, stream._active).enable() def _update_context_map(ctx: Context): global _sequence_nr_end next_sequence_nr = _get_sequence_nr() for i in range(_sequence_nr_end, next_sequence_nr): _sequence_nr_to_context[i] = ctx _sequence_nr_end = _get_sequence_nr() device_mesh._on_change.append( lambda old, mesh: _update_context_map(Context(old, stream._active)) ) stream._on_change.append( lambda old, stream: _update_context_map(Context(device_mesh._active, old)) ) [docs]def grad_generator( roots: Union[torch.Tensor, Sequence[TensorOrEdge]] = (), with_respect_to: Sequence[TensorOrEdge] = (), grad_roots: Sequence[Optional[torch.Tensor]] = (), ): if isinstance(roots, torch.Tensor): roots = [roots] return _GradientGenerator( list(roots), list(with_respect_to), list(grad_roots), restore_context ) def _gradient_edge(a: TensorOrEdge) -\u003e GradientEdge: if isinstance(a, GradientEdge): return a return get_gradient_edge(a) class GradGenerator: def __init__(self): self.roots: List[torch.autograd.graph.GradientEdge] = [] self.with_respect_to: List[torch.autograd.graph.GradientEdge] = [] self.grad_roots: List[Optional[torch.Tensor]] = [] self.unflattens: List[Tuple[int, Any]] = [] def grad(self, tree: Any): tensors, unflatten = flatten(tree, lambda x: isinstance(x, torch.Tensor)) self.unflattens.append((len(tensors), unflatten)) self.with_respect_to.extend(_gradient_edge(t) for t in tensors) def root(self, r: TensorOrEdge, grad: Optional[torch.Tensor] = None): self.roots.append(_gradient_edge(r)) self.grad_roots.append(grad) def __iter__(self): gi = _GradientGenerator( self.roots, list(reversed(self.with_respect_to)), self.grad_roots, restore_context, ) for n, unflatten in reversed(self.unflattens): yield unflatten(reversed([next(gi) for _ in range(n)])) class GradFunction(torch.autograd.Function): @staticmethod def forward(ctx, fn, *args, **kwargs): result, backward_continuation = fn(*args, **kwargs) ctx.backward_continuation = backward_continuation values = [] if backward_continuation.__closure__ is not None: for cell in backward_continuation.__closure__: values.append(cell.cell_contents) cell.cell_contents = None tensors, ctx.unflatten = flatten(values, lambda x: isinstance(x, torch.Tensor)) ctx.save_for_backward(*tensors) return result @staticmethod def backward(ctx, *args, **kwargs): closure = tuple(CellType(v) for v in ctx.unflatten(ctx.saved_tensors)) orig = ctx.backward_continuation fn = FunctionType( orig.__code__, orig.__globals__, orig.__name__, orig.__defaults__, closure ) output = fn(*args, **kwargs) if isinstance(output, tuple): return None, *output else: return None, output [docs]def grad_function(fn): return partial(GradFunction.apply, fn) def gradient_execution_order( roots: Sequence[TensorOrEdge], with_respect_to: Sequence[Any] ) -\u003e List[int]: \"\"\" Returns the order in which the gradients for `with_respect_to` would become available if autograd were run on `roots`. This is the reverse order of each tensors first use in the gradient computation. \"\"\" with_respect_to = [ (g.node, g.output_nr) for g in map(_gradient_edge, with_respect_to) ] min_sequence_nr: Dict[Any, float] = {e: math.inf for e in with_respect_to} to_scan = [_gradient_edge(r).node for r in roots] scanned = set() while to_scan: node = to_scan.pop() if node in scanned: continue scanned.add(node) for key in node.next_functions: nnode = key[0] if nnode is None: continue to_scan.append(nnode) value = min_sequence_nr.get(key) if value is not None: min_sequence_nr[key] = min(node._sequence_nr(), value) return sorted( range(len(with_respect_to)), key=lambda i: min_sequence_nr[with_respect_to[i]], reverse=True, )",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

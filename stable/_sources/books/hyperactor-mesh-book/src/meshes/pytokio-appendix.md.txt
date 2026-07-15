@@ -64,14 +64,11 @@ pub(crate) fn spawn(&mut self) -> PyResult<PyShared> {
     let traceback = self.traceback()?;
     let traceback1 = self.traceback()?;
     let task = self.take_task()?;
-    let handle = get_tokio_runtime().spawn(async move {
+    get_tokio_runtime().spawn(async move {
         send_result(tx, task.await, traceback1);
     });
     Ok(PyShared {
-        rx,
-        handle,
-        abort: false,
-        traceback,
+        core: HandleCore::new(rx, None, traceback),
     })
 }
 ```
@@ -82,7 +79,7 @@ What that does:
 2. consume the underlying Rust future (`take_task()`);
 3. run that future on the shared Tokio runtime (`get_tokio_runtime().spawn(...)`);
 4. when it completes, push the result into the watch channel (`send_result(...)`);
-5. return a `PyShared` that holds the receiver and the join handle.
+5. return a `PyShared` wrapping a `HandleCore` (the watch receiver, the creation-site traceback, and -- for `spawn_abortable` -- an abort handle; plain `spawn` passes `None`, so its task is detached).
 
 So the Rust future is running in the background, and Python will wait on the receiver.
 
@@ -94,14 +91,11 @@ So the Rust future is running in the background, and Python will wait on the rec
     module = "monarch._rust_bindings.monarch_hyperactor.pytokio"
 )]
 pub struct PyShared {
-    rx: watch::Receiver<Option<PyResult<PyObject>>>,
-    handle: JoinHandle<()>,
-    abort: bool,
-    traceback: Option<PyObject>,
+    core: HandleCore,
 }
 ```
 
-Its `task()` / `__await__` path just waits for `rx.changed()` — i.e. waits until the Rust side has written the result — and then hands that result back to Python. If `abort` is `true`, dropping it will cancel the Tokio task.
+`PyShared` is a thin wrapper over `HandleCore` (defined in `handle.rs`), which holds the watch receiver, an optional abort handle, and the creation-site traceback. Its `task()` / `__await__` path waits for the core's watch value to become `Some` — i.e. waits until the Rust side has written the result — and then hands that result back to Python. `HandleCore` aborts the Tokio task on drop only when it was built with an abort handle (from `spawn_abortable`).
 
 If a spawned task errors and nobody awaits it, pytokio logs the error instead of silently dropping it. If you set `ENABLE_UNAWAITED_PYTHON_TASK_TRACEBACK=1`, it will also log where the task was created, which makes "why did this background thing fail?" a lot easier to answer.
 

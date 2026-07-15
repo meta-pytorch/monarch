@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -16,7 +17,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="This tutorial extends the DDP using SPMDActor tutorial to run PyTorch’s Distributed Data Parallel (DDP) on Kubernetes using Monarch’s SPMDActor and KubernetesJob. This example shows: How to provisi..." />
 
-    <title>DDP on Kubernetes &#8212; Monarch v0.5.0 documentation</title>
+    <title>DDP on Kubernetes &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="../../../" id="documentation_options" src="../../../_static/documentation_options.js"></script>
+    <script src="../../../_static/doctools.js"></script>
+    <script src="../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'generated/examples/ddp/kubernetes_ddp';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/generated/examples/ddp/kubernetes_ddp.html" />
@@ -84,7 +85,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="api">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -198,7 +199,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1339,7 +1340,7 @@ document.write(`
 to download the full example code</p>
 </div>
 <section class="sphx-glr-example-title" id="ddp-on-kubernetes">
-<span id="sphx-glr-generated-examples-ddp-kubernetes-ddp-py"></span><h1>DDP on Kubernetes<a class="headerlink" href="#ddp-on-kubernetes" title="Link to this heading">#</a></h1>
+<span id="sphx-glr-generated-examples-ddp-kubernetes-ddp-py"></span><h1>DDP on Kubernetes<a class="headerlink" href="#ddp-on-kubernetes" title="Permalink to this heading">#</a></h1>
 <p>This tutorial extends the <a class="reference internal" href="spmd_ddp.html"><span class="doc">DDP using SPMDActor</span></a> tutorial to run PyTorch’s Distributed
 Data Parallel (DDP) on Kubernetes using Monarch’s <code class="docutils literal notranslate"><span class="pre">SPMDActor</span></code> and <code class="docutils literal notranslate"><span class="pre">KubernetesJob</span></code>.</p>
 <p>This example shows:</p>
@@ -1350,7 +1351,7 @@ Data Parallel (DDP) on Kubernetes using Monarch’s <code class="docutils litera
 <li><p>How to manage resources and gang scheduling with Kueue</p></li>
 </ul>
 <section id="prerequisites">
-<h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading">#</a></h2>
+<h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Permalink to this heading">#</a></h2>
 <p>Before running this example, you need:</p>
 <ol class="arabic simple">
 <li><p>A Kubernetes cluster with GPU nodes (<code class="docutils literal notranslate"><span class="pre">nvidia.com/gpu</span></code> resources)</p></li>
@@ -1360,7 +1361,7 @@ Data Parallel (DDP) on Kubernetes using Monarch’s <code class="docutils litera
 </ol>
 </section>
 <section id="python-native-provisioning">
-<h2>Python-Native Provisioning<a class="headerlink" href="#python-native-provisioning" title="Link to this heading">#</a></h2>
+<h2>Python-Native Provisioning<a class="headerlink" href="#python-native-provisioning" title="Permalink to this heading">#</a></h2>
 <p>With <code class="docutils literal notranslate"><span class="pre">--provision</span></code>, the script creates MonarchMesh CRDs directly from Python.
 No YAML manifests for worker pods are needed – only a controller pod with
 RBAC permissions to create CRDs and watch pods:</p>
@@ -1376,7 +1377,7 @@ RBAC permissions to create CRDs and watch pods:</p>
 </div>
 </section>
 <section id="kueue-gang-scheduling">
-<h2>Kueue Gang Scheduling<a class="headerlink" href="#kueue-gang-scheduling" title="Link to this heading">#</a></h2>
+<h2>Kueue Gang Scheduling<a class="headerlink" href="#kueue-gang-scheduling" title="Permalink to this heading">#</a></h2>
 <p>To manage resources and ensure gang scheduling (where all worker pods start
 only when all resources are available), you can use [Kueue](<a class="reference external" href="https://kueue.sigs.k8s.io/">https://kueue.sigs.k8s.io/</a>).
 First, follow the [instructions](<a class="reference external" href="https://kueue.sigs.k8s.io/docs/installation/">https://kueue.sigs.k8s.io/docs/installation/</a>) to install Kueue.
@@ -1392,7 +1393,7 @@ provisioned mesh with the local queue:</p>
 </div>
 </section>
 <section id="yaml-manifest-provisioning">
-<h2>YAML Manifest Provisioning<a class="headerlink" href="#yaml-manifest-provisioning" title="Link to this heading">#</a></h2>
+<h2>YAML Manifest Provisioning<a class="headerlink" href="#yaml-manifest-provisioning" title="Permalink to this heading">#</a></h2>
 <p>Alternatively, you can pre-provision workers with YAML manifests:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">apiVersion</span><span class="p">:</span> <span class="n">monarch</span><span class="o">.</span><span class="n">pytorch</span><span class="o">.</span><span class="n">org</span><span class="o">/</span><span class="n">v1alpha1</span>
 <span class="n">kind</span><span class="p">:</span> <span class="n">MonarchMesh</span>
@@ -1431,7 +1432,7 @@ provisioned mesh with the local queue:</p>
 including RBAC configuration and controller pod.</p>
 </section>
 <section id="id1">
-<h2>Kueue Gang Scheduling<a class="headerlink" href="#id1" title="Link to this heading">#</a></h2>
+<h2>Kueue Gang Scheduling<a class="headerlink" href="#id1" title="Permalink to this heading">#</a></h2>
 <p>To manage resources and ensure gang scheduling (where all worker pods start
 only when all resources are available), you can use [Kueue](<a class="reference external" href="https://kueue.sigs.k8s.io/">https://kueue.sigs.k8s.io/</a>).
 First, follow the [instructions](<a class="reference external" href="https://kueue.sigs.k8s.io/docs/installation/">https://kueue.sigs.k8s.io/docs/installation/</a>) to install Kueue.
@@ -1446,7 +1447,7 @@ configuration:</p>
 </div>
 </section>
 <section id="training-script">
-<h2>Training Script<a class="headerlink" href="#training-script" title="Link to this heading">#</a></h2>
+<h2>Training Script<a class="headerlink" href="#training-script" title="Permalink to this heading">#</a></h2>
 <p>The training script (<code class="docutils literal notranslate"><span class="pre">train.py</span></code>) is a standard PyTorch DDP script:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
 
@@ -1493,7 +1494,7 @@ configuration:</p>
 </ul>
 </section>
 <section id="imports">
-<h2>Imports<a class="headerlink" href="#imports" title="Link to this heading">#</a></h2>
+<h2>Imports<a class="headerlink" href="#imports" title="Permalink to this heading">#</a></h2>
 <p>We import Monarch’s Kubernetes job support and SPMDActor.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">argparse</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">asyncio</span>
@@ -1597,7 +1598,7 @@ configuration:</p>
 </div>
 </section>
 <section id="main-function">
-<h2>Main Function<a class="headerlink" href="#main-function" title="Link to this heading">#</a></h2>
+<h2>Main Function<a class="headerlink" href="#main-function" title="Permalink to this heading">#</a></h2>
 <p>The main function connects to Kubernetes pods and runs DDP training
 using <code class="docutils literal notranslate"><span class="pre">SPMDActor</span></code> to execute the training script.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">(</span>
@@ -1686,7 +1687,7 @@ using <code class="docutils literal notranslate"><span class="pre">SPMDActor</sp
 </div>
 </section>
 <section id="running-the-example">
-<h2>Running the Example<a class="headerlink" href="#running-the-example" title="Link to this heading">#</a></h2>
+<h2>Running the Example<a class="headerlink" href="#running-the-example" title="Permalink to this heading">#</a></h2>
 <p><strong>Option 1: Python-native provisioning (recommended)</strong></p>
 <p>With <code class="docutils literal notranslate"><span class="pre">--provision</span></code>, train.py is embedded in the worker pod spec and
 written to the filesystem at startup. No manual file copying to workers
@@ -1744,7 +1745,7 @@ done
 </li>
 </ol>
 <section id="command-line-arguments">
-<h3>Command-line Arguments<a class="headerlink" href="#command-line-arguments" title="Link to this heading">#</a></h3>
+<h3>Command-line Arguments<a class="headerlink" href="#command-line-arguments" title="Permalink to this heading">#</a></h3>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">--provision</span></code>: Create MonarchMesh CRDs from Python (no worker YAML needed)</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">--num_hosts</span></code>: Number of worker pods</p></li>
@@ -1940,6 +1941,30 @@ done
 </ul>
   </nav></div>
     
+       <div class="sidebar-secondary-item">
+
+  
+  <div class="tocsection editthispage">
+    <a href="https://github.com/meta-pytorch/monarch/edit/main/docs/source/generated/examples/ddp/kubernetes_ddp.rst">
+      <i class="fa-solid fa-pencil"></i>
+      
+      
+        
+          Edit on GitHub
+        
+      
+    </a>
+  </div>
+</div>
+    
+       <div class="sidebar-secondary-item">
+    <div class="tocsection sourcelink">
+      <a href="../../../_sources/generated/examples/ddp/kubernetes_ddp.rst.txt">
+        <i class="fa-solid fa-file-lines"></i> Show Source
+      </a>
+    </div>
+</div>
+    
 
 
 
@@ -2055,7 +2080,7 @@ done
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>

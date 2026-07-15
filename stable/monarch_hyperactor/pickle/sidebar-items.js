@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["pickle","pickle_to_part","push_pending_pickle","reduce_shared","register_python_bindings"],"struct":["PendingMessage","PicklingState","PicklingStateInner"]};
+window.SIDEBAR_ITEMS = {"fn":["pickle","pickle_to_part","push_mesh_reference_if_active","reduce_shared","register_python_bindings","reserve_mesh_reference_if_active"],"struct":["PendingMessage","PicklingState","PicklingStateInner"]};

@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="./" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -16,7 +17,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="The Mesh Admin TUI( monarch-tui) is an interactive terminal client for inspecting live Monarch meshes. It connects to the mesh admin HTTP API and renders the full topology — hosts, processes, and a..." />
 
-    <title>Mesh Admin TUI &#8212; Monarch v0.5.0 documentation</title>
+    <title>Mesh Admin TUI &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="_static/documentation_options.js?v=e663822d"></script>
-    <script src="_static/doctools.js?v=888ff710"></script>
-    <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="./" id="documentation_options" src="_static/documentation_options.js"></script>
+    <script src="_static/doctools.js"></script>
+    <script src="_static/sphinx_highlight.js"></script>
+    <script src="_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'admin-tui';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/admin-tui.html" />
@@ -84,7 +85,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -198,7 +199,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1302,7 +1303,7 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="mesh-admin-tui">
-<h1>Mesh Admin TUI<a class="headerlink" href="#mesh-admin-tui" title="Link to this heading">#</a></h1>
+<h1>Mesh Admin TUI<a class="headerlink" href="#mesh-admin-tui" title="Permalink to this heading">#</a></h1>
 <p>The <strong>Mesh Admin TUI</strong> (<code class="docutils literal notranslate"><span class="pre">monarch-tui</span></code>) is an interactive terminal client for
 inspecting live Monarch meshes. It connects to the mesh admin HTTP API and
 renders the full topology — hosts, processes, and actors — as a navigable tree
@@ -1310,7 +1311,7 @@ with a contextual detail pane.</p>
 <p>The TUI is included in the <code class="docutils literal notranslate"><span class="pre">torchmonarch</span></code> PyPI package. After
 <code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">torchmonarch</span></code>, the <code class="docutils literal notranslate"><span class="pre">monarch-tui</span></code> command is available on PATH.</p>
 <section id="quick-start">
-<h2>Quick Start<a class="headerlink" href="#quick-start" title="Link to this heading">#</a></h2>
+<h2>Quick Start<a class="headerlink" href="#quick-start" title="Permalink to this heading">#</a></h2>
 <p>Start any Monarch application that spawns a <code class="docutils literal notranslate"><span class="pre">MeshAdminAgent</span></code>. The
 <strong>Dining Philosophers</strong> example is the easiest way to try it — five philosopher
 actors share chopsticks around a table, mediated by a waiter actor that prevents
@@ -1320,7 +1321,7 @@ deadlock.</p>
 </pre></div>
 </div>
 <p>The example prints the admin server address on startup:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Mesh</span> <span class="n">admin</span> <span class="n">server</span> <span class="n">listening</span> <span class="n">on</span> <span class="n">http</span><span class="p">:</span><span class="o">//</span><span class="mf">127.0.0.1</span><span class="p">:</span><span class="mi">1729</span>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Mesh admin server listening on http://127.0.0.1:1729
 </pre></div>
 </div>
 <p><strong>Terminal 2</strong> — attach the TUI:</p>
@@ -1329,7 +1330,7 @@ deadlock.</p>
 </div>
 </section>
 <section id="topology-tree">
-<h2>Topology Tree<a class="headerlink" href="#topology-tree" title="Link to this heading">#</a></h2>
+<h2>Topology Tree<a class="headerlink" href="#topology-tree" title="Permalink to this heading">#</a></h2>
 <p>The main view is a split-pane layout: an expandable <strong>topology tree</strong> on the
 left showing hosts, processes, and actors, and a <strong>detail pane</strong> on the right
 with contextual information for the selected node.</p>
@@ -1339,7 +1340,7 @@ flight recorder events.</p>
 <a class="reference internal image-reference" href="_images/tui-tree.png"><img alt="Mesh Admin TUI showing the topology tree with philosopher actors expanded and actor details on the right" src="_images/tui-tree.png" style="width: 100%;" /></a>
 </section>
 <section id="diagnostics">
-<h2>Diagnostics<a class="headerlink" href="#diagnostics" title="Link to this heading">#</a></h2>
+<h2>Diagnostics<a class="headerlink" href="#diagnostics" title="Permalink to this heading">#</a></h2>
 <p>Press <code class="docutils literal notranslate"><span class="pre">d</span></code> to run a full health check across the mesh. The diagnostics overlay
 probes every node in the topology and reports pass/slow/fail for each, separated
 into <strong>Admin Infrastructure</strong> (admin server, host agents, service procs) and
@@ -1347,7 +1348,7 @@ into <strong>Admin Infrastructure</strong> (admin server, host agents, service p
 <a class="reference internal image-reference" href="_images/tui-diagnostics.png"><img alt="Diagnostics overlay showing health check results for all nodes in the mesh" src="_images/tui-diagnostics.png" style="width: 100%;" /></a>
 </section>
 <section id="py-spy-stack-traces">
-<h2>Py-spy Stack Traces<a class="headerlink" href="#py-spy-stack-traces" title="Link to this heading">#</a></h2>
+<h2>Py-spy Stack Traces<a class="headerlink" href="#py-spy-stack-traces" title="Permalink to this heading">#</a></h2>
 <p>Press <code class="docutils literal notranslate"><span class="pre">p</span></code> on any proc or actor to capture a live Python stack trace via
 <a class="reference external" href="https://github.com/benfred/py-spy">py-spy</a>. The overlay shows per-thread
 stacks with frame-level detail, GIL ownership, and thread names. Each press
@@ -1357,7 +1358,7 @@ calls.</p>
 <a class="reference internal image-reference" href="_images/tui-pyspy.png"><img alt="Py-spy overlay showing per-thread Python stack traces with native frames" src="_images/tui-pyspy.png" style="width: 100%;" /></a>
 </section>
 <section id="keybindings">
-<h2>Keybindings<a class="headerlink" href="#keybindings" title="Link to this heading">#</a></h2>
+<h2>Keybindings<a class="headerlink" href="#keybindings" title="Permalink to this heading">#</a></h2>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Key</p></th>
@@ -1415,8 +1416,8 @@ calls.</p>
 </div>
 </section>
 <section id="cli-options">
-<h2>CLI Options<a class="headerlink" href="#cli-options" title="Link to this heading">#</a></h2>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">monarch</span><span class="o">-</span><span class="n">tui</span> <span class="p">[</span><span class="n">OPTIONS</span><span class="p">]</span> <span class="o">--</span><span class="n">addr</span> <span class="o">&lt;</span><span class="n">ADDR</span><span class="o">&gt;</span>
+<h2>CLI Options<a class="headerlink" href="#cli-options" title="Permalink to this heading">#</a></h2>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>monarch-tui [OPTIONS] --addr &lt;ADDR&gt;
 </pre></div>
 </div>
 <div class="pst-scrollable-table-container"><table class="table">
@@ -1463,7 +1464,7 @@ calls.</p>
 </table>
 </div>
 <section id="non-interactive-diagnostics">
-<h3>Non-interactive diagnostics<a class="headerlink" href="#non-interactive-diagnostics" title="Link to this heading">#</a></h3>
+<h3>Non-interactive diagnostics<a class="headerlink" href="#non-interactive-diagnostics" title="Permalink to this heading">#</a></h3>
 <p>For scripted health checks, use <code class="docutils literal notranslate"><span class="pre">--diagnose</span></code> to get a JSON report on stdout:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>monarch-tui<span class="w"> </span>--addr<span class="w"> </span><span class="m">127</span>.0.0.1:1729<span class="w"> </span>--diagnose
 <span class="c1"># Exits 0 if healthy, 1 if any check failed.</span>
@@ -1472,7 +1473,7 @@ calls.</p>
 </section>
 </section>
 <section id="source-code">
-<h2>Source Code<a class="headerlink" href="#source-code" title="Link to this heading">#</a></h2>
+<h2>Source Code<a class="headerlink" href="#source-code" title="Permalink to this heading">#</a></h2>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Component</p></th>
@@ -1764,7 +1765,7 @@ calls.</p>
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>

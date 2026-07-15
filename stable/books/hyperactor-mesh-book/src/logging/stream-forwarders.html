@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -16,7 +17,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="The bootstrap side is responsible for capturing each child’s stdout/stderr, teeing them locally, and shipping structured log lines to the child’s in-band LogForwardActor over a hyperactor channel. ..." />
 
-    <title>Stream Forwarders (bootstrap/host side) &#8212; Monarch v0.5.0 documentation</title>
+    <title>Stream Forwarders (bootstrap/host side) &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
+    <script src="../../../../_static/doctools.js"></script>
+    <script src="../../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../../_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-mesh-book/src/logging/stream-forwarders';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-mesh-book/src/logging/stream-forwarders.html" />
@@ -82,7 +83,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +197,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1293,10 +1294,10 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="stream-forwarders-bootstrap-host-side">
-<h1>Stream Forwarders (bootstrap/host side)<a class="headerlink" href="#stream-forwarders-bootstrap-host-side" title="Link to this heading">#</a></h1>
+<h1>Stream Forwarders (bootstrap/host side)<a class="headerlink" href="#stream-forwarders-bootstrap-host-side" title="Permalink to this heading">#</a></h1>
 <p>The bootstrap side is responsible for capturing each child’s stdout/stderr, teeing them locally, and shipping structured log lines to the child’s in-band <code class="docutils literal notranslate"><span class="pre">LogForwardActor</span></code> over a hyperactor channel.</p>
 <section id="what-they-are">
-<h2>What they are<a class="headerlink" href="#what-they-are" title="Link to this heading">#</a></h2>
+<h2>What they are<a class="headerlink" href="#what-they-are" title="Permalink to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">StreamFwder</span></code> is a lightweight controller owned by the <code class="docutils literal notranslate"><span class="pre">Host</span></code>’s <code class="docutils literal notranslate"><span class="pre">BootstrapProcManager</span></code>. Each controller spawns a background tee task that does the actual I/O. The struct itself only holds control/diagnostic handles.</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">StreamFwder</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="sd">/// Join handle for the spawned tee task (child stdout/stderr reader).</span>
@@ -1320,7 +1321,7 @@ document.write(`
 </ul>
 </section>
 <section id="components-wiring-at-a-glance">
-<h2>Components &amp; wiring (at a glance)<a class="headerlink" href="#components-wiring-at-a-glance" title="Link to this heading">#</a></h2>
+<h2>Components &amp; wiring (at a glance)<a class="headerlink" href="#components-wiring-at-a-glance" title="Permalink to this heading">#</a></h2>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>Host&lt;M=BootstrapProcManager&gt;
   └─ BootstrapProcManager
      └─ BootstrapProcHandle { proc_id, pipes, ... }
@@ -1331,7 +1332,7 @@ document.write(`
 <p><code class="docutils literal notranslate"><span class="pre">BootstrapProcHandle</span></code> is the per-child record that owns the two <code class="docutils literal notranslate"><span class="pre">StreamFwder</span></code> controllers. Each <code class="docutils literal notranslate"><span class="pre">StreamFwder</span></code> spawns exactly one background “tee” task and keeps its own control/diagnostic handles (e.g., <code class="docutils literal notranslate"><span class="pre">recent_lines_buf</span></code>, <code class="docutils literal notranslate"><span class="pre">stop</span></code>).</p>
 </section>
 <section id="wiring-message-flow">
-<h2>Wiring &amp; message flow<a class="headerlink" href="#wiring-message-flow" title="Link to this heading">#</a></h2>
+<h2>Wiring &amp; message flow<a class="headerlink" href="#wiring-message-flow" title="Permalink to this heading">#</a></h2>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>[host / bootstrap proc]                      [child / remote proc]
 StreamFwder ── LocalLogSender ──►  (unix)  ──► LogForwardActor (serve)
 (stdout / stderr)                               ^     ^
@@ -1347,7 +1348,7 @@ StreamFwder ── LocalLogSender ──►  (unix)  ──► LogForwardActor (
 <li><p>If <code class="docutils literal notranslate"><span class="pre">BOOTSTRAP_LOG_CHANNEL</span></code> is absent (tests/local), the forwarder falls back to <code class="docutils literal notranslate"><span class="pre">ChannelAddr::any(ChannelTransport::Unix)</span></code>; in that mode no parent is connected and streaming is effectively disabled.</p></li>
 </ul>
 <section id="ordering-guarantees">
-<h3>Ordering guarantees<a class="headerlink" href="#ordering-guarantees" title="Link to this heading">#</a></h3>
+<h3>Ordering guarantees<a class="headerlink" href="#ordering-guarantees" title="Permalink to this heading">#</a></h3>
 <ul class="simple">
 <li><p>Per stream (stdout or stderr) and per child only.</p></li>
 <li><p>No cross-stream order guarantee (stdout vs stderr may interleave).</p></li>
@@ -1355,7 +1356,7 @@ StreamFwder ── LocalLogSender ──►  (unix)  ──► LogForwardActor (
 </section>
 </section>
 <section id="responsibilities-streamfwder-bootstrap-side">
-<h2>Responsibilities (<code class="docutils literal notranslate"><span class="pre">StreamFwder</span></code>, bootstrap side)<a class="headerlink" href="#responsibilities-streamfwder-bootstrap-side" title="Link to this heading">#</a></h2>
+<h2>Responsibilities (<code class="docutils literal notranslate"><span class="pre">StreamFwder</span></code>, bootstrap side)<a class="headerlink" href="#responsibilities-streamfwder-bootstrap-side" title="Permalink to this heading">#</a></h2>
 <ul class="simple">
 <li><p>Read bytes from each child’s stdout/stderr pipes reliably.</p></li>
 <li><p>Split into lines (preserve non-UTF8 as raw bytes; normalize \r\n).</p></li>
@@ -1371,7 +1372,7 @@ StreamFwder ── LocalLogSender ──►  (unix)  ──► LogForwardActor (
 </ul>
 </section>
 <section id="read-batch-algorithm-outline">
-<h2>Read &amp; batch algorithm (outline)<a class="headerlink" href="#read-batch-algorithm-outline" title="Link to this heading">#</a></h2>
+<h2>Read &amp; batch algorithm (outline)<a class="headerlink" href="#read-batch-algorithm-outline" title="Permalink to this heading">#</a></h2>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">tokio::io::BufReader</span></code> around each pipe fd.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">read_until(b'\n')</span></code> (or manual chunking) → line frames (strip <code class="docutils literal notranslate"><span class="pre">\n</span></code>, normalize <code class="docutils literal notranslate"><span class="pre">\r\n</span></code>).</p></li>
@@ -1384,7 +1385,7 @@ StreamFwder ── LocalLogSender ──►  (unix)  ──► LogForwardActor (
 </ul>
 </section>
 <section id="where-locallogsender-comes-from-bootstrap-side">
-<h2>Where <code class="docutils literal notranslate"><span class="pre">LocalLogSender</span></code> comes from (bootstrap side)<a class="headerlink" href="#where-locallogsender-comes-from-bootstrap-side" title="Link to this heading">#</a></h2>
+<h2>Where <code class="docutils literal notranslate"><span class="pre">LocalLogSender</span></code> comes from (bootstrap side)<a class="headerlink" href="#where-locallogsender-comes-from-bootstrap-side" title="Permalink to this heading">#</a></h2>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">BootstrapProcManager::spawn</span></code> chooses a per-child Unix channel address and exports it to the child via <code class="docutils literal notranslate"><span class="pre">BOOTSTRAP_LOG_CHANNEL</span></code>.
 The child’s <code class="docutils literal notranslate"><span class="pre">LogForwardActor</span></code> serves that address (see its <code class="docutils literal notranslate"><span class="pre">new()</span></code>), and the bootstrap dials it locally.</p></li>
@@ -1421,7 +1422,7 @@ The sender and all I/O live inside the spawned task; the <code class="docutils l
 </pre></div>
 </div>
 <section id="what-locallogsender-actually-does">
-<h3>What <code class="docutils literal notranslate"><span class="pre">LocalLogSender</span></code> actually does<a class="headerlink" href="#what-locallogsender-actually-does" title="Link to this heading">#</a></h3>
+<h3>What <code class="docutils literal notranslate"><span class="pre">LocalLogSender</span></code> actually does<a class="headerlink" href="#what-locallogsender-actually-does" title="Permalink to this heading">#</a></h3>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">LocalLogSender::new(log_channel,</span> <span class="pre">pid)</span></code> dials the child’s served channel (<code class="docutils literal notranslate"><span class="pre">channel::dial::&lt;LogMessage&gt;</span></code>), holds a <code class="docutils literal notranslate"><span class="pre">ChannelTx&lt;LogMessage&gt;</span></code> and a <code class="docutils literal notranslate"><span class="pre">Receiver&lt;TxStatus&gt;</span></code> for liveness.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">send(..)</span></code> checks <code class="docutils literal notranslate"><span class="pre">TxStatus::Active</span></code> and uses <code class="docutils literal notranslate"><span class="pre">tx.post(..)</span></code> (non-blocking) to emit:</p></li>
@@ -1438,7 +1439,7 @@ The sender and all I/O live inside the spawned task; the <code class="docutils l
 <p>(non-blocking “liveness” ping; no await).</p>
 </section>
 <section id="what-the-tee-task-forwards-tee">
-<h3>What the <code class="docutils literal notranslate"><span class="pre">tee</span></code> task forwards (<code class="docutils literal notranslate"><span class="pre">tee(..)</span></code>)<a class="headerlink" href="#what-the-tee-task-forwards-tee" title="Link to this heading">#</a></h3>
+<h3>What the <code class="docutils literal notranslate"><span class="pre">tee</span></code> task forwards (<code class="docutils literal notranslate"><span class="pre">tee(..)</span></code>)<a class="headerlink" href="#what-the-tee-task-forwards-tee" title="Permalink to this heading">#</a></h3>
 <ul class="simple">
 <li><p>Reads bytes from the child pipe, writes through to the bootstrap’s std writer, frames on <code class="docutils literal notranslate"><span class="pre">\n</span></code>, applies <code class="docutils literal notranslate"><span class="pre">MAX_LINE_SIZE</span></code> truncation and optional rank prefix, then:</p>
 <ul>
@@ -1454,7 +1455,7 @@ The sender and all I/O live inside the spawned task; the <code class="docutils l
 </div></blockquote>
 </section>
 <section id="source-level-view-tee">
-<h3>Source-level view: <code class="docutils literal notranslate"><span class="pre">tee()</span></code><a class="headerlink" href="#source-level-view-tee" title="Link to this heading">#</a></h3>
+<h3>Source-level view: <code class="docutils literal notranslate"><span class="pre">tee()</span></code><a class="headerlink" href="#source-level-view-tee" title="Permalink to this heading">#</a></h3>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// logging.rs — abridged, annotated</span>
 <span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">tee</span><span class="p">(</span>
 <span class="w">    </span><span class="k">mut</span><span class="w"> </span><span class="n">reader</span><span class="p">:</span><span class="w"> </span><span class="nc">impl</span><span class="w"> </span><span class="n">AsyncRead</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Unpin</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Send</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="o">&#39;</span><span class="nb">static</span><span class="p">,</span><span class="w">        </span><span class="c1">// child&#39;s pipe (stdout/stderr)</span>
@@ -1804,7 +1805,7 @@ The sender and all I/O live inside the spawned task; the <code class="docutils l
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>

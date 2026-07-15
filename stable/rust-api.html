@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="./" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -16,7 +17,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="Internally monarch is implemented using a Rust library for actors called hyperactor. This book provides more details about its design. This page provides access to the Rust API documentation for Mo..." />
 
-    <title>Internal APIs &#8212; Monarch v0.5.0 documentation</title>
+    <title>Internal APIs &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="_static/documentation_options.js?v=e663822d"></script>
-    <script src="_static/doctools.js?v=888ff710"></script>
-    <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="./" id="documentation_options" src="_static/documentation_options.js"></script>
+    <script src="_static/doctools.js"></script>
+    <script src="_static/sphinx_highlight.js"></script>
+    <script src="_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'rust-api';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/rust-api.html" />
@@ -84,7 +85,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -198,7 +199,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1293,13 +1294,13 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="internal-apis">
-<h1>Internal APIs<a class="headerlink" href="#internal-apis" title="Link to this heading">#</a></h1>
+<h1>Internal APIs<a class="headerlink" href="#internal-apis" title="Permalink to this heading">#</a></h1>
 <p>Internally monarch is implemented using a Rust library for actors called hyperactor.</p>
 <p><a class="reference internal" href="books/hyperactor-book/src/introduction.html"><span class="doc std std-doc">This book</span></a> provides more details about its design.</p>
 <p>This page provides access to the Rust API documentation for Monarch.</p>
 <p>The Monarch project consists of several Rust crates, each with specialized functionality:</p>
 <section id="core-framework">
-<h2>Core Framework<a class="headerlink" href="#core-framework" title="Link to this heading">#</a></h2>
+<h2>Core Framework<a class="headerlink" href="#core-framework" title="Permalink to this heading">#</a></h2>
 <ul class="simple">
 <li><p><a id="link-hyperactor" href="rust-api/hyperactor/index.html"><strong>hyperactor</strong></a><span id="desc-hyperactor"> - Core actor framework for distributed computing</span></p></li>
 <li><p><a id="link-hyperactor_macros" href="rust-api/hyperactor_macros/index.html"><strong>hyperactor_macros</strong></a><span id="desc-hyperactor_macros"> - Procedural macros for the hyperactor framework</span></p></li>
@@ -1310,7 +1311,7 @@ document.write(`
 </ul>
 </section>
 <section id="cuda-and-gpu-computing">
-<h2>CUDA and GPU Computing<a class="headerlink" href="#cuda-and-gpu-computing" title="Link to this heading">#</a></h2>
+<h2>CUDA and GPU Computing<a class="headerlink" href="#cuda-and-gpu-computing" title="Permalink to this heading">#</a></h2>
 <ul class="simple">
 <li><p><a id="link-nccl-sys" href="rust-api/nccl_sys/index.html"><strong>nccl-sys</strong></a><span id="desc-nccl-sys"> - NCCL (NVIDIA Collective Communications Library) bindings</span></p></li>
 <li><p><a id="link-torch-sys2" href="rust-api/torch_sys2/index.html"><strong>torch-sys2</strong></a><span id="desc-torch-sys2"> - Simplified PyTorch Python API bindings for Rust</span></p></li>
@@ -1319,14 +1320,14 @@ document.write(`
 </ul>
 </section>
 <section id="rdma-and-high-performance-networking">
-<h2>RDMA and High-Performance Networking<a class="headerlink" href="#rdma-and-high-performance-networking" title="Link to this heading">#</a></h2>
+<h2>RDMA and High-Performance Networking<a class="headerlink" href="#rdma-and-high-performance-networking" title="Permalink to this heading">#</a></h2>
 <ul class="simple">
 <li><p><a id="link-monarch_rdma" href="rust-api/monarch_rdma/index.html"><strong>monarch_rdma</strong></a><span id="desc-monarch_rdma"> - Remote Direct Memory Access (RDMA) support for high-speed networking</span></p></li>
 <li><p><a id="link-rdmaxcel-sys" href="rust-api/rdmaxcel_sys/index.html"><strong>rdmaxcel-sys</strong></a><span id="desc-rdmaxcel-sys"> - Low-level RDMA acceleration bindings</span></p></li>
 </ul>
 </section>
 <section id="monarch-python-integration">
-<h2>Monarch Python Integration<a class="headerlink" href="#monarch-python-integration" title="Link to this heading">#</a></h2>
+<h2>Monarch Python Integration<a class="headerlink" href="#monarch-python-integration" title="Permalink to this heading">#</a></h2>
 <ul class="simple">
 <li><p><a id="link-monarch_hyperactor" href="rust-api/monarch_hyperactor/index.html"><strong>monarch_hyperactor</strong></a><span id="desc-monarch_hyperactor"> - Python bindings bridging hyperactor to Monarch’s Python API</span></p></li>
 <li><p><a id="link-monarch_extension" href="rust-api/monarch_extension/index.html"><strong>monarch_extension</strong></a><span id="desc-monarch_extension"> - Python extension module for Monarch functionality</span></p></li>
@@ -1334,7 +1335,7 @@ document.write(`
 </ul>
 </section>
 <section id="system-and-utilities">
-<h2>System and Utilities<a class="headerlink" href="#system-and-utilities" title="Link to this heading">#</a></h2>
+<h2>System and Utilities<a class="headerlink" href="#system-and-utilities" title="Permalink to this heading">#</a></h2>
 <ul class="simple">
 <li><p><a id="link-hyper" href="rust-api/hyper/index.html"><strong>hyper</strong></a><span id="desc-hyper"> - Mesh admin CLI and HTTP utilities</span></p></li>
 <li><p><a id="link-ndslice" href="rust-api/ndslice/index.html"><strong>ndslice</strong></a><span id="desc-ndslice"> - N-dimensional array slicing and manipulation</span></p></li>
@@ -1345,7 +1346,7 @@ document.write(`
 <!-- Static links are shown by default since documentation exists -->
 </section>
 <section id="architecture-overview">
-<h2>Architecture Overview<a class="headerlink" href="#architecture-overview" title="Link to this heading">#</a></h2>
+<h2>Architecture Overview<a class="headerlink" href="#architecture-overview" title="Permalink to this heading">#</a></h2>
 <p>The Rust implementation provides a comprehensive framework for distributed computing with GPU acceleration:</p>
 <ul class="simple">
 <li><p><strong>Actor Model</strong>: Built on the hyperactor framework for concurrent, distributed processing</p></li>
@@ -1623,7 +1624,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>

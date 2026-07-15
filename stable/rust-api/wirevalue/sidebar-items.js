@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"constant":["BROKEN_TYPEHASH"],"derive":["Named"],"enum":["Encoding","Error"],"macro":["register_type"],"mod":["config"],"struct":["Any","EncodingIter","HexFmt","JsonFmt"],"trait":["Named"],"type":["Result"]};
+window.SIDEBAR_ITEMS = {"constant":["BROKEN_TYPEHASH"],"derive":["Named"],"enum":["Encoding","Error"],"macro":["register_type"],"mod":["config","encoding"],"struct":["Any","EncodingIter","HexFmt","JsonFmt"],"trait":["EncodingMarker","Named","StaticEncoding"],"type":["Result"]};

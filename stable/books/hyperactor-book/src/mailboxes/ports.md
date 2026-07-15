@@ -11,7 +11,7 @@ This section defines the structure, behavior, and usage of ports.
 
 ## Delivery Backends
 
-Each typed port uses an internal delivery mechanism to enqueue messages. This is abstracted by the `UnboundedSenderPort<M>` enum:
+Each typed port uses an internal delivery mechanism to enqueue messages. This is abstracted by the `UnboundedPortSender<M>` enum:
 
 ```
 enum UnboundedPortSender<M: Message> {
@@ -27,66 +27,52 @@ Messages are sent via the `.send(headers, message)` method, which forwards to ei
 
 ## `PortHandle<M>`
 
-A `PortHandle<M>` is used to send `M`-typed messages to a mailbox port. It represents the sending half of a typed port:
+A `PortHandle<M>` is the sending half of a typed port. It is a cheap-to-clone handle over shared inner state:
 
 ```
 pub struct PortHandle<M: Message> {
+ inner: Arc<PortHandleInner<M>>,
+}
+
+struct PortHandleInner<M: Message> {
  mailbox: Mailbox,
- port_index: u64,
  sender: UnboundedPortSender<M>,
- bound: Arc<OnceLock<PortId>>,
+ bind_target: PortBindTarget,
+ bound: Arc<RwLock<Option<PortAddr>>>,
  reducer_spec: Option<ReducerSpec>,
- reducer_opts: Option<ReducerOpts>,
+ streaming_opts: StreamingReducerOpts,
 }
 ```
 
 ### Fields
 
-- **`mailbox`**: The `Mailbox` this port was created from. Stored so the handle can access the actor ID and bind itself into the mailbox's internal port map.
-- **`port_index`**: The local index of the port within the mailbox. Used as the key in the mailbox's port map.
-- **`sender`**: The internal message delivery mechanism (e.g., MPSC channel). This determines how messages of type `M` are actually enqueued.
-- **`bound`**: A lazily initialized `PortId` stored in a `OnceLock`. This is populated when the port is formally bound into the mailbox, enabling external references via `PortRef<M>`.
+- **`mailbox`**: The `Mailbox` this port was created from. Stored so the handle can access the actor address and bind itself into the mailbox's internal port map.
+- **`sender`**: The internal message delivery mechanism (e.g., an MPSC channel). This determines how messages of type `M` are actually enqueued.
+- **`bind_target`**: Where the port binds when `.bind()` is called: an ephemeral port index, or the well-known handler port for `M`.
+- **`bound`**: The port's `PortAddr` once bound, behind an `RwLock<Option<...>>` (`None` until bound). Populated on bind, enabling external references via `PortRef<M>`.
 - **`reducer_spec`**: An optional specification for a reducer function for accumulating messages.
-- **`reducer_opts`**: Optional reducer configuration options.
+- **`streaming_opts`**: Timing options for the streaming reducer (see the `PortRef` fields below).
 
-### Construction and Use
+### Sending and Receiving
+
+Open a port from a mailbox (or any context that grants one) to get the handle and its receiver. `post` sends a message; `recv` awaits it:
 
 ```
-impl<M: Message> PortHandle<M> {
- fn new(mailbox: Mailbox, port_index: u64, sender: UnboundedPortSender<M>) -> Self {
- Self {
- mailbox,
- port_index,
- sender,
- bound: Arc::new(OnceLock::new()),
- reducer_spec: None,
- reducer_opts: None,
- }
- }
+# use hyperactor::mailbox::Mailbox;
+# use hyperactor::Endpoint as _;
+# tokio_test::block_on(async {
+# let proc = hyperactor::Proc::current();
+# let client = hyperactor::client("client");
+# let actor_id = proc.proc_addr().actor_addr("actor");
+let mbox = Mailbox::new(actor_id);
+let (port, mut receiver) = mbox.open_port::<u64>();
 
- fn location(&self) -> PortLocation {
- match self.bound.get() {
- Some(port_id) => PortLocation::Bound(port_id.clone()),
- None => PortLocation::new_unbound::<M>(self.mailbox.actor_id().clone()),
- }
- }
-
- pub fn send(&self, message: M) -> Result<(), MailboxSenderError> {
- let mut headers = Attrs::new();
- // ... set headers ...
- self.sender.send(headers, message).map_err(|err| {
- MailboxSenderError::new_unbound::<M>(
- self.mailbox.actor_id().clone(),
- MailboxSenderErrorKind::Other(err),
- )
- })
- }
-}
+port.post(&client, 123);
+assert_eq!(receiver.recv().await.unwrap(), 123u64);
+# })
 ```
 
-- `new` constructs a port handle with the mailbox, port index and delivery backend
-- `location` reports whether the port is currently bound
-- `send` enqueues a message via the internal sender, wrapping errors as needed.
+`post` comes from the `Endpoint` trait and is fire-and-forget: a delivery failure is reported through the actor's lost-message channel. `try_post` performs the same send but returns a `Result`, so the caller can observe the failure directly.
 
 ### Binding
 
@@ -106,10 +92,10 @@ This registers the port in the owning `Mailbox` and returns a `PortRef<M>`. Bind
 
 ```
 pub enum PortLocation {
- /// The port was bound: the location is its underlying bound ID.
- Bound(PortId),
- /// The port was not bound: we provide the actor ID and the message type.
- Unbound(ActorId, &'static str),
+ /// The port was bound: the location is its underlying bound address.
+ Bound(PortAddr),
+ /// The port was not bound: we provide the actor address and the message type.
+ Unbound(ActorAddr, &'static str),
 }
 ```
 
@@ -121,7 +107,7 @@ A `OncePortHandle<M>` is a one-shot sender for `M`-typed messages. Unlike `PortH
 pub struct OncePortHandle<M: Message> {
  mailbox: Mailbox,
  port_index: u64,
- port_id: PortId,
+ port_id: PortAddr,
  sender: oneshot::Sender<M>,
 }
 ```
@@ -130,12 +116,12 @@ pub struct OncePortHandle<M: Message> {
 
 - **`mailbox`**: The `Mailbox` this port was created from. Stored so the handle can access the actor ID and register itself in the mailbox's port map.
 - **`port_index`**: The local index of the port within the mailbox. Used as the key in the mailbox's port map.
-- **`port_id`**: The globally unique identifier for this port. Assigned eagerly, since one-shot ports are always bound at creation.
+- **`port_id`**: The globally unique address for this port. Assigned eagerly, since one-shot ports are always bound at creation.
 - **`sender`**: The one-shot message delivery channel. Used to transmit a single M-typed message.
 
 Compared to `PortHandle<M>`, a `OncePortHandle<M>` is:
 
-- **bound eagerly** at creation (it always has a `PortId`),
+- **bound eagerly** at creation (it always has a `PortAddr`),
 - **non-reusable** (it delivers at most one message),
 - and uses a **one-shot channel** instead of an unbounded queue.
 
@@ -155,34 +141,40 @@ A `PortRef<M>` is a cloneable, sendable reference to a bound typed port. These a
 
 ```
 pub struct PortRef<M> {
- port_id: PortId,
+ port_addr: PortAddr,
  reducer_spec: Option<ReducerSpec>,
- reducer_opts: Option<ReducerOpts>,
+ streaming_opts: StreamingReducerOpts,
  phantom: PhantomData<M>,
  return_undeliverable: bool,
+ unsplit: bool,
 }
 ```
 
 ### Fields
 
-- **`port_id`**: The globally unique identifier for this port. Used during message routing to locate the destination mailbox.
+- **`port_addr`**: The globally unique address for this port. Used during message routing to locate the destination mailbox.
 - **`reducer_spec`**: Optional specification for the reducer type, used to validate compatibility when delivering messages to reducer-style ports.
-- **`reducer_opts`**: Optional reducer configuration options.
+- **`streaming_opts`**: Timing options (initial and maximum flush intervals) for the streaming reducer used when this port is split for tree reduction.
 - **`phantom`**: Phantom data to retain the `M` type parameter. This enforces compile-time type safety without storing a value of type `M`.
-- **`return_undeliverable`**: Whether undeliverable messages should be returned to the sender.
+- **`return_undeliverable`**: Whether an undeliverable message is returned to the sender (the default) or silently dropped.
+- **`unsplit`**: When set, keeps the port out of cast/comm tree reduction so every destination replies to it directly. Set via `PortRef::unsplit()`.
 
 A `OncePortRef<M>` is a reference to a one-shot port. Unlike `PortRef`, it allows exactly one message to be sent. These are created by binding a `OncePortHandle<M>`.
 
 ```
 pub struct OncePortRef<M> {
- port_id: PortId,
+ port_addr: PortAddr,
+ reducer_spec: Option<ReducerSpec>,
+ return_undeliverable: bool,
+ unsplit: bool,
  phantom: PhantomData<M>,
 }
 ```
 
 ### Fields
 
-- **`port_id`**: The globally unique identifier for this port. Used during message routing to locate the destination mailbox.
+- **`port_addr`**: The globally unique address for this port. Used during message routing to locate the destination mailbox.
+- **`reducer_spec`**, **`return_undeliverable`**, **`unsplit`**: As on `PortRef` above.
 - **`phantom`**: Phantom data to retain the `M` type parameter. This enforces compile-time type safety without storing a value of type `M`.
 
 ## `PortReceiver<M>`
@@ -192,7 +184,7 @@ A `PortReceiver<M>` is used to asynchronously receive `M`-typed messages from a 
 ```
 pub struct PortReceiver<M> {
  receiver: mpsc::UnboundedReceiver<M>,
- port_id: PortId,
+ port_id: PortAddr,
  coalesce: bool,
  mailbox: Mailbox,
 }
@@ -207,14 +199,13 @@ pub struct PortReceiver<M> {
 
 ### Usage
 
-A `PortReceiver<M>` is returned when calling `.open_port::<M>()` on a `Mailbox`. The actor can `await` messages on the receiver using `.recv().await`, which yields `Option<M>`:
+A `PortReceiver<M>` is returned when calling `.open_port::<M>()` on a `Mailbox`. The actor can `await` messages on the receiver using `.recv().await`, which yields `Result<M, MailboxError>`:
 
 ```
 let (port, mut receiver) = mailbox.open_port::<MyMsg>();
 // ...
-if let Some(msg) = receiver.recv().await {
- handle(msg);
-}
+let msg = receiver.recv().await?;
+handle(msg);
 ```
 
 ### Construction and Use
@@ -225,7 +216,7 @@ A `PortReceiver` is created when calling `.open_port::<M>()` on a `Mailbox`. `ne
 impl<M> PortReceiver<M> {
  fn new(
  receiver: mpsc::UnboundedReceiver<M>,
- port_id: PortId,
+ port_id: PortAddr,
  coalesce: bool,
  mailbox: Mailbox
  ) -> Self {
@@ -345,7 +336,7 @@ A `OncePortReceiver<M>` is the receiving half of a one-shot port. It is returned
 ```
 pub struct OncePortReceiver<M> {
  receiver: Option<oneshot::Receiver<M>>,
- port_id: PortId,
+ port_id: PortAddr,
  state: Arc<State>,
 }
 ```
@@ -404,7 +395,7 @@ These are wrapped in:
 ```
 struct UnboundedSender<M: Message> {
  sender: UnboundedPortSender<M>,
- port_id: PortId,
+ port_id: PortAddr,
 }
 ```
 
@@ -421,7 +412,7 @@ impl<M: Message> UnboundedSender<M> {
 ```
 struct OnceSender<M: Message> {
  sender: Arc<Mutex<Option<oneshot::Sender<M>>>>,
- port_id: PortId,
+ port_id: PortAddr,
 }
 ```
 
@@ -449,7 +440,7 @@ This trait lets the mailbox deliver a `Serialized` message (a type-erased, encod
 All active ports in a mailbox internally tracked in a type-erased form:
 
 ```
-ports: DashMap<u64, Box<dyn SerializedSender>>,
+ports: DashMap<Port, Arc<dyn SerializedSender>>,
 ```
 
 This enables the mailbox to deliver messages to any known port regardless of its specific message type, provided deserialization succeeds.

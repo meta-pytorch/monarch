@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -16,7 +17,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="2. Get something that can spawn processes: In the canonical flow we need a thing in the parent that can say “start another OS process that will come up as a hyperactor proc/host and talk back to me..." />
 
-    <title>§2 Process allocator &amp; v0 bootstrap (get something that can spawn processes) &#8212; Monarch v0.5.0 documentation</title>
+    <title>§2 Process allocator &amp; v0 bootstrap (get something that can spawn processes) &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
+    <script src="../../../../_static/doctools.js"></script>
+    <script src="../../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../../_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-mesh-book/src/meshes/bootstrapping-process-allocator';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-mesh-book/src/meshes/bootstrapping-process-allocator.html" />
@@ -82,7 +83,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +197,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1293,9 +1294,9 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="process-allocator-v0-bootstrap-get-something-that-can-spawn-processes">
-<h1>§2 Process allocator &amp; v0 bootstrap (get something that can spawn processes)<a class="headerlink" href="#process-allocator-v0-bootstrap-get-something-that-can-spawn-processes" title="Link to this heading">#</a></h1>
+<h1>§2 Process allocator &amp; v0 bootstrap (get something that can spawn processes)<a class="headerlink" href="#process-allocator-v0-bootstrap-get-something-that-can-spawn-processes" title="Permalink to this heading">#</a></h1>
 <section id="get-something-that-can-spawn-processes">
-<h2>2. Get something that can spawn processes<a class="headerlink" href="#get-something-that-can-spawn-processes" title="Link to this heading">#</a></h2>
+<h2>2. Get something that can spawn processes<a class="headerlink" href="#get-something-that-can-spawn-processes" title="Permalink to this heading">#</a></h2>
 <p>In the canonical flow we need a <em>thing in the parent</em> that can say “start another OS process that will come up as a hyperactor proc/host and talk back to me.” In this codebase that “thing” is the <strong>process allocator</strong>, implemented as <code class="docutils literal notranslate"><span class="pre">hyperactor_mesh::alloc::ProcessAllocator</span></code> defined in <code class="docutils literal notranslate"><span class="pre">hyperactor_mesh/src/alloc/process.rs</span></code>.</p>
 <p>In the unit-test version (<code class="docutils literal notranslate"><span class="pre">bootstrap_canonical_simple</span></code>) it looks like this:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">allocator</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ProcessAllocator</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">Command</span><span class="p">::</span><span class="n">new</span><span class="p">(</span>
@@ -1315,7 +1316,7 @@ document.write(`
 </div>
 <p>That’s the high-level call. Under the covers, <code class="docutils literal notranslate"><span class="pre">allocate(...)</span></code> does a bit more, and it matters for understanding bootstrapping, so let’s drill in.</p>
 <section id="what-allocate-actually-does">
-<h3>2.1 What <code class="docutils literal notranslate"><span class="pre">allocate(...)</span></code> actually does<a class="headerlink" href="#what-allocate-actually-does" title="Link to this heading">#</a></h3>
+<h3>2.1 What <code class="docutils literal notranslate"><span class="pre">allocate(...)</span></code> actually does<a class="headerlink" href="#what-allocate-actually-does" title="Permalink to this heading">#</a></h3>
 <p>When you call <code class="docutils literal notranslate"><span class="pre">allocator.allocate(spec)</span></code>, the allocator first creates a <strong>per-allocation bootstrap channel</strong>:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="n">bootstrap_addr</span><span class="p">,</span><span class="w"> </span><span class="n">rx</span><span class="p">)</span><span class="w"> </span><span class="o">=</span>
 <span class="w">    </span><span class="n">channel</span><span class="p">::</span><span class="n">serve</span><span class="p">(</span><span class="n">ChannelAddr</span><span class="p">::</span><span class="n">any</span><span class="p">(</span><span class="n">ChannelTransport</span><span class="p">::</span><span class="n">Unix</span><span class="p">))</span><span class="o">?</span><span class="p">;</span>
@@ -1332,7 +1333,7 @@ document.write(`
 <p>So far: <strong>no process has been started yet</strong>, we just prepared an allocation.</p>
 </section>
 <section id="spawning-the-child-inside-maybe-spawn">
-<h3>2.2 Spawning the child (inside <code class="docutils literal notranslate"><span class="pre">maybe_spawn()</span></code>)<a class="headerlink" href="#spawning-the-child-inside-maybe-spawn" title="Link to this heading">#</a></h3>
+<h3>2.2 Spawning the child (inside <code class="docutils literal notranslate"><span class="pre">maybe_spawn()</span></code>)<a class="headerlink" href="#spawning-the-child-inside-maybe-spawn" title="Permalink to this heading">#</a></h3>
 <p>Later, when the allocation runs its loop (<code class="docutils literal notranslate"><span class="pre">alloc.next().await</span></code>), it will eventually try to spawn a child here:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="n">cmd</span><span class="p">.</span><span class="n">env</span><span class="p">(</span><span class="n">bootstrap</span><span class="p">::</span><span class="n">BOOTSTRAP_ADDR_ENV</span><span class="p">,</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">bootstrap_addr</span><span class="p">.</span><span class="n">to_string</span><span class="p">());</span>
 <span class="n">cmd</span><span class="p">.</span><span class="n">env</span><span class="p">(</span><span class="n">bootstrap</span><span class="p">::</span><span class="n">CLIENT_TRACE_ID_ENV</span><span class="p">,</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">client_context</span><span class="p">.</span><span class="n">trace_id</span><span class="p">.</span><span class="n">as_str</span><span class="p">());</span>
@@ -1371,7 +1372,7 @@ The <code class="docutils literal notranslate"><span class="pre">AllocSpec</span
 </ol>
 </section>
 <section id="what-the-child-actually-does-when-it-starts">
-<h3>2.3 What the child actually does when it starts<a class="headerlink" href="#what-the-child-actually-does-when-it-starts" title="Link to this heading">#</a></h3>
+<h3>2.3 What the child actually does when it starts<a class="headerlink" href="#what-the-child-actually-does-when-it-starts" title="Permalink to this heading">#</a></h3>
 <p>So far we’ve been on the parent side: we built a <code class="docutils literal notranslate"><span class="pre">ProcessAllocator</span></code>, we called <code class="docutils literal notranslate"><span class="pre">allocate(...)</span></code>, and that code spawned <strong>some other executable</strong> (in tests: <code class="docutils literal notranslate"><span class="pre">monarch/hyperactor_mesh/bootstrap</span></code>). Now we need to look at the <strong>child</strong> side of that executable.</p>
 <p>The test bootstrap binary’s <code class="docutils literal notranslate"><span class="pre">main</span></code> is tiny:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// from hyperactor/test/bootstrap.rs</span>
@@ -1387,7 +1388,7 @@ The <code class="docutils literal notranslate"><span class="pre">AllocSpec</span
 </div>
 <p>So: every child just calls <code class="docutils literal notranslate"><span class="pre">hyperactor_mesh::bootstrap_or_die()</span></code>. That’s the real entrypoint.</p>
 <section id="bootstrap-or-die-bootstrap-which-mode-am-i-in">
-<h4>2.3.1 <code class="docutils literal notranslate"><span class="pre">bootstrap_or_die</span></code> → <code class="docutils literal notranslate"><span class="pre">bootstrap</span></code> → “which mode am I in?”<a class="headerlink" href="#bootstrap-or-die-bootstrap-which-mode-am-i-in" title="Link to this heading">#</a></h4>
+<h4>2.3.1 <code class="docutils literal notranslate"><span class="pre">bootstrap_or_die</span></code> → <code class="docutils literal notranslate"><span class="pre">bootstrap</span></code> → “which mode am I in?”<a class="headerlink" href="#bootstrap-or-die-bootstrap-which-mode-am-i-in" title="Permalink to this heading">#</a></h4>
 <p>In bootstrap.rs the entrypoint is:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// from hyperactor_mesh/src/bootstrap.rs</span>
 <span class="k">pub</span><span class="w"> </span><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">bootstrap</span><span class="p">()</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">anyhow</span><span class="p">::</span><span class="n">Error</span><span class="w"> </span><span class="p">{</span>
@@ -1402,13 +1403,13 @@ The <code class="docutils literal notranslate"><span class="pre">AllocSpec</span
 - If it exists, it decodes a base64 JSON into a <code class="docutils literal notranslate"><span class="pre">Bootstrap</span></code> value.
 - If it doesn’t exist, it returns <code class="docutils literal notranslate"><span class="pre">None</span></code> and we fall back to <code class="docutils literal notranslate"><span class="pre">Bootstrap::default()</span></code>.</p>
 <p>What’s the default?</p>
-<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// from hyperactor_mesh/src/bootstrap.rs</span>
-<span class="cp">#[derive(Clone, Default, Debug, Serialize, Deserialize)]</span>
-<span class="k">pub</span><span class="w"> </span><span class="k">enum</span><span class="w"> </span><span class="nc">Bootstrap</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="err">…</span>
-<span class="w">    </span><span class="cp">#[default]</span>
-<span class="w">    </span><span class="n">V0ProcMesh</span><span class="p">,</span>
-<span class="p">}</span>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span>// from hyperactor_mesh/src/bootstrap.rs
+#[derive(Clone, Default, Debug, Serialize, Deserialize)]
+pub enum Bootstrap {
+    …
+    #[default]
+    V0ProcMesh,
+}
 </pre></div>
 </div>
 <p>So: if the parent did not set <code class="docutils literal notranslate"><span class="pre">HYPERACTOR_MESH_BOOTSTRAP_MODE</span></code>, the child runs in <code class="docutils literal notranslate"><span class="pre">Bootstrap::V0ProcMesh</span></code> mode.</p>
@@ -1423,7 +1424,7 @@ The <code class="docutils literal notranslate"><span class="pre">AllocSpec</span
 </section>
 </section>
 <section id="after-the-child-picks-bootstrap-v0procmesh">
-<h3>2.3.2 After the child picks <code class="docutils literal notranslate"><span class="pre">Bootstrap::V0ProcMesh</span></code><a class="headerlink" href="#after-the-child-picks-bootstrap-v0procmesh" title="Link to this heading">#</a></h3>
+<h3>2.3.2 After the child picks <code class="docutils literal notranslate"><span class="pre">Bootstrap::V0ProcMesh</span></code><a class="headerlink" href="#after-the-child-picks-bootstrap-v0procmesh" title="Permalink to this heading">#</a></h3>
 <p>At this point we are in the child process, running the <code class="docutils literal notranslate"><span class="pre">monarch/hyperactor_mesh/bootstrap</span></code> test binary (the one whose <code class="docutils literal notranslate"><span class="pre">main</span></code> just calls <code class="docutils literal notranslate"><span class="pre">hyperactor_mesh::bootstrap_or_die().await</span></code>).</p>
 <p>Because the parent did <strong>not</strong> set <code class="docutils literal notranslate"><span class="pre">HYPERACTOR_MESH_BOOTSTRAP_MODE</span></code>, the call:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="n">boot</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Bootstrap</span><span class="p">::</span><span class="n">get_from_env</span><span class="p">().</span><span class="n">unwrap_or_else</span><span class="p">(</span><span class="n">Bootstrap</span><span class="p">::</span><span class="n">default</span><span class="p">);</span>
@@ -1499,7 +1500,7 @@ When the parent/allocator finally sends:</p>
 </ol>
 <p>That’s the full round-trip for the v0 allocator + test bootstrap binary: parent starts OS process → child says “hello, I’m #N, talk to me here” → parent says “start proc X on transport T” → child starts it and reports back.</p>
 <section id="note-who-picks-the-procid">
-<h4>Note: who picks the <code class="docutils literal notranslate"><span class="pre">ProcId</span></code>?<a class="headerlink" href="#note-who-picks-the-procid" title="Link to this heading">#</a></h4>
+<h4>Note: who picks the <code class="docutils literal notranslate"><span class="pre">ProcId</span></code>?<a class="headerlink" href="#note-who-picks-the-procid" title="Permalink to this heading">#</a></h4>
 <p>When the allocator receives the child’s <code class="docutils literal notranslate"><span class="pre">Hello(...)</span></code> and decides to start a proc, <strong>the allocator chooses the proc id</strong>.</p>
 <ul class="simple">
 <li><p>If <code class="docutils literal notranslate"><span class="pre">AllocSpec.proc_name</span></code> is <strong><code class="docutils literal notranslate"><span class="pre">None</span></code></strong>, the allocator builds a default id using the allocation’s uuid and child index.</p></li>
@@ -1512,7 +1513,7 @@ When the parent/allocator finally sends:</p>
 <p>So: the parent always decides the identity; the child just accepts it.</p>
 </section>
 <section id="driving-the-allocation-where-the-child-actually-starts">
-<h4>2.3.3 Driving the allocation (where the child actually starts)<a class="headerlink" href="#driving-the-allocation-where-the-child-actually-starts" title="Link to this heading">#</a></h4>
+<h4>2.3.3 Driving the allocation (where the child actually starts)<a class="headerlink" href="#driving-the-allocation-where-the-child-actually-starts" title="Permalink to this heading">#</a></h4>
 <p>Up to this point we’ve only <em>created</em> an allocation:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// from hyperactor_mesh/src/bootstrap.rs (`fn tests::bootstrap_canonical_simple`)</span>
 <span class="kd">let</span><span class="w"> </span><span class="n">alloc</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">allocator</span>
@@ -1777,7 +1778,7 @@ When the parent/allocator finally sends:</p>
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["OrphanPolicy","RemoteActorDisposition","SupervisedWorker","WorkerSupervisor"],"struct":["Link","LinkOptions"],"trait":["LinkClient","LinkHandler","SupervisedWorkerClient","SupervisedWorkerHandler"]};

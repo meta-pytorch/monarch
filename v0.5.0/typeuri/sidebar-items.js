@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"derive":["Named"],"static":["ACTOR_PORT_BIT"],"trait":["Named"]};

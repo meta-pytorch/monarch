@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -16,7 +17,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="What the ProcAgent Is: Every proc in a mesh runs a ProcAgent. It plays the same role on the proc side that the HostAgent plays on the host side: it implements the control-plane interface for “manag..." />
 
-    <title>Proc meshes &amp; ProcAgent &#8212; Monarch v0.5.0 documentation</title>
+    <title>Proc meshes &amp; ProcAgent &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
+    <script src="../../../../_static/doctools.js"></script>
+    <script src="../../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../../_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-mesh-book/src/meshes/proc-mesh-and-agent';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-mesh-book/src/meshes/proc-mesh-and-agent.html" />
@@ -82,7 +83,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +197,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1293,9 +1294,9 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="proc-meshes-procagent">
-<h1>Proc meshes &amp; ProcAgent<a class="headerlink" href="#proc-meshes-procagent" title="Link to this heading">#</a></h1>
+<h1>Proc meshes &amp; ProcAgent<a class="headerlink" href="#proc-meshes-procagent" title="Permalink to this heading">#</a></h1>
 <section id="what-the-procagent-is">
-<h2>What the <code class="docutils literal notranslate"><span class="pre">ProcAgent</span></code> Is<a class="headerlink" href="#what-the-procagent-is" title="Link to this heading">#</a></h2>
+<h2>What the <code class="docutils literal notranslate"><span class="pre">ProcAgent</span></code> Is<a class="headerlink" href="#what-the-procagent-is" title="Permalink to this heading">#</a></h2>
 <p>Every proc in a mesh runs a <code class="docutils literal notranslate"><span class="pre">ProcAgent</span></code>. It plays the same role on the proc side that the <code class="docutils literal notranslate"><span class="pre">HostAgent</span></code> plays on the host side: it implements the control-plane interface for “managing this proc as part of a mesh”.</p>
 <p>The agent has several responsibilities, all of which will be documented on this page:</p>
 <ul class="simple">
@@ -1329,7 +1330,7 @@ document.write(`
 <p>The sections that follow walk the spawn flow end-to-end. Additional responsibilities (status, supervision, teardown) will be documented after the spawn discussion.</p>
 </section>
 <section id="the-v1-spawn-flow">
-<h2>The V1 Spawn Flow<a class="headerlink" href="#the-v1-spawn-flow" title="Link to this heading">#</a></h2>
+<h2>The V1 Spawn Flow<a class="headerlink" href="#the-v1-spawn-flow" title="Permalink to this heading">#</a></h2>
 <p>At a high level, the v1 path for creating an actor on every proc looks like this:</p>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>ProcMeshRef ──(CreateOrUpdate&lt;ActorSpec&gt;)──▶ ProcAgent mesh
                       ProcAgent ──(Remote::gspawn)──▶ Proc / Remote registry
@@ -1348,7 +1349,7 @@ document.write(`
 </div>
 <p>The rest of this section unpacks what that call actually does.</p>
 <section id="from-spawn-to-actorspec">
-<h3>From <code class="docutils literal notranslate"><span class="pre">spawn</span></code> to <code class="docutils literal notranslate"><span class="pre">ActorSpec</span></code><a class="headerlink" href="#from-spawn-to-actorspec" title="Link to this heading">#</a></h3>
+<h3>From <code class="docutils literal notranslate"><span class="pre">spawn</span></code> to <code class="docutils literal notranslate"><span class="pre">ActorSpec</span></code><a class="headerlink" href="#from-spawn-to-actorspec" title="Permalink to this heading">#</a></h3>
 <p>The real work happens in <code class="docutils literal notranslate"><span class="pre">spawn_with_name_inner</span></code>:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="w"> </span><span class="n">ProcMeshRef</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">spawn_with_name_inner</span><span class="o">&lt;</span><span class="n">A</span><span class="p">:</span><span class="w"> </span><span class="nc">Actor</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">Referable</span><span class="o">&gt;</span><span class="p">(</span>
@@ -1442,7 +1443,7 @@ document.write(`
 <p>At this point the proc mesh has done its part: it has told every proc in the mesh: “For mesh actor name, please ensure you have one local actor of type <code class="docutils literal notranslate"><span class="pre">actor_type</span></code>, constructed from <code class="docutils literal notranslate"><span class="pre">params_data</span></code>.”</p>
 </section>
 <section id="how-procagent-handles-createorupdate-actorspec">
-<h3>How <code class="docutils literal notranslate"><span class="pre">ProcAgent</span></code> handles <code class="docutils literal notranslate"><span class="pre">CreateOrUpdate&lt;ActorSpec&gt;</span></code><a class="headerlink" href="#how-procagent-handles-createorupdate-actorspec" title="Link to this heading">#</a></h3>
+<h3>How <code class="docutils literal notranslate"><span class="pre">ProcAgent</span></code> handles <code class="docutils literal notranslate"><span class="pre">CreateOrUpdate&lt;ActorSpec&gt;</span></code><a class="headerlink" href="#how-procagent-handles-createorupdate-actorspec" title="Permalink to this heading">#</a></h3>
 <p>Once the <code class="docutils literal notranslate"><span class="pre">ProcMeshRef</span></code> has broadcast a <code class="docutils literal notranslate"><span class="pre">CreateOrUpdate&lt;ActorSpec&gt;</span></code> to every proc, each proc’s <code class="docutils literal notranslate"><span class="pre">ProcAgent</span></code> receives that message and attempts to construct the actor locally.</p>
 <p>The entry point is:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="cp">#[async_trait]</span>
@@ -1560,7 +1561,7 @@ document.write(`
 </section>
 </section>
 <section id="completing-the-spawn-how-getrankstatus-decides-success">
-<h2>Completing the Spawn: How <code class="docutils literal notranslate"><span class="pre">GetRankStatus</span></code> Decides Success<a class="headerlink" href="#completing-the-spawn-how-getrankstatus-decides-success" title="Link to this heading">#</a></h2>
+<h2>Completing the Spawn: How <code class="docutils literal notranslate"><span class="pre">GetRankStatus</span></code> Decides Success<a class="headerlink" href="#completing-the-spawn-how-getrankstatus-decides-success" title="Permalink to this heading">#</a></h2>
 <p>Once every <code class="docutils literal notranslate"><span class="pre">ProcAgent</span></code> has received the <code class="docutils literal notranslate"><span class="pre">CreateOrUpdate&lt;ActorSpec&gt;</span></code> message and updated its local <code class="docutils literal notranslate"><span class="pre">actor_states</span></code>, the caller still does not know:</p>
 <ul class="simple">
 <li><p><strong>Did every proc spawn the actor successfully?</strong></p></li>
@@ -1821,7 +1822,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>

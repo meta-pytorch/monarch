@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -16,7 +17,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="Transmit ( Tx) and receive ( Rx) ends define the basic channel interface. Tx can post or send messages, Rx can asynchronously receive them. Overview: Channels provide one-way, typed communication b..." />
 
-    <title>Transmits and Receives &#8212; Monarch v0.5.0 documentation</title>
+    <title>Transmits and Receives &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
+    <script src="../../../../_static/doctools.js"></script>
+    <script src="../../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../../_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-book/src/channels/tx_rx';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/channels/tx_rx.html" />
@@ -82,7 +83,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +197,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1293,10 +1294,10 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="transmits-and-receives">
-<h1>Transmits and Receives<a class="headerlink" href="#transmits-and-receives" title="Link to this heading">#</a></h1>
+<h1>Transmits and Receives<a class="headerlink" href="#transmits-and-receives" title="Permalink to this heading">#</a></h1>
 <p>Transmit (<code class="docutils literal notranslate"><span class="pre">Tx</span></code>) and receive (<code class="docutils literal notranslate"><span class="pre">Rx</span></code>) ends define the basic channel interface. <code class="docutils literal notranslate"><span class="pre">Tx</span></code> can post or send messages, <code class="docutils literal notranslate"><span class="pre">Rx</span></code> can asynchronously receive them.</p>
 <section id="overview">
-<h2>Overview<a class="headerlink" href="#overview" title="Link to this heading">#</a></h2>
+<h2>Overview<a class="headerlink" href="#overview" title="Permalink to this heading">#</a></h2>
 <p>Channels provide one-way, typed communication between processes.</p>
 <p>The public API is:</p>
 <ul class="simple">
@@ -1309,9 +1310,9 @@ document.write(`
 </div></blockquote>
 </section>
 <section id="semantics">
-<h2>Semantics<a class="headerlink" href="#semantics" title="Link to this heading">#</a></h2>
+<h2>Semantics<a class="headerlink" href="#semantics" title="Permalink to this heading">#</a></h2>
 <section id="tx-m-remotemessage-transmit-end">
-<h3><code class="docutils literal notranslate"><span class="pre">Tx&lt;M:</span> <span class="pre">RemoteMessage&gt;</span></code> (transmit end)<a class="headerlink" href="#tx-m-remotemessage-transmit-end" title="Link to this heading">#</a></h3>
+<h3><code class="docutils literal notranslate"><span class="pre">Tx&lt;M:</span> <span class="pre">RemoteMessage&gt;</span></code> (transmit end)<a class="headerlink" href="#tx-m-remotemessage-transmit-end" title="Permalink to this heading">#</a></h3>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="cp">#[async_trait]</span>
 <span class="k">pub</span><span class="w"> </span><span class="k">trait</span><span class="w"> </span><span class="n">Tx</span><span class="o">&lt;</span><span class="n">M</span><span class="p">:</span><span class="w"> </span><span class="nc">RemoteMessage</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">do_post</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">message</span><span class="p">:</span><span class="w"> </span><span class="nc">M</span><span class="p">,</span><span class="w"> </span><span class="n">return_channel</span><span class="p">:</span><span class="w"> </span><span class="nb">Option</span><span class="o">&lt;</span><span class="n">oneshot</span><span class="p">::</span><span class="n">Sender</span><span class="o">&lt;</span><span class="n">SendError</span><span class="o">&lt;</span><span class="n">M</span><span class="o">&gt;&gt;&gt;</span><span class="p">);</span>
@@ -1349,7 +1350,7 @@ A <code class="docutils literal notranslate"><span class="pre">watch::Receiver&l
 <p><strong>Note:</strong> <code class="docutils literal notranslate"><span class="pre">SendError&lt;M&gt;</span></code> carries both the error and the original <code class="docutils literal notranslate"><span class="pre">M</span></code> for retry or inspection.</p>
 </section>
 <section id="rx-m-remotemessage-receive-end">
-<h3>Rx&lt;M: RemoteMessage&gt; (receive end)<a class="headerlink" href="#rx-m-remotemessage-receive-end" title="Link to this heading">#</a></h3>
+<h3>Rx&lt;M: RemoteMessage&gt; (receive end)<a class="headerlink" href="#rx-m-remotemessage-receive-end" title="Permalink to this heading">#</a></h3>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="cp">#[async_trait]</span>
 <span class="k">pub</span><span class="w"> </span><span class="k">trait</span><span class="w"> </span><span class="n">Rx</span><span class="o">&lt;</span><span class="n">M</span><span class="p">:</span><span class="w"> </span><span class="nc">RemoteMessage</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">recv</span><span class="p">(</span><span class="o">&amp;</span><span class="k">mut</span><span class="w"> </span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="n">M</span><span class="p">,</span><span class="w"> </span><span class="n">ChannelError</span><span class="o">&gt;</span><span class="p">;</span>
@@ -1371,9 +1372,9 @@ The source <code class="docutils literal notranslate"><span class="pre">ChannelA
 </section>
 </section>
 <section id="guarantees-and-limits">
-<h2>Guarantees and Limits<a class="headerlink" href="#guarantees-and-limits" title="Link to this heading">#</a></h2>
+<h2>Guarantees and Limits<a class="headerlink" href="#guarantees-and-limits" title="Permalink to this heading">#</a></h2>
 <section id="delivery-ordering">
-<h3>Delivery &amp; ordering<a class="headerlink" href="#delivery-ordering" title="Link to this heading">#</a></h3>
+<h3>Delivery &amp; ordering<a class="headerlink" href="#delivery-ordering" title="Permalink to this heading">#</a></h3>
 <ul class="simple">
 <li><p><strong>Per-sender FIFO.</strong> Messages posted from a single <code class="docutils literal notranslate"><span class="pre">Tx</span></code> are delivered in order.
 (Network transports tag each message with a monotonically increasing <code class="docutils literal notranslate"><span class="pre">seq</span></code>; the server enforces in-order delivery and ignores retransmits with lower <code class="docutils literal notranslate"><span class="pre">seq</span></code>.)</p></li>
@@ -1381,7 +1382,7 @@ The source <code class="docutils literal notranslate"><span class="pre">ChannelA
 </ul>
 </section>
 <section id="acknowledgement-exactly-once-at-the-channel-boundary">
-<h3>Acknowledgement &amp; exactly-once at the channel boundary<a class="headerlink" href="#acknowledgement-exactly-once-at-the-channel-boundary" title="Link to this heading">#</a></h3>
+<h3>Acknowledgement &amp; exactly-once at the channel boundary<a class="headerlink" href="#acknowledgement-exactly-once-at-the-channel-boundary" title="Permalink to this heading">#</a></h3>
 <ul class="simple">
 <li><p><strong>Network transports (TCP/Unix/MetaTLS):</strong> delivery is confirmed by explicit acks from the server (<code class="docutils literal notranslate"><span class="pre">NetRxResponse::Ack</span></code>). The server enforces <em>no duplicates and no reordering</em> per session (<code class="docutils literal notranslate"><span class="pre">seq</span></code>/<code class="docutils literal notranslate"><span class="pre">ack</span></code>) <strong>for delivery into the server’s bounded queue</strong>.</p>
 <ul>
@@ -1396,21 +1397,21 @@ The source <code class="docutils literal notranslate"><span class="pre">ChannelA
 </ul>
 </section>
 <section id="backpressure-buffering">
-<h3>Backpressure &amp; buffering<a class="headerlink" href="#backpressure-buffering" title="Link to this heading">#</a></h3>
+<h3>Backpressure &amp; buffering<a class="headerlink" href="#backpressure-buffering" title="Permalink to this heading">#</a></h3>
 <ul class="simple">
 <li><p><strong>Server-side buffer (network):</strong> incoming messages are relayed into a bounded <code class="docutils literal notranslate"><span class="pre">mpsc</span></code> (default capacity <strong>1024</strong>). If full, the server’s forwarding task uses <code class="docutils literal notranslate"><span class="pre">reserve()</span></code> in a retry loop, logging and incrementing a metric until space frees. This can delay acks.</p></li>
 <li><p><strong>Client outbox (network):</strong> each <code class="docutils literal notranslate"><span class="pre">Tx</span></code> maintains an outbox + unacked queue. On reconnect, all unacked messages are requeued in order and retransmitted; the server deduplicates them by <code class="docutils literal notranslate"><span class="pre">seq</span></code>.</p></li>
 </ul>
 </section>
 <section id="cancellation-safety">
-<h3>Cancellation safety<a class="headerlink" href="#cancellation-safety" title="Link to this heading">#</a></h3>
+<h3>Cancellation safety<a class="headerlink" href="#cancellation-safety" title="Permalink to this heading">#</a></h3>
 <ul class="simple">
 <li><p>Cancelling a task awaiting <code class="docutils literal notranslate"><span class="pre">recv()</span></code> or a network frame read/write does <strong>not</strong> corrupt channel state; progress resumes on the next poll.</p></li>
 <li><p>Cancelling <code class="docutils literal notranslate"><span class="pre">Tx::send(message)</span></code> only cancels your await; it doesn’t “unsend” the message. The message may still be in-flight or already delivered. Use <code class="docutils literal notranslate"><span class="pre">status()</span></code> to monitor liveness.</p></li>
 </ul>
 </section>
 <section id="failure-semantics">
-<h3>Failure semantics<a class="headerlink" href="#failure-semantics" title="Link to this heading">#</a></h3>
+<h3>Failure semantics<a class="headerlink" href="#failure-semantics" title="Permalink to this heading">#</a></h3>
 <ul class="simple">
 <li><p><strong>Closed receiver:</strong> <code class="docutils literal notranslate"><span class="pre">recv()</span></code> returns <code class="docutils literal notranslate"><span class="pre">Err(ChannelError::Closed)</span></code>.</p></li>
 <li><p><strong>Network transports:</strong> disconnects trigger exponential backoff reconnects; unacked messages are retried. If recovery ultimately fails (e.g., connection cannot be re-established within the delivery timeout window), the client closes and returns all undelivered/unacked messages via their <code class="docutils literal notranslate"><span class="pre">return_channel</span></code>. <code class="docutils literal notranslate"><span class="pre">status()</span></code> flips to <code class="docutils literal notranslate"><span class="pre">Closed</span></code>.</p></li>
@@ -1420,7 +1421,7 @@ The source <code class="docutils literal notranslate"><span class="pre">ChannelA
 </ul>
 </section>
 <section id="size-time-limits">
-<h3>Size &amp; time limits<a class="headerlink" href="#size-time-limits" title="Link to this heading">#</a></h3>
+<h3>Size &amp; time limits<a class="headerlink" href="#size-time-limits" title="Permalink to this heading">#</a></h3>
 <ul class="simple">
 <li><p><strong>Max frame size:</strong> frames larger than <code class="docutils literal notranslate"><span class="pre">config::CODEC_MAX_FRAME_LENGTH</span></code> are rejected.</p></li>
 <li><p><strong>Ack policy:</strong> acks are sent every <code class="docutils literal notranslate"><span class="pre">config::MESSAGE_ACK_EVERY_N_MESSAGES</span></code> or after <code class="docutils literal notranslate"><span class="pre">config::MESSAGE_ACK_TIME_INTERVAL</span></code> (whichever comes first).</p></li>
@@ -1429,7 +1430,7 @@ The source <code class="docutils literal notranslate"><span class="pre">ChannelA
 </section>
 </section>
 <section id="implementations">
-<h2>Implementations<a class="headerlink" href="#implementations" title="Link to this heading">#</a></h2>
+<h2>Implementations<a class="headerlink" href="#implementations" title="Permalink to this heading">#</a></h2>
 <p>Concrete channel implementations that satisfy <code class="docutils literal notranslate"><span class="pre">Tx&lt;M&gt;</span></code> / <code class="docutils literal notranslate"><span class="pre">Rx&lt;M&gt;</span></code>:</p>
 <ul class="simple">
 <li><p><strong>Local</strong> — in-process only; uses <code class="docutils literal notranslate"><span class="pre">tokio::sync::mpsc</span></code>. No network framing/acks.
@@ -1684,7 +1685,7 @@ The source <code class="docutils literal notranslate"><span class="pre">ChannelA
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>

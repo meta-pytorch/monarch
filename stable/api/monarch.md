@@ -127,13 +127,13 @@ the borrow is returned (becomes free and a wait_for has been issued).
 
 If not mutable both self and t.stream can read from t's storage but neither can write to it.
 
-monarch.remote(*function: Callable[P, R]*, ***, *propagate: Propagator = None*) → Remote[P, R][[source]](../_modules/monarch/common/remote.html#remote)
+monarch.remote(*function: [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[P], R]*, ***, *propagate: [Any](https://docs.python.org/3/library/typing.html#typing.Any) = None*) → Remote[P, R][[source]](../_modules/monarch/common/remote.html#remote)
 
-monarch.remote(*function: [str](https://docs.python.org/3/library/stdtypes.html#str)*, ***, *propagate: Literal['mocked', 'cached', 'inspect'] | [None](https://docs.python.org/3/library/constants.html#None) = None*) → Remote
+monarch.remote(*function: [str](https://docs.python.org/3/library/stdtypes.html#str)*, ***, *propagate: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['mocked', 'cached', 'inspect'] | [None](https://docs.python.org/3/library/constants.html#None) = None*) → Remote
 
-monarch.remote(*function: [str](https://docs.python.org/3/library/stdtypes.html#str)*, ***, *propagate: Callable[P, R]*) → Remote[P, R]
+monarch.remote(*function: [str](https://docs.python.org/3/library/stdtypes.html#str)*, ***, *propagate: [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[P], R]*) → Remote[P, R]
 
-monarch.remote(***, *propagate: Propagator = None*) → RemoteIfy
+monarch.remote(***, *propagate: [Any](https://docs.python.org/3/library/typing.html#typing.Any) = None*) → RemoteIfy
 
 monarch.coalescing()[[source]](../_modules/monarch/common/_coalescing.html#coalescing)
 

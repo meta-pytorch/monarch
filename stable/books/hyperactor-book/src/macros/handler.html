@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -16,7 +17,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="The#[derive(Handler)] macro generates the infrastructure for sending and receiving typed messages in hyperactor. This can be applied to an enum or a struct. Structs can be generic and non-generic. ..." />
 
-    <title>#[derive(Handler)] &#8212; Monarch v0.5.0 documentation</title>
+    <title>#[derive(Handler)] &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
+    <script src="../../../../_static/doctools.js"></script>
+    <script src="../../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../../_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-book/src/macros/handler';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/macros/handler.html" />
@@ -82,7 +83,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +197,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1293,10 +1294,10 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="derive-handler">
-<h1><code class="docutils literal notranslate"><span class="pre">#[derive(Handler)]</span></code><a class="headerlink" href="#derive-handler" title="Link to this heading">#</a></h1>
+<h1><code class="docutils literal notranslate"><span class="pre">#[derive(Handler)]</span></code><a class="headerlink" href="#derive-handler" title="Permalink to this heading">#</a></h1>
 <p>The <code class="docutils literal notranslate"><span class="pre">#[derive(Handler)]</span></code> macro generates the infrastructure for sending and receiving typed messages in hyperactor. This can be applied to an enum or a struct. Structs can be generic and non-generic.</p>
 <section id="for-an-enum">
-<h2>For an Enum:<a class="headerlink" href="#for-an-enum" title="Link to this heading">#</a></h2>
+<h2>For an Enum:<a class="headerlink" href="#for-an-enum" title="Permalink to this heading">#</a></h2>
 <p>When applied to an enum like this</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="cp">#[derive(Handler)]</span>
 <span class="k">enum</span><span class="w"> </span><span class="nc">ShoppingList</span><span class="w"> </span><span class="p">{</span>
@@ -1312,7 +1313,7 @@ document.write(`
 </div>
 <p>… it generates <strong>two key things</strong>:</p>
 <section id="shoppinglisthandler-trait">
-<h3>1. <code class="docutils literal notranslate"><span class="pre">ShoppingListHandler</span></code> trait<a class="headerlink" href="#shoppinglisthandler-trait" title="Link to this heading">#</a></h3>
+<h3>1. <code class="docutils literal notranslate"><span class="pre">ShoppingListHandler</span></code> trait<a class="headerlink" href="#shoppinglisthandler-trait" title="Permalink to this heading">#</a></h3>
 <p>This trait defines a method for each variant, and a <code class="docutils literal notranslate"><span class="pre">handle</span></code> method to route incoming messages:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">use</span><span class="w"> </span><span class="n">async_trait</span><span class="p">::</span><span class="n">async_trait</span><span class="p">;</span>
 <span class="k">use</span><span class="w"> </span><span class="n">hyperactor</span><span class="p">::</span><span class="n">anyhow</span><span class="p">::</span><span class="n">Error</span><span class="p">;</span>
@@ -1354,7 +1355,7 @@ document.write(`
 </ul>
 </section>
 <section id="shoppinglistclient-trait">
-<h3>2. <code class="docutils literal notranslate"><span class="pre">ShoppingListClient</span></code> trait<a class="headerlink" href="#shoppinglistclient-trait" title="Link to this heading">#</a></h3>
+<h3>2. <code class="docutils literal notranslate"><span class="pre">ShoppingListClient</span></code> trait<a class="headerlink" href="#shoppinglistclient-trait" title="Permalink to this heading">#</a></h3>
 <p>Alongside the handler, the <code class="docutils literal notranslate"><span class="pre">#[derive(Handler)]</span></code> macro also generates a client-side trait named <code class="docutils literal notranslate"><span class="pre">ShoppingListClient</span></code>. This trait provides a convenient and type-safe interface for sending messages to an actor.</p>
 <p>Each method in the trait corresponds to a variant of the message enum. For example:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">use</span><span class="w"> </span><span class="n">async_trait</span><span class="p">::</span><span class="n">async_trait</span><span class="p">;</span>
@@ -1373,7 +1374,7 @@ document.write(`
 </section>
 </section>
 <section id="for-a-struct">
-<h2>For a struct<a class="headerlink" href="#for-a-struct" title="Link to this heading">#</a></h2>
+<h2>For a struct<a class="headerlink" href="#for-a-struct" title="Permalink to this heading">#</a></h2>
 <p>Supports both generic and non-generic structs. Generic structs must implement the trait bounds <code class="docutils literal notranslate"><span class="pre">Serialize</span></code>, <code class="docutils literal notranslate"><span class="pre">Deserialize</span></code>, <code class="docutils literal notranslate"><span class="pre">Send</span></code>, <code class="docutils literal notranslate"><span class="pre">Sync</span></code>, <code class="docutils literal notranslate"><span class="pre">Debug</span></code>, and <code class="docutils literal notranslate"><span class="pre">Named</span></code>. This is automatically enforced by the macro.
 When applied to a struct like this</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="cp">#[derive(Handler)]</span>
@@ -1386,7 +1387,7 @@ When applied to a struct like this</p>
 </div>
 <p>… it generates:</p>
 <section id="getitemcounthandler-trait">
-<h3>1. <code class="docutils literal notranslate"><span class="pre">GetItemCountHandler</span></code> trait<a class="headerlink" href="#getitemcounthandler-trait" title="Link to this heading">#</a></h3>
+<h3>1. <code class="docutils literal notranslate"><span class="pre">GetItemCountHandler</span></code> trait<a class="headerlink" href="#getitemcounthandler-trait" title="Permalink to this heading">#</a></h3>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">use</span><span class="w"> </span><span class="n">async_trait</span><span class="p">::</span><span class="n">async_trait</span><span class="p">;</span>
 <span class="k">use</span><span class="w"> </span><span class="n">hyperactor</span><span class="p">::</span><span class="n">anyhow</span><span class="p">::</span><span class="n">Error</span><span class="p">;</span>
 
@@ -1423,7 +1424,7 @@ When applied to a struct like this</p>
 </div>
 </section>
 <section id="getitemcountclient-trait">
-<h3>2. <code class="docutils literal notranslate"><span class="pre">GetItemCountClient</span></code> trait<a class="headerlink" href="#getitemcountclient-trait" title="Link to this heading">#</a></h3>
+<h3>2. <code class="docutils literal notranslate"><span class="pre">GetItemCountClient</span></code> trait<a class="headerlink" href="#getitemcountclient-trait" title="Permalink to this heading">#</a></h3>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="cp">#[async_trait]</span>
 <span class="k">pub</span><span class="w"> </span><span class="k">trait</span><span class="w"> </span><span class="n">GetItemCountClient</span><span class="p">:</span><span class="w"> </span><span class="nb">Send</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Sync</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">get_item_count</span><span class="p">(</span>
@@ -1436,14 +1437,13 @@ When applied to a struct like this</p>
 </div>
 </section>
 <section id="capability-parameter">
-<h3>Capability Parameter<a class="headerlink" href="#capability-parameter" title="Link to this heading">#</a></h3>
+<h3>Capability Parameter<a class="headerlink" href="#capability-parameter" title="Permalink to this heading">#</a></h3>
 <p>The <code class="docutils literal notranslate"><span class="pre">cx</span></code> parameter provides the actor context required to send messages and open ports. In typical usage, <code class="docutils literal notranslate"><span class="pre">cx</span></code> is a <code class="docutils literal notranslate"><span class="pre">Mailbox</span></code> or other type implementing the <code class="docutils literal notranslate"><span class="pre">Actor</span></code> trait.</p>
 </section>
 <section id="example-usage">
-<h3>Example Usage<a class="headerlink" href="#example-usage" title="Link to this heading">#</a></h3>
-<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">proc</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Proc</span><span class="p">::</span><span class="n">isolated</span><span class="p">();</span>
-<span class="kd">let</span><span class="w"> </span><span class="n">actor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">proc</span><span class="p">.</span><span class="n">spawn</span><span class="p">::</span><span class="o">&lt;</span><span class="n">ShoppingListActor</span><span class="o">&gt;</span><span class="p">(</span><span class="s">&quot;shopping&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">()).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
-<span class="kd">let</span><span class="w"> </span><span class="n">client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">proc</span><span class="p">.</span><span class="n">attach</span><span class="p">(</span><span class="s">&quot;client&quot;</span><span class="p">).</span><span class="n">unwrap</span><span class="p">();</span>
+<h3>Example Usage<a class="headerlink" href="#example-usage" title="Permalink to this heading">#</a></h3>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="n">actor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">hyperactor</span><span class="p">::</span><span class="n">spawn_with_label</span><span class="p">(</span><span class="s">&quot;shopping&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">ShoppingListActor</span><span class="p">::</span><span class="n">default</span><span class="p">())</span><span class="o">?</span><span class="p">;</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">hyperactor</span><span class="p">::</span><span class="n">client</span><span class="p">(</span><span class="s">&quot;client&quot;</span><span class="p">);</span>
 
 <span class="c1">// Fire-and-forget</span>
 <span class="n">actor</span><span class="p">.</span><span class="n">add</span><span class="p">(</span><span class="o">&amp;</span><span class="n">client</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;milk&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">()).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
@@ -1453,10 +1453,10 @@ When applied to a struct like this</p>
 <span class="fm">println!</span><span class="p">(</span><span class="s">&quot;got milk? {found}&quot;</span><span class="p">);</span>
 </pre></div>
 </div>
-<p>Here, actor is an <code class="docutils literal notranslate"><span class="pre">ActorHandle&lt;ShoppingListActor&gt;</span></code> that implements <code class="docutils literal notranslate"><span class="pre">ShoppingListClient</span></code>, and <code class="docutils literal notranslate"><span class="pre">client</span></code> is a <code class="docutils literal notranslate"><span class="pre">Mailbox</span></code> that provides the necessary capabilities.</p>
+<p>Here, actor is an <code class="docutils literal notranslate"><span class="pre">ActorHandle&lt;ShoppingListActor&gt;</span></code> that implements <code class="docutils literal notranslate"><span class="pre">ShoppingListClient</span></code>, and <code class="docutils literal notranslate"><span class="pre">client</span></code> provides the necessary caller capabilities.</p>
 </section>
 <section id="reply">
-<h3><code class="docutils literal notranslate"><span class="pre">#[reply]</span></code><a class="headerlink" href="#reply" title="Link to this heading">#</a></h3>
+<h3><code class="docutils literal notranslate"><span class="pre">#[reply]</span></code><a class="headerlink" href="#reply" title="Permalink to this heading">#</a></h3>
 <p><code class="docutils literal notranslate"><span class="pre">#[reply]</span></code> can take any of the four types:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">OncePortRef&lt;T&gt;</span></code></p></li>
@@ -1705,7 +1705,7 @@ When applied to a struct like this</p>
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>
@@ -1734,7 +1734,7 @@ When applied to a struct like this</p>
        "headline": "#[derive(Handler)]",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/books/hyperactor-book/src/macros/handler.html",
-       "articleBody": "#[derive(Handler)]# The #[derive(Handler)] macro generates the infrastructure for sending and receiving typed messages in hyperactor. This can be applied to an enum or a struct. Structs can be generic and non-generic. For an Enum:# When applied to an enum like this #[derive(Handler)] enum ShoppingList { // Fire-and-forget messages Add(String), Remove(String), // Request-response messages Exists(String, #[reply] OncePortRef\u003cbool\u003e), List(#[reply] OncePortRef\u003cVec\u003cString\u003e\u003e), } \u2026 it generates two key things: 1. ShoppingListHandler trait# This trait defines a method for each variant, and a handle method to route incoming messages: use async_trait::async_trait; use hyperactor::anyhow::Error; #[async_trait] pub trait ShoppingListHandler: hyperactor::Actor + Send + Sync { async fn add(\u0026mut self, ctx: \u0026Context\u003cSelf\u003e, item: String) -\u003e Result\u003c(), Error\u003e; async fn remove(\u0026mut self, ctx: \u0026Context\u003cSelf\u003e, item: String) -\u003e Result\u003c(), Error\u003e; async fn exists(\u0026mut self, ctx: \u0026Context\u003cSelf\u003e, item: String) -\u003e Result\u003cbool, Error\u003e; async fn list(\u0026mut self, ctx: \u0026Context\u003cSelf\u003e) -\u003e Result\u003cVec\u003cString\u003e, Error\u003e; async fn handle(\u0026mut self, ctx: \u0026Context\u003cSelf\u003e, msg: ShoppingList) -\u003e Result\u003c(), Error\u003e { match msg { ShoppingList::Add(item) =\u003e { self.add(ctx, item).await } ShoppingList::Remove(item) =\u003e { self.remove(ctx, item).await } ShoppingList::Exists(item, reply_to) =\u003e { let result = self.exists(ctx, item).await?; reply_to.send(ctx, result)?; Ok(()) } ShoppingList::List(reply_to) =\u003e { let result = self.list(ctx).await?; reply_to.send(ctx, result)?; Ok(()) } } } } Note: Add and Remove are oneway: no reply port Exists and List are call-style: they take a #[reply] OncePortRef\u003cT\u003e and expect a response to be sent back. 2. ShoppingListClient trait# Alongside the handler, the #[derive(Handler)] macro also generates a client-side trait named ShoppingListClient. This trait provides a convenient and type-safe interface for sending messages to an actor. Each method in the trait corresponds to a variant of the message enum. For example: use async_trait::async_trait; use hyperactor::anyhow::Error; use hyperactor::context::Actor; #[async_trait] pub trait ShoppingListClient: Send + Sync { async fn add(\u0026self, cx: \u0026impl Actor, item: String) -\u003e Result\u003c(), Error\u003e; async fn remove(\u0026self, cx: \u0026impl Actor, item: String) -\u003e Result\u003c(), Error\u003e; async fn exists(\u0026self, cx: \u0026impl Actor, item: String) -\u003e Result\u003cbool, Error\u003e; async fn list(\u0026self, cx: \u0026impl Actor) -\u003e Result\u003cVec\u003cString\u003e, Error\u003e; } For a struct# Supports both generic and non-generic structs. Generic structs must implement the trait bounds Serialize, Deserialize, Send, Sync, Debug, and Named. This is automatically enforced by the macro. When applied to a struct like this #[derive(Handler)] struct GetItemCount\u003cC\u003e { category_filter: String, #[reply] reply: OncePortRef\u003cC\u003e, } \u2026 it generates: 1. GetItemCountHandler trait# use async_trait::async_trait; use hyperactor::anyhow::Error; #[async_trait] pub trait GetItemCountHandler\u003c C: serde::Serialize + for\u003c\u0027de\u003e serde::Deserialize\u003c\u0027de\u003e + Send + Sync + std::fmt::Debug + typeuri::Named, \u003e: hyperactor::Actor + Send + Sync { async fn get_item_count( \u0026mut self, _cx: \u0026Context\u003cSelf\u003e, category_filter: String, ) -\u003e Result\u003c(), anyhow::Error\u003e; async fn handle( \u0026mut self, _cx: \u0026Context\u003cSelf\u003e, msg: GetItemCount, ) -\u003e Result\u003c(), anyhow::Error\u003e { match msg { GetItemCount { category_filter, reply_to } =\u003e { let result = self.get_item_count(_cx, category_filter).await?; reply_to.send(_cx, result)?; Ok(()) } } } } 2. GetItemCountClient trait# #[async_trait] pub trait GetItemCountClient: Send + Sync { async fn get_item_count( \u0026mut self, cx: \u0026impl Actor, category_filter: String, ) -\u003e Result\u003c(), anyhow::Error\u003e; } Capability Parameter# The cx parameter provides the actor context required to send messages and open ports. In typical usage, cx is a Mailbox or other type implementing the Actor trait. Example Usage# let mut proc = Proc::isolated(); let actor = proc.spawn::\u003cShoppingListActor\u003e(\"shopping\", ()).await?; let client = proc.attach(\"client\").unwrap(); // Fire-and-forget actor.add(\u0026client, \"milk\".into()).await?; // With reply let found = actor.exists(\u0026client, \"milk\".into()).await?; println!(\"got milk? {found}\"); Here, actor is an ActorHandle\u003cShoppingListActor\u003e that implements ShoppingListClient, and client is a Mailbox that provides the necessary capabilities. #[reply]# #[reply] can take any of the four types: OncePortRef\u003cT\u003e OncePortHandle\u003cT\u003e PortRef\u003cT\u003e PortHandle\u003cT\u003e Note that OncePortRef\u003cT\u003e and OncePortHandle\u003cT\u003e support one-shot communication, compared to PortRef\u003cT\u003e and PortHandle\u003cT\u003e which can be used for multiple requests and responses.",
+       "articleBody": "#[derive(Handler)]# The #[derive(Handler)] macro generates the infrastructure for sending and receiving typed messages in hyperactor. This can be applied to an enum or a struct. Structs can be generic and non-generic. For an Enum:# When applied to an enum like this #[derive(Handler)] enum ShoppingList { // Fire-and-forget messages Add(String), Remove(String), // Request-response messages Exists(String, #[reply] OncePortRef\u003cbool\u003e), List(#[reply] OncePortRef\u003cVec\u003cString\u003e\u003e), } \u2026 it generates two key things: 1. ShoppingListHandler trait# This trait defines a method for each variant, and a handle method to route incoming messages: use async_trait::async_trait; use hyperactor::anyhow::Error; #[async_trait] pub trait ShoppingListHandler: hyperactor::Actor + Send + Sync { async fn add(\u0026mut self, ctx: \u0026Context\u003cSelf\u003e, item: String) -\u003e Result\u003c(), Error\u003e; async fn remove(\u0026mut self, ctx: \u0026Context\u003cSelf\u003e, item: String) -\u003e Result\u003c(), Error\u003e; async fn exists(\u0026mut self, ctx: \u0026Context\u003cSelf\u003e, item: String) -\u003e Result\u003cbool, Error\u003e; async fn list(\u0026mut self, ctx: \u0026Context\u003cSelf\u003e) -\u003e Result\u003cVec\u003cString\u003e, Error\u003e; async fn handle(\u0026mut self, ctx: \u0026Context\u003cSelf\u003e, msg: ShoppingList) -\u003e Result\u003c(), Error\u003e { match msg { ShoppingList::Add(item) =\u003e { self.add(ctx, item).await } ShoppingList::Remove(item) =\u003e { self.remove(ctx, item).await } ShoppingList::Exists(item, reply_to) =\u003e { let result = self.exists(ctx, item).await?; reply_to.send(ctx, result)?; Ok(()) } ShoppingList::List(reply_to) =\u003e { let result = self.list(ctx).await?; reply_to.send(ctx, result)?; Ok(()) } } } } Note: Add and Remove are oneway: no reply port Exists and List are call-style: they take a #[reply] OncePortRef\u003cT\u003e and expect a response to be sent back. 2. ShoppingListClient trait# Alongside the handler, the #[derive(Handler)] macro also generates a client-side trait named ShoppingListClient. This trait provides a convenient and type-safe interface for sending messages to an actor. Each method in the trait corresponds to a variant of the message enum. For example: use async_trait::async_trait; use hyperactor::anyhow::Error; use hyperactor::context::Actor; #[async_trait] pub trait ShoppingListClient: Send + Sync { async fn add(\u0026self, cx: \u0026impl Actor, item: String) -\u003e Result\u003c(), Error\u003e; async fn remove(\u0026self, cx: \u0026impl Actor, item: String) -\u003e Result\u003c(), Error\u003e; async fn exists(\u0026self, cx: \u0026impl Actor, item: String) -\u003e Result\u003cbool, Error\u003e; async fn list(\u0026self, cx: \u0026impl Actor) -\u003e Result\u003cVec\u003cString\u003e, Error\u003e; } For a struct# Supports both generic and non-generic structs. Generic structs must implement the trait bounds Serialize, Deserialize, Send, Sync, Debug, and Named. This is automatically enforced by the macro. When applied to a struct like this #[derive(Handler)] struct GetItemCount\u003cC\u003e { category_filter: String, #[reply] reply: OncePortRef\u003cC\u003e, } \u2026 it generates: 1. GetItemCountHandler trait# use async_trait::async_trait; use hyperactor::anyhow::Error; #[async_trait] pub trait GetItemCountHandler\u003c C: serde::Serialize + for\u003c\u0027de\u003e serde::Deserialize\u003c\u0027de\u003e + Send + Sync + std::fmt::Debug + typeuri::Named, \u003e: hyperactor::Actor + Send + Sync { async fn get_item_count( \u0026mut self, _cx: \u0026Context\u003cSelf\u003e, category_filter: String, ) -\u003e Result\u003c(), anyhow::Error\u003e; async fn handle( \u0026mut self, _cx: \u0026Context\u003cSelf\u003e, msg: GetItemCount, ) -\u003e Result\u003c(), anyhow::Error\u003e { match msg { GetItemCount { category_filter, reply_to } =\u003e { let result = self.get_item_count(_cx, category_filter).await?; reply_to.send(_cx, result)?; Ok(()) } } } } 2. GetItemCountClient trait# #[async_trait] pub trait GetItemCountClient: Send + Sync { async fn get_item_count( \u0026mut self, cx: \u0026impl Actor, category_filter: String, ) -\u003e Result\u003c(), anyhow::Error\u003e; } Capability Parameter# The cx parameter provides the actor context required to send messages and open ports. In typical usage, cx is a Mailbox or other type implementing the Actor trait. Example Usage# let actor = hyperactor::spawn_with_label(\"shopping\", ShoppingListActor::default())?; let client = hyperactor::client(\"client\"); // Fire-and-forget actor.add(\u0026client, \"milk\".into()).await?; // With reply let found = actor.exists(\u0026client, \"milk\".into()).await?; println!(\"got milk? {found}\"); Here, actor is an ActorHandle\u003cShoppingListActor\u003e that implements ShoppingListClient, and client provides the necessary caller capabilities. #[reply]# #[reply] can take any of the four types: OncePortRef\u003cT\u003e OncePortHandle\u003cT\u003e PortRef\u003cT\u003e PortHandle\u003cT\u003e Note that OncePortRef\u003cT\u003e and OncePortHandle\u003cT\u003e support one-shot communication, compared to PortRef\u003cT\u003e and PortHandle\u003cT\u003e which can be used for multiple requests and responses.",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

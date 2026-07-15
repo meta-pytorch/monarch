@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -11,12 +12,12 @@
 <meta property="og:type" content="website" />
 <meta property="og:url" content="http://pytorch.org/books/hyperactor-book/src/procs/proc.html" />
 <meta property="og:site_name" content="Monarch" />
-<meta property="og:description" content="A Proc is the fundamental container for actors in hyperactor. It provides the runtime context for actor execution and determines how messages are routed—both inbound messages arriving at the proc f..." />
+<meta property="og:description" content="A Proc is the fundamental container for actors in hyperactor. It provides the runtime context for actor execution: it owns actor lifecycle, delivers messages to its local actors, and hosts supervis..." />
 <meta property="og:image" content="https://pytorch.org/assets/images/social-share.jpg" />
 <meta property="og:image:alt" content="Monarch" />
-<meta name="description" content="A Proc is the fundamental container for actors in hyperactor. It provides the runtime context for actor execution and determines how messages are routed—both inbound messages arriving at the proc f..." />
+<meta name="description" content="A Proc is the fundamental container for actors in hyperactor. It provides the runtime context for actor execution: it owns actor lifecycle, delivers messages to its local actors, and hosts supervis..." />
 
-    <title>Proc &#8212; Monarch v0.5.0 documentation</title>
+    <title>Proc &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
+    <script src="../../../../_static/doctools.js"></script>
+    <script src="../../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../../_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-book/src/procs/proc';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/procs/proc.html" />
@@ -82,7 +83,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +197,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1293,128 +1294,96 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="proc">
-<h1>Proc<a class="headerlink" href="#proc" title="Link to this heading">#</a></h1>
-<p>A <code class="docutils literal notranslate"><span class="pre">Proc</span></code> is the fundamental container for actors in hyperactor. It provides the runtime context for actor execution and determines how messages are routed—both inbound messages arriving at the proc from the network and outbound messages leaving the proc.</p>
+<h1>Proc<a class="headerlink" href="#proc" title="Permalink to this heading">#</a></h1>
+<p>A <code class="docutils literal notranslate"><span class="pre">Proc</span></code> is the fundamental container for actors in hyperactor. It provides
+the runtime context for actor execution: it owns actor lifecycle, delivers
+messages to its local actors, and hosts supervision state.</p>
+<p>A proc is <strong>not</strong> a network endpoint by itself. It reaches—and is reached by—
+the outside world only through a <a class="reference internal" href="gateway.html"><span class="std std-doc"><code class="docutils literal notranslate"><span class="pre">Gateway</span></code></span></a>, its connectivity
+boundary. Every proc is attached to exactly one gateway; outbound messages flow
+through that gateway, and inbound messages for the proc arrive via the gateway’s
+ingress path. Procs that share a gateway reach each other by an in-gateway
+lookup rather than dialing.</p>
 <section id="construction">
-<h2>Construction<a class="headerlink" href="#construction" title="Link to this heading">#</a></h2>
-<p>Create a pre-configured proc using <code class="docutils literal notranslate"><span class="pre">Proc::configured()</span></code>:</p>
-<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">pub</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">configured</span><span class="p">(</span><span class="n">proc_id</span><span class="p">:</span><span class="w"> </span><span class="nc">ProcId</span><span class="p">,</span><span class="w"> </span><span class="n">forwarder</span><span class="p">:</span><span class="w"> </span><span class="nc">BoxedMailboxSender</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Self</span>
-</pre></div>
-</div>
-<p><strong>Parameters:</strong></p>
-<ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">proc_id</span></code>: The proc’s unique identity (see <a class="reference internal" href="../references/proc_id.html"><span class="std std-doc">ProcId</span></a>)</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">forwarder</span></code>: A <code class="docutils literal notranslate"><span class="pre">BoxedMailboxSender</span></code> that routes all outbound messages from this proc</p></li>
-</ul>
-<p>The forwarder is the critical routing component for remote delivery - when an actor within this proc sends a message to an actor in another proc, it flows through this forwarder.</p>
-</section>
-<section id="example-service-proc-in-host">
-<h2>Example: Service Proc in Host<a class="headerlink" href="#example-service-proc-in-host" title="Link to this heading">#</a></h2>
-<p>From <code class="docutils literal notranslate"><span class="pre">Host::new()</span></code>:</p>
-<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="n">router</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">DialMailboxRouter</span><span class="p">::</span><span class="n">new</span><span class="p">();</span>
+<h2>Construction<a class="headerlink" href="#construction" title="Permalink to this heading">#</a></h2>
+<p>Build a proc with the builder, choosing how it attaches to a gateway:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// Default: attach to the process-wide `Gateway::global()`.</span>
+<span class="c1">// (Legacy pseudo-singleton ids are reserved for host-scoped construction.)</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">proc</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Proc</span><span class="p">::</span><span class="n">builder</span><span class="p">().</span><span class="n">proc_id</span><span class="p">(</span><span class="n">id</span><span class="p">).</span><span class="n">build</span><span class="p">()</span><span class="o">?</span><span class="p">;</span>
 
-<span class="kd">let</span><span class="w"> </span><span class="n">service_proc_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ProcId</span><span class="p">(</span>
-<span class="w">    </span><span class="n">frontend_addr</span><span class="p">.</span><span class="n">clone</span><span class="p">(),</span>
-<span class="w">    </span><span class="s">&quot;service&quot;</span><span class="p">.</span><span class="n">to_string</span><span class="p">()</span>
-<span class="p">);</span>
-
-<span class="kd">let</span><span class="w"> </span><span class="n">service_proc</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Proc</span><span class="p">::</span><span class="n">configured</span><span class="p">(</span><span class="n">service_proc_id</span><span class="p">,</span><span class="w"> </span><span class="n">router</span><span class="p">.</span><span class="n">boxed</span><span class="p">());</span>
+<span class="c1">// Attach to a caller-provided gateway — e.g. a host wiring its procs</span>
+<span class="c1">// into the one gateway it owns. Accepts any proc id.</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">proc</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Proc</span><span class="p">::</span><span class="n">builder</span><span class="p">().</span><span class="n">shared_gateway</span><span class="p">(</span><span class="n">gateway</span><span class="p">.</span><span class="n">clone</span><span class="p">()).</span><span class="n">build</span><span class="p">()</span><span class="o">?</span><span class="p">;</span>
 </pre></div>
 </div>
-<p>Here:</p>
+<p>Convenience constructors cover common cases:</p>
 <ul class="simple">
-<li><p>The proc is identified by <code class="docutils literal notranslate"><span class="pre">ProcId(frontend_addr,</span> <span class="pre">&quot;service&quot;)</span></code></p></li>
-<li><p>All outbound messages use the <code class="docutils literal notranslate"><span class="pre">DialMailboxRouter</span></code> as their forwarder</p></li>
-<li><p>The router will look up target procs and dial their backend addresses</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Proc::isolated()</span></code> — a random-id proc on a fresh local-only gateway
+(<code class="docutils literal notranslate"><span class="pre">Gateway::isolated()</span></code>); outbound to unknown destinations is undeliverable.
+Useful in tests.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Proc::configured(proc_id,</span> <span class="pre">forwarder)</span></code> — wraps <code class="docutils literal notranslate"><span class="pre">Gateway::configured(location,</span> <span class="pre">forwarder)</span></code> so the proc advertises <code class="docutils literal notranslate"><span class="pre">location</span></code> and uses <code class="docutils literal notranslate"><span class="pre">forwarder</span></code> for
+egress.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Proc::direct(addr,</span> <span class="pre">name)</span></code> — a direct-addressed proc served on its own
+channel.</p></li>
 </ul>
+<p>The proc’s gateway is reachable via <code class="docutils literal notranslate"><span class="pre">Proc::gateway()</span></code>.</p>
 </section>
-<section id="procid-addressing">
-<h2>ProcId: Addressing<a class="headerlink" href="#procid-addressing" title="Link to this heading">#</a></h2>
-<p>Procs are identified using <code class="docutils literal notranslate"><span class="pre">ProcId</span></code>:</p>
-<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="n">ProcId</span><span class="p">(</span><span class="n">ChannelAddr</span><span class="p">,</span><span class="w"> </span><span class="nb">String</span><span class="p">)</span>
-</pre></div>
-</div>
-<p>Example:</p>
+<section id="proc-identity-and-addressing">
+<h2>Proc identity and addressing<a class="headerlink" href="#proc-identity-and-addressing" title="Permalink to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">ProcId</span></code> is pure identity. <code class="docutils literal notranslate"><span class="pre">ProcAddr</span></code> pairs that id with the <code class="docutils literal notranslate"><span class="pre">Location</span></code> where the proc is reachable:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="n">addr</span><span class="p">:</span><span class="w"> </span><span class="nc">ChannelAddr</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;unix:@abc123&quot;</span><span class="p">.</span><span class="n">parse</span><span class="p">()</span><span class="o">?</span><span class="p">;</span>
-<span class="kd">let</span><span class="w"> </span><span class="n">proc_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ProcId</span><span class="p">(</span><span class="n">addr</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;service&quot;</span><span class="p">.</span><span class="n">to_string</span><span class="p">());</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">proc_addr</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ProcAddr</span><span class="p">::</span><span class="n">instance</span><span class="p">(</span><span class="n">addr</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;service&quot;</span><span class="p">);</span>
 </pre></div>
 </div>
-<p>The proc is addressed by:</p>
-<ul class="simple">
-<li><p>The host’s channel address (where it can be reached)</p></li>
-<li><p>A name identifying the proc within that host</p></li>
-</ul>
-<p>See <a class="reference internal" href="../references/proc_id.html"><span class="std std-doc">ProcId</span></a> for complete details.</p>
+<p>A proc is reached through its gateway’s advertised location. On a host, spawned
+children are advertised through the host frontend with a
+<code class="docutils literal notranslate"><span class="pre">Via(child_uid,</span> <span class="pre">frontend_addr)</span></code> location, so the host gateway can peel the child
+uid and forward to the child gateway peer. See <a class="reference internal" href="../references/proc_id.html"><span class="std std-doc">ProcId</span></a>
+for identity details and <a class="reference internal" href="../references/reference.html"><span class="std std-doc">Addr</span></a> for addressable
+references.</p>
 </section>
-<section id="forwarder-integration">
-<h2>Forwarder Integration<a class="headerlink" href="#forwarder-integration" title="Link to this heading">#</a></h2>
-<p>The forwarder determines how messages leave the proc. Typically, a <code class="docutils literal notranslate"><span class="pre">DialMailboxRouter</span></code> is used to enable dynamic routing to multiple destinations.</p>
-<section id="using-dialmailboxrouter">
-<h3>Using DialMailboxRouter<a class="headerlink" href="#using-dialmailboxrouter" title="Link to this heading">#</a></h3>
-<p>Routes messages by looking up target addresses and dialing connections:</p>
-<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="n">router</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">DialMailboxRouter</span><span class="p">::</span><span class="n">new</span><span class="p">();</span>
-<span class="kd">let</span><span class="w"> </span><span class="n">proc</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Proc</span><span class="p">::</span><span class="n">configured</span><span class="p">(</span><span class="n">proc_id</span><span class="p">,</span><span class="w"> </span><span class="n">router</span><span class="p">.</span><span class="n">boxed</span><span class="p">());</span>
-</pre></div>
-</div>
-<p>When an actor sends a message to another proc, the router:</p>
-<ol class="arabic simple">
-<li><p>Looks up the target’s address in its address book</p></li>
-<li><p>Dials a connection (or reuses a cached one)</p></li>
-<li><p>Sends the message over that connection</p></li>
-</ol>
-<p>See <a class="reference internal" href="../mailboxes/routers.html#dialmailboxrouter-remote-and-serializable-routing"><span class="std std-ref">Routers</span></a>.</p>
-</section>
+<section id="egress-through-the-gateway">
+<h2>Egress through the gateway<a class="headerlink" href="#egress-through-the-gateway" title="Permalink to this heading">#</a></h2>
+<p>When an actor sends a message to an actor in another proc, the message leaves
+the proc through its gateway, which applies the single
+<a class="reference internal" href="gateway.html#the-single-routing-decision"><span class="std std-ref">routing decision</span></a>: deliver to a local
+proc, forward to a child proc or a known peer by peeling its <code class="docutils literal notranslate"><span class="pre">Via</span></code> hop, or hand
+to the forwarder for everything else. Spawned children are just peers keyed by
+their child uid. The default forwarder is a <code class="docutils literal notranslate"><span class="pre">DialMailboxRouter</span></code>, which looks up
+the target’s address and dials it.</p>
 <section id="local-proc-bypass">
-<h3>Local Proc Bypass<a class="headerlink" href="#local-proc-bypass" title="Link to this heading">#</a></h3>
-<p>When a proc sends a message to an actor in another proc, the message normally flows through the proc’s forwarder to a backend address, where a central routing layer forwards it to the destination proc (see <a class="reference internal" href="host.html"><span class="std std-doc">Host</span></a> for the complete architecture with frontend and backend receivers). For procs running on the same host, this can be optimized: procs can dial each other directly via Unix sockets, bypassing the central routing layer entirely.</p>
-<p><strong>Injection point</strong>: When a proc manager spawns a new proc, instead of providing a plain backend sender as the forwarder, it wraps it with a local-aware forwarder:</p>
-<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// At proc spawn time, the manager injects a local bypass forwarder:</span>
-<span class="kd">let</span><span class="w"> </span><span class="n">backend_sender</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">MailboxClient</span><span class="p">::</span><span class="n">dial</span><span class="p">(</span><span class="n">backend_addr</span><span class="p">);</span>
-<span class="kd">let</span><span class="w"> </span><span class="n">proc_forwarder</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">LocalProcDialer</span><span class="p">::</span><span class="n">new</span><span class="p">(</span>
-<span class="w">    </span><span class="n">host_frontend_addr</span><span class="p">,</span><span class="w">   </span><span class="c1">// Identify local procs by this address</span>
-<span class="w">    </span><span class="n">socket_dir</span><span class="p">,</span><span class="w">           </span><span class="c1">// Directory where procs place Unix sockets</span>
-<span class="w">    </span><span class="n">backend_sender</span><span class="p">,</span><span class="w">       </span><span class="c1">// Fallback for remote procs</span>
-<span class="p">);</span>
+<h3>Local proc bypass<a class="headerlink" href="#local-proc-bypass" title="Permalink to this heading">#</a></h3>
+<p>For procs that run in <em>separate processes</em> on the same host, same-host
+proc-to-proc traffic can skip the host round-trip. At spawn time the proc
+manager gives the child gateway a <code class="docutils literal notranslate"><span class="pre">LocalProcDialer</span></code> forwarder that dials a
+sibling proc directly over its Unix socket when the destination is local, and
+falls back to the host backend otherwise:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="n">backend_sender</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">MailboxClient</span><span class="p">::</span><span class="n">dial</span><span class="p">(</span><span class="n">backend_addr</span><span class="p">);</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">proc_forwarder</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">LocalProcDialer</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">host_frontend_addr</span><span class="p">,</span><span class="w"> </span><span class="n">socket_dir</span><span class="p">,</span><span class="w"> </span><span class="n">backend_sender</span><span class="p">);</span>
 <span class="kd">let</span><span class="w"> </span><span class="n">proc</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Proc</span><span class="p">::</span><span class="n">configured</span><span class="p">(</span><span class="n">proc_id</span><span class="p">,</span><span class="w"> </span><span class="n">proc_forwarder</span><span class="p">.</span><span class="n">boxed</span><span class="p">());</span>
 </pre></div>
 </div>
-<p>The forwarder checks each outbound message: if the destination is a local proc (matching the host’s frontend address), it dials directly via the proc’s Unix socket. Otherwise, it routes through the backend sender:</p>
-<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="w"> </span><span class="n">MailboxSender</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">LocalProcDialer</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">post_unchecked</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">envelope</span><span class="p">:</span><span class="w"> </span><span class="nc">MessageEnvelope</span><span class="p">,</span><span class="w"> </span><span class="o">..</span><span class="p">.)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="n">envelope</span><span class="p">.</span><span class="n">dest</span><span class="p">().</span><span class="n">proc_id</span><span class="p">()</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="n">local_proc_on_this_host</span><span class="w"> </span><span class="p">{</span>
-<span class="w">            </span><span class="n">unix_sender</span><span class="p">.</span><span class="n">post_unchecked</span><span class="p">(</span><span class="n">envelope</span><span class="p">,</span><span class="w"> </span><span class="o">..</span><span class="p">.)</span><span class="w">  </span><span class="c1">// Direct</span>
-<span class="w">        </span><span class="p">}</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="p">{</span>
-<span class="w">            </span><span class="n">backend_sender</span><span class="p">.</span><span class="n">post_unchecked</span><span class="p">(</span><span class="n">envelope</span><span class="p">,</span><span class="w"> </span><span class="o">..</span><span class="p">.)</span><span class="w">  </span><span class="c1">// Via host backend</span>
-<span class="w">        </span><span class="p">}</span>
-<span class="w">    </span><span class="p">}</span>
-<span class="p">}</span>
-</pre></div>
-</div>
-<p>This improves throughput for intra-host communication by reducing message copies and preventing the host agent from becoming a sequencing bottleneck for all messages between local procs, while maintaining compatibility with remote routing.</p>
-<p>See <code class="docutils literal notranslate"><span class="pre">hyperactor_mesh::bootstrap::mailbox::LocalProcDialer</span></code> for the implementation.</p>
+<p>This reduces message copies and keeps the host agent off the hot path for
+intra-host traffic. See <code class="docutils literal notranslate"><span class="pre">hyperactor_mesh::bootstrap::mailbox::LocalProcDialer</span></code>.</p>
 </section>
 </section>
 <section id="spawning-actors">
-<h2>Spawning Actors<a class="headerlink" href="#spawning-actors" title="Link to this heading">#</a></h2>
+<h2>Spawning actors<a class="headerlink" href="#spawning-actors" title="Permalink to this heading">#</a></h2>
 <p>Once you have a proc, spawn actors within it:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="n">actor_handle</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">proc</span><span class="p">.</span><span class="n">spawn</span><span class="p">(</span><span class="s">&quot;my_actor&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">MyActor</span><span class="p">::</span><span class="n">new</span><span class="p">())</span><span class="o">?</span><span class="p">;</span>
 </pre></div>
 </div>
-<p>The spawned actor:</p>
-<ul class="simple">
-<li><p>Runs within this proc</p></li>
-<li><p>Inherits the proc’s <code class="docutils literal notranslate"><span class="pre">ProcId</span></code> as part of its <code class="docutils literal notranslate"><span class="pre">ActorId</span></code></p></li>
-<li><p>Uses the proc’s forwarder for outbound messages</p></li>
-</ul>
-<p>See <a class="reference internal" href="../actors/remote_spawn.html"><span class="std std-doc">RemoteSpawn</span></a> for spawning details.</p>
+<p>The spawned actor runs within this proc, inherits the proc’s <code class="docutils literal notranslate"><span class="pre">ProcId</span></code> as part
+of its <code class="docutils literal notranslate"><span class="pre">ActorId</span></code>, and uses the proc’s gateway for outbound messages. See
+<a class="reference internal" href="../actors/remote_spawn.html"><span class="std std-doc">RemoteSpawn</span></a> for spawning details.</p>
 </section>
 <section id="see-also">
-<h2>See Also<a class="headerlink" href="#see-also" title="Link to this heading">#</a></h2>
+<h2>See Also<a class="headerlink" href="#see-also" title="Permalink to this heading">#</a></h2>
 <ul class="simple">
-<li><p><a class="reference internal" href="host.html"><span class="std std-doc">Host</span></a> - How hosts create and manage procs</p></li>
-<li><p><a class="reference internal" href="../references/proc_id.html"><span class="std std-doc">ProcId</span></a> - Proc addressing schemes</p></li>
-<li><p><a class="reference internal" href="../mailboxes/routers.html"><span class="std std-doc">Routers</span></a> - Forwarder implementations</p></li>
-<li><p><a class="reference internal" href="../references/actor_id.html"><span class="std std-doc">ActorId</span></a> - How actors inherit proc identity</p></li>
+<li><p><a class="reference internal" href="gateway.html"><span class="std std-doc">Gateway</span></a> — the connectivity boundary every proc attaches to</p></li>
+<li><p><a class="reference internal" href="host.html"><span class="std std-doc">Host</span></a> — how hosts create and manage procs</p></li>
+<li><p><a class="reference internal" href="../references/proc_id.html"><span class="std std-doc">ProcId</span></a> — proc addressing</p></li>
+<li><p><a class="reference internal" href="../references/actor_id.html"><span class="std std-doc">ActorId</span></a> — how actors inherit proc identity</p></li>
 </ul>
 </section>
 </section>
@@ -1501,14 +1470,12 @@ document.write(`
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#construction">Construction</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#example-service-proc-in-host">Example: Service Proc in Host</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#procid-addressing">ProcId: Addressing</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#forwarder-integration">Forwarder Integration</a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#using-dialmailboxrouter">Using DialMailboxRouter</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#local-proc-bypass">Local Proc Bypass</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#proc-identity-and-addressing">Proc identity and addressing</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#egress-through-the-gateway">Egress through the gateway</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#local-proc-bypass">Local proc bypass</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#spawning-actors">Spawning Actors</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#spawning-actors">Spawning actors</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#see-also">See Also</a></li>
 </ul>
   </nav></div>
@@ -1652,7 +1619,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>
@@ -1681,7 +1648,7 @@ document.write(`
        "headline": "Proc",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/books/hyperactor-book/src/procs/proc.html",
-       "articleBody": "Proc# A Proc is the fundamental container for actors in hyperactor. It provides the runtime context for actor execution and determines how messages are routed\u2014both inbound messages arriving at the proc from the network and outbound messages leaving the proc. Construction# Create a pre-configured proc using Proc::configured(): pub fn configured(proc_id: ProcId, forwarder: BoxedMailboxSender) -\u003e Self Parameters: proc_id: The proc\u2019s unique identity (see ProcId) forwarder: A BoxedMailboxSender that routes all outbound messages from this proc The forwarder is the critical routing component for remote delivery - when an actor within this proc sends a message to an actor in another proc, it flows through this forwarder. Example: Service Proc in Host# From Host::new(): let router = DialMailboxRouter::new(); let service_proc_id = ProcId( frontend_addr.clone(), \"service\".to_string() ); let service_proc = Proc::configured(service_proc_id, router.boxed()); Here: The proc is identified by ProcId(frontend_addr, \"service\") All outbound messages use the DialMailboxRouter as their forwarder The router will look up target procs and dial their backend addresses ProcId: Addressing# Procs are identified using ProcId: ProcId(ChannelAddr, String) Example: let addr: ChannelAddr = \"unix:@abc123\".parse()?; let proc_id = ProcId(addr, \"service\".to_string()); The proc is addressed by: The host\u2019s channel address (where it can be reached) A name identifying the proc within that host See ProcId for complete details. Forwarder Integration# The forwarder determines how messages leave the proc. Typically, a DialMailboxRouter is used to enable dynamic routing to multiple destinations. Using DialMailboxRouter# Routes messages by looking up target addresses and dialing connections: let router = DialMailboxRouter::new(); let proc = Proc::configured(proc_id, router.boxed()); When an actor sends a message to another proc, the router: Looks up the target\u2019s address in its address book Dials a connection (or reuses a cached one) Sends the message over that connection See Routers. Local Proc Bypass# When a proc sends a message to an actor in another proc, the message normally flows through the proc\u2019s forwarder to a backend address, where a central routing layer forwards it to the destination proc (see Host for the complete architecture with frontend and backend receivers). For procs running on the same host, this can be optimized: procs can dial each other directly via Unix sockets, bypassing the central routing layer entirely. Injection point: When a proc manager spawns a new proc, instead of providing a plain backend sender as the forwarder, it wraps it with a local-aware forwarder: // At proc spawn time, the manager injects a local bypass forwarder: let backend_sender = MailboxClient::dial(backend_addr); let proc_forwarder = LocalProcDialer::new( host_frontend_addr, // Identify local procs by this address socket_dir, // Directory where procs place Unix sockets backend_sender, // Fallback for remote procs ); let proc = Proc::configured(proc_id, proc_forwarder.boxed()); The forwarder checks each outbound message: if the destination is a local proc (matching the host\u2019s frontend address), it dials directly via the proc\u2019s Unix socket. Otherwise, it routes through the backend sender: impl MailboxSender for LocalProcDialer { fn post_unchecked(\u0026self, envelope: MessageEnvelope, ...) { if envelope.dest().proc_id() == local_proc_on_this_host { unix_sender.post_unchecked(envelope, ...) // Direct } else { backend_sender.post_unchecked(envelope, ...) // Via host backend } } } This improves throughput for intra-host communication by reducing message copies and preventing the host agent from becoming a sequencing bottleneck for all messages between local procs, while maintaining compatibility with remote routing. See hyperactor_mesh::bootstrap::mailbox::LocalProcDialer for the implementation. Spawning Actors# Once you have a proc, spawn actors within it: let actor_handle = proc.spawn(\"my_actor\", MyActor::new())?; The spawned actor: Runs within this proc Inherits the proc\u2019s ProcId as part of its ActorId Uses the proc\u2019s forwarder for outbound messages See RemoteSpawn for spawning details. See Also# Host - How hosts create and manage procs ProcId - Proc addressing schemes Routers - Forwarder implementations ActorId - How actors inherit proc identity",
+       "articleBody": "Proc# A Proc is the fundamental container for actors in hyperactor. It provides the runtime context for actor execution: it owns actor lifecycle, delivers messages to its local actors, and hosts supervision state. A proc is not a network endpoint by itself. It reaches\u2014and is reached by\u2014 the outside world only through a Gateway, its connectivity boundary. Every proc is attached to exactly one gateway; outbound messages flow through that gateway, and inbound messages for the proc arrive via the gateway\u2019s ingress path. Procs that share a gateway reach each other by an in-gateway lookup rather than dialing. Construction# Build a proc with the builder, choosing how it attaches to a gateway: // Default: attach to the process-wide `Gateway::global()`. // (Legacy pseudo-singleton ids are reserved for host-scoped construction.) let proc = Proc::builder().proc_id(id).build()?; // Attach to a caller-provided gateway \u2014 e.g. a host wiring its procs // into the one gateway it owns. Accepts any proc id. let proc = Proc::builder().shared_gateway(gateway.clone()).build()?; Convenience constructors cover common cases: Proc::isolated() \u2014 a random-id proc on a fresh local-only gateway (Gateway::isolated()); outbound to unknown destinations is undeliverable. Useful in tests. Proc::configured(proc_id, forwarder) \u2014 wraps Gateway::configured(location, forwarder) so the proc advertises location and uses forwarder for egress. Proc::direct(addr, name) \u2014 a direct-addressed proc served on its own channel. The proc\u2019s gateway is reachable via Proc::gateway(). Proc identity and addressing# ProcId is pure identity. ProcAddr pairs that id with the Location where the proc is reachable: let addr: ChannelAddr = \"unix:@abc123\".parse()?; let proc_addr = ProcAddr::instance(addr, \"service\"); A proc is reached through its gateway\u2019s advertised location. On a host, spawned children are advertised through the host frontend with a Via(child_uid, frontend_addr) location, so the host gateway can peel the child uid and forward to the child gateway peer. See ProcId for identity details and Addr for addressable references. Egress through the gateway# When an actor sends a message to an actor in another proc, the message leaves the proc through its gateway, which applies the single routing decision: deliver to a local proc, forward to a child proc or a known peer by peeling its Via hop, or hand to the forwarder for everything else. Spawned children are just peers keyed by their child uid. The default forwarder is a DialMailboxRouter, which looks up the target\u2019s address and dials it. Local proc bypass# For procs that run in separate processes on the same host, same-host proc-to-proc traffic can skip the host round-trip. At spawn time the proc manager gives the child gateway a LocalProcDialer forwarder that dials a sibling proc directly over its Unix socket when the destination is local, and falls back to the host backend otherwise: let backend_sender = MailboxClient::dial(backend_addr); let proc_forwarder = LocalProcDialer::new(host_frontend_addr, socket_dir, backend_sender); let proc = Proc::configured(proc_id, proc_forwarder.boxed()); This reduces message copies and keeps the host agent off the hot path for intra-host traffic. See hyperactor_mesh::bootstrap::mailbox::LocalProcDialer. Spawning actors# Once you have a proc, spawn actors within it: let actor_handle = proc.spawn(\"my_actor\", MyActor::new())?; The spawned actor runs within this proc, inherits the proc\u2019s ProcId as part of its ActorId, and uses the proc\u2019s gateway for outbound messages. See RemoteSpawn for spawning details. See Also# Gateway \u2014 the connectivity boundary every proc attaches to Host \u2014 how hosts create and manage procs ProcId \u2014 proc addressing ActorId \u2014 how actors inherit proc identity",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

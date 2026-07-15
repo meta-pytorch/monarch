@@ -44,8 +44,7 @@ An **Actor** in Monarch is:
 
 ### Core Characteristics
 
-```
-graph LR
+ graph LR
  A[Actor] --> B[Private State]
  A --> C[Message Mailbox]
  A --> D[Endpoints]
@@ -56,7 +55,7 @@ graph LR
  style C fill:#007c88
  style D fill:#007c88
  style E fill:#007c88
-```
+ 
 
 **1. Isolation**
 
@@ -88,8 +87,7 @@ graph LR
 
 ### Lifecycle Stages
 
-```
-stateDiagram-v2
+ stateDiagram-v2
  [*] --> Creating: spawn()
  Creating --> Constructing: allocate resources
  Constructing --> Running: __init__()
@@ -100,7 +98,7 @@ stateDiagram-v2
  Constructing --> Failed: __init__ error
  Running --> Failed: unhandled error
  Failed --> [*]: propagate to parent
-```
+ 
 
 ### 1. Creation Phase
 
@@ -150,8 +148,7 @@ class DataProcessor(Actor):
 
 Once initialized, the actor enters its main lifecycle where it processes messages.
 
-```
-sequenceDiagram
+ sequenceDiagram
  participant Mailbox
  participant ActorInstance
  participant Handler
@@ -163,7 +160,7 @@ sequenceDiagram
  Handler-->>ActorInstance: Return result
  ActorInstance->>ActorInstance: Process result
  end
-```
+ 
 
 **Message Processing:**
 
@@ -176,17 +173,64 @@ sequenceDiagram
 
 **Normal Termination:**
 
-- All child actors terminated
-- Mailbox drained
-- Resources cleaned up
-- Parent notified
+- Triggered by `ActorMesh.stop()`
+- Mailbox drained, `__cleanup__` runs, parent notified
 
 **Error Termination:**
 
-- Unhandled exception in handler
-- Propagated to supervisor
+- Triggered by an unhandled exception in a handler
+- `__cleanup__` runs, then the failure is propagated to the supervisor
 - Supervision tree handles recovery (see Error Handling in Meshes)
-- All child actors terminated
+
+**The `__cleanup__` Method:**
+
+The same `__cleanup__` runs in both normal and error termination. The `exc` argument is `None` on a normal stop and carries the exception on an error stop.
+
+```
+class FileWriter(Actor):
+ def __init__(self, path: str):
+ self.f = open(path, "w")
+
+ @endpoint
+ def write(self, line: str) -> None:
+ self.f.write(line)
+
+ def __cleanup__(self, exc: Exception | None) -> None:
+ # Runs on normal stop and on error termination.
+ # `exc` carries the exception that caused the stop, if any.
+ self.f.close()
+```
+
+**When It Runs:**
+
+- Called automatically in both normal and error termination
+- *Not* called on fatal failures such as OOMs, panics, or fatal signals (e.g., `SIGSEGV`)
+- Cancelled if it exceeds `HYPERACTOR_CLEANUP_TIMEOUT`, which puts the actor in an error state
+
+**What Has Already Happened:**
+
+- Every mesh this actor owns has already been stopped recursively
+- Each owned actor's `__cleanup__` has already run
+- Owned actor meshes and proc meshes are no longer usable from this method
+- For shutdown work that needs an owned mesh, expose a dedicated endpoint and call it before `stop()`
+
+**What to Clean Up Here:**
+
+- Open files and network connections
+- Background threads and asyncio tasks
+- Other resources the actor owns directly (not other actors or procs)
+
+**Sync vs. Async:**
+
+- Override with `def` or `async def`; the async-ness must match the actor's endpoints
+- Actors with sync endpoints require a sync `__cleanup__`
+- Actors with async endpoints require an async `__cleanup__`
+- An `async def` override is awaited on the actor's asyncio event loop, the same loop that runs endpoint coroutines, so it may `await` other endpoints or I/O
+- A sync override runs under `fake_sync_state` and cannot observe a running loop with `asyncio.get_running_loop`
+
+**Errors in `__cleanup__`:**
+
+- A raise is treated as a new supervision event chained to the one being handled, matching the `__exit__` convention for context managers
 
 ---
 
@@ -231,12 +275,15 @@ Call a single actor and get response.
 ```
 calc = this_proc().spawn("calc", Calculator)
 
-# Synchronous wait for result
+# Synchronous wait for result (blocks the calling thread)
 result = calc.add.call_one(5, 3).get()
 print(result) # 8
 
-# Async await
+# Async await (on an asyncio event loop)
 result = await calc.add.call_one(5, 3)
+
+# Or bridge to a standard asyncio.Future explicitly
+result = await calc.add.call_one(5, 3).as_asyncio()
 ```
 
 **Use When:**
@@ -247,8 +294,7 @@ result = await calc.add.call_one(5, 3)
 
 **Flow Diagram:**
 
-```
-sequenceDiagram
+ sequenceDiagram
  participant Client
  participant ActorInstance
 
@@ -257,7 +303,7 @@ sequenceDiagram
  ActorInstance-->>Client: Future[Result]
  Client->>Client: .get() waits
  Note over Client: Result available
-```
+ 
 
 #### 2. `call()` - Broadcast and Collect
 
@@ -279,8 +325,7 @@ print(results) # [15, 15, 15, 15, 15, 15, 15, 15]
 
 **Flow Diagram:**
 
-```
-sequenceDiagram
+ sequenceDiagram
  participant Client
  participant Mesh
  participant A1 as Actor 1
@@ -301,7 +346,7 @@ sequenceDiagram
  end
 
  Mesh-->>Client: Future[List[Result]]
-```
+ 
 
 #### 3. `broadcast()` - Fire and Forget
 
@@ -325,8 +370,7 @@ next_operation()
 
 **Flow Diagram:**
 
-```
-sequenceDiagram
+ sequenceDiagram
  participant Client
  participant Mesh
  participant Actors
@@ -335,7 +379,7 @@ sequenceDiagram
  Note over Client: Returns immediately
  Mesh->>Actors: messages
  Note over Actors: Process async
-```
+ 
 
 #### 4. `rref()` - Distributed Tensor Reference
 
@@ -397,8 +441,7 @@ actor.method3.call_one(arg3) # Message M3
 
 **Ordering Diagram:**
 
-```
-sequenceDiagram
+ sequenceDiagram
  participant Sender
  participant ActorMailbox
  participant ActorInstance
@@ -415,7 +458,7 @@ sequenceDiagram
  Note over ActorInstance: Process M2
  ActorMailbox->>ActorInstance: Deliver M3
  Note over ActorInstance: Process M3
-```
+ 
 
 ---
 
@@ -512,8 +555,7 @@ def spawn_sibling(self):
 
 ### Context Usage Diagram
 
-```
-graph TD
+ graph TD
  A[context] --> B[message_rank]
  A --> C[actor_instance]
 
@@ -525,7 +567,7 @@ graph TD
  D --> D1[spawn]
 
  style A fill:#007c88,stroke:#333,stroke-width:2px
-```
+ 
 
 ---
 
@@ -555,8 +597,7 @@ print(actors.extent) # {"gpus": 8}
 
 ### Mesh Structure
 
-```
-graph TD
+ graph TD
  subgraph ActorMesh
  subgraph Row1[GPU 0]
  A0[Actor Instance]
@@ -592,7 +633,7 @@ graph TD
  style A5 fill:#007c88
  style A6 fill:#007c88
  style A7 fill:#007c88
-```
+ 
 
 ### Slicing Operations
 
@@ -627,8 +668,7 @@ actors.slice(hosts=1, gpus=3).method.call_one()
 
 **Slicing Visualization:**
 
-```
-graph TB
+ graph TB
  subgraph Full Mesh [8x4]
  direction LR
  subgraph R0[Host 0]
@@ -657,7 +697,7 @@ graph TB
  style H0G1 fill:#007c88
  style S0 fill:#855b9d
  style S1 fill:#855b9d
-```
+ 
 
 ### Passing Actor References
 
@@ -781,7 +821,96 @@ If you own a mesh of N actors, each of which generates a supervision error, it m
 
 ## Advanced Patterns
 
-### 1. Explicit Response Ports
+### 1. Concurrent Endpoints
+
+Use `@concurrent_endpoint` when one async endpoint should continue running while
+the actor accepts later messages. This is a convenience wrapper for common
+request/response endpoints; it preserves the normal `call()`, `call_one()`, and
+`stream()` API while running the endpoint body in an `asyncio` task.
+
+For two messages sent from the same source actor to `@concurrent_endpoint`
+methods on the same target actor, the first endpoint body starts before the
+second. This is only a start-order guarantee: the first endpoint runs until its
+first `await`, not to completion, before the second starts.
+
+Warning: if you mix `@concurrent_endpoint` with normal `@endpoint` methods, a
+normal endpoint that follows a concurrent endpoint may run before the
+concurrent endpoint body has started.
+
+```
+import asyncio
+from monarch.actor import Actor, concurrent_endpoint, endpoint
+
+class Gate(Actor):
+ def __init__(self):
+ self.ready = asyncio.Event()
+ self.unblock = asyncio.Event()
+
+ @concurrent_endpoint
+ async def wait(self) -> str:
+ self.ready.set()
+ await self.unblock.wait()
+ return "done"
+
+ @endpoint
+ async def release_when_ready(self) -> None:
+ await self.ready.wait()
+ self.unblock.set()
+```
+
+When an actor stops, `@concurrent_endpoint` cancels and awaits the outstanding
+tasks that it created before user `__cleanup__` runs. This is a cleanup-time
+guarantee only: meshes owned by the actor may already have been stopped by the
+core actor lifecycle before this cancellation runs. General pending tasks on the
+actor's asyncio loop are cancelled after user `__cleanup__` completes, when the
+loop is stopped.
+
+Pass endpoint options directly to `@concurrent_endpoint(...)`, such as
+`explicit_response_port=True`; do not stack it with `@endpoint`.
+
+There is nothing special about `@concurrent_endpoint`: it packages the
+`explicit_response_port=True` pattern with `asyncio.create_task`, result
+forwarding for non-explicit endpoints, failing the actor when an explicit-port
+endpoint lets an exception escape the function, and cleanup-time cancellation of
+the tasks it starts. You can write the simple version yourself when you want full
+control:
+
+```
+import asyncio
+from monarch.actor import Actor, Port, endpoint
+
+class ManualGate(Actor):
+ def __init__(self):
+ self.ready = asyncio.Event()
+ self.unblock = asyncio.Event()
+
+ @endpoint(explicit_response_port=True)
+ async def wait(self, port: Port[str]) -> None:
+ async def run() -> None:
+ try:
+ self.ready.set()
+ await self.unblock.wait()
+ port.send("done")
+ except Exception as e:
+ port.exception(e)
+
+ asyncio.create_task(run())
+```
+
+This manual form intentionally has no extra task tracking; the task lifetime is
+part of the endpoint protocol you are writing. Because the body runs in a
+detached task that you own, an exception escaping it before a response is sent
+leaves the caller waiting until it times out or is cancelled, while the actor
+survives. By contrast, `@concurrent_endpoint` fails the actor with a supervision
+error in that case, following the principle of no silent errors.
+
+`@concurrent_endpoint` works on individual endpoints, including inherited
+endpoints, so an actor can mix concurrent and sequential endpoints. For protocols
+that need custom response ordering, multiple sends, or more complex lifetime
+control, use `@endpoint(explicit_response_port=True)` directly and manage the
+response port yourself.
+
+### 2. Explicit Response Ports
 
 For out-of-order responses or background processing:
 
@@ -810,7 +939,7 @@ class AsyncProcessor(Actor):
  port.send(result)
 ```
 
-### 2. Actor Supervision
+### 3. Actor Supervision
 
 Custom supervision for fine-grained error handling:
 
@@ -1039,8 +1168,7 @@ This is particularly useful for:
 The `BootstrapCommand.with_env()` method makes it easy to create modified copies of a base command with additional environment variables. Use `default_bootstrap_cmd()` to get the default command for the current environment:
 
 ```
-from monarch.actor import this_host
-from monarch._src.actor.host_mesh import default_bootstrap_cmd
+from monarch.actor import default_bootstrap_cmd, this_host
 
 host = this_host()
 
@@ -1251,8 +1379,7 @@ async def test_calculator():
 
 ### Actor Lifecycle Recap
 
-```
-graph LR
+ graph LR
  A[Spawn] --> B[__init__]
  B --> C[Running]
  C --> D[Handle Messages]
@@ -1264,8 +1391,6 @@ graph LR
  style C fill:#007c88
  style D fill:#13a3a4
  style E fill:#0072c7
-```
-
  ### Next Steps
 
 - Read [Mesh Concepts](./MESHES.md) for mesh details
@@ -1476,10 +1601,14 @@ The [monarch.spmd](monarch.spmd.html) package provides primitives for running to
 - [`get_or_spawn_controller()`](monarch.actor.html#monarch.actor.get_or_spawn_controller)
 - [`this_host()`](monarch.actor.html#monarch.actor.this_host)
 - [`this_proc()`](monarch.actor.html#monarch.actor.this_proc)
+- [`default_bootstrap_cmd()`](monarch.actor.html#monarch.actor.default_bootstrap_cmd)
+- [`hosts_from_config()`](monarch.actor.html#monarch.actor.hosts_from_config)
+- [`enable_transport()`](monarch.actor.html#monarch.actor.enable_transport)
 - [Defining Actors](monarch.actor.html#defining-actors)
 
 - [`Actor`](monarch.actor.html#monarch.actor.Actor)
 - [`endpoint()`](monarch.actor.html#monarch.actor.endpoint)
+- [`concurrent_endpoint()`](monarch.actor.html#monarch.actor.concurrent_endpoint)
 - [Messaging Actor](monarch.actor.html#messaging-actor)
 
 - [`Endpoint`](monarch.actor.html#monarch.actor.Endpoint)
@@ -1498,12 +1627,17 @@ The [monarch.spmd](monarch.spmd.html) package provides primitives for running to
 - [`current_rank()`](monarch.actor.html#monarch.actor.current_rank)
 - [`current_size()`](monarch.actor.html#monarch.actor.current_size)
 - [`context()`](monarch.actor.html#monarch.actor.context)
+- [`shutdown_context()`](monarch.actor.html#monarch.actor.shutdown_context)
 - [`Context`](monarch.actor.html#monarch.actor.Context)
 - [`Point`](monarch.actor.html#monarch.actor.Point)
 - [`Extent`](monarch.actor.html#monarch.actor.Extent)
 - [Supervision](monarch.actor.html#supervision)
 
 - [`MeshFailure`](monarch.actor.html#monarch.actor.MeshFailure)
+- [`unhandled_fault_hook()`](monarch.actor.html#monarch.actor.unhandled_fault_hook)
+- [Telemetry](monarch.actor.html#telemetry)
+
+- [`traced()`](monarch.actor.html#monarch.actor.traced)
 - [monarch.config](monarch.config.html)
 - [Configuration API](monarch.config.html#configuration-api)
 
@@ -1553,9 +1687,6 @@ The [monarch.spmd](monarch.spmd.html) package provides primitives for running to
 - [`job_load()`](monarch.job.html#monarch.job.job_load)
 - [`job_loads()`](monarch.job.html#monarch.job.job_loads)
 - [SPMD Jobs](monarch.job.html#spmd-jobs)
-
-- [`serve()`](monarch.job.html#monarch.job.spmd.serve)
-- [`SPMDJob`](monarch.job.html#monarch.job.spmd.SPMDJob)
 - [monarch](monarch.html)
 
 - [`Tensor`](monarch.html#monarch.Tensor)
@@ -1742,13 +1873,13 @@ the borrow is returned (becomes free and a wait_for has been issued).
 
 If not mutable both self and t.stream can read from t's storage but neither can write to it.
 
-monarch.remote(*function: Callable[P, R]*, ***, *propagate: Propagator = None*) → Remote[P, R][[source]](../_modules/monarch/common/remote.html#remote)
+monarch.remote(*function: [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[P], R]*, ***, *propagate: [Any](https://docs.python.org/3/library/typing.html#typing.Any) = None*) → Remote[P, R][[source]](../_modules/monarch/common/remote.html#remote)
 
-monarch.remote(*function: [str](https://docs.python.org/3/library/stdtypes.html#str)*, ***, *propagate: Literal['mocked', 'cached', 'inspect'] | [None](https://docs.python.org/3/library/constants.html#None) = None*) → Remote
+monarch.remote(*function: [str](https://docs.python.org/3/library/stdtypes.html#str)*, ***, *propagate: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['mocked', 'cached', 'inspect'] | [None](https://docs.python.org/3/library/constants.html#None) = None*) → Remote
 
-monarch.remote(*function: [str](https://docs.python.org/3/library/stdtypes.html#str)*, ***, *propagate: Callable[P, R]*) → Remote[P, R]
+monarch.remote(*function: [str](https://docs.python.org/3/library/stdtypes.html#str)*, ***, *propagate: [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[P], R]*) → Remote[P, R]
 
-monarch.remote(***, *propagate: Propagator = None*) → RemoteIfy
+monarch.remote(***, *propagate: [Any](https://docs.python.org/3/library/typing.html#typing.Any) = None*) → RemoteIfy
 
 monarch.coalescing()[[source]](../_modules/monarch/common/_coalescing.html#coalescing)
 
@@ -2330,6 +2461,58 @@ monarch.actor.this_proc()[[source]](../_modules/monarch/_src/actor/host_mesh.htm
 The current singleton process that this specific actor is
 running on
 
+monarch.actor.default_bootstrap_cmd()[[source]](../_modules/monarch/_src/actor/host_mesh.html#default_bootstrap_cmd)
+
+Get the default bootstrap command for the current environment.
+
+Returns a BootstrapCommand configured with the current Python executable
+and environment. This can be used as a base for customization with
+`with_env()` or by modifying its attributes directly.
+
+Returns:
+
+The default bootstrap command.
+
+Return type:
+
+BootstrapCommand
+
+monarch.actor.hosts_from_config(*name*)[[source]](../_modules/monarch/_src/actor/host_mesh.html#hosts_from_config)
+
+Get the host mesh 'name' from the monarch configuration for the project.
+
+This config can be modified so that the same code can create meshes from scheduler sources,
+and different sizes etc.
+
+WARNING: This function is a standin so that our getting_started example code works. The real implementation
+needs an RFC design.
+
+monarch.actor.enable_transport(*transport*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#enable_transport)
+
+Allow monarch to communicate with transport type 'transport'
+This must be called before any other calls in the monarch API.
+If it isn't called, we will implicitly call
+monarch.enable_transport(ChannelTransport.Unix) on the first monarch call.
+
+Currently only one transport type may be enabled at one time.
+In the future we may allow multiple to be enabled.
+
+Supported transport values:
+
+- ChannelTransport enum: ChannelTransport.Unix, ChannelTransport.TcpWithHostname, etc.
+- string short cuts for the ChannelTransport enum:
+
+- "tcp": ChannelTransport.TcpWithHostname
+- "ipc": ChannelTransport.Unix
+- "metatls": ChannelTransport.MetaTlsWithIpV6
+- "metatls-hostname": ChannelTransport.MetaTlsWithHostname
+- "tls": ChannelTransport.Tls (uses configurable TLS certs)
+- ZMQ-style URL format string for explicit address, e.g.:
+
+- "[tcp://127.0.0.1:8080](tcp://127.0.0.1:8080)"
+
+For Meta usage, use metatls-hostname
+
 # Defining Actors
 
 All actor classes subclass the Actor base object, which provides them mesh slicing API.
@@ -2339,7 +2522,15 @@ Each publicly exposed function of the actor is annotated with @endpoint:
 
 Bases: `MeshTrait`
 
-*property*logger*: [Logger](https://docs.python.org/3/library/logging.html#logging.Logger)*[[source]](../_modules/monarch/_src/actor/actor_mesh.html#Actor.logger)
+Base class for actors.
+
+Subclass `Actor` to define an actor, and decorate the methods that form
+its public API with `@endpoint`. Actors are spawned onto a `ProcMesh`
+(for example with `this_proc().spawn(...)`), after which their endpoints
+are invoked remotely through the messaging adverbs. Each actor processes its
+messages sequentially and participates in the supervision tree.
+
+*property*logger*: [Logger](https://docs.python.org/3/library/logging.html#logging.Logger)*
 
 *property*initialized*: [Any](https://docs.python.org/3/library/typing.html#typing.Any)*
 
@@ -2384,17 +2575,100 @@ The size of 'pp' is specified and the dimension size is derived from it:
 
 Dimensions not specified will remain unchanged.
 
-monarch.actor.endpoint(*method: Callable[Concatenate[Any, P], Awaitable[R]]*, ***, *propagate: Propagator = None*, *explicit_response_port: Literal[False] = False*, *instrument: [bool](https://docs.python.org/3/library/functions.html#bool) = True*) → EndpointProperty[P, R][[source]](../_modules/monarch/_src/actor/endpoint.html#endpoint)
+monarch.actor.endpoint(*method: [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[[Concatenate](https://docs.python.org/3/library/typing.html#typing.Concatenate)[[Any](https://docs.python.org/3/library/typing.html#typing.Any), P]], [Awaitable](https://docs.python.org/3/library/typing.html#typing.Awaitable)[R]]*, ***, *propagate: [None](https://docs.python.org/3/library/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[False] = False*, *instrument: [bool](https://docs.python.org/3/library/functions.html#bool) = True*) → EndpointProperty[P, R][[source]](../_modules/monarch/_src/actor/endpoint.html#endpoint)
 
-monarch.actor.endpoint(*method: Callable[Concatenate[Any, P], R]*, ***, *propagate: Propagator = None*, *explicit_response_port: Literal[False] = False*, *instrument: [bool](https://docs.python.org/3/library/functions.html#bool) = True*) → EndpointProperty[P, R]
+monarch.actor.endpoint(*method: [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[[Concatenate](https://docs.python.org/3/library/typing.html#typing.Concatenate)[[Any](https://docs.python.org/3/library/typing.html#typing.Any), P]], R]*, ***, *propagate: [None](https://docs.python.org/3/library/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[False] = False*, *instrument: [bool](https://docs.python.org/3/library/functions.html#bool) = True*) → EndpointProperty[P, R]
 
-monarch.actor.endpoint(***, *propagate: Propagator = None*, *explicit_response_port: Literal[False] = False*, *instrument: [bool](https://docs.python.org/3/library/functions.html#bool) = True*) → EndpointIfy
+monarch.actor.endpoint(***, *propagate: [None](https://docs.python.org/3/library/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[False] = False*, *instrument: [bool](https://docs.python.org/3/library/functions.html#bool) = True*) → EndpointIfy
 
-monarch.actor.endpoint(*method: Callable[Concatenate[Any, 'Port[R]', P], Awaitable[[None](https://docs.python.org/3/library/constants.html#None)]]*, ***, *propagate: Propagator = None*, *explicit_response_port: Literal[True]*, *instrument: [bool](https://docs.python.org/3/library/functions.html#bool) = True*) → EndpointProperty[P, R]
+monarch.actor.endpoint(*method: Callable[Concatenate[Any, 'Port[R]', P], Awaitable[[None](https://docs.python.org/3/library/constants.html#None)]]*, ***, *propagate: [None](https://docs.python.org/3/library/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[True]*, *instrument: [bool](https://docs.python.org/3/library/functions.html#bool) = True*) → EndpointProperty[P, R]
 
-monarch.actor.endpoint(*method: Callable[Concatenate[Any, 'Port[R]', P], [None](https://docs.python.org/3/library/constants.html#None)]*, ***, *propagate: Propagator = None*, *explicit_response_port: Literal[True]*, *instrument: [bool](https://docs.python.org/3/library/functions.html#bool) = True*) → EndpointProperty[P, R]
+monarch.actor.endpoint(*method: Callable[Concatenate[Any, 'Port[R]', P], [None](https://docs.python.org/3/library/constants.html#None)]*, ***, *propagate: [None](https://docs.python.org/3/library/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[True]*, *instrument: [bool](https://docs.python.org/3/library/functions.html#bool) = True*) → EndpointProperty[P, R]
 
-monarch.actor.endpoint(***, *propagate: Propagator = None*, *explicit_response_port: Literal[True]*, *instrument: [bool](https://docs.python.org/3/library/functions.html#bool) = True*) → PortedEndpointIfy
+monarch.actor.endpoint(***, *propagate: [None](https://docs.python.org/3/library/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[True]*, *instrument: [bool](https://docs.python.org/3/library/functions.html#bool) = True*) → PortedEndpointIfy
+
+Mark an `Actor` method as an endpoint callable from other actors.
+
+An endpoint defines part of an actor's public API. Once the actor is
+spawned onto a mesh, you invoke its endpoints through messaging adverbs
+(`call`, `call_one`, `choose`, `stream`, `broadcast`, and
+`rref`) rather than calling the method directly. Each adverb controls how
+the message is delivered and how the response is returned. Endpoint methods
+may be synchronous or `async`.
+
+Apply it bare or with options:
+
+```
+class Counter(Actor):
+ @endpoint
+ def increment(self) -> int:
+ ...
+
+ @endpoint(explicit_response_port=True)
+ async def stream_results(self, port: Port[int]) -> None:
+ ...
+```
+
+Parameters:
+
+- **method** - The actor method to wrap. Supplied automatically when the
+decorator is applied without parentheses; leave it unset when
+passing options.
+- **propagate** - Controls how the tensor engine infers output tensor shapes
+for `rref` without running the endpoint. Pass a callable that
+takes the endpoint's arguments (excluding `self`) and returns
+tensors of the shapes the endpoint would produce, or one of the
+strings `"cached"`, `"inspect"`, or `"mocked"`. Defaults to
+`None`, which matters only for endpoints used with distributed
+tensors.
+- **explicit_response_port** - When `True`, the endpoint receives a `Port`
+as its first argument (after `self`) and is responsible for
+sending its result through that port instead of returning a value.
+This supports custom response protocols, such as sending several
+responses or deferring one. The method's return annotation should
+be `None`.
+- **instrument** - When `True` (the default), wrap each invocation in a
+tracing span named for the method.
+
+Returns:
+
+An `EndpointProperty` descriptor. Accessing it on a spawned actor
+yields an `Endpoint` exposing the messaging adverbs.
+
+monarch.actor.concurrent_endpoint(*method=None*, ***, *propagate=None*, *explicit_response_port=False*, *instrument=True*)[[source]](../_modules/monarch/_src/actor/concurrent.html#concurrent_endpoint)
+
+Run one async actor endpoint as an `asyncio` background task.
+
+The decorator accepts the same endpoint options as `@endpoint`. It
+rewrites the endpoint to use an explicit response port, schedules the
+original async body as a task, and returns immediately so that the actor can
+handle another queued message.
+
+If two messages from the same source actor call `@concurrent_endpoint`
+methods on the same target actor, the first endpoint body starts before the
+second. This is only a start-order guarantee: the first endpoint runs until
+its first `await`, not to completion, before the second starts.
+
+If you mix `@concurrent_endpoint` with normal `@endpoint` methods, a
+normal endpoint that follows a concurrent endpoint may run before the
+concurrent endpoint body has started.
+
+Outstanding tasks created by this decorator are cancelled and awaited
+before user `__cleanup__` runs. This is a cleanup-time guarantee only:
+meshes owned by the actor may already have been stopped by the core actor
+lifecycle before these tasks are cancelled. General pending tasks on the
+actor's asyncio loop are cancelled later, after user `__cleanup__`
+completes.
+
+If the endpoint body raises an exception that it does not forward through
+its response port, the actor fails with a supervision error, just as an
+exception escaping an `@endpoint(explicit_response_port=True)` method
+does. This follows the principle of no silent errors. To report an error to
+the caller without failing the actor, forward it through the port (for
+example, `port.exception(e)`); to recover, catch it inside the endpoint.
+
+More complex protocols can still use `@endpoint(explicit_response_port=True)`
+and manage response ports manually.
 
 # Messaging Actor
 
@@ -2403,6 +2677,14 @@ Messaging is done through the "adverbs" defined for each endpoint
 *class*monarch.actor.Endpoint(**args*, ***kwargs*)[[source]](../_modules/monarch/_src/actor/endpoint.html#Endpoint)
 
 Bases: [`Protocol`](https://docs.python.org/3/library/typing.html#typing.Protocol)[`P`, `R`]
+
+A callable endpoint on a spawned actor or actor mesh.
+
+Accessing an `@endpoint` method on a spawned actor yields an `Endpoint`
+rather than calling the method directly. Its methods are the messaging
+adverbs that send a message to the actor(s) and control how responses are
+returned: `call`, `call_one`, `choose`, `stream`, `broadcast`,
+and `rref`.
 
 call_one(**args*, ***kwargs*)[[source]](../_modules/monarch/_src/actor/endpoint.html#Endpoint.call_one)
 
@@ -2441,6 +2723,57 @@ the asynchronous computation.
 __init__(***, *coro*)[[source]](../_modules/monarch/_src/actor/future.html#Future.__init__)
 
 get(*timeout=None*)[[source]](../_modules/monarch/_src/actor/future.html#Future.get)
+
+Get the result of the Future.
+
+Caveats:
+
+This method is designed to be used in places where event loops are not available. Besides that, you should
+avoid using this method if possible. Instead, use as_asyncio() (or await). This is because when Future.get() is called from
+within an active event loop, it blocks synchronously and does not yield control. That may degrade performance
+by preventing other tasks from running, and can potentially cause deadlocks if this future depends on them.
+
+A timeout never consumes the Future: on TimeoutError the underlying task keeps running, so a later get()/await still observes its result.
+
+examples:
+
+This is not recommended because fut.get() blocks the event loop and might lead to issues explained above.
+```
+def inner_func(fut):
+
+> result = fut.get()
+> # ...
+
+async def out_func(fut):
+
+inner_func(fut)
+
+```
+
+This is okay because everything is running synchronously.
+```
+def inner_func(fut):
+
+> result = fut.get()
+> # ...
+
+def main():
+
+# ...
+inner_func(fut)
+
+```
+
+as_asyncio()[[source]](../_modules/monarch/_src/actor/future.html#Future.as_asyncio)
+
+Return a standard `asyncio.Future` that resolves when this Future
+does.
+
+Requires a running event loop; off a loop it raises `RuntimeError`
+**without** consuming the underlying task (the Future stays unawaited, so
+a later `get()` still drives it). Observation is non-consuming:
+repeated `as_asyncio()`/`await` each return a fresh loop-local future
+observing the same result.
 
 result(*timeout=None*)[[source]](../_modules/monarch/_src/actor/future.html#Future.result)
 
@@ -2545,14 +2878,14 @@ some invariant enforced by the various APIs.
 
 __init__(*exception*, *message='A remote actor call has failed.'*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#ActorError.__init__)
 
-add_note(*object*, */*)
+add_note()
 
 Exception.add_note(note) -
 add a note to the exception
 
 args
 
-with_traceback(*object*, */*)
+with_traceback()
 
 Exception.with_traceback(tb) -
 set self.__traceback__ to tb and return self.
@@ -2636,27 +2969,52 @@ Wraps an EitherPortRef with the actor instance needed for sending.
 
 send(*obj*)
 
+send_message(*message*)
+
+*async*resolve_and_send(*result*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#Port.resolve_and_send)
+
 exception(*e*)
 
 return_undeliverable
 
-*class*monarch.actor.PortReceiver(*mailbox*, *receiver*, *monitor=None*, *endpoint=None*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#PortReceiver)
+*class*monarch.actor.PortReceiver(*mailbox*, *receiver*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#PortReceiver)
 
 Bases: [`Generic`](https://docs.python.org/3/library/typing.html#typing.Generic)[`R`]
 
 Receiver for messages sent through a communication channel.
 
 Handles receiving R-typed objects sent from a corresponding Port.
-Asynchronously message reception with optional supervision
-monitoring for error handling.
 
 recv()[[source]](../_modules/monarch/_src/actor/actor_mesh.html#PortReceiver.recv)
 
 ranked()[[source]](../_modules/monarch/_src/actor/actor_mesh.html#PortReceiver.ranked)
 
-monarch.actor.as_endpoint(*not_an_endpoint: Callable[P, R]*, ***, *propagate: Propagator = None*, *explicit_response_port: Literal[False] = False*) → Endpoint[P, R][[source]](../_modules/monarch/_src/actor/actor_mesh.html#as_endpoint)
+monarch.actor.as_endpoint(*not_an_endpoint: [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[P], R]*, ***, *propagate: [None](https://docs.python.org/3/library/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[False] = False*) → Endpoint[P, R][[source]](../_modules/monarch/_src/actor/actor_mesh.html#as_endpoint)
 
-monarch.actor.as_endpoint(*not_an_endpoint: Callable[Concatenate['PortProtocol[R]', P], [None](https://docs.python.org/3/library/constants.html#None)]*, ***, *propagate: Propagator = None*, *explicit_response_port: Literal[True]*) → Endpoint[P, R]
+monarch.actor.as_endpoint(*not_an_endpoint: Callable[Concatenate['PortProtocol[R]', P], [None](https://docs.python.org/3/library/constants.html#None)]*, ***, *propagate: [None](https://docs.python.org/3/library/constants.html#None) | [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)['cached', 'inspect', 'mocked'] | [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[...], [Any](https://docs.python.org/3/library/typing.html#typing.Any)] = None*, *explicit_response_port: [Literal](https://docs.python.org/3/library/typing.html#typing.Literal)[True]*) → Endpoint[P, R]
+
+Treat an actor method that is not an `@endpoint` as one.
+
+Use this to call a plain method of a spawned actor through the messaging
+adverbs when the method was not decorated with `@endpoint`, for example
+`as_endpoint(actor.method).call(...)`. The options match those of
+`endpoint`.
+
+Parameters:
+
+- **not_an_endpoint** - An unannotated method of a spawned actor.
+- **propagate** - Tensor-shape propagation for `rref`; see `endpoint`.
+- **explicit_response_port** - When `True`, the method receives a `Port`
+as its first argument and sends its result through it; see
+`endpoint`.
+
+Returns:
+
+An `Endpoint` exposing the messaging adverbs.
+
+Raises:
+
+[**ValueError**](https://docs.python.org/3/library/exceptions.html#ValueError) - If `not_an_endpoint` is not a method of a spawned actor.
 
 # Context API
 
@@ -2664,11 +3022,43 @@ Use these functions to look up what actor is running the currently executing cod
 
 monarch.actor.current_actor_name()[[source]](../_modules/monarch/_src/actor/actor_mesh.html#current_actor_name)
 
+Return the actor id of the currently executing actor as a string.
+
 monarch.actor.current_rank()[[source]](../_modules/monarch/_src/actor/actor_mesh.html#current_rank)
+
+Return the current message's position within its mesh as a `Point`.
 
 monarch.actor.current_size()[[source]](../_modules/monarch/_src/actor/actor_mesh.html#current_size)
 
+Return the size of each mesh dimension for the current message.
+
+The result maps each dimension label to the number of actors along it.
+
 monarch.actor.context()[[source]](../_modules/monarch/_src/actor/actor_mesh.html#context)
+
+Return the `Context` for the currently executing actor.
+
+Call this from within an endpoint to inspect the running actor and the
+current message's position in the mesh. Outside an actor (on the client) it
+returns the root client context.
+
+monarch.actor.shutdown_context()[[source]](../_modules/monarch/_src/actor/actor_mesh.html#shutdown_context)
+
+Shutdown global actor context resources.
+
+Idempotent: subsequent calls return an immediately-resolved future.
+This is safe to call both explicitly and from atexit.
+
+Returns:
+
+A future that completes when shutdown is
+
+finished. Call with .get() to wait for
+completion.
+
+Return type:
+
+Future[None]
 
 *class*monarch.actor.Context[[source]](../_modules/monarch/_src/actor/actor_mesh.html#Context)
 
@@ -2681,6 +3071,15 @@ message_rank
 *class*monarch.actor.Point(*rank*, *extent*)[[source]](../_modules/monarch/_src/actor/actor_mesh.html#Point)
 
 Bases: `Point`, [`Mapping`](https://docs.python.org/3/library/collections.abc.html#collections.abc.Mapping)
+
+A coordinate within a mesh.
+
+A `Point` maps each mesh dimension label (for example `"hosts"` or
+`"gpus"`) to its integer index along that dimension. It behaves as a
+read-only mapping, so `point["gpus"]` is the index along the `"gpus"`
+dimension. `current_rank` and `Context.message_rank` return the
+`Point` that locates the current actor within the mesh that received the
+message.
 
 extent
 
@@ -2719,6 +3118,62 @@ mesh
 mesh_name
 
 report()
+
+monarch.actor.unhandled_fault_hook(*failure*)[[source]](../_modules/monarch/_src/actor/supervision.html#unhandled_fault_hook)
+
+When a supervision event is unhandled and is propagated back to the client,
+this hook is called.
+The default implementation is to exit the process with error code 1
+after logging the event.
+If this function raises any exception (including BaseException classes such
+as SystemExit from sys.exit), this fault is considered unhandled.
+Any normal return value will cause the fault to be dropped. Logs will be
+written containing the failure message in either case.
+
+To customize this behavior, overwrite this function in your client code like so:
+```
+import monarch.actor
+
+def my_unhandled_fault_hook(failure: MeshFailure) -> None:
+
+# log it, add metrics, etc.
+print(f"Mesh failure was not handled: {failure}")
+# To ignore this error, return any value (including None) without an exception.
+
+monarch.actor.unhandled_fault_hook = my_unhandled_fault_hook
+```
+
+If the fault is unhandled, it exits the main thread by delivering a KeyboardInterrupt.
+This is done because the Python Interpreter can only be finalized to run
+destructors and atexit hooks from the main thread. So if you see a
+"KeyboardInterrupt" happening that you didn't send, it's because there was
+an unhandled fault.
+
+# Telemetry
+
+Utilities for tracing actor execution.
+
+monarch.actor.traced(*fn: [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[_P], _R]*) → [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[_P], _R][[source]](../_modules/monarch/_src/actor/telemetry.html#traced)
+
+monarch.actor.traced(***, *name: [str](https://docs.python.org/3/library/stdtypes.html#str)*) → [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[[Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[_P], _R]], [Callable](https://docs.python.org/3/library/typing.html#typing.Callable)[[_P], _R]]
+
+Decorator that wraps a function in a telemetry span.
+
+Works with both sync and async functions. The span is automatically
+associated with the current actor context, if any. When no name is
+provided, the function's `__name__` is used as the span name.
+
+Usage:
+
+```
+@traced
+async def do_work():
+ ...
+
+@traced(name="custom_name")
+def compute():
+ ...
+```
 
 ---
 
@@ -2807,8 +3262,7 @@ enable_dest_actor_reordering_buffer: Enable reordering buffer in dest actor.
 - **configuration** - mesh_bootstrap_enable_pdeathsig: Enable parent-death signal for spawned processes.
 mesh_terminate_concurrency: Maximum concurrent terminations during shutdown.
 mesh_terminate_timeout: Timeout per child during graceful termination (humantime).
-- **buffering** (*Runtime and*) - shared_asyncio_runtime: Share asyncio runtime across actors.
-small_write_threshold: Threshold below which writes are copied (bytes).
+- **buffering** (*Runtime and*) - small_write_threshold: Threshold below which writes are copied (bytes).
 - **configuration** - max_cast_dimension_size: Maximum dimension size for cast operations.
 - **allocation** (*Remote*) - remote_alloc_bind_to_inaddr_any: Bind remote allocators to INADDR_ANY.
 remote_alloc_bootstrap_addr: Bootstrap address for remote allocators.
@@ -3303,14 +3757,6 @@ Maximum concurrent terminations during mesh shutdown.
 
 ## Runtime and Buffering
 
-`shared_asyncio_runtime`
-
-Share asyncio runtime across actors.
-
-- **Type**: `bool`
-- **Default**: `False`
-- **Environment**: `MONARCH_HYPERACTOR_SHARED_ASYNCIO_RUNTIME`
-
 `small_write_threshold`
 
 Threshold below which writes are copied (in bytes).
@@ -3329,7 +3775,7 @@ Writes at or above this size are stored as zero-copy references.
 Enable queue-based dispatch for actor message handling.
 
 - **Type**: `bool`
-- **Default**: `False`
+- **Default**: `True`
 - **Environment**: `HYPERACTOR_ACTOR_QUEUE_DISPATCH`
 
 When `True`, actor messages are dispatched through a queue rather than
@@ -3606,7 +4052,7 @@ Returns:
 
 Return type:
 
-*JobTrait*
+[*Self*](https://docs.python.org/3/library/typing.html#typing.Self)
 
 enable_admin(*config=None*, ***kwargs*)[[source]](../_modules/monarch/_src/job/job.html#JobTrait.enable_admin)
 
@@ -3623,7 +4069,7 @@ Returns:
 
 Return type:
 
-*JobTrait*
+[*Self*](https://docs.python.org/3/library/typing.html#typing.Self)
 
 apply(*client_script=None*)[[source]](../_modules/monarch/_src/job/job.html#JobTrait.apply)
 
@@ -3651,11 +4097,7 @@ from a cached file, the original `apply_id` is preserved.
 
 state(*cached_path='.monarch/job_state.pkl'*)[[source]](../_modules/monarch/_src/job/job.html#JobTrait.state)
 
-Connect to the job and return its state with all configured mounts applied.
-
-See `_connect()` for the connection logic. After connecting, all
-mount configs registered via `remote_mount()` and gather mount
-configs registered via `gather_mount()` are applied before returning.
+Connect and run component state hooks on the final host meshes.
 
 dump(*filename*)[[source]](../_modules/monarch/_src/job/job.html#JobTrait.dump)
 
@@ -3775,6 +4217,14 @@ This implementation:
 2. Queries job status with squeue to get allocated hostnames
 3. Uses the hostnames to connect to the started workers
 
+Two launch modes are supported:
+- External controller (default): `apply()` submits the workers; a separate
+
+> controller process attaches via `state()`.
+
+- Batch (`apply(client_script=...)`): one allocation runs both the workers
+and the client; the allocation is released when the client exits.
+
 add_mesh(*name*, *num_nodes*)[[source]](../_modules/monarch/_src/job/slurm.html#SlurmJob.add_mesh)
 
 can_run(*spec*)[[source]](../_modules/monarch/_src/job/slurm.html#SlurmJob.can_run)
@@ -3787,7 +4237,7 @@ Share a node with other jobs.
 
 ## KubernetesJob
 
-*class*monarch.job.kubernetes.KubernetesJob(*namespace*, *timeout=None*)[[source]](../_modules/monarch/_src/job/kubernetes.html#KubernetesJob)
+*class*monarch.job.kubernetes.KubernetesJob(*namespace*, *timeout=None*, *kubeconfig=None*, *attach_to=None*)[[source]](../_modules/monarch/_src/job/kubernetes.html#KubernetesJob)
 
 Bases: `JobTrait`
 
@@ -3907,114 +4357,6 @@ The `monarch.job.spmd` submodule provides job primitives for launching
 torchrun-style SPMD training over Monarch. It parses torchrun arguments from
 an AppDef and executes the training script across the mesh.
 
-monarch.job.spmd.serve(*appdef*, *scheduler='mast_conda'*, *scheduler_cfg=None*)[[source]](../_modules/monarch/_src/job/spmd.html#serve)
-
-Launch SPMD job using an AppDef or a single-node torchrun command.
-
-This function launches monarch workers, then allows running SPMD training
-via run_spmd().
-
-Assumptions:
-
-- When using an AppDef, the role's entrypoint is a script (e.g.,
-"workspace/entrypoint.sh") that sets up the environment (activates
-conda, sets WORKSPACE_DIR, etc.) and runs its arguments.
-- The role's args contains a torchrun command with the training script,
-e.g., ["torchrun", "-nnodes=1", "-m", "train", "-lr", "0.001"].
-- The role's workspace defines which files to upload to workers.
-- When using a command list, it should be a torchrun command, e.g.,
-["torchrun", "-nproc-per-node=4", "-standalone", "train.py"].
-
-Note
-
-When passing a command list, only single-node torchrun is supported
-(`--standalone` or `--nnodes=1`). For multi-node training, use an
-`AppDef` with a scheduler that manages node allocation.
-
-Parameters:
-
-- **appdef** (*AppDef**|*[*List*](https://docs.python.org/3/library/typing.html#typing.List)*[*[*str*](https://docs.python.org/3/library/stdtypes.html#str)*]*) - Either a torchx `AppDef` instance, or a torchrun command as
-a list of strings (e.g., `["torchrun", "--nproc-per-node=4",
-"train.py"]`). When a list is provided, the first element is the
-entrypoint and the rest are arguments.
-- **scheduler** ([*str*](https://docs.python.org/3/library/stdtypes.html#str)) - Scheduler name (e.g., 'mast_conda', 'local_cwd')
-- **scheduler_cfg** ([*Dict*](https://docs.python.org/3/library/typing.html#typing.Dict)*[*[*str*](https://docs.python.org/3/library/stdtypes.html#str)*,*[*Any*](https://docs.python.org/3/library/typing.html#typing.Any)*]**|**None*) - Scheduler configuration dict
-
-Returns:
-
-SPMDJob instance
-
-Raises:
-
-[**ValueError**](https://docs.python.org/3/library/exceptions.html#ValueError) - If command list specifies multi-node (-nnodes > 1).
-
-Return type:
-
-*SPMDJob*
-
-Example
-
-Using a torchrun command list (single-node only):
-
-```
-from monarch.job.spmd import serve
-
-job = serve(
- ["torchrun", "--nproc-per-node=4", "--standalone", "train.py"],
- scheduler="local_cwd",
-)
-job.run_spmd()
-```
-
-Using an AppDef (supports multi-node):
-
-```
-from monarch.job.spmd import serve
-from torchx import specs
-
-app = specs.AppDef(
- name="my-training",
- roles=[
- specs.Role(
- name="trainer",
- image="my_workspace:latest",
- entrypoint="workspace/entrypoint.sh",
- args=["torchrun", "--nnodes=2", "--nproc-per-node=8",
- "-m", "train"],
- num_replicas=2,
- resource=specs.resource(h="gtt_any"),
- ),
- ],
-)
-job = serve(
- app,
- scheduler="mast_conda",
- scheduler_cfg={
- "hpcClusterUuid": "MastGenAICluster",
- "hpcIdentity": "my_identity",
- "localityConstraints": ["region", "pci"],
- },
-)
-job.run_spmd()
-```
-
-*class*monarch.job.spmd.SPMDJob(*handle*, *scheduler*, *workspace=None*, *original_roles=None*)[[source]](../_modules/monarch/_src/job/spmd.html#SPMDJob)
-
-Bases: `JobTrait`
-
-SPMD (Single Program Multiple Data) job that uses torchx directly.
-
-This job type wraps a torchx Runner and job handle, providing monarch job tracking.
-
-can_run(*spec*)[[source]](../_modules/monarch/_src/job/spmd.html#SPMDJob.can_run)
-
-Is this job capable of running the job spec? This is used to check if a
-cached job can be used to run spec instead of creating a new reserveration.
-
-It is also used by the batch run infrastructure to indicate that the batch job can certainly run itself.
-
-run_spmd()[[source]](../_modules/monarch/_src/job/spmd.html#SPMDJob.run_spmd)
-
 ---
 
 # monarch.rdma
@@ -4053,53 +4395,26 @@ Return the RDMA backend in use ('ibverbs').
 
 size()[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMABuffer.size)
 
-read_into(*dst*, ***, *timeout=3*)[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMABuffer.read_into)
+read_into(*dst*, ***, *timeout=60*)[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMABuffer.read_into)
 
-Read data from the RDMABuffer into a destination tensor.
+Read data from this RDMABuffer into `dst`.
 
-The destination tensor must be contiguous (including tensor views/slices).
-:param dst: Destination tensor or memoryview to read into.
-
-Keyword Arguments:
-
-**timeout** ([*int*](https://docs.python.org/3/library/functions.html#int)*,**optional*) - Timeout in seconds for the operation. Defaults to 3s.
-
-Returns:
-
-A Monarch Future that can be awaited or called with .get() for blocking operation.
-
-Return type:
-
-[Future](monarch.html#monarch.Future)[Optional[[int](https://docs.python.org/3/library/functions.html#int)]]
-
-Raises:
-
-[**ValueError**](https://docs.python.org/3/library/exceptions.html#ValueError) - If the destination tensor size is smaller than the RDMA buffer size.
-
-Note
-
-Currently only CPU tensors are fully supported. GPU tensors will be temporarily
-copied to CPU, which may impact performance.
-
-write_from(*src*, ***, *timeout=3*)[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMABuffer.write_from)
-
-Write data from a source tensor into the RDMABuffer.
+`dst` must be a 1D contiguous tensor or c-contiguous memoryview
+whose byte-size is at least `self.size()`.
 
 Parameters:
 
-**src** ([*torch.Tensor*](https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor)*|*[*memoryview*](https://docs.python.org/3/library/stdtypes.html#memoryview)) - Source tensor containing data to be written to the RDMA buffer.
-Must be a contiguous tensor (including tensor views/slices).
-Either src or addr/size must be provided.
+**dst** ([*torch.Tensor*](https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor)*|*[*memoryview*](https://docs.python.org/3/library/stdtypes.html#memoryview)) - Destination tensor or memoryview to read into.
 
 Keyword Arguments:
 
-**timeout** ([*int*](https://docs.python.org/3/library/functions.html#int)*,**optional*) - Timeout in seconds for the operation. Defaults to 3s.
+**timeout** ([*int*](https://docs.python.org/3/library/functions.html#int)*,**optional*) - Timeout in seconds. Defaults to 60s.
 
 Returns:
 
-A Monarch Future object that can be awaited or called with .get()
+A Monarch Future that resolves to `None` when
 
-for blocking operation. Returns None when completed successfully.
+the read completes.
 
 Return type:
 
@@ -4107,12 +4422,37 @@ Return type:
 
 Raises:
 
-[**ValueError**](https://docs.python.org/3/library/exceptions.html#ValueError) - If the source tensor size exceeds the RDMA buffer size.
+[**ValueError**](https://docs.python.org/3/library/exceptions.html#ValueError) - If `dst` is smaller than the RDMA buffer.
 
-Note
+write_from(*src*, ***, *timeout=60*)[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMABuffer.write_from)
 
-Currently only CPU tensors are fully supported. GPU tensors will be temporarily
-copied to CPU, which may impact performance.
+Write data from `src` into this RDMABuffer.
+
+`src` must be a 1D contiguous tensor or c-contiguous memoryview
+whose byte-size is at most `self.size()`.
+
+Parameters:
+
+**src** ([*torch.Tensor*](https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor)*|*[*memoryview*](https://docs.python.org/3/library/stdtypes.html#memoryview)) - Source tensor or memoryview containing the bytes to
+write to the RDMA buffer.
+
+Keyword Arguments:
+
+**timeout** ([*int*](https://docs.python.org/3/library/functions.html#int)*,**optional*) - Timeout in seconds. Defaults to 60s.
+
+Returns:
+
+A Monarch Future that resolves to `None` when
+
+the write completes.
+
+Return type:
+
+[Future](monarch.html#monarch.Future)[None]
+
+Raises:
+
+[**ValueError**](https://docs.python.org/3/library/exceptions.html#ValueError) - If `src` exceeds the RDMA buffer size.
 
 drop()[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMABuffer.drop)
 
@@ -4128,90 +4468,33 @@ The owner reference (str)
 
 Bases: [`object`](https://docs.python.org/3/library/functions.html#object)
 
-Schedule a bunch of actions at once. This provides an opportunity to
-optimize bulk RDMA transactions without exposing complexity to users.
+Schedule a batch of RDMA operations and submit them as one unit.
 
-*class*RDMAOp(*value*, *names=<not given>*, **values*, *module=None*, *qualname=None*, *type=None*, *start=1*, *boundary=None*)[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMAAction.RDMAOp)
-
-Bases: [`Enum`](https://docs.python.org/3/library/enum.html#enum.Enum)
-
-Enumeration of RDMA operation types.
-
-READ_INTO*= 'read_into'*
-
-WRITE_FROM*= 'write_from'*
-
-FETCH_ADD*= 'fetch_add'*
-
-COMPARE_AND_SWAP*= 'compare_and_swap'*
+All bookkeeping (per-op validation, intra-batch local-memory race
+detection, backend grouping, parallel dispatch) lives in the Rust
+_RdmaAction; this class is a thin wrapper around it.
 
 __init__()[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMAAction.__init__)
 
-read_into(*src*, *dst*)[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMAAction.read_into)
+read_remote(*dst*, *src*)[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMAAction.read_remote)
 
-Read from src RDMA buffer into dst memory.
+Queue a read from RDMA buffer `src` into local memory `dst`.
 
-Parameters:
+write_remote(*dst*, *src*)[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMAAction.write_remote)
 
-- **src** (*RDMABuffer*) - Source RDMA buffer to read from
-- **dst** (*LocalMemory**|**List**[**LocalMemory**]*) - Destination local memory to read into
-If dst is a list, it is the concatenation of the data in the list
-
-write_from(*src*, *dst*)[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMAAction.write_from)
-
-Write from dst memory to src RDMA buffer.
-
-Parameters:
-
-- **src** (*RDMABuffer*) - Destination RDMA buffer to write to
-- **dst** (*LocalMemory**|**List**[**LocalMemory**]*) - Source local memory to write from
-If local is a list, it is the concatenation of the data in the list
+Queue a write from local memory `src` into RDMA buffer `dst`.
 
 fetch_add(*src*, *dst*, *add*)[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMAAction.fetch_add)
 
-Perform atomic fetch-and-add operation on src RDMA buffer.
-
-Parameters:
-
-- **src** (*RDMABuffer*) - src RDMA buffer to perform operation on
-- **dst** (*LocalMemory*) - Local memory to store the original value
-- **add** ([*int*](https://docs.python.org/3/library/functions.html#int)) - Value to add to the src buffer
-
-Atomically:
-
-*dst = *src
-*src = *src + add
-
-Note: src/dst are 8 bytes
-
 compare_and_swap(*src*, *dst*, *compare*, *swap*)[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMAAction.compare_and_swap)
 
-Perform atomic compare-and-swap operation on src RDMA buffer.
+submit(***, *timeout=60*)[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMAAction.submit)
 
-Parameters:
+Schedule the queued ops. Safe to call multiple times.
 
-- **src** (*RDMABuffer*) - src RDMA buffer to perform operation on
-- **dst** (*LocalMemory*) - Local memory to store the original value
-- **compare** ([*int*](https://docs.python.org/3/library/functions.html#int)) - Value to compare against
-- **swap** ([*int*](https://docs.python.org/3/library/functions.html#int)) - Value to swap in if comparison succeeds
-
-Atomically:
-
-*dst = *src;
-if (*src == compare) {
-
-> *src = swap
-
-}
-
-Note: src/dst are 8 bytes
-
-submit()[[source]](../_modules/monarch/_src/rdma/rdma.html#RDMAAction.submit)
-
-Schedules the work (can be called multiple times to schedule the same work more than once).
-Future completes when all the work is done.
-
-Executes futures for each src actor independently and concurrently for optimal performance.
+The returned Future does not resolve until every op in the batch
+completes, or until the timeout is reached. If any op fails, the
+Future resolves with an exception.
 
 # Utility Functions
 
@@ -4345,9 +4628,33 @@ Contents
 - [Macros](src/macros/index.html)
 - [Channels](src/channels/index.html)
 - [Mailboxes and Routers](src/mailboxes/index.html)
+- [Procs](src/procs/index.html)
 - [References](src/references/index.html)
+- [Remote Supervision and Rendezvous](src/remote_supervision.html)
 - [Appendix](src/appendix/index.html)
-- [Summary](src/SUMMARY.html)
+- [References](src/references/index.html)
+- [Mailboxes and Routers](src/mailboxes/index.html)
+- [Channels](src/channels/index.html)
+- [Procs](src/procs/index.html)
+
+- [Overview](src/procs/index.html#overview)
+- [Key Components](src/procs/index.html#key-components)
+- [See Also](src/procs/index.html#see-also)
+- [Actors](src/actors/index.html)
+- [Remote Supervision and Rendezvous](src/remote_supervision.html)
+
+- [Intended usage](src/remote_supervision.html#intended-usage)
+- [Remote supervision](src/remote_supervision.html#remote-supervision)
+- [Link protocol](src/remote_supervision.html#link-protocol)
+- [Keepalive link](src/remote_supervision.html#keepalive-link)
+- [Child and link failures](src/remote_supervision.html#child-and-link-failures)
+- [Stop and unlink](src/remote_supervision.html#stop-and-unlink)
+- [Rendezvous tokens](src/remote_supervision.html#rendezvous-tokens)
+- [Public surface](src/remote_supervision.html#public-surface)
+- [Macros](src/macros/index.html)
+
+- [Macro Summary](src/macros/index.html#macro-summary)
+- [Appendix](src/appendix/index.html)
 
 ## Running the Book
 
@@ -4358,7 +4665,7 @@ To run the book on a remote server (e.g., `devgpu004`):
 ```
 x2ssh devgpu004.rva5.facebook.com
 tmux new -s mdbook
-cd ~/fbsource/fbcode/monarch/books/hyperactor-book
+cd ~/fbsource/fbcode/monarch/docs/source/books/hyperactor-book
 mdbook serve
 ```
 
@@ -4429,7 +4736,7 @@ Use this to check whether the mdbook session is still running.
 - [ProcId](references/proc_id.html)
 - [ActorId](references/actor_id.html)
 - [PortId](references/port_id.html)
-- [Reference](references/reference.html)
+- [Addr](references/reference.html)
 - [Typed References](references/typed_refs.html)
 - [Mailboxes and Routers](mailboxes/index.html)
 
@@ -4457,8 +4764,8 @@ Use this to check whether the mdbook session is still running.
 - [Procs](procs/index.html)
 
 - [Proc](procs/proc.html)
+- [Gateway](procs/gateway.html)
 - [Host](procs/host.html)
-- [ProcOrDial Router](procs/proc_or_dial.html)
 - [Actors](actors/index.html)
 
 - [Actor](actors/actor.html)
@@ -5066,33 +5373,23 @@ impl<A: Actor> Handler<Signal> for A {
 }
 ```
 
-### `Handler<IndexedErasedUnbound<M>>`
+### Multipart routed messages
 
 ```
-#[async_trait]
-impl<A, M> Handler<IndexedErasedUnbound<M>> for A
-where
- A: Handler<M>,
- M: Castable,
-{
- async fn handle(
- &mut self,
- cx: &Context<Self>,
- msg: IndexedErasedUnbound<M>,
- ) -> anyhow::Result<()> {
- let message = msg.downcast()?.bind()?;
- Handler::handle(self, cx, message).await
- }
-}
+let mut message = wirevalue::Any::<wirevalue::encoding::Multipart>::serialize(&value)?;
+message.visit_multipart_parts_mut::<PortRefRepr, anyhow::Error>(|port| {
+ port.update_port_addr(rewritten_addr);
+ Ok(())
+})?;
 ```
 
-This implementation allows an actor to transparently handle erased, rebound messages of type `M`, provided it already implements `Handler<M>`.
+Casting and accumulation routes serialized multipart messages through intermediate actors. Intermediate actors rewrite typed multipart parts directly, then forward the serialized message to the destination actor's ordinary typed handler port.
 
 This construct is used in the implementation of **accumulation**, a communication pattern where a message is multicast to multiple recipients and their replies are gathered--possibly through intermediate actors--before being sent back to the original sender.
 
-To enable this, messages are unbound at the sender: reply ports (`PortRef`s) are extracted into a `Bindings` object, allowing intermediate nodes to rewrite those ports to point back to themselves. This ensures that replies from downstream actors are routed through the intermediate, enabling reply collection and reduction.
+To enable this, selected fields such as `PortRef`s serialize as typed multipart parts. Intermediate nodes visit those part representations and rewrite the port addresses to point back to themselves. This ensures that replies from downstream actors are routed through the intermediate, enabling reply collection and reduction.
 
-Once a message reaches its destination, it is rebound by merging the updated bindings back into the message. The `Handler<IndexedErasedUnbound<M>>` implementation automates this by recovering the typed message `M` and dispatching it to the actor's existing `Handler<M>` implementation.
+Once a message reaches its destination, the mailbox deserializes the multipart payload as the actor's typed message and dispatches it to the actor's existing `Handler<M>` implementation.
 
 This allows actors to remain unaware of accumulation mechanics--they can just implement `Handler<M>` as usual.
 
@@ -5741,7 +6038,7 @@ The following pages explore the key aspects of channels, from basic usage to tra
 
 - [Transmits and Receives](tx_rx.html)
 - [Channel Addresses](addresses.html)
-- [Transports](transports.html)
+- [Transports](transports/index.html)
 - [Frames](frames.html)
 - [Network Internals](net_internals.html)
 
@@ -6167,7 +6464,7 @@ channel/net/framed.rs
 
 # Transports
 
-Different transports implement the channel abstraction: Local (in-process), Tcp, Unix, MetaTls, and Simulated.
+The transport overview lives in [transports/index.md](transports/index.html).
 
 ---
 
@@ -6419,9 +6716,23 @@ Chapters
 - [Macro Summary](macros/index.html#macro-summary)
 - [Channels](channels/index.html)
 - [Mailboxes and Routers](mailboxes/index.html)
+- [Procs](procs/index.html)
+
+- [Overview](procs/index.html#overview)
+- [Key Components](procs/index.html#key-components)
+- [See Also](procs/index.html#see-also)
 - [References](references/index.html)
+- [Remote Supervision and Rendezvous](remote_supervision.html)
+
+- [Intended usage](remote_supervision.html#intended-usage)
+- [Remote supervision](remote_supervision.html#remote-supervision)
+- [Link protocol](remote_supervision.html#link-protocol)
+- [Keepalive link](remote_supervision.html#keepalive-link)
+- [Child and link failures](remote_supervision.html#child-and-link-failures)
+- [Stop and unlink](remote_supervision.html#stop-and-unlink)
+- [Rendezvous tokens](remote_supervision.html#rendezvous-tokens)
+- [Public surface](remote_supervision.html#public-surface)
 - [Appendix](appendix/index.html)
-- [Summary](SUMMARY.html)
 
 ---
 
@@ -6476,10 +6787,9 @@ The behavior can include any type of message:
 After spawning the real actor, re-type its id as the behavior:
 
 ```
-let mut proc = Proc::isolated();
 let shopping_list_actor: ActorHandle<ShoppingListActor> =
- proc.spawn("shopping", ()).await?;
-let (client, _) = proc.client("client").unwrap();
+ hyperactor::spawn_with_label("shopping", ShoppingListActor::default())?;
+let client = hyperactor::client("client");
 
 // Re-type the reference as ActorRef<ShoppingApi>.
 // We use `attest` here for demonstration, because we know this id
@@ -6555,7 +6865,7 @@ This makes `behavior!` a useful tool for **compile-time capability control**.
 
 The `#[hyperactor::export]` macro turns a regular `Actor` implementation into a remotely addressable actor by generating its type information and supported message handlers.
 
-It also supports message casting (broadcasting to multiple actors) by specifying `cast = true` for individual handlers.
+It also supports message casting (broadcasting to multiple actors) for exported remote message handlers.
 
 ## What It Adds
 
@@ -6583,14 +6893,14 @@ To make a concrete actor remotely spawnable, add `#[hyperactor::spawnable]`. For
 
 ## Casting Messages
 
-For message types that need to be broadcast to multiple actors in a mesh, use `cast = true`:
+Message types that need to be broadcast to multiple actors in a mesh must be exported remote message handlers:
 
 ```
 #[hyperactor::export(
  handlers = [
- TestMessage { cast = true },
- () { cast = true },
- MyGeneric<()> { cast = true },
+ TestMessage,
+ (),
+ MyGeneric<()>,
  u64,
  ],
 )]
@@ -6599,7 +6909,7 @@ struct TestActor {
 }
 ```
 
-When `cast = true` is specified, the macro registers both the concrete message type and its `IndexedErasedUnbound<T>` wrapper. This enables the message to be multicast to a group of actors via `CastMessageEnvelope`, with proper handling of reply port mutation so replies can be relayed through intermediate nodes and aggregated.
+Cast routes send the message as multipart data to the destination's ordinary typed handler port, with reply-port mutation handled by visiting typed multipart part representations while the message is in transit.
 
 ## Generated Implementations (simplified)
 
@@ -6915,9 +7225,8 @@ The `cx` parameter provides the actor context required to send messages and open
 ### Example Usage
 
 ```
-let mut proc = Proc::isolated();
-let actor = proc.spawn::<ShoppingListActor>("shopping", ()).await?;
-let client = proc.attach("client").unwrap();
+let actor = hyperactor::spawn_with_label("shopping", ShoppingListActor::default())?;
+let client = hyperactor::client("client");
 
 // Fire-and-forget
 actor.add(&client, "milk".into()).await?;
@@ -6927,7 +7236,7 @@ let found = actor.exists(&client, "milk".into()).await?;
 println!("got milk? {found}");
 ```
 
-Here, actor is an `ActorHandle<ShoppingListActor>` that implements `ShoppingListClient`, and `client` is a `Mailbox` that provides the necessary capabilities.
+Here, actor is an `ActorHandle<ShoppingListActor>` that implements `ShoppingListClient`, and `client` provides the necessary caller capabilities.
 
 ### `#[reply]`
 
@@ -7132,249 +7441,98 @@ where
 
 # Delivery Semantics
 
-This section defines the mechanics of message delivery and failure in the mailbox system.
+This page describes how mailbox delivery succeeds, fails, and reports failure.
 
-Key components:
+## Message envelopes
 
-- `MessageEnvelope`: encapsulates a message, sender, and destination
-- `DeliveryError`: enumerates failure modes (unroutable, broken link, etc.)
-- Undeliverable handling: how messages are returned on failure
-- Serialization and deserialization support
-
-These types form the foundation for how messages are transmitted, routed, and failed in a structured way.
-
-An envelope carries a message destined to a remote actor. The envelope contains a serialized message along with its destination and sender:
+`MessageEnvelope` is the unit routed through `MailboxSender`s. It carries an addressed, serialized message:
 
 ```
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Named)]
 pub struct MessageEnvelope {
- /// The sender of this message.
- sender: ActorId,
-
- /// The destination of the message.
- dest: PortId,
-
- /// The serialized message.
- data: Serialized,
-
- /// Error contains a delivery error when message delivery failed.
- error: Option<DeliveryError>,
-
- /// Additional context for this message.
- headers: Attrs,
+ sender: ActorAddr,
+ dest: PortAddr,
+ next_hop: Option<PortAddr>,
+ data: wirevalue::Any,
+ delivery_failures: Vec<DeliveryFailure>,
+ headers: Flattrs,
+ ttl: u8,
+ return_undeliverable: bool,
 }
 ```
 
-`MessageEnvelope::new` creates a message envelope:
+The sender and destination are addresses, not bare ids. `dest` is the canonical destination and does not change in flight. `next_hop` is where the next router should deliver; it defaults to `dest`, and a gateway rewrites it as it peels `Via` hops (see [Gateway](../procs/gateway.html)). A gateway routes on the next hop's `Location`; prefix routers match on `dest`'s actor address.
+
+Constructors:
 
 ```
 impl MessageEnvelope {
- fn new(sender: ActorId, dest: PortId, data: Serialized, headers: Attrs) -> Self { ... }
+ pub fn new(
+ sender: impl Into<ActorAddr>,
+ dest: impl Into<PortAddr>,
+ data: wirevalue::Any,
+ headers: Flattrs,
+ ) -> Self;
+
+ pub fn serialize<T: Serialize + Named>(
+ source: impl Into<ActorAddr>,
+ dest: impl Into<PortAddr>,
+ value: &T,
+ headers: Flattrs,
+ ) -> Result<Self, wirevalue::Error>;
 }
 ```
 
-`MessageEnvelope::new_unknown` creates a new envelope when we don't know who the sender is:
+Each `MailboxSender::post` decrements `ttl` before calling `post_unchecked`. When the TTL reaches zero, the envelope is returned as an expired delivery instead of being routed further.
+
+## Structured failures
+
+Delivery failures are structured and accumulate in the envelope's `delivery_failures` vector. Each entry is a `DeliveryFailure`: a `kind` plus attributes.
 
 ```
-impl MessageEnvelope {
- fn new_unknown(dest: PortId, data: Serialized) -> Self {
- let unknown_addr = ChannelAddr::any(ChannelTransport::Local);
- let unknown_proc = ProcAddr::instance(unknown_addr, "unknown");
- let unknown_actor = ActorAddr::root(unknown_proc, Label::strip("unknown"));
- Self::new(unknown_actor, dest, data)
- }
+pub struct DeliveryFailure {
+ pub kind: DeliveryFailureKind,
+ pub attrs: Flattrs,
+}
+
+pub enum DeliveryFailureKind {
+ InvalidReference(InvalidReference),
+ Undeliverable(UndeliverableReason),
+ Expired(ExpiredDelivery),
 }
 ```
 
-If a type `T` implements `Serialize` and `Named`, an envelope can be constructed while serializing the message data:
+The first entry is the root failure. Later entries record failures encountered while the same envelope is forwarded onward.
+
+Common failure classes:
+
+- `InvalidReference`: the destination does not denote a valid live recipient, such as an unbound handler, a stopped actor, a port that was never allocated, or delivery to the wrong mailbox owner.
+- `UndeliverableReason::Transport`: the message could not be carried to the destination, such as a closed channel, unavailable link, missing route, or acknowledgement timeout.
+- `UndeliverableReason::PortGone`: the destination port's ordinary recipient is gone.
+- `ExpiredDelivery`: the envelope exhausted its TTL.
+
+## Returning undeliverables
+
+When delivery fails, code calls:
 
 ```
-impl MessageEnvelope {
- fn serialize<T: Serialize + Named>(
- source: ActorId, dest: PortId, value: &T, headers: Attrs) -> Result<Self, bincode::Error> {
- Ok(Self {
- data: Serialized::serialize(value)?,
- sender: source,
- dest,
- error: None,
- })
- }
-}
+envelope.undeliverable(failure, return_handle);
 ```
 
-We can use the fact that `T` implements `DeserializeOwned` to provide a function to deserialize the message data in an envelope:
+This records the `DeliveryFailure` on the envelope and, when `return_undeliverable` is true, sends an `Undeliverable<MessageEnvelope>` to the supplied return handle; when it is false, the envelope is dropped. The failure is recorded before the return is attempted, so the original cause survives even if the return path itself fails: a failed return is logged and the message abandoned, not retried.
 
-```
-impl MessageEnvelope {
- fn deserialized<T: DeserializedOwned>(&self) -> Result<T, anhyow::Error> {
- self.data.deserialized()
- }
-}
-```
+Actors normally receive returned failures on their `Undeliverable<MessageEnvelope>` handler port. The default actor behavior treats invalid references and ordinary undeliverables as actor errors unless the actor overrides the corresponding handler.
 
-This function stamps an envelope with a delivery error:
+## Mailbox delivery
 
-```
-impl MessageEnvelope {
- fn error(&mut self, error: DeliveryError) {
- self.error = Some(error);
- }
-}
-```
+`Mailbox::post_unchecked` performs local delivery only for its owning actor address:
 
-The `undeliverable` function on a `MessageEnvelope` can be called when a message has been determined to be undeliverable due to the provided error. It marks the envelope with the error and attempts to return it to the sender.
+1. Reject envelopes whose destination actor is not the mailbox owner with `InvalidReferenceReason::WrongMailboxOwner`.
+2. Look up the destination port index in the mailbox's bound-port table.
+3. Reject unallocated or unbound ports with an `InvalidReference`.
+4. Deserialize the payload into the port's expected message type.
+5. Enqueue the typed message, or remove exhausted one-shot ports.
 
-```
-impl MessageEnvelope {
- pub fn undeliverable(
- mut self,
- error: DeliveryError,
- return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
- ) {
- self.try_set_error(error);
- undeliverable::return_undeliverable(return_handle, self);
- }
-}
-```
-
-## Delivery errors
-
-Delivery errors can occur during message posting:
-
-```
-#[derive(thiserror::Error, ...)]
-pub enum DeliveryError {
- /// The destination address is not reachable.
- #[error("address not routable: {0}")]
- Unroutable(String),
-
- /// A broken link indicates that a link in the message
- /// delivery path has failed.
- #[error("broken link: {0}")]
- BrokenLink(String),
-
- /// A (local) mailbox delivery error.
- #[error("mailbox error: {0}")]
- Mailbox(String),
-}
-```
-
-## Mailbox Errors
-
-Errors can occur during mailbox operations. Each error is associated with the mailbox's actor ID:
-
-```
-pub struct MailboxError {
- actor_id: ActorId,
- kind: MailboxErrorKind,
-}
-
-#[non_exhaustive]
-pub enum MailboxErrorKind {
- /// An operation was attempted on a closed mailbox.
- #[error("mailbox closed")]
- Closed,
-
- /// The port associated with an operation was invalid.
- #[error("invalid port: {0}")]
- InvalidPort(PortId),
-
- /// There was no sender associated with the port.
- #[error("no sender for port: {0}")]
- NoSenderForPort(PortId),
-
- /// There was no local sender associated with the port.
- /// Returned by operations that require a local port.
- #[error("no local sender for port: {0}")]
- NoLocalSenderForPort(PortId),
-
- /// The port was closed.
- #[error("{0}: port closed")]
- PortClosed(PortId),
-
- /// An error occured during a send operation.
- #[error("send {0}: {1}")]
- Send(PortId, #[source] anyhow::Error),
-
- /// An error occured during a receive operation.
- #[error("recv {0}: {1}")]
- Recv(PortId, #[source] anyhow::Error),
-
- /// There was a serialization failure.
- #[error("serialize: {0}")]
- Serialize(#[source] anyhow::Error),
-
- /// There was a deserialization failure.
- #[error("deserialize {0}: {1}")]
- Deserialize(&'static str, anyhow::Error),
-
- #[error(transparent)]
- Channel(#[from] ChannelError),
-}
-```
-
-`PortLocation` describes the location of a port. It provides a uniform data type for ports that may or may not be bound.
-
-```
-#[derive(Debug, Clone)]
-pub enum PortLocation {
- /// The port was bound: the location is its underlying bound ID.
- Bound(PortId),
- /// The port was not bound: we provide the actor ID and the message type.
- Unbound(ActorId, &'static str),
-}
-```
-
-One place `PortLocation` is used is in the type `MailboxSenderError` which is specifically for errors that occur during mailbox send operations. Each error is associated with the port ID of the operation:
-
-```
-#[derive(Debug)]
-pub struct MailboxSenderError {
- location: PortLocation,
- kind: MailboxSenderErrorKind,
-}
-
-/// The kind of mailbox sending errors.
-#[derive(thiserror::Error, Debug)]
-pub enum MailboxSenderErrorKind {
- /// Error during serialization.
- #[error("serialization error: {0}")]
- Serialize(anyhow::Error),
-
- /// Error during deserialization.
- #[error("deserialization error for type {0}: {1}")]
- Deserialize(&'static str, anyhow::Error),
-
- /// A send to an invalid port.
- #[error("invalid port")]
- Invalid,
-
- /// A send to a closed port.
- #[error("port closed")]
- Closed,
-
- // The following pass through underlying errors:
- /// An underlying mailbox error.
- #[error(transparent)]
- Mailbox(#[from] MailboxError),
-
- /// An underlying channel error.
- #[error(transparent)]
- Channel(#[from] ChannelError),
-
- /// An underlying message log error.
- #[error(transparent)]
- MessageLog(#[from] MessageLogError),
-
- /// An other, uncategorized error.
- #[error("send error: {0}")]
- Other(#[from] anyhow::Error),
-
- /// The destination was unreachable.
- #[error("unreachable: {0}")]
- Unreachable(anyhow::Error),
-}
-```
+Cross-actor and cross-proc routing happens before the envelope reaches a mailbox: procs, gateways, and routers choose the right mailbox; the mailbox only delivers to ports owned by its actor.
 
 ---
 
@@ -7398,386 +7556,89 @@ This chapter introduces the components of the mailbox subsystem:
 
 # Mailbox
 
-A `Mailbox` represents an actor's in-process inbox. It owns and manages all of the actor's ports, provides APIs to open and bind them, and routes messages based on their destination `PortId`.
+A `Mailbox` is an actor's in-process inbox. It owns the actor's ports, allocates new port indices, binds serializable ports into a routing table, and delivers `MessageEnvelope`s to the correct typed receiver.
 
-A mailbox routes messages for its actor directly to its ports. If a message is addressed to a different actor, the mailbox treats it as undeliverable; cross-actor and cross-proc routing happens through `Proc` and `Gateway`.
+A mailbox is deliberately local. If an envelope is addressed to a different actor, `Mailbox::post_unchecked` returns it as an invalid reference (`WrongMailboxOwner`). Cross-actor and cross-proc routing happens before the mailbox, through procs, gateways, and routers.
 
-This section covers:
+## Opening ports
 
-- Opening ports of various kinds
-- Port binding and registration
-- Internal mailbox state and delivery logic
-
-The `State` holds the actor's ID, active ports, and a port allocator. Multiple clones of a `Mailbox` share access to the same state:
+The most common API is `open_port`, which creates a reusable typed port:
 
 ```
-pub struct Mailbox {
- state: Arc<State>,
-}
+let (handle, receiver) = mailbox.open_port::<MyMessage>();
 ```
 
-The `new` function creates a mailbox with the provided actor ID:
+The returned `PortHandle<M>` is the sending side, and `PortReceiver<M>` is the receiving side. Local sends through the handle do not require serialization:
 
 ```
-impl Mailbox {
- pub fn new(actor_id: ActorId) -> Self {
- Self {
- state: Arc::new(State::new(actor_id)),
- }
- }
-}
+PortHandle<M>::post(cx, message)
+-> UnboundedPortSender<M>
+-> PortReceiver<M>::recv().await
 ```
 
-A mailbox can open ports, each identified by a unique `PortId` within the owning actor. The most common form is `open_port`, which creates a fresh, unbounded channel for message delivery:
+Other variants cover common runtime needs:
+
+- `open_once_port<M>()` creates a one-shot request/reply port.
+- `open_accum_port<A>()` creates a reducer-backed port that accumulates updates into state.
+- Internal enqueue ports wire actor handler ports directly to actor work queues.
+
+## Binding ports
+
+Binding is required only when a port must be addressable through routed delivery, such as when a port reference is sent to another actor:
 
 ```
-impl Mailbox {
- pub fn open_port<M: Message>(&self) -> (PortHandle<M>, PortReceiver<M>) {
- let port_index = self.state.allocate_port();
- let (sender, receiver) = mpsc::unbounded_channel::<M>();
- let port_id = PortId(self.state.actor_id.clone(), port_index);
- (
- PortHandle::new(self.clone(), port_index, UnboundedPortSender::Mpsc(sender)),
- PortReceiver::new(
- receiver,
- port_id,
- /*coalesce=*/ false,
- self.state.clone(),
- ),
- )
- }
-}
+let port_ref: PortRef<MyMessage> = handle.bind();
 ```
 
-This allocates a new port index and sets up a pair of endpoints: a `PortHandle<M>` for sending messages into the port, and a `PortReceiver<M>` for asynchronously consuming them. Internally, these are two ends of an `mpsc::unbounded_channel`, meaning messages are buffered in memory and processed in order without backpressure.
+Binding installs the port's serialized sender in the mailbox's internal table and returns a `PortRef<M>` carrying a `PortAddr`. `M` must implement `RemoteMessage`, because routed delivery serializes the message payload.
 
-In contrast to `open_port`, which uses a channel-backed buffer, `open_enqueue_port` constructs a port backed directly by a user-supplied enqueue function:
+By contrast, an unbound `PortHandle<M>` can still be used for local in-process sends and only requires `M: Message`.
 
-```
-impl Mailbox {
- pub(crate) fn open_enqueue_port<M: Message>(
- &self,
- enqueue: impl Fn(M) -> Result<(), anyhow::Error> + Send + Sync + 'static,
- ) -> PortHandle<M> {
- PortHandle {
- mailbox: self.clone(),
- port_index: self.state.allocate_port(),
- sender: UnboundedPortSender::Func(Arc::new(enqueue)),
- bound: Arc::new(OnceLock::new()),
- reducer_typehash: None,
- }
- }
-}
-```
+## Routed delivery
 
-Unlike `open_port`, which yields both sender and receiver ends of an internal channel, `open_enqueue_port` returns only a `PortHandle`. Instead of buffering messages, this port invokes a user-supplied function directly on each message it receives.
-
-Another variant `open_accum_port`, builds on the same principle as `open_enqueue_port`, but pairs the port with an accumulator that maintains state across messages. We'll return to this specialized port type later. We'll also encounter `open_once_port` analogous to `open_port` but sets up a one-shot message channel - useful for rendezvous-style communication - using the associated `OncePortHandle` and `OncePort` types.
-
-## Port Binding
-
-Binding is only required when a port must be referred to externally-for example, when sending it across the network or including it in a message. Binding a port produces a `PortRef`, which globally names the port and requires that the associated message type implements `RemoteMessage` (i.e., is serializable). All messages sent via a `PortRef` are serialized.
-
-By contrast, `PortHandle` can be used locally to send any type implementing `Message`, including non-serializable types, and behaves like a typed in-memory queue.
-
-Once a port is opened with `open_port`, it must be bound before it can receive messages routed through the mailbox. Binding installs the port into the mailbox's internal routing table and produces a `PortRef<M>`-a lightweight, serializable reference that remote actors can use to send messages to the port.
-
-Port binding is performed by calling `.bind()` on a `PortHandle`:
-
-```
-impl<M: RemoteMessage> PortHandle<M> {
- pub fn bind(&self) -> PortRef<M> {
- PortRef::attest_reducible(
- self.bound
- .get_or_init(|| self.mailbox.bind(self).port_id().clone())
- .clone(),
- self.reducer_spec.clone(),
- self.reducer_opts.clone(),
- )
- }
-}
-```
-
-This delegates to `Mailbox::bind(&self, handle)`, which performs the actual installation into the mailbox's internal `State`. If the port is already bound, this is a no-op.
-
-The mailbox checks that the port handle belongs to it, computes the `PortId`, and then inserts the sender into the internal ports map if it hasn't been bound already:
-
-```
-impl Mailbox {
- fn bind<M: RemoteMessage>(&self, handle: &PortHandle<M>) -> PortRef<M> {
- assert_eq!(
- handle.mailbox.actor_id(),
- self.actor_id(),
- "port does not belong to mailbox"
- );
- let port_id = self.actor_id().port_id(handle.port_index);
- match self.state.ports.entry(handle.port_index) {
- Entry::Vacant(entry) => {
- entry.insert(Box::new(UnboundedSender::new(
- handle.sender.clone(),
- port_id.clone(),
- )));
- }
- Entry::Occupied(_entry) => {}
- }
-
- PortRef::attest(port_id)
- }
-}
-```
-
-The result is a `PortRef<M>` that can be sent across the network to deliver messages to this bound port.
-
-## Binding to a Specific Index
-
-There is also a lower-level variant, bind_to, used internally by actor binding mechanisms (e.g., when installing well-known ports at known indices):
-
-```
-impl Mailbox {
- fn bind_to<M: RemoteMessage>(&self, handle: &PortHandle<M>, port_index: u64) {
- assert_eq!(
- handle.mailbox.actor_id(),
- self.actor_id(),
- "port does not belong to mailbox"
- );
-
- let port_id = self.actor_id().port_id(port_index);
- match self.state.ports.entry(port_index) {
- Entry::Vacant(entry) => {
- entry.insert(Box::new(UnboundedSender::new(
- handle.sender.clone(),
- port_id,
- )));
- }
- Entry::Occupied(_) => panic!("port {} already bound", port_id),
- }
- }
-}
-```
-
-## Message Delivery via MailboxSender
-
-The mailbox also handles message delivery. It does this by implementing the `MailboxSender` trait, which defines how messages-wrapped in `MessageEnvelope`-are routed, deserialized, and delivered to bound ports or forwarded to remote destinations.
-
-```
-impl MailboxSender for Mailbox {
- fn post(
- &self,
- envelope: MessageEnvelope,
- return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
- ) {
- if envelope.dest().actor_id() != &self.state.actor_id {
- return self.state.forwarder.post(envelope, return_handle);
- }
-
- match self.state.ports.entry(envelope.dest().index()) {
- Entry::Vacant(_) => envelope.undeliverable(
- DeliveryError::Unroutable("port not bound in mailbox".to_string()),
- return_handle,
- ),
- Entry::Occupied(entry) => {
- let (metadata, data) = envelope.open();
- let MessageMetadata {headers, sender, dest, error: metadata_error } = metadata;
- match entry.get().send_serialized(headers, data) {
- Ok(false) => {
- entry.remove();
- }
- Ok(true) => (),
- Err(SerializedSenderError {
- data,
- error,
- headers,
- }) => MessageEnvelope::seal(
- MessageMetadata { headers, sender, dest, error: metadata_error },
- data,
- )
- .undeliverable(DeliveryError::Mailbox(format!("{}", error)), return_handle),
- }
- }
- }
- }
-}
-```
-
-### Breakdown of Delivery Logic
-
-This implementation of `MailboxSender::post` defines how a mailbox handles message delivery:
-
-1. Actor ID routing
-
-```
-if envelope.dest().actor_id() != &self.state.actor_id
-```
-
-If the message is not addressed to this actor, it's forwarded using the forwarder defined in the mailbox's state. This allows for transparent routing across process or network boundaries.
-
-1. Port Lookup and Binding Check
-
-```
-match self.state.ports.entry(envelope.dest().index())
-```
-
-The mailbox uses the destination `PortId` to locate the bound port in its internal routing table. If the port hasn't been bound, the message is returned to the sender as undeliverable.
-
-1. Deserialization and Delivery Attempt
-
-```
-match entry.get().send_serialized(headers, data)
-```
-
-If the port is found, the message is unsealed and passed to the corresponding `SerializedSender` (e.g., the `UnboundedSender` inserted during binding). This may succeed or fail:
-
-- `Ok(true)`: Message was delivered.
-- `Ok(false)`: Port is closed; remove it from the routing table.
-- `Err(...)`: Deserialization failed or other error; wrap the message and return it to the sender as undeliverable.
-
-### Relationship to Bound Ports
-
-Only ports that have been bound via `PortHandle::bind()` appear in the ports map and are eligible to receive messages via this `post` path. The entry in this map is a type-erased boxed `SerializedSender`, which, when invoked, attempts to deserialize the raw message payload into the expected concrete type and forward it to the associated `PortReceiver` or handler.
-
-The mailbox's routing and delivery logic ultimately relies on the internal `State`, which stores port mappings, forwarding configuration, and allocation state.
-
-## State
-
-Each `Mailbox` instance wraps an internal `State` struct that contains all shared delivery infrastructure:
-
-```
-struct State {
- actor_id: ActorId,
- ports: DashMap<u64, Box<dyn SerializedSender>>,
- next_port: AtomicU64,
- forwarder: BoxedMailboxSender,
-}
-```
-
-This structure is reference-counted via `Arc<State>` and is cloned across all components that need access to the mailbox's internal state. Each field plays a central role:
-
-- **`actor_id`**: Identifies the actor that owns this mailbox. All ports in the mailbox are scoped under this actor ID and used to construct `PortId`s during binding and routing.
-- **`ports`**: A concurrent map from port indices (`u64`) to type-erased `SerializedSenders`. Each entry corresponds to a bound port and provides the ability to deserialize and deliver raw messages to the correct `PortReceiver`. Only serializable ports are registered here.
-- **`next_port`**: Tracks the next available user port index. Actor-assigned ports occupy indices 0..1024, and user-allocated ports begin from a constant offset (`USER_PORT_OFFSET`).
-- **`forwarder`**: A boxed `MailboxSender` used for forwarding messages to other actors. If a message's destination is not owned by this mailbox, it will be passed to this sender.
-
-### State: Internal Structure of a Mailbox
-
-The `State` struct holds all the internal data needed for a functioning `Mailbox`. It's not exposed directly--rather, it's wrapped in `Arc<State>` and shared between `Mailbox`, `PortHandle`, and `PortReceiver`:
-
-```
-impl State {
- fn new(actor_id: ActorId, forwarder: BoxedMailboxSender) -> Self {
- Self {
- actor_id,
- ports: DashMap::new(),
- next_port: AtomicU64::new(USER_PORT_OFFSET),
- forwarder,
- }
- }
-
- fn allocate_port(&self) -> u64 {
- self.next_port.fetch_add(1, Ordering::SeqCst)
- }
-}
-```
-
-**Notes**:
-
-- The `actor_id` allows every `Mailbox` to know which actor it belongs to, which is essential for routing decisions (`post` checks this).
-- The ports field holds the routing table: it maps each port index to a type-erased sink (`SerializedSender`) capable of deserializing and dispatching messages to the right receiver.
-- `next_port` enables safe concurrent dynamic port allocation by atomically assigning unique port indices.
-- The forwarder is used to send messages not destined for this actor-e.g., remote delivery.
-
-## Sending and Receiving Messages
-
-There are two distinct pathways by which a message can arrive at a `PortReceiver`. Both ultimately push a message into an `mpsc` channel (or functionally equivalent handler), but they differ in intent and routing mechanism.
-
-### Local Sends via PortHandle
-
-When you call `.send(msg)` on a `PortHandle<M>`, the message bypasses the `Mailbox` entirely and goes directly into the associated channel:
-
-```
-PortHandle<M>::send(msg)
-→ UnboundedPortSender<M>::send(Attrs::new(), msg)
-→ underlying channel (mpsc::UnboundedSender<M>)
-→ PortReceiver<M>::recv().await
-```
-
-### Routed Sends via Mailbox
-
-When a message is wrapped in a `MessageEnvelope` and posted via `Mailbox::post`, routing logic takes over:
+Routed delivery enters through `MailboxSender`:
 
 ```
 Mailbox::post(envelope, return_handle)
-→ lookup State::ports[port_index]
-→ SerializedSender::send_serialized(headers, bytes)
-→ UnboundedSender::send(headers, M) // after deserialization
-→ mpsc channel
-→ PortReceiver<M>::recv().await
+-> decrement envelope TTL
+-> Mailbox::post_unchecked(envelope, return_handle)
+-> check destination actor matches this mailbox
+-> lookup destination port index
+-> SerializedSender::send_serialized(headers, data)
+-> typed receiver or handler queue
 ```
 
-This is the delivery path for remote messages or any message routed by a `PortRef`. A `PortHandle` must first be **bound** to participate in this.
+Delivery can fail if the destination actor does not match, the port was never allocated, the handler port was not bound, the actor has stopped or failed, deserialization fails, or the receiving side is gone. Failures are returned as structured `DeliveryFailure`s; see [Delivery Semantics](delivery.html).
+
+## State
+
+All clones of a `Mailbox` share one state object:
+
+```
+pub struct Mailbox {
+ inner: Arc<State>,
+}
+
+struct State {
+ actor_id: ActorAddr,
+ ports: DashMap<Port, Arc<dyn SerializedSender>>,
+ next_ephemeral_port: AtomicU64,
+ closed: RwLock<Option<ActorStatus>>,
+}
+```
+
+The `ports` map is keyed by `Port` (an ephemeral index, a handler uid, or a control port). Each value is type-erased, but it knows the expected message type and attempts to deserialize the incoming `wirevalue::Any` before enqueueing it.
 
 ## Capabilities
 
-Capabilities are lightweight traits that control access to mailbox-related operations. They act as permissions: a type that implements a capability trait is allowed to perform the corresponding action, such as sending messages or opening ports.
+Mailbox operations are gated by sealed *context* traits in `hyperactor::context`. An API takes the narrowest context it needs, and these traits cannot be implemented outside the crate.
 
-These traits are sealed, meaning they can only be implemented inside the crate. This ensures that capability boundaries are enforced and cannot be circumvented by downstream code.
-
-### Overview
-
-| Capability | Description |
+| Context trait | Grants |
 | --- | --- |
-| `CanSend` | Allows sending messages to ports |
-| `CanOpenPort` | Allows creating new ports for receiving messages |
-| `CanSplitPort` | Allows splitting existing ports with reducers |
-| `CanSpawn` | Allows spawning new child actors |
+| `context::Mailbox` | Access to a `Mailbox`, and so opening ports (`open_port`, `open_once_port`). |
+| `context::Actor` | Everything `Mailbox` grants, plus sending to ports, splitting ports, and spawning child actors. |
 
-Each public trait (e.g., `CanSend`) is implemented for any type that implements the corresponding private `sealed::CanSend` trait. This gives the crate full control over capability delegation and encapsulation.
-
-### Example: CanSend
-
-```
-pub trait CanSend: sealed::CanSend {}
-impl<T: sealed::CanSend> CanSend for T {}
-```
-
-The sealed version defines the core method:
-
-```
-pub trait sealed::CanSend: Send + Sync {
- fn post(&self, dest: PortId, headers: Attrs, data: Serialized);
-}
-```
-
-Only internal types (e.g., `Mailbox`) implement this sealed trait, meaning only trusted components can obtain `CanSend`:
-
-```
-impl cap::sealed::CanSend for Mailbox {
- fn post(&self, dest: PortId, headers: Attrs, data: Serialized) {
- let return_handle = self
- .lookup_sender::<Undeliverable<MessageEnvelope>>()
- .map_or_else(
- || {
- let actor_id = self.actor_id();
- if CAN_SEND_WARNED_MAILBOXES
- .get_or_init(DashSet::new)
- .insert(actor_id.clone()) {
- let bt = std::backtrace::Backtrace::capture();
- tracing::warn!(
- actor_id = ?actor_id,
- backtrace = ?bt,
- "mailbox attempted to post a message without binding Undeliverable<MessageEnvelope>"
- );
- }
- monitored_return_handle()
- },
- |sender| PortHandle::new(self.clone(), self.state.allocate_port(), sender),
- );
- let envelope = MessageEnvelope::new(self.actor_id().clone(), dest, data, headers);
- MailboxSender::post(self, envelope, return_handle);
- }
-}
-```
-
-This implementation prefers that the mailbox has already bound a port capable of receiving undeliverable messages (of type `Undeliverable<MessageEnvelope>`). This port acts as a return address for failed message deliveries. If the port is not bound, message sending will warn with a backtrace indicating a logic error in system setup and fallback on a `monitored_return_handle` (ideally we'd `panic!` but backwards compatibility prevents this). This ensures that all messages have a well-defined failure path and avoids silent message loss.
+`context::Actor` extends `context::Mailbox`: only an actor context can send, because a send needs a return port for undeliverable replies. Actor implementations run with a `Context<A>`, backed by the actor's `Instance<A>`, so handler code already has the full set installed.
 
 ---
 
@@ -7920,12 +7781,13 @@ impl MailboxClient {
  tokio::spawn(async move {
  let result = return_receiver.await;
  if let Ok(SendError{error: e, message, ..}) = result {
- message.undeliverable(
- DeliveryError::BrokenLink(format!(
- "failed to enqueue in MailboxClient when processing buffer: {e}"
- )),
- return_handle_0,
- );
+ let failure = DeliveryFailure::new(UndeliverableReason::Transport(
+ TransportFailure::new(
+ message.dest().clone(),
+ TransportFailureReason::LinkUnavailable(e.to_string()),
+ ),
+ ));
+ message.undeliverable(failure, return_handle_0);
  }
  });
  // Send the message for transmission.
@@ -7980,10 +7842,13 @@ impl MailboxSender for MailboxClient {
  self.buffer.send((envelope, return_handle))
  {
  // Failed to enqueue.
- envelope.undeliverable(
- DeliveryError::BrokenLink("failed to enqueue in MailboxClient".to_string()),
- return_handle,
- );
+ let failure = DeliveryFailure::new(UndeliverableReason::Transport(
+ TransportFailure::new(
+ envelope.dest().clone(),
+ TransportFailureReason::LinkUnavailable("failed to enqueue in MailboxClient".to_string()),
+ ),
+ ));
+ envelope.undeliverable(failure, return_handle);
  }
  }
 }
@@ -8349,8 +8214,11 @@ impl MailboxSender for MailboxMuxer {
  let dest_actor_id = envelope.dest().actor_id();
  match self.mailboxes.get(envelope.dest().actor_id()) {
  None => {
- let err = format!("no mailbox for actor {} registered in muxer", dest_actor_id);
- envelope.undeliverable(DeliveryError::Unroutable(err), return_handle)
+ let failure = DeliveryFailure::new(InvalidReference::new(
+ envelope.dest().actor_addr(),
+ InvalidReferenceReason::ActorNotExist,
+ ));
+ envelope.undeliverable(failure, return_handle)
  }
  Some(sender) => sender.post(envelope, return_handle),
  }
@@ -8358,7 +8226,7 @@ impl MailboxSender for MailboxMuxer {
 }
 ```
 
-This makes `MailboxMuxer` composable: it can be nested within other routers, shared across components, or substituted for a standalone mailbox in generic code. If the destination `ActorId` is found in the internal map, the message is forwarded to the corresponding sender. Otherwise, it is marked as undeliverable with an appropriate `DeliveryError`.
+This makes `MailboxMuxer` composable: it can be nested within other routers, shared across components, or substituted for a standalone mailbox in generic code. If the destination `ActorId` is found in the internal map, the message is forwarded to the corresponding sender. Otherwise, it is returned with an `InvalidReference` delivery failure.
 
 ---
 
@@ -8375,7 +8243,7 @@ This section defines the structure, behavior, and usage of ports.
 
 ## Delivery Backends
 
-Each typed port uses an internal delivery mechanism to enqueue messages. This is abstracted by the `UnboundedSenderPort<M>` enum:
+Each typed port uses an internal delivery mechanism to enqueue messages. This is abstracted by the `UnboundedPortSender<M>` enum:
 
 ```
 enum UnboundedPortSender<M: Message> {
@@ -8391,66 +8259,52 @@ Messages are sent via the `.send(headers, message)` method, which forwards to ei
 
 ## `PortHandle<M>`
 
-A `PortHandle<M>` is used to send `M`-typed messages to a mailbox port. It represents the sending half of a typed port:
+A `PortHandle<M>` is the sending half of a typed port. It is a cheap-to-clone handle over shared inner state:
 
 ```
 pub struct PortHandle<M: Message> {
+ inner: Arc<PortHandleInner<M>>,
+}
+
+struct PortHandleInner<M: Message> {
  mailbox: Mailbox,
- port_index: u64,
  sender: UnboundedPortSender<M>,
- bound: Arc<OnceLock<PortId>>,
+ bind_target: PortBindTarget,
+ bound: Arc<RwLock<Option<PortAddr>>>,
  reducer_spec: Option<ReducerSpec>,
- reducer_opts: Option<ReducerOpts>,
+ streaming_opts: StreamingReducerOpts,
 }
 ```
 
 ### Fields
 
-- **`mailbox`**: The `Mailbox` this port was created from. Stored so the handle can access the actor ID and bind itself into the mailbox's internal port map.
-- **`port_index`**: The local index of the port within the mailbox. Used as the key in the mailbox's port map.
-- **`sender`**: The internal message delivery mechanism (e.g., MPSC channel). This determines how messages of type `M` are actually enqueued.
-- **`bound`**: A lazily initialized `PortId` stored in a `OnceLock`. This is populated when the port is formally bound into the mailbox, enabling external references via `PortRef<M>`.
+- **`mailbox`**: The `Mailbox` this port was created from. Stored so the handle can access the actor address and bind itself into the mailbox's internal port map.
+- **`sender`**: The internal message delivery mechanism (e.g., an MPSC channel). This determines how messages of type `M` are actually enqueued.
+- **`bind_target`**: Where the port binds when `.bind()` is called: an ephemeral port index, or the well-known handler port for `M`.
+- **`bound`**: The port's `PortAddr` once bound, behind an `RwLock<Option<...>>` (`None` until bound). Populated on bind, enabling external references via `PortRef<M>`.
 - **`reducer_spec`**: An optional specification for a reducer function for accumulating messages.
-- **`reducer_opts`**: Optional reducer configuration options.
+- **`streaming_opts`**: Timing options for the streaming reducer (see the `PortRef` fields below).
 
-### Construction and Use
+### Sending and Receiving
+
+Open a port from a mailbox (or any context that grants one) to get the handle and its receiver. `post` sends a message; `recv` awaits it:
 
 ```
-impl<M: Message> PortHandle<M> {
- fn new(mailbox: Mailbox, port_index: u64, sender: UnboundedPortSender<M>) -> Self {
- Self {
- mailbox,
- port_index,
- sender,
- bound: Arc::new(OnceLock::new()),
- reducer_spec: None,
- reducer_opts: None,
- }
- }
+# use hyperactor::mailbox::Mailbox;
+# use hyperactor::Endpoint as _;
+# tokio_test::block_on(async {
+# let proc = hyperactor::Proc::current();
+# let client = hyperactor::client("client");
+# let actor_id = proc.proc_addr().actor_addr("actor");
+let mbox = Mailbox::new(actor_id);
+let (port, mut receiver) = mbox.open_port::<u64>();
 
- fn location(&self) -> PortLocation {
- match self.bound.get() {
- Some(port_id) => PortLocation::Bound(port_id.clone()),
- None => PortLocation::new_unbound::<M>(self.mailbox.actor_id().clone()),
- }
- }
-
- pub fn send(&self, message: M) -> Result<(), MailboxSenderError> {
- let mut headers = Attrs::new();
- // ... set headers ...
- self.sender.send(headers, message).map_err(|err| {
- MailboxSenderError::new_unbound::<M>(
- self.mailbox.actor_id().clone(),
- MailboxSenderErrorKind::Other(err),
- )
- })
- }
-}
+port.post(&client, 123);
+assert_eq!(receiver.recv().await.unwrap(), 123u64);
+# })
 ```
 
-- `new` constructs a port handle with the mailbox, port index and delivery backend
-- `location` reports whether the port is currently bound
-- `send` enqueues a message via the internal sender, wrapping errors as needed.
+`post` comes from the `Endpoint` trait and is fire-and-forget: a delivery failure is reported through the actor's lost-message channel. `try_post` performs the same send but returns a `Result`, so the caller can observe the failure directly.
 
 ### Binding
 
@@ -8470,10 +8324,10 @@ This registers the port in the owning `Mailbox` and returns a `PortRef<M>`. Bind
 
 ```
 pub enum PortLocation {
- /// The port was bound: the location is its underlying bound ID.
- Bound(PortId),
- /// The port was not bound: we provide the actor ID and the message type.
- Unbound(ActorId, &'static str),
+ /// The port was bound: the location is its underlying bound address.
+ Bound(PortAddr),
+ /// The port was not bound: we provide the actor address and the message type.
+ Unbound(ActorAddr, &'static str),
 }
 ```
 
@@ -8485,7 +8339,7 @@ A `OncePortHandle<M>` is a one-shot sender for `M`-typed messages. Unlike `PortH
 pub struct OncePortHandle<M: Message> {
  mailbox: Mailbox,
  port_index: u64,
- port_id: PortId,
+ port_id: PortAddr,
  sender: oneshot::Sender<M>,
 }
 ```
@@ -8494,12 +8348,12 @@ pub struct OncePortHandle<M: Message> {
 
 - **`mailbox`**: The `Mailbox` this port was created from. Stored so the handle can access the actor ID and register itself in the mailbox's port map.
 - **`port_index`**: The local index of the port within the mailbox. Used as the key in the mailbox's port map.
-- **`port_id`**: The globally unique identifier for this port. Assigned eagerly, since one-shot ports are always bound at creation.
+- **`port_id`**: The globally unique address for this port. Assigned eagerly, since one-shot ports are always bound at creation.
 - **`sender`**: The one-shot message delivery channel. Used to transmit a single M-typed message.
 
 Compared to `PortHandle<M>`, a `OncePortHandle<M>` is:
 
-- **bound eagerly** at creation (it always has a `PortId`),
+- **bound eagerly** at creation (it always has a `PortAddr`),
 - **non-reusable** (it delivers at most one message),
 - and uses a **one-shot channel** instead of an unbounded queue.
 
@@ -8519,34 +8373,40 @@ A `PortRef<M>` is a cloneable, sendable reference to a bound typed port. These a
 
 ```
 pub struct PortRef<M> {
- port_id: PortId,
+ port_addr: PortAddr,
  reducer_spec: Option<ReducerSpec>,
- reducer_opts: Option<ReducerOpts>,
+ streaming_opts: StreamingReducerOpts,
  phantom: PhantomData<M>,
  return_undeliverable: bool,
+ unsplit: bool,
 }
 ```
 
 ### Fields
 
-- **`port_id`**: The globally unique identifier for this port. Used during message routing to locate the destination mailbox.
+- **`port_addr`**: The globally unique address for this port. Used during message routing to locate the destination mailbox.
 - **`reducer_spec`**: Optional specification for the reducer type, used to validate compatibility when delivering messages to reducer-style ports.
-- **`reducer_opts`**: Optional reducer configuration options.
+- **`streaming_opts`**: Timing options (initial and maximum flush intervals) for the streaming reducer used when this port is split for tree reduction.
 - **`phantom`**: Phantom data to retain the `M` type parameter. This enforces compile-time type safety without storing a value of type `M`.
-- **`return_undeliverable`**: Whether undeliverable messages should be returned to the sender.
+- **`return_undeliverable`**: Whether an undeliverable message is returned to the sender (the default) or silently dropped.
+- **`unsplit`**: When set, keeps the port out of cast/comm tree reduction so every destination replies to it directly. Set via `PortRef::unsplit()`.
 
 A `OncePortRef<M>` is a reference to a one-shot port. Unlike `PortRef`, it allows exactly one message to be sent. These are created by binding a `OncePortHandle<M>`.
 
 ```
 pub struct OncePortRef<M> {
- port_id: PortId,
+ port_addr: PortAddr,
+ reducer_spec: Option<ReducerSpec>,
+ return_undeliverable: bool,
+ unsplit: bool,
  phantom: PhantomData<M>,
 }
 ```
 
 ### Fields
 
-- **`port_id`**: The globally unique identifier for this port. Used during message routing to locate the destination mailbox.
+- **`port_addr`**: The globally unique address for this port. Used during message routing to locate the destination mailbox.
+- **`reducer_spec`**, **`return_undeliverable`**, **`unsplit`**: As on `PortRef` above.
 - **`phantom`**: Phantom data to retain the `M` type parameter. This enforces compile-time type safety without storing a value of type `M`.
 
 ## `PortReceiver<M>`
@@ -8556,7 +8416,7 @@ A `PortReceiver<M>` is used to asynchronously receive `M`-typed messages from a 
 ```
 pub struct PortReceiver<M> {
  receiver: mpsc::UnboundedReceiver<M>,
- port_id: PortId,
+ port_id: PortAddr,
  coalesce: bool,
  mailbox: Mailbox,
 }
@@ -8571,14 +8431,13 @@ pub struct PortReceiver<M> {
 
 ### Usage
 
-A `PortReceiver<M>` is returned when calling `.open_port::<M>()` on a `Mailbox`. The actor can `await` messages on the receiver using `.recv().await`, which yields `Option<M>`:
+A `PortReceiver<M>` is returned when calling `.open_port::<M>()` on a `Mailbox`. The actor can `await` messages on the receiver using `.recv().await`, which yields `Result<M, MailboxError>`:
 
 ```
 let (port, mut receiver) = mailbox.open_port::<MyMsg>();
 // ...
-if let Some(msg) = receiver.recv().await {
- handle(msg);
-}
+let msg = receiver.recv().await?;
+handle(msg);
 ```
 
 ### Construction and Use
@@ -8589,7 +8448,7 @@ A `PortReceiver` is created when calling `.open_port::<M>()` on a `Mailbox`. `ne
 impl<M> PortReceiver<M> {
  fn new(
  receiver: mpsc::UnboundedReceiver<M>,
- port_id: PortId,
+ port_id: PortAddr,
  coalesce: bool,
  mailbox: Mailbox
  ) -> Self {
@@ -8709,7 +8568,7 @@ A `OncePortReceiver<M>` is the receiving half of a one-shot port. It is returned
 ```
 pub struct OncePortReceiver<M> {
  receiver: Option<oneshot::Receiver<M>>,
- port_id: PortId,
+ port_id: PortAddr,
  state: Arc<State>,
 }
 ```
@@ -8768,7 +8627,7 @@ These are wrapped in:
 ```
 struct UnboundedSender<M: Message> {
  sender: UnboundedPortSender<M>,
- port_id: PortId,
+ port_id: PortAddr,
 }
 ```
 
@@ -8785,7 +8644,7 @@ impl<M: Message> UnboundedSender<M> {
 ```
 struct OnceSender<M: Message> {
  sender: Arc<Mutex<Option<oneshot::Sender<M>>>>,
- port_id: PortId,
+ port_id: PortAddr,
 }
 ```
 
@@ -8813,7 +8672,7 @@ This trait lets the mailbox deliver a `Serialized` message (a type-erased, encod
 All active ports in a mailbox internally tracked in a type-erased form:
 
 ```
-ports: DashMap<u64, Box<dyn SerializedSender>>,
+ports: DashMap<Port, Arc<dyn SerializedSender>>,
 ```
 
 This enables the mailbox to deliver messages to any known port regardless of its specific message type, provided deserialization succeeds.
@@ -8946,11 +8805,11 @@ This guarantees that messages posted before configuration are not dropped - they
 
 # Routers
 
-While a muxer dispatches messages to exact `ActorId` matches, a **router** generalizes this by routing messages to the *nearest matching prefix*. This enables hierarchical, prefix-based routing across clusters of actors--spanning local and remote processes.
+While a muxer dispatches messages to exact `ActorId` matches, a **router** generalizes this by routing messages to the nearest matching address prefix. This enables hierarchical, prefix-based routing across clusters of actors and procs.
 
 Routers extend the ideas of the muxer with:
 
-- Longest-prefix matching on structured `Reference` identifiers
+- Longest-prefix matching on structured `Addr` values
 - Dynamic routing to local and remote mailboxes
 - Optional serialization and remote connection via `DialMailboxRouter`
 - Fallback logic via `WeakMailboxRouter`
@@ -8961,62 +8820,54 @@ This page introduces:
 - `DialMailboxRouter`: remote routing with connection management
 - `WeakMailboxRouter`: downgradeable reference for ephemeral routing
 
-To support routing, hyperactor defines a universal reference type for hierarchical identifiers:
+To support routing, hyperactor defines a universal address type for hierarchical identifiers:
 
 ```
-pub enum Reference {
- Proc(ProcId),
- Actor(ActorId),
- Port(PortId),
+pub enum Addr {
+ Proc(ProcAddr),
+ Actor(ActorAddr),
+ Port(PortAddr),
 }
 ```
 
-A `Reference` encodes a path through the logical structure of the system-spanning from procs to fine-grained targets like actors or ports. It has a concrete string syntax (e.g., `tcp:[::1]:1234,myproc,actor[42]`) and can be parsed from user input or configuration via `FromStr`.
+An `Addr` encodes a path through the logical structure of the system, spanning from procs to fine-grained targets like actors or ports. It has a concrete string syntax, such as `trainer.service@tcp://[::1]:1234` or `trainer.service:42@tcp://[::1]:1234`, and can be parsed from user input or configuration via `FromStr`.
 
 ## Total Ordering and Prefix Routing
 
-`Reference` implements a total order via a lexicographic comparison of its internal components:
+`Addr` implements a total order via a lexicographic comparison of its internal components:
 
 ```
-impl PartialOrd for Reference {
+impl PartialOrd for Addr {
  fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
  Some(self.cmp(other))
  }
 }
 
-impl Ord for Reference {
+impl Ord for Addr {
  fn cmp(&self, other: &Self) -> Ordering {
  (
- self.proc_id(),
- self.actor_name(),
- self.pid(),
+ self.proc_addr(),
+ self.actor_uid(),
  self.port(),
  )
  .cmp(&(
- other.proc_id(),
- other.actor_name(),
- other.pid(),
+ other.proc_addr(),
+ other.actor_uid(),
  other.port(),
  ))
  }
 }
 ```
 
-This means that references are ordered by their position in the system hierarchy-starting with proc, then actor name, PID, and finally port. For example:
+This means that references are ordered by their position in the system hierarchy, starting with proc address, then actor uid, and finally port. For example:
 
 ```
-tcp:127.0.0.1:8080,service < tcp:127.0.0.1:8080,service,trainer[0]
+controller<2MuAHeDjLCEd>@tcp://127.0.0.1:8080 < trainer.controller<2MuAHeDjLCEd>@tcp://127.0.0.1:8080
 ```
 
-For Direct addressing (see [ProcId](../references/proc_id.html)), references use channel addresses instead of ranks:
+Semantically, an `Addr::Proc(p)` is considered a prefix of any `Actor` or `Port` address that shares the same proc address.
 
-```
-tcp:127.0.0.1:8080,service < tcp:127.0.0.1:8080,service,trainer[0]
-```
-
-Semantically, a `Reference` like `Proc(p)` is considered a prefix of any `Actor` or `Port` reference that shares the same proc (by matching channel address and proc name).
-
-Because this order is total and consistent with prefix semantics, it enables efficient prefix-based routing using `BTreeMap<Reference, ...>`. When routing a message, the destination `ActorId` is converted into a `Reference`, and the router performs a longest-prefix match by locating the nearest entry that is a prefix of the destination.
+Because this order is total and consistent with prefix semantics, it enables efficient prefix-based routing using `BTreeMap<Addr, ...>`. When routing a message, the destination `ActorAddr` is converted into an `Addr`, and the router performs a longest-prefix match by locating the nearest entry that is a prefix of the destination.
 
 ### `MailboxRouter`
 
@@ -9024,13 +8875,13 @@ With this structure in place, we can now define the core router:
 
 ```
 pub struct MailboxRouter {
- entries: Arc<RwLock<BTreeMap<Reference, Arc<dyn MailboxSender + Send + Sync>>>>,
+ entries: Arc<RwLock<BTreeMap<Addr, Arc<dyn MailboxSender + Send + Sync>>>>,
 }
 ```
 
-A `MailboxRouter` maintains a thread-safe mapping from `Reference` prefixes to corresponding `MailboxSender`s. These entries form the routing table: each entry declares that messages targeting a reference in that subtree should be forwarded to the given sender.
+A `MailboxRouter` maintains a thread-safe mapping from `Addr` prefixes to corresponding `MailboxSender`s. These entries form the routing table: each entry declares that messages targeting an address in that subtree should be forwarded to the given sender.
 
-When a message is routed, its destination `ActorId` is converted into a `Reference`. The router performs a longest-prefix match against the table to find the nearest registered handler.
+When a message is routed, its destination `ActorAddr` is converted into an `Addr`. The router performs a longest-prefix match against the table to find the nearest registered handler.
 
 ### Binding and Downgrading
 
@@ -9038,14 +8889,14 @@ To register a new routing entry, the router provides a `bind` method:
 
 ```
 impl MailboxRouter {
- pub fn bind(&self, dest: Reference, sender: impl MailboxSender + 'static) {
+ pub fn bind(&self, dest: Addr, sender: impl MailboxSender + 'static) {
  let mut w = self.entries.write().unwrap();
  w.insert(dest, Arc::new(sender));
  }
 }
 ```
 
-Each call to `bind` inserts a new `Reference` → `MailboxSender` entry into the routing table. These entries act as prefixes: once inserted, they serve as candidates during longest-prefix matching at message delivery time.
+Each call to `bind` inserts a new `Addr` to `MailboxSender` entry into the routing table. These entries act as prefixes: once inserted, they serve as candidates during longest-prefix matching at message delivery time.
 
 In some cases, you may want to share or store a weak reference to the router-especially when integrating with structures that should not keep the routing table alive indefinitely. To support this, `MailboxRouter` can be downgraded to a `WeakMailboxRouter`:
 
@@ -9063,7 +8914,7 @@ The `WeakMailboxRouter` is a lightweight wrapper around a weak reference to the 
 
 ```
 pub struct WeakMailboxRouter(
- Weak<RwLock<BTreeMap<Reference, Arc<dyn MailboxSender + Send + Sync>>>>,
+ Weak<RwLock<BTreeMap<Addr, Arc<dyn MailboxSender + Send + Sync>>>>,
 );
 ```
 
@@ -9081,42 +8932,40 @@ impl MailboxSender for MailboxRouter {
  return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
  ) {
  let sender = {
- let actor_id = envelope.dest().actor_id();
+ let actor_addr = envelope.dest().actor_addr();
  match self
  .entries
  .read()
  .unwrap()
- .lower_bound(Excluded(&actor_id.clone().into()))
+ .lower_bound(Excluded(&actor_addr.clone().into()))
  .prev()
  {
- None => None,
- Some((key, sender)) if key.is_prefix_of(&actor_id.clone().into()) => {
- Some(sender.clone())
- }
+ Some((key, sender)) if key.is_prefix_of(&actor_addr.clone().into()) => Some(sender.clone()),
  Some(_) => None,
+ None => None,
  }
  };
 
  match sender {
- None => envelope.undeliverable(
- DeliveryError::Unroutable(
- "no destination found for actor in routing table".to_string(),
- ),
- return_handle,
- ),
+ None => {
+ let failure = DeliveryFailure::new(UndeliverableReason::Transport(
+ TransportFailure::new(envelope.dest().clone(), TransportFailureReason::NoRoute),
+ ));
+ envelope.undeliverable(failure, return_handle)
+ }
  Some(sender) => sender.post(envelope, return_handle),
  }
  }
 }
 ```
 
-This implementation performs a longest-prefix match using the total order on `Reference`:
+This implementation performs a longest-prefix match using the total order on `Addr`:
 
-1. It converts the destination `ActorId` into a `Reference`.
+1. It converts the destination `ActorAddr` into an `Addr`.
 2. It performs a descending prefix search using:
 
 ```
-entries.lower_bound(Excluded(&reference)).prev()
+entries.lower_bound(Excluded(&addr)).prev()
 ```
 
 This locates the greatest key in the routing table that is strictly less than the destination.
@@ -9131,7 +8980,7 @@ A `WeakMailboxRouter` is a downgradeable, non-owning reference to a router's int
 
 ```
 pub struct WeakMailboxRouter(
- Weak<RwLock<BTreeMap<Reference, Arc<dyn MailboxSender + Send + Sync>>>>,
+ Weak<RwLock<BTreeMap<Addr, Arc<dyn MailboxSender + Send + Sync>>>>,
 );
 ```
 
@@ -9146,10 +8995,15 @@ impl MailboxSender for WeakMailboxRouter {
  ) {
  match self.upgrade() {
  Some(router) => router.post(envelope, return_handle),
- None => envelope.undeliverable(
- DeliveryError::BrokenLink("failed to upgrade WeakMailboxRouter".to_string()),
- return_handle,
+ None => {
+ let failure = DeliveryFailure::new(UndeliverableReason::Transport(
+ TransportFailure::new(
+ envelope.dest().clone(),
+ TransportFailureReason::LinkUnavailable("mailbox router is gone".to_string()),
  ),
+ ));
+ envelope.undeliverable(failure, return_handle)
+ }
  }
  }
 }
@@ -9163,7 +9017,7 @@ While `MailboxRouter` supports prefix-based routing, it relies on explicitly reg
 
 ```
 pub struct DialMailboxRouter {
- address_book: Arc<RwLock<BTreeMap<Reference, ChannelAddr>>>,
+ address_book: Arc<RwLock<BTreeMap<Addr, ChannelAddr>>>,
  sender_cache: Arc<DashMap<ChannelAddr, Arc<MailboxClient>>>,
  default: BoxedMailboxSender,
 }
@@ -9171,7 +9025,7 @@ pub struct DialMailboxRouter {
 
 #### Address Book
 
-The `address_book` maps `Reference` prefixes to `ChannelAddr`s representing remote destinations.
+The `address_book` maps `Addr` prefixes to `ChannelAddr`s representing remote destinations.
 
 #### Sender Cache
 
@@ -9185,16 +9039,16 @@ This structure enables adaptive, connection-aware routing across distributed sys
 
 ### Managing Routes: `bind` and `unbind`
 
-To populate the router, use `bind` to associate a `Reference` with a `ChannelAddr`. This replaces any existing mapping for the same reference and evicts any cached sender tied to the old address:
+To populate the router, use `bind` to associate an `Addr` with a `ChannelAddr`. This replaces any existing mapping for the same address prefix and evicts any cached sender tied to the old address:
 
 ```
-router.bind(reference, remote_addr);
+router.bind(addr, remote_addr);
 ```
 
 To remove entries, use `unbind`. It removes all mappings with the given prefix-effectively deleting a subtree of the address book. Corresponding cached senders are also evicted to prevent reuse of stale connections:
 
 ```
-router.unbind(&reference_prefix);
+router.unbind(&addr_prefix);
 ```
 
 This allows the router to adapt dynamically to process exits, topology changes, or application-level reconfiguration. The use of `is_prefix_of` during unbinding ensures that hierarchical references can be removed in bulk-e.g., removing a `Proc`-level entry will also remove all associated `Actor` routes.
@@ -9207,7 +9061,7 @@ Once the router has been populated using `bind`, message delivery proceeds in tw
 
 When a message arrives, the router first attempts to locate a destination using `lookup_addr`. This method:
 
-- Converts the message's `ActorId` into a `Reference`
+- Converts the message's `ActorAddr` into an `Addr`
 - Performs a longest-prefix search using `lower_bound(...).prev()` on the address book
 - Applies `is_prefix_of` to confirm that the matched reference is semantically valid
 
@@ -9234,16 +9088,25 @@ impl MailboxSender for DialMailboxRouter {
  envelope: MessageEnvelope,
  return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
  ) {
- let Some(addr) = self.lookup_addr(envelope.dest().actor_id()) else {
+ let dest_actor_addr = envelope.dest().actor_addr();
+ let Some(addr) = self.lookup_addr(&dest_actor_addr) else {
  self.default.post(envelope, return_handle);
  return;
  };
 
- match self.dial(&addr, envelope.dest().actor_id()) {
- Err(err) => envelope.undeliverable(
- DeliveryError::Unroutable(format!("cannot dial destination: {err}")),
- return_handle,
+ match self.dial(&addr, &dest_actor_addr) {
+ Err(err) => {
+ let failure = DeliveryFailure::new(UndeliverableReason::Transport(
+ TransportFailure::new(
+ envelope.dest().clone(),
+ TransportFailureReason::DialFailed {
+ addr,
+ error: err.to_string(),
+ },
  ),
+ ));
+ envelope.undeliverable(failure, return_handle)
+ }
  Ok(sender) => sender.post(envelope, return_handle),
  }
  }
@@ -9254,14 +9117,14 @@ Here's what happens step by step:
 
 1. Address lookup:
 
-- The destination `ActorId` is converted into a `Reference`.
+- The destination `ActorAddr` is converted into an `Addr`.
 - The router searches for the nearest matching prefix in the address book.
 - If no match is found, the message is forwarded to the configured `default` sender.
 
 1. Connection resolution:
 
 - If an address is found, the router attempts to `dial` or reuse a cached `MailboxClient`.
-- On error (e.g., failed dial), the message is returned to the sender with a `DeliveryError::Unroutable`.
+- On error (e.g., failed dial), the message is returned to the sender with a structured transport failure.
 
 1. Message forwarding:
 
@@ -9271,230 +9134,242 @@ Here's what happens step by step:
 
 ---
 
+# Gateway
+
+A `Gateway` is the connectivity layer for procs. A [`Proc`](proc.html) by
+itself is an isolated actor runtime: it owns local actor lifecycle and
+mailboxes, but it has no way to reach--or be reached by--the outside world.
+It communicates by attaching to a gateway. The gateway gives each attached
+proc an advertised location, accepts inbound traffic for that location, and
+forwards outbound traffic to destinations outside the proc.
+
+This separation lets us compose topologies without changing proc identity.
+A [`Host`](host.html) attaches its in-process procs to one gateway and registers
+spawned child proc gateways as peers, so the gateway multiplexes ingress and
+routes egress for the host. A gateway can also attach to another gateway over a
+duplex link and advertise its local procs through that peer's location.
+
+From the connectivity perspective, each location has exactly one gateway.
+Operationally, a gateway is both a *proc multiplexer* for ingress and a
+*router* for egress.
+
+## What lives inside a gateway
+
+A gateway is two routing tables plus synchronized advertised-location state:
+
+| Field | Type | Role |
+| --- | --- | --- |
+| `uid` | `Uid` | A stable routing key. Other gateways address this gateway with `Via(uid, ...)`. |
+| `procs` | `HashMap<ProcId, WeakProc>` | In-process procs attached to this gateway. The weak reference lets the proc's lifetime detach the route. |
+| `peers` | `HashMap<Uid, BoxedMailboxSender>` | Gateway peers keyed by uid. This includes duplex-attached clients and child proc gateways registered by a host. |
+| `forwarder` | `BoxedMailboxSender` | Catch-all egress for destinations not owned by this gateway. Defaults to `DialMailboxRouter`; `serve_via` temporarily replaces it with the duplex sender. |
+| `default_location` | `Location` | The location stamped onto newly bound refs. A `serve_via` session advertises refs as `Via(self_uid, peer_location)`. |
+
+`forwarder`, `default_location`, and the active local-delivery locations live
+behind one lock. Starting or stopping a serve updates reachability and egress
+together.
+
+## The single routing decision
+
+Every message that reaches a gateway runs through `Gateway::post_unchecked`.
+The gateway routes by repeatedly inspecting the next hop's outermost
+[`Via`](../references/syntax.html) hop:
+
+```
+envelope arrives
+ |
+ v
+next_hop.location().pop_via()
+ |
+ +-- uid in peers -> peel hop, forward to that peer
+ +-- uid == self -> peel hop, continue routing the inner location
+ +-- foreign uid -> hand unchanged envelope to the forwarder
+ +-- no via -> try local proc delivery; otherwise forward or fail
+```
+
+Local delivery uses `procs[dest.proc_id]` only after all owned via hops have
+been peeled. This prevents a foreign via from being delivered locally merely
+because its inner proc id collides with a local proc id. If the envelope still
+has an explicit next hop after peeling and no local proc matches, the gateway
+returns `NoRoute`; otherwise it hands the envelope to the forwarder.
+
+## Constructing a gateway
+
+| Constructor | Forwarder | Use |
+| --- | --- | --- |
+| `Gateway::new()` | `DialMailboxRouter` | A fresh gateway that dials addresses for egress. |
+| `Gateway::isolated()` | `UnroutableMailboxSender` | Local-only; outbound to unknown destinations is undeliverable. Handy in tests. |
+| `Gateway::global()` | `DialMailboxRouter` | The process-wide singleton. `Host::new` uses this by default. |
+| `Gateway::configured(loc, fwd)` | caller-supplied | Explicit advertised location and forwarder. |
+
+Procs attach during construction: `Proc::builder().shared_gateway(gw).build()`
+calls `Gateway::attach_proc`, which registers the proc as a local entry in
+`procs` and returns a guard that detaches it on drop. A proc's outbound path runs through
+`Proc::gateway()`, so procs sharing a gateway reach each other by an in-gateway
+lookup rather than dialing.
+
+## Serving a gateway
+
+A gateway must be served before it can accept inbound traffic:
+
+- `serve(addr)` serves a simplex mailbox endpoint.
+- `serve_with_listener(addr, listener)` uses a caller-provided listener when
+present and chooses simplex or duplex based on the transport.
+- `serve_duplex(addr)` opens a duplex endpoint that accepts both ordinary
+envelopes and gateway-attach handshakes.
+
+Serving records an active location. The newest active normal serve or
+`serve_via` session becomes `default_location`; older active serve locations
+remain valid for local delivery.
+
+### `serve_via`: client-side attach
+
+`serve_via(addr)` connects *this* gateway to a remote gateway over a duplex
+channel, so a client outside a cluster can reach an in-mesh host through one
+exposed address. The handshake:
+
+1. Dial the peer's duplex endpoint and post `AttachRequest { uid: self.uid }`.
+2. The peer records `peers[self.uid] = sender-over-the-duplex` and replies
+`AttachAck::Accepted { location: Via(self.uid, peer_default) }`.
+3. The client records that location as an active serve, so it becomes
+`default_location` until a newer active serve replaces it, and uses the
+duplex sender as its forwarder.
+
+From then on both directions carry plain `MessageEnvelope`s over the one
+socket, and each end runs the same routing decision. Remote clients and spawned
+children are both `peers` entries matched by uid. They differ only in the
+sender behind the peer entry: a duplex link for `serve_via`, and usually a
+one-way dialed `MailboxClient` for a spawned child.
+
+## `GatewayServeHandle`
+
+`serve`, `serve_duplex`, and `serve_via` all return a `GatewayServeHandle`.
+Shutdown is two explicit steps:
+
+- `stop(reason)` signals the server and removes that handle's active serve
+location. For duplex serving it also cancels the accept loop.
+- `join()` awaits teardown. It does not stop--call `stop` first.
+
+The handle carries one `HandleKind` per flavor (`Serve`, `ServeDuplex`,
+`ServeVia`), each owning its own teardown state. The `ServeVia` variant removes
+its active serve entry even if the handle is dropped without `stop`, so a
+dropped attach never leaves the gateway holding a dead duplex sender.
+
+## See Also
+
+- [Proc](proc.html) -- the runtime that attaches to a gateway
+- [Host](host.html) -- owns one gateway and wires its procs into it
+- [Syntax](../references/syntax.html) -- `Location` and the `Via` source-route form
+- [Routers](../mailboxes/routers.html) -- `DialMailboxRouter`, the default forwarder
+
+---
+
 # Host
 
-A `Host` manages a collection of spawned procs and provides bidirectional routing between them. It serves as the entry point for external connections and coordinates message delivery across local and remote actors.
+A `Host` is the mesh concept of a host: it manages the lifecycle of the procs
+running on one machine. It is deliberately narrow--connectivity is *not* its
+job. A host owns exactly one [`Gateway`](gateway.html), and delegates all
+routing and multiplexing to it. The host serves its endpoints through
+the gateway and never inspects transports or rewrites locations itself.
 
-## Overview
+## How a host is put together
 
-The `Host` struct maintains two key channel endpoints:
+A host owns:
 
-- **Frontend address**: accepts connections from external clients
-- **Backend address**: receives messages from spawned procs
-
-Both endpoints feed into a unified routing layer that can deliver messages to either the service proc (running within the host) or to spawned procs.
-
-```
-┌────────────┐
- ┌───▶ proc *,1 │
- │ #1└────────────┘
- │
- ┌──────────┐ │ ┌────────────┐
- │ Host │◀───┼───▶ proc *,2 │
- *└──────────┘# │ #2└────────────┘
- │
- │ ┌────────────┐
- └───▶ proc *,3 │
- #3└────────────┘
-```
-
-Where:
-
-- `*` is the host's frontend address (`frontend_addr`)
-- `#` is the host's backend address (`backend_addr`)
-- `#1`, `#2`, `#3` are the per-proc backend channels
-- Each proc is direct-addressed via the host - its id is "proc at `*` named `N`"
-
-## Structure
+- **one `Gateway`** -- the connectivity layer for every proc on the host (see
+[Gateway](gateway.html));
+- **two built-in procs**, `service_proc` and `local_proc`, that run
+*in-process* and therefore sit in the gateway's `procs` table;
+- a **frontend address** (`*`), the gateway's bound listening address that the
+rest of the mesh uses to reach this host's procs;
+- a **backend address** (`#`), where spawned child procs dial back;
+- a **`ProcManager`** that knows how to make a proc real (fork a process, run
+the bootstrap command, wire the backchannel) or spawn it in-process for
+tests.
 
 ```
-pub struct Host<M> {
- procs: HashSet<String>,
- frontend_addr: ChannelAddr,
- backend_addr: ChannelAddr,
- router: DialMailboxRouter,
- manager: M,
- service_proc: Proc,
- local_proc: Proc,
- frontend_rx: Option<ChannelRx<MessageEnvelope>>,
-}
+┌─────────────────────────────────────────────┐
+ │ Host (one machine) │
+ │ frontend = * (gateway listens here) │
+ │ backend = # (children dial back here) │
+ │ │
+ │ ┌──────────────── Gateway ─────────────┐ │
+ │ │ local: service_proc, local_proc │ │ ┌─────────────────┐
+ │ │ peers: C1 → dial(child1) ──────────┼───┼──▶│ child gateway 1 │
+ │ │ C2 → dial(child2) ──────────┼───┼──▶│ child gateway 2 │
+ │ │ forwarder: DialMailboxRouter │ │ └─────────────────┘
+ │ └──────────────────────────────────────┘ │
+ └─────────────────────────────────────────────┘
 ```
 
-**Fields:**
+Spawned children use ids derived from their names and locations of the form
+`Via(child_uid, frontend_addr)`, so all children are reached through the one
+frontend address. The gateway peels the child uid and forwards to the child's
+registered peer sender.
 
-- `procs`: Stores proc names to avoid creating duplicates
-- `frontend_addr`: The address external clients connect to
-- `backend_addr`: The address spawned procs use to send messages back to the host
-- `router`: A [`DialMailboxRouter`](../mailboxes/routers.html#dialmailboxrouter-remote-and-serializable-routing) for prefix-based routing to spawned procs
-- `manager`: A `ProcManager` implementation that handles proc lifecycle
-- `service_proc`: The host's local proc for system-level actors
-- `local_proc`: The host's local proc for user-level actors
-- `frontend_rx`: Channel receiver for external connections (consumed during startup)
+## The two built-in procs
 
-## Creating a Host
+`service_proc` and `local_proc` are in-process and share the host's single
+gateway, so they reach each other--and the host reaches them--through the
+gateway's local `procs` table, with zero dialing.
 
-The `Host::new` constructor takes a `ProcManager` and a channel address to serve:
+Their ids are *legacy pseudo-singletons*: literally the names `"service"` and
+`"local"`, identical across every host. A gateway can hold at most one proc per
+id, so a gateway can host at most one `service`/`local` pair--i.e. at most one
+host. `Host::new` uses `Gateway::global()`; callers that need more than one
+host in the same process, or need a pre-attached gateway, must use
+`Host::new_with_gateway`.
 
-```
-impl<M: ProcManager> Host<M> {
- pub async fn new(manager: M, addr: ChannelAddr) -> Result<Self, HostError> {
- let (frontend_addr, frontend_rx) = channel::serve(addr)?;
- let (backend_addr, backend_rx) = channel::serve(
- ChannelAddr::any(manager.transport())
- )?;
+## Spawned children
 
- let router = DialMailboxRouter::new();
+Each spawned child has its own gateway endpoint. In production that usually
+means a separate OS process; `LocalProcManager` uses the same protocol
+in-process for tests.
 
- let service_proc_id = ProcAddr::instance(
- frontend_addr.clone(),
- "service",
- );
- let service_proc = Proc::configured(service_proc_id.clone(), router.boxed());
+`Host::spawn` advertises the child at `Via(child_uid, host_location)`, waits
+for the child to report its serving address, dials that address, and registers
+the sender with `Gateway::attach_peer(child_uid, sender)`. A message for that
+child arrives at the host gateway, matches the child uid in `peers`, has that
+via hop peeled, and is forwarded to the child gateway. The returned
+`PeerAttachGuard` keeps the route alive; dropping it frees the slot.
 
- let local_proc_id = ProcAddr::instance(
- frontend_addr.clone(),
- "local",
- );
- let local_proc = Proc::configured(local_proc_id.clone(), router.boxed());
+## Binding and serving
 
- let host = Host {
- procs: HashSet::new(),
- frontend_addr,
- backend_addr,
- router,
- manager,
- service_proc,
- local_proc,
- frontend_rx: Some(frontend_rx),
- };
-
- let _backend_handle = host.forwarder().serve(backend_rx);
-
- Ok(host)
- }
-}
-```
-
-### Understanding `channel::serve()`
-
-`channel::serve()` is the universal "bind and listen" operation across different transport types. It:
-
-- Takes a `ChannelAddr` (which can be a wildcard like `ChannelAddr::any()`)
-- Binds a server/listener on that address
-- Returns a tuple of:
-
-- The **actual bound address** (resolved from wildcards)
-- A **receiver** (`ChannelRx<MessageEnvelope>`) for incoming messages
-
-This is why both calls in `Host::new` capture the returned address:
+Connectivity lives in the gateway. `Host::new_with_gateway` starts both host
+servers during construction:
 
 ```
-let (frontend_addr, frontend_rx) = channel::serve(addr)?;
-let (backend_addr, backend_rx) = channel::serve(ChannelAddr::any(manager.transport()))?;
+let mut backend_handle = gateway.serve(ChannelAddr::any(manager.transport()))?;
+let backend_addr = gateway.default_location().addr().clone();
+
+let frontend_handle = gateway.serve_with_listener(addr, listener)?;
+let frontend_addr = gateway.default_location().addr().clone();
+
+let service_proc = Proc::legacy_service_pseudo_singleton_on_gateway(gateway.clone());
+let local_proc = Proc::legacy_local_pseudo_singleton_on_gateway(gateway.clone());
 ```
 
-The returned address is the **actual bound address** you can give to others to connect to. For example, when you pass `ChannelAddr::Tcp(127.0.0.1:0)`:
+The backend address is passed to each child as its fallback route back to the
+host. The frontend address is the host location used in public proc refs.
 
-- **Input**: "bind to localhost on any available port"
-- **Output**: `(ChannelAddr::Tcp(127.0.0.1:54321), rx)` - the OS-assigned port
+Because the gateway owns the advertised location, later gateway serves affect
+new refs. Host construction serves the backend and frontend, so built-in procs
+snapshot the frontend location. A `serve_via` session that already exists
+remains active as an outbound route and as a valid local-delivery location, but
+the frontend serve becomes the default location until a newer serve replaces it.
 
-See [Channel Addresses](../channels/addresses.html) and [Transmits and Receives](../channels/tx_rx.html) for more on channel semantics.
+## Local proc invariant (LP-1)
 
-### The Service Proc and Local Proc
+The local proc always exists as the singleton proc id `"local"` on the host
+gateway and is forwarded in-process, but it starts with zero actors. A
+`ProcAgent` and root client actor are added only when
+`HostMeshAgent::handle(GetLocalProc)` is first called.
 
-The host creates two procs identified by `ProcId`:
+## See Also
 
-**Service Proc:**
-
-```
-let service_proc_id = ProcId(
- frontend_addr.clone(),
- "service".to_string()
-);
-let service_proc = Proc::configured(service_proc_id, router.boxed());
-```
-
-**Local Proc:**
-
-```
-let local_proc_id = ProcId(
- frontend_addr.clone(),
- "local".to_string()
-);
-let local_proc = Proc::configured(local_proc_id, router.boxed());
-```
-
-Both procs:
-
-- Live within the host process
-- Use `ProcId(frontend_addr, name)` as their identity
-- Forward outbound messages through the `DialMailboxRouter`
-- The service proc hosts system-level actors that manage proc lifecycle and coordination
-- The local proc hosts user-level actors
-
-See [`ProcId`](../references/proc_id.html) for details on proc addressing.
-
-## Routing Architecture
-
-The host implements bidirectional routing using a specialized `ProcOrDial` router (see [ProcOrDial Router](proc_or_dial.html)). Both the frontend and backend receivers are served by this router:
-
-**Backend receiver** (from spawned procs):
-
-```
-let _backend_handle = host.forwarder().serve(backend_rx);
-```
-
-**Frontend receiver** (from external clients):
-
-```
-Some(self.forwarder().serve(self.frontend_rx.take()?))
-```
-
-### Complete Routing Flow
-
-```
-frontend_rx (external connections) ──┐
- ├──> serve() ──> ProcOrDial ──┬──> service proc
-backend_rx (from spawned procs) ──┘ ├──> local proc
- └──> DialMailboxRouter
- │
- └──> looks up proc by name
- └──> dials backend addr
-```
-
-Both receivers feed into the same `ProcOrDial` router, creating bidirectional routing:
-
-- **Inbound (frontend)**: External → ProcOrDial → service proc or local proc or spawned proc
-- **Inbound (backend)**: Spawned procs → ProcOrDial → service proc or local proc or other spawned procs
-- **Outbound (from service proc or local proc)**: `service_proc.forwarder` / `local_proc.forwarder` = DialMailboxRouter → spawned procs
-
-See [`MailboxServer::serve()`](../mailboxes/mailbox_server.html) for how receivers are bridged to routers.
-
-## Channel Receivers
-
-The `ChannelRx<M>` receiver returned from `channel::serve()` implements the `Rx<M>` trait:
-
-```
-trait Rx<M: RemoteMessage> {
- async fn recv(&mut self) -> Result<M, ChannelError>;
- fn addr(&self) -> ChannelAddr;
-}
-```
-
-It's a stream of incoming messages of type `M`. In the host context, `M = MessageEnvelope`, so it receives actor messages from the network.
-
-**How the host uses receivers:**
-
-- **Frontend**: Serves the user-provided `addr` → receives messages from external connections via `frontend_rx`
-- **Backend**: Serves a wildcard backend address → receives messages from spawned procs via `backend_rx`
-
-Both are consumed by calling `.serve()` on the `ProcOrDial` forwarder, which bridges the channel receivers to the mailbox routing system.
-
-## Next Steps
-
-- See [ProcOrDial Router](proc_or_dial.html) for the routing implementation
-- See [Routers](../mailboxes/routers.html) for `DialMailboxRouter` details
-- See [Proc](proc.html) for how procs integrate with routers, including the local proc bypass optimization
+- [Gateway](gateway.html) -- the connectivity layer a host owns and delegates to
+- [Proc](proc.html) -- the runtime managed by the host's `ProcManager`
+- [ProcId](../references/proc_id.html) -- proc identity
 
 ---
 
@@ -9504,47 +9379,40 @@ A `Proc` is a container for actors and provides the runtime context for actor ex
 
 ## Overview
 
-Procs bridge the gap between actors (local computation) and the distributed system (remote communication). Each proc:
+Procs bridge the gap between actors (local computation) and the distributed system (remote communication). The three types in this section fit together as follows:
 
-- **Hosts actors**: Spawns and manages actor instances within its process
-- **Routes messages**: Provides a forwarder that determines how outbound messages reach their destinations
-- **Identifies actors**: All actors within a proc share the proc's identity as part of their `ActorId`
-- **Manages lifecycle**: Coordinates actor startup, supervision, and shutdown
+- A **`Proc`** hosts actors and manages their lifecycle, but is not itself a network endpoint.
+- A **`Gateway`** is the connectivity layer a proc attaches to: it multiplexes inbound traffic to the right local proc and routes outbound traffic on the proc's behalf.
+- A **`Host`** manages the procs on one machine and owns the single gateway through which they are reached.
 
 ## Key Components
 
 ### Proc
 
-The `Proc` struct represents a single runtime instance. It's created with:
-
-- A `ProcId` that uniquely identifies it (see [ProcId](../references/proc_id.html))
-- A forwarder (`BoxedMailboxSender`) for routing outbound messages
+The `Proc` struct represents a single actor runtime. It owns actor lifecycle and identity (all actors within a proc share its `ProcId` as part of their `ActorId`) and reaches the outside world only through its gateway.
 
 See [Proc](proc.html) for details on construction and usage.
 
+### Gateway
+
+The `Gateway` is the connectivity layer for procs. It has one table for local
+in-process procs, one table for peer gateways keyed by `Via(uid)` hops, and a
+forwarder for everything else. The same routing decision handles local delivery,
+spawned children, attached clients, and ordinary egress.
+
+See [Gateway](gateway.html) for the type and its routing decision.
+
 ### Host
 
-The `Host` manages multiple spawned procs and provides the infrastructure for:
-
-- Accepting external connections (frontend)
-- Coordinating message routing between procs (backend)
-- Managing a service proc for system-level coordination
-- Managing a local proc for user-level actors
+The `Host` manages the lifecycle of the procs on one machine. It owns exactly
+one gateway and delegates all connectivity to it: `service` and `local` attach
+as in-process procs, while spawned children attach as gateway peers.
 
 See [Host](host.html) for the complete hosting architecture.
 
-### ProcOrDial Router
-
-A specialized router that enables bidirectional communication by distinguishing between:
-
-- Messages destined for the service proc (delivered locally)
-- Messages destined for the local proc (delivered locally)
-- Messages destined for spawned procs (dialed remotely)
-
-See [ProcOrDial Router](proc_or_dial.html) for routing implementation details.
-
 ## See Also
 
+- [Gateway](gateway.html) - The connectivity layer procs attach to
 - [ProcId](../references/proc_id.html) - Proc identity and addressing
 - [ActorId](../references/actor_id.html) - How actors inherit proc identity
 - [Channels](../channels/index.html) - Transport layer for inter-proc communication
@@ -9554,123 +9422,87 @@ See [ProcOrDial Router](proc_or_dial.html) for routing implementation details.
 
 # Proc
 
-A `Proc` is the fundamental container for actors in hyperactor. It provides the runtime context for actor execution and determines how messages are routed--both inbound messages arriving at the proc from the network and outbound messages leaving the proc.
+A `Proc` is the fundamental container for actors in hyperactor. It provides
+the runtime context for actor execution: it owns actor lifecycle, delivers
+messages to its local actors, and hosts supervision state.
+
+A proc is **not** a network endpoint by itself. It reaches--and is reached by--
+the outside world only through a [`Gateway`](gateway.html), its connectivity
+boundary. Every proc is attached to exactly one gateway; outbound messages flow
+through that gateway, and inbound messages for the proc arrive via the gateway's
+ingress path. Procs that share a gateway reach each other by an in-gateway
+lookup rather than dialing.
 
 ## Construction
 
-Create a pre-configured proc using `Proc::configured()`:
+Build a proc with the builder, choosing how it attaches to a gateway:
 
 ```
-pub fn configured(proc_id: ProcId, forwarder: BoxedMailboxSender) -> Self
+// Default: attach to the process-wide `Gateway::global()`.
+// (Legacy pseudo-singleton ids are reserved for host-scoped construction.)
+let proc = Proc::builder().proc_id(id).build()?;
+
+// Attach to a caller-provided gateway -- e.g. a host wiring its procs
+// into the one gateway it owns. Accepts any proc id.
+let proc = Proc::builder().shared_gateway(gateway.clone()).build()?;
 ```
 
-**Parameters:**
+Convenience constructors cover common cases:
 
-- `proc_id`: The proc's unique identity (see [ProcId](../references/proc_id.html))
-- `forwarder`: A `BoxedMailboxSender` that routes all outbound messages from this proc
+- `Proc::isolated()` -- a random-id proc on a fresh local-only gateway
+(`Gateway::isolated()`); outbound to unknown destinations is undeliverable.
+Useful in tests.
+- `Proc::configured(proc_id, forwarder)` -- wraps `Gateway::configured(location, forwarder)` so the proc advertises `location` and uses `forwarder` for
+egress.
+- `Proc::direct(addr, name)` -- a direct-addressed proc served on its own
+channel.
 
-The forwarder is the critical routing component for remote delivery - when an actor within this proc sends a message to an actor in another proc, it flows through this forwarder.
+The proc's gateway is reachable via `Proc::gateway()`.
 
-## Example: Service Proc in Host
+## Proc identity and addressing
 
-From `Host::new()`:
-
-```
-let router = DialMailboxRouter::new();
-
-let service_proc_id = ProcId(
- frontend_addr.clone(),
- "service".to_string()
-);
-
-let service_proc = Proc::configured(service_proc_id, router.boxed());
-```
-
-Here:
-
-- The proc is identified by `ProcId(frontend_addr, "service")`
-- All outbound messages use the `DialMailboxRouter` as their forwarder
-- The router will look up target procs and dial their backend addresses
-
-## ProcId: Addressing
-
-Procs are identified using `ProcId`:
-
-```
-ProcId(ChannelAddr, String)
-```
-
-Example:
+`ProcId` is pure identity. `ProcAddr` pairs that id with the `Location` where the proc is reachable:
 
 ```
 let addr: ChannelAddr = "unix:@abc123".parse()?;
-let proc_id = ProcId(addr, "service".to_string());
+let proc_addr = ProcAddr::instance(addr, "service");
 ```
 
-The proc is addressed by:
+A proc is reached through its gateway's advertised location. On a host, spawned
+children are advertised through the host frontend with a
+`Via(child_uid, frontend_addr)` location, so the host gateway can peel the child
+uid and forward to the child gateway peer. See [ProcId](../references/proc_id.html)
+for identity details and [Addr](../references/reference.html) for addressable
+references.
 
-- The host's channel address (where it can be reached)
-- A name identifying the proc within that host
+## Egress through the gateway
 
-See [ProcId](../references/proc_id.html) for complete details.
+When an actor sends a message to an actor in another proc, the message leaves
+the proc through its gateway, which applies the single
+[routing decision](gateway.html#the-single-routing-decision): deliver to a local
+proc, forward to a child proc or a known peer by peeling its `Via` hop, or hand
+to the forwarder for everything else. Spawned children are just peers keyed by
+their child uid. The default forwarder is a `DialMailboxRouter`, which looks up
+the target's address and dials it.
 
-## Forwarder Integration
+### Local proc bypass
 
-The forwarder determines how messages leave the proc. Typically, a `DialMailboxRouter` is used to enable dynamic routing to multiple destinations.
-
-### Using DialMailboxRouter
-
-Routes messages by looking up target addresses and dialing connections:
-
-```
-let router = DialMailboxRouter::new();
-let proc = Proc::configured(proc_id, router.boxed());
-```
-
-When an actor sends a message to another proc, the router:
-
-1. Looks up the target's address in its address book
-2. Dials a connection (or reuses a cached one)
-3. Sends the message over that connection
-
-See [Routers](../mailboxes/routers.html#dialmailboxrouter-remote-and-serializable-routing).
-
-### Local Proc Bypass
-
-When a proc sends a message to an actor in another proc, the message normally flows through the proc's forwarder to a backend address, where a central routing layer forwards it to the destination proc (see [Host](host.html) for the complete architecture with frontend and backend receivers). For procs running on the same host, this can be optimized: procs can dial each other directly via Unix sockets, bypassing the central routing layer entirely.
-
-**Injection point**: When a proc manager spawns a new proc, instead of providing a plain backend sender as the forwarder, it wraps it with a local-aware forwarder:
+For procs that run in *separate processes* on the same host, same-host
+proc-to-proc traffic can skip the host round-trip. At spawn time the proc
+manager gives the child gateway a `LocalProcDialer` forwarder that dials a
+sibling proc directly over its Unix socket when the destination is local, and
+falls back to the host backend otherwise:
 
 ```
-// At proc spawn time, the manager injects a local bypass forwarder:
 let backend_sender = MailboxClient::dial(backend_addr);
-let proc_forwarder = LocalProcDialer::new(
- host_frontend_addr, // Identify local procs by this address
- socket_dir, // Directory where procs place Unix sockets
- backend_sender, // Fallback for remote procs
-);
+let proc_forwarder = LocalProcDialer::new(host_frontend_addr, socket_dir, backend_sender);
 let proc = Proc::configured(proc_id, proc_forwarder.boxed());
 ```
 
-The forwarder checks each outbound message: if the destination is a local proc (matching the host's frontend address), it dials directly via the proc's Unix socket. Otherwise, it routes through the backend sender:
+This reduces message copies and keeps the host agent off the hot path for
+intra-host traffic. See `hyperactor_mesh::bootstrap::mailbox::LocalProcDialer`.
 
-```
-impl MailboxSender for LocalProcDialer {
- fn post_unchecked(&self, envelope: MessageEnvelope, ...) {
- if envelope.dest().proc_id() == local_proc_on_this_host {
- unix_sender.post_unchecked(envelope, ...) // Direct
- } else {
- backend_sender.post_unchecked(envelope, ...) // Via host backend
- }
- }
-}
-```
-
-This improves throughput for intra-host communication by reducing message copies and preventing the host agent from becoming a sequencing bottleneck for all messages between local procs, while maintaining compatibility with remote routing.
-
-See `hyperactor_mesh::bootstrap::mailbox::LocalProcDialer` for the implementation.
-
-## Spawning Actors
+## Spawning actors
 
 Once you have a proc, spawn actors within it:
 
@@ -9678,109 +9510,16 @@ Once you have a proc, spawn actors within it:
 let actor_handle = proc.spawn("my_actor", MyActor::new())?;
 ```
 
-The spawned actor:
-
-- Runs within this proc
-- Inherits the proc's `ProcId` as part of its `ActorId`
-- Uses the proc's forwarder for outbound messages
-
-See [RemoteSpawn](../actors/remote_spawn.html) for spawning details.
+The spawned actor runs within this proc, inherits the proc's `ProcId` as part
+of its `ActorId`, and uses the proc's gateway for outbound messages. See
+[RemoteSpawn](../actors/remote_spawn.html) for spawning details.
 
 ## See Also
 
-- [Host](host.html) - How hosts create and manage procs
-- [ProcId](../references/proc_id.html) - Proc addressing schemes
-- [Routers](../mailboxes/routers.html) - Forwarder implementations
-- [ActorId](../references/actor_id.html) - How actors inherit proc identity
-
----
-
-# ProcOrDial Router
-
-`ProcOrDial` is a specialized router that bridges the service proc, local proc, and the `DialMailboxRouter`. It enables bidirectional routing in the `Host` by distinguishing between messages destined for the service proc, local proc, versus those targeting spawned procs.
-
-## Structure
-
-```
-struct ProcOrDial {
- service_proc: Proc, // The service proc
- local_proc: Proc, // The local proc
- dialer: DialMailboxRouter, // Router for spawned procs
-}
-```
-
-## Routing Logic
-
-`ProcOrDial` implements `MailboxSender` with conditional routing based on the destination:
-
-```
-impl MailboxSender for ProcOrDial {
- fn post_unchecked(&self, envelope: MessageEnvelope, ...) {
- if envelope.dest().actor_id().proc_id() == self.service_proc.proc_id() {
- self.service_proc.post_unchecked(envelope, ...) // → service proc
- } else if envelope.dest().actor_id().proc_id() == self.local_proc.proc_id() {
- self.local_proc.post_unchecked(envelope, ...) // → local proc
- } else {
- self.dialer.post_unchecked(envelope, ...) // → dialed procs
- }
- }
-}
-```
-
-When a message arrives:
-
-1. **Check destination**: Is it addressed to the service proc's `ProcId`?
-2. **Route to service proc**: If yes, deliver directly to `service_proc`
-3. **Check local proc**: Is it addressed to the local proc's `ProcId`?
-4. **Route to local proc**: If yes, deliver directly to `local_proc`
-5. **Route via dialer**: Otherwise, forward to `DialMailboxRouter` which looks up the target proc and dials its backend address
-
-## Integration with Host
-
-Both the frontend and backend receivers in `Host` are served by `ProcOrDial`:
-
-```
-// Backend receiver (from spawned procs)
-let _backend_handle = host.forwarder().serve(backend_rx);
-
-// Frontend receiver (from external clients)
-Some(self.forwarder().serve(self.frontend_rx.take()?))
-```
-
-This creates a unified routing layer where all incoming messages flow through the same router, regardless of their source.
-
-## Bidirectional Routing
-
-The `ProcOrDial` router enables complete bidirectional communication:
-
-### Inbound Messages
-
-**From external clients (frontend_rx)**:
-
-- → `ProcOrDial`
-- → service proc (if dest matches) OR local proc (if dest matches) OR spawned proc (via `DialMailboxRouter`)
-
-**From spawned procs (backend_rx)**:
-
-- → `ProcOrDial`
-- → service proc (if dest matches) OR local proc (if dest matches) OR other spawned procs (via `DialMailboxRouter`)
-
-### Outbound Messages
-
-**From service proc or local proc**:
-
-- Uses `DialMailboxRouter` as its forwarder
-- → looks up proc by name in address book
-- → dials backend address
-- → delivers to target proc
-
-This symmetric design allows procs to communicate freely - external clients can reach any proc, spawned procs can reach each other or the service/local procs, and the service/local procs can coordinate across all spawned procs.
-
-## See Also
-
-- [Host](host.html) - The container that uses `ProcOrDial`
-- [Routers](../mailboxes/routers.html) - Details on `DialMailboxRouter`
-- [MailboxSender](../mailboxes/mailbox_sender.html) - The trait `ProcOrDial` implements
+- [Gateway](gateway.html) -- the connectivity boundary every proc attaches to
+- [Host](host.html) -- how hosts create and manage procs
+- [ProcId](../references/proc_id.html) -- proc addressing
+- [ActorId](../references/actor_id.html) -- how actors inherit proc identity
 
 ---
 
@@ -9805,7 +9544,7 @@ pub struct ActorId {
 Fields are private; use named constructors:
 
 ```
-use hyperactor::id::{ActorId, Label, ProcId};
+use hyperactor::{ActorId, Label, ProcId};
 
 let proc = ProcId::instance(Label::new("myproc").unwrap());
 let anonymous = ActorId::anonymous(proc.clone());
@@ -9849,15 +9588,20 @@ impl ActorId {
 
 # References
 
-This section documents the reference system used throughout hyperactor to identify and communicate with distributed entities.
+This section documents the address system used throughout hyperactor to identify and communicate with distributed entities.
 
-References are lightweight, serializable identifiers for **procs**, **actors**, and **ports**. They are the backbone of addressing and routing in the runtime. Whether you're sending a message, spawning an actor, or broadcasting to a group, references are how you name things.
+Hyperactor separates identity from reachability:
+
+- `ProcId`, `ActorId`, and `PortId` are pure identities.
+- `ProcAddr`, `ActorAddr`, and `PortAddr` pair those identities with a `Location`.
+- `Addr` is the type-erased enum that can hold any of the three address forms.
+- `ActorRef<A>`, `PortRef<M>`, and `OncePortRef<M>` wrap addresses with type information for public APIs.
 
 The reference system is:
 
 - **Uniform**: All references follow a shared syntax and structure.
 - **Parsable**: References can be round-tripped from strings and manipulated programmatically.
-- **Typed**: While the `Reference` enum is typeless and dynamic, typed references like `ActorRef<A>` and `PortRef<M>` allow safe interaction in APIs.
+- **Typed**: While `Addr` is typeless and dynamic, typed references like `ActorRef<A>` and `PortRef<M>` allow safe interaction in APIs.
 - **Orderable**: References implement a total order, enabling prefix-based routing and sorted maps.
 
 In this section, we'll cover:
@@ -9868,7 +9612,7 @@ In this section, we'll cover:
 - [`ProcId`](proc_id.html)
 - [`ActorId`](actor_id.html)
 - [`PortId`](port_id.html)
-- The [Reference](reference.html), which unifies all reference variants
+- [`Addr`](reference.html), which unifies all address variants
 
 - [Typed references](typed_refs.html) used in APIs: `ActorRef<A>`, `PortRef<M>`, and `OncePortRef<M>`
 
@@ -9879,38 +9623,36 @@ In this section, we'll cover:
 A `PortId` identifies a specific port on a particular actor. Ports are the entry points through which messages are delivered to an actor, and each `PortId` is globally unique.
 
 ```
-#[derive(
- Debug,
- Serialize,
- Deserialize,
- Clone,
- PartialEq,
- Eq,
- PartialOrd,
- Hash,
- Ord,
- Named
-)]
-pub struct PortId(ActorId, u64);
+#[derive(Clone, Serialize, Deserialize)]
+pub struct PortId {
+ actor_id: ActorId,
+ port: Port,
+}
 ```
 
-- The first field is the owning `ActorId`.
-- The second field is the port number (`u64`), typically derived from the message type's registered port.
+- `actor_id` is the owning actor.
+- `port` is a `Port` (an ephemeral index, a handler uid, or a control port), not a bare integer.
+
+`PartialEq`, `Eq`, `Hash`, `Ord`, and `Display` are hand-implemented and key off `(actor_id, port)`.
 
 ## Construction
 
-Fields are private; use a named constructor or derive from an `ActorId`:
+Fields are private; build one with `PortId::new`, passing the owning `ActorId` and a `Port`:
 
 ```
-use hyperactor::reference::{PortId, ActorId};
+use hyperactor::PortId;
+use hyperactor::port::Port;
 
-let port = PortId::new(actor.clone(), 42);
+# let actor_id = hyperactor::Proc::current().proc_addr().actor_addr("logger").id().clone();
+let port_id = PortId::new(actor_id, Port::from(42u64));
 ```
 
-You can also construct a PortId from an `ActorId` using `.port_id(...)`:
+For the addressable form, call `port_addr` on an `ActorAddr`. It pairs the `PortId` with the actor's `Location` and returns a `PortAddr`:
 
 ```
-let port = actor.port_id(42);
+# use hyperactor::port::Port;
+# let actor_addr = hyperactor::Proc::current().proc_addr().actor_addr("logger");
+let port_addr = actor_addr.port_addr(Port::from(42u64));
 ```
 
 ## Methods
@@ -9918,21 +9660,21 @@ let port = actor.port_id(42);
 ```
 impl PortId {
  pub fn actor_id(&self) -> &ActorId;
- pub fn index(&self) -> u64;
- pub fn into_actor_id(self) -> ActorId;
+ pub fn port(&self) -> Port;
+ pub fn proc_id(&self) -> &ProcId;
 }
 ```
 
 - `.actor_id()` returns the owning actor.
-- `.index()` returns the port number.
-- `.into_actor_id()` discards the port index and yields the owning actor ID.
+- `.port()` returns the port number.
+- `.proc_id()` returns the proc id that owns this port.
 
 ## Traits
 
 `PortId` implements:
 
-- `Display` -- formatted as `addr,proc_name,actor_name[pid][port]`
-- `FromStr` -- parses from strings like `"tcp:[::1]:1234,myproc,logger[1][42]"`
+- `Display` -- formatted as `actor-id:port`, such as `logger.service:42`
+- `FromStr` -- parses the same id-only syntax. Use `PortAddr` or `Addr` for strings that also include a location, such as `logger.service:42@tcp://[::1]:1234`.
 - `Ord`, `Eq`, `Hash` -- usable as map keys or for dispatch
 - `Named` -- supports reflection and typed messaging
 
@@ -9960,14 +9702,14 @@ pub struct ProcId {
 Fields are private; use named constructors:
 
 ```
-use hyperactor::id::{Label, ProcId};
+use hyperactor::{Label, ProcId};
 
 let anonymous = ProcId::anonymous();
 let worker = ProcId::instance(Label::new("worker").unwrap());
 let service = ProcId::singleton(Label::new("service").unwrap());
 ```
 
-See [Host](../procs/host.html) for how procs are used in the Host architecture.
+Use `ProcAddr` when you need a reachable proc reference; it pairs a `ProcId` with a `Location`. See [Host](../procs/host.html) for how proc addresses are used in the host architecture.
 
 ## Methods
 
@@ -9993,29 +9735,29 @@ ProcId implements:
 
 ---
 
-# `Reference`
+# `Addr`
 
-The `Reference` enum is a type-erased, unified representation of all addressable entities in hyperactor. It provides a common format for parsing, logging, routing, and transport.
+The `Addr` enum is the type-erased representation of addressable entities in hyperactor. It provides a common format for parsing, logging, routing, and transport.
 
 ```
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash, Named)]
-pub enum Reference {
- Proc(ProcId),
- Actor(ActorId),
- Port(PortId),
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Addr {
+ Proc(ProcAddr),
+ Actor(ActorAddr),
+ Port(PortAddr),
 }
 ```
 
-Each variant wraps one of the concrete identifier types:
+Each variant wraps one of the concrete address types. Each address pairs an id with a `Location`:
 
-- [`ProcId`](proc_id.html)
-- [`ActorId`](actor_id.html)
-- [`PortId`](port_id.html)
+- `ProcAddr`
+- `ActorAddr`
+- `PortAddr`
 
 ## Use Cases
 
-- Used to represent references in a uniform way (e.g., CLI args, config, logs).
-- Returned by `.parse::<Reference>()` when parsing from string.
+- Used to represent references in a uniform way, such as CLI args, config, and logs.
+- Returned by `.parse::<Addr>()` when parsing from string.
 - Enables prefix-based comparisons for routing or scoping.
 - Can be converted `to`/`from` the concrete types via `From`.
 
@@ -10024,24 +9766,24 @@ Each variant wraps one of the concrete identifier types:
 From concrete types:
 
 ```
-use hyperactor::reference::{Reference, ActorId};
+use hyperactor::{ActorAddr, Addr};
 
-let actor_id = ...;
-let reference: Reference = actor_id.into();
+let actor_addr: ActorAddr = ...;
+let reference: Addr = actor_addr.into();
 ```
 
 From a string:
 
 ```
-let reference: Reference = "tcp:[::1]:1234,myproc,logger[1][42]".parse().unwrap();
+let reference: Addr = "logger.controller<2MuAHeDjLCEd>@tcp://[::1]:1234".parse().unwrap();
 ```
 
 You can match on the reference to access the underlying type:
 
 ```
 match reference {
- Reference::Actor(actor_id) => { /* ... */ }
- Reference::Port(port_id) => { /* ... */ }
+ Addr::Actor(actor_addr) => { /* ... */ }
+ Addr::Port(port_addr) => { /* ... */ }
  _ => {}
 }
 ```
@@ -10049,34 +9791,32 @@ match reference {
 ## Methods
 
 ```
-impl Reference {
- pub fn is_prefix_of(&self, other: &Reference) -> bool;
- pub fn proc_id(&self) -> Option<&ProcId>;
- pub fn actor_id(&self) -> Option<&ActorId>;
+impl Addr {
+ pub fn is_prefix_of(&self, other: &Addr) -> bool;
+ pub fn proc_addr(&self) -> ProcAddr;
 }
 ```
 
 - `.is_prefix_of(other)` checks whether one reference is a prefix of another (e.g., `Proc` -> `Actor` -> `Port`).
-- `.proc_id()` and `.actor_id()` return their corresponding IDs if applicable.
+- `.proc_addr()` returns the proc address containing the target.
 
 ## Ordering
 
-Reference implements a total order across all variants. Ordering is defined lexicographically:
+`Addr` implements a total order across all variants. Ordering is defined lexicographically:
 
 ```
-(proc_id, actor_name, pid, port)
+(proc_addr, actor_uid, port)
 ```
 
 This allows references to be used in sorted maps or for prefix-based routing schemes.
 
 ## Traits
 
-Reference implements:
+`Addr` implements:
 
 - `Display` -- formats to the same syntax accepted by `FromStr`
-- `FromStr` -- parses strings like `"tcp:[::1]:1234,myproc,actor[2][port]"`
+- `FromStr` -- parses strings like `"logger.controller<2MuAHeDjLCEd>@tcp://[::1]:1234"` and `"logger.controller<2MuAHeDjLCEd>:42@tcp://[::1]:1234"`
 - `Ord`, `Eq`, `Hash` -- useful in sorted/routed contexts
-- `Named` -- used for port assignment, reflection, and runtime dispatch
 
 ---
 
@@ -10089,14 +9829,16 @@ References in Hyperactor follow a uniform concrete syntax that can be written as
 The canonical string syntax supports hierarchical references, from procs down to ports:
 
 ```
-location := zmq URL
+location := via* zmq-url
+via := uid "."
 label := lowercase letter, then lowercase letters, digits, `-`, or `_`,
  ending in a lowercase letter or digit
 uid58 := base58(u64) using the Flickr alphabet:
  123456789abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ
+uid := label | "<" uid58 ">" | label "<" uid58 ">"
 
-proc-id := label | "<" uid58 ">" | label "<" uid58 ">"
-actor-part := label | "<" uid58 ">" | label "<" uid58 ">"
+proc-id := uid
+actor-part := uid
 actor-id := actor-part "." proc-id
 port-id := actor-id ":" decimal-port
 
@@ -10105,9 +9847,7 @@ actor-ref := actor-id "@" location
 port-ref := port-id "@" location
 ```
 
-Singletons are self-documenting and therefore use the bare `label` form.
-Instance ids use `<uid58>`, with an optional semantic label outside the brackets:
-`label<uid58>`.
+Singletons are self-documenting and therefore use the bare `label` form. Instance ids use `<uid58>`, with an optional semantic label outside the brackets: `label<uid58>`. A `Location` can also carry one or more `Via` hops before the terminal ZMQ-style URL, such as `client.host<7PDmJtQJB5S>.tcp://[::1]:1234`.
 
 These forms can be used wherever a reference is accepted as a string, such as
 command-line arguments, config files, and logs.
@@ -10124,23 +9864,23 @@ The parser is robust and fails clearly on invalid syntax.
 
 ## Runtime Parsing
 
-The `Reference` type implements `FromStr`, so you can parse strings into references:
+The `Addr` type implements `FromStr`, so you can parse strings into references:
 
 ```
-use hyperactor::reference::Reference;
+use hyperactor::Addr;
 
-let r: Reference = "worker.controller<2MuAHeDjLCEd>@tcp://[::1]:1234"
+let r: Addr = "worker.controller<2MuAHeDjLCEd>@tcp://[::1]:1234"
  .parse()
  .unwrap();
 ```
 
-It returns a strongly typed enum: `Reference::Proc`, `Reference::Actor`, `Reference::Port`.
+It returns a strongly typed enum: `Addr::Proc`, `Addr::Actor`, or `Addr::Port`.
 
 ---
 
 # Typed References
 
-Typed references are strongly typed wrappers over raw identifiers like `ActorId` and `PortId`. These types are used throughout hyperactor's APIs; as parameters in messages, return values from `bind()` methods, and elements in routing decisions. They make distributed communication safe, expressive, and statically checked.
+Typed references are strongly typed wrappers over addresses like `ActorAddr` and `PortAddr`. These types are used throughout hyperactor's APIs: as parameters in messages, return values from `bind()` methods, and elements in routing decisions. They make distributed communication safe, expressive, and statically checked.
 
 ## Overview
 
@@ -10159,10 +9899,10 @@ These types are used as parameters in messages, return values from bindings, and
 `ActorRef<A>` is a typed reference to an actor of type `A`. It provides a way to identify and address remote actors that implement `Referable`.
 
 ```
-let actor_ref: ActorRef<MyActor> = ActorRef::attest(actor_id);
+let actor_ref: ActorRef<MyActor> = ActorRef::attest(actor_addr);
 ```
 
-> **Note**: While `ActorRef::attest` can be used to construct a reference from an `ActorId`, it should generally be avoided. Instead, prefer using the `ActorRef` returned from `ActorHandle::bind()`, which guarantees that the actor is actually running and bound to a mailbox. `attest` is unsafe in the sense that it bypasses that guarantee.
+> **Note**: While `ActorRef::attest` can construct a reference from an `ActorAddr`, prefer the `ActorRef` returned from `ActorHandle::bind()`, which guarantees that the actor is running and has bound ports. `attest` bypasses that guarantee.
 
 > **Note**: The `Referable` trait only requires that `A` provides a static name via `Named`. It does not impose `Send` or `Sync` bounds--those are added at specific call sites that need them.
 
@@ -10173,12 +9913,12 @@ Unlike `ActorHandle<A>`, an `ActorRef` is just a reference -- it doesn't guarant
 ```
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ActorRef<A: Referable> {
- actor_id: ActorId,
+ actor_addr: ActorAddr,
  phantom: PhantomData<A>,
 }
 ```
 
-This type is a thin wrapper around an `ActorId`, with a phantom type `A` to track which actor it refers to. It ensures you can only send messages supported by the actor's declared `RemoteHandles`.
+This type is a thin wrapper around an `ActorAddr`, with a phantom type `A` to track which actor interface it refers to. It ensures you can only send messages supported by the actor's declared `RemoteHandles`.
 
 ## `PortRef<M>`
 
@@ -10194,17 +9934,18 @@ This allows the port to be sent across the network or passed into other messages
 ### Definition
 
 ```
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Hash, Ord)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Hash, Ord, Named)]
 pub struct PortRef<M> {
- port_id: PortId,
+ port_addr: PortAddr,
  reducer_spec: Option<ReducerSpec>,
  streaming_opts: StreamingReducerOpts,
  phantom: PhantomData<M>,
  return_undeliverable: bool,
+ unsplit: bool,
 }
 ```
 
-As with `ActorRef`, this is a typed wrapper around a raw identifier (`PortId`), carrying a phantom type for safety. It ensures that only messages of type `M` can be sent through this reference.
+As with `ActorRef`, this is a typed wrapper around an address (`PortAddr`), carrying a phantom type for safety. It ensures that only messages of type `M` can be sent through this reference.
 
 ## `OncePortRef<M>`
 
@@ -10220,14 +9961,17 @@ These are commonly used for request/response interactions, where a single reply 
 ### Definition
 
 ```
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct OncePortRef<M> {
- port_id: PortId,
+ port_addr: PortAddr,
+ reducer_spec: Option<ReducerSpec>,
+ return_undeliverable: bool,
+ unsplit: bool,
  phantom: PhantomData<M>,
 }
 ```
 
-This wraps a `PortId` with a phantom message type `M` for type safety. Internally, the system enforces one-time delivery semantics, ensuring the port is closed after receiving a single message.
+This wraps a `PortAddr` with a phantom message type `M` for type safety. Internally, the system enforces one-time delivery semantics, ensuring the port is closed after receiving a single message.
 
 ---
 
@@ -13288,7 +13032,7 @@ The agent is exported with exactly these handlers:
  resource::CreateOrUpdate<ProcSpec>,
  resource::Stop,
  resource::GetState<ProcState>,
- resource::GetRankStatus { cast = true },
+ resource::GetRankStatus,
  resource::List,
  ShutdownHost,
  ]
@@ -13367,7 +13111,6 @@ So right now:
 ```
 pub struct CreateOrUpdate<S> {
  pub name: Name,
- #[binding(include)]
  pub rank: Rank,
  pub spec: S,
 }
@@ -14072,7 +13815,7 @@ impl<T> PortHandle<T> {
 With these primitives, we can flexibly support all of the above communication patterns. For example:
 
 1. Simple RPC: we simply link the recipient actor, which subsequently does not modify linkage.
-2. Multicast: we link the root of the tree. Each node in turn rewrites (through bind/unbind) the ports to maintain a hierarchy of links. Link failure propagates through the hierarchy.
+2. Multicast: we link the root of the tree. Each node in turn rewrites typed multipart port parts to maintain a hierarchy of links. Link failure propagates through the hierarchy.
 
 ## Implementation
 
@@ -14523,14 +14266,11 @@ pub(crate) fn spawn(&mut self) -> PyResult<PyShared> {
  let traceback = self.traceback()?;
  let traceback1 = self.traceback()?;
  let task = self.take_task()?;
- let handle = get_tokio_runtime().spawn(async move {
+ get_tokio_runtime().spawn(async move {
  send_result(tx, task.await, traceback1);
  });
  Ok(PyShared {
- rx,
- handle,
- abort: false,
- traceback,
+ core: HandleCore::new(rx, None, traceback),
  })
 }
 ```
@@ -14541,7 +14281,7 @@ What that does:
 2. consume the underlying Rust future (`take_task()`);
 3. run that future on the shared Tokio runtime (`get_tokio_runtime().spawn(...)`);
 4. when it completes, push the result into the watch channel (`send_result(...)`);
-5. return a `PyShared` that holds the receiver and the join handle.
+5. return a `PyShared` wrapping a `HandleCore` (the watch receiver, the creation-site traceback, and - for `spawn_abortable` - an abort handle; plain `spawn` passes `None`, so its task is detached).
 
 So the Rust future is running in the background, and Python will wait on the receiver.
 
@@ -14553,14 +14293,11 @@ So the Rust future is running in the background, and Python will wait on the rec
  module = "monarch._rust_bindings.monarch_hyperactor.pytokio"
 )]
 pub struct PyShared {
- rx: watch::Receiver<Option<PyResult<PyObject>>>,
- handle: JoinHandle<()>,
- abort: bool,
- traceback: Option<PyObject>,
+ core: HandleCore,
 }
 ```
 
-Its `task()` / `__await__` path just waits for `rx.changed()` -- i.e. waits until the Rust side has written the result -- and then hands that result back to Python. If `abort` is `true`, dropping it will cancel the Tokio task.
+`PyShared` is a thin wrapper over `HandleCore` (defined in `handle.rs`), which holds the watch receiver, an optional abort handle, and the creation-site traceback. Its `task()` / `__await__` path waits for the core's watch value to become `Some` -- i.e. waits until the Rust side has written the result -- and then hands that result back to Python. `HandleCore` aborts the Tokio task on drop only when it was built with an abort handle (from `spawn_abortable`).
 
 If a spawned task errors and nobody awaits it, pytokio logs the error instead of silently dropping it. If you set `ENABLE_UNAWAITED_PYTHON_TASK_TRACEBACK=1`, it will also log where the task was created, which makes "why did this background thing fail?" a lot easier to answer.
 
@@ -16986,6 +16723,21 @@ actor mesh for distributed RL on Kubernetes (two heterogeneous meshes,
 replay-buffer actor, scorer actor, RDMA weight sync, async rollout /
 train).
 
+## Running the example on GKE
+
+Follow the instructions in [Allocate network resources by using GKE managed DRANET](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/allocate-network-resources-dra) to create a GKE cluster with RDMA enabled.
+**NOTE:** The gpus_per_generator must match the generator resource claim template device count in `resource_claim_templates.yaml`.
+
+```
+kubectl apply -f manifests/grpo_provision.yaml
+kubectl apply -f manifests/gke/resource_claim_templates.yaml
+kubectl wait --for=condition=Ready pod/grpo-controller -n monarch-tests
+kubectl cp kubernetes_grpo.py monarch-tests/grpo-controller:/tmp/kubernetes_grpo.py
+kubectl exec -it grpo-controller -n monarch-tests -- python /tmp/kubernetes_grpo.py --gpus_per_generator 3 --learner_resource_claim_template "learner-rdma" --generator_resource_claim_template "generator-rdma"
+kubectl delete -f manifests/gke/resource_claim_templates.yaml
+kubectl delete -f manifests/grpo_provision.yaml
+```
+
 ## Imports
 
 ```
@@ -17005,9 +16757,11 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from kubernetes.client import (
+ CoreV1ResourceClaim,
  V1Container,
  V1EmptyDirVolumeSource,
  V1EnvVar,
+ V1PodResourceClaim,
  V1PodSpec,
  V1PodTemplateSpec,
  V1Probe,
@@ -17713,7 +17467,9 @@ PIP_INSTALL = textwrap.dedent("""\
  ])
 """)
 
-def build_pod_template(gpus: int) -> V1PodTemplateSpec:
+def build_pod_template(
+ gpus: int, resource_claim_template: Optional[str] = None
+) -> V1PodTemplateSpec:
  """Shared pod template for learner and generator meshes.
 
  Prepends a pip-install prefix to the Monarch worker bootstrap so that
@@ -17732,6 +17488,7 @@ def build_pod_template(gpus: int) -> V1PodTemplateSpec:
  """
  bootstrap = PIP_INSTALL + _WORKER_BOOTSTRAP_SCRIPT
  resources = None
+ node_selector = None
  env = [
  V1EnvVar(name="MONARCH_PORT", value="26600"),
  # /tmp/hf_cache forces the Hugging Face cache onto
@@ -17744,11 +17501,22 @@ def build_pod_template(gpus: int) -> V1PodTemplateSpec:
  # hammer the HF Hub.
  V1EnvVar(name="HF_HOME", value="/tmp/hf_cache"),
  ]
+ resource_claims = []
+ claims = []
  if gpus > 0:
+ if resource_claim_template:
+ resource_claims = [
+ V1PodResourceClaim(
+ name="rdma", resource_claim_template_name=resource_claim_template
+ )
+ ]
+ claims = [CoreV1ResourceClaim(name="rdma")]
+
  gpu_resources = {"nvidia.com/gpu": str(gpus)}
  resources = V1ResourceRequirements(
  limits=gpu_resources,
  requests=gpu_resources,
+ claims=claims if claims else None,
  )
  env.insert(
  1,
@@ -17784,6 +17552,8 @@ def build_pod_template(gpus: int) -> V1PodTemplateSpec:
  ],
  )
  ],
+ node_selector=node_selector,
+ resource_claims=resource_claims if resource_claims else None,
  volumes=[
  V1Volume(
  name="dshm",
@@ -17832,6 +17602,8 @@ async def main(
  dataset_split: str,
  num_prompts: int,
  eval_size: int,
+ learner_resource_claim_template: Optional[str] = None,
+ generator_resource_claim_template: Optional[str] = None,
 ) -> None:
  """Run GRPO fine-tuning across the learner and generator meshes."""
  prompts = load_gsm8k_prompts(split=dataset_split, num_prompts=num_prompts)
@@ -17845,6 +17617,10 @@ async def main(
  print(f"Namespace: {namespace} | Training steps: {training_steps}")
  print(f"Dataset: openai/gsm8k[{dataset_split}] ({len(prompts)} prompts)")
  print(f"Eval: openai/gsm8k[test] ({len(eval_prompts)} prompts)")
+ if learner_resource_claim_template:
+ print(f"Learner Resource Claim Template: {learner_resource_claim_template}")
+ if generator_resource_claim_template:
+ print(f"Generator Resource Claim Template: {generator_resource_claim_template}")
  print("=" * 60)
 
  # 600s timeout lets the meshes finish cold-start pip install + model
@@ -17859,12 +17635,17 @@ async def main(
  k8s_job.add_mesh(
  "learner",
  num_replicas=1,
- pod_template=build_pod_template(gpus=2),
+ pod_template=build_pod_template(
+ gpus=2, resource_claim_template=learner_resource_claim_template
+ ),
  )
  k8s_job.add_mesh(
  "generator",
  num_replicas=num_generator_hosts,
- pod_template=build_pod_template(gpus=gpus_per_generator),
+ pod_template=build_pod_template(
+ gpus=gpus_per_generator,
+ resource_claim_template=generator_resource_claim_template,
+ ),
  )
 
  learner_mesh = None
@@ -18016,6 +17797,18 @@ if __name__ == "__main__":
  default=512,
  help="Number of held-out GSM8K test prompts used for eval.",
  )
+ parser.add_argument(
+ "--learner_resource_claim_template",
+ type=str,
+ default=None,
+ help="Name of the ResourceClaimTemplate for Learner RDMA (e.g. 'two-rdma')",
+ )
+ parser.add_argument(
+ "--generator_resource_claim_template",
+ type=str,
+ default=None,
+ help="Name of the ResourceClaimTemplate for Generator RDMA (e.g. 'two-rdma')",
+ )
  args = parser.parse_args()
  asyncio.run(
  main(
@@ -18027,6 +17820,8 @@ if __name__ == "__main__":
  dataset_split=args.dataset_split,
  num_prompts=args.num_prompts,
  eval_size=args.eval_size,
+ learner_resource_claim_template=args.learner_resource_claim_template,
+ generator_resource_claim_template=args.generator_resource_claim_template,
  )
  )
 ```
@@ -20075,7 +19870,6 @@ kubectl delete namespace monarch-tests
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | (unset) | Collector endpoint. When set, enables OTLP metric and log export. |
 | `OTEL_SERVICE_NAME` | `unknown_service` | Service name attached to all exported telemetry. |
 | `OTEL_METRIC_EXPORT_INTERVAL` | `1s` | How often the periodic metric reader pushes to the exporter. |
-| `USE_UNIFIED_LAYER` | `true` | Enables the unified tracing layer and OTLP log sink. Enabled by default. |
 | `ENABLE_OTEL_METRICS` | `true` | Set to `false` to disable OTel metrics entirely. |
 | `OTEL_EXPORTER_OTLP_HEADERS` | (unset) | Additional headers for the OTLP exporter (e.g., auth tokens). |
 | `OTEL_EXPORTER_OTLP_TIMEOUT` | (unset) | Timeout for OTLP export requests. |
@@ -20417,7 +20211,10 @@ fut = trainers.train.call(step=0)
 fut.get()
 ```
 
-Note: Monarch is currently only supported on Linux systems
+Note: Monarch runs on Linux and macOS.
+
+- The CPU-only tensor engine works on macOS and on Linux hosts without a GPU
+- GPU features require Linux with a supported GPU toolchain
 
 ## Getting Started
 
@@ -20464,9 +20261,11 @@ We welcome contributions from the community! If you're interested in contributin
 
 Before installing Monarch, ensure you have:
 
-- A Linux system (Monarch is currently only supported on Linux)
+- Linux or macOS.
+
+- The CPU-only tensor engine builds on both; GPU features require Linux with a supported GPU toolchain
 - Python 3.10 or later
-- CUDA-compatible GPU(s)
+- Optional: CUDA-compatible GPU(s) for distributed tensor and RDMA features
 - Basic familiarity with PyTorch
 
 See [README](https://github.com/meta-pytorch/monarch?tab=readme-ov-file#installation) for install instructions.
@@ -20502,8 +20301,8 @@ full DAG visualization.
 > **Note** -- The Monarch Dashboard is in early development and may change
 > significantly between releases.
 
-The dashboard is included in the `torchmonarch` PyPI package. When you call
-`start_telemetry(include_dashboard=True)`, it starts a local web server that
+The dashboard is included in the `torchmonarch` PyPI package. When a job enables
+`TelemetryConfig(include_dashboard=True)`, Monarch starts a local web server that
 serves the dashboard UI.
 
 ## Quick Start

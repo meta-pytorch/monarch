@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -16,7 +17,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="Python kickoff → Rust actors: High-level flow: Python ProcMesh boots and attaches a LoggingManager., On mesh init, Python asks Rust to spawn a logging stack via LoggingMeshClient.spawn(...)., Rust ..." />
 
-    <title>Logging &#8212; Monarch v0.5.0 documentation</title>
+    <title>Logging &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
+    <script src="../../../../_static/doctools.js"></script>
+    <script src="../../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../../_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-mesh-book/src/logging/overview';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-mesh-book/src/logging/overview.html" />
@@ -82,7 +83,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +197,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1293,11 +1294,11 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="logging">
-<h1>Logging<a class="headerlink" href="#logging" title="Link to this heading">#</a></h1>
+<h1>Logging<a class="headerlink" href="#logging" title="Permalink to this heading">#</a></h1>
 <section id="python-kickoff-rust-actors">
-<h2>Python kickoff → Rust actors<a class="headerlink" href="#python-kickoff-rust-actors" title="Link to this heading">#</a></h2>
+<h2>Python kickoff → Rust actors<a class="headerlink" href="#python-kickoff-rust-actors" title="Permalink to this heading">#</a></h2>
 <section id="high-level-flow">
-<h3>High-level flow<a class="headerlink" href="#high-level-flow" title="Link to this heading">#</a></h3>
+<h3>High-level flow<a class="headerlink" href="#high-level-flow" title="Permalink to this heading">#</a></h3>
 <ol class="arabic simple">
 <li><p>Python <code class="docutils literal notranslate"><span class="pre">ProcMesh</span></code> boots and attaches a <code class="docutils literal notranslate"><span class="pre">LoggingManager</span></code>.</p></li>
 <li><p>On mesh init, Python asks Rust to spawn a logging stack via <code class="docutils literal notranslate"><span class="pre">LoggingMeshClient.spawn(...)</span></code>.</p></li>
@@ -1312,21 +1313,21 @@ document.write(`
 </ol>
 </section>
 <section id="python-entry-point-procmesh-wires-up-logging">
-<h3>Python entry point: <code class="docutils literal notranslate"><span class="pre">ProcMesh</span></code> wires up logging<a class="headerlink" href="#python-entry-point-procmesh-wires-up-logging" title="Link to this heading">#</a></h3>
+<h3>Python entry point: <code class="docutils literal notranslate"><span class="pre">ProcMesh</span></code> wires up logging<a class="headerlink" href="#python-entry-point-procmesh-wires-up-logging" title="Permalink to this heading">#</a></h3>
 <p>When a <code class="docutils literal notranslate"><span class="pre">ProcMesh</span></code> is constructed from a <code class="docutils literal notranslate"><span class="pre">HostMesh</span></code>, it defers init then calls into the logging manager:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># proc_mesh.py</span>
-<span class="n">pm</span> <span class="o">=</span> <span class="n">ProcMesh</span><span class="p">(</span><span class="n">hy_proc_mesh</span><span class="p">,</span> <span class="n">host_mesh</span><span class="p">,</span> <span class="n">region</span><span class="p">,</span> <span class="n">region</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span># proc_mesh.py
+pm = ProcMesh(hy_proc_mesh, host_mesh, region, region, None)
 
-<span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">task</span><span class="p">(</span>
-    <span class="n">pm</span><span class="p">:</span> <span class="s2">&quot;ProcMesh&quot;</span><span class="p">,</span>
-    <span class="n">hy_proc_mesh_task</span><span class="p">:</span> <span class="s2">&quot;Shared[HyProcMesh]&quot;</span><span class="p">,</span>
-    <span class="n">setup_actor</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="s2">&quot;SetupActor&quot;</span><span class="p">],</span>
-    <span class="n">stream_log_to_client</span><span class="p">:</span> <span class="nb">bool</span><span class="p">,</span>
-<span class="p">)</span> <span class="err">→</span> <span class="n">HyProcMesh</span><span class="p">:</span>
-    <span class="n">hy_proc_mesh</span> <span class="o">=</span> <span class="k">await</span> <span class="n">hy_proc_mesh_task</span>
+async def task(
+    pm: &quot;ProcMesh&quot;,
+    hy_proc_mesh_task: &quot;Shared[HyProcMesh]&quot;,
+    setup_actor: Optional[&quot;SetupActor&quot;],
+    stream_log_to_client: bool,
+) → HyProcMesh:
+    hy_proc_mesh = await hy_proc_mesh_task
 
-    <span class="k">await</span> <span class="n">pm</span><span class="o">.</span><span class="n">_logging_manager</span><span class="o">.</span><span class="n">init</span><span class="p">(</span><span class="n">hy_proc_mesh</span><span class="p">,</span> <span class="n">stream_log_to_client</span><span class="p">)</span>
-    <span class="o">...</span>
+    await pm._logging_manager.init(hy_proc_mesh, stream_log_to_client)
+    ...
 </pre></div>
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">LoggingManager.init(...)</span></code> spawns the client:</p>
@@ -1352,7 +1353,7 @@ document.write(`
 </section>
 <hr class="docutils" />
 <section id="crossing-the-ffi-what-loggingmeshclient-spawn-does">
-<h3>Crossing the FFI: what <code class="docutils literal notranslate"><span class="pre">LoggingMeshClient.spawn(...)</span></code> does<a class="headerlink" href="#crossing-the-ffi-what-loggingmeshclient-spawn-does" title="Link to this heading">#</a></h3>
+<h3>Crossing the FFI: what <code class="docutils literal notranslate"><span class="pre">LoggingMeshClient.spawn(...)</span></code> does<a class="headerlink" href="#crossing-the-ffi-what-loggingmeshclient-spawn-does" title="Permalink to this heading">#</a></h3>
 <p>Rust sets up the three actor pieces the Python side depends on:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">LogClientActor</span></code> (in the client proc): orchestrates flushes and aggregates client-side buffering.</p></li>
@@ -1360,7 +1361,7 @@ document.write(`
 <li><p><code class="docutils literal notranslate"><span class="pre">LoggerRuntimeActor</span></code> mesh (on every proc): controls the Python logging subsystem (log levels, handlers, etc).</p></li>
 </ul>
 <section id="schematic-for-orientation">
-<h4>Schematic (for orientation)<a class="headerlink" href="#schematic-for-orientation" title="Link to this heading">#</a></h4>
+<h4>Schematic (for orientation)<a class="headerlink" href="#schematic-for-orientation" title="Permalink to this heading">#</a></h4>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// One local client actor, plus two per-proc meshes:</span>
 <span class="kd">let</span><span class="w"> </span><span class="n">client_actor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">instance</span><span class="p">.</span><span class="n">proc</span><span class="p">().</span><span class="n">spawn</span><span class="p">(</span><span class="s">&quot;log_client&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">()).</span><span class="k">await</span><span class="p">;</span>
 <span class="kd">let</span><span class="w"> </span><span class="n">client_actor_ref</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">client_actor</span><span class="p">.</span><span class="n">bind</span><span class="p">();</span>
@@ -1370,7 +1371,7 @@ document.write(`
 </div>
 </section>
 <section id="real-code-trimmed-to-essentials">
-<h4>Real code (trimmed to essentials)<a class="headerlink" href="#real-code-trimmed-to-essentials" title="Link to this heading">#</a></h4>
+<h4>Real code (trimmed to essentials)<a class="headerlink" href="#real-code-trimmed-to-essentials" title="Permalink to this heading">#</a></h4>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// monarch_hyperactor logging.rs</span>
 
 <span class="cp">#[pymethods]</span>
@@ -1416,7 +1417,7 @@ document.write(`
 </div>
 </section>
 <section id="what-to-notice">
-<h4>What to notice:<a class="headerlink" href="#what-to-notice" title="Link to this heading">#</a></h4>
+<h4>What to notice:<a class="headerlink" href="#what-to-notice" title="Permalink to this heading">#</a></h4>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">PyPythonTask::new(async</span> <span class="pre">move</span> <span class="pre">{...})</span></code>: bridges the Python call into Rust async, returning a task handle back to Python.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">instance_dispatch!</span></code>: executes the spawn on the correct actor instance context.</p></li>
@@ -1428,10 +1429,10 @@ document.write(`
 </section>
 <hr class="docutils" />
 <section id="control-surface-from-python-rust">
-<h3>Control surface from Python → Rust<a class="headerlink" href="#control-surface-from-python-rust" title="Link to this heading">#</a></h3>
+<h3>Control surface from Python → Rust<a class="headerlink" href="#control-surface-from-python-rust" title="Permalink to this heading">#</a></h3>
 </section>
 <section id="set-mode-stream-to-client-aggregate-window-sec-level">
-<h3><code class="docutils literal notranslate"><span class="pre">set_mode(stream_to_client,</span> <span class="pre">aggregate_window_sec_level)</span></code><a class="headerlink" href="#set-mode-stream-to-client-aggregate-window-sec-level" title="Link to this heading">#</a></h3>
+<h3><code class="docutils literal notranslate"><span class="pre">set_mode(stream_to_client,</span> <span class="pre">aggregate_window_sec_level)</span></code><a class="headerlink" href="#set-mode-stream-to-client-aggregate-window-sec-level" title="Permalink to this heading">#</a></h3>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// logging.rs (inside LoggingMeshClient::set_mode)</span>
 <span class="k">if</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="k">ref</span><span class="w"> </span><span class="n">forwarder_mesh</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">forwarder_mesh</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="n">forwarder_mesh</span>
@@ -1456,7 +1457,7 @@ document.write(`
 </section>
 <hr class="docutils" />
 <section id="sync-flush-barrier-flush">
-<h3>Sync flush barrier (<code class="docutils literal notranslate"><span class="pre">flush()</span></code>)<a class="headerlink" href="#sync-flush-barrier-flush" title="Link to this heading">#</a></h3>
+<h3>Sync flush barrier (<code class="docutils literal notranslate"><span class="pre">flush()</span></code>)<a class="headerlink" href="#sync-flush-barrier-flush" title="Permalink to this heading">#</a></h3>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// logging.rs</span>
 <span class="k">impl</span><span class="w"> </span><span class="n">LoggingMeshClient</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">flush_internal</span><span class="p">(</span>
@@ -1491,7 +1492,7 @@ document.write(`
 </section>
 <hr class="docutils" />
 <section id="teardown-client-side">
-<h3>Teardown (client-side)<a class="headerlink" href="#teardown-client-side" title="Link to this heading">#</a></h3>
+<h3>Teardown (client-side)<a class="headerlink" href="#teardown-client-side" title="Permalink to this heading">#</a></h3>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="w"> </span><span class="nb">Drop</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">LoggingMeshClient</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">drop</span><span class="p">(</span><span class="o">&amp;</span><span class="k">mut</span><span class="w"> </span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
 <span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="nb">Err</span><span class="p">(</span><span class="n">e</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">client_actor</span><span class="p">.</span><span class="n">drain_and_stop</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
@@ -1745,7 +1746,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>

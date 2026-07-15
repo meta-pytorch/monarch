@@ -1,13 +1,14 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>monarch._src.spmd.actor &#8212; Monarch v0.5.0 documentation</title>
+    <title>monarch._src.spmd.actor &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -27,37 +28,31 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
-    <script type="module" src="https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs"></script>
-    <script type="module" src="https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0.1.4/dist/mermaid-layout-elk.esm.min.mjs"></script>
-    <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs";import elkLayouts from "https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0.1.4/dist/mermaid-layout-elk.esm.min.mjs";mermaid.registerLayoutLoaders(elkLayouts);mermaid.initialize({startOnLoad:false});</script>
-    <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
-    <script type="module">
-import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs";
-window.addEventListener("load", () => mermaid.run());
-</script>
+    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
+    <script src="../../../../_static/doctools.js"></script>
+    <script src="../../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../../_static/design-tabs.js"></script>
+    <script src="https://unpkg.com/mermaid@10.2.0/dist/mermaid.min.js"></script>
+    <script>mermaid.initialize({startOnLoad:true});</script>
     <script>DOCUMENTATION_OPTIONS.pagename = '_modules/monarch/_src/spmd/actor';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/_modules/monarch/_src/spmd/actor.html" />
@@ -81,7 +76,7 @@ window.addEventListener("load", () => mermaid.run());
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -195,7 +190,7 @@ window.addEventListener("load", () => mermaid.run());
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1334,9 +1329,7 @@ document.write(`
         <span class="k">return</span> <span class="n">port</span>
 
 
-<div class="viewcode-block" id="SPMDActor">
-<a class="viewcode-back" href="../../../../api/monarch.spmd.html#monarch.spmd.SPMDActor">[docs]</a>
-<span class="k">class</span><span class="w"> </span><span class="nc">SPMDActor</span><span class="p">(</span><span class="n">Actor</span><span class="p">):</span>
+<div class="viewcode-block" id="SPMDActor"><a class="viewcode-back" href="../../../../api/monarch.spmd.html#monarch.spmd.SPMDActor">[docs]</a><span class="k">class</span><span class="w"> </span><span class="nc">SPMDActor</span><span class="p">(</span><span class="n">Actor</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">    Actor that sets up PyTorch distibuted.run training environment variables and</span>
 <span class="sd">    executes SPMD training scripts.</span>
@@ -1459,7 +1452,6 @@ document.write(`
             <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;No script or module specified&quot;</span><span class="p">)</span>
 
         <span class="k">return</span> <span class="kc">True</span></div>
-
 </pre></div>
 
                 </article>
@@ -1612,7 +1604,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>
@@ -1641,7 +1633,7 @@ document.write(`
        "headline": "monarch._src.spmd.actor",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/_modules/monarch/_src/spmd/actor.html",
-       "articleBody": "Source code for monarch._src.spmd.actor # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-strict import math import os import runpy import socket import sys from typing import Optional from monarch._src.actor.actor_mesh import Actor, current_rank, current_size from monarch._src.actor.endpoint import endpoint from monarch.tools.network import AddrType, get_ipaddr def _find_free_port() -\u003e int: with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s: s.bind((\"localhost\", 0)) addr = s.getsockname() port = addr[1] return port [docs] class SPMDActor(Actor): \"\"\" Actor that sets up PyTorch distibuted.run training environment variables and executes SPMD training scripts. This actor replicates torchrun\u0027s behavior by configuring environment variables (see https://docs.pytorch.org/docs/stable/elastic/run.html#environment-variables) for PyTorch distributed training including RANK, WORLD_SIZE, LOCAL_RANK, LOCAL_WORLD_SIZE, GROUP_RANK, GROUP_WORLD_SIZE, ROLE_RANK, ROLE_WORLD_SIZE, ROLE_NAME, MASTER_ADDR, and MASTER_PORT before launching the training script. All rank and mesh information is automatically derived from current_rank(). Example:: from monarch.spmd import SPMDActor # Spawn SPMDActor on the process mesh spmd_actors = proc_mesh.spawn(\"_SPMDActor\", SPMDActor) # Get master address/port from first actor first_values = dict.fromkeys(proc_mesh._labels, 0) master_addr, master_port = spmd_actors.slice(**first_values).get_host_port.call_one(None).get() # Execute training script across the mesh spmd_actors.main.call(master_addr, master_port, [\"-m\", \"train\", \"--lr\", \"0.001\"]).get() For custom client code that uses torch.distributed directly:: from monarch.actor import this_host from monarch.spmd import setup_torch_elastic_env # Create a process mesh with 2 GPUs per host proc_mesh = this_host().spawn_procs(per_host={\"gpus\": 2}) # Set up torch elastic environment (spawns SPMDActor internally) setup_torch_elastic_env(proc_mesh) # ... rest of custom client code \"\"\" def __init__( self, ) -\u003e None: super().__init__() point = current_rank() gpu_dim = point.extent.labels[-1] # Typically \"gpus\" sizes = current_size() # Returns dict: {\"hosts\": N, \"gpus\": M, ...} self.local_rank: int = point[gpu_dim] # LOCAL_RANK self.rank: int = point.rank # RANK (global) self.nproc_per_node: int = sizes[gpu_dim] # Number of GPUs per host self.world_size: int = math.prod(sizes.values()) self.local_world_size: int = sizes[gpu_dim] self.group_rank: int = self.rank // self.local_world_size self.group_world_size: int = ( self.world_size + self.local_world_size - 1 ) // self.local_world_size def _setup_env(self, master_addr: str, master_port: int) -\u003e None: os.environ.update( { \"MASTER_ADDR\": master_addr, \"MASTER_PORT\": str(master_port), \"RANK\": str(self.rank), \"LOCAL_RANK\": str(self.local_rank), \"LOCAL_WORLD_SIZE\": str(self.local_world_size), \"GROUP_RANK\": str(self.group_rank), \"GROUP_WORLD_SIZE\": str(self.group_world_size), \"ROLE_RANK\": str(self.rank), \"ROLE_WORLD_SIZE\": str(self.world_size), \"ROLE_NAME\": \"rank\", \"WORLD_SIZE\": str(self.world_size), } ) @endpoint def get_host_port(self, use_ipaddr: Optional[AddrType]) -\u003e tuple[str, int]: hostname = socket.gethostname() port = _find_free_port() if use_ipaddr is None: return (hostname, port) ipaddr = get_ipaddr(hostname, port, use_ipaddr) return (ipaddr, port) @endpoint def setup_env(self, master_addr: str, master_port: int) -\u003e None: \"\"\" Set up distributed training environment variables. \"\"\" self._setup_env(master_addr, master_port) @endpoint def main(self, master_addr: str, master_port: int, script_args: list[str]) -\u003e bool: \"\"\" Set up distributed training environment and execute the training script. Args: master_addr: Master node address for distributed training master_port: Master node port for distributed training script_args: Arguments for the training script. First element is either \"-m\" (for module execution) or the script path, followed by script arguments. Returns: True on successful execution. Raises: ValueError: If no script or module specified. \"\"\" self._setup_env(master_addr, master_port) if script_args and script_args[0] == \"-m\": module_name = script_args[1] sys.argv = [module_name] + list(script_args[2:]) runpy.run_module(module_name, run_name=\"__main__\", alter_sys=True) elif script_args: script_path = script_args[0] sys.argv = list(script_args) runpy.run_path(script_path, run_name=\"__main__\") else: raise ValueError(\"No script or module specified\") return True",
+       "articleBody": "Source code for monarch._src.spmd.actor # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-strict import math import os import runpy import socket import sys from typing import Optional from monarch._src.actor.actor_mesh import Actor, current_rank, current_size from monarch._src.actor.endpoint import endpoint from monarch.tools.network import AddrType, get_ipaddr def _find_free_port() -\u003e int: with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s: s.bind((\"localhost\", 0)) addr = s.getsockname() port = addr[1] return port [docs]class SPMDActor(Actor): \"\"\" Actor that sets up PyTorch distibuted.run training environment variables and executes SPMD training scripts. This actor replicates torchrun\u0027s behavior by configuring environment variables (see https://docs.pytorch.org/docs/stable/elastic/run.html#environment-variables) for PyTorch distributed training including RANK, WORLD_SIZE, LOCAL_RANK, LOCAL_WORLD_SIZE, GROUP_RANK, GROUP_WORLD_SIZE, ROLE_RANK, ROLE_WORLD_SIZE, ROLE_NAME, MASTER_ADDR, and MASTER_PORT before launching the training script. All rank and mesh information is automatically derived from current_rank(). Example:: from monarch.spmd import SPMDActor # Spawn SPMDActor on the process mesh spmd_actors = proc_mesh.spawn(\"_SPMDActor\", SPMDActor) # Get master address/port from first actor first_values = dict.fromkeys(proc_mesh._labels, 0) master_addr, master_port = spmd_actors.slice(**first_values).get_host_port.call_one(None).get() # Execute training script across the mesh spmd_actors.main.call(master_addr, master_port, [\"-m\", \"train\", \"--lr\", \"0.001\"]).get() For custom client code that uses torch.distributed directly:: from monarch.actor import this_host from monarch.spmd import setup_torch_elastic_env # Create a process mesh with 2 GPUs per host proc_mesh = this_host().spawn_procs(per_host={\"gpus\": 2}) # Set up torch elastic environment (spawns SPMDActor internally) setup_torch_elastic_env(proc_mesh) # ... rest of custom client code \"\"\" def __init__( self, ) -\u003e None: super().__init__() point = current_rank() gpu_dim = point.extent.labels[-1] # Typically \"gpus\" sizes = current_size() # Returns dict: {\"hosts\": N, \"gpus\": M, ...} self.local_rank: int = point[gpu_dim] # LOCAL_RANK self.rank: int = point.rank # RANK (global) self.nproc_per_node: int = sizes[gpu_dim] # Number of GPUs per host self.world_size: int = math.prod(sizes.values()) self.local_world_size: int = sizes[gpu_dim] self.group_rank: int = self.rank // self.local_world_size self.group_world_size: int = ( self.world_size + self.local_world_size - 1 ) // self.local_world_size def _setup_env(self, master_addr: str, master_port: int) -\u003e None: os.environ.update( { \"MASTER_ADDR\": master_addr, \"MASTER_PORT\": str(master_port), \"RANK\": str(self.rank), \"LOCAL_RANK\": str(self.local_rank), \"LOCAL_WORLD_SIZE\": str(self.local_world_size), \"GROUP_RANK\": str(self.group_rank), \"GROUP_WORLD_SIZE\": str(self.group_world_size), \"ROLE_RANK\": str(self.rank), \"ROLE_WORLD_SIZE\": str(self.world_size), \"ROLE_NAME\": \"rank\", \"WORLD_SIZE\": str(self.world_size), } ) @endpoint def get_host_port(self, use_ipaddr: Optional[AddrType]) -\u003e tuple[str, int]: hostname = socket.gethostname() port = _find_free_port() if use_ipaddr is None: return (hostname, port) ipaddr = get_ipaddr(hostname, port, use_ipaddr) return (ipaddr, port) @endpoint def setup_env(self, master_addr: str, master_port: int) -\u003e None: \"\"\" Set up distributed training environment variables. \"\"\" self._setup_env(master_addr, master_port) @endpoint def main(self, master_addr: str, master_port: int, script_args: list[str]) -\u003e bool: \"\"\" Set up distributed training environment and execute the training script. Args: master_addr: Master node address for distributed training master_port: Master node port for distributed training script_args: Arguments for the training script. First element is either \"-m\" (for module execution) or the script path, followed by script arguments. Returns: True on successful execution. Raises: ValueError: If no script or module specified. \"\"\" self._setup_env(master_addr, master_port) if script_args and script_args[0] == \"-m\": module_name = script_args[1] sys.argv = [module_name] + list(script_args[2:]) runpy.run_module(module_name, run_name=\"__main__\", alter_sys=True) elif script_args: script_path = script_args[0] sys.argv = list(script_args) runpy.run_path(script_path, run_name=\"__main__\") else: raise ValueError(\"No script or module specified\") return True",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

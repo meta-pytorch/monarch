@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["Addr","AddrParseError"],"struct":["ActorAddr","Location","PortAddr","ProcAddr"]};
+window.SIDEBAR_ITEMS = {"enum":["Addr","AddrParseError","Location"],"struct":["ActorAddr","PortAddr","ProcAddr"]};

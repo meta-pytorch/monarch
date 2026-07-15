@@ -83,8 +83,7 @@ enable_dest_actor_reordering_buffer: Enable reordering buffer in dest actor.
 - **configuration** - mesh_bootstrap_enable_pdeathsig: Enable parent-death signal for spawned processes.
 mesh_terminate_concurrency: Maximum concurrent terminations during shutdown.
 mesh_terminate_timeout: Timeout per child during graceful termination (humantime).
-- **buffering** (*Runtime and*) - shared_asyncio_runtime: Share asyncio runtime across actors.
-small_write_threshold: Threshold below which writes are copied (bytes).
+- **buffering** (*Runtime and*) - small_write_threshold: Threshold below which writes are copied (bytes).
 - **configuration** - max_cast_dimension_size: Maximum dimension size for cast operations.
 - **allocation** (*Remote*) - remote_alloc_bind_to_inaddr_any: Bind remote allocators to INADDR_ANY.
 remote_alloc_bootstrap_addr: Bootstrap address for remote allocators.
@@ -579,14 +578,6 @@ Maximum concurrent terminations during mesh shutdown.
 
 ## Runtime and Buffering
 
-`shared_asyncio_runtime`
-
-Share asyncio runtime across actors.
-
-- **Type**: `bool`
-- **Default**: `False`
-- **Environment**: `MONARCH_HYPERACTOR_SHARED_ASYNCIO_RUNTIME`
-
 `small_write_threshold`
 
 Threshold below which writes are copied (in bytes).
@@ -605,7 +596,7 @@ Writes at or above this size are stored as zero-copy references.
 Enable queue-based dispatch for actor message handling.
 
 - **Type**: `bool`
-- **Default**: `False`
+- **Default**: `True`
 - **Environment**: `HYPERACTOR_ACTOR_QUEUE_DISPATCH`
 
 When `True`, actor messages are dispatched through a queue rather than

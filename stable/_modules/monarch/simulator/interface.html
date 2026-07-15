@@ -1,13 +1,14 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>monarch.simulator.interface &#8212; Monarch v0.5.0 documentation</title>
+    <title>monarch.simulator.interface &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -27,37 +28,31 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../_static/design-tabs.js?v=f930bc37"></script>
-    <script type="module" src="https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs"></script>
-    <script type="module" src="https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0.1.4/dist/mermaid-layout-elk.esm.min.mjs"></script>
-    <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs";import elkLayouts from "https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0.1.4/dist/mermaid-layout-elk.esm.min.mjs";mermaid.registerLayoutLoaders(elkLayouts);mermaid.initialize({startOnLoad:false});</script>
-    <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
-    <script type="module">
-import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs";
-window.addEventListener("load", () => mermaid.run());
-</script>
+    <script data-url_root="../../../" id="documentation_options" src="../../../_static/documentation_options.js"></script>
+    <script src="../../../_static/doctools.js"></script>
+    <script src="../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../_static/design-tabs.js"></script>
+    <script src="https://unpkg.com/mermaid@10.2.0/dist/mermaid.min.js"></script>
+    <script>mermaid.initialize({startOnLoad:true});</script>
     <script>DOCUMENTATION_OPTIONS.pagename = '_modules/monarch/simulator/interface';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/_modules/monarch/simulator/interface.html" />
@@ -81,7 +76,7 @@ window.addEventListener("load", () => mermaid.run());
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -195,7 +190,7 @@ window.addEventListener("load", () => mermaid.run());
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1319,9 +1314,7 @@ document.write(`
 <span class="p">)</span>
 
 
-<div class="viewcode-block" id="Simulator">
-<a class="viewcode-back" href="../../../api/monarch.html#monarch.Simulator">[docs]</a>
-<span class="k">def</span><span class="w"> </span><span class="nf">Simulator</span><span class="p">(</span>
+<div class="viewcode-block" id="Simulator"><a class="viewcode-back" href="../../../api/monarch.html#monarch.Simulator">[docs]</a><span class="k">def</span><span class="w"> </span><span class="nf">Simulator</span><span class="p">(</span>
     <span class="n">hosts</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
     <span class="n">gpus</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
@@ -1359,7 +1352,6 @@ document.write(`
 
     <span class="n">dm</span><span class="o">.</span><span class="n">exit</span> <span class="o">=</span> <span class="k">lambda</span><span class="p">:</span> <span class="n">client</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span>
     <span class="k">return</span> <span class="n">SimulatorInterface</span><span class="p">(</span><span class="n">dm</span><span class="p">,</span> <span class="n">ctrl</span><span class="p">,</span> <span class="n">ir</span><span class="p">)</span></div>
-
 </pre></div>
 
                 </article>
@@ -1512,7 +1504,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>
@@ -1541,7 +1533,7 @@ document.write(`
        "headline": "monarch.simulator.interface",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/_modules/monarch/simulator/interface.html",
-       "articleBody": "Source code for monarch.simulator.interface # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-unsafe from typing import Union from monarch._src.actor.shape import NDSlice from monarch.common.client import Client as _Client from monarch.common.device_mesh import DeviceMesh from monarch.simulator.ir import IRGraph from monarch.simulator.simulator import ( SimulatorBackendMode, SimulatorController as _SimulatorController, SimulatorInterface, SimulatorTraceMode, ) [docs] def Simulator( hosts: int, gpus: int, *, simulate_mode: Union[\"str\", SimulatorBackendMode] = SimulatorBackendMode.SIMULATE, trace_mode: Union[\"str\", SimulatorTraceMode] = SimulatorTraceMode.STREAM_ONLY, upload_trace: bool = False, trace_path: str = \"trace.json\", command_history_path: str = \"command_history.pkl\", group_workers: bool = False, build_ir: bool = False, ) -\u003e \"SimulatorInterface\": if isinstance(simulate_mode, str): simulate_mode = getattr(SimulatorBackendMode, simulate_mode.upper()) if isinstance(trace_mode, str): trace_mode = getattr(SimulatorTraceMode, trace_mode.upper()) ir = IRGraph() if build_ir else None ctrl = _SimulatorController( hosts * gpus, gpu_per_host=gpus, simulate_mode=simulate_mode, trace_mode=trace_mode, upload_trace=upload_trace, trace_path=trace_path, command_history_path=command_history_path, group_workers=group_workers, ir=ir, ) client = _Client(ctrl, ctrl.world_size, ctrl.gpu_per_host) dm = DeviceMesh( client, NDSlice(offset=0, sizes=[hosts, gpus], strides=[gpus, 1]), (\"host\", \"gpu\"), ) dm.exit = lambda: client.shutdown() return SimulatorInterface(dm, ctrl, ir)",
+       "articleBody": "Source code for monarch.simulator.interface # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-unsafe from typing import Union from monarch._src.actor.shape import NDSlice from monarch.common.client import Client as _Client from monarch.common.device_mesh import DeviceMesh from monarch.simulator.ir import IRGraph from monarch.simulator.simulator import ( SimulatorBackendMode, SimulatorController as _SimulatorController, SimulatorInterface, SimulatorTraceMode, ) [docs]def Simulator( hosts: int, gpus: int, *, simulate_mode: Union[\"str\", SimulatorBackendMode] = SimulatorBackendMode.SIMULATE, trace_mode: Union[\"str\", SimulatorTraceMode] = SimulatorTraceMode.STREAM_ONLY, upload_trace: bool = False, trace_path: str = \"trace.json\", command_history_path: str = \"command_history.pkl\", group_workers: bool = False, build_ir: bool = False, ) -\u003e \"SimulatorInterface\": if isinstance(simulate_mode, str): simulate_mode = getattr(SimulatorBackendMode, simulate_mode.upper()) if isinstance(trace_mode, str): trace_mode = getattr(SimulatorTraceMode, trace_mode.upper()) ir = IRGraph() if build_ir else None ctrl = _SimulatorController( hosts * gpus, gpu_per_host=gpus, simulate_mode=simulate_mode, trace_mode=trace_mode, upload_trace=upload_trace, trace_path=trace_path, command_history_path=command_history_path, group_workers=group_workers, ir=ir, ) client = _Client(ctrl, ctrl.world_size, ctrl.gpu_per_host) dm = DeviceMesh( client, NDSlice(offset=0, sizes=[hosts, gpus], strides=[gpus, 1]), (\"host\", \"gpu\"), ) dm.exit = lambda: client.shutdown() return SimulatorInterface(dm, ctrl, ir)",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

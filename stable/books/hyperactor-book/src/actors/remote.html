@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -16,7 +17,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="The hyperactor::actor::remote module provides the process-local registry for remote-spawnable actors. It is the counterpart to RemoteSpawn: given actor types that implement RemoteSpawn and are regi..." />
 
-    <title>Remote Registry &#8212; Monarch v0.5.0 documentation</title>
+    <title>Remote Registry &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
+    <script src="../../../../_static/doctools.js"></script>
+    <script src="../../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../../_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-book/src/actors/remote';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/actors/remote.html" />
@@ -82,7 +83,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +197,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1293,10 +1294,10 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="remote-registry">
-<h1>Remote Registry<a class="headerlink" href="#remote-registry" title="Link to this heading">#</a></h1>
+<h1>Remote Registry<a class="headerlink" href="#remote-registry" title="Permalink to this heading">#</a></h1>
 <p>The <code class="docutils literal notranslate"><span class="pre">hyperactor::actor::remote</span></code> module provides the process-local registry for remote-spawnable actors. It is the counterpart to <code class="docutils literal notranslate"><span class="pre">RemoteSpawn</span></code>: given actor types that implement <code class="docutils literal notranslate"><span class="pre">RemoteSpawn</span></code> and are registered with <code class="docutils literal notranslate"><span class="pre">#[spawnable]</span></code> or <code class="docutils literal notranslate"><span class="pre">register_spawnable!(...)</span></code>, this module discovers them at runtime and allows actors to be spawned by their global type name. The implementation uses the <a class="reference external" href="https://docs.rs/inventory/0.3.21/inventory/index.html"><code class="docutils literal notranslate"><span class="pre">inventory</span></code></a> crate to collect registrations contributed from any crate linked into the application.</p>
 <section id="registration-model-and-spawnable-registration">
-<h2>Registration model and spawnable registration<a class="headerlink" href="#registration-model-and-spawnable-registration" title="Link to this heading">#</a></h2>
+<h2>Registration model and spawnable registration<a class="headerlink" href="#registration-model-and-spawnable-registration" title="Permalink to this heading">#</a></h2>
 <p>Remote-spawnable actors are registered using either the <code class="docutils literal notranslate"><span class="pre">#[spawnable]</span></code> attribute or the <code class="docutils literal notranslate"><span class="pre">register_spawnable!</span></code> macro. Given an actor type that implements <a class="reference internal" href="remote_spawn.html"><span class="std std-doc"><code class="docutils literal notranslate"><span class="pre">RemoteSpawn</span></code></span></a> and <code class="docutils literal notranslate"><span class="pre">Named</span></code>, either form arranges for a <code class="docutils literal notranslate"><span class="pre">SpawnableActor</span></code> record to be submitted to a global registry using the <a class="reference external" href="https://docs.rs/inventory/0.3.21/inventory/index.html"><code class="docutils literal notranslate"><span class="pre">inventory</span></code></a> crate.</p>
 <p>In idiomatic use:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="cp">#[derive(Debug)]</span>
@@ -1342,7 +1343,7 @@ document.write(`
 <p>At runtime, the <code class="docutils literal notranslate"><span class="pre">Remote</span></code> registry (described below) discovers all such submissions via <code class="docutils literal notranslate"><span class="pre">inventory::iter::&lt;SpawnableActor&gt;</span></code> and makes them available for lookup and spawning by global type name.</p>
 </section>
 <section id="spawnableactor-registration-records">
-<h2><code class="docutils literal notranslate"><span class="pre">SpawnableActor</span></code>: registration records<a class="headerlink" href="#spawnableactor-registration-records" title="Link to this heading">#</a></h2>
+<h2><code class="docutils literal notranslate"><span class="pre">SpawnableActor</span></code>: registration records<a class="headerlink" href="#spawnableactor-registration-records" title="Permalink to this heading">#</a></h2>
 <p>A <code class="docutils literal notranslate"><span class="pre">SpawnableActor</span></code> is the type-erased registration record produced by <code class="docutils literal notranslate"><span class="pre">#[spawnable]</span></code> or <code class="docutils literal notranslate"><span class="pre">register_spawnable!(...)</span></code>. Each remotely spawnable actor type contributes exactly one of these records to the process. The registry discovers them at runtime and uses them to look up actors by global type name and to invoke their type-erased constructor.</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="cp">#[derive(Debug)]</span>
 <span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">SpawnableActor</span><span class="w"> </span><span class="p">{</span>
@@ -1372,7 +1373,7 @@ document.write(`
 <p>In both cases, the registration step can safely plug <code class="docutils literal notranslate"><span class="pre">&lt;MyActor</span> <span class="pre">as</span> <span class="pre">RemoteSpawn&gt;::gspawn</span></code> into the <code class="docutils literal notranslate"><span class="pre">SpawnableActor</span></code> record it generates.</p>
 </section>
 <section id="the-remote-registry">
-<h2>The <code class="docutils literal notranslate"><span class="pre">Remote</span></code> registry<a class="headerlink" href="#the-remote-registry" title="Link to this heading">#</a></h2>
+<h2>The <code class="docutils literal notranslate"><span class="pre">Remote</span></code> registry<a class="headerlink" href="#the-remote-registry" title="Permalink to this heading">#</a></h2>
 <p>The <code class="docutils literal notranslate"><span class="pre">Remote</span></code> type is the process-local registry of remote-spawnable actors. It is built from all <code class="docutils literal notranslate"><span class="pre">SpawnableActor</span></code> records submitted via <code class="docutils literal notranslate"><span class="pre">#[spawnable]</span></code> and <code class="docutils literal notranslate"><span class="pre">register_spawnable!(...)</span></code> and exposed through two lookups: by global type name and by <code class="docutils literal notranslate"><span class="pre">TypeId</span></code>.</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="cp">#[derive(Debug)]</span>
 <span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">Remote</span><span class="w"> </span><span class="p">{</span>
@@ -1387,7 +1388,7 @@ document.write(`
 </ul>
 <p>This is why the registry maintains two maps: one keyed by <code class="docutils literal notranslate"><span class="pre">TypeId</span></code> for caller-side APIs that start from a Rust type, and one keyed by string name for remote services that start from a serialized request.</p>
 <section id="building-the-registry-remote-collect">
-<h3>Building the registry: <code class="docutils literal notranslate"><span class="pre">Remote::collect</span></code><a class="headerlink" href="#building-the-registry-remote-collect" title="Link to this heading">#</a></h3>
+<h3>Building the registry: <code class="docutils literal notranslate"><span class="pre">Remote::collect</span></code><a class="headerlink" href="#building-the-registry-remote-collect" title="Permalink to this heading">#</a></h3>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="w"> </span><span class="n">Remote</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">collect</span><span class="p">()</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Self</span><span class="w"> </span><span class="p">{</span>
 <span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">by_name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">HashMap</span><span class="p">::</span><span class="n">new</span><span class="p">();</span>
@@ -1418,7 +1419,7 @@ document.write(`
 <p>The result is a process-local view of all remote-spawnable actors; callers are free to construct this registry once and reuse it or to rebuild it on demand, depending on their needs.</p>
 </section>
 <section id="looking-up-names-remote-name-of">
-<h3>Looking up names: <code class="docutils literal notranslate"><span class="pre">Remote::name_of</span></code><a class="headerlink" href="#looking-up-names-remote-name-of" title="Link to this heading">#</a></h3>
+<h3>Looking up names: <code class="docutils literal notranslate"><span class="pre">Remote::name_of</span></code><a class="headerlink" href="#looking-up-names-remote-name-of" title="Permalink to this heading">#</a></h3>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="w"> </span><span class="n">Remote</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">name_of</span><span class="o">&lt;</span><span class="n">A</span><span class="p">:</span><span class="w"> </span><span class="nc">Actor</span><span class="o">&gt;</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Option</span><span class="o">&lt;&amp;&#39;</span><span class="nb">static</span><span class="w"> </span><span class="kt">str</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
 <span class="w">        </span><span class="bp">self</span><span class="p">.</span><span class="n">by_type_id</span>
@@ -1469,7 +1470,7 @@ document.write(`
 <p>Here the caller begins with the Rust type <code class="docutils literal notranslate"><span class="pre">A</span></code> and uses <code class="docutils literal notranslate"><span class="pre">name_of::&lt;A&gt;()</span></code> to obtain the global name that will be sent to the remote <code class="docutils literal notranslate"><span class="pre">Proc</span></code>. On the receiving side, the registry takes the global type name string, resolves it to a <code class="docutils literal notranslate"><span class="pre">SpawnableActor</span></code>, and then invokes that entry’s <code class="docutils literal notranslate"><span class="pre">gspawn</span></code> function to construct the actor.</p>
 </section>
 <section id="spawning-by-name-remote-gspawn">
-<h3>Spawning by name: <code class="docutils literal notranslate"><span class="pre">Remote::gspawn</span></code><a class="headerlink" href="#spawning-by-name-remote-gspawn" title="Link to this heading">#</a></h3>
+<h3>Spawning by name: <code class="docutils literal notranslate"><span class="pre">Remote::gspawn</span></code><a class="headerlink" href="#spawning-by-name-remote-gspawn" title="Permalink to this heading">#</a></h3>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="w"> </span><span class="n">Remote</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">gspawn</span><span class="p">(</span>
 <span class="w">        </span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span>
@@ -1501,7 +1502,7 @@ document.write(`
 </section>
 </section>
 <section id="putting-it-together">
-<h2>Putting it together<a class="headerlink" href="#putting-it-together" title="Link to this heading">#</a></h2>
+<h2>Putting it together<a class="headerlink" href="#putting-it-together" title="Permalink to this heading">#</a></h2>
 <p>Remote spawning in hyperactor involves two complementary pieces:</p>
 <ol class="arabic simple">
 <li><p><strong>Type-level registration</strong> Each <code class="docutils literal notranslate"><span class="pre">A:</span> <span class="pre">RemoteSpawn</span></code> contributes a <code class="docutils literal notranslate"><span class="pre">SpawnableActor</span></code> record when the user writes <code class="docutils literal notranslate"><span class="pre">#[spawnable]</span></code> on a concrete actor declaration or <code class="docutils literal notranslate"><span class="pre">register_spawnable!(A)</span></code> for a concrete instantiation. These records are collected at runtime by <code class="docutils literal notranslate"><span class="pre">Remote::collect()</span></code>.</p></li>
@@ -1758,7 +1759,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>

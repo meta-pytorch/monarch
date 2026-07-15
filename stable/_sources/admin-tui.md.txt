@@ -23,7 +23,7 @@ python python/examples/dining_philosophers.py
 
 The example prints the admin server address on startup:
 
-```
+```text
 Mesh admin server listening on http://127.0.0.1:1729
 ```
 
@@ -97,7 +97,7 @@ calls.
 
 ## CLI Options
 
-```
+```text
 monarch-tui [OPTIONS] --addr <ADDR>
 ```
 

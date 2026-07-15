@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -16,7 +17,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="The monarch.spmd module provides primitives for running torchrun-style SPMD (Single Program Multiple Data) distributed training scripts over Monarch actor meshes. It bridges PyTorch distributed tra..." />
 
-    <title>monarch.spmd &#8212; Monarch v0.5.0 documentation</title>
+    <title>monarch.spmd &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../_static/doctools.js?v=888ff710"></script>
-    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="../" id="documentation_options" src="../_static/documentation_options.js"></script>
+    <script src="../_static/doctools.js"></script>
+    <script src="../_static/sphinx_highlight.js"></script>
+    <script src="../_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'api/monarch.spmd';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/api/monarch.spmd.html" />
@@ -84,7 +85,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -198,7 +199,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1216,6 +1217,7 @@ document.write(`
 
 
 
+
 <li class="toctree-l1"><a class="reference internal" href="monarch.config.html">monarch.config</a></li>
 
 
@@ -1341,17 +1343,17 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="monarch-spmd">
-<h1>monarch.spmd<a class="headerlink" href="#monarch-spmd" title="Link to this heading">#</a></h1>
+<h1>monarch.spmd<a class="headerlink" href="#monarch-spmd" title="Permalink to this heading">#</a></h1>
 <p>The <code class="docutils literal notranslate"><span class="pre">monarch.spmd</span></code> module provides primitives for running torchrun-style SPMD
 (Single Program Multiple Data) distributed training scripts over Monarch actor meshes.</p>
 <p>It bridges PyTorch distributed training with Monarch by automatically configuring
 torch elastic environment variables (<code class="docutils literal notranslate"><span class="pre">RANK</span></code>, <code class="docutils literal notranslate"><span class="pre">LOCAL_RANK</span></code>, <code class="docutils literal notranslate"><span class="pre">WORLD_SIZE</span></code>,
 <code class="docutils literal notranslate"><span class="pre">MASTER_ADDR</span></code>, <code class="docutils literal notranslate"><span class="pre">MASTER_PORT</span></code>, etc.) across the mesh.</p>
 <section id="environment-setup">
-<h2>Environment Setup<a class="headerlink" href="#environment-setup" title="Link to this heading">#</a></h2>
+<h2>Environment Setup<a class="headerlink" href="#environment-setup" title="Permalink to this heading">#</a></h2>
 <dl class="py function">
 <dt class="sig sig-object py" id="monarch.spmd.setup_torch_elastic_env">
-<span class="sig-prename descclassname"><span class="pre">monarch.spmd.</span></span><span class="sig-name descname"><span class="pre">setup_torch_elastic_env</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">proc_mesh</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">master_addr</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">master_port</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_ipaddr</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/_src/spmd.html#setup_torch_elastic_env"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.spmd.setup_torch_elastic_env" title="Link to this definition">#</a></dt>
+<span class="sig-prename descclassname"><span class="pre">monarch.spmd.</span></span><span class="sig-name descname"><span class="pre">setup_torch_elastic_env</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">proc_mesh</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">master_addr</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">master_port</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_ipaddr</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/_src/spmd.html#setup_torch_elastic_env"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.spmd.setup_torch_elastic_env" title="Permalink to this definition">#</a></dt>
 <dd><p>Sets up environment variables for pytorch torchelastic.
 It sets enviornment variables like RANK, LOCAL_RANK, WORLD_SIZE, etc.
 If master_addr and master_port are None, it will automatically select a master node and port.
@@ -1362,7 +1364,7 @@ It selects the first proc in the proc_mesh to be the master node.</p>
 
 <dl class="py function">
 <dt class="sig sig-object py" id="monarch.spmd.setup_torch_elastic_env_async">
-<em class="property"><span class="k"><span class="pre">async</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">monarch.spmd.</span></span><span class="sig-name descname"><span class="pre">setup_torch_elastic_env_async</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">proc_mesh</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">master_addr</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">master_port</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_ipaddr</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/_src/spmd.html#setup_torch_elastic_env_async"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.spmd.setup_torch_elastic_env_async" title="Link to this definition">#</a></dt>
+<em class="property"><span class="k"><span class="pre">async</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">monarch.spmd.</span></span><span class="sig-name descname"><span class="pre">setup_torch_elastic_env_async</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">proc_mesh</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">master_addr</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">master_port</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_ipaddr</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/_src/spmd.html#setup_torch_elastic_env_async"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.spmd.setup_torch_elastic_env_async" title="Permalink to this definition">#</a></dt>
 <dd><p>Sets up environment variables for pytorch torchelastic.
 It sets enviornment variables like RANK, LOCAL_RANK, WORLD_SIZE, etc.
 If master_addr and master_port are None, it will automatically select a master node and port.
@@ -1373,10 +1375,10 @@ It selects the first proc in the proc_mesh to be the master node.</p>
 
 </section>
 <section id="spmd-actor">
-<h2>SPMD Actor<a class="headerlink" href="#spmd-actor" title="Link to this heading">#</a></h2>
+<h2>SPMD Actor<a class="headerlink" href="#spmd-actor" title="Permalink to this heading">#</a></h2>
 <dl class="py class">
 <dt class="sig sig-object py" id="monarch.spmd.SPMDActor">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">monarch.spmd.</span></span><span class="sig-name descname"><span class="pre">SPMDActor</span></span><a class="reference internal" href="../_modules/monarch/_src/spmd/actor.html#SPMDActor"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.spmd.SPMDActor" title="Link to this definition">#</a></dt>
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">monarch.spmd.</span></span><span class="sig-name descname"><span class="pre">SPMDActor</span></span><a class="reference internal" href="../_modules/monarch/_src/spmd/actor.html#SPMDActor"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.spmd.SPMDActor" title="Permalink to this definition">#</a></dt>
 <dd><p>Bases: <a class="reference internal" href="monarch.actor.html#monarch.actor.Actor" title="monarch._src.actor.actor_mesh.Actor"><code class="xref py py-class docutils literal notranslate"><span class="pre">Actor</span></code></a></p>
 <p>Actor that sets up PyTorch distibuted.run training environment variables and
 executes SPMD training scripts.</p>
@@ -1416,17 +1418,17 @@ All rank and mesh information is automatically derived from current_rank().</p>
 </dl>
 <dl class="py attribute">
 <dt class="sig sig-object py" id="monarch.spmd.SPMDActor.get_host_port">
-<span class="sig-name descname"><span class="pre">get_host_port</span></span><a class="headerlink" href="#monarch.spmd.SPMDActor.get_host_port" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">get_host_port</span></span><a class="headerlink" href="#monarch.spmd.SPMDActor.get_host_port" title="Permalink to this definition">#</a></dt>
 <dd></dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="monarch.spmd.SPMDActor.setup_env">
-<span class="sig-name descname"><span class="pre">setup_env</span></span><a class="headerlink" href="#monarch.spmd.SPMDActor.setup_env" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">setup_env</span></span><a class="headerlink" href="#monarch.spmd.SPMDActor.setup_env" title="Permalink to this definition">#</a></dt>
 <dd></dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="monarch.spmd.SPMDActor.main">
-<span class="sig-name descname"><span class="pre">main</span></span><a class="headerlink" href="#monarch.spmd.SPMDActor.main" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">main</span></span><a class="headerlink" href="#monarch.spmd.SPMDActor.main" title="Permalink to this definition">#</a></dt>
 <dd></dd></dl>
 
 </dd></dl>
@@ -1707,7 +1709,7 @@ All rank and mesh information is automatically derived from current_rank().</p>
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>

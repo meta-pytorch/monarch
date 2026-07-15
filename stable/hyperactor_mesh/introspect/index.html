@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Mesh-topology introspection types and attrs."><title>hyperactor_mesh::introspect - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-b7b9f40b.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="hyperactor_mesh" data-themes="" data-resource-suffix="" data-rustdoc-version="1.95.0-nightly (3a70d0349 2026-02-27)" data-channel="nightly" data-search-js="search-63369b7b.js" data-stringdex-js="stringdex-b897f86f.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../sidebar-items.js"></script><script defer src="../../static.files/main-5013f961.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Module introspect</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../hyperactor_mesh/index.html">hyperactor_<wbr>mesh</a><span class="version">0.0.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module introspect</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#mesh-key-invariants-mk-" title="Mesh key invariants (MK-*)">Mesh key invariants (MK-*)</a></li><li><a href="#proc-debug-stats-invariants-pd-" title="Proc debug stats invariants (PD-*)">Proc debug stats invariants (PD-*)</a></li><li><a href="#http-boundary-invariants-hb-" title="HTTP boundary invariants (HB-*)">HTTP boundary invariants (HB-*)</a></li><li><a href="#attrs-invariants-ia-" title="Attrs invariants (IA-*)">Attrs invariants (IA-*)</a></li><li><a href="#attrs-view-invariants-av-" title="Attrs view invariants (AV-*)">Attrs view invariants (AV-*)</a></li><li><a href="#derive-invariants-dp-" title="Derive invariants (DP-*)">Derive invariants (DP-*)</a></li><li><a href="#py-spy-integration-ps-" title="py-spy integration (PS-*)">py-spy integration (PS-*)</a></li><li><a href="#py-spy-profiling-pp-" title="py-spy profiling (PP-*)">py-spy profiling (PP-*)</a></li><li><a href="#mesh-admin-config-ma-" title="Mesh-admin config (MA-*)">Mesh-admin config (MA-*)</a></li></ul><h3><a href="#modules">Module Items</a></h3><ul class="block"><li><a href="#modules" title="Modules">Modules</a></li><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#enums" title="Enums">Enums</a></li><li><a href="#statics" title="Statics">Statics</a></li><li><a href="#functions" title="Functions">Functions</a></li></ul></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="../index.html">In crate hyperactor_<wbr>mesh</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">hyperactor_mesh</a></div><h1>Module <span>introspect</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/hyperactor_mesh/introspect.rs.html#9-1819">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Mesh-topology introspection types and attrs.</p>
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Mesh-topology introspection types and attrs."><title>hyperactor_mesh::introspect - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-17e0aaed.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="hyperactor_mesh" data-themes="" data-resource-suffix="" data-rustdoc-version="1.96.0-nightly (02c7f9bec 2026-04-10)" data-channel="nightly" data-search-js="search-b5634cc7.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../sidebar-items.js"></script><script defer src="../../static.files/main-5013f961.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Module introspect</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../hyperactor_mesh/index.html">hyperactor_<wbr>mesh</a><span class="version">0.0.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module introspect</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#mesh-key-invariants-mk-" title="Mesh key invariants (MK-*)">Mesh key invariants (MK-*)</a></li><li><a href="#proc-debug-stats-invariants-pd-" title="Proc debug stats invariants (PD-*)">Proc debug stats invariants (PD-*)</a></li><li><a href="#http-boundary-invariants-hb-" title="HTTP boundary invariants (HB-*)">HTTP boundary invariants (HB-*)</a></li><li><a href="#attrs-invariants-ia-" title="Attrs invariants (IA-*)">Attrs invariants (IA-*)</a></li><li><a href="#attrs-view-invariants-av-" title="Attrs view invariants (AV-*)">Attrs view invariants (AV-*)</a></li><li><a href="#derive-invariants-dp-" title="Derive invariants (DP-*)">Derive invariants (DP-*)</a></li><li><a href="#execution-presentation-ex-" title="Execution presentation (EX-*)">Execution presentation (EX-*)</a></li><li><a href="#inbound-ordering-presentation-io-" title="Inbound ordering presentation (IO-*)">Inbound ordering presentation (IO-*)</a></li><li><a href="#py-spy-integration-ps-" title="py-spy integration (PS-*)">py-spy integration (PS-*)</a></li><li><a href="#py-spy-profiling-pp-" title="py-spy profiling (PP-*)">py-spy profiling (PP-*)</a></li><li><a href="#mesh-admin-config-ma-" title="Mesh-admin config (MA-*)">Mesh-admin config (MA-*)</a></li></ul><h3><a href="#modules">Module Items</a></h3><ul class="block"><li><a href="#modules" title="Modules">Modules</a></li><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#enums" title="Enums">Enums</a></li><li><a href="#statics" title="Statics">Statics</a></li><li><a href="#functions" title="Functions">Functions</a></li></ul></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="../index.html">In crate hyperactor_<wbr>mesh</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">hyperactor_mesh</a></div><h1>Module <span>introspect</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/hyperactor_mesh/introspect.rs.html#9-2114">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Mesh-topology introspection types and attrs.</p>
 <p>This module owns the typed internal model used by mesh-admin and the
 TUI: mesh-topology attr keys, typed attrs views, <code>NodeRef</code>, and the
 domain <code>NodePayload</code> / <code>NodeProperties</code> / <code>FailureInfo</code> values derived
@@ -97,19 +97,81 @@ IA-6.</li>
 <h3 id="derive-invariants-dp-"><a class="doc-anchor" href="#derive-invariants-dp-">§</a>Derive invariants (DP-*)</h3>
 <ul>
 <li><strong>DP-1 (derive-precedence):</strong> <code>derive_properties</code> dispatches
-on <code>node_type</code> first, then falls back to <code>error_code</code>,
-then <code>status</code>, then unknown. This order is the canonical
-detection chain.</li>
+on <code>status</code> first (DP-5), then <code>node_type</code>, then <code>error_code</code>,
+then unknown. This order is the canonical detection chain.</li>
 <li><strong>DP-2 (derive-totality-on-parse-failure):</strong>
 <code>derive_properties</code> is total; malformed or incoherent attrs
 never panic and map to <code>NodeProperties::Error</code> with detail.</li>
 <li><strong>DP-3 (derive-precedence-stability):</strong>
 <code>derive_properties</code> detection order is stable and explicit:
-<code>node_type</code> &gt; <code>error_code</code> &gt; <code>status</code> &gt; unknown.</li>
+<code>status</code> &gt; <code>node_type</code> &gt; <code>error_code</code> &gt; unknown.</li>
 <li><strong>DP-4 (error-on-decode-failure):</strong> Any view decode or
 invariant failure maps to a deterministic
 <code>NodeProperties::Error</code> with a <code>malformed_*</code> code family,
 without panic.</li>
+<li><strong>DP-5 (actor-view classification safety):</strong> a payload
+carrying the core <code>STATUS</code> key always decodes as <code>Actor</code>.
+<code>STATUS</code> is set only by the blanket Actor builder
+(<code>build_actor_attrs</code>) and is core-owned, so the actor-attrs
+snapshot seam can neither remove nor override it (AS-2), and no
+non-actor payload (root/host/proc/error) carries it. Therefore
+an actor cannot inject <code>node_type</code>/<code>error_code</code> via the seam to
+spoof a different node kind.</li>
+</ul>
+<h3 id="execution-presentation-ex-"><a class="doc-anchor" href="#execution-presentation-ex-">§</a>Execution presentation (EX-*)</h3>
+<p>These govern the <code>execution</code> field on <code>NodeProperties::Actor</code> — an
+actor’s in-flight handler execution, reported through the generic
+actor-attrs snapshot seam (<code>AS-*</code> in <code>hyperactor::introspect</code>) and
+decoded from the <code>EXECUTION</code> attr in <code>derive_properties</code>.</p>
+<ul>
+<li><strong>EX-1 (unsupported-vs-idle):</strong> <code>execution: None</code> means the actor
+does not report execution (no snapshot installed) – <em>unsupported</em>,
+not idle. A supported-but-idle actor is <code>Some</code> with
+<code>active_count == 0</code>.</li>
+<li><strong>EX-2 (partial-detail, never absence):</strong> <code>complete == false</code>
+means the per-handler detail was momentarily unavailable on that
+read (e.g. a non-blocking tracker miss); <code>active_count</code> stays
+authoritative and the field stays <code>Some</code> – contention never
+collapses <code>execution</code> to <code>None</code>.</li>
+<li><strong>EX-3 (observational, not transactional):</strong> <code>active_count</code> and
+<code>active_handlers</code> are independent point-in-time reads;
+<code>active_count</code> need not equal <code>sum(active_handlers[*].active_count)</code>
+on a given poll (cf. IO-3). Consumers must not derive one from the
+other.</li>
+<li><strong>EX-4 (deterministic truncation):</strong> <code>active_handlers</code> is ordered
+oldest-first with a stable tie-break on <code>name</code>; <code>truncated == true</code>
+means it is a prefix of the N oldest while <code>active_count</code> remains
+the full total.</li>
+<li><strong>EX-5 (post-mortem semantics):</strong> a terminated actor’s stored
+snapshot persists its last <code>live_actor_payload</code>, so <code>execution</code>
+reflects state <em>as of termination</em>. The producer drains in-flight
+entries on stop (try/finally), so a stopped actor reports
+<code>active_count == 0</code>.</li>
+</ul>
+<h3 id="inbound-ordering-presentation-io-"><a class="doc-anchor" href="#inbound-ordering-presentation-io-">§</a>Inbound ordering presentation (IO-*)</h3>
+<p>Mesh-admin presentation extension of the cross-crate <code>IO-*</code>
+family. The lower-level invariants <code>IO-1</code> (tri-state absence),
+<code>IO-2</code> (publish-time <code>try_lock</code>), and <code>IO-3</code> (no arithmetic
+relation between <code>queue_depth</code> and reorder-buffer depth) live in
+<code>hyperactor::introspect</code>. The presentation layer below adds:</p>
+<ul>
+<li><strong>IO-4 (snapshot_complete derivation):</strong>
+<code>InboundOrdering.snapshot_complete == (skipped_session_count == 0)</code>. Mirrors
+<code>OrderingSnapshot::is_complete()</code> at the presentation layer.</li>
+<li><strong>IO-5 (known_session_count totality):</strong>
+<code>InboundOrdering.known_session_count == sessions.len() + skipped_session_count</code>. The only rollup
+that is a true total across returned and skipped sessions.</li>
+<li><em><em>IO-6 (returned_</em> scope):</em>*
+<code>returned_buffered_session_count</code>,
+<code>returned_buffered_message_count</code>, and
+<code>returned_max_buffered_count</code> are computed over <code>sessions</code>
+only and are LOWER BOUNDS when <code>snapshot_complete == false</code>.</li>
+<li><strong>IO-7 (live-actor exposure):</strong> For any actor built through
+<code>Instance::new</code>, <code>/v1/{actor}</code> exposes
+<code>inbound_ordering: Some(...)</code> – never <code>None</code>. <code>None</code>
+indicates either structural absence (test fixtures,
+hand-built <code>InstanceCellState</code>) or a regression in the
+publish path.</li>
 </ul>
 <h3 id="py-spy-integration-ps-"><a class="doc-anchor" href="#py-spy-integration-ps-">§</a>py-spy integration (PS-*)</h3>
 <ul>
@@ -251,7 +313,13 @@ budgets are read from config attrs at call-time, with defaults
 in <code>config.rs</code>. No hardcoded timeout constants in
 <code>mesh_admin.rs</code>.</li>
 </ul>
-</div></details><h2 id="modules" class="section-header">Modules<a href="#modules" class="anchor">§</a></h2><dl class="item-table"><dt><a class="mod" href="dto/index.html" title="mod hyperactor_mesh::introspect::dto">dto</a></dt><dd>HTTP boundary DTO types for mesh-admin introspection.</dd></dl><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.ErrorAttrsView.html" title="struct hyperactor_mesh::introspect::ErrorAttrsView">Error<wbr>Attrs<wbr>View</a></dt><dd>Typed view over attrs for an error node.</dd><dt><a class="struct" href="struct.FailureInfo.html" title="struct hyperactor_mesh::introspect::FailureInfo">Failure<wbr>Info</a></dt><dd>Structured failure information for failed actors.</dd><dt><a class="struct" href="struct.HostAttrsView.html" title="struct hyperactor_mesh::introspect::HostAttrsView">Host<wbr>Attrs<wbr>View</a></dt><dd>Typed view over attrs for a host node.</dd><dt><a class="struct" href="struct.NodePayload.html" title="struct hyperactor_mesh::introspect::NodePayload">Node<wbr>Payload</a></dt><dd>Uniform response for any node in the mesh topology.</dd><dt><a class="struct" href="struct.ProcAttrsView.html" title="struct hyperactor_mesh::introspect::ProcAttrsView">Proc<wbr>Attrs<wbr>View</a></dt><dd>Typed view over attrs for a proc node.</dd><dt><a class="struct" href="struct.ProcDebugStats.html" title="struct hyperactor_mesh::introspect::ProcDebugStats">Proc<wbr>Debug<wbr>Stats</a></dt><dd>Proc-level debug/operational stats. Groups hosting-process memory
+</div></details><h2 id="modules" class="section-header">Modules<a href="#modules" class="anchor">§</a></h2><dl class="item-table"><dt><a class="mod" href="dto/index.html" title="mod hyperactor_mesh::introspect::dto">dto</a></dt><dd>HTTP boundary DTO types for mesh-admin introspection.</dd></dl><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.ActiveHandler.html" title="struct hyperactor_mesh::introspect::ActiveHandler">Active<wbr>Handler</a></dt><dd>One handler with in-flight invocations, aggregated by name (EX-4).</dd><dt><a class="struct" href="struct.ErrorAttrsView.html" title="struct hyperactor_mesh::introspect::ErrorAttrsView">Error<wbr>Attrs<wbr>View</a></dt><dd>Typed view over attrs for an error node.</dd><dt><a class="struct" href="struct.Execution.html" title="struct hyperactor_mesh::introspect::Execution">Execution</a></dt><dd>An actor’s in-flight handler execution, reported through the generic
+actor-attrs snapshot seam (<code>AS-*</code>). Carried both as the <code>EXECUTION</code>
+attr value and as the <code>NodeProperties::Actor.execution</code> field; core
+hyperactor does not interpret it. See EX-* in module doc.</dd><dt><a class="struct" href="struct.FailureInfo.html" title="struct hyperactor_mesh::introspect::FailureInfo">Failure<wbr>Info</a></dt><dd>Structured failure information for failed actors.</dd><dt><a class="struct" href="struct.HostAttrsView.html" title="struct hyperactor_mesh::introspect::HostAttrsView">Host<wbr>Attrs<wbr>View</a></dt><dd>Typed view over attrs for a host node.</dd><dt><a class="struct" href="struct.InboundOrdering.html" title="struct hyperactor_mesh::introspect::InboundOrdering">Inbound<wbr>Ordering</a></dt><dd>Mesh-admin presentation of inbound ordering state. Computed from
+the upstream <code>hyperactor::ordering::OrderingSnapshot</code>; rollup fields
+are derived at conversion time so consumers don’t have to iterate
+sessions for the common “is anything stalled?” question.</dd><dt><a class="struct" href="struct.NodePayload.html" title="struct hyperactor_mesh::introspect::NodePayload">Node<wbr>Payload</a></dt><dd>Uniform response for any node in the mesh topology.</dd><dt><a class="struct" href="struct.ProcAttrsView.html" title="struct hyperactor_mesh::introspect::ProcAttrsView">Proc<wbr>Attrs<wbr>View</a></dt><dd>Typed view over attrs for a proc node.</dd><dt><a class="struct" href="struct.ProcDebugStats.html" title="struct hyperactor_mesh::introspect::ProcDebugStats">Proc<wbr>Debug<wbr>Stats</a></dt><dd>Proc-level debug/operational stats. Groups hosting-process memory
 (process-scoped) and actor queue pressure (proc-scoped) into one
 operational summary.</dd><dt><a class="struct" href="struct.ProcessMemoryStats.html" title="struct hyperactor_mesh::introspect::ProcessMemoryStats">Process<wbr>Memory<wbr>Stats</a></dt><dd>Memory stats of the hosting OS process. Shared by host and
 proc introspection surfaces — both agents are authoritative
@@ -261,7 +329,7 @@ Eventually consistent — concurrent readers may transiently
 observe total &gt; high_water_mark. Retained evidence — driven
 from the runtime accounting path, not publish-time sampling.</dd><dt><a class="static" href="static.ACTOR_WORK_QUEUE_DEPTH_MAX.html" title="static hyperactor_mesh::introspect::ACTOR_WORK_QUEUE_DEPTH_MAX">ACTOR_<wbr>WORK_<wbr>QUEUE_<wbr>DEPTH_<wbr>MAX</a></dt><dd>Maximum current per-actor message queue depth across live
 actors at publish time. This is not a historical high-water
-mark.</dd><dt><a class="static" href="static.ACTOR_WORK_QUEUE_DEPTH_TOTAL.html" title="static hyperactor_mesh::introspect::ACTOR_WORK_QUEUE_DEPTH_TOTAL">ACTOR_<wbr>WORK_<wbr>QUEUE_<wbr>DEPTH_<wbr>TOTAL</a></dt><dd>Sum of per-actor message queue depths across live actors.</dd><dt><a class="static" href="static.ADDR.html" title="static hyperactor_mesh::introspect::ADDR">ADDR</a></dt><dd>Host network address (e.g. “10.0.0.1:8080”).</dd><dt><a class="static" href="static.FAILED_ACTOR_COUNT.html" title="static hyperactor_mesh::introspect::FAILED_ACTOR_COUNT">FAILED_<wbr>ACTOR_<wbr>COUNT</a></dt><dd>Count of failed actors in a proc.</dd><dt><a class="static" href="static.IS_POISONED.html" title="static hyperactor_mesh::introspect::IS_POISONED">IS_<wbr>POISONED</a></dt><dd>Whether this proc is refusing new spawns due to actor
+mark.</dd><dt><a class="static" href="static.ACTOR_WORK_QUEUE_DEPTH_TOTAL.html" title="static hyperactor_mesh::introspect::ACTOR_WORK_QUEUE_DEPTH_TOTAL">ACTOR_<wbr>WORK_<wbr>QUEUE_<wbr>DEPTH_<wbr>TOTAL</a></dt><dd>Sum of per-actor message queue depths across live actors.</dd><dt><a class="static" href="static.ADDR.html" title="static hyperactor_mesh::introspect::ADDR">ADDR</a></dt><dd>Host network address (e.g. “10.0.0.1:8080”).</dd><dt><a class="static" href="static.EXECUTION.html" title="static hyperactor_mesh::introspect::EXECUTION">EXECUTION</a></dt><dd>In-flight handler execution for an actor.</dd><dt><a class="static" href="static.FAILED_ACTOR_COUNT.html" title="static hyperactor_mesh::introspect::FAILED_ACTOR_COUNT">FAILED_<wbr>ACTOR_<wbr>COUNT</a></dt><dd>Count of failed actors in a proc.</dd><dt><a class="static" href="static.IS_POISONED.html" title="static hyperactor_mesh::introspect::IS_POISONED">IS_<wbr>POISONED</a></dt><dd>Whether this proc is refusing new spawns due to actor
 failures.</dd><dt><a class="static" href="static.LAST_NONZERO_QUEUE_DEPTH_AGE_MS.html" title="static hyperactor_mesh::introspect::LAST_NONZERO_QUEUE_DEPTH_AGE_MS">LAST_<wbr>NONZERO_<wbr>QUEUE_<wbr>DEPTH_<wbr>AGE_<wbr>MS</a></dt><dd>How long ago proc-wide queue depth was last observed non-zero
 (PD-7). <code>None</code> means no counted actor work has traversed the
 queue accounting path since startup. Uses wall clock, so the

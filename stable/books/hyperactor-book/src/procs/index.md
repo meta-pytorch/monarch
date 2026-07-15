@@ -4,47 +4,40 @@ A `Proc` is a container for actors and provides the runtime context for actor ex
 
 ## Overview
 
-Procs bridge the gap between actors (local computation) and the distributed system (remote communication). Each proc:
+Procs bridge the gap between actors (local computation) and the distributed system (remote communication). The three types in this section fit together as follows:
 
-- **Hosts actors**: Spawns and manages actor instances within its process
-- **Routes messages**: Provides a forwarder that determines how outbound messages reach their destinations
-- **Identifies actors**: All actors within a proc share the proc's identity as part of their `ActorId`
-- **Manages lifecycle**: Coordinates actor startup, supervision, and shutdown
+- A **`Proc`** hosts actors and manages their lifecycle, but is not itself a network endpoint.
+- A **`Gateway`** is the connectivity layer a proc attaches to: it multiplexes inbound traffic to the right local proc and routes outbound traffic on the proc's behalf.
+- A **`Host`** manages the procs on one machine and owns the single gateway through which they are reached.
 
 ## Key Components
 
 ### Proc
 
-The `Proc` struct represents a single runtime instance. It's created with:
-
-- A `ProcId` that uniquely identifies it (see [ProcId](../references/proc_id.html))
-- A forwarder (`BoxedMailboxSender`) for routing outbound messages
+The `Proc` struct represents a single actor runtime. It owns actor lifecycle and identity (all actors within a proc share its `ProcId` as part of their `ActorId`) and reaches the outside world only through its gateway.
 
 See [Proc](proc.html) for details on construction and usage.
 
+### Gateway
+
+The `Gateway` is the connectivity layer for procs. It has one table for local
+in-process procs, one table for peer gateways keyed by `Via(uid)` hops, and a
+forwarder for everything else. The same routing decision handles local delivery,
+spawned children, attached clients, and ordinary egress.
+
+See [Gateway](gateway.html) for the type and its routing decision.
+
 ### Host
 
-The `Host` manages multiple spawned procs and provides the infrastructure for:
-
-- Accepting external connections (frontend)
-- Coordinating message routing between procs (backend)
-- Managing a service proc for system-level coordination
-- Managing a local proc for user-level actors
+The `Host` manages the lifecycle of the procs on one machine. It owns exactly
+one gateway and delegates all connectivity to it: `service` and `local` attach
+as in-process procs, while spawned children attach as gateway peers.
 
 See [Host](host.html) for the complete hosting architecture.
 
-### ProcOrDial Router
-
-A specialized router that enables bidirectional communication by distinguishing between:
-
-- Messages destined for the service proc (delivered locally)
-- Messages destined for the local proc (delivered locally)
-- Messages destined for spawned procs (dialed remotely)
-
-See [ProcOrDial Router](proc_or_dial.html) for routing implementation details.
-
 ## See Also
 
+- [Gateway](gateway.html) - The connectivity layer procs attach to
 - [ProcId](../references/proc_id.html) - Proc identity and addressing
 - [ActorId](../references/actor_id.html) - How actors inherit proc identity
 - [Channels](../channels/index.html) - Transport layer for inter-proc communication

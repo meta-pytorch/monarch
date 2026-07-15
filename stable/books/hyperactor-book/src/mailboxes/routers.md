@@ -1,10 +1,10 @@
 # Routers
 
-While a muxer dispatches messages to exact `ActorId` matches, a **router** generalizes this by routing messages to the *nearest matching prefix*. This enables hierarchical, prefix-based routing across clusters of actors--spanning local and remote processes.
+While a muxer dispatches messages to exact `ActorId` matches, a **router** generalizes this by routing messages to the nearest matching address prefix. This enables hierarchical, prefix-based routing across clusters of actors and procs.
 
 Routers extend the ideas of the muxer with:
 
-- Longest-prefix matching on structured `Reference` identifiers
+- Longest-prefix matching on structured `Addr` values
 - Dynamic routing to local and remote mailboxes
 - Optional serialization and remote connection via `DialMailboxRouter`
 - Fallback logic via `WeakMailboxRouter`
@@ -15,62 +15,54 @@ This page introduces:
 - `DialMailboxRouter`: remote routing with connection management
 - `WeakMailboxRouter`: downgradeable reference for ephemeral routing
 
-To support routing, hyperactor defines a universal reference type for hierarchical identifiers:
+To support routing, hyperactor defines a universal address type for hierarchical identifiers:
 
 ```
-pub enum Reference {
- Proc(ProcId),
- Actor(ActorId),
- Port(PortId),
+pub enum Addr {
+ Proc(ProcAddr),
+ Actor(ActorAddr),
+ Port(PortAddr),
 }
 ```
 
-A `Reference` encodes a path through the logical structure of the system-spanning from procs to fine-grained targets like actors or ports. It has a concrete string syntax (e.g., `tcp:[::1]:1234,myproc,actor[42]`) and can be parsed from user input or configuration via `FromStr`.
+An `Addr` encodes a path through the logical structure of the system, spanning from procs to fine-grained targets like actors or ports. It has a concrete string syntax, such as `trainer.service@tcp://[::1]:1234` or `trainer.service:42@tcp://[::1]:1234`, and can be parsed from user input or configuration via `FromStr`.
 
 ## Total Ordering and Prefix Routing
 
-`Reference` implements a total order via a lexicographic comparison of its internal components:
+`Addr` implements a total order via a lexicographic comparison of its internal components:
 
 ```
-impl PartialOrd for Reference {
+impl PartialOrd for Addr {
  fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
  Some(self.cmp(other))
  }
 }
 
-impl Ord for Reference {
+impl Ord for Addr {
  fn cmp(&self, other: &Self) -> Ordering {
  (
- self.proc_id(),
- self.actor_name(),
- self.pid(),
+ self.proc_addr(),
+ self.actor_uid(),
  self.port(),
  )
  .cmp(&(
- other.proc_id(),
- other.actor_name(),
- other.pid(),
+ other.proc_addr(),
+ other.actor_uid(),
  other.port(),
  ))
  }
 }
 ```
 
-This means that references are ordered by their position in the system hierarchy-starting with proc, then actor name, PID, and finally port. For example:
+This means that references are ordered by their position in the system hierarchy, starting with proc address, then actor uid, and finally port. For example:
 
 ```
-tcp:127.0.0.1:8080,service < tcp:127.0.0.1:8080,service,trainer[0]
+controller<2MuAHeDjLCEd>@tcp://127.0.0.1:8080 < trainer.controller<2MuAHeDjLCEd>@tcp://127.0.0.1:8080
 ```
 
-For Direct addressing (see [ProcId](../references/proc_id.html)), references use channel addresses instead of ranks:
+Semantically, an `Addr::Proc(p)` is considered a prefix of any `Actor` or `Port` address that shares the same proc address.
 
-```
-tcp:127.0.0.1:8080,service < tcp:127.0.0.1:8080,service,trainer[0]
-```
-
-Semantically, a `Reference` like `Proc(p)` is considered a prefix of any `Actor` or `Port` reference that shares the same proc (by matching channel address and proc name).
-
-Because this order is total and consistent with prefix semantics, it enables efficient prefix-based routing using `BTreeMap<Reference, ...>`. When routing a message, the destination `ActorId` is converted into a `Reference`, and the router performs a longest-prefix match by locating the nearest entry that is a prefix of the destination.
+Because this order is total and consistent with prefix semantics, it enables efficient prefix-based routing using `BTreeMap<Addr, ...>`. When routing a message, the destination `ActorAddr` is converted into an `Addr`, and the router performs a longest-prefix match by locating the nearest entry that is a prefix of the destination.
 
 ### `MailboxRouter`
 
@@ -78,13 +70,13 @@ With this structure in place, we can now define the core router:
 
 ```
 pub struct MailboxRouter {
- entries: Arc<RwLock<BTreeMap<Reference, Arc<dyn MailboxSender + Send + Sync>>>>,
+ entries: Arc<RwLock<BTreeMap<Addr, Arc<dyn MailboxSender + Send + Sync>>>>,
 }
 ```
 
-A `MailboxRouter` maintains a thread-safe mapping from `Reference` prefixes to corresponding `MailboxSender`s. These entries form the routing table: each entry declares that messages targeting a reference in that subtree should be forwarded to the given sender.
+A `MailboxRouter` maintains a thread-safe mapping from `Addr` prefixes to corresponding `MailboxSender`s. These entries form the routing table: each entry declares that messages targeting an address in that subtree should be forwarded to the given sender.
 
-When a message is routed, its destination `ActorId` is converted into a `Reference`. The router performs a longest-prefix match against the table to find the nearest registered handler.
+When a message is routed, its destination `ActorAddr` is converted into an `Addr`. The router performs a longest-prefix match against the table to find the nearest registered handler.
 
 ### Binding and Downgrading
 
@@ -92,14 +84,14 @@ To register a new routing entry, the router provides a `bind` method:
 
 ```
 impl MailboxRouter {
- pub fn bind(&self, dest: Reference, sender: impl MailboxSender + 'static) {
+ pub fn bind(&self, dest: Addr, sender: impl MailboxSender + 'static) {
  let mut w = self.entries.write().unwrap();
  w.insert(dest, Arc::new(sender));
  }
 }
 ```
 
-Each call to `bind` inserts a new `Reference` → `MailboxSender` entry into the routing table. These entries act as prefixes: once inserted, they serve as candidates during longest-prefix matching at message delivery time.
+Each call to `bind` inserts a new `Addr` to `MailboxSender` entry into the routing table. These entries act as prefixes: once inserted, they serve as candidates during longest-prefix matching at message delivery time.
 
 In some cases, you may want to share or store a weak reference to the router-especially when integrating with structures that should not keep the routing table alive indefinitely. To support this, `MailboxRouter` can be downgraded to a `WeakMailboxRouter`:
 
@@ -117,7 +109,7 @@ The `WeakMailboxRouter` is a lightweight wrapper around a weak reference to the 
 
 ```
 pub struct WeakMailboxRouter(
- Weak<RwLock<BTreeMap<Reference, Arc<dyn MailboxSender + Send + Sync>>>>,
+ Weak<RwLock<BTreeMap<Addr, Arc<dyn MailboxSender + Send + Sync>>>>,
 );
 ```
 
@@ -135,42 +127,40 @@ impl MailboxSender for MailboxRouter {
  return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
  ) {
  let sender = {
- let actor_id = envelope.dest().actor_id();
+ let actor_addr = envelope.dest().actor_addr();
  match self
  .entries
  .read()
  .unwrap()
- .lower_bound(Excluded(&actor_id.clone().into()))
+ .lower_bound(Excluded(&actor_addr.clone().into()))
  .prev()
  {
- None => None,
- Some((key, sender)) if key.is_prefix_of(&actor_id.clone().into()) => {
- Some(sender.clone())
- }
+ Some((key, sender)) if key.is_prefix_of(&actor_addr.clone().into()) => Some(sender.clone()),
  Some(_) => None,
+ None => None,
  }
  };
 
  match sender {
- None => envelope.undeliverable(
- DeliveryError::Unroutable(
- "no destination found for actor in routing table".to_string(),
- ),
- return_handle,
- ),
+ None => {
+ let failure = DeliveryFailure::new(UndeliverableReason::Transport(
+ TransportFailure::new(envelope.dest().clone(), TransportFailureReason::NoRoute),
+ ));
+ envelope.undeliverable(failure, return_handle)
+ }
  Some(sender) => sender.post(envelope, return_handle),
  }
  }
 }
 ```
 
-This implementation performs a longest-prefix match using the total order on `Reference`:
+This implementation performs a longest-prefix match using the total order on `Addr`:
 
-1. It converts the destination `ActorId` into a `Reference`.
+1. It converts the destination `ActorAddr` into an `Addr`.
 2. It performs a descending prefix search using:
 
 ```
-entries.lower_bound(Excluded(&reference)).prev()
+entries.lower_bound(Excluded(&addr)).prev()
 ```
 
 This locates the greatest key in the routing table that is strictly less than the destination.
@@ -185,7 +175,7 @@ A `WeakMailboxRouter` is a downgradeable, non-owning reference to a router's int
 
 ```
 pub struct WeakMailboxRouter(
- Weak<RwLock<BTreeMap<Reference, Arc<dyn MailboxSender + Send + Sync>>>>,
+ Weak<RwLock<BTreeMap<Addr, Arc<dyn MailboxSender + Send + Sync>>>>,
 );
 ```
 
@@ -200,10 +190,15 @@ impl MailboxSender for WeakMailboxRouter {
  ) {
  match self.upgrade() {
  Some(router) => router.post(envelope, return_handle),
- None => envelope.undeliverable(
- DeliveryError::BrokenLink("failed to upgrade WeakMailboxRouter".to_string()),
- return_handle,
+ None => {
+ let failure = DeliveryFailure::new(UndeliverableReason::Transport(
+ TransportFailure::new(
+ envelope.dest().clone(),
+ TransportFailureReason::LinkUnavailable("mailbox router is gone".to_string()),
  ),
+ ));
+ envelope.undeliverable(failure, return_handle)
+ }
  }
  }
 }
@@ -217,7 +212,7 @@ While `MailboxRouter` supports prefix-based routing, it relies on explicitly reg
 
 ```
 pub struct DialMailboxRouter {
- address_book: Arc<RwLock<BTreeMap<Reference, ChannelAddr>>>,
+ address_book: Arc<RwLock<BTreeMap<Addr, ChannelAddr>>>,
  sender_cache: Arc<DashMap<ChannelAddr, Arc<MailboxClient>>>,
  default: BoxedMailboxSender,
 }
@@ -225,7 +220,7 @@ pub struct DialMailboxRouter {
 
 #### Address Book
 
-The `address_book` maps `Reference` prefixes to `ChannelAddr`s representing remote destinations.
+The `address_book` maps `Addr` prefixes to `ChannelAddr`s representing remote destinations.
 
 #### Sender Cache
 
@@ -239,16 +234,16 @@ This structure enables adaptive, connection-aware routing across distributed sys
 
 ### Managing Routes: `bind` and `unbind`
 
-To populate the router, use `bind` to associate a `Reference` with a `ChannelAddr`. This replaces any existing mapping for the same reference and evicts any cached sender tied to the old address:
+To populate the router, use `bind` to associate an `Addr` with a `ChannelAddr`. This replaces any existing mapping for the same address prefix and evicts any cached sender tied to the old address:
 
 ```
-router.bind(reference, remote_addr);
+router.bind(addr, remote_addr);
 ```
 
 To remove entries, use `unbind`. It removes all mappings with the given prefix-effectively deleting a subtree of the address book. Corresponding cached senders are also evicted to prevent reuse of stale connections:
 
 ```
-router.unbind(&reference_prefix);
+router.unbind(&addr_prefix);
 ```
 
 This allows the router to adapt dynamically to process exits, topology changes, or application-level reconfiguration. The use of `is_prefix_of` during unbinding ensures that hierarchical references can be removed in bulk-e.g., removing a `Proc`-level entry will also remove all associated `Actor` routes.
@@ -261,7 +256,7 @@ Once the router has been populated using `bind`, message delivery proceeds in tw
 
 When a message arrives, the router first attempts to locate a destination using `lookup_addr`. This method:
 
-- Converts the message's `ActorId` into a `Reference`
+- Converts the message's `ActorAddr` into an `Addr`
 - Performs a longest-prefix search using `lower_bound(...).prev()` on the address book
 - Applies `is_prefix_of` to confirm that the matched reference is semantically valid
 
@@ -288,16 +283,25 @@ impl MailboxSender for DialMailboxRouter {
  envelope: MessageEnvelope,
  return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
  ) {
- let Some(addr) = self.lookup_addr(envelope.dest().actor_id()) else {
+ let dest_actor_addr = envelope.dest().actor_addr();
+ let Some(addr) = self.lookup_addr(&dest_actor_addr) else {
  self.default.post(envelope, return_handle);
  return;
  };
 
- match self.dial(&addr, envelope.dest().actor_id()) {
- Err(err) => envelope.undeliverable(
- DeliveryError::Unroutable(format!("cannot dial destination: {err}")),
- return_handle,
+ match self.dial(&addr, &dest_actor_addr) {
+ Err(err) => {
+ let failure = DeliveryFailure::new(UndeliverableReason::Transport(
+ TransportFailure::new(
+ envelope.dest().clone(),
+ TransportFailureReason::DialFailed {
+ addr,
+ error: err.to_string(),
+ },
  ),
+ ));
+ envelope.undeliverable(failure, return_handle)
+ }
  Ok(sender) => sender.post(envelope, return_handle),
  }
  }
@@ -308,14 +312,14 @@ Here's what happens step by step:
 
 1. Address lookup:
 
-- The destination `ActorId` is converted into a `Reference`.
+- The destination `ActorAddr` is converted into an `Addr`.
 - The router searches for the nearest matching prefix in the address book.
 - If no match is found, the message is forwarded to the configured `default` sender.
 
 1. Connection resolution:
 
 - If an address is found, the router attempts to `dial` or reuse a cached `MailboxClient`.
-- On error (e.g., failed dial), the message is returned to the sender with a `DeliveryError::Unroutable`.
+- On error (e.g., failed dial), the message is returned to the sender with a structured transport failure.
 
 1. Message forwarding:
 

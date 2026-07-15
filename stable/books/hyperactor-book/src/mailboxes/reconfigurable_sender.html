@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -16,7 +17,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="Some actors are constructed before the full messaging graph is available. For example, the ReconfigurableMailboxSender is used during HostAgent::bootstrap to allow early creation of the Proc and ag..." />
 
-    <title>Reconfigurable Senders &#8212; Monarch v0.5.0 documentation</title>
+    <title>Reconfigurable Senders &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
+    <script src="../../../../_static/doctools.js"></script>
+    <script src="../../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../../_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-book/src/mailboxes/reconfigurable_sender';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/mailboxes/reconfigurable_sender.html" />
@@ -82,7 +83,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +197,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1293,17 +1294,17 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="reconfigurable-senders">
-<h1>Reconfigurable Senders<a class="headerlink" href="#reconfigurable-senders" title="Link to this heading">#</a></h1>
+<h1>Reconfigurable Senders<a class="headerlink" href="#reconfigurable-senders" title="Permalink to this heading">#</a></h1>
 <p>Some actors are constructed before the full messaging graph is available.
 For example, the <code class="docutils literal notranslate"><span class="pre">ReconfigurableMailboxSender</span></code> is used during <code class="docutils literal notranslate"><span class="pre">HostAgent::bootstrap</span></code> to allow early creation of the <code class="docutils literal notranslate"><span class="pre">Proc</span></code> and agent before outbound routing is available.
 The <code class="docutils literal notranslate"><span class="pre">.configure(...)</span></code> method installs the actual router later, once mesh wiring is complete.</p>
 <section id="motivation">
-<h2>Motivation<a class="headerlink" href="#motivation" title="Link to this heading">#</a></h2>
+<h2>Motivation<a class="headerlink" href="#motivation" title="Permalink to this heading">#</a></h2>
 <p>Actors like <code class="docutils literal notranslate"><span class="pre">HostAgent</span></code> are created before remote routing infrastructure is established. These actors need to send messages during setup, but the concrete <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code> they will use hasn’t been determined yet.</p>
 <p>To solve this, <code class="docutils literal notranslate"><span class="pre">ReconfigurableMailboxSender</span></code> implements [<code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code>] and supports <strong>deferred configuration</strong>: it starts by queueing messages in memory, then later transitions to forwarding once a real sender is available.</p>
 </section>
 <section id="internal-structure">
-<h2>Internal Structure<a class="headerlink" href="#internal-structure" title="Link to this heading">#</a></h2>
+<h2>Internal Structure<a class="headerlink" href="#internal-structure" title="Permalink to this heading">#</a></h2>
 <p>The sender wraps a state machine:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">struct</span><span class="w"> </span><span class="nc">ReconfigurableMailboxSender</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="n">state</span><span class="p">:</span><span class="w"> </span><span class="nc">Arc</span><span class="o">&lt;</span><span class="n">RwLock</span><span class="o">&lt;</span><span class="n">ReconfigurableMailboxSenderState</span><span class="o">&gt;&gt;</span><span class="p">,</span>
@@ -1324,7 +1325,7 @@ The <code class="docutils literal notranslate"><span class="pre">.configure(...)
 <li><p>When <code class="docutils literal notranslate"><span class="pre">.configure(...)</span></code> is called, the queue is flushed into the new sender, and the state is replaced with <code class="docutils literal notranslate"><span class="pre">Configured(...)</span></code>.</p></li>
 </ul>
 <section id="configuration">
-<h3>Configuration<a class="headerlink" href="#configuration" title="Link to this heading">#</a></h3>
+<h3>Configuration<a class="headerlink" href="#configuration" title="Permalink to this heading">#</a></h3>
 <p>The <code class="docutils literal notranslate"><span class="pre">.configure(...)</span></code> method installs the actual sender. If called while in the <code class="docutils literal notranslate"><span class="pre">Queueing</span> <span class="pre">state</span></code>, it:</p>
 <ul class="simple">
 <li><p>Drains all buffered messages to the given sender</p></li>
@@ -1585,7 +1586,7 @@ The <code class="docutils literal notranslate"><span class="pre">.configure(...)
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>

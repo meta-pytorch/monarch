@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -16,7 +17,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="What it is: An optional, local file sink that mirrors each child’s stdout/stderr into per-proc files on the bootstrap host. It’s implemented by FileAppender plus a tiny writer task ( file_monitor_t..." />
 
-    <title>File aggregation &#8212; Monarch v0.5.0 documentation</title>
+    <title>File aggregation &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
+    <script src="../../../../_static/doctools.js"></script>
+    <script src="../../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../../_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-mesh-book/src/logging/file-aggregation';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-mesh-book/src/logging/file-aggregation.html" />
@@ -82,7 +83,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +197,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1293,13 +1294,13 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="file-aggregation">
-<h1>File aggregation<a class="headerlink" href="#file-aggregation" title="Link to this heading">#</a></h1>
+<h1>File aggregation<a class="headerlink" href="#file-aggregation" title="Permalink to this heading">#</a></h1>
 <section id="what-it-is">
-<h2>What it is<a class="headerlink" href="#what-it-is" title="Link to this heading">#</a></h2>
+<h2>What it is<a class="headerlink" href="#what-it-is" title="Permalink to this heading">#</a></h2>
 <p>An optional, local file sink that mirrors each child’s stdout/stderr into per-proc files on the bootstrap host. It’s implemented by <code class="docutils literal notranslate"><span class="pre">FileAppender</span></code> plus a tiny writer task (<code class="docutils literal notranslate"><span class="pre">file_monitor_task</span></code>) that receives lines over a hyperactor channel and appends them to disk.</p>
 </section>
 <section id="when-files-are-created-env-gating">
-<h2>When files are created (env gating)<a class="headerlink" href="#when-files-are-created-env-gating" title="Link to this heading">#</a></h2>
+<h2>When files are created (env gating)<a class="headerlink" href="#when-files-are-created-env-gating" title="Permalink to this heading">#</a></h2>
 <p>Files are only created when:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">Env</span></code> is not Local, or</p></li>
@@ -1311,7 +1312,7 @@ document.write(`
 </section>
 <hr class="docutils" />
 <section id="naming-scheme-paths">
-<h2>Naming scheme &amp; paths<a class="headerlink" href="#naming-scheme-paths" title="Link to this heading">#</a></h2>
+<h2>Naming scheme &amp; paths<a class="headerlink" href="#naming-scheme-paths" title="Permalink to this heading">#</a></h2>
 <p>Files live under the path returned by <code class="docutils literal notranslate"><span class="pre">log_file_path(env,</span> <span class="pre">None)</span></code> and are named:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="p">{</span><span class="n">basename</span><span class="p">}</span><span class="n">_</span><span class="p">{</span><span class="n">host</span><span class="o">-</span><span class="n">tag</span><span class="p">}</span><span class="n">_</span><span class="p">{</span><span class="n">shortuuid</span><span class="p">}</span><span class="o">.</span><span class="p">{</span><span class="n">stdout</span><span class="o">|</span><span class="n">stderr</span><span class="p">}</span>
 </pre></div>
@@ -1335,7 +1336,7 @@ document.write(`
 </section>
 <hr class="docutils" />
 <section id="how-bytes-reach-the-files">
-<h2>How bytes reach the files<a class="headerlink" href="#how-bytes-reach-the-files" title="Link to this heading">#</a></h2>
+<h2>How bytes reach the files<a class="headerlink" href="#how-bytes-reach-the-files" title="Permalink to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">StreamFwder</span></code>’s background <code class="docutils literal notranslate"><span class="pre">tee(...)</span></code> task frames lines and posts them to the file appender’s channel as <code class="docutils literal notranslate"><span class="pre">FileMonitorMessage</span> <span class="pre">{</span> <span class="pre">lines:</span> <span class="pre">Vec&lt;String&gt;</span> <span class="pre">}</span></code>. The <code class="docutils literal notranslate"><span class="pre">file_monitor_task</span></code> writes each line + newline and flushes.</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// logging.rs — file_monitor_task (abridged)</span>
 <span class="k">loop</span><span class="w"> </span><span class="p">{</span>
@@ -1361,7 +1362,7 @@ document.write(`
 </div></blockquote>
 </section>
 <section id="using-fileappender-bootstrap-side">
-<h2>Using FileAppender (bootstrap side)<a class="headerlink" href="#using-fileappender-bootstrap-side" title="Link to this heading">#</a></h2>
+<h2>Using FileAppender (bootstrap side)<a class="headerlink" href="#using-fileappender-bootstrap-side" title="Permalink to this heading">#</a></h2>
 <p>Creating an appender spins up two writer tasks (stdout/stderr) and exposes one channel address per stream:.</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// logging.rs — FileAppender::new (abridged)</span>
 <span class="kd">let</span><span class="w"> </span><span class="n">app</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">FileAppender</span><span class="p">::</span><span class="n">new</span><span class="p">();</span><span class="w">                </span><span class="c1">// Option&lt;FileAppender&gt;</span>
@@ -1383,7 +1384,7 @@ document.write(`
 </section>
 <hr class="docutils" />
 <section id="rotation-semantics-guarantees">
-<h2>Rotation semantics &amp; guarantees<a class="headerlink" href="#rotation-semantics-guarantees" title="Link to this heading">#</a></h2>
+<h2>Rotation semantics &amp; guarantees<a class="headerlink" href="#rotation-semantics-guarantees" title="Permalink to this heading">#</a></h2>
 <div class="highlight-none notranslate"><div class="highlight"><pre><span></span>•   Rotation: not implemented (today each `FileAppender` creates fresh, uniquely-named files).
 •   Sync &amp; durability: every batch is `flush()`ed by the writer task; a final `flush` happens on task exit and on drop.
 •   Line ordering: per-stream (stdout vs stderr are independent).
@@ -1393,7 +1394,7 @@ document.write(`
 </section>
 <hr class="docutils" />
 <section id="related">
-<h2>Related<a class="headerlink" href="#related" title="Link to this heading">#</a></h2>
+<h2>Related<a class="headerlink" href="#related" title="Permalink to this heading">#</a></h2>
 <ul class="simple">
 <li><p><strong><a class="reference internal" href="stream-forwarders.html"><span class="std std-doc">Stream forwarders</span></a></strong> — where lines are framed and posted to the appender</p></li>
 <li><p><strong><a class="reference internal" href="client.html"><span class="std std-doc">Client actor</span></a></strong> — aggregation/printing on the Python side</p></li>
@@ -1632,7 +1633,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>

@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["PollTarget"],"struct":["DoorBell","IbvQueuePair","PollCompletionError"]};
+window.SIDEBAR_ITEMS = {"enum":["PollTarget"],"mod":["legacy"],"struct":["DoorBell","PollCompletionError","RCQueuePair","WorkRequestError"],"trait":["IbvQueuePair"]};

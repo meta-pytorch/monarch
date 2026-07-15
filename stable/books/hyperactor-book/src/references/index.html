@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -11,12 +12,12 @@
 <meta property="og:type" content="website" />
 <meta property="og:url" content="http://pytorch.org/books/hyperactor-book/src/references/index.html" />
 <meta property="og:site_name" content="Monarch" />
-<meta property="og:description" content="This section documents the reference system used throughout hyperactor to identify and communicate with distributed entities. References are lightweight, serializable identifiers for procs, actors,..." />
+<meta property="og:description" content="This section documents the address system used throughout hyperactor to identify and communicate with distributed entities. Hyperactor separates identity from reachability: ProcId, ActorId, and Por..." />
 <meta property="og:image" content="https://pytorch.org/assets/images/social-share.jpg" />
 <meta property="og:image:alt" content="Monarch" />
-<meta name="description" content="This section documents the reference system used throughout hyperactor to identify and communicate with distributed entities. References are lightweight, serializable identifiers for procs, actors,..." />
+<meta name="description" content="This section documents the address system used throughout hyperactor to identify and communicate with distributed entities. Hyperactor separates identity from reachability: ProcId, ActorId, and Por..." />
 
-    <title>References &#8212; Monarch v0.5.0 documentation</title>
+    <title>References &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
+    <script src="../../../../_static/doctools.js"></script>
+    <script src="../../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../../_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-book/src/references/index';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/references/index.html" />
@@ -82,7 +83,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +197,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1213,9 +1214,10 @@ document.write(`
 <li class="toctree-l1"><a class="reference internal" href="../macros/index.html">Macros</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../channels/index.html">Channels</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../mailboxes/index.html">Mailboxes and Routers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../procs/index.html">Procs</a></li>
 <li class="toctree-l1 current active"><a class="current reference internal" href="#">References</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../remote_supervision.html">Remote Supervision and Rendezvous</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../appendix/index.html">Appendix</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../SUMMARY.html">Summary</a></li>
 </ul>
 </div>
 </nav></div>
@@ -1310,14 +1312,20 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="references">
-<h1>References<a class="headerlink" href="#references" title="Link to this heading">#</a></h1>
-<p>This section documents the reference system used throughout hyperactor to identify and communicate with distributed entities.</p>
-<p>References are lightweight, serializable identifiers for <strong>procs</strong>, <strong>actors</strong>, and <strong>ports</strong>. They are the backbone of addressing and routing in the runtime. Whether you’re sending a message, spawning an actor, or broadcasting to a group, references are how you name things.</p>
+<h1>References<a class="headerlink" href="#references" title="Permalink to this heading">#</a></h1>
+<p>This section documents the address system used throughout hyperactor to identify and communicate with distributed entities.</p>
+<p>Hyperactor separates identity from reachability:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">ProcId</span></code>, <code class="docutils literal notranslate"><span class="pre">ActorId</span></code>, and <code class="docutils literal notranslate"><span class="pre">PortId</span></code> are pure identities.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ProcAddr</span></code>, <code class="docutils literal notranslate"><span class="pre">ActorAddr</span></code>, and <code class="docutils literal notranslate"><span class="pre">PortAddr</span></code> pair those identities with a <code class="docutils literal notranslate"><span class="pre">Location</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Addr</span></code> is the type-erased enum that can hold any of the three address forms.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ActorRef&lt;A&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">PortRef&lt;M&gt;</span></code>, and <code class="docutils literal notranslate"><span class="pre">OncePortRef&lt;M&gt;</span></code> wrap addresses with type information for public APIs.</p></li>
+</ul>
 <p>The reference system is:</p>
 <ul class="simple">
 <li><p><strong>Uniform</strong>: All references follow a shared syntax and structure.</p></li>
 <li><p><strong>Parsable</strong>: References can be round-tripped from strings and manipulated programmatically.</p></li>
-<li><p><strong>Typed</strong>: While the <code class="docutils literal notranslate"><span class="pre">Reference</span></code> enum is typeless and dynamic, typed references like <code class="docutils literal notranslate"><span class="pre">ActorRef&lt;A&gt;</span></code> and <code class="docutils literal notranslate"><span class="pre">PortRef&lt;M&gt;</span></code> allow safe interaction in APIs.</p></li>
+<li><p><strong>Typed</strong>: While <code class="docutils literal notranslate"><span class="pre">Addr</span></code> is typeless and dynamic, typed references like <code class="docutils literal notranslate"><span class="pre">ActorRef&lt;A&gt;</span></code> and <code class="docutils literal notranslate"><span class="pre">PortRef&lt;M&gt;</span></code> allow safe interaction in APIs.</p></li>
 <li><p><strong>Orderable</strong>: References implement a total order, enabling prefix-based routing and sorted maps.</p></li>
 </ul>
 <p>In this section, we’ll cover:</p>
@@ -1330,7 +1338,7 @@ document.write(`
 <li><p><a class="reference internal" href="port_id.html"><span class="std std-doc"><code class="docutils literal notranslate"><span class="pre">PortId</span></code></span></a></p></li>
 </ul>
 </li>
-<li><p>The <a class="reference internal" href="reference.html"><span class="std std-doc">Reference</span></a>, which unifies all reference variants</p>
+<li><p><a class="reference internal" href="reference.html"><span class="std std-doc"><code class="docutils literal notranslate"><span class="pre">Addr</span></code></span></a>, which unifies all address variants</p>
 <ul>
 <li><p><a class="reference internal" href="typed_refs.html"><span class="std std-doc">Typed references</span></a> used in APIs: <code class="docutils literal notranslate"><span class="pre">ActorRef&lt;A&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">PortRef&lt;M&gt;</span></code>, and <code class="docutils literal notranslate"><span class="pre">OncePortRef&lt;M&gt;</span></code></p></li>
 </ul>
@@ -1550,7 +1558,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>
@@ -1579,7 +1587,7 @@ document.write(`
        "headline": "References",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/books/hyperactor-book/src/references/index.html",
-       "articleBody": "References# This section documents the reference system used throughout hyperactor to identify and communicate with distributed entities. References are lightweight, serializable identifiers for procs, actors, and ports. They are the backbone of addressing and routing in the runtime. Whether you\u2019re sending a message, spawning an actor, or broadcasting to a group, references are how you name things. The reference system is: Uniform: All references follow a shared syntax and structure. Parsable: References can be round-tripped from strings and manipulated programmatically. Typed: While the Reference enum is typeless and dynamic, typed references like ActorRef\u003cA\u003e and PortRef\u003cM\u003e allow safe interaction in APIs. Orderable: References implement a total order, enabling prefix-based routing and sorted maps. In this section, we\u2019ll cover: The syntax and string format of references The core reference types: ProcId ActorId PortId The Reference, which unifies all reference variants Typed references used in APIs: ActorRef\u003cA\u003e, PortRef\u003cM\u003e, and OncePortRef\u003cM\u003e",
+       "articleBody": "References# This section documents the address system used throughout hyperactor to identify and communicate with distributed entities. Hyperactor separates identity from reachability: ProcId, ActorId, and PortId are pure identities. ProcAddr, ActorAddr, and PortAddr pair those identities with a Location. Addr is the type-erased enum that can hold any of the three address forms. ActorRef\u003cA\u003e, PortRef\u003cM\u003e, and OncePortRef\u003cM\u003e wrap addresses with type information for public APIs. The reference system is: Uniform: All references follow a shared syntax and structure. Parsable: References can be round-tripped from strings and manipulated programmatically. Typed: While Addr is typeless and dynamic, typed references like ActorRef\u003cA\u003e and PortRef\u003cM\u003e allow safe interaction in APIs. Orderable: References implement a total order, enabling prefix-based routing and sorted maps. In this section, we\u2019ll cover: The syntax and string format of references The core reference types: ProcId ActorId PortId Addr, which unifies all address variants Typed references used in APIs: ActorRef\u003cA\u003e, PortRef\u003cM\u003e, and OncePortRef\u003cM\u003e",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["CallFunctionError","Reduction","ResolvableFunction","StreamCreationMode","WorkerMessage"],"struct":["ActorCallParams","ActorMethodParams","ArgsKwargs","CallFunctionParams","Cloudpickle","Factory","FunctionPath","Ref","SeqError","StreamRef","WorkerActor","WorkerParams"],"trait":["WorkerMessageClient","WorkerMessageHandler"]};

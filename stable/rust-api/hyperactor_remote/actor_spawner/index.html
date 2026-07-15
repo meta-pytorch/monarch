@@ -1,0 +1,77 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Actor interface for remotely spawning actors."><title>hyperactor_remote::actor_spawner - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-17e0aaed.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="hyperactor_remote" data-themes="" data-resource-suffix="" data-rustdoc-version="1.96.0-nightly (02c7f9bec 2026-04-10)" data-channel="nightly" data-search-js="search-b5634cc7.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../sidebar-items.js"></script><script defer src="../../static.files/main-5013f961.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Module actor_spawner</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../hyperactor_remote/index.html">hyperactor_<wbr>remote</a><span class="version">0.0.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module actor_<wbr>spawner</a></h2><h3><a href="#structs">Module Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#traits" title="Traits">Traits</a></li></ul></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="../index.html">In crate hyperactor_<wbr>remote</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">hyperactor_remote</a></div><h1>Module <span>actor_<wbr>spawner</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/hyperactor_remote/actor_spawner.rs.html#9-616">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Actor interface for remotely spawning actors.</p>
+<p><a href="struct.ActorSpawner.html" title="struct hyperactor_remote::actor_spawner::ActorSpawner"><code>ActorSpawner</code></a> is a spawn factory actor. A proc that wants to accept
+dynamic actor spawns runs an <code>ActorSpawner</code> locally and exposes an
+<a href="../../hyperactor/ref_/struct.ActorRef.html" title="struct hyperactor::ref_::ActorRef"><code>ActorRef&lt;ActorSpawner&gt;</code></a> to callers, for example through a token
+rendezvous. A caller can post <a href="struct.SpawnActor.html" title="struct hyperactor_remote::actor_spawner::SpawnActor"><code>SpawnActor</code></a> directly, but most callers
+should use <a href="trait.ActorSpawnerEndpoint.html" title="trait hyperactor_remote::actor_spawner::ActorSpawnerEndpoint"><code>ActorSpawnerEndpoint</code></a>. The extension trait builds the spawn
+request, starts the local supervisor that owns the remote actor lifetime,
+and returns the <a href="../../hyperactor/ref_/struct.ActorRef.html" title="struct hyperactor::ref_::ActorRef"><code>ActorRef</code></a> for the actor that will be created on the
+remote proc.</p>
+<p>Spawning through <a href="trait.ActorSpawnerEndpoint.html" title="trait hyperactor_remote::actor_spawner::ActorSpawnerEndpoint"><code>ActorSpawnerEndpoint</code></a> makes the spawning actor the
+supervisor of the spawned remote actor. Logically, the remote actor becomes
+part of the spawner’s supervision tree even though it runs on another proc:</p>
+<div class="example-wrap"><pre class="language-text"><code>caller proc                         remote proc
+
+caller actor
+`- spawned actor A  -------- runs on --------&gt;  ActorSpawner&#39;s proc</code></pre></div>
+<p>The implementation realizes that logical edge with a caller-side supervisor,
+a remote worker, and a cross-proc session. Boxes are actors. Arrow labels
+are protocol messages.</p>
+<div class="example-wrap"><pre class="language-text"><code>caller proc                                      remote proc
+
+caller actor
+`- [Supervisor] -- SpawnActor ----------------&gt;  [ActorSpawner]
+                                               `- [Worker]
+                                                  `- [spawned actor A]
+
+[Supervisor] &lt;-------- SupervisorEvent -------- [Worker]</code></pre></div>
+<p>The caller-side <a href="../supervision/struct.Supervisor.html" title="struct hyperactor_remote::supervision::Supervisor"><code>Supervisor</code></a> is spawned as a child of the actor that
+requested the remote spawn. Its bootstrap posts <a href="struct.SpawnActor.html" title="struct hyperactor_remote::actor_spawner::SpawnActor"><code>SpawnActor</code></a> to the remote
+<a href="struct.ActorSpawner.html" title="struct hyperactor_remote::actor_spawner::ActorSpawner"><code>ActorSpawner</code></a>. The remote <a href="struct.ActorSpawner.html" title="struct hyperactor_remote::actor_spawner::ActorSpawner"><code>ActorSpawner</code></a> spawns a <a href="../supervision/struct.Worker.html" title="struct hyperactor_remote::supervision::Worker"><code>Worker</code></a> child and asks it
+to deserialize the <a href="../proto/struct.Gspawn.html" title="struct hyperactor_remote::proto::Gspawn"><code>Gspawn</code></a> specification, spawn the requested actor as its
+own child, and attach it to the caller-side supervisor. The caller-side
+supervisor also owns the private liveness machinery that lets either proc
+observe when the other side disappears.</p>
+<p>The resulting lifetime is rooted in the caller’s actor tree. If the caller
+tree stops, <code>Supervisor</code> forwards a stop request to <code>Worker</code>, and <code>Worker</code>
+stops the spawned actor. If the spawned actor fails, <code>Worker</code> reports the
+supervision event to <code>Supervisor</code>, which re-raises it into the caller’s
+supervision tree. If the supervisor session fails, the surviving side turns
+that into a terminal supervision event instead of leaving an orphaned remote
+actor.</p>
+<p>A typical caller only needs the extension trait. The returned <a href="../../hyperactor/ref_/struct.ActorRef.html" title="struct hyperactor::ref_::ActorRef"><code>ActorRef</code></a>
+names where the actor will run, but the remote proc has to spawn and link it
+before it can route — messages sent earlier are dropped. Spawn with a
+readiness port and wait for the signal before messaging the actor:</p>
+
+<div class="example-wrap ignore"><a href="#" class="tooltip" title="This example is not tested">ⓘ</a><pre class="rust rust-example-rendered"><code><span class="kw">use </span>hyperactor::ActorRef;
+<span class="kw">use </span>hyperactor::Context;
+<span class="kw">use </span>hyperactor::Handler;
+<span class="kw">use </span>hyperactor::Label;
+<span class="kw">use </span>hyperactor::RemoteSpawn;
+<span class="kw">use </span>hyperactor::Uid;
+<span class="kw">use </span>hyperactor_remote::ActorSpawner;
+<span class="kw">use </span>hyperactor_remote::ActorSpawnerEndpoint;
+
+<span class="kw">struct </span>Driver {
+    actor_spawner: ActorRef&lt;ActorSpawner&gt;,
+}
+
+<span class="kw">impl </span>Handler&lt;Start&gt; <span class="kw">for </span>Driver {
+    <span class="kw">async fn </span>handle(<span class="kw-2">&amp;mut </span><span class="self">self</span>, cx: <span class="kw-2">&amp;</span>Context&lt;<span class="self">Self</span>&gt;, _start: Start) -&gt; anyhow::Result&lt;()&gt; {
+        <span class="kw">let </span>(ready, ready_rx) = cx.open_once_port::&lt;()&gt;();
+        <span class="kw">let </span>calculator = <span class="self">self</span>.actor_spawner.spawn_uid_with_ready::&lt;Calculator&gt;(
+            cx,
+            Uid::instance(Label::new(<span class="string">"calculator"</span>).unwrap()),
+            CalculatorParams { initial_value: <span class="number">0 </span>},
+            ready,
+        )<span class="question-mark">?</span>;
+        <span class="comment">// The returned ref names the calculator, but it cannot route until
+        // the remote proc spawns and links it. Wait for the readiness signal
+        // first, then message the actor we already hold a ref to.
+        </span>ready_rx.recv().<span class="kw">await</span><span class="question-mark">?</span>;
+        calculator.post(cx, Add { lhs: <span class="number">40</span>, rhs: <span class="number">2 </span>});
+        <span class="prelude-val">Ok</span>(())
+    }
+}
+</code></pre></div></div></details><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.ActorSpawner.html" title="struct hyperactor_remote::actor_spawner::ActorSpawner">Actor<wbr>Spawner</a></dt><dd>Remote actor that accepts dynamic remote spawn requests.</dd><dt><a class="struct" href="struct.SpawnActor.html" title="struct hyperactor_remote::actor_spawner::SpawnActor">Spawn<wbr>Actor</a></dt><dd>The generated behavior struct.</dd></dl><h2 id="traits" class="section-header">Traits<a href="#traits" class="anchor">§</a></h2><dl class="item-table"><dt><a class="trait" href="trait.ActorSpawnerEndpoint.html" title="trait hyperactor_remote::actor_spawner::ActorSpawnerEndpoint">Actor<wbr>Spawner<wbr>Endpoint</a></dt><dd>Convenience methods for endpoints that accept <a href="struct.SpawnActor.html" title="struct hyperactor_remote::actor_spawner::SpawnActor"><code>SpawnActor</code></a> requests.</dd></dl></section></div></main></body></html>

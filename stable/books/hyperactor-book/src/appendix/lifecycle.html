@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -16,7 +17,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="Serialization (Typed → Logical Wire Format): Input: A typed message M(struct, enum, etc.) which may include Part fields for large binary blobs., Process:- Walk M with a custom Serialize impl.- Run ..." />
 
-    <title>Typed Message Lifecycle: Zero-Copy Serialization, Framing, and Cancel-Safe I/O &#8212; Monarch v0.5.0 documentation</title>
+    <title>Typed Message Lifecycle: Zero-Copy Serialization, Framing, and Cancel-Safe I/O &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
+    <script src="../../../../_static/doctools.js"></script>
+    <script src="../../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../../_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-book/src/appendix/lifecycle';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/appendix/lifecycle.html" />
@@ -82,7 +83,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +197,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1293,9 +1294,9 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="typed-message-lifecycle-zero-copy-serialization-framing-and-cancel-safe-i-o">
-<h1>Typed Message Lifecycle: Zero-Copy Serialization, Framing, and Cancel-Safe I/O<a class="headerlink" href="#typed-message-lifecycle-zero-copy-serialization-framing-and-cancel-safe-i-o" title="Link to this heading">#</a></h1>
+<h1>Typed Message Lifecycle: Zero-Copy Serialization, Framing, and Cancel-Safe I/O<a class="headerlink" href="#typed-message-lifecycle-zero-copy-serialization-framing-and-cancel-safe-i-o" title="Permalink to this heading">#</a></h1>
 <section id="serialization-typed-logical-wire-format">
-<h2>Serialization (Typed → Logical Wire Format)<a class="headerlink" href="#serialization-typed-logical-wire-format" title="Link to this heading">#</a></h2>
+<h2>Serialization (Typed → Logical Wire Format)<a class="headerlink" href="#serialization-typed-logical-wire-format" title="Permalink to this heading">#</a></h2>
 <ul class="simple">
 <li><p>Input: A typed message <code class="docutils literal notranslate"><span class="pre">M</span></code> (struct, enum, etc.) which may include <code class="docutils literal notranslate"><span class="pre">Part</span></code> fields for large binary blobs.</p></li>
 <li><p>Process:</p>
@@ -1314,7 +1315,7 @@ document.write(`
 <p>This is the heart of our zero-copy story: large payloads (<code class="docutils literal notranslate"><span class="pre">Part</span></code>) stay in their original <code class="docutils literal notranslate"><span class="pre">Bytes</span></code> allocations, and the body just carries lightweight references.</p>
 </section>
 <section id="framing-logical-message-transport-frame">
-<h2>Framing (Logical Message → Transport Frame)<a class="headerlink" href="#framing-logical-message-transport-frame" title="Link to this heading">#</a></h2>
+<h2>Framing (Logical Message → Transport Frame)<a class="headerlink" href="#framing-logical-message-transport-frame" title="Permalink to this heading">#</a></h2>
 <ul class="simple">
 <li><p>Input: Message from serialization.</p></li>
 <li><p>Process:</p>
@@ -1338,7 +1339,7 @@ document.write(`
 <p><em>Note: “Zero-copy” here refers to user-space: we still incur one unavoidable kernel copy on send (<code class="docutils literal notranslate"><span class="pre">writev</span></code>) and one on receive (<code class="docutils literal notranslate"><span class="pre">read</span></code> into <code class="docutils literal notranslate"><span class="pre">BytesMut</span></code>), but avoid any additional user-space coalescing/copying.</em></p>
 </section>
 <section id="i-o-framewrite-framereader">
-<h2>I/O (FrameWrite / FrameReader)<a class="headerlink" href="#i-o-framewrite-framereader" title="Link to this heading">#</a></h2>
+<h2>I/O (FrameWrite / FrameReader)<a class="headerlink" href="#i-o-framewrite-framereader" title="Permalink to this heading">#</a></h2>
 <ul class="simple">
 <li><p>Send (<code class="docutils literal notranslate"><span class="pre">FrameWrite</span></code>):</p>
 <ul>
@@ -1362,7 +1363,7 @@ document.write(`
 </ul>
 </section>
 <section id="deframing-deserialization-transport-typed">
-<h2>Deframing &amp; Deserialization (Transport → Typed)<a class="headerlink" href="#deframing-deserialization-transport-typed" title="Link to this heading">#</a></h2>
+<h2>Deframing &amp; Deserialization (Transport → Typed)<a class="headerlink" href="#deframing-deserialization-transport-typed" title="Permalink to this heading">#</a></h2>
 <ul class="simple">
 <li><p>Input: Contiguous frame payload.</p>
 <ul>
@@ -1379,7 +1380,7 @@ document.write(`
 </ul>
 </section>
 <section id="highlights">
-<h2>Highlights<a class="headerlink" href="#highlights" title="Link to this heading">#</a></h2>
+<h2>Highlights<a class="headerlink" href="#highlights" title="Permalink to this heading">#</a></h2>
 <ul class="simple">
 <li><p><strong>Zero-copy</strong>: <code class="docutils literal notranslate"><span class="pre">Part</span></code>s (<code class="docutils literal notranslate"><span class="pre">Bytes</span></code>) are never copied—only referenced.</p></li>
 <li><p><strong>Vectorized I/O:</strong> OS-level <code class="docutils literal notranslate"><span class="pre">writev</span></code> (send) and read (<code class="docutils literal notranslate"><span class="pre">recv</span></code>) avoid extra user-space copies</p></li>
@@ -1388,7 +1389,7 @@ document.write(`
 </ul>
 </section>
 <section id="tl-dr">
-<h2>TL;DR<a class="headerlink" href="#tl-dr" title="Link to this heading">#</a></h2>
+<h2>TL;DR<a class="headerlink" href="#tl-dr" title="Permalink to this heading">#</a></h2>
 <ul class="simple">
 <li><p><strong>Send:</strong> <code class="docutils literal notranslate"><span class="pre">serde_multipart::serialize_bincode(M)</span> <span class="pre">-&gt;</span> <span class="pre">Message</span> <span class="pre">→</span> <span class="pre">Message::framed()</span> <span class="pre">-&gt;</span> <span class="pre">impl</span> <span class="pre">Buf</span></code></p></li>
 <li><p><strong>Recv:</strong> <code class="docutils literal notranslate"><span class="pre">FrameReader::next()</span> <span class="pre">-&gt;</span> <span class="pre">Bytes</span> <span class="pre">→</span> <span class="pre">Message::from_framed(Bytes)</span> <span class="pre">-&gt;</span> <span class="pre">Message</span> <span class="pre">→</span> <span class="pre">serde_multipart::deserialize_bincode::&lt;M&gt;(Message)</span> <span class="pre">-&gt;</span> <span class="pre">M</span></code></p></li>
@@ -1625,7 +1626,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>

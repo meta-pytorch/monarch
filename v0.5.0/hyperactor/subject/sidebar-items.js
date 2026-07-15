@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"struct":["Subject"],"trait":["AsSubject"]};

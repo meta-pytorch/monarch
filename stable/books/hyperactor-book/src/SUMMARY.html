@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -11,12 +12,12 @@
 <meta property="og:type" content="website" />
 <meta property="og:url" content="http://pytorch.org/books/hyperactor-book/src/SUMMARY.html" />
 <meta property="og:site_name" content="Monarch" />
-<meta property="og:description" content="Introduction, References- Syntax, ProcId, ActorId, PortId, Reference, Typed References., Mailboxes and Routers- Ports, MailboxSender, Reconfigurable Senders, MailboxServer, MailboxClient, Mailbox, ..." />
+<meta property="og:description" content="Introduction, References- Syntax, ProcId, ActorId, PortId, Addr, Typed References., Mailboxes and Routers- Ports, MailboxSender, Reconfigurable Senders, MailboxServer, MailboxClient, Mailbox, Deliv..." />
 <meta property="og:image" content="https://pytorch.org/assets/images/social-share.jpg" />
 <meta property="og:image:alt" content="Monarch" />
-<meta name="description" content="Introduction, References- Syntax, ProcId, ActorId, PortId, Reference, Typed References., Mailboxes and Routers- Ports, MailboxSender, Reconfigurable Senders, MailboxServer, MailboxClient, Mailbox, ..." />
+<meta name="description" content="Introduction, References- Syntax, ProcId, ActorId, PortId, Addr, Typed References., Mailboxes and Routers- Ports, MailboxSender, Reconfigurable Senders, MailboxServer, MailboxClient, Mailbox, Deliv..." />
 
-    <title>Summary &#8212; Monarch v0.5.0 documentation</title>
+    <title>Summary &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="../../../" id="documentation_options" src="../../../_static/documentation_options.js"></script>
+    <script src="../../../_static/doctools.js"></script>
+    <script src="../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-book/src/SUMMARY';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/SUMMARY.html" />
@@ -82,7 +83,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +197,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -841,7 +842,9 @@ document.write(`
       
       
       
-      <div class="bd-sidebar-primary bd-sidebar">
+        
+      
+      <div class="bd-sidebar-primary bd-sidebar hide-on-wide">
         
 
 
@@ -1202,25 +1205,6 @@ document.write(`
     
   </div>
   
-    <div class="sidebar-primary-items__start sidebar-primary__section">
-        <div class="sidebar-primary-item">
-<nav class="bd-docs-nav bd-links"
-     aria-label="Section Navigation">
-  <p class="bd-links__title" role="heading" aria-level="1">Section Navigation</p>
-  <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">Chapters</span></p>
-<ul class="current nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="actors/index.html">Actors</a></li>
-<li class="toctree-l1"><a class="reference internal" href="macros/index.html">Macros</a></li>
-<li class="toctree-l1"><a class="reference internal" href="channels/index.html">Channels</a></li>
-<li class="toctree-l1"><a class="reference internal" href="mailboxes/index.html">Mailboxes and Routers</a></li>
-<li class="toctree-l1"><a class="reference internal" href="references/index.html">References</a></li>
-<li class="toctree-l1"><a class="reference internal" href="appendix/index.html">Appendix</a></li>
-<li class="toctree-l1 current active"><a class="current reference internal" href="#">Summary</a></li>
-</ul>
-</div>
-</nav></div>
-    </div>
-  
   
   <div class="sidebar-primary-items__end sidebar-primary__section">
   </div>
@@ -1310,7 +1294,7 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="summary">
-<h1>Summary<a class="headerlink" href="#summary" title="Link to this heading">#</a></h1>
+<h1>Summary<a class="headerlink" href="#summary" title="Permalink to this heading">#</a></h1>
 <ul class="simple">
 <li><p><a class="reference internal" href="introduction.html"><span class="std std-doc">Introduction</span></a></p></li>
 <li><p><a class="reference internal" href="references/index.html"><span class="std std-doc">References</span></a></p>
@@ -1319,7 +1303,7 @@ document.write(`
 <li><p><a class="reference internal" href="references/proc_id.html"><span class="std std-doc">ProcId</span></a></p></li>
 <li><p><a class="reference internal" href="references/actor_id.html"><span class="std std-doc">ActorId</span></a></p></li>
 <li><p><a class="reference internal" href="references/port_id.html"><span class="std std-doc">PortId</span></a></p></li>
-<li><p><a class="reference internal" href="references/reference.html"><span class="std std-doc">Reference</span></a></p></li>
+<li><p><a class="reference internal" href="references/reference.html"><span class="std std-doc">Addr</span></a></p></li>
 <li><p><a class="reference internal" href="references/typed_refs.html"><span class="std std-doc">Typed References</span></a></p></li>
 </ul>
 </li>
@@ -1355,8 +1339,8 @@ document.write(`
 <li><p><a class="reference internal" href="procs/index.html"><span class="std std-doc">Procs</span></a></p>
 <ul>
 <li><p><a class="reference internal" href="procs/proc.html"><span class="std std-doc">Proc</span></a></p></li>
+<li><p><a class="reference internal" href="procs/gateway.html"><span class="std std-doc">Gateway</span></a></p></li>
 <li><p><a class="reference internal" href="procs/host.html"><span class="std std-doc">Host</span></a></p></li>
-<li><p><a class="reference internal" href="procs/proc_or_dial.html"><span class="std std-doc">ProcOrDial Router</span></a></p></li>
 </ul>
 </li>
 <li><p><a class="reference internal" href="actors/index.html"><span class="std std-doc">Actors</span></a></p>
@@ -1604,7 +1588,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>
@@ -1633,7 +1617,7 @@ document.write(`
        "headline": "Summary",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/books/hyperactor-book/src/SUMMARY.html",
-       "articleBody": "Summary# Introduction References Syntax ProcId ActorId PortId Reference Typed References Mailboxes and Routers Ports MailboxSender Reconfigurable Senders MailboxServer MailboxClient Mailbox Delivery Semantics Multiplexers Routers Channels Transmits and Receives Channel Addresses Transports Local TCP Unix MetaTLS Frames Network Internals Procs Proc Host ProcOrDial Router Actors Actor Handler RemoteSpawn Remote Registry Referable Binds RemoteHandles ActorHandle Actor Lifecycle Remote Supervision and Rendezvous Macros #[derive(Handler)] #[derive(HandleClient)] #[derive(RefClient)] #[derive(Named)] #[export] #[handle] #[behavior] Appendix Typed Message Lifecycle",
+       "articleBody": "Summary# Introduction References Syntax ProcId ActorId PortId Addr Typed References Mailboxes and Routers Ports MailboxSender Reconfigurable Senders MailboxServer MailboxClient Mailbox Delivery Semantics Multiplexers Routers Channels Transmits and Receives Channel Addresses Transports Local TCP Unix MetaTLS Frames Network Internals Procs Proc Gateway Host Actors Actor Handler RemoteSpawn Remote Registry Referable Binds RemoteHandles ActorHandle Actor Lifecycle Remote Supervision and Rendezvous Macros #[derive(Handler)] #[derive(HandleClient)] #[derive(RefClient)] #[derive(Named)] #[export] #[handle] #[behavior] Appendix Typed Message Lifecycle",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

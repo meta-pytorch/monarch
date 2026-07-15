@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -16,7 +17,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="At this point we already have: a control-side proc + instance (from §1),, a running allocation from the v0 ProcessAllocator(from §2),, and we’ve seen how the child executable comes up in Bootstrap:..." />
 
-    <title>§3 HostMesh from an allocation (what HostMesh::allocate(...) actually does) &#8212; Monarch v0.5.0 documentation</title>
+    <title>§3 HostMesh from an allocation (what HostMesh::allocate(...) actually does) &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
+    <script src="../../../../_static/doctools.js"></script>
+    <script src="../../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../../_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-mesh-book/src/meshes/bootstrapping-hostmesh-from-allocation';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-mesh-book/src/meshes/bootstrapping-hostmesh-from-allocation.html" />
@@ -82,7 +83,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +197,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1293,7 +1294,7 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="hostmesh-from-an-allocation-what-hostmesh-allocate-actually-does">
-<h1>§3 HostMesh from an allocation (what <code class="docutils literal notranslate"><span class="pre">HostMesh::allocate(...)</span></code> actually does)<a class="headerlink" href="#hostmesh-from-an-allocation-what-hostmesh-allocate-actually-does" title="Link to this heading">#</a></h1>
+<h1>§3 HostMesh from an allocation (what <code class="docutils literal notranslate"><span class="pre">HostMesh::allocate(...)</span></code> actually does)<a class="headerlink" href="#hostmesh-from-an-allocation-what-hostmesh-allocate-actually-does" title="Permalink to this heading">#</a></h1>
 <p>At this point we already have:</p>
 <ul class="simple">
 <li><p>a control-side proc + instance (from §1),</p></li>
@@ -1309,7 +1310,7 @@ document.write(`
 </div>
 <p>This is the step that turns “I have OS processes that can run a proc” into “I have real hosts I can talk to.”</p>
 <section id="inputs">
-<h2>3.1 Inputs<a class="headerlink" href="#inputs" title="Link to this heading">#</a></h2>
+<h2>3.1 Inputs<a class="headerlink" href="#inputs" title="Permalink to this heading">#</a></h2>
 <p>The function is:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// from hyperactor_mesh/src/host_mesh.rs</span>
 <span class="k">pub</span><span class="w"> </span><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">allocate</span><span class="p">(</span>
@@ -1329,7 +1330,7 @@ document.write(`
 <p>So this function <strong>consumes</strong> an allocation; it doesn’t spawn OS processes by itself.</p>
 </section>
 <section id="first-turn-the-allocation-into-a-proc-mesh">
-<h2>3.2 First: turn the allocation into a proc-mesh<a class="headerlink" href="#first-turn-the-allocation-into-a-proc-mesh" title="Link to this heading">#</a></h2>
+<h2>3.2 First: turn the allocation into a proc-mesh<a class="headerlink" href="#first-turn-the-allocation-into-a-proc-mesh" title="Permalink to this heading">#</a></h2>
 <p>The first real work <code class="docutils literal notranslate"><span class="pre">HostMesh::allocate(...)</span></code> does is to <strong>consume</strong> the <code class="docutils literal notranslate"><span class="pre">Alloc</span></code> you handed it and turn it into a <code class="docutils literal notranslate"><span class="pre">ProcMesh</span></code>:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// from hyperactor_mesh/src/host_mesh.rs (`fn HostMesh::allocate`)</span>
 <span class="kd">let</span><span class="w"> </span><span class="n">transport</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">alloc</span><span class="p">.</span><span class="n">transport</span><span class="p">();</span>
@@ -1416,7 +1417,7 @@ Once it has all ranks, it returns a <code class="docutils literal notranslate"><
 </ul>
 </section>
 <section id="then-tell-each-proc-to-become-a-host-the-trampoline-step">
-<h2>3.3 Then: tell each proc to become a host (the trampoline step)<a class="headerlink" href="#then-tell-each-proc-to-become-a-host-the-trampoline-step" title="Link to this heading">#</a></h2>
+<h2>3.3 Then: tell each proc to become a host (the trampoline step)<a class="headerlink" href="#then-tell-each-proc-to-become-a-host-the-trampoline-step" title="Permalink to this heading">#</a></h2>
 <p>Right after turning the allocation into a <code class="docutils literal notranslate"><span class="pre">ProcMesh</span></code>, the code does:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// from hyperactor_mesh/src/host_mesh.rs `HostMesh::allocate()`</span>
 <span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="n">mesh_agents</span><span class="p">,</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">mesh_agents_rx</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">cx</span><span class="p">.</span><span class="n">mailbox</span><span class="p">().</span><span class="n">open_port</span><span class="p">();</span>
@@ -1482,7 +1483,7 @@ Once it has all ranks, it returns a <code class="docutils literal notranslate"><
 <p>After this, the parent just waits on <code class="docutils literal notranslate"><span class="pre">mesh_agents_rx.recv()</span></code> once per rank (see §3.4).</p>
 </section>
 <section id="collect-one-agent-per-rank">
-<h2>3.4 Collect one agent per rank<a class="headerlink" href="#collect-one-agent-per-rank" title="Link to this heading">#</a></h2>
+<h2>3.4 Collect one agent per rank<a class="headerlink" href="#collect-one-agent-per-rank" title="Permalink to this heading">#</a></h2>
 <p>After spawning those trampolines, <code class="docutils literal notranslate"><span class="pre">HostMesh::allocate()</span></code> does:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// from hyperactor_mesh/src/host_mesh.rs `HostMesh::allocate()`</span>
 <span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">hosts</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">Vec</span><span class="p">::</span><span class="n">new</span><span class="p">();</span>
@@ -1516,7 +1517,7 @@ Once it has all ranks, it returns a <code class="docutils literal notranslate"><
 <p>At the end of that loop we have a <code class="docutils literal notranslate"><span class="pre">Vec&lt;HostRef&gt;</span></code> — one per remote OS process we allocated.</p>
 </section>
 <section id="what-the-trampoline-actually-does-remote-side">
-<h2>3.5 What the trampoline actually does (remote side)<a class="headerlink" href="#what-the-trampoline-actually-does-remote-side" title="Link to this heading">#</a></h2>
+<h2>3.5 What the trampoline actually does (remote side)<a class="headerlink" href="#what-the-trampoline-actually-does-remote-side" title="Permalink to this heading">#</a></h2>
 <p>This is the bit from <code class="docutils literal notranslate"><span class="pre">hyperactor_mesh/src/host_mesh.rs</span></code> right after we opened the port and before we start collecting agents:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// from hyperactor_mesh/src/host_mesh.rs `HostMesh::allocate()`</span>
 <span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="n">mesh_agents</span><span class="p">,</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">mesh_agents_rx</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">cx</span><span class="p">.</span><span class="n">mailbox</span><span class="p">().</span><span class="n">open_port</span><span class="p">();</span>
@@ -1563,7 +1564,7 @@ In §3.4 we loop over <code class="docutils literal notranslate"><span class="pr
 <p>So the trampoline is the “last mile” that runs <em>inside the child process</em> and upgrades “I am a proc the allocator asked for” → “I am a host with a service proc and a host-mesh agent, and here is my agent ref.”</p>
 </section>
 <section id="assemble-the-hostmesh">
-<h2>3.6 Assemble the <code class="docutils literal notranslate"><span class="pre">HostMesh</span></code><a class="headerlink" href="#assemble-the-hostmesh" title="Link to this heading">#</a></h2>
+<h2>3.6 Assemble the <code class="docutils literal notranslate"><span class="pre">HostMesh</span></code><a class="headerlink" href="#assemble-the-hostmesh" title="Permalink to this heading">#</a></h2>
 <p>At this point in <code class="docutils literal notranslate"><span class="pre">hyperactor_mesh/src/host_mesh.rs</span></code> (inside <code class="docutils literal notranslate"><span class="pre">HostMesh::allocate(...)</span></code>) we’ve already:</p>
 <ul class="simple">
 <li><p>turned the <code class="docutils literal notranslate"><span class="pre">Alloc</span></code> into a <code class="docutils literal notranslate"><span class="pre">ProcMesh</span></code> (one proc per rank, running in the OS processes the allocator started),</p></li>
@@ -1613,7 +1614,7 @@ This builds the lightweight, non-owning view over the same hosts:</p>
 <p>Put differently: <strong><code class="docutils literal notranslate"><span class="pre">HostMesh::allocate(...)</span></code> ends by freezing the dynamic bootstrap we just did (alloc → proc-mesh → trampolines → host agents) into a single owned value that remembers all the pieces it must later shut down.</strong></p>
 </section>
 <section id="how-this-fits-the-flow">
-<h2>3.7 How this fits the flow<a class="headerlink" href="#how-this-fits-the-flow" title="Link to this heading">#</a></h2>
+<h2>3.7 How this fits the flow<a class="headerlink" href="#how-this-fits-the-flow" title="Permalink to this heading">#</a></h2>
 <p>So now the flow looks like:</p>
 <ol class="arabic simple">
 <li><p>parent has a proc + instance (can send/receive)</p></li>
@@ -1855,7 +1856,7 @@ This builds the lightweight, non-owning view over the same hosts:</p>
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>

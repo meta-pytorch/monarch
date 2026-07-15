@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -16,7 +17,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="Monarch supports pdb debugging for python actor meshes. This guide demonstrates how to debug distributed actors using Python’s built-in debugger with breakpoints, step-through debugging, and intera..." />
 
-    <title>Debugging Python Actors with pdb in Monarch &#8212; Monarch v0.5.0 documentation</title>
+    <title>Debugging Python Actors with pdb in Monarch &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="../../" id="documentation_options" src="../../_static/documentation_options.js"></script>
+    <script src="../../_static/doctools.js"></script>
+    <script src="../../_static/sphinx_highlight.js"></script>
+    <script src="../../_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'generated/examples/debugging';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/generated/examples/debugging.html" />
@@ -84,7 +85,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="api">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -198,7 +199,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1339,7 +1340,7 @@ document.write(`
 to download the full example code</p>
 </div>
 <section class="sphx-glr-example-title" id="debugging-python-actors-with-pdb-in-monarch">
-<span id="sphx-glr-generated-examples-debugging-py"></span><h1>Debugging Python Actors with pdb in Monarch<a class="headerlink" href="#debugging-python-actors-with-pdb-in-monarch" title="Link to this heading">#</a></h1>
+<span id="sphx-glr-generated-examples-debugging-py"></span><h1>Debugging Python Actors with pdb in Monarch<a class="headerlink" href="#debugging-python-actors-with-pdb-in-monarch" title="Permalink to this heading">#</a></h1>
 <p>Monarch supports <code class="docutils literal notranslate"><span class="pre">pdb</span></code> debugging for python actor meshes. This guide demonstrates
 how to debug distributed actors using Python’s built-in debugger with breakpoints,
 step-through debugging, and interactive debugging sessions. It includes:</p>
@@ -1351,7 +1352,7 @@ step-through debugging, and interactive debugging sessions. It includes:</p>
 <li><p>Post-mortem debugging capabilities</p></li>
 </ul>
 <section id="defining-an-actor-with-breakpoints">
-<h2>Defining an Actor with Breakpoints<a class="headerlink" href="#defining-an-actor-with-breakpoints" title="Link to this heading">#</a></h2>
+<h2>Defining an Actor with Breakpoints<a class="headerlink" href="#defining-an-actor-with-breakpoints" title="Permalink to this heading">#</a></h2>
 <p>To debug an actor, simply define your python actor and insert typical breakpoints
 in the relevant endpoint that you want to debug using Python’s built-in <code class="docutils literal notranslate"><span class="pre">breakpoint()</span></code>.</p>
 <p><strong>Note: Currently, debug sessions are indexed by actor name + rank. This means that
@@ -1389,7 +1390,7 @@ at the moment.</strong></p>
 </div>
 </section>
 <section id="setting-up-the-debug-session">
-<h2>Setting Up the Debug Session<a class="headerlink" href="#setting-up-the-debug-session" title="Link to this heading">#</a></h2>
+<h2>Setting Up the Debug Session<a class="headerlink" href="#setting-up-the-debug-session" title="Permalink to this heading">#</a></h2>
 <p>The monarch debug server listens for breakpoints at a TCP address
 determined by these environment variables:</p>
 <ul class="simple">
@@ -1410,7 +1411,7 @@ determined by these environment variables:</p>
 </div>
 </section>
 <section id="using-the-monarch-debugger">
-<h2>Using the Monarch Debugger<a class="headerlink" href="#using-the-monarch-debugger" title="Link to this heading">#</a></h2>
+<h2>Using the Monarch Debugger<a class="headerlink" href="#using-the-monarch-debugger" title="Permalink to this heading">#</a></h2>
 <p>To access the debugger, from a separate terminal with conda activated and monarch installed, run:</p>
 <div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>monarch<span class="w"> </span>debug
 </pre></div>
@@ -1434,7 +1435,7 @@ about each breakpoint including actor name, rank, coordinates, hostname,
 function, and line number.</p>
 </section>
 <section id="attaching-to-a-specific-actor">
-<h2>Attaching to a Specific Actor<a class="headerlink" href="#attaching-to-a-specific-actor" title="Link to this heading">#</a></h2>
+<h2>Attaching to a Specific Actor<a class="headerlink" href="#attaching-to-a-specific-actor" title="Permalink to this heading">#</a></h2>
 <p>From the <code class="docutils literal notranslate"><span class="pre">monarch_dbg&gt;</span></code> prompt, you can dive into a specific actor/breakpoint
 using the <code class="docutils literal notranslate"><span class="pre">attach</span></code> command, specifying the <em>name</em> and <em>rank</em> of the actor:</p>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>monarch_dbg&gt; attach debugee 13
@@ -1460,7 +1461,7 @@ Attached to debug session for rank 13 (your.host.com)
 can detach early using the <code class="docutils literal notranslate"><span class="pre">detach</span></code> command.</p>
 </section>
 <section id="casting-commands-to-multiple-actors">
-<h2>Casting Commands to Multiple Actors<a class="headerlink" href="#casting-commands-to-multiple-actors" title="Link to this heading">#</a></h2>
+<h2>Casting Commands to Multiple Actors<a class="headerlink" href="#casting-commands-to-multiple-actors" title="Permalink to this heading">#</a></h2>
 <p>You can send <code class="docutils literal notranslate"><span class="pre">pdb</span></code> commands to multiple actors on the same actor mesh at once
 using the <code class="docutils literal notranslate"><span class="pre">cast</span></code> command. The usage is:</p>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>monarch_dbg&gt; cast &lt;actor_name&gt; ranks(&lt;ranks&gt;) &lt;pdb_command&gt;
@@ -1481,7 +1482,7 @@ monarch_dbg&gt; cast debugee ranks(host=2:4, gpus=1:3) c  # casts `c` to ranks w
 </div>
 </section>
 <section id="post-mortem-debugging">
-<h2>Post-Mortem Debugging<a class="headerlink" href="#post-mortem-debugging" title="Link to this heading">#</a></h2>
+<h2>Post-Mortem Debugging<a class="headerlink" href="#post-mortem-debugging" title="Permalink to this heading">#</a></h2>
 <p>If an actor endpoint raises an error after a breakpoint has been hit,
 execution will stop where the error was raised to allow for post-mortem
 debugging. This is currently enabled by default and requires that the
@@ -1491,7 +1492,7 @@ raises a ValueError, allowing you to inspect the state at the point
 of failure.</p>
 </section>
 <section id="continuing-execution">
-<h2>Continuing Execution<a class="headerlink" href="#continuing-execution" title="Link to this heading">#</a></h2>
+<h2>Continuing Execution<a class="headerlink" href="#continuing-execution" title="Permalink to this heading">#</a></h2>
 <p>To allow execution to continue, from the <code class="docutils literal notranslate"><span class="pre">monarch_dbg&gt;</span></code> prompt,
 simply enter <code class="docutils literal notranslate"><span class="pre">c</span></code> or <code class="docutils literal notranslate"><span class="pre">continue</span></code>. This will clear any non-hardcoded
 breakpoints and cast the “<code class="docutils literal notranslate"><span class="pre">continue</span></code>” <code class="docutils literal notranslate"><span class="pre">pdb</span></code> command to all ranks
@@ -1636,6 +1637,30 @@ currently stopped at a breakpoint.</p>
 </ul>
   </nav></div>
     
+       <div class="sidebar-secondary-item">
+
+  
+  <div class="tocsection editthispage">
+    <a href="https://github.com/meta-pytorch/monarch/edit/main/docs/source/generated/examples/debugging.rst">
+      <i class="fa-solid fa-pencil"></i>
+      
+      
+        
+          Edit on GitHub
+        
+      
+    </a>
+  </div>
+</div>
+    
+       <div class="sidebar-secondary-item">
+    <div class="tocsection sourcelink">
+      <a href="../../_sources/generated/examples/debugging.rst.txt">
+        <i class="fa-solid fa-file-lines"></i> Show Source
+      </a>
+    </div>
+</div>
+    
 
 
 
@@ -1751,7 +1776,7 @@ currently stopped at a breakpoint.</p>
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>

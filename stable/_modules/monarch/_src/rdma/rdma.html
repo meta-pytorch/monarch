@@ -1,13 +1,14 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>monarch._src.rdma.rdma &#8212; Monarch v0.5.0 documentation</title>
+    <title>monarch._src.rdma.rdma &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -27,37 +28,31 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
-    <script type="module" src="https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs"></script>
-    <script type="module" src="https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0.1.4/dist/mermaid-layout-elk.esm.min.mjs"></script>
-    <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs";import elkLayouts from "https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0.1.4/dist/mermaid-layout-elk.esm.min.mjs";mermaid.registerLayoutLoaders(elkLayouts);mermaid.initialize({startOnLoad:false});</script>
-    <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
-    <script type="module">
-import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs";
-window.addEventListener("load", () => mermaid.run());
-</script>
+    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
+    <script src="../../../../_static/doctools.js"></script>
+    <script src="../../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../../_static/design-tabs.js"></script>
+    <script src="https://unpkg.com/mermaid@10.2.0/dist/mermaid.min.js"></script>
+    <script>mermaid.initialize({startOnLoad:true});</script>
     <script>DOCUMENTATION_OPTIONS.pagename = '_modules/monarch/_src/rdma/rdma';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/_modules/monarch/_src/rdma/rdma.html" />
@@ -81,7 +76,7 @@ window.addEventListener("load", () => mermaid.run());
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -195,7 +190,7 @@ window.addEventListener("load", () => mermaid.run());
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1304,14 +1299,13 @@ document.write(`
 <span class="c1"># LICENSE file in the root directory of this source tree.</span>
 
 <span class="c1"># pyre-unsafe</span>
-<span class="kn">import</span><span class="w"> </span><span class="nn">ctypes</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">functools</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">sys</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">threading</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">warnings</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">collections</span><span class="w"> </span><span class="kn">import</span> <span class="n">defaultdict</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">enum</span><span class="w"> </span><span class="kn">import</span> <span class="n">Enum</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Any</span><span class="p">,</span> <span class="n">cast</span><span class="p">,</span> <span class="n">Dict</span><span class="p">,</span> <span class="n">List</span><span class="p">,</span> <span class="n">Optional</span><span class="p">,</span> <span class="n">Tuple</span><span class="p">,</span> <span class="n">TYPE_CHECKING</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">weakref</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Any</span><span class="p">,</span> <span class="n">cast</span><span class="p">,</span> <span class="n">Dict</span><span class="p">,</span> <span class="n">Optional</span><span class="p">,</span> <span class="n">Tuple</span><span class="p">,</span> <span class="n">TYPE_CHECKING</span>
 
 <span class="k">if</span> <span class="n">TYPE_CHECKING</span><span class="p">:</span>
     <span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
@@ -1322,37 +1316,78 @@ document.write(`
 <span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.actor.future</span><span class="w"> </span><span class="kn">import</span> <span class="n">Future</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.actor.proc_mesh</span><span class="w"> </span><span class="kn">import</span> <span class="n">get_or_spawn_controller</span><span class="p">,</span> <span class="n">ProcMesh</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">pyre_extensions</span><span class="w"> </span><span class="kn">import</span> <span class="n">none_throws</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">typing_extensions</span><span class="w"> </span><span class="kn">import</span> <span class="n">Self</span>
 
 <span class="n">_NATIVE_RDMA_IMPORT_ERROR</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="ne">ImportError</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
 
 <span class="k">try</span><span class="p">:</span>
     <span class="kn">from</span><span class="w"> </span><span class="nn">monarch._rust_bindings.rdma</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+        <span class="n">_assert_1d_contiguous</span><span class="p">,</span>
+        <span class="n">_get_memoryview_addr_and_size</span><span class="p">,</span>
+        <span class="n">_get_tensor_addr_and_size</span><span class="p">,</span>
         <span class="n">_LocalMemoryHandle</span><span class="p">,</span>
+        <span class="n">_make_local_memory_handle_from_memoryview</span><span class="p">,</span>
+        <span class="n">_make_local_memory_handle_from_tensor</span><span class="p">,</span>
+        <span class="n">_RdmaAction</span><span class="p">,</span>
         <span class="n">_RdmaBuffer</span><span class="p">,</span>
         <span class="n">_RdmaManager</span><span class="p">,</span>
+        <span class="n">_WeakLocalMemoryHandle</span><span class="p">,</span>
         <span class="n">is_ibverbs_available</span> <span class="k">as</span> <span class="n">_is_ibverbs_available</span><span class="p">,</span>
         <span class="n">rdma_supported</span> <span class="k">as</span> <span class="n">_rdma_supported</span><span class="p">,</span>
     <span class="p">)</span>
 <span class="k">except</span> <span class="ne">ImportError</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
-    <span class="n">_NATIVE_RDMA_IMPORT_ERROR</span> <span class="o">=</span> <span class="n">e</span>
-    <span class="n">logging</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s2">&quot;RDMA native bindings are not available: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">e</span><span class="p">)</span>
+    <span class="c1"># These fallbacks let the module import on platforms without the native</span>
+    <span class="c1"># RDMA bindings; every entry point raises on use. We hide them from the</span>
+    <span class="c1"># type checker with `if not TYPE_CHECKING` so it resolves these names to</span>
+    <span class="c1"># their real types from the `try` import (via the `.pyi` stub) rather</span>
+    <span class="c1"># than the catch-all `_UnavailableNativeBinding`, which has none of the</span>
+    <span class="c1"># real attributes. At runtime `TYPE_CHECKING` is `False`, so the</span>
+    <span class="c1"># fallbacks below are the ones that take effect.</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">TYPE_CHECKING</span><span class="p">:</span>
+        <span class="n">_NATIVE_RDMA_IMPORT_ERROR</span> <span class="o">=</span> <span class="n">e</span>
+        <span class="n">logging</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s2">&quot;RDMA native bindings are not available: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">e</span><span class="p">)</span>
 
-    <span class="k">class</span><span class="w"> </span><span class="nc">_UnavailableNativeBinding</span><span class="p">:</span>
-        <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">class</span><span class="w"> </span><span class="nc">_UnavailableNativeBinding</span><span class="p">:</span>
+            <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="ne">ImportError</span><span class="p">(</span>
+                    <span class="s2">&quot;RDMA native bindings are not available on this platform&quot;</span>
+                <span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">_NATIVE_RDMA_IMPORT_ERROR</span>
+
+        <span class="n">_LocalMemoryHandle</span> <span class="o">=</span> <span class="n">_UnavailableNativeBinding</span>
+        <span class="n">_WeakLocalMemoryHandle</span> <span class="o">=</span> <span class="n">_UnavailableNativeBinding</span>
+        <span class="n">_RdmaAction</span> <span class="o">=</span> <span class="n">_UnavailableNativeBinding</span>
+        <span class="n">_RdmaBuffer</span> <span class="o">=</span> <span class="n">_UnavailableNativeBinding</span>
+        <span class="n">_RdmaManager</span> <span class="o">=</span> <span class="n">_UnavailableNativeBinding</span>
+
+        <span class="k">def</span><span class="w"> </span><span class="nf">_make_local_memory_handle_from_memoryview</span><span class="p">(</span><span class="n">mv</span><span class="p">:</span> <span class="nb">memoryview</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Any</span><span class="p">:</span>
             <span class="k">raise</span> <span class="ne">ImportError</span><span class="p">(</span>
                 <span class="s2">&quot;RDMA native bindings are not available on this platform&quot;</span>
             <span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">_NATIVE_RDMA_IMPORT_ERROR</span>
 
-    <span class="n">_LocalMemoryHandle</span> <span class="o">=</span> <span class="n">_UnavailableNativeBinding</span>
-    <span class="n">_RdmaBuffer</span> <span class="o">=</span> <span class="n">_UnavailableNativeBinding</span>
-    <span class="n">_RdmaManager</span> <span class="o">=</span> <span class="n">_UnavailableNativeBinding</span>
+        <span class="k">def</span><span class="w"> </span><span class="nf">_make_local_memory_handle_from_tensor</span><span class="p">(</span><span class="n">tensor</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Any</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ImportError</span><span class="p">(</span>
+                <span class="s2">&quot;RDMA native bindings are not available on this platform&quot;</span>
+            <span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">_NATIVE_RDMA_IMPORT_ERROR</span>
 
-    <span class="k">def</span><span class="w"> </span><span class="nf">_is_ibverbs_available</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
-        <span class="k">return</span> <span class="kc">False</span>
+        <span class="k">def</span><span class="w"> </span><span class="nf">_assert_1d_contiguous</span><span class="p">(</span><span class="n">buf</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ImportError</span><span class="p">(</span>
+                <span class="s2">&quot;RDMA native bindings are not available on this platform&quot;</span>
+            <span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">_NATIVE_RDMA_IMPORT_ERROR</span>
 
-    <span class="k">def</span><span class="w"> </span><span class="nf">_rdma_supported</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
-        <span class="k">return</span> <span class="kc">False</span>
+        <span class="k">def</span><span class="w"> </span><span class="nf">_get_memoryview_addr_and_size</span><span class="p">(</span><span class="n">mv</span><span class="p">:</span> <span class="nb">memoryview</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">]:</span>
+            <span class="k">raise</span> <span class="ne">ImportError</span><span class="p">(</span>
+                <span class="s2">&quot;RDMA native bindings are not available on this platform&quot;</span>
+            <span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">_NATIVE_RDMA_IMPORT_ERROR</span>
+
+        <span class="k">def</span><span class="w"> </span><span class="nf">_get_tensor_addr_and_size</span><span class="p">(</span><span class="n">tensor</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">]:</span>
+            <span class="k">raise</span> <span class="ne">ImportError</span><span class="p">(</span>
+                <span class="s2">&quot;RDMA native bindings are not available on this platform&quot;</span>
+            <span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">_NATIVE_RDMA_IMPORT_ERROR</span>
+
+        <span class="k">def</span><span class="w"> </span><span class="nf">_is_ibverbs_available</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+            <span class="k">return</span> <span class="kc">False</span>
+
+        <span class="k">def</span><span class="w"> </span><span class="nf">_rdma_supported</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+            <span class="k">return</span> <span class="kc">False</span>
 
 
 <span class="c1"># RDMARead/WriteTransferWarnings are warnings that are only printed once per process.</span>
@@ -1374,17 +1409,12 @@ document.write(`
 <span class="n">warnings</span><span class="o">.</span><span class="n">simplefilter</span><span class="p">(</span><span class="s2">&quot;once&quot;</span><span class="p">,</span> <span class="n">RDMATcpFallbackWarning</span><span class="p">)</span>
 
 
-<div class="viewcode-block" id="is_ibverbs_available">
-<a class="viewcode-back" href="../../../../api/monarch.rdma.html#monarch.rdma.is_ibverbs_available">[docs]</a>
-<span class="k">def</span><span class="w"> </span><span class="nf">is_ibverbs_available</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<div class="viewcode-block" id="is_ibverbs_available"><a class="viewcode-back" href="../../../../api/monarch.rdma.html#monarch.rdma.is_ibverbs_available">[docs]</a><span class="k">def</span><span class="w"> </span><span class="nf">is_ibverbs_available</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Whether ibverbs RDMA hardware is available on this system.&quot;&quot;&quot;</span>
     <span class="k">return</span> <span class="n">_is_ibverbs_available</span><span class="p">()</span></div>
 
 
-
-<div class="viewcode-block" id="is_rdma_available">
-<a class="viewcode-back" href="../../../../api/monarch.rdma.html#monarch.rdma.is_rdma_available">[docs]</a>
-<span class="k">def</span><span class="w"> </span><span class="nf">is_rdma_available</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<div class="viewcode-block" id="is_rdma_available"><a class="viewcode-back" href="../../../../api/monarch.rdma.html#monarch.rdma.is_rdma_available">[docs]</a><span class="k">def</span><span class="w"> </span><span class="nf">is_rdma_available</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Whether RDMA over ibverbs is available on this system.</span>
 
 <span class="sd">    .. deprecated::</span>
@@ -1403,10 +1433,7 @@ document.write(`
     <span class="k">return</span> <span class="n">is_ibverbs_available</span><span class="p">()</span></div>
 
 
-
-<div class="viewcode-block" id="get_rdma_backend">
-<a class="viewcode-back" href="../../../../api/monarch.rdma.html#monarch.rdma.get_rdma_backend">[docs]</a>
-<span class="k">def</span><span class="w"> </span><span class="nf">get_rdma_backend</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+<div class="viewcode-block" id="get_rdma_backend"><a class="viewcode-back" href="../../../../api/monarch.rdma.html#monarch.rdma.get_rdma_backend">[docs]</a><span class="k">def</span><span class="w"> </span><span class="nf">get_rdma_backend</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Return available RDMA backend.</span>
 
 <span class="sd">    Returns:</span>
@@ -1421,7 +1448,6 @@ document.write(`
         <span class="k">return</span> <span class="s2">&quot;tcp&quot;</span>
 
     <span class="k">return</span> <span class="s2">&quot;none&quot;</span></div>
-
 
 
 <span class="c1"># Cached so that we don&#39;t have to call out to the root client every time,</span>
@@ -1442,14 +1468,6 @@ document.write(`
     <span class="k">return</span> <span class="n">PythonTask</span><span class="o">.</span><span class="n">from_coroutine</span><span class="p">(</span><span class="n">task</span><span class="p">())</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
 
 
-<span class="k">def</span><span class="w"> </span><span class="nf">_get_error</span><span class="p">(</span><span class="n">buf</span><span class="p">:</span> <span class="nb">object</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="ne">ValueError</span><span class="p">:</span>
-    <span class="k">return</span> <span class="ne">ValueError</span><span class="p">(</span>
-        <span class="s2">&quot;RDMABuffer only supports 1d contiguous torch.Tensor or 1d c-contiguous memoryview. Got: </span><span class="si">{}</span><span class="s2">&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span>
-            <span class="n">buf</span>
-        <span class="p">)</span>
-    <span class="p">)</span>
-
-
 <span class="k">def</span><span class="w"> </span><span class="nf">_is_torch_tensor</span><span class="p">(</span><span class="n">obj</span><span class="p">:</span> <span class="nb">object</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Check whether obj is a torch.Tensor without importing torch.&quot;&quot;&quot;</span>
     <span class="n">torch_mod</span> <span class="o">=</span> <span class="n">sys</span><span class="o">.</span><span class="n">modules</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;torch&quot;</span><span class="p">)</span>
@@ -1458,56 +1476,82 @@ document.write(`
     <span class="k">return</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">obj</span><span class="p">,</span> <span class="n">torch_mod</span><span class="o">.</span><span class="n">Tensor</span><span class="p">)</span>
 
 
-<span class="k">def</span><span class="w"> </span><span class="nf">_assert_1d_contiguous</span><span class="p">(</span><span class="n">buf</span><span class="p">:</span> <span class="s2">&quot;torch.Tensor | memoryview&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-    <span class="k">if</span> <span class="n">_is_torch_tensor</span><span class="p">(</span><span class="n">buf</span><span class="p">):</span>
-        <span class="k">if</span> <span class="n">buf</span><span class="o">.</span><span class="n">dim</span><span class="p">()</span> <span class="o">!=</span> <span class="mi">1</span> <span class="ow">or</span> <span class="ow">not</span> <span class="n">buf</span><span class="o">.</span><span class="n">is_contiguous</span><span class="p">():</span>  <span class="c1"># type: ignore[union-attr]</span>
-            <span class="k">raise</span> <span class="n">_get_error</span><span class="p">(</span><span class="n">buf</span><span class="p">)</span>
-    <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">buf</span><span class="p">,</span> <span class="nb">memoryview</span><span class="p">):</span>
-        <span class="k">if</span> <span class="n">buf</span><span class="o">.</span><span class="n">ndim</span> <span class="o">!=</span> <span class="mi">1</span> <span class="ow">or</span> <span class="ow">not</span> <span class="n">buf</span><span class="o">.</span><span class="n">c_contiguous</span><span class="p">:</span>
-            <span class="k">raise</span> <span class="n">_get_error</span><span class="p">(</span><span class="n">buf</span><span class="p">)</span>
-    <span class="k">else</span><span class="p">:</span>
-        <span class="k">raise</span> <span class="n">_get_error</span><span class="p">(</span><span class="n">buf</span><span class="p">)</span>
+<span class="c1"># Cache of weak handles to local memory regions, keyed by</span>
+<span class="c1"># `(backing_id, addr, size)`. `backing_id` is `id(t.untyped_storage())`</span>
+<span class="c1"># for tensors and `id(mv)` for memoryviews — the id of the stable</span>
+<span class="c1"># backing object, not of any per-call view. Transient tensor views like</span>
+<span class="c1"># `tensor.view(...).flatten()` share their storage&#39;s id and so reuse one</span>
+<span class="c1"># entry; distinct memoryviews over the same buffer keep separate entries</span>
+<span class="c1"># (their ids differ). `addr` and `size` further disambiguate slices of</span>
+<span class="c1"># one backing.</span>
+<span class="c1">#</span>
+<span class="c1"># The cached `_WeakLocalMemoryHandle` does NOT pin the backing, so the</span>
+<span class="c1"># cache cannot prolong an allocation&#39;s lifetime. Eviction is driven by</span>
+<span class="c1"># a `weakref` to the backing — a tensor&#39;s `untyped_storage()` or the</span>
+<span class="c1"># memoryview itself — whose callback drops the entry once the backing</span>
+<span class="c1"># is garbage-collected.</span>
+<span class="n">_local_memory_cache</span><span class="p">:</span> <span class="s2">&quot;Dict[Tuple[int, int, int], _WeakLocalMemoryHandle]&quot;</span> <span class="o">=</span> <span class="p">{}</span>
+<span class="c1"># Eviction weakrefs, keyed identically. Holding the weakref alive is</span>
+<span class="c1"># what lets its callback fire; the callback removes the entry only when</span>
+<span class="c1"># its own weakref is still the registered one, so a stale callback</span>
+<span class="c1"># cannot evict a fresh registration whose backing reused a freed id.</span>
+<span class="n">_local_memory_cache_refs</span><span class="p">:</span> <span class="s2">&quot;Dict[Tuple[int, int, int], weakref.ref]&quot;</span> <span class="o">=</span> <span class="p">{}</span>
+<span class="c1"># Serializes the get/upgrade/insert and eviction sequences; the GIL</span>
+<span class="c1"># only makes the individual dict ops atomic.</span>
+<span class="n">_local_memory_cache_lock</span> <span class="o">=</span> <span class="n">threading</span><span class="o">.</span><span class="n">Lock</span><span class="p">()</span>
 
 
-<span class="k">def</span><span class="w"> </span><span class="nf">_get_memoryview_addr_and_size</span><span class="p">(</span><span class="n">buf</span><span class="p">:</span> <span class="nb">memoryview</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">]:</span>
-    <span class="n">addr</span> <span class="o">=</span> <span class="n">ctypes</span><span class="o">.</span><span class="n">addressof</span><span class="p">(</span><span class="n">ctypes</span><span class="o">.</span><span class="n">c_char</span><span class="o">.</span><span class="n">from_buffer</span><span class="p">(</span><span class="n">buf</span><span class="p">))</span>
-    <span class="n">size</span> <span class="o">=</span> <span class="n">buf</span><span class="o">.</span><span class="n">nbytes</span>
-    <span class="k">return</span> <span class="n">addr</span><span class="p">,</span> <span class="n">size</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">_evict_local_memory</span><span class="p">(</span><span class="n">key</span><span class="p">:</span> <span class="n">Tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">],</span> <span class="n">ref</span><span class="p">:</span> <span class="s2">&quot;weakref.ref&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Drop the cache entry for ``key`` when its backing is collected.</span>
 
-
-<span class="k">def</span><span class="w"> </span><span class="nf">_get_tensor_addr_and_size</span><span class="p">(</span><span class="n">tensor</span><span class="p">:</span> <span class="s2">&quot;torch.Tensor&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">]:</span>
-    <span class="n">data_ptr</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="n">tensor</span><span class="o">.</span><span class="n">untyped_storage</span><span class="p">()</span><span class="o">.</span><span class="n">data_ptr</span><span class="p">()</span>
-    <span class="c1"># Calculate the actual starting address of the tensor data</span>
-    <span class="c1"># storage_offset() can return either int or torch.SymInt in newer PyTorch versions</span>
-    <span class="k">try</span><span class="p">:</span>
-        <span class="n">storage_offset</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">tensor</span><span class="o">.</span><span class="n">storage_offset</span><span class="p">())</span>
-    <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
-        <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s2">&quot;Failed to convert tensor.storage_offset() to int.&quot;</span><span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">e</span>
-    <span class="n">offset</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="n">storage_offset</span> <span class="o">*</span> <span class="n">tensor</span><span class="o">.</span><span class="n">element_size</span><span class="p">()</span>
-    <span class="n">addr</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="n">data_ptr</span> <span class="o">+</span> <span class="n">offset</span>
-    <span class="n">size</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="n">tensor</span><span class="o">.</span><span class="n">element_size</span><span class="p">()</span> <span class="o">*</span> <span class="n">tensor</span><span class="o">.</span><span class="n">numel</span><span class="p">()</span>
-    <span class="k">return</span> <span class="n">addr</span><span class="p">,</span> <span class="n">size</span>
-
-
-<span class="k">def</span><span class="w"> </span><span class="nf">_get_addr_and_size</span><span class="p">(</span><span class="n">buf</span><span class="p">:</span> <span class="s2">&quot;torch.Tensor | memoryview&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">]:</span>
-    <span class="n">_assert_1d_contiguous</span><span class="p">(</span><span class="n">buf</span><span class="p">)</span>
-    <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">buf</span><span class="p">,</span> <span class="nb">memoryview</span><span class="p">):</span>
-        <span class="k">return</span> <span class="n">_get_memoryview_addr_and_size</span><span class="p">(</span><span class="n">buf</span><span class="p">)</span>
-    <span class="k">elif</span> <span class="n">_is_torch_tensor</span><span class="p">(</span><span class="n">buf</span><span class="p">):</span>
-        <span class="k">return</span> <span class="n">_get_tensor_addr_and_size</span><span class="p">(</span><span class="n">buf</span><span class="p">)</span>  <span class="c1"># type: ignore[arg-type]</span>
-    <span class="c1"># This shouldn&#39;t happen unless there is a bug, handle the type in caller.</span>
-    <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span>
-        <span class="s2">&quot;Trying to get address and size of unsupported type. Expected memoryview or torch.Tensor. Got: </span><span class="si">{}</span><span class="s2">&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span>
-            <span class="nb">type</span><span class="p">(</span><span class="n">buf</span><span class="p">)</span>
-        <span class="p">)</span>
-    <span class="p">)</span>
+<span class="sd">    Guards against id reuse: a newer registration whose backing reused a</span>
+<span class="sd">    freed object&#39;s id installs a fresh weakref under the same key, so</span>
+<span class="sd">    this fires only when the registered weakref is still the one that</span>
+<span class="sd">    scheduled the callback.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">with</span> <span class="n">_local_memory_cache_lock</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">_local_memory_cache_refs</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">key</span><span class="p">)</span> <span class="ow">is</span> <span class="n">ref</span><span class="p">:</span>
+            <span class="k">del</span> <span class="n">_local_memory_cache_refs</span><span class="p">[</span><span class="n">key</span><span class="p">]</span>
+            <span class="n">_local_memory_cache</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">_make_local_memory_handle</span><span class="p">(</span>
     <span class="n">data</span><span class="p">:</span> <span class="s2">&quot;torch.Tensor | memoryview&quot;</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">_LocalMemoryHandle</span><span class="p">:</span>
-    <span class="n">addr</span><span class="p">,</span> <span class="n">size</span> <span class="o">=</span> <span class="n">_get_addr_and_size</span><span class="p">(</span><span class="n">data</span><span class="p">)</span>
-    <span class="k">return</span> <span class="n">_LocalMemoryHandle</span><span class="p">(</span><span class="n">obj</span><span class="o">=</span><span class="n">data</span><span class="p">,</span> <span class="n">addr</span><span class="o">=</span><span class="n">addr</span><span class="p">,</span> <span class="n">size</span><span class="o">=</span><span class="n">size</span><span class="p">)</span>
+    <span class="n">_assert_1d_contiguous</span><span class="p">(</span><span class="n">data</span><span class="p">)</span>
+    <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">data</span><span class="p">,</span> <span class="nb">memoryview</span><span class="p">):</span>
+        <span class="n">addr</span><span class="p">,</span> <span class="n">size</span> <span class="o">=</span> <span class="n">_get_memoryview_addr_and_size</span><span class="p">(</span><span class="n">data</span><span class="p">)</span>
+        <span class="n">backing</span> <span class="o">=</span> <span class="n">data</span>
+    <span class="k">elif</span> <span class="n">_is_torch_tensor</span><span class="p">(</span><span class="n">data</span><span class="p">):</span>
+        <span class="n">addr</span><span class="p">,</span> <span class="n">size</span> <span class="o">=</span> <span class="n">_get_tensor_addr_and_size</span><span class="p">(</span><span class="n">data</span><span class="p">)</span>
+        <span class="n">backing</span> <span class="o">=</span> <span class="n">data</span><span class="o">.</span><span class="n">untyped_storage</span><span class="p">()</span>  <span class="c1"># type: ignore[union-attr]</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span>
+            <span class="s2">&quot;Trying to make a local memory handle for an unsupported type. &quot;</span>
+            <span class="s2">&quot;Expected memoryview or torch.Tensor. Got: </span><span class="si">{}</span><span class="s2">&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="nb">type</span><span class="p">(</span><span class="n">data</span><span class="p">))</span>
+        <span class="p">)</span>
+    <span class="n">key</span> <span class="o">=</span> <span class="p">(</span><span class="nb">id</span><span class="p">(</span><span class="n">backing</span><span class="p">),</span> <span class="n">addr</span><span class="p">,</span> <span class="n">size</span><span class="p">)</span>
+    <span class="k">with</span> <span class="n">_local_memory_cache_lock</span><span class="p">:</span>
+        <span class="n">weak</span> <span class="o">=</span> <span class="n">_local_memory_cache</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">key</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">weak</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">cached</span> <span class="o">=</span> <span class="n">weak</span><span class="o">.</span><span class="n">upgrade</span><span class="p">()</span>
+            <span class="k">if</span> <span class="n">cached</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="k">return</span> <span class="n">cached</span>
+            <span class="c1"># The backing is gone but its eviction callback has not run</span>
+            <span class="c1"># yet; drop the stale entry now.</span>
+            <span class="n">_local_memory_cache</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+            <span class="n">_local_memory_cache_refs</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+    <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">data</span><span class="p">,</span> <span class="nb">memoryview</span><span class="p">):</span>
+        <span class="n">strong</span> <span class="o">=</span> <span class="n">_make_local_memory_handle_from_memoryview</span><span class="p">(</span><span class="n">data</span><span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">strong</span> <span class="o">=</span> <span class="n">_make_local_memory_handle_from_tensor</span><span class="p">(</span><span class="n">data</span><span class="p">)</span>
+    <span class="n">weak</span> <span class="o">=</span> <span class="n">strong</span><span class="o">.</span><span class="n">downgrade</span><span class="p">()</span>
+    <span class="k">if</span> <span class="n">weak</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">ref</span> <span class="o">=</span> <span class="n">weakref</span><span class="o">.</span><span class="n">ref</span><span class="p">(</span><span class="n">backing</span><span class="p">,</span> <span class="k">lambda</span> <span class="n">_r</span><span class="p">,</span> <span class="n">_k</span><span class="o">=</span><span class="n">key</span><span class="p">:</span> <span class="n">_evict_local_memory</span><span class="p">(</span><span class="n">_k</span><span class="p">,</span> <span class="n">_r</span><span class="p">))</span>
+        <span class="k">with</span> <span class="n">_local_memory_cache_lock</span><span class="p">:</span>
+            <span class="n">_local_memory_cache</span><span class="p">[</span><span class="n">key</span><span class="p">]</span> <span class="o">=</span> <span class="n">weak</span>
+            <span class="n">_local_memory_cache_refs</span><span class="p">[</span><span class="n">key</span><span class="p">]</span> <span class="o">=</span> <span class="n">ref</span>
+    <span class="k">return</span> <span class="n">strong</span>
 
 
 <span class="k">class</span><span class="w"> </span><span class="nc">RdmaController</span><span class="p">(</span><span class="n">Actor</span><span class="p">):</span>
@@ -1556,6 +1600,7 @@ document.write(`
     <span class="n">allocator_settings</span> <span class="o">=</span> <span class="n">snapshot</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;allocator_settings&quot;</span><span class="p">,</span> <span class="p">{})</span>
 
     <span class="c1"># Check if expandable_segments is enabled</span>
+    <span class="c1"># pyrefly: ignore [missing-attribute]</span>
     <span class="k">return</span> <span class="n">allocator_settings</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;expandable_segments&quot;</span><span class="p">,</span> <span class="kc">False</span><span class="p">)</span>
 
 
@@ -1588,7 +1633,7 @@ document.write(`
             <span class="k">return</span> <span class="kc">False</span>
         <span class="k">return</span> <span class="kc">True</span>
 
-    <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+    <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
         <span class="n">warnings</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span>
             <span class="s2">&quot;Unable to verify CUDA allocator configuration.</span><span class="se">\n</span><span class="s2">&quot;</span>
             <span class="s2">&quot;Please ensure expandable segments are enabled for best RDMA performance with CUDA tensors:</span><span class="se">\n</span><span class="s2">&quot;</span>
@@ -1600,12 +1645,8 @@ document.write(`
         <span class="k">return</span> <span class="kc">False</span>
 
 
-<div class="viewcode-block" id="RDMABuffer">
-<a class="viewcode-back" href="../../../../api/monarch.rdma.html#monarch.rdma.RDMABuffer">[docs]</a>
-<span class="k">class</span><span class="w"> </span><span class="nc">RDMABuffer</span><span class="p">:</span>
-<div class="viewcode-block" id="RDMABuffer.__init__">
-<a class="viewcode-back" href="../../../../api/monarch.rdma.html#monarch.rdma.RDMABuffer.__init__">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
+<div class="viewcode-block" id="RDMABuffer"><a class="viewcode-back" href="../../../../api/monarch.rdma.html#monarch.rdma.RDMABuffer">[docs]</a><span class="k">class</span><span class="w"> </span><span class="nc">RDMABuffer</span><span class="p">:</span>
+<div class="viewcode-block" id="RDMABuffer.__init__"><a class="viewcode-back" href="../../../../api/monarch.rdma.html#monarch.rdma.RDMABuffer.__init__">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
         <span class="bp">self</span><span class="p">,</span>
         <span class="n">data</span><span class="p">:</span> <span class="s2">&quot;torch.Tensor | memoryview&quot;</span><span class="p">,</span>
     <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
@@ -1663,120 +1704,62 @@ document.write(`
             <span class="n">logging</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="s2">&quot;Failed to create buffer </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">e</span><span class="p">)</span>
             <span class="k">raise</span> <span class="n">e</span></div>
 
-
     <span class="nd">@property</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">backend</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;Return the RDMA backend in use (&#39;ibverbs&#39;).&quot;&quot;&quot;</span>
         <span class="k">return</span> <span class="n">get_rdma_backend</span><span class="p">()</span>
 
-<div class="viewcode-block" id="RDMABuffer.size">
-<a class="viewcode-back" href="../../../../api/monarch.rdma.html#monarch.rdma.RDMABuffer.size">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">size</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
+<div class="viewcode-block" id="RDMABuffer.size"><a class="viewcode-back" href="../../../../api/monarch.rdma.html#monarch.rdma.RDMABuffer.size">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="nf">size</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
         <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_buffer</span><span class="o">.</span><span class="n">size</span><span class="p">()</span></div>
 
-
-<div class="viewcode-block" id="RDMABuffer.read_into">
-<a class="viewcode-back" href="../../../../api/monarch.rdma.html#monarch.rdma.RDMABuffer.read_into">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">read_into</span><span class="p">(</span>
+<div class="viewcode-block" id="RDMABuffer.read_into"><a class="viewcode-back" href="../../../../api/monarch.rdma.html#monarch.rdma.RDMABuffer.read_into">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="nf">read_into</span><span class="p">(</span>
         <span class="bp">self</span><span class="p">,</span>
         <span class="n">dst</span><span class="p">:</span> <span class="s2">&quot;torch.Tensor | memoryview&quot;</span><span class="p">,</span>
         <span class="o">*</span><span class="p">,</span>
-        <span class="n">timeout</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">3</span><span class="p">,</span>
-    <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Future</span><span class="p">[</span><span class="n">Optional</span><span class="p">[</span><span class="nb">int</span><span class="p">]]:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
-<span class="sd">        Read data from the RDMABuffer into a destination tensor.</span>
+        <span class="n">timeout</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">60</span><span class="p">,</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Future</span><span class="p">[</span><span class="kc">None</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Read data from this RDMABuffer into ``dst``.</span>
 
-<span class="sd">        The destination tensor must be contiguous (including tensor views/slices).</span>
+<span class="sd">        ``dst`` must be a 1D contiguous tensor or c-contiguous memoryview</span>
+<span class="sd">        whose byte-size is at least ``self.size()``.</span>
+
 <span class="sd">        Args:</span>
 <span class="sd">            dst: Destination tensor or memoryview to read into.</span>
 <span class="sd">        Keyword Args:</span>
-<span class="sd">            timeout (int, optional): Timeout in seconds for the operation. Defaults to 3s.</span>
+<span class="sd">            timeout (int, optional): Timeout in seconds. Defaults to 60s.</span>
 <span class="sd">        Returns:</span>
-<span class="sd">            Future[Optional[int]]: A Monarch Future that can be awaited or called with .get() for blocking operation.</span>
-
+<span class="sd">            Future[None]: A Monarch Future that resolves to ``None`` when</span>
+<span class="sd">                the read completes.</span>
 <span class="sd">        Raises:</span>
-<span class="sd">            ValueError: If the destination tensor size is smaller than the RDMA buffer size.</span>
-
-<span class="sd">        Note:</span>
-<span class="sd">            Currently only CPU tensors are fully supported. GPU tensors will be temporarily</span>
-<span class="sd">            copied to CPU, which may impact performance.</span>
+<span class="sd">            ValueError: If ``dst`` is smaller than the RDMA buffer.</span>
 <span class="sd">        &quot;&quot;&quot;</span>
-        <span class="n">handle</span> <span class="o">=</span> <span class="n">_make_local_memory_handle</span><span class="p">(</span><span class="n">dst</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">RDMAAction</span><span class="p">()</span><span class="o">.</span><span class="n">read_remote</span><span class="p">(</span><span class="n">dst</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">submit</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span></div>
 
-        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">size</span><span class="p">()</span> <span class="o">&gt;</span> <span class="n">handle</span><span class="o">.</span><span class="n">size</span><span class="p">:</span>
-            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
-                <span class="sa">f</span><span class="s2">&quot;Destination tensor size (</span><span class="si">{</span><span class="n">handle</span><span class="o">.</span><span class="n">size</span><span class="si">}</span><span class="s2">) must be &gt;= RDMA buffer size (</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">size</span><span class="p">()</span><span class="si">}</span><span class="s2">)&quot;</span>
-            <span class="p">)</span>
-
-        <span class="n">client</span> <span class="o">=</span> <span class="n">context</span><span class="p">()</span><span class="o">.</span><span class="n">actor_instance</span>
-
-        <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">read_into_nonblocking</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">int</span><span class="p">]:</span>
-            <span class="k">await</span> <span class="n">_ensure_init_rdma_manager</span><span class="p">()</span>
-
-            <span class="n">res</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_buffer</span><span class="o">.</span><span class="n">read_into</span><span class="p">(</span>
-                <span class="n">dst</span><span class="o">=</span><span class="n">handle</span><span class="p">,</span>
-                <span class="n">client</span><span class="o">=</span><span class="n">client</span><span class="p">,</span>
-                <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">,</span>
-            <span class="p">)</span>
-            <span class="k">return</span> <span class="n">res</span>
-
-        <span class="k">return</span> <span class="n">Future</span><span class="p">(</span><span class="n">coro</span><span class="o">=</span><span class="n">read_into_nonblocking</span><span class="p">())</span></div>
-
-
-<div class="viewcode-block" id="RDMABuffer.write_from">
-<a class="viewcode-back" href="../../../../api/monarch.rdma.html#monarch.rdma.RDMABuffer.write_from">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">write_from</span><span class="p">(</span>
+<div class="viewcode-block" id="RDMABuffer.write_from"><a class="viewcode-back" href="../../../../api/monarch.rdma.html#monarch.rdma.RDMABuffer.write_from">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="nf">write_from</span><span class="p">(</span>
         <span class="bp">self</span><span class="p">,</span>
         <span class="n">src</span><span class="p">:</span> <span class="s2">&quot;torch.Tensor | memoryview&quot;</span><span class="p">,</span>
         <span class="o">*</span><span class="p">,</span>
-        <span class="n">timeout</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">3</span><span class="p">,</span>
+        <span class="n">timeout</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">60</span><span class="p">,</span>
     <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Future</span><span class="p">[</span><span class="kc">None</span><span class="p">]:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
-<span class="sd">        Write data from a source tensor into the RDMABuffer.</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Write data from ``src`` into this RDMABuffer.</span>
+
+<span class="sd">        ``src`` must be a 1D contiguous tensor or c-contiguous memoryview</span>
+<span class="sd">        whose byte-size is at most ``self.size()``.</span>
 
 <span class="sd">        Args:</span>
-<span class="sd">            src: Source tensor containing data to be written to the RDMA buffer.</span>
-<span class="sd">                                Must be a contiguous tensor (including tensor views/slices).</span>
-<span class="sd">                                Either src or addr/size must be provided.</span>
+<span class="sd">            src: Source tensor or memoryview containing the bytes to</span>
+<span class="sd">                write to the RDMA buffer.</span>
 <span class="sd">        Keyword Args:</span>
-<span class="sd">            timeout (int, optional): Timeout in seconds for the operation. Defaults to 3s.</span>
-
+<span class="sd">            timeout (int, optional): Timeout in seconds. Defaults to 60s.</span>
 <span class="sd">        Returns:</span>
-<span class="sd">            Future[None]: A Monarch Future object that can be awaited or called with .get()</span>
-<span class="sd">                         for blocking operation. Returns None when completed successfully.</span>
-
+<span class="sd">            Future[None]: A Monarch Future that resolves to ``None`` when</span>
+<span class="sd">                the write completes.</span>
 <span class="sd">        Raises:</span>
-<span class="sd">            ValueError: If the source tensor size exceeds the RDMA buffer size.</span>
-
-<span class="sd">        Note:</span>
-<span class="sd">            Currently only CPU tensors are fully supported. GPU tensors will be temporarily</span>
-<span class="sd">            copied to CPU, which may impact performance.</span>
+<span class="sd">            ValueError: If ``src`` exceeds the RDMA buffer size.</span>
 <span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="n">RDMAAction</span><span class="p">()</span><span class="o">.</span><span class="n">write_remote</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">src</span><span class="p">)</span><span class="o">.</span><span class="n">submit</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span></div>
 
-        <span class="n">handle</span> <span class="o">=</span> <span class="n">_make_local_memory_handle</span><span class="p">(</span><span class="n">src</span><span class="p">)</span>
-
-        <span class="k">if</span> <span class="n">handle</span><span class="o">.</span><span class="n">size</span> <span class="o">&gt;</span> <span class="bp">self</span><span class="o">.</span><span class="n">size</span><span class="p">():</span>
-            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
-                <span class="sa">f</span><span class="s2">&quot;Source tensor size (</span><span class="si">{</span><span class="n">handle</span><span class="o">.</span><span class="n">size</span><span class="si">}</span><span class="s2">) must be &lt;= RDMA buffer size (</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">size</span><span class="p">()</span><span class="si">}</span><span class="s2">)&quot;</span>
-            <span class="p">)</span>
-        <span class="n">client</span> <span class="o">=</span> <span class="n">context</span><span class="p">()</span><span class="o">.</span><span class="n">actor_instance</span>
-
-        <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">write_from_nonblocking</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="k">await</span> <span class="n">_ensure_init_rdma_manager</span><span class="p">()</span>
-
-            <span class="n">res</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_buffer</span><span class="o">.</span><span class="n">write_from</span><span class="p">(</span>
-                <span class="n">src</span><span class="o">=</span><span class="n">handle</span><span class="p">,</span>
-                <span class="n">client</span><span class="o">=</span><span class="n">client</span><span class="p">,</span>
-                <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">,</span>
-            <span class="p">)</span>
-            <span class="k">return</span> <span class="n">res</span>
-
-        <span class="k">return</span> <span class="n">Future</span><span class="p">(</span><span class="n">coro</span><span class="o">=</span><span class="n">write_from_nonblocking</span><span class="p">())</span></div>
-
-
-<div class="viewcode-block" id="RDMABuffer.drop">
-<a class="viewcode-back" href="../../../../api/monarch.rdma.html#monarch.rdma.RDMABuffer.drop">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">drop</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Future</span><span class="p">[</span><span class="kc">None</span><span class="p">]:</span>
+<div class="viewcode-block" id="RDMABuffer.drop"><a class="viewcode-back" href="../../../../api/monarch.rdma.html#monarch.rdma.RDMABuffer.drop">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="nf">drop</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Future</span><span class="p">[</span><span class="kc">None</span><span class="p">]:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        Release the handle on the memory that the src holds to this memory.</span>
 <span class="sd">        &quot;&quot;&quot;</span>
@@ -1784,13 +1767,11 @@ document.write(`
 
         <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">drop_nonblocking</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
             <span class="k">await</span> <span class="n">_ensure_init_rdma_manager</span><span class="p">()</span>
-
             <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_buffer</span><span class="o">.</span><span class="n">drop</span><span class="p">(</span>
                 <span class="n">client</span><span class="o">=</span><span class="n">client</span><span class="p">,</span>
             <span class="p">)</span>
 
         <span class="k">return</span> <span class="n">Future</span><span class="p">(</span><span class="n">coro</span><span class="o">=</span><span class="n">drop_nonblocking</span><span class="p">())</span></div>
-
 
     <span class="nd">@property</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">owner</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
@@ -1800,247 +1781,64 @@ document.write(`
         <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_buffer</span><span class="o">.</span><span class="n">owner_actor_id</span><span class="p">()</span></div>
 
 
-
 <span class="k">if</span> <span class="n">TYPE_CHECKING</span><span class="p">:</span>
     <span class="n">LocalMemory</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span> <span class="o">|</span> <span class="nb">memoryview</span>
 
 
-<div class="viewcode-block" id="RDMAAction">
-<a class="viewcode-back" href="../../../../api/monarch.rdma.html#monarch.rdma.RDMAAction">[docs]</a>
-<span class="k">class</span><span class="w"> </span><span class="nc">RDMAAction</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
-<span class="sd">    Schedule a bunch of actions at once. This provides an opportunity to</span>
-<span class="sd">    optimize bulk RDMA transactions without exposing complexity to users.</span>
+<div class="viewcode-block" id="RDMAAction"><a class="viewcode-back" href="../../../../api/monarch.rdma.html#monarch.rdma.RDMAAction">[docs]</a><span class="k">class</span><span class="w"> </span><span class="nc">RDMAAction</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Schedule a batch of RDMA operations and submit them as one unit.</span>
 
+<span class="sd">    All bookkeeping (per-op validation, intra-batch local-memory race</span>
+<span class="sd">    detection, backend grouping, parallel dispatch) lives in the Rust</span>
+<span class="sd">    `_RdmaAction`; this class is a thin wrapper around it.</span>
 <span class="sd">    &quot;&quot;&quot;</span>
 
-<div class="viewcode-block" id="RDMAAction.RDMAOp">
-<a class="viewcode-back" href="../../../../api/monarch.rdma.html#monarch.rdma.RDMAAction.RDMAOp">[docs]</a>
-    <span class="k">class</span><span class="w"> </span><span class="nc">RDMAOp</span><span class="p">(</span><span class="n">Enum</span><span class="p">):</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Enumeration of RDMA operation types.&quot;&quot;&quot;</span>
+<div class="viewcode-block" id="RDMAAction.__init__"><a class="viewcode-back" href="../../../../api/monarch.rdma.html#monarch.rdma.RDMAAction.__init__">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_inner</span><span class="p">:</span> <span class="n">_RdmaAction</span> <span class="o">=</span> <span class="n">_RdmaAction</span><span class="p">()</span></div>
 
-        <span class="n">READ_INTO</span> <span class="o">=</span> <span class="s2">&quot;read_into&quot;</span>
-        <span class="n">WRITE_FROM</span> <span class="o">=</span> <span class="s2">&quot;write_from&quot;</span>
-        <span class="n">FETCH_ADD</span> <span class="o">=</span> <span class="s2">&quot;fetch_add&quot;</span>
-        <span class="n">COMPARE_AND_SWAP</span> <span class="o">=</span> <span class="s2">&quot;compare_and_swap&quot;</span></div>
-
-
-<div class="viewcode-block" id="RDMAAction.__init__">
-<a class="viewcode-back" href="../../../../api/monarch.rdma.html#monarch.rdma.RDMAAction.__init__">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">_instructs</span><span class="p">:</span> <span class="s2">&quot;List[Tuple[RDMAAction.RDMAOp, RDMABuffer, LocalMemory]]&quot;</span> <span class="o">=</span> <span class="p">[]</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">_memory_dependencies</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="n">Tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">],</span> <span class="n">RDMAAction</span><span class="o">.</span><span class="n">RDMAOp</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span></div>
-
-
-    <span class="k">def</span><span class="w"> </span><span class="nf">_check_and_merge_overlapping_range</span><span class="p">(</span>
-        <span class="bp">self</span><span class="p">,</span> <span class="n">addr</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">size</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">op</span><span class="p">:</span> <span class="s2">&quot;RDMAAction.RDMAOp&quot;</span>
-    <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
-<span class="sd">        Check for overlapping ranges and merge if found.</span>
-
-<span class="sd">        Returns the final range to use (either new_range or expanded merged range).</span>
-<span class="sd">        Updates self._memory_dependencies in place if merging occurs.</span>
-<span class="sd">        &quot;&quot;&quot;</span>
-        <span class="n">new_start</span><span class="p">,</span> <span class="n">new_end</span> <span class="o">=</span> <span class="n">addr</span><span class="p">,</span> <span class="n">addr</span> <span class="o">+</span> <span class="n">size</span>
-
-        <span class="c1"># Find overlapping range</span>
-        <span class="n">overlapping_range</span> <span class="o">=</span> <span class="kc">None</span>
-        <span class="k">for</span> <span class="n">existing_start</span><span class="p">,</span> <span class="n">existing_end</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_memory_dependencies</span><span class="p">:</span>
-            <span class="c1"># Check if ranges overlap</span>
-            <span class="k">if</span> <span class="ow">not</span> <span class="p">(</span><span class="n">new_end</span> <span class="o">&lt;=</span> <span class="n">existing_start</span> <span class="ow">or</span> <span class="n">existing_end</span> <span class="o">&lt;=</span> <span class="n">new_start</span><span class="p">):</span>
-                <span class="n">overlapping_range</span> <span class="o">=</span> <span class="p">(</span><span class="n">existing_start</span><span class="p">,</span> <span class="n">existing_end</span><span class="p">)</span>
-                <span class="k">break</span>
-
-        <span class="c1"># No overlap found - good to go</span>
-        <span class="k">if</span> <span class="n">overlapping_range</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">_memory_dependencies</span><span class="p">[(</span><span class="n">new_start</span><span class="p">,</span> <span class="n">new_end</span><span class="p">)]</span> <span class="o">=</span> <span class="n">op</span>
-            <span class="k">return</span>
-
-        <span class="c1"># Overlap found - merge ranges</span>
-        <span class="n">existing_op</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_memory_dependencies</span><span class="p">[</span><span class="n">overlapping_range</span><span class="p">]</span>
-
-        <span class="c1"># Merge ops, only safe if neither is write_from at the moment</span>
-        <span class="k">if</span> <span class="n">existing_op</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">RDMAOp</span><span class="o">.</span><span class="n">WRITE_FROM</span> <span class="ow">or</span> <span class="n">op</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">RDMAOp</span><span class="o">.</span><span class="n">WRITE_FROM</span><span class="p">:</span>
-            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
-                <span class="sa">f</span><span class="s2">&quot;Same data range already has a write_from within RDMAAction: </span><span class="si">{</span><span class="n">existing_op</span><span class="si">}</span><span class="s2"> vs </span><span class="si">{</span><span class="n">op</span><span class="si">}</span><span class="s2">&quot;</span>
-            <span class="p">)</span>
-
-        <span class="c1"># Create expanded range that covers both</span>
-        <span class="n">expanded_range</span> <span class="o">=</span> <span class="p">(</span>
-            <span class="nb">min</span><span class="p">(</span><span class="n">overlapping_range</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">new_start</span><span class="p">),</span>
-            <span class="nb">max</span><span class="p">(</span><span class="n">overlapping_range</span><span class="p">[</span><span class="mi">1</span><span class="p">],</span> <span class="n">new_end</span><span class="p">),</span>
-        <span class="p">)</span>
-
-        <span class="c1"># range is unchanged - no need to update</span>
-        <span class="k">if</span> <span class="n">expanded_range</span> <span class="o">==</span> <span class="p">(</span><span class="n">new_start</span><span class="p">,</span> <span class="n">new_end</span><span class="p">):</span>
-            <span class="k">return</span>
-
-        <span class="c1"># Update dictionary: remove old range, add expanded range</span>
-        <span class="k">del</span> <span class="bp">self</span><span class="o">.</span><span class="n">_memory_dependencies</span><span class="p">[</span><span class="n">overlapping_range</span><span class="p">]</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">_memory_dependencies</span><span class="p">[</span><span class="n">expanded_range</span><span class="p">]</span> <span class="o">=</span> <span class="n">op</span>
-
-        <span class="c1"># now since merged, possible need to merge again</span>
-        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_check_and_merge_overlapping_range</span><span class="p">(</span>
-            <span class="n">expanded_range</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">expanded_range</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="o">-</span> <span class="n">expanded_range</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">op</span>
-        <span class="p">)</span>
-
-<div class="viewcode-block" id="RDMAAction.read_into">
-<a class="viewcode-back" href="../../../../api/monarch.rdma.html#monarch.rdma.RDMAAction.read_into">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">read_into</span><span class="p">(</span>
-        <span class="bp">self</span><span class="p">,</span> <span class="n">src</span><span class="p">:</span> <span class="n">RDMABuffer</span><span class="p">,</span> <span class="n">dst</span><span class="p">:</span> <span class="s2">&quot;LocalMemory | List[LocalMemory]&quot;</span>
-    <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
-<span class="sd">        Read from src RDMA buffer into dst memory.</span>
-
-<span class="sd">        Args:</span>
-<span class="sd">            src: Source RDMA buffer to read from</span>
-<span class="sd">            dst: Destination local memory to read into</span>
-<span class="sd">                   If dst is a list, it is the concatenation of the data in the list</span>
-<span class="sd">        &quot;&quot;&quot;</span>
-        <span class="c1"># Throw NotImplementedError for lists to simplify logic</span>
-        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">dst</span><span class="p">,</span> <span class="nb">list</span><span class="p">):</span>
-            <span class="k">raise</span> <span class="ne">NotImplementedError</span><span class="p">(</span><span class="s2">&quot;List destinations not yet supported&quot;</span><span class="p">)</span>
-
-        <span class="n">addr</span><span class="p">,</span> <span class="n">size</span> <span class="o">=</span> <span class="n">_get_addr_and_size</span><span class="p">(</span><span class="n">dst</span><span class="p">)</span>
-
-        <span class="k">if</span> <span class="n">size</span> <span class="o">&lt;</span> <span class="n">src</span><span class="o">.</span><span class="n">size</span><span class="p">():</span>
-            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
-                <span class="sa">f</span><span class="s2">&quot;dst memory size (</span><span class="si">{</span><span class="n">size</span><span class="si">}</span><span class="s2">) must be &gt;= src buffer size (</span><span class="si">{</span><span class="n">src</span><span class="o">.</span><span class="n">size</span><span class="p">()</span><span class="si">}</span><span class="s2">)&quot;</span>
-            <span class="p">)</span>
-
-        <span class="bp">self</span><span class="o">.</span><span class="n">_check_and_merge_overlapping_range</span><span class="p">(</span><span class="n">addr</span><span class="p">,</span> <span class="n">size</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">RDMAOp</span><span class="o">.</span><span class="n">READ_INTO</span><span class="p">)</span>
-
-        <span class="bp">self</span><span class="o">.</span><span class="n">_instructs</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="bp">self</span><span class="o">.</span><span class="n">RDMAOp</span><span class="o">.</span><span class="n">READ_INTO</span><span class="p">,</span> <span class="n">src</span><span class="p">,</span> <span class="n">dst</span><span class="p">))</span>
-
+    <span class="c1"># pyrefly: ignore [not-a-type]</span>
+<div class="viewcode-block" id="RDMAAction.read_remote"><a class="viewcode-back" href="../../../../api/monarch.rdma.html#monarch.rdma.RDMAAction.read_remote">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="nf">read_remote</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">dst</span><span class="p">:</span> <span class="s2">&quot;LocalMemory&quot;</span><span class="p">,</span> <span class="n">src</span><span class="p">:</span> <span class="n">RDMABuffer</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="s2">&quot;RDMAAction&quot;</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Queue a read from RDMA buffer ``src`` into local memory ``dst``.&quot;&quot;&quot;</span>
+        <span class="n">handle</span> <span class="o">=</span> <span class="n">_make_local_memory_handle</span><span class="p">(</span><span class="n">dst</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_inner</span><span class="o">.</span><span class="n">add_read_into_local</span><span class="p">(</span><span class="n">remote</span><span class="o">=</span><span class="n">src</span><span class="o">.</span><span class="n">_buffer</span><span class="p">,</span> <span class="n">local</span><span class="o">=</span><span class="n">handle</span><span class="p">)</span>
         <span class="k">return</span> <span class="bp">self</span></div>
 
-
-<div class="viewcode-block" id="RDMAAction.write_from">
-<a class="viewcode-back" href="../../../../api/monarch.rdma.html#monarch.rdma.RDMAAction.write_from">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">write_from</span><span class="p">(</span>
-        <span class="bp">self</span><span class="p">,</span> <span class="n">src</span><span class="p">:</span> <span class="n">RDMABuffer</span><span class="p">,</span> <span class="n">dst</span><span class="p">:</span> <span class="s2">&quot;LocalMemory | List[LocalMemory]&quot;</span>
-    <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
-<span class="sd">        Write from dst memory to src RDMA buffer.</span>
-
-<span class="sd">        Args:</span>
-<span class="sd">            src: Destination RDMA buffer to write to</span>
-<span class="sd">            dst: Source local memory to write from</span>
-<span class="sd">                   If local is a list, it is the concatenation of the data in the list</span>
-<span class="sd">        &quot;&quot;&quot;</span>
-        <span class="c1"># Throw NotImplementedError for lists to simplify logic</span>
-        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">dst</span><span class="p">,</span> <span class="nb">list</span><span class="p">):</span>
-            <span class="k">raise</span> <span class="ne">NotImplementedError</span><span class="p">(</span><span class="s2">&quot;List sources not yet supported&quot;</span><span class="p">)</span>
-
-        <span class="n">addr</span><span class="p">,</span> <span class="n">size</span> <span class="o">=</span> <span class="n">_get_addr_and_size</span><span class="p">(</span><span class="n">dst</span><span class="p">)</span>
-
-        <span class="k">if</span> <span class="n">size</span> <span class="o">&gt;</span> <span class="n">src</span><span class="o">.</span><span class="n">size</span><span class="p">():</span>
-            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
-                <span class="sa">f</span><span class="s2">&quot;Local memory size (</span><span class="si">{</span><span class="n">size</span><span class="si">}</span><span class="s2">) must be &lt;= src buffer size (</span><span class="si">{</span><span class="n">src</span><span class="o">.</span><span class="n">size</span><span class="p">()</span><span class="si">}</span><span class="s2">)&quot;</span>
-            <span class="p">)</span>
-
-        <span class="bp">self</span><span class="o">.</span><span class="n">_check_and_merge_overlapping_range</span><span class="p">(</span><span class="n">addr</span><span class="p">,</span> <span class="n">size</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">RDMAOp</span><span class="o">.</span><span class="n">WRITE_FROM</span><span class="p">)</span>
-
-        <span class="bp">self</span><span class="o">.</span><span class="n">_instructs</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="bp">self</span><span class="o">.</span><span class="n">RDMAOp</span><span class="o">.</span><span class="n">WRITE_FROM</span><span class="p">,</span> <span class="n">src</span><span class="p">,</span> <span class="n">dst</span><span class="p">))</span>
-
+    <span class="c1"># pyrefly: ignore [not-a-type]</span>
+<div class="viewcode-block" id="RDMAAction.write_remote"><a class="viewcode-back" href="../../../../api/monarch.rdma.html#monarch.rdma.RDMAAction.write_remote">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="nf">write_remote</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">dst</span><span class="p">:</span> <span class="n">RDMABuffer</span><span class="p">,</span> <span class="n">src</span><span class="p">:</span> <span class="s2">&quot;LocalMemory&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="s2">&quot;RDMAAction&quot;</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Queue a write from local memory ``src`` into RDMA buffer ``dst``.&quot;&quot;&quot;</span>
+        <span class="n">handle</span> <span class="o">=</span> <span class="n">_make_local_memory_handle</span><span class="p">(</span><span class="n">src</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_inner</span><span class="o">.</span><span class="n">add_write_from_local</span><span class="p">(</span><span class="n">remote</span><span class="o">=</span><span class="n">dst</span><span class="o">.</span><span class="n">_buffer</span><span class="p">,</span> <span class="n">local</span><span class="o">=</span><span class="n">handle</span><span class="p">)</span>
         <span class="k">return</span> <span class="bp">self</span></div>
 
-
-<div class="viewcode-block" id="RDMAAction.fetch_add">
-<a class="viewcode-back" href="../../../../api/monarch.rdma.html#monarch.rdma.RDMAAction.fetch_add">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">fetch_add</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">src</span><span class="p">:</span> <span class="n">RDMABuffer</span><span class="p">,</span> <span class="n">dst</span><span class="p">:</span> <span class="s2">&quot;LocalMemory&quot;</span><span class="p">,</span> <span class="n">add</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
-<span class="sd">        Perform atomic fetch-and-add operation on src RDMA buffer.</span>
-
-<span class="sd">        Args:</span>
-<span class="sd">            src: src RDMA buffer to perform operation on</span>
-<span class="sd">            dst: Local memory to store the original value</span>
-<span class="sd">            add: Value to add to the src buffer</span>
-
-<span class="sd">        Atomically:</span>
-<span class="sd">            *dst = *src</span>
-<span class="sd">            *src = *src + add</span>
-
-<span class="sd">        Note: src/dst are 8 bytes</span>
-<span class="sd">        &quot;&quot;&quot;</span>
+    <span class="c1"># pyrefly: ignore [not-a-type]</span>
+<div class="viewcode-block" id="RDMAAction.fetch_add"><a class="viewcode-back" href="../../../../api/monarch.rdma.html#monarch.rdma.RDMAAction.fetch_add">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="nf">fetch_add</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">src</span><span class="p">:</span> <span class="n">RDMABuffer</span><span class="p">,</span> <span class="n">dst</span><span class="p">:</span> <span class="s2">&quot;LocalMemory&quot;</span><span class="p">,</span> <span class="n">add</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="s2">&quot;RDMAAction&quot;</span><span class="p">:</span>
         <span class="k">raise</span> <span class="ne">NotImplementedError</span><span class="p">(</span><span class="s2">&quot;Not yet supported&quot;</span><span class="p">)</span></div>
 
-
-<div class="viewcode-block" id="RDMAAction.compare_and_swap">
-<a class="viewcode-back" href="../../../../api/monarch.rdma.html#monarch.rdma.RDMAAction.compare_and_swap">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">compare_and_swap</span><span class="p">(</span>
-        <span class="bp">self</span><span class="p">,</span> <span class="n">src</span><span class="p">:</span> <span class="n">RDMABuffer</span><span class="p">,</span> <span class="n">dst</span><span class="p">:</span> <span class="s2">&quot;LocalMemory&quot;</span><span class="p">,</span> <span class="n">compare</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">swap</span><span class="p">:</span> <span class="nb">int</span>
-    <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Self</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
-<span class="sd">        Perform atomic compare-and-swap operation on src RDMA buffer.</span>
-
-<span class="sd">        Args:</span>
-<span class="sd">            src: src RDMA buffer to perform operation on</span>
-<span class="sd">            dst: Local memory to store the original value</span>
-<span class="sd">            compare: Value to compare against</span>
-<span class="sd">            swap: Value to swap in if comparison succeeds</span>
-
-<span class="sd">        Atomically:</span>
-<span class="sd">            *dst = *src;</span>
-<span class="sd">            if (*src == compare) {</span>
-<span class="sd">                *src = swap</span>
-<span class="sd">            }</span>
-
-<span class="sd">        Note: src/dst are 8 bytes</span>
-<span class="sd">        &quot;&quot;&quot;</span>
+<div class="viewcode-block" id="RDMAAction.compare_and_swap"><a class="viewcode-back" href="../../../../api/monarch.rdma.html#monarch.rdma.RDMAAction.compare_and_swap">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="nf">compare_and_swap</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">src</span><span class="p">:</span> <span class="n">RDMABuffer</span><span class="p">,</span>
+        <span class="n">dst</span><span class="p">:</span> <span class="s2">&quot;LocalMemory&quot;</span><span class="p">,</span>
+        <span class="n">compare</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+        <span class="n">swap</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+        <span class="c1"># pyrefly: ignore [not-a-type]</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="s2">&quot;RDMAAction&quot;</span><span class="p">:</span>
         <span class="k">raise</span> <span class="ne">NotImplementedError</span><span class="p">(</span><span class="s2">&quot;Not yet supported&quot;</span><span class="p">)</span></div>
 
+<div class="viewcode-block" id="RDMAAction.submit"><a class="viewcode-back" href="../../../../api/monarch.rdma.html#monarch.rdma.RDMAAction.submit">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="nf">submit</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">timeout</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">60</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Future</span><span class="p">[</span><span class="kc">None</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Schedule the queued ops. Safe to call multiple times.</span>
 
-<div class="viewcode-block" id="RDMAAction.submit">
-<a class="viewcode-back" href="../../../../api/monarch.rdma.html#monarch.rdma.RDMAAction.submit">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">submit</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Future</span><span class="p">[</span><span class="kc">None</span><span class="p">]:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
-<span class="sd">        Schedules the work (can be called multiple times to schedule the same work more than once).</span>
-<span class="sd">        Future completes when all the work is done.</span>
-
-<span class="sd">        Executes futures for each src actor independently and concurrently for optimal performance.</span>
+<span class="sd">        The returned Future does not resolve until every op in the batch</span>
+<span class="sd">        completes, or until the timeout is reached. If any op fails, the</span>
+<span class="sd">        Future resolves with an exception.</span>
 <span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">client</span> <span class="o">=</span> <span class="n">context</span><span class="p">()</span><span class="o">.</span><span class="n">actor_instance</span>
+        <span class="n">inner</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_inner</span>
 
-        <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">submit_all_work</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_instructs</span><span class="p">:</span>
-                <span class="k">return</span>
+        <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">run</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">await</span> <span class="n">_ensure_init_rdma_manager</span><span class="p">()</span>
+            <span class="k">await</span> <span class="n">inner</span><span class="o">.</span><span class="n">submit</span><span class="p">(</span><span class="n">client</span><span class="o">=</span><span class="n">client</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span>
 
-            <span class="n">work</span> <span class="o">=</span> <span class="n">defaultdict</span><span class="p">(</span><span class="nb">list</span><span class="p">)</span>
-
-            <span class="c1"># Group operations by owner for concurrent execution per owner</span>
-            <span class="k">for</span> <span class="n">op</span><span class="p">,</span> <span class="n">src</span><span class="p">,</span> <span class="n">dst</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_instructs</span><span class="p">:</span>
-                <span class="k">if</span> <span class="n">op</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">RDMAOp</span><span class="o">.</span><span class="n">READ_INTO</span><span class="p">:</span>
-                    <span class="n">fut</span> <span class="o">=</span> <span class="n">src</span><span class="o">.</span><span class="n">read_into</span><span class="p">(</span><span class="n">dst</span><span class="p">)</span>
-                <span class="k">elif</span> <span class="n">op</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">RDMAOp</span><span class="o">.</span><span class="n">WRITE_FROM</span><span class="p">:</span>
-                    <span class="n">fut</span> <span class="o">=</span> <span class="n">src</span><span class="o">.</span><span class="n">write_from</span><span class="p">(</span><span class="n">dst</span><span class="p">)</span>
-                <span class="k">else</span><span class="p">:</span>
-                    <span class="k">raise</span> <span class="ne">NotImplementedError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Unknown RDMA operation: </span><span class="si">{</span><span class="n">op</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-                <span class="n">work</span><span class="p">[</span><span class="n">src</span><span class="o">.</span><span class="n">owner</span><span class="p">]</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">fut</span><span class="p">)</span>
-
-            <span class="c1"># Create a list of tasks, one per owner, that wait for all that owner&#39;s futures sequentially</span>
-            <span class="n">owner_tasks</span> <span class="o">=</span> <span class="p">[]</span>
-
-            <span class="k">for</span> <span class="n">_</span><span class="p">,</span> <span class="n">futures</span> <span class="ow">in</span> <span class="n">work</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
-                <span class="c1"># Create a coroutine that processes all futures for a qp sequentially</span>
-                <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">process_owner_futures</span><span class="p">(</span><span class="n">owner_futures_list</span><span class="o">=</span><span class="n">futures</span><span class="p">):</span>
-<span class="w">                    </span><span class="sd">&quot;&quot;&quot;Process all futures for a single qp sequentially&quot;&quot;&quot;</span>
-                    <span class="k">for</span> <span class="n">future</span> <span class="ow">in</span> <span class="n">owner_futures_list</span><span class="p">:</span>
-                        <span class="k">await</span> <span class="n">future</span>
-
-                <span class="c1"># Convert to PythonTask for Monarch&#39;s native concurrency</span>
-                <span class="n">owner_task</span> <span class="o">=</span> <span class="n">PythonTask</span><span class="o">.</span><span class="n">from_coroutine</span><span class="p">(</span><span class="n">process_owner_futures</span><span class="p">())</span>
-                <span class="n">owner_tasks</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">owner_task</span><span class="p">)</span>
-
-            <span class="c1"># Spawn all owner tasks concurrently and collect their shared handles</span>
-            <span class="n">shared_tasks</span> <span class="o">=</span> <span class="p">[</span><span class="n">task</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span> <span class="k">for</span> <span class="n">task</span> <span class="ow">in</span> <span class="n">owner_tasks</span><span class="p">]</span>
-
-            <span class="c1"># Wait for all owner tasks to complete concurrently</span>
-            <span class="k">for</span> <span class="n">shared_task</span> <span class="ow">in</span> <span class="n">shared_tasks</span><span class="p">:</span>
-                <span class="k">await</span> <span class="n">shared_task</span>
-
-        <span class="k">return</span> <span class="n">Future</span><span class="p">(</span><span class="n">coro</span><span class="o">=</span><span class="n">submit_all_work</span><span class="p">())</span></div>
-</div>
-
+        <span class="k">return</span> <span class="n">Future</span><span class="p">(</span><span class="n">coro</span><span class="o">=</span><span class="n">run</span><span class="p">())</span></div></div>
 </pre></div>
 
                 </article>
@@ -2193,7 +1991,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>
@@ -2222,7 +2020,7 @@ document.write(`
        "headline": "monarch._src.rdma.rdma",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/_modules/monarch/_src/rdma/rdma.html",
-       "articleBody": "Source code for monarch._src.rdma.rdma # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-unsafe import ctypes import functools import logging import sys import warnings from collections import defaultdict from enum import Enum from typing import Any, cast, Dict, List, Optional, Tuple, TYPE_CHECKING if TYPE_CHECKING: import torch from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared from monarch._src.actor.actor_mesh import Actor, context from monarch._src.actor.endpoint import endpoint from monarch._src.actor.future import Future from monarch._src.actor.proc_mesh import get_or_spawn_controller, ProcMesh from pyre_extensions import none_throws from typing_extensions import Self _NATIVE_RDMA_IMPORT_ERROR: Optional[ImportError] = None try: from monarch._rust_bindings.rdma import ( _LocalMemoryHandle, _RdmaBuffer, _RdmaManager, is_ibverbs_available as _is_ibverbs_available, rdma_supported as _rdma_supported, ) except ImportError as e: _NATIVE_RDMA_IMPORT_ERROR = e logging.warning(\"RDMA native bindings are not available: %s\", e) class _UnavailableNativeBinding: def __init__(self, *args: Any, **kwargs: Any) -\u003e None: raise ImportError( \"RDMA native bindings are not available on this platform\" ) from _NATIVE_RDMA_IMPORT_ERROR _LocalMemoryHandle = _UnavailableNativeBinding _RdmaBuffer = _UnavailableNativeBinding _RdmaManager = _UnavailableNativeBinding def _is_ibverbs_available() -\u003e bool: return False def _rdma_supported() -\u003e bool: return False # RDMARead/WriteTransferWarnings are warnings that are only printed once per process. # Remove these once GPU support is added. class RDMAReadTransferWarning(Warning): pass class RDMAWriteTransferWarning(Warning): pass class RDMATcpFallbackWarning(Warning): pass warnings.simplefilter(\"once\", RDMAReadTransferWarning) warnings.simplefilter(\"once\", RDMAWriteTransferWarning) warnings.simplefilter(\"once\", RDMATcpFallbackWarning) [docs] def is_ibverbs_available() -\u003e bool: \"\"\"Whether ibverbs RDMA hardware is available on this system.\"\"\" return _is_ibverbs_available() [docs] def is_rdma_available() -\u003e bool: \"\"\"Whether RDMA over ibverbs is available on this system. .. deprecated:: Monarch now supports multiple RDMA backends, so `is_rdma_available` is ambiguous and will be removed in a future release. Use :func:`is_ibverbs_available` or :func:`get_rdma_backend` instead. \"\"\" warnings.warn( \"is_rdma_available is deprecated because Monarch now supports multiple \" \"RDMA backends, making this function ambiguous. For now it indicates \" \"whether RDMA over ibverbs is available. Use is_ibverbs_available() or \" \"get_rdma_backend() instead.\", DeprecationWarning, stacklevel=2, ) return is_ibverbs_available() [docs] def get_rdma_backend() -\u003e str: \"\"\"Return available RDMA backend. Returns: str: One of \u0027ibverbs\u0027, \u0027tcp\u0027, or \u0027none\u0027 indicating the available backend. Both Mellanox and EFA hardware are accessed through ibverbs. \u0027tcp\u0027 indicates the TCP fallback transport is enabled. \"\"\" if _is_ibverbs_available(): return \"ibverbs\" if _rdma_supported(): return \"tcp\" return \"none\" # Cached so that we don\u0027t have to call out to the root client every time, # which may be on a different host. @functools.cache def _ensure_init_rdma_manager() -\u003e Shared[None]: \"\"\"Initialize the RDMA manager for this node\u0027s backend (ibverbs or EFA).\"\"\" async def task() -\u003e None: # Ensure the proc mesh is initialized before we can send it over the wire, # since pickling the proc mesh before it is initiliazed would block the # tokio runtime and cause a panic. await context().actor_instance.proc_mesh.initialized await ( await get_or_spawn_controller(\"rdma_controller\", RdmaController) ).init_rdma_on_mesh.call_one(none_throws(context().actor_instance.proc_mesh)) return PythonTask.from_coroutine(task()).spawn() def _get_error(buf: object) -\u003e ValueError: return ValueError( \"RDMABuffer only supports 1d contiguous torch.Tensor or 1d c-contiguous memoryview. Got: {}\".format( buf ) ) def _is_torch_tensor(obj: object) -\u003e bool: \"\"\"Check whether obj is a torch.Tensor without importing torch.\"\"\" torch_mod = sys.modules.get(\"torch\") if torch_mod is None: return False return isinstance(obj, torch_mod.Tensor) def _assert_1d_contiguous(buf: \"torch.Tensor | memoryview\") -\u003e None: if _is_torch_tensor(buf): if buf.dim() != 1 or not buf.is_contiguous(): # type: ignore[union-attr] raise _get_error(buf) elif isinstance(buf, memoryview): if buf.ndim != 1 or not buf.c_contiguous: raise _get_error(buf) else: raise _get_error(buf) def _get_memoryview_addr_and_size(buf: memoryview) -\u003e tuple[int, int]: addr = ctypes.addressof(ctypes.c_char.from_buffer(buf)) size = buf.nbytes return addr, size def _get_tensor_addr_and_size(tensor: \"torch.Tensor\") -\u003e tuple[int, int]: data_ptr: int = tensor.untyped_storage().data_ptr() # Calculate the actual starting address of the tensor data # storage_offset() can return either int or torch.SymInt in newer PyTorch versions try: storage_offset = int(tensor.storage_offset()) except Exception as e: raise RuntimeError(\"Failed to convert tensor.storage_offset() to int.\") from e offset: int = storage_offset * tensor.element_size() addr: int = data_ptr + offset size: int = tensor.element_size() * tensor.numel() return addr, size def _get_addr_and_size(buf: \"torch.Tensor | memoryview\") -\u003e tuple[int, int]: _assert_1d_contiguous(buf) if isinstance(buf, memoryview): return _get_memoryview_addr_and_size(buf) elif _is_torch_tensor(buf): return _get_tensor_addr_and_size(buf) # type: ignore[arg-type] # This shouldn\u0027t happen unless there is a bug, handle the type in caller. raise RuntimeError( \"Trying to get address and size of unsupported type. Expected memoryview or torch.Tensor. Got: {}\".format( type(buf) ) ) def _make_local_memory_handle( data: \"torch.Tensor | memoryview\", ) -\u003e _LocalMemoryHandle: addr, size = _get_addr_and_size(data) return _LocalMemoryHandle(obj=data, addr=addr, size=size) class RdmaController(Actor): def __init__(self) -\u003e None: self._manager_futures: Dict[ProcMesh, Future[_RdmaManager]] = {} @endpoint async def init_rdma_on_mesh(self, proc_mesh: ProcMesh) -\u003e None: # Note: RdmaController acts as coordinator and can run on any node # The RDMA support check should happen on the target proc_mesh nodes, not on RdmaController\u0027s node if proc_mesh not in self._manager_futures: async def create_manager() -\u003e _RdmaManager: proc_mesh_result = await Future( coro=cast(\"PythonTask[Any]\", proc_mesh._proc_mesh.task()) ) return none_throws( await _RdmaManager.create_rdma_manager_nonblocking( proc_mesh_result, context().actor_instance ) ) self._manager_futures[proc_mesh] = Future(coro=create_manager()) await self._manager_futures[proc_mesh] def pt_cuda_allocator_compatibility() -\u003e bool: \"\"\" Check if PyTorch CUDA caching allocator is compatible with RDMA. This checks if both the CUDA caching allocator is enabled AND expandable segments are enabled, which is required for RDMA operations with CUDA tensors. Returns: bool: True if both conditions are met, False otherwise \"\"\" import torch if not torch.cuda.is_available(): return False # Get allocator snapshot which contains settings snapshot = torch.cuda.memory._snapshot() allocator_settings = snapshot.get(\"allocator_settings\", {}) # Check if expandable_segments is enabled return allocator_settings.get(\"expandable_segments\", False) @functools.cache def _check_cuda_expandable_segments_enabled() -\u003e bool: \"\"\" Check if PyTorch CUDA caching allocator is using expandable segments. Returns: bool: True if expandable segments are enabled, False otherwise \"\"\" try: # Call the Python implementation of pt_cuda_allocator_compatibility pt_cuda_compat = pt_cuda_allocator_compatibility() if not pt_cuda_compat: warnings.warn( \"CUDA caching allocator is not using expandable segments.\\n\" \"This is required to maximize RDMA performance with CUDA tensors.\\n\\n\" \"To fix this, set the environment variable BEFORE importing PyTorch:\\n\" \"1. In shell:\\n\" \u0027 export PYTORCH_CUDA_ALLOC_CONF=\"expandable_segments:True\"\\n\u0027 \"2. Or in Python script (BEFORE any PyTorch imports):\\n\" \" import os\\n\" \u0027 os.environ[\"PYTORCH_CUDA_ALLOC_CONF\"] = \"expandable_segments:True\"\\n\u0027 \" import torch # Must come after setting the env var\\n\\n\", UserWarning, stacklevel=2, ) return False return True except Exception as e: warnings.warn( \"Unable to verify CUDA allocator configuration.\\n\" \"Please ensure expandable segments are enabled for best RDMA performance with CUDA tensors:\\n\" \u0027 export PYTORCH_CUDA_ALLOC_CONF=\"expandable_segments:True\"\\n\u0027 \"Set this environment variable before importing PyTorch.\", UserWarning, stacklevel=2, ) return False [docs] class RDMABuffer: [docs] def __init__( self, data: \"torch.Tensor | memoryview\", ) -\u003e None: \"\"\" RDMABuffer supports 1d contiguous tensors (including tensor views/slices) or 1d c-contiguous memoryviews. Args: data: torch.Tensor or memoryview to create the buffer from. Must be 1d and contiguous. If provided, addr and size must not be specified. Raises: ValueError: If data is not 1d contiguous, if size is 0, or if data is a GPU tensor. RuntimeError: If no RDMA backend is available on this platform. Note: Currently only CPU tensors are supported. GPU tensor support will be added in the future. TODO: Create TensorBuffer, which will be main user API supporting non-contiguous tensors \"\"\" if _is_torch_tensor(data) and data.device.type == \"cuda\": # type: ignore[union-attr] # Check if CUDA caching allocator is using expandable segments _check_cuda_expandable_segments_enabled() backend = get_rdma_backend() assert backend != \"none\", ( \"Tried to create an RDMABuffer, but RDMA is not available on this platform. \" \"To enable TCP fallback transport, call \" \"monarch.configure(rdma_allow_tcp_fallback=True) before creating buffers.\" ) if backend == \"tcp\": warnings.warn( \"No ibverbs RDMA hardware detected. Falling back to TCP transport, \" \"which has significantly lower throughput and higher latency than \" \"native RDMA. To disable this fallback and fail explicitly, call \" \"monarch.configure(rdma_allow_tcp_fallback=False).\", RDMATcpFallbackWarning, stacklevel=2, ) # We need to ensure that _RdmaManager is initialized at this point, because under the hood # _RdmaBuffer.create_rdma_buffer_blocking relies on this being the case. _ensure_init_rdma_manager().block_on() handle = _make_local_memory_handle(data) try: if handle.size == 0: raise ValueError(\"Cannot create RDMABuffer with size 0.\") ctx = context() self._buffer: _RdmaBuffer = _RdmaBuffer.create_rdma_buffer_blocking( local=handle, client=ctx.actor_instance, ) # TODO - specific exception except Exception as e: logging.error(\"Failed to create buffer %s\", e) raise e @property def backend(self) -\u003e str: \"\"\"Return the RDMA backend in use (\u0027ibverbs\u0027).\"\"\" return get_rdma_backend() [docs] def size(self) -\u003e int: return self._buffer.size() [docs] def read_into( self, dst: \"torch.Tensor | memoryview\", *, timeout: int = 3, ) -\u003e Future[Optional[int]]: \"\"\" Read data from the RDMABuffer into a destination tensor. The destination tensor must be contiguous (including tensor views/slices). Args: dst: Destination tensor or memoryview to read into. Keyword Args: timeout (int, optional): Timeout in seconds for the operation. Defaults to 3s. Returns: Future[Optional[int]]: A Monarch Future that can be awaited or called with .get() for blocking operation. Raises: ValueError: If the destination tensor size is smaller than the RDMA buffer size. Note: Currently only CPU tensors are fully supported. GPU tensors will be temporarily copied to CPU, which may impact performance. \"\"\" handle = _make_local_memory_handle(dst) if self.size() \u003e handle.size: raise ValueError( f\"Destination tensor size ({handle.size}) must be \u003e= RDMA buffer size ({self.size()})\" ) client = context().actor_instance async def read_into_nonblocking() -\u003e Optional[int]: await _ensure_init_rdma_manager() res = await self._buffer.read_into( dst=handle, client=client, timeout=timeout, ) return res return Future(coro=read_into_nonblocking()) [docs] def write_from( self, src: \"torch.Tensor | memoryview\", *, timeout: int = 3, ) -\u003e Future[None]: \"\"\" Write data from a source tensor into the RDMABuffer. Args: src: Source tensor containing data to be written to the RDMA buffer. Must be a contiguous tensor (including tensor views/slices). Either src or addr/size must be provided. Keyword Args: timeout (int, optional): Timeout in seconds for the operation. Defaults to 3s. Returns: Future[None]: A Monarch Future object that can be awaited or called with .get() for blocking operation. Returns None when completed successfully. Raises: ValueError: If the source tensor size exceeds the RDMA buffer size. Note: Currently only CPU tensors are fully supported. GPU tensors will be temporarily copied to CPU, which may impact performance. \"\"\" handle = _make_local_memory_handle(src) if handle.size \u003e self.size(): raise ValueError( f\"Source tensor size ({handle.size}) must be \u003c= RDMA buffer size ({self.size()})\" ) client = context().actor_instance async def write_from_nonblocking() -\u003e None: await _ensure_init_rdma_manager() res = await self._buffer.write_from( src=handle, client=client, timeout=timeout, ) return res return Future(coro=write_from_nonblocking()) [docs] def drop(self) -\u003e Future[None]: \"\"\" Release the handle on the memory that the src holds to this memory. \"\"\" client = context().actor_instance async def drop_nonblocking() -\u003e None: await _ensure_init_rdma_manager() await self._buffer.drop( client=client, ) return Future(coro=drop_nonblocking()) @property def owner(self) -\u003e str: \"\"\" The owner reference (str) \"\"\" return self._buffer.owner_actor_id() if TYPE_CHECKING: LocalMemory = torch.Tensor | memoryview [docs] class RDMAAction: \"\"\" Schedule a bunch of actions at once. This provides an opportunity to optimize bulk RDMA transactions without exposing complexity to users. \"\"\" [docs] class RDMAOp(Enum): \"\"\"Enumeration of RDMA operation types.\"\"\" READ_INTO = \"read_into\" WRITE_FROM = \"write_from\" FETCH_ADD = \"fetch_add\" COMPARE_AND_SWAP = \"compare_and_swap\" [docs] def __init__(self) -\u003e None: self._instructs: \"List[Tuple[RDMAAction.RDMAOp, RDMABuffer, LocalMemory]]\" = [] self._memory_dependencies: Dict[Tuple[int, int], RDMAAction.RDMAOp] = {} def _check_and_merge_overlapping_range( self, addr: int, size: int, op: \"RDMAAction.RDMAOp\" ) -\u003e None: \"\"\" Check for overlapping ranges and merge if found. Returns the final range to use (either new_range or expanded merged range). Updates self._memory_dependencies in place if merging occurs. \"\"\" new_start, new_end = addr, addr + size # Find overlapping range overlapping_range = None for existing_start, existing_end in self._memory_dependencies: # Check if ranges overlap if not (new_end \u003c= existing_start or existing_end \u003c= new_start): overlapping_range = (existing_start, existing_end) break # No overlap found - good to go if overlapping_range is None: self._memory_dependencies[(new_start, new_end)] = op return # Overlap found - merge ranges existing_op = self._memory_dependencies[overlapping_range] # Merge ops, only safe if neither is write_from at the moment if existing_op == self.RDMAOp.WRITE_FROM or op == self.RDMAOp.WRITE_FROM: raise ValueError( f\"Same data range already has a write_from within RDMAAction: {existing_op} vs {op}\" ) # Create expanded range that covers both expanded_range = ( min(overlapping_range[0], new_start), max(overlapping_range[1], new_end), ) # range is unchanged - no need to update if expanded_range == (new_start, new_end): return # Update dictionary: remove old range, add expanded range del self._memory_dependencies[overlapping_range] self._memory_dependencies[expanded_range] = op # now since merged, possible need to merge again return self._check_and_merge_overlapping_range( expanded_range[0], expanded_range[1] - expanded_range[0], op ) [docs] def read_into( self, src: RDMABuffer, dst: \"LocalMemory | List[LocalMemory]\" ) -\u003e Self: \"\"\" Read from src RDMA buffer into dst memory. Args: src: Source RDMA buffer to read from dst: Destination local memory to read into If dst is a list, it is the concatenation of the data in the list \"\"\" # Throw NotImplementedError for lists to simplify logic if isinstance(dst, list): raise NotImplementedError(\"List destinations not yet supported\") addr, size = _get_addr_and_size(dst) if size \u003c src.size(): raise ValueError( f\"dst memory size ({size}) must be \u003e= src buffer size ({src.size()})\" ) self._check_and_merge_overlapping_range(addr, size, self.RDMAOp.READ_INTO) self._instructs.append((self.RDMAOp.READ_INTO, src, dst)) return self [docs] def write_from( self, src: RDMABuffer, dst: \"LocalMemory | List[LocalMemory]\" ) -\u003e Self: \"\"\" Write from dst memory to src RDMA buffer. Args: src: Destination RDMA buffer to write to dst: Source local memory to write from If local is a list, it is the concatenation of the data in the list \"\"\" # Throw NotImplementedError for lists to simplify logic if isinstance(dst, list): raise NotImplementedError(\"List sources not yet supported\") addr, size = _get_addr_and_size(dst) if size \u003e src.size(): raise ValueError( f\"Local memory size ({size}) must be \u003c= src buffer size ({src.size()})\" ) self._check_and_merge_overlapping_range(addr, size, self.RDMAOp.WRITE_FROM) self._instructs.append((self.RDMAOp.WRITE_FROM, src, dst)) return self [docs] def fetch_add(self, src: RDMABuffer, dst: \"LocalMemory\", add: int) -\u003e Self: \"\"\" Perform atomic fetch-and-add operation on src RDMA buffer. Args: src: src RDMA buffer to perform operation on dst: Local memory to store the original value add: Value to add to the src buffer Atomically: *dst = *src *src = *src + add Note: src/dst are 8 bytes \"\"\" raise NotImplementedError(\"Not yet supported\") [docs] def compare_and_swap( self, src: RDMABuffer, dst: \"LocalMemory\", compare: int, swap: int ) -\u003e Self: \"\"\" Perform atomic compare-and-swap operation on src RDMA buffer. Args: src: src RDMA buffer to perform operation on dst: Local memory to store the original value compare: Value to compare against swap: Value to swap in if comparison succeeds Atomically: *dst = *src; if (*src == compare) { *src = swap } Note: src/dst are 8 bytes \"\"\" raise NotImplementedError(\"Not yet supported\") [docs] def submit(self) -\u003e Future[None]: \"\"\" Schedules the work (can be called multiple times to schedule the same work more than once). Future completes when all the work is done. Executes futures for each src actor independently and concurrently for optimal performance. \"\"\" async def submit_all_work() -\u003e None: if not self._instructs: return work = defaultdict(list) # Group operations by owner for concurrent execution per owner for op, src, dst in self._instructs: if op == self.RDMAOp.READ_INTO: fut = src.read_into(dst) elif op == self.RDMAOp.WRITE_FROM: fut = src.write_from(dst) else: raise NotImplementedError(f\"Unknown RDMA operation: {op}\") work[src.owner].append(fut) # Create a list of tasks, one per owner, that wait for all that owner\u0027s futures sequentially owner_tasks = [] for _, futures in work.items(): # Create a coroutine that processes all futures for a qp sequentially async def process_owner_futures(owner_futures_list=futures): \"\"\"Process all futures for a single qp sequentially\"\"\" for future in owner_futures_list: await future # Convert to PythonTask for Monarch\u0027s native concurrency owner_task = PythonTask.from_coroutine(process_owner_futures()) owner_tasks.append(owner_task) # Spawn all owner tasks concurrently and collect their shared handles shared_tasks = [task.spawn() for task in owner_tasks] # Wait for all owner tasks to complete concurrently for shared_task in shared_tasks: await shared_task return Future(coro=submit_all_work())",
+       "articleBody": "Source code for monarch._src.rdma.rdma # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-unsafe import functools import logging import sys import threading import warnings import weakref from typing import Any, cast, Dict, Optional, Tuple, TYPE_CHECKING if TYPE_CHECKING: import torch from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared from monarch._src.actor.actor_mesh import Actor, context from monarch._src.actor.endpoint import endpoint from monarch._src.actor.future import Future from monarch._src.actor.proc_mesh import get_or_spawn_controller, ProcMesh from pyre_extensions import none_throws _NATIVE_RDMA_IMPORT_ERROR: Optional[ImportError] = None try: from monarch._rust_bindings.rdma import ( _assert_1d_contiguous, _get_memoryview_addr_and_size, _get_tensor_addr_and_size, _LocalMemoryHandle, _make_local_memory_handle_from_memoryview, _make_local_memory_handle_from_tensor, _RdmaAction, _RdmaBuffer, _RdmaManager, _WeakLocalMemoryHandle, is_ibverbs_available as _is_ibverbs_available, rdma_supported as _rdma_supported, ) except ImportError as e: # These fallbacks let the module import on platforms without the native # RDMA bindings; every entry point raises on use. We hide them from the # type checker with `if not TYPE_CHECKING` so it resolves these names to # their real types from the `try` import (via the `.pyi` stub) rather # than the catch-all `_UnavailableNativeBinding`, which has none of the # real attributes. At runtime `TYPE_CHECKING` is `False`, so the # fallbacks below are the ones that take effect. if not TYPE_CHECKING: _NATIVE_RDMA_IMPORT_ERROR = e logging.warning(\"RDMA native bindings are not available: %s\", e) class _UnavailableNativeBinding: def __init__(self, *args: Any, **kwargs: Any) -\u003e None: raise ImportError( \"RDMA native bindings are not available on this platform\" ) from _NATIVE_RDMA_IMPORT_ERROR _LocalMemoryHandle = _UnavailableNativeBinding _WeakLocalMemoryHandle = _UnavailableNativeBinding _RdmaAction = _UnavailableNativeBinding _RdmaBuffer = _UnavailableNativeBinding _RdmaManager = _UnavailableNativeBinding def _make_local_memory_handle_from_memoryview(mv: memoryview) -\u003e Any: raise ImportError( \"RDMA native bindings are not available on this platform\" ) from _NATIVE_RDMA_IMPORT_ERROR def _make_local_memory_handle_from_tensor(tensor: Any) -\u003e Any: raise ImportError( \"RDMA native bindings are not available on this platform\" ) from _NATIVE_RDMA_IMPORT_ERROR def _assert_1d_contiguous(buf: Any) -\u003e None: raise ImportError( \"RDMA native bindings are not available on this platform\" ) from _NATIVE_RDMA_IMPORT_ERROR def _get_memoryview_addr_and_size(mv: memoryview) -\u003e tuple[int, int]: raise ImportError( \"RDMA native bindings are not available on this platform\" ) from _NATIVE_RDMA_IMPORT_ERROR def _get_tensor_addr_and_size(tensor: Any) -\u003e tuple[int, int]: raise ImportError( \"RDMA native bindings are not available on this platform\" ) from _NATIVE_RDMA_IMPORT_ERROR def _is_ibverbs_available() -\u003e bool: return False def _rdma_supported() -\u003e bool: return False # RDMARead/WriteTransferWarnings are warnings that are only printed once per process. # Remove these once GPU support is added. class RDMAReadTransferWarning(Warning): pass class RDMAWriteTransferWarning(Warning): pass class RDMATcpFallbackWarning(Warning): pass warnings.simplefilter(\"once\", RDMAReadTransferWarning) warnings.simplefilter(\"once\", RDMAWriteTransferWarning) warnings.simplefilter(\"once\", RDMATcpFallbackWarning) [docs]def is_ibverbs_available() -\u003e bool: \"\"\"Whether ibverbs RDMA hardware is available on this system.\"\"\" return _is_ibverbs_available() [docs]def is_rdma_available() -\u003e bool: \"\"\"Whether RDMA over ibverbs is available on this system. .. deprecated:: Monarch now supports multiple RDMA backends, so `is_rdma_available` is ambiguous and will be removed in a future release. Use :func:`is_ibverbs_available` or :func:`get_rdma_backend` instead. \"\"\" warnings.warn( \"is_rdma_available is deprecated because Monarch now supports multiple \" \"RDMA backends, making this function ambiguous. For now it indicates \" \"whether RDMA over ibverbs is available. Use is_ibverbs_available() or \" \"get_rdma_backend() instead.\", DeprecationWarning, stacklevel=2, ) return is_ibverbs_available() [docs]def get_rdma_backend() -\u003e str: \"\"\"Return available RDMA backend. Returns: str: One of \u0027ibverbs\u0027, \u0027tcp\u0027, or \u0027none\u0027 indicating the available backend. Both Mellanox and EFA hardware are accessed through ibverbs. \u0027tcp\u0027 indicates the TCP fallback transport is enabled. \"\"\" if _is_ibverbs_available(): return \"ibverbs\" if _rdma_supported(): return \"tcp\" return \"none\" # Cached so that we don\u0027t have to call out to the root client every time, # which may be on a different host. @functools.cache def _ensure_init_rdma_manager() -\u003e Shared[None]: \"\"\"Initialize the RDMA manager for this node\u0027s backend (ibverbs or EFA).\"\"\" async def task() -\u003e None: # Ensure the proc mesh is initialized before we can send it over the wire, # since pickling the proc mesh before it is initiliazed would block the # tokio runtime and cause a panic. await context().actor_instance.proc_mesh.initialized await ( await get_or_spawn_controller(\"rdma_controller\", RdmaController) ).init_rdma_on_mesh.call_one(none_throws(context().actor_instance.proc_mesh)) return PythonTask.from_coroutine(task()).spawn() def _is_torch_tensor(obj: object) -\u003e bool: \"\"\"Check whether obj is a torch.Tensor without importing torch.\"\"\" torch_mod = sys.modules.get(\"torch\") if torch_mod is None: return False return isinstance(obj, torch_mod.Tensor) # Cache of weak handles to local memory regions, keyed by # `(backing_id, addr, size)`. `backing_id` is `id(t.untyped_storage())` # for tensors and `id(mv)` for memoryviews \u2014 the id of the stable # backing object, not of any per-call view. Transient tensor views like # `tensor.view(...).flatten()` share their storage\u0027s id and so reuse one # entry; distinct memoryviews over the same buffer keep separate entries # (their ids differ). `addr` and `size` further disambiguate slices of # one backing. # # The cached `_WeakLocalMemoryHandle` does NOT pin the backing, so the # cache cannot prolong an allocation\u0027s lifetime. Eviction is driven by # a `weakref` to the backing \u2014 a tensor\u0027s `untyped_storage()` or the # memoryview itself \u2014 whose callback drops the entry once the backing # is garbage-collected. _local_memory_cache: \"Dict[Tuple[int, int, int], _WeakLocalMemoryHandle]\" = {} # Eviction weakrefs, keyed identically. Holding the weakref alive is # what lets its callback fire; the callback removes the entry only when # its own weakref is still the registered one, so a stale callback # cannot evict a fresh registration whose backing reused a freed id. _local_memory_cache_refs: \"Dict[Tuple[int, int, int], weakref.ref]\" = {} # Serializes the get/upgrade/insert and eviction sequences; the GIL # only makes the individual dict ops atomic. _local_memory_cache_lock = threading.Lock() def _evict_local_memory(key: Tuple[int, int, int], ref: \"weakref.ref\") -\u003e None: \"\"\"Drop the cache entry for ``key`` when its backing is collected. Guards against id reuse: a newer registration whose backing reused a freed object\u0027s id installs a fresh weakref under the same key, so this fires only when the registered weakref is still the one that scheduled the callback. \"\"\" with _local_memory_cache_lock: if _local_memory_cache_refs.get(key) is ref: del _local_memory_cache_refs[key] _local_memory_cache.pop(key, None) def _make_local_memory_handle( data: \"torch.Tensor | memoryview\", ) -\u003e _LocalMemoryHandle: _assert_1d_contiguous(data) if isinstance(data, memoryview): addr, size = _get_memoryview_addr_and_size(data) backing = data elif _is_torch_tensor(data): addr, size = _get_tensor_addr_and_size(data) backing = data.untyped_storage() # type: ignore[union-attr] else: raise RuntimeError( \"Trying to make a local memory handle for an unsupported type. \" \"Expected memoryview or torch.Tensor. Got: {}\".format(type(data)) ) key = (id(backing), addr, size) with _local_memory_cache_lock: weak = _local_memory_cache.get(key) if weak is not None: cached = weak.upgrade() if cached is not None: return cached # The backing is gone but its eviction callback has not run # yet; drop the stale entry now. _local_memory_cache.pop(key, None) _local_memory_cache_refs.pop(key, None) if isinstance(data, memoryview): strong = _make_local_memory_handle_from_memoryview(data) else: strong = _make_local_memory_handle_from_tensor(data) weak = strong.downgrade() if weak is not None: ref = weakref.ref(backing, lambda _r, _k=key: _evict_local_memory(_k, _r)) with _local_memory_cache_lock: _local_memory_cache[key] = weak _local_memory_cache_refs[key] = ref return strong class RdmaController(Actor): def __init__(self) -\u003e None: self._manager_futures: Dict[ProcMesh, Future[_RdmaManager]] = {} @endpoint async def init_rdma_on_mesh(self, proc_mesh: ProcMesh) -\u003e None: # Note: RdmaController acts as coordinator and can run on any node # The RDMA support check should happen on the target proc_mesh nodes, not on RdmaController\u0027s node if proc_mesh not in self._manager_futures: async def create_manager() -\u003e _RdmaManager: proc_mesh_result = await Future( coro=cast(\"PythonTask[Any]\", proc_mesh._proc_mesh.task()) ) return none_throws( await _RdmaManager.create_rdma_manager_nonblocking( proc_mesh_result, context().actor_instance ) ) self._manager_futures[proc_mesh] = Future(coro=create_manager()) await self._manager_futures[proc_mesh] def pt_cuda_allocator_compatibility() -\u003e bool: \"\"\" Check if PyTorch CUDA caching allocator is compatible with RDMA. This checks if both the CUDA caching allocator is enabled AND expandable segments are enabled, which is required for RDMA operations with CUDA tensors. Returns: bool: True if both conditions are met, False otherwise \"\"\" import torch if not torch.cuda.is_available(): return False # Get allocator snapshot which contains settings snapshot = torch.cuda.memory._snapshot() allocator_settings = snapshot.get(\"allocator_settings\", {}) # Check if expandable_segments is enabled # pyrefly: ignore [missing-attribute] return allocator_settings.get(\"expandable_segments\", False) @functools.cache def _check_cuda_expandable_segments_enabled() -\u003e bool: \"\"\" Check if PyTorch CUDA caching allocator is using expandable segments. Returns: bool: True if expandable segments are enabled, False otherwise \"\"\" try: # Call the Python implementation of pt_cuda_allocator_compatibility pt_cuda_compat = pt_cuda_allocator_compatibility() if not pt_cuda_compat: warnings.warn( \"CUDA caching allocator is not using expandable segments.\\n\" \"This is required to maximize RDMA performance with CUDA tensors.\\n\\n\" \"To fix this, set the environment variable BEFORE importing PyTorch:\\n\" \"1. In shell:\\n\" \u0027 export PYTORCH_CUDA_ALLOC_CONF=\"expandable_segments:True\"\\n\u0027 \"2. Or in Python script (BEFORE any PyTorch imports):\\n\" \" import os\\n\" \u0027 os.environ[\"PYTORCH_CUDA_ALLOC_CONF\"] = \"expandable_segments:True\"\\n\u0027 \" import torch # Must come after setting the env var\\n\\n\", UserWarning, stacklevel=2, ) return False return True except Exception: warnings.warn( \"Unable to verify CUDA allocator configuration.\\n\" \"Please ensure expandable segments are enabled for best RDMA performance with CUDA tensors:\\n\" \u0027 export PYTORCH_CUDA_ALLOC_CONF=\"expandable_segments:True\"\\n\u0027 \"Set this environment variable before importing PyTorch.\", UserWarning, stacklevel=2, ) return False [docs]class RDMABuffer: [docs] def __init__( self, data: \"torch.Tensor | memoryview\", ) -\u003e None: \"\"\" RDMABuffer supports 1d contiguous tensors (including tensor views/slices) or 1d c-contiguous memoryviews. Args: data: torch.Tensor or memoryview to create the buffer from. Must be 1d and contiguous. If provided, addr and size must not be specified. Raises: ValueError: If data is not 1d contiguous, if size is 0, or if data is a GPU tensor. RuntimeError: If no RDMA backend is available on this platform. Note: Currently only CPU tensors are supported. GPU tensor support will be added in the future. TODO: Create TensorBuffer, which will be main user API supporting non-contiguous tensors \"\"\" if _is_torch_tensor(data) and data.device.type == \"cuda\": # type: ignore[union-attr] # Check if CUDA caching allocator is using expandable segments _check_cuda_expandable_segments_enabled() backend = get_rdma_backend() assert backend != \"none\", ( \"Tried to create an RDMABuffer, but RDMA is not available on this platform. \" \"To enable TCP fallback transport, call \" \"monarch.configure(rdma_allow_tcp_fallback=True) before creating buffers.\" ) if backend == \"tcp\": warnings.warn( \"No ibverbs RDMA hardware detected. Falling back to TCP transport, \" \"which has significantly lower throughput and higher latency than \" \"native RDMA. To disable this fallback and fail explicitly, call \" \"monarch.configure(rdma_allow_tcp_fallback=False).\", RDMATcpFallbackWarning, stacklevel=2, ) # We need to ensure that _RdmaManager is initialized at this point, because under the hood # _RdmaBuffer.create_rdma_buffer_blocking relies on this being the case. _ensure_init_rdma_manager().block_on() handle = _make_local_memory_handle(data) try: if handle.size == 0: raise ValueError(\"Cannot create RDMABuffer with size 0.\") ctx = context() self._buffer: _RdmaBuffer = _RdmaBuffer.create_rdma_buffer_blocking( local=handle, client=ctx.actor_instance, ) # TODO - specific exception except Exception as e: logging.error(\"Failed to create buffer %s\", e) raise e @property def backend(self) -\u003e str: \"\"\"Return the RDMA backend in use (\u0027ibverbs\u0027).\"\"\" return get_rdma_backend() [docs] def size(self) -\u003e int: return self._buffer.size() [docs] def read_into( self, dst: \"torch.Tensor | memoryview\", *, timeout: int = 60, ) -\u003e Future[None]: \"\"\"Read data from this RDMABuffer into ``dst``. ``dst`` must be a 1D contiguous tensor or c-contiguous memoryview whose byte-size is at least ``self.size()``. Args: dst: Destination tensor or memoryview to read into. Keyword Args: timeout (int, optional): Timeout in seconds. Defaults to 60s. Returns: Future[None]: A Monarch Future that resolves to ``None`` when the read completes. Raises: ValueError: If ``dst`` is smaller than the RDMA buffer. \"\"\" return RDMAAction().read_remote(dst, self).submit(timeout=timeout) [docs] def write_from( self, src: \"torch.Tensor | memoryview\", *, timeout: int = 60, ) -\u003e Future[None]: \"\"\"Write data from ``src`` into this RDMABuffer. ``src`` must be a 1D contiguous tensor or c-contiguous memoryview whose byte-size is at most ``self.size()``. Args: src: Source tensor or memoryview containing the bytes to write to the RDMA buffer. Keyword Args: timeout (int, optional): Timeout in seconds. Defaults to 60s. Returns: Future[None]: A Monarch Future that resolves to ``None`` when the write completes. Raises: ValueError: If ``src`` exceeds the RDMA buffer size. \"\"\" return RDMAAction().write_remote(self, src).submit(timeout=timeout) [docs] def drop(self) -\u003e Future[None]: \"\"\" Release the handle on the memory that the src holds to this memory. \"\"\" client = context().actor_instance async def drop_nonblocking() -\u003e None: await _ensure_init_rdma_manager() await self._buffer.drop( client=client, ) return Future(coro=drop_nonblocking()) @property def owner(self) -\u003e str: \"\"\" The owner reference (str) \"\"\" return self._buffer.owner_actor_id() if TYPE_CHECKING: LocalMemory = torch.Tensor | memoryview [docs]class RDMAAction: \"\"\"Schedule a batch of RDMA operations and submit them as one unit. All bookkeeping (per-op validation, intra-batch local-memory race detection, backend grouping, parallel dispatch) lives in the Rust `_RdmaAction`; this class is a thin wrapper around it. \"\"\" [docs] def __init__(self) -\u003e None: self._inner: _RdmaAction = _RdmaAction() # pyrefly: ignore [not-a-type] [docs] def read_remote(self, dst: \"LocalMemory\", src: RDMABuffer) -\u003e \"RDMAAction\": \"\"\"Queue a read from RDMA buffer ``src`` into local memory ``dst``.\"\"\" handle = _make_local_memory_handle(dst) self._inner.add_read_into_local(remote=src._buffer, local=handle) return self # pyrefly: ignore [not-a-type] [docs] def write_remote(self, dst: RDMABuffer, src: \"LocalMemory\") -\u003e \"RDMAAction\": \"\"\"Queue a write from local memory ``src`` into RDMA buffer ``dst``.\"\"\" handle = _make_local_memory_handle(src) self._inner.add_write_from_local(remote=dst._buffer, local=handle) return self # pyrefly: ignore [not-a-type] [docs] def fetch_add(self, src: RDMABuffer, dst: \"LocalMemory\", add: int) -\u003e \"RDMAAction\": raise NotImplementedError(\"Not yet supported\") [docs] def compare_and_swap( self, src: RDMABuffer, dst: \"LocalMemory\", compare: int, swap: int, # pyrefly: ignore [not-a-type] ) -\u003e \"RDMAAction\": raise NotImplementedError(\"Not yet supported\") [docs] def submit(self, *, timeout: int = 60) -\u003e Future[None]: \"\"\"Schedule the queued ops. Safe to call multiple times. The returned Future does not resolve until every op in the batch completes, or until the timeout is reached. If any op fails, the Future resolves with an exception. \"\"\" client = context().actor_instance inner = self._inner async def run() -\u003e None: await _ensure_init_rdma_manager() await inner.submit(client=client, timeout=timeout) return Future(coro=run())",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

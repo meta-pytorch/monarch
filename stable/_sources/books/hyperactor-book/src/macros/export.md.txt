@@ -2,7 +2,7 @@
 
 The `#[hyperactor::export]` macro turns a regular `Actor` implementation into a remotely addressable actor by generating its type information and supported message handlers.
 
-It also supports message casting (broadcasting to multiple actors) by specifying `cast = true` for individual handlers.
+It also supports message casting (broadcasting to multiple actors) for exported remote message handlers.
 
 ## What It Adds
 
@@ -27,14 +27,14 @@ To make a concrete actor remotely spawnable, add `#[hyperactor::spawnable]`. For
 
 ## Casting Messages
 
-For message types that need to be broadcast to multiple actors in a mesh, use `cast = true`:
+Message types that need to be broadcast to multiple actors in a mesh must be exported remote message handlers:
 
 ```rust
 #[hyperactor::export(
     handlers = [
-        TestMessage { cast = true },
-        () { cast = true },
-        MyGeneric<()> { cast = true },
+        TestMessage,
+        (),
+        MyGeneric<()>,
         u64,
     ],
 )]
@@ -43,7 +43,7 @@ struct TestActor {
 }
 ```
 
-When `cast = true` is specified, the macro registers both the concrete message type and its `IndexedErasedUnbound<T>` wrapper. This enables the message to be multicast to a group of actors via `CastMessageEnvelope`, with proper handling of reply port mutation so replies can be relayed through intermediate nodes and aggregated.
+Cast routes send the message as multipart data to the destination's ordinary typed handler port, with reply-port mutation handled by visiting typed multipart part representations while the message is in transit.
 
 ## Generated Implementations (simplified)
 ```rust

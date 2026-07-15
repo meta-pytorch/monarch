@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -16,7 +17,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="We begin in a process that can already run hyperactor code and create an instance: This gives us a proc + mailbox we can use to tell the mesh to do things. That’s two separate things happening, so ..." />
 
-    <title>§1 Proc and Instance (start from a Proc you control) &#8212; Monarch v0.5.0 documentation</title>
+    <title>§1 Proc and Instance (start from a Proc you control) &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
+    <script src="../../../../_static/doctools.js"></script>
+    <script src="../../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../../_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-mesh-book/src/meshes/bootstrapping-proc-and-instance';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-mesh-book/src/meshes/bootstrapping-proc-and-instance.html" />
@@ -82,7 +83,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +197,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1293,7 +1294,7 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="proc-and-instance-start-from-a-proc-you-control">
-<h1>§1 Proc and Instance (start from a Proc you control)<a class="headerlink" href="#proc-and-instance-start-from-a-proc-you-control" title="Link to this heading">#</a></h1>
+<h1>§1 Proc and Instance (start from a Proc you control)<a class="headerlink" href="#proc-and-instance-start-from-a-proc-you-control" title="Permalink to this heading">#</a></h1>
 <p>We begin in a process that can already run hyperactor code and create an instance:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="n">proc</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Proc</span><span class="p">::</span><span class="n">direct</span><span class="p">(</span><span class="n">ChannelTransport</span><span class="p">::</span><span class="n">Unix</span><span class="p">.</span><span class="n">any</span><span class="p">(),</span><span class="w"> </span><span class="s">&quot;root&quot;</span><span class="p">.</span><span class="n">to_string</span><span class="p">())</span>
 <span class="w">    </span><span class="p">.</span><span class="n">unwrap</span><span class="p">();</span>
@@ -1302,7 +1303,7 @@ document.write(`
 </div>
 <p>This gives us a proc + mailbox we can use to tell the mesh to do things. That’s two separate things happening, so let’s spell them out.</p>
 <section id="what-proc-direct-actually-does">
-<h2>1.1 What <code class="docutils literal notranslate"><span class="pre">Proc::direct(...)</span></code> actually does<a class="headerlink" href="#what-proc-direct-actually-does" title="Link to this heading">#</a></h2>
+<h2>1.1 What <code class="docutils literal notranslate"><span class="pre">Proc::direct(...)</span></code> actually does<a class="headerlink" href="#what-proc-direct-actually-does" title="Permalink to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">Proc::direct(...)</span></code> is the “stand up a proc right here and make it reachable on this channel address” helper.</p>
 <p>Under the hood it does (cf. <code class="docutils literal notranslate"><span class="pre">Proc::direct</span></code> in the source):</p>
 <ol class="arabic simple">
@@ -1325,7 +1326,7 @@ It calls <code class="docutils literal notranslate"><span class="pre">proc.clone
 </section>
 </section>
 <section id="what-proc-client-client-does">
-<h1>1.2 What <code class="docutils literal notranslate"><span class="pre">proc.client(&quot;client&quot;)</span></code> does<a class="headerlink" href="#what-proc-client-client-does" title="Link to this heading">#</a></h1>
+<h1>1.2 What <code class="docutils literal notranslate"><span class="pre">proc.client(&quot;client&quot;)</span></code> does<a class="headerlink" href="#what-proc-client-client-does" title="Permalink to this heading">#</a></h1>
 <p>Once we have a proc (from <code class="docutils literal notranslate"><span class="pre">Proc::direct(...)</span></code> or otherwise), we usually want “a handle into that proc” that we can drive from plain Rust code. That’s what</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="n">instance</span><span class="p">,</span><span class="w"> </span><span class="n">handle</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">proc</span><span class="p">.</span><span class="n">client</span><span class="p">(</span><span class="s">&quot;client&quot;</span><span class="p">)</span><span class="o">?</span><span class="p">;</span>
 </pre></div>
@@ -1361,7 +1362,7 @@ You get:</p>
 </li>
 </ol>
 <section id="why-we-care-for-bootstrapping">
-<h2>Why we care for bootstrapping<a class="headerlink" href="#why-we-care-for-bootstrapping" title="Link to this heading">#</a></h2>
+<h2>Why we care for bootstrapping<a class="headerlink" href="#why-we-care-for-bootstrapping" title="Permalink to this heading">#</a></h2>
 <p>In the bootstrapping flow we’re describing, we often need “a proc-local, controllable actor endpoint” so we can:</p>
 <ul class="simple">
 <li><p>send messages to actors in the mesh (once hosts/procs are up)</p></li>
@@ -1615,7 +1616,7 @@ You get:</p>
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>

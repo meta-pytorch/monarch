@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -16,7 +17,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="Meshes: All computation is done on a ‘mesh’ of devices. Here we create a mesh composed of the machine running the notebook: Without a mesh active, torch runs locally. Once active, torch runs on eve..." />
 
-    <title>Distributed Tensors in Monarch &#8212; Monarch v0.5.0 documentation</title>
+    <title>Distributed Tensors in Monarch &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="../../" id="documentation_options" src="../../_static/documentation_options.js"></script>
+    <script src="../../_static/doctools.js"></script>
+    <script src="../../_static/sphinx_highlight.js"></script>
+    <script src="../../_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'generated/examples/distributed_tensors';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/generated/examples/distributed_tensors.html" />
@@ -84,7 +85,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="api">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -198,7 +199,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1339,7 +1340,7 @@ document.write(`
 to download the full example code</p>
 </div>
 <section class="sphx-glr-example-title" id="distributed-tensors-in-monarch">
-<span id="sphx-glr-generated-examples-distributed-tensors-py"></span><h1>Distributed Tensors in Monarch<a class="headerlink" href="#distributed-tensors-in-monarch" title="Link to this heading">#</a></h1>
+<span id="sphx-glr-generated-examples-distributed-tensors-py"></span><h1>Distributed Tensors in Monarch<a class="headerlink" href="#distributed-tensors-in-monarch" title="Permalink to this heading">#</a></h1>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">monarch</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">torch.nn</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">nn</span>
@@ -1350,7 +1351,7 @@ to download the full example code</p>
 </div>
 </section>
 <section id="meshes">
-<h1>Meshes<a class="headerlink" href="#meshes" title="Link to this heading">#</a></h1>
+<h1>Meshes<a class="headerlink" href="#meshes" title="Permalink to this heading">#</a></h1>
 <p>All computation is done on a ‘mesh’ of devices.
 Here we create a mesh composed of the machine running the notebook:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">mesh</span> <span class="o">=</span> <span class="n">this_host</span><span class="p">()</span><span class="o">.</span><span class="n">spawn_procs</span><span class="p">({</span><span class="s2">&quot;gpu&quot;</span><span class="p">:</span> <span class="mi">8</span><span class="p">})</span>
@@ -1380,7 +1381,7 @@ Here we create a mesh composed of the machine running the notebook:</p>
 </div>
 </section>
 <section id="tensor-commands">
-<h1>Tensor Commands<a class="headerlink" href="#tensor-commands" title="Link to this heading">#</a></h1>
+<h1>Tensor Commands<a class="headerlink" href="#tensor-commands" title="Permalink to this heading">#</a></h1>
 <p>Any command done on the controller, such as multiplying these tensors,
 performs that action to all of the tensors in the collection.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="k">with</span> <span class="n">mesh</span><span class="o">.</span><span class="n">activate</span><span class="p">():</span>
@@ -1423,7 +1424,7 @@ what works:</p>
 </div>
 </section>
 <section id="collectives">
-<h1>Collectives<a class="headerlink" href="#collectives" title="Link to this heading">#</a></h1>
+<h1>Collectives<a class="headerlink" href="#collectives" title="Permalink to this heading">#</a></h1>
 <p>Each machine has its own copy of the tensor, similar to torch.distributed.</p>
 <p>To compute across tensors in the mesh, we use special communication operators, analogous to collectives.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="k">with</span> <span class="n">mesh</span><span class="o">.</span><span class="n">activate</span><span class="p">():</span>
@@ -1439,7 +1440,7 @@ what works:</p>
 </div>
 </section>
 <section id="remote-gpus">
-<h1>Remote GPUs<a class="headerlink" href="#remote-gpus" title="Link to this heading">#</a></h1>
+<h1>Remote GPUs<a class="headerlink" href="#remote-gpus" title="Permalink to this heading">#</a></h1>
 <p>We can also connect to remote GPUs reserved from some scheduler</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># NYI: schedule public API based on config, just fake it locally</span>
 
@@ -1454,7 +1455,7 @@ what works:</p>
 </div>
 </section>
 <section id="device-mesh-dimensions">
-<h1>Device Mesh Dimensions<a class="headerlink" href="#device-mesh-dimensions" title="Link to this heading">#</a></h1>
+<h1>Device Mesh Dimensions<a class="headerlink" href="#device-mesh-dimensions" title="Permalink to this heading">#</a></h1>
 <p>Meshes can be renamed and reshaped to fit the parallelism desired.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">mesh_2d_parallel</span> <span class="o">=</span> <span class="n">remote_mesh</span><span class="o">.</span><span class="n">rename</span><span class="p">(</span><span class="n">host</span><span class="o">=</span><span class="s2">&quot;dp&quot;</span><span class="p">,</span> <span class="n">gpu</span><span class="o">=</span><span class="s2">&quot;tp&quot;</span><span class="p">)</span>
 <span class="nb">print</span><span class="p">(</span><span class="n">mesh_2d_parallel</span><span class="o">.</span><span class="n">to_table</span><span class="p">())</span>
@@ -1465,7 +1466,7 @@ what works:</p>
 </div>
 </section>
 <section id="pipelining">
-<h1>Pipelining<a class="headerlink" href="#pipelining" title="Link to this heading">#</a></h1>
+<h1>Pipelining<a class="headerlink" href="#pipelining" title="Permalink to this heading">#</a></h1>
 <p>Pipelining is accomplished by slicing the mesh, and copying tensors from
 one mesh to another.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">pipeline_mesh</span> <span class="o">=</span> <span class="n">remote_mesh</span><span class="o">.</span><span class="n">rename</span><span class="p">(</span><span class="n">host</span><span class="o">=</span><span class="s2">&quot;pp&quot;</span><span class="p">)</span>
@@ -1504,7 +1505,7 @@ one mesh to another.</p>
 </div>
 </section>
 <section id="ddp-example">
-<h1>DDP Example<a class="headerlink" href="#ddp-example" title="Link to this heading">#</a></h1>
+<h1>DDP Example<a class="headerlink" href="#ddp-example" title="Permalink to this heading">#</a></h1>
 <p>The next sections will use an example of writing DDP to illustrate a
 typical way to develop code in monarch.</p>
 <p>Let’s interleave the backward pass with the gradient reductions and
@@ -1527,7 +1528,7 @@ It returns an iterator that computes the grad parameters one at a time.</p>
 </div>
 </section>
 <section id="simulation-of-ddp">
-<h1>Simulation of DDP<a class="headerlink" href="#simulation-of-ddp" title="Link to this heading">#</a></h1>
+<h1>Simulation of DDP<a class="headerlink" href="#simulation-of-ddp" title="Permalink to this heading">#</a></h1>
 <p>We can use a simulator to check for expected behavior of code before running it
 for real.</p>
 <p>It is another kind of mesh, which simulates rather than computes results for real.</p>
@@ -1561,7 +1562,7 @@ for real.</p>
 </div>
 </section>
 <section id="overlapping-comms-compute">
-<h1>Overlapping Comms/Compute<a class="headerlink" href="#overlapping-comms-compute" title="Link to this heading">#</a></h1>
+<h1>Overlapping Comms/Compute<a class="headerlink" href="#overlapping-comms-compute" title="Permalink to this heading">#</a></h1>
 <p>Commands on different devices run in parallel,
 but by default commands on a single device run sequentially.</p>
 <p>We introduce parallelism on a device via stream objects.</p>
@@ -1775,6 +1776,30 @@ grad step but before we update the param.</p>
 
   </nav></div>
     
+       <div class="sidebar-secondary-item">
+
+  
+  <div class="tocsection editthispage">
+    <a href="https://github.com/meta-pytorch/monarch/edit/main/docs/source/generated/examples/distributed_tensors.rst">
+      <i class="fa-solid fa-pencil"></i>
+      
+      
+        
+          Edit on GitHub
+        
+      
+    </a>
+  </div>
+</div>
+    
+       <div class="sidebar-secondary-item">
+    <div class="tocsection sourcelink">
+      <a href="../../_sources/generated/examples/distributed_tensors.rst.txt">
+        <i class="fa-solid fa-file-lines"></i> Show Source
+      </a>
+    </div>
+</div>
+    
 
 
 
@@ -1890,7 +1915,7 @@ grad step but before we update the param.</p>
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>

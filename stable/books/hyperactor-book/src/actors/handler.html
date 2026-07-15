@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -16,7 +17,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="The Handler trait defines how an actor receives and responds to messages of a specific type. Each message type that an actor can handle must be declared by implementing this trait. The runtime invo..." />
 
-    <title>The Handler Trait &#8212; Monarch v0.5.0 documentation</title>
+    <title>The Handler Trait &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
+    <script src="../../../../_static/doctools.js"></script>
+    <script src="../../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../../_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-book/src/actors/handler';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/actors/handler.html" />
@@ -82,7 +83,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +197,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1293,7 +1294,7 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="the-handler-trait">
-<h1>The <code class="docutils literal notranslate"><span class="pre">Handler</span></code> Trait<a class="headerlink" href="#the-handler-trait" title="Link to this heading">#</a></h1>
+<h1>The <code class="docutils literal notranslate"><span class="pre">Handler</span></code> Trait<a class="headerlink" href="#the-handler-trait" title="Permalink to this heading">#</a></h1>
 <p>The <code class="docutils literal notranslate"><span class="pre">Handler</span></code> trait defines how an actor receives and responds to messages of a specific type.</p>
 <p>Each message type that an actor can handle must be declared by implementing this trait. The runtime invokes the <code class="docutils literal notranslate"><span class="pre">handle</span></code> method when such a message is delivered.</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="cp">#[async_trait]</span>
@@ -1303,7 +1304,7 @@ document.write(`
 </pre></div>
 </div>
 <section id="message-dispatch-handle">
-<h2>Message Dispatch: <code class="docutils literal notranslate"><span class="pre">handle</span></code><a class="headerlink" href="#message-dispatch-handle" title="Link to this heading">#</a></h2>
+<h2>Message Dispatch: <code class="docutils literal notranslate"><span class="pre">handle</span></code><a class="headerlink" href="#message-dispatch-handle" title="Permalink to this heading">#</a></h2>
 <p>The <code class="docutils literal notranslate"><span class="pre">handle</span></code> method is invoked by the runtime whenever a message of type <code class="docutils literal notranslate"><span class="pre">M</span></code> arrives at a matching port on the actor.</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">message</span></code> is the received payload.</p></li>
@@ -1313,10 +1314,10 @@ document.write(`
 <p>An actor may implement <code class="docutils literal notranslate"><span class="pre">Handler&lt;M&gt;</span></code> multiple times — once for each message type <code class="docutils literal notranslate"><span class="pre">M</span></code> it supports.</p>
 </section>
 <section id="built-in-handlers">
-<h2>Built-in Handlers<a class="headerlink" href="#built-in-handlers" title="Link to this heading">#</a></h2>
+<h2>Built-in Handlers<a class="headerlink" href="#built-in-handlers" title="Permalink to this heading">#</a></h2>
 <p>The runtime provides implementations of <code class="docutils literal notranslate"><span class="pre">Handler&lt;M&gt;</span></code> for a few internal message types:</p>
 <section id="handler-signal">
-<h3><code class="docutils literal notranslate"><span class="pre">Handler&lt;Signal&gt;</span></code><a class="headerlink" href="#handler-signal" title="Link to this heading">#</a></h3>
+<h3><code class="docutils literal notranslate"><span class="pre">Handler&lt;Signal&gt;</span></code><a class="headerlink" href="#handler-signal" title="Permalink to this heading">#</a></h3>
 <p>This is a marker implementation indicating that all actors can receive <code class="docutils literal notranslate"><span class="pre">Signal</span></code>. The handler is not expected to be invoked directly — its real behavior is implemented inside the runtime.</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="cp">#[async_trait]</span>
 <span class="k">impl</span><span class="o">&lt;</span><span class="n">A</span><span class="p">:</span><span class="w"> </span><span class="nc">Actor</span><span class="o">&gt;</span><span class="w"> </span><span class="n">Handler</span><span class="o">&lt;</span><span class="n">Signal</span><span class="o">&gt;</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">A</span><span class="w"> </span><span class="p">{</span>
@@ -1331,29 +1332,19 @@ document.write(`
 </pre></div>
 </div>
 </section>
-<section id="handler-indexederasedunbound-m">
-<h3><code class="docutils literal notranslate"><span class="pre">Handler&lt;IndexedErasedUnbound&lt;M&gt;&gt;</span></code><a class="headerlink" href="#handler-indexederasedunbound-m" title="Link to this heading">#</a></h3>
-<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="cp">#[async_trait]</span>
-<span class="k">impl</span><span class="o">&lt;</span><span class="n">A</span><span class="p">,</span><span class="w"> </span><span class="n">M</span><span class="o">&gt;</span><span class="w"> </span><span class="n">Handler</span><span class="o">&lt;</span><span class="n">IndexedErasedUnbound</span><span class="o">&lt;</span><span class="n">M</span><span class="o">&gt;&gt;</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">A</span>
-<span class="k">where</span>
-<span class="w">    </span><span class="n">A</span><span class="p">:</span><span class="w"> </span><span class="nc">Handler</span><span class="o">&lt;</span><span class="n">M</span><span class="o">&gt;</span><span class="p">,</span>
-<span class="w">    </span><span class="n">M</span><span class="p">:</span><span class="w"> </span><span class="nc">Castable</span><span class="p">,</span>
-<span class="p">{</span>
-<span class="w">    </span><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">handle</span><span class="p">(</span>
-<span class="w">        </span><span class="o">&amp;</span><span class="k">mut</span><span class="w"> </span><span class="bp">self</span><span class="p">,</span>
-<span class="w">        </span><span class="n">cx</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Context</span><span class="o">&lt;</span><span class="bp">Self</span><span class="o">&gt;</span><span class="p">,</span>
-<span class="w">        </span><span class="n">msg</span><span class="p">:</span><span class="w"> </span><span class="nc">IndexedErasedUnbound</span><span class="o">&lt;</span><span class="n">M</span><span class="o">&gt;</span><span class="p">,</span>
-<span class="w">    </span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">anyhow</span><span class="p">::</span><span class="nb">Result</span><span class="o">&lt;</span><span class="p">()</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">message</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">msg</span><span class="p">.</span><span class="n">downcast</span><span class="p">()</span><span class="o">?</span><span class="p">.</span><span class="n">bind</span><span class="p">()</span><span class="o">?</span><span class="p">;</span>
-<span class="w">        </span><span class="n">Handler</span><span class="p">::</span><span class="n">handle</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">cx</span><span class="p">,</span><span class="w"> </span><span class="n">message</span><span class="p">).</span><span class="k">await</span>
-<span class="w">    </span><span class="p">}</span>
-<span class="p">}</span>
+<section id="multipart-routed-messages">
+<h3>Multipart routed messages<a class="headerlink" href="#multipart-routed-messages" title="Permalink to this heading">#</a></h3>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">message</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">wirevalue</span><span class="p">::</span><span class="n">Any</span><span class="p">::</span><span class="o">&lt;</span><span class="n">wirevalue</span><span class="p">::</span><span class="n">encoding</span><span class="p">::</span><span class="n">Multipart</span><span class="o">&gt;</span><span class="p">::</span><span class="n">serialize</span><span class="p">(</span><span class="o">&amp;</span><span class="n">value</span><span class="p">)</span><span class="o">?</span><span class="p">;</span>
+<span class="n">message</span><span class="p">.</span><span class="n">visit_multipart_parts_mut</span><span class="p">::</span><span class="o">&lt;</span><span class="n">PortRefRepr</span><span class="p">,</span><span class="w"> </span><span class="n">anyhow</span><span class="p">::</span><span class="n">Error</span><span class="o">&gt;</span><span class="p">(</span><span class="o">|</span><span class="n">port</span><span class="o">|</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">port</span><span class="p">.</span><span class="n">update_port_addr</span><span class="p">(</span><span class="n">rewritten_addr</span><span class="p">);</span>
+<span class="w">    </span><span class="nb">Ok</span><span class="p">(())</span>
+<span class="p">})</span><span class="o">?</span><span class="p">;</span>
 </pre></div>
 </div>
-<p>This implementation allows an actor to transparently handle erased, rebound messages of type <code class="docutils literal notranslate"><span class="pre">M</span></code>, provided it already implements <code class="docutils literal notranslate"><span class="pre">Handler&lt;M&gt;</span></code>.</p>
+<p>Casting and accumulation routes serialized multipart messages through intermediate actors. Intermediate actors rewrite typed multipart parts directly, then forward the serialized message to the destination actor’s ordinary typed handler port.</p>
 <p>This construct is used in the implementation of <strong>accumulation</strong>, a communication pattern where a message is multicast to multiple recipients and their replies are gathered—possibly through intermediate actors—before being sent back to the original sender.</p>
-<p>To enable this, messages are unbound at the sender: reply ports (<code class="docutils literal notranslate"><span class="pre">PortRef</span></code>s) are extracted into a <code class="docutils literal notranslate"><span class="pre">Bindings</span></code> object, allowing intermediate nodes to rewrite those ports to point back to themselves. This ensures that replies from downstream actors are routed through the intermediate, enabling reply collection and reduction.</p>
-<p>Once a message reaches its destination, it is rebound by merging the updated bindings back into the message. The <code class="docutils literal notranslate"><span class="pre">Handler&lt;IndexedErasedUnbound&lt;M&gt;&gt;</span></code> implementation automates this by recovering the typed message <code class="docutils literal notranslate"><span class="pre">M</span></code> and dispatching it to the actor’s existing <code class="docutils literal notranslate"><span class="pre">Handler&lt;M&gt;</span></code> implementation.</p>
+<p>To enable this, selected fields such as <code class="docutils literal notranslate"><span class="pre">PortRef</span></code>s serialize as typed multipart parts. Intermediate nodes visit those part representations and rewrite the port addresses to point back to themselves. This ensures that replies from downstream actors are routed through the intermediate, enabling reply collection and reduction.</p>
+<p>Once a message reaches its destination, the mailbox deserializes the multipart payload as the actor’s typed message and dispatches it to the actor’s existing <code class="docutils literal notranslate"><span class="pre">Handler&lt;M&gt;</span></code> implementation.</p>
 <p>This allows actors to remain unaware of accumulation mechanics—they can just implement <code class="docutils literal notranslate"><span class="pre">Handler&lt;M&gt;</span></code> as usual.</p>
 </section>
 </section>
@@ -1443,7 +1434,7 @@ document.write(`
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#message-dispatch-handle">Message Dispatch: <code class="docutils literal notranslate"><span class="pre">handle</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#built-in-handlers">Built-in Handlers</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#handler-signal"><code class="docutils literal notranslate"><span class="pre">Handler&lt;Signal&gt;</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#handler-indexederasedunbound-m"><code class="docutils literal notranslate"><span class="pre">Handler&lt;IndexedErasedUnbound&lt;M&gt;&gt;</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#multipart-routed-messages">Multipart routed messages</a></li>
 </ul>
 </li>
 </ul>
@@ -1588,7 +1579,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>
@@ -1617,7 +1608,7 @@ document.write(`
        "headline": "The Handler Trait",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/books/hyperactor-book/src/actors/handler.html",
-       "articleBody": "The Handler Trait# The Handler trait defines how an actor receives and responds to messages of a specific type. Each message type that an actor can handle must be declared by implementing this trait. The runtime invokes the handle method when such a message is delivered. #[async_trait] pub trait Handler\u003cM\u003e: Actor { async fn handle(\u0026mut self, cx: \u0026Context\u003cSelf\u003e, message: M) -\u003e Result\u003c(), anyhow::Error\u003e; } Message Dispatch: handle# The handle method is invoked by the runtime whenever a message of type M arrives at a matching port on the actor. message is the received payload. cx gives access to the actor\u2019s runtime context, including its identity, mailbox, and any capabilities exposed by the Context type (such as spawning or reference resolution). The return value indicates whether the message was handled successfully. An actor may implement Handler\u003cM\u003e multiple times \u2014 once for each message type M it supports. Built-in Handlers# The runtime provides implementations of Handler\u003cM\u003e for a few internal message types: Handler\u003cSignal\u003e# This is a marker implementation indicating that all actors can receive Signal. The handler is not expected to be invoked directly \u2014 its real behavior is implemented inside the runtime. #[async_trait] impl\u003cA: Actor\u003e Handler\u003cSignal\u003e for A { async fn handle( \u0026mut self, _cx: \u0026Context\u003cSelf\u003e, _message: Signal, ) -\u003e Result\u003c(), anyhow::Error\u003e { unimplemented!(\"signal handler should not be called directly\") } } Handler\u003cIndexedErasedUnbound\u003cM\u003e\u003e# #[async_trait] impl\u003cA, M\u003e Handler\u003cIndexedErasedUnbound\u003cM\u003e\u003e for A where A: Handler\u003cM\u003e, M: Castable, { async fn handle( \u0026mut self, cx: \u0026Context\u003cSelf\u003e, msg: IndexedErasedUnbound\u003cM\u003e, ) -\u003e anyhow::Result\u003c()\u003e { let message = msg.downcast()?.bind()?; Handler::handle(self, cx, message).await } } This implementation allows an actor to transparently handle erased, rebound messages of type M, provided it already implements Handler\u003cM\u003e. This construct is used in the implementation of accumulation, a communication pattern where a message is multicast to multiple recipients and their replies are gathered\u2014possibly through intermediate actors\u2014before being sent back to the original sender. To enable this, messages are unbound at the sender: reply ports (PortRefs) are extracted into a Bindings object, allowing intermediate nodes to rewrite those ports to point back to themselves. This ensures that replies from downstream actors are routed through the intermediate, enabling reply collection and reduction. Once a message reaches its destination, it is rebound by merging the updated bindings back into the message. The Handler\u003cIndexedErasedUnbound\u003cM\u003e\u003e implementation automates this by recovering the typed message M and dispatching it to the actor\u2019s existing Handler\u003cM\u003e implementation. This allows actors to remain unaware of accumulation mechanics\u2014they can just implement Handler\u003cM\u003e as usual.",
+       "articleBody": "The Handler Trait# The Handler trait defines how an actor receives and responds to messages of a specific type. Each message type that an actor can handle must be declared by implementing this trait. The runtime invokes the handle method when such a message is delivered. #[async_trait] pub trait Handler\u003cM\u003e: Actor { async fn handle(\u0026mut self, cx: \u0026Context\u003cSelf\u003e, message: M) -\u003e Result\u003c(), anyhow::Error\u003e; } Message Dispatch: handle# The handle method is invoked by the runtime whenever a message of type M arrives at a matching port on the actor. message is the received payload. cx gives access to the actor\u2019s runtime context, including its identity, mailbox, and any capabilities exposed by the Context type (such as spawning or reference resolution). The return value indicates whether the message was handled successfully. An actor may implement Handler\u003cM\u003e multiple times \u2014 once for each message type M it supports. Built-in Handlers# The runtime provides implementations of Handler\u003cM\u003e for a few internal message types: Handler\u003cSignal\u003e# This is a marker implementation indicating that all actors can receive Signal. The handler is not expected to be invoked directly \u2014 its real behavior is implemented inside the runtime. #[async_trait] impl\u003cA: Actor\u003e Handler\u003cSignal\u003e for A { async fn handle( \u0026mut self, _cx: \u0026Context\u003cSelf\u003e, _message: Signal, ) -\u003e Result\u003c(), anyhow::Error\u003e { unimplemented!(\"signal handler should not be called directly\") } } Multipart routed messages# let mut message = wirevalue::Any::\u003cwirevalue::encoding::Multipart\u003e::serialize(\u0026value)?; message.visit_multipart_parts_mut::\u003cPortRefRepr, anyhow::Error\u003e(|port| { port.update_port_addr(rewritten_addr); Ok(()) })?; Casting and accumulation routes serialized multipart messages through intermediate actors. Intermediate actors rewrite typed multipart parts directly, then forward the serialized message to the destination actor\u2019s ordinary typed handler port. This construct is used in the implementation of accumulation, a communication pattern where a message is multicast to multiple recipients and their replies are gathered\u2014possibly through intermediate actors\u2014before being sent back to the original sender. To enable this, selected fields such as PortRefs serialize as typed multipart parts. Intermediate nodes visit those part representations and rewrite the port addresses to point back to themselves. This ensures that replies from downstream actors are routed through the intermediate, enabling reply collection and reduction. Once a message reaches its destination, the mailbox deserializes the multipart payload as the actor\u2019s typed message and dispatches it to the actor\u2019s existing Handler\u003cM\u003e implementation. This allows actors to remain unaware of accumulation mechanics\u2014they can just implement Handler\u003cM\u003e as usual.",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

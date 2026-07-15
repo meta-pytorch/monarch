@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["multicast","test_utils"],"static":["ENABLE_NATIVE_V1_CASTING"],"struct":["CommActor","CommActorParams","CommMeshConfig"]};
+window.SIDEBAR_ITEMS = {"mod":["multicast","test_utils"],"static":["ENABLE_NATIVE_V1_CASTING","MULTICAST_FAILURE_COMM_ACTOR","MULTICAST_FAILURE_ORIGIN","MULTICAST_FAILURE_PHASE","MULTICAST_FAILURE_RETURN_PORT"],"struct":["CommActor","CommActorParams","CommMeshConfig"]};

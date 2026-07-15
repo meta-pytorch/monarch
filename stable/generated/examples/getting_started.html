@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -16,7 +17,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="This guide introduces the core concepts of Monarch, a framework for building multi-machine training programs using actors. We’ll cover: Defining actors with endpoint functions, Spawning actors loca..." />
 
-    <title>Getting Started &#8212; Monarch v0.5.0 documentation</title>
+    <title>Getting Started &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="../../" id="documentation_options" src="../../_static/documentation_options.js"></script>
+    <script src="../../_static/doctools.js"></script>
+    <script src="../../_static/sphinx_highlight.js"></script>
+    <script src="../../_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'generated/examples/getting_started';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/generated/examples/getting_started.html" />
@@ -84,7 +85,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="api">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -198,7 +199,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1298,7 +1299,7 @@ document.write(`
 to download the full example code</p>
 </div>
 <section class="sphx-glr-example-title" id="getting-started">
-<span id="sphx-glr-generated-examples-getting-started-py"></span><h1>Getting Started<a class="headerlink" href="#getting-started" title="Link to this heading">#</a></h1>
+<span id="sphx-glr-generated-examples-getting-started-py"></span><h1>Getting Started<a class="headerlink" href="#getting-started" title="Permalink to this heading">#</a></h1>
 <p>This guide introduces the core concepts of Monarch, a framework for building
 multi-machine training programs using actors. We’ll cover:</p>
 <ul class="simple">
@@ -1309,7 +1310,7 @@ multi-machine training programs using actors. We’ll cover:</p>
 <li><p>Distributed tensors and RDMA capabilities</p></li>
 </ul>
 <section id="defining-an-actor">
-<h2>Defining an Actor<a class="headerlink" href="#defining-an-actor" title="Link to this heading">#</a></h2>
+<h2>Defining an Actor<a class="headerlink" href="#defining-an-actor" title="Permalink to this heading">#</a></h2>
 <p>At its core, Monarch uses actors as a way to create multi-machine training programs.
 Actors are Python objects that expose a number of endpoint functions. These functions
 can be called by other actors in the system and their responses gathered asynchronously.</p>
@@ -1336,7 +1337,7 @@ actor calls with correct types.</p>
 </section>
 </section>
 <section id="spawning-an-actor-in-the-local-process">
-<h1>Spawning An Actor In The Local Process<a class="headerlink" href="#spawning-an-actor-in-the-local-process" title="Link to this heading">#</a></h1>
+<h1>Spawning An Actor In The Local Process<a class="headerlink" href="#spawning-an-actor-in-the-local-process" title="Permalink to this heading">#</a></h1>
 <p>We can then spawn an actor in the currently running process like so:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">counter</span><span class="p">:</span> <span class="n">Counter</span> <span class="o">=</span> <span class="n">this_proc</span><span class="p">()</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="s2">&quot;counter&quot;</span><span class="p">,</span> <span class="n">Counter</span><span class="p">,</span> <span class="n">initial_value</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
 </pre></div>
@@ -1349,7 +1350,7 @@ Note that passing messages between two actors (even if they are on the same proc
 always implies serialization.</p>
 </section>
 <section id="sending-a-simple-message">
-<h1>Sending A Simple Message<a class="headerlink" href="#sending-a-simple-message" title="Link to this heading">#</a></h1>
+<h1>Sending A Simple Message<a class="headerlink" href="#sending-a-simple-message" title="Permalink to this heading">#</a></h1>
 <p>Once spawned we can send messages to the actor:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">monarch.actor</span><span class="w"> </span><span class="kn">import</span> <span class="n">Future</span>
 
@@ -1367,7 +1368,7 @@ the sender do other things before it needs the reply. <code class="docutils lite
 Futures can also be awaited if you are in an asyncio context.</p>
 </section>
 <section id="multiple-actors-at-once">
-<h1>Multiple Actors at Once<a class="headerlink" href="#multiple-actors-at-once" title="Link to this heading">#</a></h1>
+<h1>Multiple Actors at Once<a class="headerlink" href="#multiple-actors-at-once" title="Permalink to this heading">#</a></h1>
 <p>Monarch scales to thousands of machines because of its ability to broadcast a single
 message to many actors at once rather than send many point-to-point messages. By
 organizing communication into trees, monarch can multicast messages to thousands of
@@ -1385,7 +1386,7 @@ indexing across the hosts in a cluster, or “gpus”, indexing across things in
 </pre></div>
 </div>
 <section id="broadcasting-messages">
-<h2>Broadcasting Messages<a class="headerlink" href="#broadcasting-messages" title="Link to this heading">#</a></h2>
+<h2>Broadcasting Messages<a class="headerlink" href="#broadcasting-messages" title="Permalink to this heading">#</a></h2>
 <p>Now messages can be sent to all the actors in the mesh:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">counters</span><span class="o">.</span><span class="n">increment</span><span class="o">.</span><span class="n">broadcast</span><span class="p">()</span>
 </pre></div>
@@ -1396,7 +1397,7 @@ Note however that all messages (including broadcasts) are delivered in the order
 the client (about which more later).</p>
 </section>
 <section id="slicing-meshes">
-<h2>Slicing Meshes<a class="headerlink" href="#slicing-meshes" title="Link to this heading">#</a></h2>
+<h2>Slicing Meshes<a class="headerlink" href="#slicing-meshes" title="Permalink to this heading">#</a></h2>
 <p>We can also slice up the mesh and send to only some of it (gpus 0 through 4):</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">counters</span><span class="o">.</span><span class="n">slice</span><span class="p">(</span><span class="n">gpus</span><span class="o">=</span><span class="nb">slice</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">4</span><span class="p">))</span><span class="o">.</span><span class="n">increment</span><span class="o">.</span><span class="n">broadcast</span><span class="p">()</span>
 </pre></div>
@@ -1412,7 +1413,7 @@ a single actor being messaged.</p>
 </section>
 </section>
 <section id="multiple-hosts">
-<h1>Multiple Hosts<a class="headerlink" href="#multiple-hosts" title="Link to this heading">#</a></h1>
+<h1>Multiple Hosts<a class="headerlink" href="#multiple-hosts" title="Permalink to this heading">#</a></h1>
 <p>When we created our processes before, we spawned them on <cite>this_host()</cite> – the machine
 running the top-level script. For larger jobs, monarch controls many machines. How these
 machines are obtained depends on the scheduling system (Slurm, Kubernetes, SkyPilot, etc.),
@@ -1449,7 +1450,7 @@ but these schedulers are typically encapsulated in a config file.</p>
 </pre></div>
 </div>
 <section id="logging">
-<h2>Logging<a class="headerlink" href="#logging" title="Link to this heading">#</a></h2>
+<h2>Logging<a class="headerlink" href="#logging" title="Permalink to this heading">#</a></h2>
 <p>Since we’re talking about having multiple hosts now, it’s worth briefly covering how Monarch handles distributed logging.
 User logs from a Monarch job are routed to stdout and stderr of the corresponding process.
 In distributed runs, you can stream all worker logs to the client and aggregate them to reduce verbosity.
@@ -1467,7 +1468,7 @@ include <code class="docutils literal notranslate"><span class="pre">[&quot;TRAC
 </section>
 </section>
 <section id="actor-and-process-references">
-<h1>Actor and Process References<a class="headerlink" href="#actor-and-process-references" title="Link to this heading">#</a></h1>
+<h1>Actor and Process References<a class="headerlink" href="#actor-and-process-references" title="Permalink to this heading">#</a></h1>
 <p>Actors, processes, and hosts can be sent between actors as arguments to messages.
 This lets programs establish more complicated messaging patterns or establish point-to-point
 connectivity between actors. For instance, we can launch DataLoader actors and Trainer actors
@@ -1503,7 +1504,7 @@ without the trainer needing to be modified.</p>
 </div>
 </section>
 <section id="the-supervision-tree">
-<h1>The Supervision Tree<a class="headerlink" href="#the-supervision-tree" title="Link to this heading">#</a></h1>
+<h1>The Supervision Tree<a class="headerlink" href="#the-supervision-tree" title="Permalink to this heading">#</a></h1>
 <p>Large scale training will run into issues with faulty hardware, flaky networks, and
 software bugs. Monarch is designed to provide good behaviors for errors and faults by
 default with the option to define more sophisticated behavior for faster recovery or
@@ -1525,7 +1526,7 @@ has a parent that launched it and is responsible for its health.</p>
 </pre></div>
 </div>
 <section id="broadcasting-without-response">
-<h2>Broadcasting Without Response<a class="headerlink" href="#broadcasting-without-response" title="Link to this heading">#</a></h2>
+<h2>Broadcasting Without Response<a class="headerlink" href="#broadcasting-without-response" title="Permalink to this heading">#</a></h2>
 <p>We also might call something and provide it no way to respond.
 In this case, the error will not show up as an exception, but will be delivered
 to the owner of “e”.</p>
@@ -1540,7 +1541,7 @@ stop the spawning processes.</p>
 </section>
 </section>
 <section id="fine-grained-supervision">
-<h1>Fine-grained Supervision<a class="headerlink" href="#fine-grained-supervision" title="Link to this heading">#</a></h1>
+<h1>Fine-grained Supervision<a class="headerlink" href="#fine-grained-supervision" title="Permalink to this heading">#</a></h1>
 <p>Sometimes fine-grained recovery is possible. For instance, if a data loader failed to
 read a URL, perhaps it would work to just restart it. In these cases, we also offer a
 different API. If an actor defines a <cite>__supervise__</cite> special method, then it will get
@@ -1600,7 +1601,7 @@ with a KeyboardInterrupt.</p>
 </div>
 </section>
 <section id="point-to-point-rdma">
-<h1>Point-to-Point RDMA<a class="headerlink" href="#point-to-point-rdma" title="Link to this heading">#</a></h1>
+<h1>Point-to-Point RDMA<a class="headerlink" href="#point-to-point-rdma" title="Permalink to this heading">#</a></h1>
 <p>Monarch provides first-class RDMA support through the RDMABuffer API. This lets
 you separate data references from data movement - instead of sending large tensors
 through your messaging patterns, you pass lightweight buffer references anywhere
@@ -1656,7 +1657,7 @@ build higher-level libraries for transferring tensors or implementing collective
 on top of these primitives.</p>
 </section>
 <section id="distributed-tensors">
-<h1>Distributed Tensors<a class="headerlink" href="#distributed-tensors" title="Link to this heading">#</a></h1>
+<h1>Distributed Tensors<a class="headerlink" href="#distributed-tensors" title="Permalink to this heading">#</a></h1>
 <p>Monarch also comes with a ‘tensor engine’ that provides distributed torch tensors.
 This lets a single actor directly compute with tensors distributed across a mesh of processes.</p>
 <p>We can use distributed features by ‘activating’ a ProcMesh:</p>
@@ -1715,7 +1716,7 @@ However, currently the performance of messaging for distributed tensors is not o
 still useful for interactive debugging.</p>
 </section>
 <section id="summary">
-<h1>Summary<a class="headerlink" href="#summary" title="Link to this heading">#</a></h1>
+<h1>Summary<a class="headerlink" href="#summary" title="Permalink to this heading">#</a></h1>
 <p>We have now seen all four major features of Monarch:</p>
 <ol class="arabic simple">
 <li><p><strong>Scalable messaging</strong> using multidimensional meshes of actors</p></li>
@@ -1729,7 +1730,7 @@ clear semantics for distribution, fault tolerance, and communication patterns.</
 with the above features.</p>
 </section>
 <section id="actor-context">
-<h1>Actor Context<a class="headerlink" href="#actor-context" title="Link to this heading">#</a></h1>
+<h1>Actor Context<a class="headerlink" href="#actor-context" title="Permalink to this heading">#</a></h1>
 <p>At any point, code might need to know ‘what’ it is and ‘where’ it is. For instance,
 when initializing torch.distributed, it will need a RANK/WORLD_SIZE. In monarch, the
 ‘what’ is always what actor is currently running the code. The ‘where’ can be
@@ -1753,7 +1754,7 @@ looked up using the <cite>context()</cite> API:</p>
 of the dimension names to the index within that dimension.</p>
 </section>
 <section id="free-remote-functions">
-<h1>Free Remote Functions<a class="headerlink" href="#free-remote-functions" title="Link to this heading">#</a></h1>
+<h1>Free Remote Functions<a class="headerlink" href="#free-remote-functions" title="Permalink to this heading">#</a></h1>
 <p>It is possible to run functions on a process mesh that are not associated with any actor.
 These can be useful to set up state on a process, or perform pre-post processing of
 data before sending it to an actor:</p>
@@ -1773,7 +1774,7 @@ data before sending it to an actor:</p>
 </div>
 </section>
 <section id="channels-and-low-level-messaging">
-<h1>Channels and Low-level messaging<a class="headerlink" href="#channels-and-low-level-messaging" title="Link to this heading">#</a></h1>
+<h1>Channels and Low-level messaging<a class="headerlink" href="#channels-and-low-level-messaging" title="Permalink to this heading">#</a></h1>
 <p>It is sometimes useful to establish direct channels between two points,
 or forward the handling of some messages from one actor to another.
 To enable this, all messaging in monarch is built out of port objects.</p>
@@ -1806,7 +1807,7 @@ the  <code class="docutils literal notranslate"><span class="pre">send</span></c
 implemented in terms of ports and send.</p>
 </section>
 <section id="message-ordering">
-<h1>Message Ordering<a class="headerlink" href="#message-ordering" title="Link to this heading">#</a></h1>
+<h1>Message Ordering<a class="headerlink" href="#message-ordering" title="Permalink to this heading">#</a></h1>
 <p>Messages from an actor are delivered to the destination actor in order in which they are sent.
 In particular, if actor A sends a message M0 to actor B, and then
 later A sends another message M1 to B, then actor B will receive M0 before M1.
@@ -1818,7 +1819,7 @@ before the next message on the actor is called.</p>
 <p>Different actors in the same process handle messages concurrently.</p>
 </section>
 <section id="responding-out-of-order">
-<h1>Responding Out of Order<a class="headerlink" href="#responding-out-of-order" title="Link to this heading">#</a></h1>
+<h1>Responding Out of Order<a class="headerlink" href="#responding-out-of-order" title="Permalink to this heading">#</a></h1>
 <p>Messages to actors are delivered in order, but sometimes an actor might want to
 respond to later messages first. The normal way of defining an endpoint does not
 allow for this since it must return the response before future messages are delivered.</p>
@@ -2032,6 +2033,30 @@ even if update_weights was called after infer:</p>
 
   </nav></div>
     
+       <div class="sidebar-secondary-item">
+
+  
+  <div class="tocsection editthispage">
+    <a href="https://github.com/meta-pytorch/monarch/edit/main/docs/source/generated/examples/getting_started.rst">
+      <i class="fa-solid fa-pencil"></i>
+      
+      
+        
+          Edit on GitHub
+        
+      
+    </a>
+  </div>
+</div>
+    
+       <div class="sidebar-secondary-item">
+    <div class="tocsection sourcelink">
+      <a href="../../_sources/generated/examples/getting_started.rst.txt">
+        <i class="fa-solid fa-file-lines"></i> Show Source
+      </a>
+    </div>
+</div>
+    
 
 
 
@@ -2147,7 +2172,7 @@ even if update_weights was called after infer:</p>
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>

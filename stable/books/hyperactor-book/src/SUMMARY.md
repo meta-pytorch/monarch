@@ -7,7 +7,7 @@
 - [ProcId](references/proc_id.html)
 - [ActorId](references/actor_id.html)
 - [PortId](references/port_id.html)
-- [Reference](references/reference.html)
+- [Addr](references/reference.html)
 - [Typed References](references/typed_refs.html)
 - [Mailboxes and Routers](mailboxes/index.html)
 
@@ -35,8 +35,8 @@
 - [Procs](procs/index.html)
 
 - [Proc](procs/proc.html)
+- [Gateway](procs/gateway.html)
 - [Host](procs/host.html)
-- [ProcOrDial Router](procs/proc_or_dial.html)
 - [Actors](actors/index.html)
 
 - [Actor](actors/actor.html)

@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -16,7 +17,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="This section explains the shape of meshes in v1 — hosts, procs, and actor meshes — and then shows how we bring them up (bootstrapping) from both Rust and Python. By “mesh” here we don’t just mean “..." />
 
-    <title>Meshes &#8212; Monarch v0.5.0 documentation</title>
+    <title>Meshes &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
+    <script src="../../../../_static/doctools.js"></script>
+    <script src="../../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../../_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-mesh-book/src/meshes/index';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-mesh-book/src/meshes/index.html" />
@@ -82,7 +83,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +197,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1293,7 +1294,7 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="meshes">
-<h1>Meshes<a class="headerlink" href="#meshes" title="Link to this heading">#</a></h1>
+<h1>Meshes<a class="headerlink" href="#meshes" title="Permalink to this heading">#</a></h1>
 <p>This section explains the <em>shape</em> of meshes in v1 — hosts, procs, and actor meshes — and then shows how we bring them up (bootstrapping) from both Rust and Python.</p>
 <p>By “mesh” here we don’t just mean “a bunch of actors.” We mean the whole layered thing:</p>
 <ol class="arabic simple">
@@ -1303,7 +1304,7 @@ document.write(`
 </ol>
 <p>The bootstrapping work is mostly about getting those first two layers to exist so the third one is easy.</p>
 <section id="what-we-want-to-show">
-<h2>What we want to show<a class="headerlink" href="#what-we-want-to-show" title="Link to this heading">#</a></h2>
+<h2>What we want to show<a class="headerlink" href="#what-we-want-to-show" title="Permalink to this heading">#</a></h2>
 <ul class="simple">
 <li><p>there is a bootstrap entrypoint in Rust that can make <strong>a host</strong> and put a <strong>host agent</strong> in it</p></li>
 <li><p>that host can start <strong>procs</strong> (OS children or in-proc), and each proc has a <strong>proc agent</strong></p></li>
@@ -1314,7 +1315,7 @@ document.write(`
 <p>So the through line is: <em>one process that can speak hyperactor → host → procs → actors</em>.</p>
 </section>
 <section id="pieces-conceptual">
-<h2>Pieces (conceptual)<a class="headerlink" href="#pieces-conceptual" title="Link to this heading">#</a></h2>
+<h2>Pieces (conceptual)<a class="headerlink" href="#pieces-conceptual" title="Permalink to this heading">#</a></h2>
 <ul class="simple">
 <li><p><strong>Host</strong>: a long-lived runtime that owns “all procs on this machine” and gives them a single front door (<code class="docutils literal notranslate"><span class="pre">*</span></code> / mux). It also runs a <strong><code class="docutils literal notranslate"><span class="pre">HostAgent</span></code></strong> in its system proc so other parts of the mesh can tell it “start/stop this proc.”</p></li>
 <li><p><strong>Proc</strong>: an actor runtime. In v1 the proc also runs a <strong><code class="docutils literal notranslate"><span class="pre">ProcAgent</span></code></strong> so it can be managed the same way as the host — that’s why the agent handlers all look like the resource ones you saw.</p></li>
@@ -1323,7 +1324,7 @@ document.write(`
 <p>That’s why the messages look uniform — <code class="docutils literal notranslate"><span class="pre">CreateOrUpdate&lt;T&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">GetState&lt;T&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">Stop</span></code>, <code class="docutils literal notranslate"><span class="pre">ShutdownHost</span></code> — the same resource shape works at both the host level and the proc level.</p>
 </section>
 <section id="flow-we-ll-describe">
-<h2>Flow we’ll describe<a class="headerlink" href="#flow-we-ll-describe" title="Link to this heading">#</a></h2>
+<h2>Flow we’ll describe<a class="headerlink" href="#flow-we-ll-describe" title="Permalink to this heading">#</a></h2>
 <ol class="arabic simple">
 <li><p>start from a single process (the Rust test / the Python runtime does this)</p></li>
 <li><p>create a <strong>host</strong> in that process</p></li>
@@ -1334,7 +1335,7 @@ document.write(`
 <p>After that, it’s just “send messages to the mesh.”</p>
 </section>
 <section id="how-the-pages-line-up">
-<h2>How the pages line up<a class="headerlink" href="#how-the-pages-line-up" title="Link to this heading">#</a></h2>
+<h2>How the pages line up<a class="headerlink" href="#how-the-pages-line-up" title="Permalink to this heading">#</a></h2>
 <ul class="simple">
 <li><p><strong>Bootstrapping Overview</strong> — the story version: host → procs → actors.</p>
 <ul>
@@ -1583,7 +1584,7 @@ the owner for handling</p></li>
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>

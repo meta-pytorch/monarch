@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -16,7 +17,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="Frames define the wire format for channel messages: a single-stream, length-prefixed protocol that carries a serialized, multipart message per frame. Each frame is: where the 8-byte prefix declares..." />
 
-    <title>Frames &#8212; Monarch v0.5.0 documentation</title>
+    <title>Frames &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
+    <script src="../../../../_static/doctools.js"></script>
+    <script src="../../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../../_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-book/src/channels/frames';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/channels/frames.html" />
@@ -82,7 +83,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +197,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1293,7 +1294,7 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="frames">
-<h1>Frames<a class="headerlink" href="#frames" title="Link to this heading">#</a></h1>
+<h1>Frames<a class="headerlink" href="#frames" title="Permalink to this heading">#</a></h1>
 <p>Frames define the wire format for channel messages: a single-stream, length-prefixed protocol that carries a serialized, multipart message per frame. Each frame is:</p>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>[length: u64 big-endian][payload bytes …]
 </pre></div>
@@ -1316,7 +1317,7 @@ document.write(`
 </ul>
 <p>That’s the overview. Next we’ll spell out the exact format and walk through <code class="docutils literal notranslate"><span class="pre">FrameReader</span></code> and <code class="docutils literal notranslate"><span class="pre">FrameWrite</span></code> in detail.</p>
 <section id="frame-format">
-<h2>Frame format<a class="headerlink" href="#frame-format" title="Link to this heading">#</a></h2>
+<h2>Frame format<a class="headerlink" href="#frame-format" title="Permalink to this heading">#</a></h2>
 <p>Frames carry a single serialized <strong>multipart</strong> message per frame.</p>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>[length: u64 big-endian][payload bytes …]
 </pre></div>
@@ -1326,7 +1327,7 @@ document.write(`
 <li><p><strong>Payload</strong>: the bytes of a <code class="docutils literal notranslate"><span class="pre">serde_multipart::Message::framed()</span></code> value. This is logically multipart (body + parts), but appears on the wire as a single contiguous length-sized region.</p></li>
 </ul>
 <section id="invariants">
-<h3>Invariants<a class="headerlink" href="#invariants" title="Link to this heading">#</a></h3>
+<h3>Invariants<a class="headerlink" href="#invariants" title="Permalink to this heading">#</a></h3>
 <ul class="simple">
 <li><p>The length is the exact payload size (<code class="docutils literal notranslate"><span class="pre">payload.len()</span> <span class="pre">==</span> <span class="pre">length</span></code>).</p></li>
 <li><p>Zero-length frames are valid.</p></li>
@@ -1340,12 +1341,12 @@ document.write(`
 </ul>
 </section>
 <section id="why-multipart-matters-even-on-one-stream">
-<h3>Why multipart matters (even on one stream)<a class="headerlink" href="#why-multipart-matters-even-on-one-stream" title="Link to this heading">#</a></h3>
+<h3>Why multipart matters (even on one stream)<a class="headerlink" href="#why-multipart-matters-even-on-one-stream" title="Permalink to this heading">#</a></h3>
 <p><code class="docutils literal notranslate"><span class="pre">Message::framed()</span></code> implements <code class="docutils literal notranslate"><span class="pre">Buf</span></code> with vectored slices (<code class="docutils literal notranslate"><span class="pre">chunks_vectored</span></code>). <code class="docutils literal notranslate"><span class="pre">FrameWrite</span></code> uses <code class="docutils literal notranslate"><span class="pre">write_vectored</span></code> to hand the OS multiple <code class="docutils literal notranslate"><span class="pre">IoSlice</span></code>s (prefix, body, parts) without coalescing in user-space. This preserves zero-copy characteristics for large parts while still producing a single length-delimited frame on the wire.</p>
 </section>
 </section>
 <section id="framereader">
-<h2><code class="docutils literal notranslate"><span class="pre">FrameReader</span></code><a class="headerlink" href="#framereader" title="Link to this heading">#</a></h2>
+<h2><code class="docutils literal notranslate"><span class="pre">FrameReader</span></code><a class="headerlink" href="#framereader" title="Permalink to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">FrameReader&lt;R:</span> <span class="pre">AsyncRead</span> <span class="pre">+</span> <span class="pre">Unpin&gt;</span></code> yields whole frames as <code class="docutils literal notranslate"><span class="pre">Bytes</span></code> and is cancellation-safe (safe to use in <code class="docutils literal notranslate"><span class="pre">tokio::select!</span></code> without losing frames).</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="sd">/// A FrameReader reads frames from an underlying [`AsyncRead`].</span>
 <span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">FrameReader</span><span class="o">&lt;</span><span class="n">R</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
@@ -1376,7 +1377,7 @@ document.write(`
 <p><strong>Cancellation-safe</strong>: If polled inside <code class="docutils literal notranslate"><span class="pre">tokio::select!</span></code> and cancelled at any <code class="docutils literal notranslate"><span class="pre">Pending</span></code>, progress is not lost and no partial frame is surfaced; the next <code class="docutils literal notranslate"><span class="pre">next()</span></code> call resumes from state.</p>
 </section>
 <section id="framewrite">
-<h2><code class="docutils literal notranslate"><span class="pre">FrameWrite</span></code><a class="headerlink" href="#framewrite" title="Link to this heading">#</a></h2>
+<h2><code class="docutils literal notranslate"><span class="pre">FrameWrite</span></code><a class="headerlink" href="#framewrite" title="Permalink to this heading">#</a></h2>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="sd">/// A Writer for message frames. `FrameWrite` requires the user to</span>
 <span class="sd">/// drive the underlying state machines through (possibly) successive</span>
 <span class="sd">/// calls to `send`, retaining cancellation safety. The `FrameWrite`</span>
@@ -1405,7 +1406,7 @@ document.write(`
 </pre></div>
 </div>
 <section id="what-it-does">
-<h3>What it does<a class="headerlink" href="#what-it-does" title="Link to this heading">#</a></h3>
+<h3>What it does<a class="headerlink" href="#what-it-does" title="Permalink to this heading">#</a></h3>
 <ul class="simple">
 <li><p>Length-prefix first. <code class="docutils literal notranslate"><span class="pre">new()</span></code> precomputes an 8-byte big-endian prefix with <code class="docutils literal notranslate"><span class="pre">body.remaining()</span></code> and freezes it (<code class="docutils literal notranslate"><span class="pre">BytesMut::put_u64(..).freeze()</span></code>). Returns an error if <code class="docutils literal notranslate"><span class="pre">body.remaining()</span></code> exceeds <code class="docutils literal notranslate"><span class="pre">max_len</span></code>.</p></li>
 <li><p>Then the body. <code class="docutils literal notranslate"><span class="pre">send()</span></code> writes the prefix, then the body:</p>
@@ -1419,7 +1420,7 @@ document.write(`
 </ul>
 </section>
 <section id="cancellation-safety">
-<h3>Cancellation safety<a class="headerlink" href="#cancellation-safety" title="Link to this heading">#</a></h3>
+<h3>Cancellation safety<a class="headerlink" href="#cancellation-safety" title="Permalink to this heading">#</a></h3>
 <p><code class="docutils literal notranslate"><span class="pre">send()</span></code> is designed to be used inside <code class="docutils literal notranslate"><span class="pre">tokio::select!</span></code> and safely cancelled:</p>
 <ul class="simple">
 <li><p>If cancelled while writing the length prefix, no body bytes are written yet; a subsequent <code class="docutils literal notranslate"><span class="pre">send()</span></code> call resumes and finishes the prefix before writing body bytes.</p></li>
@@ -1429,7 +1430,7 @@ document.write(`
 </section>
 </section>
 <section id="atomicity-frame-granularity">
-<h2>Atomicity (frame granularity)<a class="headerlink" href="#atomicity-frame-granularity" title="Link to this heading">#</a></h2>
+<h2>Atomicity (frame granularity)<a class="headerlink" href="#atomicity-frame-granularity" title="Permalink to this heading">#</a></h2>
 <p>Guarantee: A receiver observes either the entire frame body exactly once, or it observes nothing for that frame.
 This flows from:</p>
 <ul class="simple">
@@ -1438,14 +1439,14 @@ This flows from:</p>
 </ul>
 </section>
 <section id="errors-state">
-<h2>Errors &amp; state<a class="headerlink" href="#errors-state" title="Link to this heading">#</a></h2>
+<h2>Errors &amp; state<a class="headerlink" href="#errors-state" title="Permalink to this heading">#</a></h2>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">send()</span></code> returns an <code class="docutils literal notranslate"><span class="pre">io::Result&lt;()&gt;</span></code>. Any error means the underlying stream is in an unknown state; higher layers typically reconnect.</p></li>
 <li><p>Call <code class="docutils literal notranslate"><span class="pre">complete()</span></code> only after a successful <code class="docutils literal notranslate"><span class="pre">send()</span></code>. Calling it early yields an undefined stream state (by design).</p></li>
 </ul>
 </section>
 <section id="multipart-friendly">
-<h2>Multipart friendly<a class="headerlink" href="#multipart-friendly" title="Link to this heading">#</a></h2>
+<h2>Multipart friendly<a class="headerlink" href="#multipart-friendly" title="Permalink to this heading">#</a></h2>
 <p>Pass a multipart buffer to <code class="docutils literal notranslate"><span class="pre">new()</span></code>:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">use</span><span class="w"> </span><span class="n">serde_multipart</span><span class="p">::</span><span class="n">Message</span><span class="p">;</span>
 <span class="kd">let</span><span class="w"> </span><span class="n">msg</span><span class="p">:</span><span class="w"> </span><span class="nc">Message</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="c1">// serialized typed message</span>
@@ -1457,14 +1458,14 @@ This flows from:</p>
 </div>
 </section>
 <section id="oneshot-convenience">
-<h2>Oneshot convenience<a class="headerlink" href="#oneshot-convenience" title="Link to this heading">#</a></h2>
+<h2>Oneshot convenience<a class="headerlink" href="#oneshot-convenience" title="Permalink to this heading">#</a></h2>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// Send exactly one frame, then get the writer back.</span>
 <span class="kd">let</span><span class="w"> </span><span class="n">writer</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">FrameWrite</span><span class="p">::</span><span class="n">write_frame</span><span class="p">(</span><span class="n">writer</span><span class="p">,</span><span class="w"> </span><span class="n">msg</span><span class="p">.</span><span class="n">framed</span><span class="p">(),</span><span class="w"> </span><span class="n">max_len</span><span class="p">).</span><span class="k">await</span><span class="p">.</span><span class="n">map_err</span><span class="p">(</span><span class="o">|</span><span class="p">(</span><span class="n">_</span><span class="p">,</span><span class="w"> </span><span class="n">e</span><span class="p">)</span><span class="o">|</span><span class="w"> </span><span class="n">e</span><span class="p">)</span><span class="o">?</span><span class="p">;</span>
 </pre></div>
 </div>
 </section>
 <section id="tl-dr">
-<h2>TL;DR<a class="headerlink" href="#tl-dr" title="Link to this heading">#</a></h2>
+<h2>TL;DR<a class="headerlink" href="#tl-dr" title="Permalink to this heading">#</a></h2>
 <ul class="simple">
 <li><p><strong>Send</strong>:
 <code class="docutils literal notranslate"><span class="pre">serde_multipart::serialize_bincode(M)</span> <span class="pre">-&gt;</span> <span class="pre">Message</span> <span class="pre">→</span> <span class="pre">Message::framed()</span> <span class="pre">-&gt;</span> <span class="pre">impl</span> <span class="pre">Buf</span></code></p></li>
@@ -1714,7 +1715,7 @@ This flows from:</p>
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>

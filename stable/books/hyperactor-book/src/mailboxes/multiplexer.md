@@ -71,8 +71,11 @@ impl MailboxSender for MailboxMuxer {
  let dest_actor_id = envelope.dest().actor_id();
  match self.mailboxes.get(envelope.dest().actor_id()) {
  None => {
- let err = format!("no mailbox for actor {} registered in muxer", dest_actor_id);
- envelope.undeliverable(DeliveryError::Unroutable(err), return_handle)
+ let failure = DeliveryFailure::new(InvalidReference::new(
+ envelope.dest().actor_addr(),
+ InvalidReferenceReason::ActorNotExist,
+ ));
+ envelope.undeliverable(failure, return_handle)
  }
  Some(sender) => sender.post(envelope, return_handle),
  }
@@ -80,4 +83,4 @@ impl MailboxSender for MailboxMuxer {
 }
 ```
 
-This makes `MailboxMuxer` composable: it can be nested within other routers, shared across components, or substituted for a standalone mailbox in generic code. If the destination `ActorId` is found in the internal map, the message is forwarded to the corresponding sender. Otherwise, it is marked as undeliverable with an appropriate `DeliveryError`.
+This makes `MailboxMuxer` composable: it can be nested within other routers, shared across components, or substituted for a standalone mailbox in generic code. If the destination `ActorId` is found in the internal map, the message is forwarded to the corresponding sender. Otherwise, it is returned with an `InvalidReference` delivery failure.

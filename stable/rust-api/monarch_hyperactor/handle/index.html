@@ -1,0 +1,81 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="`Handle`: an observe-only handle to a background Tokio task."><title>monarch_hyperactor::handle - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-17e0aaed.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="monarch_hyperactor" data-themes="" data-resource-suffix="" data-rustdoc-version="1.96.0-nightly (02c7f9bec 2026-04-10)" data-channel="nightly" data-search-js="search-b5634cc7.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../sidebar-items.js"></script><script defer src="../../static.files/main-5013f961.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Module handle</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../monarch_hyperactor/index.html">monarch_<wbr>hyperactor</a><span class="version">0.0.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module handle</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#handle-invariants-hdl-" title="Handle invariants (HDL-*)">Handle invariants (HDL-*)</a></li></ul><h3><a href="#structs">Module Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li></ul></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="../index.html">In crate monarch_<wbr>hyperactor</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">monarch_hyperactor</a></div><h1>Module <span>handle</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/monarch_hyperactor/handle.rs.html#9-1390">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p><code>Handle</code>: an observe-only handle to a background Tokio task.</p>
+<p>A <code>Handle</code> wraps a <code>watch</code> channel that a producer fulfills exactly once with
+the task’s <code>PyResult&lt;Py&lt;PyAny&gt;&gt;</code>. You observe its eventual result:
+synchronously via <code>get()</code>, on an <code>asyncio</code> loop via <code>as_asyncio()</code>/<code>await</code>, or
+without blocking via <code>poll()</code>. The channel is multi-observer, so a resolved
+value stays observable by any number of later observers.</p>
+<p>The watch-channel mechanics live in [<code>HandleCore</code>].</p>
+<h3 id="handle-invariants-hdl-"><a class="doc-anchor" href="#handle-invariants-hdl-">§</a>Handle invariants (HDL-*)</h3>
+<p>Code that relies on or enforces an invariant is tagged <code>// HDL-N</code>, and each
+<code>#[cfg(test)]</code> test that attests one names it; read the matching entry below
+before changing a tagged site.</p>
+<p>Assumed of the shared core and producer (not enforced here):</p>
+<ul>
+<li><strong>HDL-1 (single terminal completion).</strong> The watch value goes <code>None</code> -&gt;
+<code>Some(_)</code> exactly once and is never reset (<code>Some</code> -&gt; <code>Some</code>, <code>Some</code> -&gt;
+<code>None</code>). Relied on by [<code>HandleCore::wait_future</code>] (wait loop + <code>expect</code>) and
+[<code>HandleCore::poll</code>] (re-borrow across the GIL). Held by convention: every
+producer sends once, always <code>Some(_)</code>. A send-once sender (a newtype
+consuming the <code>watch::Sender</code>) could make it structural, hardening <code>poll</code>’s
+re-borrow.</li>
+<li><strong>HDL-2 (value encoding).</strong> <code>None</code> is pending, <code>Some(Ok(_))</code> success,
+<code>Some(Err(_))</code> a producer error.</li>
+</ul>
+<p>Guaranteed by this module:</p>
+<ul>
+<li><strong>HDL-3 (non-consuming reads).</strong> Every read clones the value out
+(<code>clone_ref</code>) rather than moving it, so any number of observers see the
+same result. Enforced by construction: no read path moves the value.</li>
+<li><strong>HDL-4 (drop does not cancel; drop never panics).</strong> Dropping a <code>Handle</code>
+never cancels its producer; a <code>Handle</code> observes, it does not own the
+producer’s lifecycle. Enforced by construction: a <code>Handle</code>’s core has
+<code>abort_on_drop: None</code>, and <code>HandleCore::Drop</code> aborts only when
+<code>abort_on_drop</code> is set. The abort is wrapped in <code>catch_unwind</code>, so an
+<code>abort()</code> that panics at interpreter shutdown (the Tokio runtime already
+gone) cannot escape <code>Drop</code> and abort the process.</li>
+<li><strong>HDL-5 (GIL discipline).</strong> No Python object is touched without the GIL,
+and every acquisition goes through <code>monarch_with_gil{,_blocking}</code>. Enforced
+by the crate’s <code>#![deny(clippy::disallowed_methods)]</code> ban on raw
+<code>Python::with_gil</code>/<code>attach</code> – a hard compile error, not a <code>debug_assert</code>.</li>
+<li><strong>HDL-6 (<code>WouldBlockRuntime</code> is <code>get()</code>’s alone).</strong> Only <code>get()</code> raises it,
+and only in a Tokio runtime context; <code>as_asyncio()</code>/<code>__await__</code> off a loop
+raise the native <code>RuntimeError</code> instead.</li>
+<li><strong>HDL-7 (<code>as_asyncio</code> publish).</strong> The observer waits borrow-first (via
+<code>wait_ready</code>, never <code>changed()</code>-first) and sets a result only on a
+non-cancelled future, swallowing <code>InvalidStateError</code>; any <code>StopIteration</code>
+(including subclasses) is wrapped in <code>RuntimeError</code> first, since
+<code>set_exception</code> rejects <code>StopIteration</code> (PEP 479); if the loop has closed it
+logs rather than panics.</li>
+<li><strong>HDL-8 (<code>get()</code> loop-warning is call-pattern, not outcome).</strong> <code>get()</code> on a
+running asyncio loop warns regardless of whether the value is ready: it
+flags the blocking-call-from-a-loop anti-pattern, not whether this call
+happens to block. A ready value returns after warning; under a
+warnings-as-errors filter the warning escalates to an error.</li>
+<li><strong>HDL-9 (GIL/watch borrow discipline).</strong> A <code>watch</code> borrow is never held
+across a GIL acquisition or an <code>.await</code>. <code>poll</code> drops its read guard before
+taking the GIL and re-borrows under it (GIL-then-watch order, never the
+inverse against the producer’s write-lock <code>send</code>); the <code>wait_ready</code>/
+<code>wait_future</code> loops drop the temporary <code>Ref</code> before each <code>.await</code>; and their
+returned futures own a cloned receiver (<code>Send + 'static</code>, borrowing nothing
+from <code>&amp;self</code>), which is what lets <code>get()</code> <code>drop(slf)</code> + release the GIL
+before blocking and lets <code>as_asyncio</code> <code>spawn</code> the observer. Enforced partly
+by the compiler (<code>Send</code> bounds, the borrow checker on <code>drop(slf)</code>) and
+partly by construction; exercised by the multi-observer/blocking tests.</li>
+<li><strong>HDL-10 (dropped producer surfaces, never hangs).</strong> If every producer drops
+its sender without sending, the wait loop’s <code>changed().await?</code> yields a
+<code>RecvError</code> turned into a Python exception (<code>to_py_error</code>) on both the sync
+(<code>get</code>/<code>wait_future</code>) and async (<code>as_asyncio</code>) paths, so an observer raises
+rather than hanging forever.</li>
+<li><strong>HDL-11 (<code>Handle</code> is not constructible from Python).</strong> The pyclass has no
+<code>#[new]</code> and the only <code>from_value</code> constructor is <code>#[cfg(test)]</code>-gated, so a
+live <code>Handle</code> always wraps a producer-supplied core (upholding HDL-1/HDL-2);
+exposing a Python constructor would let user code mint an unresolvable core.</li>
+<li><strong>HDL-12 (<code>get()</code> timeout contract).</strong> <code>get()</code> validates the timeout up
+front (rejecting negative/NaN/non-finite as <code>ValueError</code> via
+<code>try_from_secs_f64</code>, never panicking) and before the ready fast path, so an
+invalid timeout raises deterministically even for a ready handle. A timeout
+is non-cancelling: it raises <code>TimeoutError</code> while leaving the producer and
+every observer untouched, so a later <code>poll()</code>/<code>get()</code>/<code>await</code> still observes
+completion.</li>
+</ul>
+</div></details><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.PyHandle.html" title="struct monarch_hyperactor::handle::PyHandle">PyHandle</a></dt><dd>The observe-only handle to a background Tokio task.</dd><dt><a class="struct" href="struct.WouldBlockRuntime.html" title="struct monarch_hyperactor::handle::WouldBlockRuntime">Would<wbr>Block<wbr>Runtime</a></dt><dd>raised when Handle.get() is called from a Tokio runtime context</dd></dl></section></div></main></body></html>

@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["RdmaRemoteBackendContext"],"mod":["ibverbs","tcp"],"trait":["RdmaBackend"]};
+window.SIDEBAR_ITEMS = {"enum":["RdmaBackendHandle"],"mod":["ibverbs","tcp"],"struct":["RdmaConfig"],"trait":["RdmaBackend"]};

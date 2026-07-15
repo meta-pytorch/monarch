@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -16,7 +17,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="We can now line up the rest of bootstrap_canonical_simple and see that the remaining calls are just “use the host we just created.” Source we’re explaining: was the part we just broke down in §3 — ..." />
 
-    <title>§4 Doing real work (hosts → procs → actors) &#8212; Monarch v0.5.0 documentation</title>
+    <title>§4 Doing real work (hosts → procs → actors) &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
+    <script src="../../../../_static/doctools.js"></script>
+    <script src="../../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../../_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-mesh-book/src/meshes/bootstrapping-doing-real-work';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-mesh-book/src/meshes/bootstrapping-doing-real-work.html" />
@@ -82,7 +83,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +197,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1293,7 +1294,7 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="doing-real-work-hosts-procs-actors">
-<h1>§4 Doing real work (hosts → procs → actors)<a class="headerlink" href="#doing-real-work-hosts-procs-actors" title="Link to this heading">#</a></h1>
+<h1>§4 Doing real work (hosts → procs → actors)<a class="headerlink" href="#doing-real-work-hosts-procs-actors" title="Permalink to this heading">#</a></h1>
 <p>We can now line up the rest of <code class="docutils literal notranslate"><span class="pre">bootstrap_canonical_simple</span></code> and see that the remaining calls are just “use the host we just created.”</p>
 <p>Source we’re explaining:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="n">host_mesh</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">HostMesh</span><span class="p">::</span><span class="n">allocate</span><span class="p">(</span><span class="o">&amp;</span><span class="n">instance</span><span class="p">,</span><span class="w"> </span><span class="nb">Box</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">alloc</span><span class="p">),</span><span class="w"> </span><span class="s">&quot;test&quot;</span><span class="p">,</span><span class="w"> </span><span class="nb">None</span><span class="p">)</span>
@@ -1310,7 +1311,7 @@ document.write(`
 <p>Then it proves messages can go through, and shuts everything down.</p>
 <hr class="docutils" />
 <section id="spawn-a-proc-on-each-host">
-<h2>4.1 Spawn a proc on each host<a class="headerlink" href="#spawn-a-proc-on-each-host" title="Link to this heading">#</a></h2>
+<h2>4.1 Spawn a proc on each host<a class="headerlink" href="#spawn-a-proc-on-each-host" title="Permalink to this heading">#</a></h2>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="n">proc_mesh</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">host_mesh</span>
 <span class="w">    </span><span class="p">.</span><span class="n">spawn</span><span class="p">(</span><span class="o">&amp;</span><span class="n">instance</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;p0&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">Extent</span><span class="p">::</span><span class="n">unity</span><span class="p">())</span>
 <span class="w">    </span><span class="p">.</span><span class="k">await</span>
@@ -1337,7 +1338,7 @@ document.write(`
 <hr class="docutils" />
 </section>
 <section id="spawn-actors-into-those-procs">
-<h2>4.2 Spawn actors into those procs<a class="headerlink" href="#spawn-actors-into-those-procs" title="Link to this heading">#</a></h2>
+<h2>4.2 Spawn actors into those procs<a class="headerlink" href="#spawn-actors-into-those-procs" title="Permalink to this heading">#</a></h2>
 <p>Next line of the test:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="n">actor_mesh</span><span class="p">:</span><span class="w"> </span><span class="nc">ActorMesh</span><span class="o">&lt;</span><span class="n">testactor</span><span class="p">::</span><span class="n">TestActor</span><span class="o">&gt;</span><span class="w"> </span><span class="o">=</span>
 <span class="w">    </span><span class="n">proc_mesh</span><span class="p">.</span><span class="n">spawn</span><span class="p">(</span><span class="o">&amp;</span><span class="n">instance</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;a0&quot;</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="p">()).</span><span class="k">await</span><span class="p">.</span><span class="n">unwrap</span><span class="p">();</span>
@@ -1353,7 +1354,7 @@ document.write(`
 <hr class="docutils" />
 </section>
 <section id="prove-messages-flow">
-<h2>4.3 Prove messages flow<a class="headerlink" href="#prove-messages-flow" title="Link to this heading">#</a></h2>
+<h2>4.3 Prove messages flow<a class="headerlink" href="#prove-messages-flow" title="Permalink to this heading">#</a></h2>
 <p>The test then opens a port on the <strong>client</strong> instance and broadcasts a message to the actor mesh:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="n">port</span><span class="p">,</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">rx</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">instance</span><span class="p">.</span><span class="n">mailbox</span><span class="p">().</span><span class="n">open_port</span><span class="p">();</span>
 <span class="n">actor_mesh</span>
@@ -1377,7 +1378,7 @@ document.write(`
 <hr class="docutils" />
 </section>
 <section id="shutdown">
-<h2>4.4 Shutdown<a class="headerlink" href="#shutdown" title="Link to this heading">#</a></h2>
+<h2>4.4 Shutdown<a class="headerlink" href="#shutdown" title="Permalink to this heading">#</a></h2>
 <p>Last part of the test:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="n">host_mesh</span><span class="p">.</span><span class="n">shutdown</span><span class="p">(</span><span class="o">&amp;</span><span class="n">instance</span><span class="p">).</span><span class="k">await</span><span class="p">.</span><span class="n">expect</span><span class="p">(</span><span class="s">&quot;host shutdown&quot;</span><span class="p">);</span>
 </pre></div>
@@ -1389,7 +1390,7 @@ sessions where you don’t want to restart the server process.</p>
 <hr class="docutils" />
 </section>
 <section id="recap-of-layers">
-<h2>4.5 Recap of layers<a class="headerlink" href="#recap-of-layers" title="Link to this heading">#</a></h2>
+<h2>4.5 Recap of layers<a class="headerlink" href="#recap-of-layers" title="Permalink to this heading">#</a></h2>
 <p>At this point the whole test looks like:</p>
 <ol class="arabic simple">
 <li><p><strong>client proc</strong> in our test process</p></li>
@@ -1630,7 +1631,7 @@ sessions where you don’t want to restart the server process.</p>
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>

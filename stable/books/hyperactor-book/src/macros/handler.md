@@ -157,9 +157,8 @@ The `cx` parameter provides the actor context required to send messages and open
 ### Example Usage
 
 ```
-let mut proc = Proc::isolated();
-let actor = proc.spawn::<ShoppingListActor>("shopping", ()).await?;
-let client = proc.attach("client").unwrap();
+let actor = hyperactor::spawn_with_label("shopping", ShoppingListActor::default())?;
+let client = hyperactor::client("client");
 
 // Fire-and-forget
 actor.add(&client, "milk".into()).await?;
@@ -169,7 +168,7 @@ let found = actor.exists(&client, "milk".into()).await?;
 println!("got milk? {found}");
 ```
 
-Here, actor is an `ActorHandle<ShoppingListActor>` that implements `ShoppingListClient`, and `client` is a `Mailbox` that provides the necessary capabilities.
+Here, actor is an `ActorHandle<ShoppingListActor>` that implements `ShoppingListClient`, and `client` provides the necessary caller capabilities.
 
 ### `#[reply]`
 

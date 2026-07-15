@@ -112,7 +112,7 @@ Returns:
 
 Return type:
 
-*JobTrait*
+[*Self*](https://docs.python.org/3/library/typing.html#typing.Self)
 
 enable_admin(*config=None*, ***kwargs*)[[source]](../_modules/monarch/_src/job/job.html#JobTrait.enable_admin)
 
@@ -129,7 +129,7 @@ Returns:
 
 Return type:
 
-*JobTrait*
+[*Self*](https://docs.python.org/3/library/typing.html#typing.Self)
 
 apply(*client_script=None*)[[source]](../_modules/monarch/_src/job/job.html#JobTrait.apply)
 
@@ -157,11 +157,7 @@ from a cached file, the original `apply_id` is preserved.
 
 state(*cached_path='.monarch/job_state.pkl'*)[[source]](../_modules/monarch/_src/job/job.html#JobTrait.state)
 
-Connect to the job and return its state with all configured mounts applied.
-
-See `_connect()` for the connection logic. After connecting, all
-mount configs registered via `remote_mount()` and gather mount
-configs registered via `gather_mount()` are applied before returning.
+Connect and run component state hooks on the final host meshes.
 
 dump(*filename*)[[source]](../_modules/monarch/_src/job/job.html#JobTrait.dump)
 
@@ -281,6 +277,14 @@ This implementation:
 2. Queries job status with squeue to get allocated hostnames
 3. Uses the hostnames to connect to the started workers
 
+Two launch modes are supported:
+- External controller (default): `apply()` submits the workers; a separate
+
+> controller process attaches via `state()`.
+
+- Batch (`apply(client_script=...)`): one allocation runs both the workers
+and the client; the allocation is released when the client exits.
+
 add_mesh(*name*, *num_nodes*)[[source]](../_modules/monarch/_src/job/slurm.html#SlurmJob.add_mesh)
 
 can_run(*spec*)[[source]](../_modules/monarch/_src/job/slurm.html#SlurmJob.can_run)
@@ -293,7 +297,7 @@ Share a node with other jobs.
 
 ## KubernetesJob
 
-*class*monarch.job.kubernetes.KubernetesJob(*namespace*, *timeout=None*)[[source]](../_modules/monarch/_src/job/kubernetes.html#KubernetesJob)
+*class*monarch.job.kubernetes.KubernetesJob(*namespace*, *timeout=None*, *kubeconfig=None*, *attach_to=None*)[[source]](../_modules/monarch/_src/job/kubernetes.html#KubernetesJob)
 
 Bases: `JobTrait`
 
@@ -412,111 +416,3 @@ Return type:
 The `monarch.job.spmd` submodule provides job primitives for launching
 torchrun-style SPMD training over Monarch. It parses torchrun arguments from
 an AppDef and executes the training script across the mesh.
-
-monarch.job.spmd.serve(*appdef*, *scheduler='mast_conda'*, *scheduler_cfg=None*)[[source]](../_modules/monarch/_src/job/spmd.html#serve)
-
-Launch SPMD job using an AppDef or a single-node torchrun command.
-
-This function launches monarch workers, then allows running SPMD training
-via run_spmd().
-
-Assumptions:
-
-- When using an AppDef, the role's entrypoint is a script (e.g.,
-"workspace/entrypoint.sh") that sets up the environment (activates
-conda, sets WORKSPACE_DIR, etc.) and runs its arguments.
-- The role's args contains a torchrun command with the training script,
-e.g., ["torchrun", "-nnodes=1", "-m", "train", "-lr", "0.001"].
-- The role's workspace defines which files to upload to workers.
-- When using a command list, it should be a torchrun command, e.g.,
-["torchrun", "-nproc-per-node=4", "-standalone", "train.py"].
-
-Note
-
-When passing a command list, only single-node torchrun is supported
-(`--standalone` or `--nnodes=1`). For multi-node training, use an
-`AppDef` with a scheduler that manages node allocation.
-
-Parameters:
-
-- **appdef** (*AppDef**|*[*List*](https://docs.python.org/3/library/typing.html#typing.List)*[*[*str*](https://docs.python.org/3/library/stdtypes.html#str)*]*) - Either a torchx `AppDef` instance, or a torchrun command as
-a list of strings (e.g., `["torchrun", "--nproc-per-node=4",
-"train.py"]`). When a list is provided, the first element is the
-entrypoint and the rest are arguments.
-- **scheduler** ([*str*](https://docs.python.org/3/library/stdtypes.html#str)) - Scheduler name (e.g., 'mast_conda', 'local_cwd')
-- **scheduler_cfg** ([*Dict*](https://docs.python.org/3/library/typing.html#typing.Dict)*[*[*str*](https://docs.python.org/3/library/stdtypes.html#str)*,*[*Any*](https://docs.python.org/3/library/typing.html#typing.Any)*]**|**None*) - Scheduler configuration dict
-
-Returns:
-
-SPMDJob instance
-
-Raises:
-
-[**ValueError**](https://docs.python.org/3/library/exceptions.html#ValueError) - If command list specifies multi-node (-nnodes > 1).
-
-Return type:
-
-*SPMDJob*
-
-Example
-
-Using a torchrun command list (single-node only):
-
-```
-from monarch.job.spmd import serve
-
-job = serve(
- ["torchrun", "--nproc-per-node=4", "--standalone", "train.py"],
- scheduler="local_cwd",
-)
-job.run_spmd()
-```
-
-Using an AppDef (supports multi-node):
-
-```
-from monarch.job.spmd import serve
-from torchx import specs
-
-app = specs.AppDef(
- name="my-training",
- roles=[
- specs.Role(
- name="trainer",
- image="my_workspace:latest",
- entrypoint="workspace/entrypoint.sh",
- args=["torchrun", "--nnodes=2", "--nproc-per-node=8",
- "-m", "train"],
- num_replicas=2,
- resource=specs.resource(h="gtt_any"),
- ),
- ],
-)
-job = serve(
- app,
- scheduler="mast_conda",
- scheduler_cfg={
- "hpcClusterUuid": "MastGenAICluster",
- "hpcIdentity": "my_identity",
- "localityConstraints": ["region", "pci"],
- },
-)
-job.run_spmd()
-```
-
-*class*monarch.job.spmd.SPMDJob(*handle*, *scheduler*, *workspace=None*, *original_roles=None*)[[source]](../_modules/monarch/_src/job/spmd.html#SPMDJob)
-
-Bases: `JobTrait`
-
-SPMD (Single Program Multiple Data) job that uses torchx directly.
-
-This job type wraps a torchx Runner and job handle, providing monarch job tracking.
-
-can_run(*spec*)[[source]](../_modules/monarch/_src/job/spmd.html#SPMDJob.can_run)
-
-Is this job capable of running the job spec? This is used to check if a
-cached job can be used to run spec instead of creating a new reserveration.
-
-It is also used by the batch run infrastructure to indicate that the batch job can certainly run itself.
-
-run_spmd()[[source]](../_modules/monarch/_src/job/spmd.html#SPMDJob.run_spmd)

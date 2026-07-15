@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["Gateway","GatewayServeHandle"]};
+window.SIDEBAR_ITEMS = {"struct":["AttachedProcGuard","Gateway","GatewayServeHandle","PeerAttachError","PeerAttachGuard"]};

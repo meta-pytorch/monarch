@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -16,7 +17,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="What’s guaranteed (and what isn’t): Per proc, per stream. Within a single child’s stdout stream (and separately within stderr), lines are read in order by the bootstrap and forwarded in that order...." />
 
-    <title>Ordering &#8212; Monarch v0.5.0 documentation</title>
+    <title>Ordering &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
+    <script src="../../../../_static/doctools.js"></script>
+    <script src="../../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../../_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-mesh-book/src/logging/ordering';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-mesh-book/src/logging/ordering.html" />
@@ -82,7 +83,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +197,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1293,9 +1294,9 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="ordering">
-<h1>Ordering<a class="headerlink" href="#ordering" title="Link to this heading">#</a></h1>
+<h1>Ordering<a class="headerlink" href="#ordering" title="Permalink to this heading">#</a></h1>
 <section id="what-s-guaranteed-and-what-isn-t">
-<h2>What’s guaranteed (and what isn’t)<a class="headerlink" href="#what-s-guaranteed-and-what-isn-t" title="Link to this heading">#</a></h2>
+<h2>What’s guaranteed (and what isn’t)<a class="headerlink" href="#what-s-guaranteed-and-what-isn-t" title="Permalink to this heading">#</a></h2>
 <ul class="simple">
 <li><p><strong>Per proc, per stream.</strong> Within a single child’s <strong>stdout</strong> stream (and separately within <strong>stderr</strong>), lines are read in order by the bootstrap and forwarded in that order. See the tee path in <a class="reference internal" href="stream-forwarders.html"><span class="std std-doc"><code class="docutils literal notranslate"><span class="pre">stream-forwarders.md</span></code></span></a>.</p></li>
 <li><p><strong>No global total order.</strong> There is <strong>no</strong> ordering guarantee:</p>
@@ -1309,7 +1310,7 @@ document.write(`
 </section>
 <hr class="docutils" />
 <section id="why-the-barrier-is-in-band">
-<h2>Why the barrier is “in-band”<a class="headerlink" href="#why-the-barrier-is-in-band" title="Link to this heading">#</a></h2>
+<h2>Why the barrier is “in-band”<a class="headerlink" href="#why-the-barrier-is-in-band" title="Permalink to this heading">#</a></h2>
 <p>The forwarder injects <code class="docutils literal notranslate"><span class="pre">Flush(Some(v))</span></code> <strong>on the same actor mailbox</strong> that carries data <code class="docutils literal notranslate"><span class="pre">Log</span></code> messages. Since the client only acks the barrier <strong>after</strong> it has read the marker from that mailbox, all previously enqueued <code class="docutils literal notranslate"><span class="pre">Log</span></code> messages for that proc are known to precede the barrier.</p>
 <blockquote>
 <div><p>Heartbeats <code class="docutils literal notranslate"><span class="pre">Flush(None)</span></code> are unrelated to ordering; they are for <strong>liveness</strong> (to avoid <code class="docutils literal notranslate"><span class="pre">recv()</span></code> starvation) and come from the <strong>forwarder</strong>. The bootstrap’s stream forwarder only flushes at <strong>EOF</strong>. See <a class="reference internal" href="forwarder.html"><span class="std std-doc"><code class="docutils literal notranslate"><span class="pre">forwarder.md</span></code></span></a> and <a class="reference internal" href="stream-forwarders.html"><span class="std std-doc"><code class="docutils literal notranslate"><span class="pre">stream-forwarders.md</span></code></span></a>.</p>
@@ -1317,7 +1318,7 @@ document.write(`
 </section>
 <hr class="docutils" />
 <section id="minimal-source-context">
-<h2>Minimal source context<a class="headerlink" href="#minimal-source-context" title="Link to this heading">#</a></h2>
+<h2>Minimal source context<a class="headerlink" href="#minimal-source-context" title="Permalink to this heading">#</a></h2>
 <p><strong>Forwarder reads data and barrier markers from one mailbox</strong></p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// logging.rs (abridged)</span>
 <span class="c1">// LogForwardActor main loop: data and control share the same rx.</span>
@@ -1589,7 +1590,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>

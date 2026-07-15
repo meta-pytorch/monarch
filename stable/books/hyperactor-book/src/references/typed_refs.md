@@ -1,6 +1,6 @@
 # Typed References
 
-Typed references are strongly typed wrappers over raw identifiers like `ActorId` and `PortId`. These types are used throughout hyperactor's APIs; as parameters in messages, return values from `bind()` methods, and elements in routing decisions. They make distributed communication safe, expressive, and statically checked.
+Typed references are strongly typed wrappers over addresses like `ActorAddr` and `PortAddr`. These types are used throughout hyperactor's APIs: as parameters in messages, return values from `bind()` methods, and elements in routing decisions. They make distributed communication safe, expressive, and statically checked.
 
 ## Overview
 
@@ -19,10 +19,10 @@ These types are used as parameters in messages, return values from bindings, and
 `ActorRef<A>` is a typed reference to an actor of type `A`. It provides a way to identify and address remote actors that implement `Referable`.
 
 ```
-let actor_ref: ActorRef<MyActor> = ActorRef::attest(actor_id);
+let actor_ref: ActorRef<MyActor> = ActorRef::attest(actor_addr);
 ```
 
-> **Note**: While `ActorRef::attest` can be used to construct a reference from an `ActorId`, it should generally be avoided. Instead, prefer using the `ActorRef` returned from `ActorHandle::bind()`, which guarantees that the actor is actually running and bound to a mailbox. `attest` is unsafe in the sense that it bypasses that guarantee.
+> **Note**: While `ActorRef::attest` can construct a reference from an `ActorAddr`, prefer the `ActorRef` returned from `ActorHandle::bind()`, which guarantees that the actor is running and has bound ports. `attest` bypasses that guarantee.
 
 > **Note**: The `Referable` trait only requires that `A` provides a static name via `Named`. It does not impose `Send` or `Sync` bounds--those are added at specific call sites that need them.
 
@@ -33,12 +33,12 @@ Unlike `ActorHandle<A>`, an `ActorRef` is just a reference -- it doesn't guarant
 ```
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ActorRef<A: Referable> {
- actor_id: ActorId,
+ actor_addr: ActorAddr,
  phantom: PhantomData<A>,
 }
 ```
 
-This type is a thin wrapper around an `ActorId`, with a phantom type `A` to track which actor it refers to. It ensures you can only send messages supported by the actor's declared `RemoteHandles`.
+This type is a thin wrapper around an `ActorAddr`, with a phantom type `A` to track which actor interface it refers to. It ensures you can only send messages supported by the actor's declared `RemoteHandles`.
 
 ## `PortRef<M>`
 
@@ -54,17 +54,18 @@ This allows the port to be sent across the network or passed into other messages
 ### Definition
 
 ```
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Hash, Ord)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Hash, Ord, Named)]
 pub struct PortRef<M> {
- port_id: PortId,
+ port_addr: PortAddr,
  reducer_spec: Option<ReducerSpec>,
  streaming_opts: StreamingReducerOpts,
  phantom: PhantomData<M>,
  return_undeliverable: bool,
+ unsplit: bool,
 }
 ```
 
-As with `ActorRef`, this is a typed wrapper around a raw identifier (`PortId`), carrying a phantom type for safety. It ensures that only messages of type `M` can be sent through this reference.
+As with `ActorRef`, this is a typed wrapper around an address (`PortAddr`), carrying a phantom type for safety. It ensures that only messages of type `M` can be sent through this reference.
 
 ## `OncePortRef<M>`
 
@@ -80,11 +81,14 @@ These are commonly used for request/response interactions, where a single reply 
 ### Definition
 
 ```
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct OncePortRef<M> {
- port_id: PortId,
+ port_addr: PortAddr,
+ reducer_spec: Option<ReducerSpec>,
+ return_undeliverable: bool,
+ unsplit: bool,
  phantom: PhantomData<M>,
 }
 ```
 
-This wraps a `PortId` with a phantom message type `M` for type safety. Internally, the system enforces one-time delivery semantics, ensuring the port is closed after receiving a single message.
+This wraps a `PortAddr` with a phantom message type `M` for type safety. Internally, the system enforces one-time delivery semantics, ensuring the port is closed after receiving a single message.

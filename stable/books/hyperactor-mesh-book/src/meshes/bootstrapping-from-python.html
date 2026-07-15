@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -16,7 +17,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="So far we described the Rust side: there is a host, the host has a HostAgent, and we send CreateOrUpdate&lt;ProcSpec&gt; etc. That’s the control plane. Most users won’t do that by hand — they’ll wr..." />
 
-    <title>§5 Bootstrapping from Python &#8212; Monarch v0.5.0 documentation</title>
+    <title>§5 Bootstrapping from Python &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
+    <script src="../../../../_static/doctools.js"></script>
+    <script src="../../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../../_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-mesh-book/src/meshes/bootstrapping-from-python';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-mesh-book/src/meshes/bootstrapping-from-python.html" />
@@ -82,7 +83,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +197,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1293,7 +1294,7 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="bootstrapping-from-python">
-<h1>§5 Bootstrapping from Python<a class="headerlink" href="#bootstrapping-from-python" title="Link to this heading">#</a></h1>
+<h1>§5 Bootstrapping from Python<a class="headerlink" href="#bootstrapping-from-python" title="Permalink to this heading">#</a></h1>
 <p>So far we described the Rust side: there is a host, the host has a <code class="docutils literal notranslate"><span class="pre">HostAgent</span></code>, and we send <code class="docutils literal notranslate"><span class="pre">CreateOrUpdate&lt;ProcSpec&gt;</span></code> etc. That’s the control plane.</p>
 <p>Most users won’t do that by hand — they’ll write Python like this:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">asyncio</span>
@@ -1316,7 +1317,7 @@ document.write(`
 </pre></div>
 </div>
 <section id="getting-a-host-in-python-this-host-this-proc-context">
-<h2>Getting a host in Python (<code class="docutils literal notranslate"><span class="pre">this_host()</span></code> → <code class="docutils literal notranslate"><span class="pre">this_proc()</span></code> → <code class="docutils literal notranslate"><span class="pre">context()</span></code>)<a class="headerlink" href="#getting-a-host-in-python-this-host-this-proc-context" title="Link to this heading">#</a></h2>
+<h2>Getting a host in Python (<code class="docutils literal notranslate"><span class="pre">this_host()</span></code> → <code class="docutils literal notranslate"><span class="pre">this_proc()</span></code> → <code class="docutils literal notranslate"><span class="pre">context()</span></code>)<a class="headerlink" href="#getting-a-host-in-python-this-host-this-proc-context" title="Permalink to this heading">#</a></h2>
 <p>When you write code like:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.actor.host_mesh</span><span class="w"> </span><span class="kn">import</span> <span class="n">this_host</span>
 
@@ -1325,7 +1326,7 @@ document.write(`
 </div>
 <p>there’s a bootstrap under it. Here’s what actually happens.</p>
 <section id="this-host-reads-the-host-mesh-off-the-current-proc">
-<h3>1. <code class="docutils literal notranslate"><span class="pre">this_host()</span></code> reads the host mesh off the current proc.<a class="headerlink" href="#this-host-reads-the-host-mesh-off-the-current-proc" title="Link to this heading">#</a></h3>
+<h3>1. <code class="docutils literal notranslate"><span class="pre">this_host()</span></code> reads the host mesh off the current proc.<a class="headerlink" href="#this-host-reads-the-host-mesh-off-the-current-proc" title="Permalink to this heading">#</a></h3>
 <p>From monarch/_src/actor/host_mesh.py:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">this_host</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="s2">&quot;HostMesh&quot;</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
@@ -1340,7 +1341,7 @@ document.write(`
 </section>
 </section>
 <section id="this-proc-pulls-the-proc-mesh-off-the-current-context">
-<h2>2. <code class="docutils literal notranslate"><span class="pre">this_proc()</span></code> pulls the proc mesh off the current context<a class="headerlink" href="#this-proc-pulls-the-proc-mesh-off-the-current-context" title="Link to this heading">#</a></h2>
+<h2>2. <code class="docutils literal notranslate"><span class="pre">this_proc()</span></code> pulls the proc mesh off the current context<a class="headerlink" href="#this-proc-pulls-the-proc-mesh-off-the-current-context" title="Permalink to this heading">#</a></h2>
 <p>From the same file:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">this_proc</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="s2">&quot;ProcMesh&quot;</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
@@ -1352,7 +1353,7 @@ document.write(`
 </div>
 <p>So now we’re down to the real root: <code class="docutils literal notranslate"><span class="pre">context()</span></code>. Everything hangs off of that.</p>
 <section id="context-create-once-or-return-later-the-runtime-context">
-<h3>3. <code class="docutils literal notranslate"><span class="pre">context()</span></code> — create (once) or return (later) the runtime context<a class="headerlink" href="#context-create-once-or-return-later-the-runtime-context" title="Link to this heading">#</a></h3>
+<h3>3. <code class="docutils literal notranslate"><span class="pre">context()</span></code> — create (once) or return (later) the runtime context<a class="headerlink" href="#context-create-once-or-return-later-the-runtime-context" title="Permalink to this heading">#</a></h3>
 <p>From monarch/_src/actor/actor_mesh.py:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">_context</span><span class="p">:</span> <span class="n">contextvars</span><span class="o">.</span><span class="n">ContextVar</span><span class="p">[</span><span class="n">Context</span><span class="p">]</span> <span class="o">=</span> <span class="n">contextvars</span><span class="o">.</span><span class="n">ContextVar</span><span class="p">(</span>
     <span class="s2">&quot;monarch.actor_mesh._context&quot;</span>
@@ -1383,7 +1384,7 @@ document.write(`
 <p>The interesting part is step (1) above — <code class="docutils literal notranslate"><span class="pre">Context._root_client_context()</span></code> — because that’s where Python hands off to Rust.</p>
 </section>
 <section id="what-context-root-client-context-does-rust-side">
-<h3>4. What <code class="docutils literal notranslate"><span class="pre">Context._root_client_context()</span></code> does (Rust side)<a class="headerlink" href="#what-context-root-client-context-does-rust-side" title="Link to this heading">#</a></h3>
+<h3>4. What <code class="docutils literal notranslate"><span class="pre">Context._root_client_context()</span></code> does (Rust side)<a class="headerlink" href="#what-context-root-client-context-does-rust-side" title="Permalink to this heading">#</a></h3>
 <p>The Rust in context.rs:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="cp">#[staticmethod]</span>
 <span class="k">fn</span><span class="w"> </span><span class="nf">_root_client_context</span><span class="p">(</span><span class="n">py</span><span class="p">:</span><span class="w"> </span><span class="nc">Python</span><span class="o">&lt;&#39;</span><span class="nb">_</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">PyResult</span><span class="o">&lt;</span><span class="n">PyContext</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
@@ -1423,7 +1424,7 @@ document.write(`
 <p>Notice what it doesn’t do: it does not attach a proc mesh or a host mesh. Those Python-only fields are still <code class="docutils literal notranslate"><span class="pre">None</span></code> at this point.</p>
 </section>
 <section id="python-fills-in-the-missing-pieces">
-<h3>5. Python fills in the missing pieces<a class="headerlink" href="#python-fills-in-the-missing-pieces" title="Link to this heading">#</a></h3>
+<h3>5. Python fills in the missing pieces<a class="headerlink" href="#python-fills-in-the-missing-pieces" title="Permalink to this heading">#</a></h3>
 <p>That’s why, back in Python, right after calling the Rust function, we do three extra things:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">c</span><span class="o">.</span><span class="n">actor_instance</span><span class="o">.</span><span class="n">proc_mesh</span> <span class="o">=</span> <span class="n">_root_proc_mesh</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
 <span class="n">_this_host_for_fake_in_process_host</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
@@ -1714,7 +1715,7 @@ And we stash the control-plane actor into <code class="docutils literal notransl
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>

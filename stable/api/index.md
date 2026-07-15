@@ -18,10 +18,14 @@ The [monarch.spmd](monarch.spmd.html) package provides primitives for running to
 - [`get_or_spawn_controller()`](monarch.actor.html#monarch.actor.get_or_spawn_controller)
 - [`this_host()`](monarch.actor.html#monarch.actor.this_host)
 - [`this_proc()`](monarch.actor.html#monarch.actor.this_proc)
+- [`default_bootstrap_cmd()`](monarch.actor.html#monarch.actor.default_bootstrap_cmd)
+- [`hosts_from_config()`](monarch.actor.html#monarch.actor.hosts_from_config)
+- [`enable_transport()`](monarch.actor.html#monarch.actor.enable_transport)
 - [Defining Actors](monarch.actor.html#defining-actors)
 
 - [`Actor`](monarch.actor.html#monarch.actor.Actor)
 - [`endpoint()`](monarch.actor.html#monarch.actor.endpoint)
+- [`concurrent_endpoint()`](monarch.actor.html#monarch.actor.concurrent_endpoint)
 - [Messaging Actor](monarch.actor.html#messaging-actor)
 
 - [`Endpoint`](monarch.actor.html#monarch.actor.Endpoint)
@@ -40,12 +44,17 @@ The [monarch.spmd](monarch.spmd.html) package provides primitives for running to
 - [`current_rank()`](monarch.actor.html#monarch.actor.current_rank)
 - [`current_size()`](monarch.actor.html#monarch.actor.current_size)
 - [`context()`](monarch.actor.html#monarch.actor.context)
+- [`shutdown_context()`](monarch.actor.html#monarch.actor.shutdown_context)
 - [`Context`](monarch.actor.html#monarch.actor.Context)
 - [`Point`](monarch.actor.html#monarch.actor.Point)
 - [`Extent`](monarch.actor.html#monarch.actor.Extent)
 - [Supervision](monarch.actor.html#supervision)
 
 - [`MeshFailure`](monarch.actor.html#monarch.actor.MeshFailure)
+- [`unhandled_fault_hook()`](monarch.actor.html#monarch.actor.unhandled_fault_hook)
+- [Telemetry](monarch.actor.html#telemetry)
+
+- [`traced()`](monarch.actor.html#monarch.actor.traced)
 - [monarch.config](monarch.config.html)
 - [Configuration API](monarch.config.html#configuration-api)
 
@@ -95,9 +104,6 @@ The [monarch.spmd](monarch.spmd.html) package provides primitives for running to
 - [`job_load()`](monarch.job.html#monarch.job.job_load)
 - [`job_loads()`](monarch.job.html#monarch.job.job_loads)
 - [SPMD Jobs](monarch.job.html#spmd-jobs)
-
-- [`serve()`](monarch.job.html#monarch.job.spmd.serve)
-- [`SPMDJob`](monarch.job.html#monarch.job.spmd.SPMDJob)
 - [monarch](monarch.html)
 
 - [`Tensor`](monarch.html#monarch.Tensor)

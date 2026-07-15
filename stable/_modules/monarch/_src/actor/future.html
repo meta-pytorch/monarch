@@ -1,13 +1,14 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>monarch._src.actor.future &#8212; Monarch v0.5.0 documentation</title>
+    <title>monarch._src.actor.future &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -27,37 +28,31 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
-    <script type="module" src="https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs"></script>
-    <script type="module" src="https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0.1.4/dist/mermaid-layout-elk.esm.min.mjs"></script>
-    <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs";import elkLayouts from "https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0.1.4/dist/mermaid-layout-elk.esm.min.mjs";mermaid.registerLayoutLoaders(elkLayouts);mermaid.initialize({startOnLoad:false});</script>
-    <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
-    <script type="module">
-import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs";
-window.addEventListener("load", () => mermaid.run());
-</script>
+    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
+    <script src="../../../../_static/doctools.js"></script>
+    <script src="../../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../../_static/design-tabs.js"></script>
+    <script src="https://unpkg.com/mermaid@10.2.0/dist/mermaid.min.js"></script>
+    <script>mermaid.initialize({startOnLoad:true});</script>
     <script>DOCUMENTATION_OPTIONS.pagename = '_modules/monarch/_src/actor/future';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/_modules/monarch/_src/actor/future.html" />
@@ -81,7 +76,7 @@ window.addEventListener("load", () => mermaid.run());
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -195,7 +190,7 @@ window.addEventListener("load", () => mermaid.run());
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1307,6 +1302,7 @@ document.write(`
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">asyncio</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">math</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">warnings</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
     <span class="n">Any</span><span class="p">,</span>
@@ -1320,9 +1316,11 @@ document.write(`
 <span class="p">)</span>
 
 <span class="kn">from</span><span class="w"> </span><span class="nn">monarch._rust_bindings.monarch_hyperactor.pytokio</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">Handle</span><span class="p">,</span>
     <span class="n">is_tokio_thread</span><span class="p">,</span>
     <span class="n">PythonTask</span><span class="p">,</span>
     <span class="n">Shared</span><span class="p">,</span>
+    <span class="n">WouldBlockRuntime</span><span class="p">,</span>
 <span class="p">)</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.actor.telemetry</span><span class="w"> </span><span class="kn">import</span> <span class="n">log_with_tracing</span>
 
@@ -1377,20 +1375,31 @@ document.write(`
     <span class="n">exe</span><span class="p">:</span> <span class="ne">Exception</span>
 
 
-<span class="k">class</span><span class="w"> </span><span class="nc">_Asyncio</span><span class="p">(</span><span class="n">NamedTuple</span><span class="p">):</span>
-    <span class="n">fut</span><span class="p">:</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">Future</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">_Handle</span><span class="p">(</span><span class="n">NamedTuple</span><span class="p">):</span>
+    <span class="n">handle</span><span class="p">:</span> <span class="n">Handle</span><span class="p">[</span><span class="n">Any</span><span class="p">]</span>
 
 
 <span class="k">class</span><span class="w"> </span><span class="nc">_Tokio</span><span class="p">(</span><span class="n">NamedTuple</span><span class="p">):</span>
     <span class="n">shared</span><span class="p">:</span> <span class="n">Shared</span><span class="p">[</span><span class="n">Any</span><span class="p">]</span>
 
 
-<span class="n">_Status</span> <span class="o">=</span> <span class="n">_Unawaited</span> <span class="o">|</span> <span class="n">_Complete</span> <span class="o">|</span> <span class="n">_Exception</span> <span class="o">|</span> <span class="n">_Asyncio</span> <span class="o">|</span> <span class="n">_Tokio</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">_Taken</span><span class="p">(</span><span class="n">NamedTuple</span><span class="p">):</span>
+    <span class="k">pass</span>
 
 
-<div class="viewcode-block" id="Future">
-<a class="viewcode-back" href="../../../../api/monarch.actor.html#monarch.actor.Future">[docs]</a>
-<span class="k">class</span><span class="w"> </span><span class="nc">Future</span><span class="p">(</span><span class="n">Generic</span><span class="p">[</span><span class="n">R</span><span class="p">]):</span>
+<span class="n">_Status</span> <span class="o">=</span> <span class="n">_Unawaited</span> <span class="o">|</span> <span class="n">_Complete</span> <span class="o">|</span> <span class="n">_Exception</span> <span class="o">|</span> <span class="n">_Handle</span> <span class="o">|</span> <span class="n">_Tokio</span> <span class="o">|</span> <span class="n">_Taken</span>
+
+
+<span class="c1"># The `_Tokio` state means the task was bridged to a pytokio `Shared` on a</span>
+<span class="c1"># tokio-thread await; `get()` and `as_asyncio()` both refuse it because that</span>
+<span class="c1"># value is only awaitable from a PythonTask coroutine.</span>
+<span class="n">_ALREADY_TOKIO_MSG</span> <span class="o">=</span> <span class="p">(</span>
+    <span class="s2">&quot;already converted into a pytokio.Shared object, use &#39;await&#39; from a &quot;</span>
+    <span class="s2">&quot;PythonTask coroutine to get the value.&quot;</span>
+<span class="p">)</span>
+
+
+<div class="viewcode-block" id="Future"><a class="viewcode-back" href="../../../../api/monarch.actor.html#monarch.actor.Future">[docs]</a><span class="k">class</span><span class="w"> </span><span class="nc">Future</span><span class="p">(</span><span class="n">Generic</span><span class="p">[</span><span class="n">R</span><span class="p">]):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">    The Future class wraps a PythonTask, which is a handle to a asyncio coroutine running on the Tokio event loop.</span>
 <span class="sd">    These coroutines do not use asyncio or asyncio.Future; instead, they are executed directly on the Tokio runtime.</span>
@@ -1402,29 +1411,71 @@ document.write(`
 
 <span class="sd">    &quot;&quot;&quot;</span>
 
-<div class="viewcode-block" id="Future.__init__">
-<a class="viewcode-back" href="../../../../api/monarch.actor.html#monarch.actor.Future.__init__">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">coro</span><span class="p">:</span> <span class="s2">&quot;Coroutine[Any, Any, R] | PythonTask[R]&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<div class="viewcode-block" id="Future.__init__"><a class="viewcode-back" href="../../../../api/monarch.actor.html#monarch.actor.Future.__init__">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">coro</span><span class="p">:</span> <span class="s2">&quot;Coroutine[Any, Any, R] | PythonTask[R]&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_status</span><span class="p">:</span> <span class="n">_Status</span> <span class="o">=</span> <span class="n">_Unawaited</span><span class="p">(</span>
             <span class="n">coro</span> <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">coro</span><span class="p">,</span> <span class="n">PythonTask</span><span class="p">)</span> <span class="k">else</span> <span class="n">PythonTask</span><span class="o">.</span><span class="n">from_coroutine</span><span class="p">(</span><span class="n">coro</span><span class="p">)</span>
         <span class="p">)</span></div>
 
+    <span class="k">def</span><span class="w"> </span><span class="nf">_take_inner</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="s2">&quot;PythonTask[R]&quot;</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Surrender the underlying ``PythonTask`` to a caller that needs to drive</span>
+<span class="sd">        it directly (for example to await the raw Rust future without the GIL).</span>
+<span class="sd">        Only valid on a Future that has not yet been awaited or resolved; the</span>
+<span class="sd">        Future is spent afterward (a second take, or any get()/await, raises).</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">match</span> <span class="bp">self</span><span class="o">.</span><span class="n">_status</span><span class="p">:</span>
+            <span class="k">case</span> <span class="n">_Unawaited</span><span class="p">(</span><span class="n">coro</span><span class="o">=</span><span class="n">coro</span><span class="p">):</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_status</span> <span class="o">=</span> <span class="n">_Taken</span><span class="p">()</span>
+                <span class="k">return</span> <span class="n">cast</span><span class="p">(</span><span class="s2">&quot;PythonTask[R]&quot;</span><span class="p">,</span> <span class="n">coro</span><span class="p">)</span>
+            <span class="k">case</span><span class="w"> </span><span class="k">_</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;Future has already been awaited or resolved.&quot;</span><span class="p">)</span>
 
-<div class="viewcode-block" id="Future.get">
-<a class="viewcode-back" href="../../../../api/monarch.actor.html#monarch.actor.Future.get">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">get</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">timeout</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">R</span><span class="p">:</span>
+<div class="viewcode-block" id="Future.get"><a class="viewcode-back" href="../../../../api/monarch.actor.html#monarch.actor.Future.get">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="nf">get</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">timeout</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">R</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Get the result of the Future.</span>
+
+<span class="sd">        Caveats:</span>
+
+<span class="sd">        This method is designed to be used in places where event loops are not available. Besides that, you should</span>
+<span class="sd">        avoid using this method if possible. Instead, use `as_asyncio()` (or `await`). This is because when Future.get() is called from</span>
+<span class="sd">        within an active event loop, it blocks synchronously and does not yield control. That may degrade performance</span>
+<span class="sd">        by preventing other tasks from running, and can potentially cause deadlocks if this future depends on them.</span>
+
+<span class="sd">        A `timeout` never consumes the Future: on `TimeoutError` the underlying task keeps running, so a later `get()`/`await` still observes its result.</span>
+
+<span class="sd">        examples:</span>
+
+<span class="sd">        This is not recommended because `fut.get()` blocks the event loop and might lead to issues explained above.</span>
+<span class="sd">        ```</span>
+<span class="sd">        def inner_func(fut):</span>
+<span class="sd">            result = fut.get()</span>
+<span class="sd">            # ...</span>
+
+<span class="sd">        async def out_func(fut):</span>
+<span class="sd">            inner_func(fut)</span>
+<span class="sd">        ```</span>
+
+<span class="sd">        This is okay because everything is running synchronously.</span>
+<span class="sd">        ```</span>
+<span class="sd">        def inner_func(fut):</span>
+<span class="sd">            result = fut.get()</span>
+<span class="sd">            # ...</span>
+
+<span class="sd">        def main():</span>
+<span class="sd">            # ...</span>
+<span class="sd">            inner_func(fut)</span>
+<span class="sd">        ```</span>
+<span class="sd">        &quot;&quot;&quot;</span>
         <span class="n">in_asyncio</span> <span class="o">=</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">_get_running_loop</span><span class="p">()</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
         <span class="n">in_tokio</span> <span class="o">=</span> <span class="n">is_tokio_thread</span><span class="p">()</span>
         <span class="k">if</span> <span class="n">in_asyncio</span> <span class="ow">or</span> <span class="n">in_tokio</span><span class="p">:</span>
-            <span class="n">warnings</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span>
-                <span class="s2">&quot;Future.get() called from within an active event loop blocks it; &quot;</span>
-                <span class="s2">&quot;use &#39;await&#39; instead. This will become a RuntimeError in monarch v0.6.&quot;</span><span class="p">,</span>
-                <span class="ne">DeprecationWarning</span><span class="p">,</span>
-                <span class="n">stacklevel</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
-            <span class="p">)</span>
-            <span class="c1"># Forward the event directly to Rust tracing so we capture it in</span>
-            <span class="c1"># non-actor driver processes too, where no `TracingForwarder`</span>
-            <span class="c1"># handler is attached to the Python logging chain.</span>
+            <span class="c1"># Forward the event to Rust tracing for every in-loop/tokio caller,</span>
+            <span class="c1"># including non-actor driver processes where no `TracingForwarder`</span>
+            <span class="c1"># handler is on the Python logging chain. A UserWarning (separate</span>
+            <span class="c1"># from this trace) fires only on a running asyncio loop, never on a</span>
+            <span class="c1"># Tokio thread: the blocking `_Unawaited`/`_Handle` paths raise</span>
+            <span class="c1"># `WouldBlockRuntime` before warning, and cached `_Complete`/</span>
+            <span class="c1"># `_Exception` reads don&#39;t block or warn. On asyncio it fires once,</span>
+            <span class="c1"># inline below for the no-timeout `_Unawaited` path, else via</span>
+            <span class="c1"># `Handle.get()` for the `get(timeout=...)`/`_Handle` paths.</span>
             <span class="n">log_with_tracing</span><span class="p">(</span>
                 <span class="n">logging</span><span class="o">.</span><span class="n">WARNING</span><span class="p">,</span>
                 <span class="s2">&quot;Future.get() called from within an active event loop&quot;</span><span class="p">,</span>
@@ -1433,66 +1484,72 @@ document.write(`
             <span class="p">)</span>
         <span class="k">match</span> <span class="bp">self</span><span class="o">.</span><span class="n">_status</span><span class="p">:</span>
             <span class="k">case</span> <span class="n">_Unawaited</span><span class="p">(</span><span class="n">coro</span><span class="o">=</span><span class="n">coro</span><span class="p">):</span>
+                <span class="k">if</span> <span class="n">in_tokio</span><span class="p">:</span>
+                    <span class="c1"># Cannot block inside a Tokio runtime. Refuse cleanly BEFORE</span>
+                    <span class="c1"># spawning or consuming the task (mirroring Handle.get()), for</span>
+                    <span class="c1"># BOTH the timeout and no-timeout paths, so a rejected call</span>
+                    <span class="c1"># never starts work or flips state and a later get()/await</span>
+                    <span class="c1"># from a valid context still drives the Future. (Otherwise the</span>
+                    <span class="c1"># no-timeout path&#39;s block_on() takes the task then panics, and</span>
+                    <span class="c1"># the timeout path spawns a Handle then raises -- both mutate.)</span>
+                    <span class="k">raise</span> <span class="n">WouldBlockRuntime</span><span class="p">(</span>
+                        <span class="s2">&quot;Future.get() cannot block from within a Tokio runtime; &quot;</span>
+                        <span class="s2">&quot;await the Future inside a PythonTask coroutine instead.&quot;</span>
+                    <span class="p">)</span>
+                <span class="k">if</span> <span class="n">timeout</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                    <span class="c1"># Validate the timeout BEFORE spawning: an invalid value must</span>
+                    <span class="c1"># not start work or flip state to _Handle. Handle.get()</span>
+                    <span class="c1"># re-validates authoritatively; this only avoids the spawn on</span>
+                    <span class="c1"># a bad argument.</span>
+                    <span class="k">if</span> <span class="ow">not</span> <span class="n">math</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">timeout</span><span class="p">)</span> <span class="ow">or</span> <span class="n">timeout</span> <span class="o">&lt;</span> <span class="mi">0</span><span class="p">:</span>
+                        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+                            <span class="sa">f</span><span class="s2">&quot;invalid timeout </span><span class="si">{</span><span class="n">timeout</span><span class="si">}</span><span class="s2">: expected a non-negative, finite number of seconds&quot;</span>
+                        <span class="p">)</span>
+                    <span class="c1"># A timeout must not destroy the Future. Observe the task</span>
+                    <span class="c1"># through a Handle, which is non-cancelling on timeout, so a</span>
+                    <span class="c1"># later get()/poll()/await still resolves. Handle.get() applies</span>
+                    <span class="c1"># the context policy and emits the warning itself.</span>
+                    <span class="n">handle</span> <span class="o">=</span> <span class="n">coro</span><span class="o">.</span><span class="n">spawn_handle</span><span class="p">()</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">_status</span> <span class="o">=</span> <span class="n">_Handle</span><span class="p">(</span><span class="n">handle</span><span class="p">)</span>
+                    <span class="k">return</span> <span class="n">cast</span><span class="p">(</span><span class="s2">&quot;R&quot;</span><span class="p">,</span> <span class="n">handle</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">timeout</span><span class="p">))</span>
+                <span class="k">if</span> <span class="n">in_asyncio</span><span class="p">:</span>
+                    <span class="n">warnings</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span>
+                        <span class="s2">&quot;Future.get() was called from within an active event loop. Because this method blocks &quot;</span>
+                        <span class="s2">&quot;synchronously and does not yield control, it may degrade performance by preventing &quot;</span>
+                        <span class="s2">&quot;other tasks from running, and can potentially cause deadlocks if this future depends &quot;</span>
+                        <span class="s2">&quot;on them. It is encouraged to use as_asyncio() (or await) instead.&quot;</span><span class="p">,</span>
+                        <span class="ne">UserWarning</span><span class="p">,</span>
+                        <span class="n">stacklevel</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
+                    <span class="p">)</span>
                 <span class="k">try</span><span class="p">:</span>
-                    <span class="k">if</span> <span class="n">timeout</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-                        <span class="n">coro</span> <span class="o">=</span> <span class="n">coro</span><span class="o">.</span><span class="n">with_timeout</span><span class="p">(</span><span class="n">timeout</span><span class="p">)</span>
                     <span class="n">v</span> <span class="o">=</span> <span class="n">coro</span><span class="o">.</span><span class="n">block_on</span><span class="p">()</span>
                     <span class="bp">self</span><span class="o">.</span><span class="n">_status</span> <span class="o">=</span> <span class="n">_Complete</span><span class="p">(</span><span class="n">v</span><span class="p">)</span>
                     <span class="k">return</span> <span class="n">cast</span><span class="p">(</span><span class="s2">&quot;R&quot;</span><span class="p">,</span> <span class="n">v</span><span class="p">)</span>
                 <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
                     <span class="bp">self</span><span class="o">.</span><span class="n">_status</span> <span class="o">=</span> <span class="n">_Exception</span><span class="p">(</span><span class="n">e</span><span class="p">)</span>
                     <span class="k">raise</span> <span class="n">e</span> <span class="kn">from</span><span class="w"> </span><span class="kc">None</span>
-            <span class="k">case</span> <span class="n">_Asyncio</span><span class="p">(</span><span class="n">_</span><span class="p">):</span>
-                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
-                    <span class="s2">&quot;already converted into an asyncio.Future, use &#39;await&#39; to get the value.&quot;</span>
-                <span class="p">)</span>
+            <span class="k">case</span> <span class="n">_Handle</span><span class="p">(</span><span class="n">handle</span><span class="o">=</span><span class="n">handle</span><span class="p">):</span>
+                <span class="c1"># Observe the shared Handle. `Handle.get()` applies its own</span>
+                <span class="c1"># context policy (warn on a live loop, `WouldBlockRuntime` in a</span>
+                <span class="c1"># Tokio runtime context, block on a sync thread) and emits the</span>
+                <span class="c1"># Python warning itself, so we do not warn again here.</span>
+                <span class="k">return</span> <span class="n">cast</span><span class="p">(</span><span class="s2">&quot;R&quot;</span><span class="p">,</span> <span class="n">handle</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">timeout</span><span class="p">))</span>
             <span class="k">case</span> <span class="n">_Complete</span><span class="p">(</span><span class="n">value</span><span class="o">=</span><span class="n">value</span><span class="p">):</span>
                 <span class="k">return</span> <span class="n">cast</span><span class="p">(</span><span class="s2">&quot;R&quot;</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
             <span class="k">case</span> <span class="n">_Exception</span><span class="p">(</span><span class="n">exe</span><span class="o">=</span><span class="n">exe</span><span class="p">):</span>
                 <span class="k">raise</span> <span class="n">exe</span>
             <span class="k">case</span> <span class="n">_Tokio</span><span class="p">(</span><span class="n">_</span><span class="p">):</span>
-                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
-                    <span class="s2">&quot;already converted into a pytokio.Shared object, use &#39;await&#39; from a PythonTask coroutine to get the value.&quot;</span>
-                <span class="p">)</span>
+                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="n">_ALREADY_TOKIO_MSG</span><span class="p">)</span>
+            <span class="k">case</span> <span class="n">_Taken</span><span class="p">():</span>
+                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;Future was consumed.&quot;</span><span class="p">)</span>
             <span class="k">case</span><span class="w"> </span><span class="k">_</span><span class="p">:</span>
                 <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s2">&quot;unknown status&quot;</span><span class="p">)</span></div>
 
-
     <span class="k">def</span><span class="w"> </span><span class="fm">__await__</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Generator</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="n">Any</span><span class="p">,</span> <span class="n">R</span><span class="p">]:</span>
         <span class="k">if</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">_get_running_loop</span><span class="p">()</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="k">match</span> <span class="bp">self</span><span class="o">.</span><span class="n">_status</span><span class="p">:</span>
-                <span class="k">case</span> <span class="n">_Unawaited</span><span class="p">(</span><span class="n">coro</span><span class="o">=</span><span class="n">coro</span><span class="p">):</span>
-                    <span class="n">loop</span> <span class="o">=</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">get_running_loop</span><span class="p">()</span>
-                    <span class="n">fut</span> <span class="o">=</span> <span class="n">loop</span><span class="o">.</span><span class="n">create_future</span><span class="p">()</span>
-                    <span class="bp">self</span><span class="o">.</span><span class="n">_status</span> <span class="o">=</span> <span class="n">_Asyncio</span><span class="p">(</span><span class="n">fut</span><span class="p">)</span>
-
-                    <span class="k">def</span><span class="w"> </span><span class="nf">set_result</span><span class="p">(</span><span class="n">fut</span><span class="p">:</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">Future</span><span class="p">[</span><span class="n">R</span><span class="p">],</span> <span class="n">value</span><span class="p">:</span> <span class="n">R</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-                        <span class="k">if</span> <span class="ow">not</span> <span class="n">fut</span><span class="o">.</span><span class="n">cancelled</span><span class="p">():</span>
-                            <span class="n">fut</span><span class="o">.</span><span class="n">set_result</span><span class="p">(</span><span class="n">value</span><span class="p">)</span>
-
-                    <span class="k">def</span><span class="w"> </span><span class="nf">set_exception</span><span class="p">(</span><span class="n">fut</span><span class="p">:</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">Future</span><span class="p">[</span><span class="n">R</span><span class="p">],</span> <span class="n">e</span><span class="p">:</span> <span class="ne">Exception</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-                        <span class="k">if</span> <span class="ow">not</span> <span class="n">fut</span><span class="o">.</span><span class="n">cancelled</span><span class="p">():</span>
-                            <span class="n">fut</span><span class="o">.</span><span class="n">set_exception</span><span class="p">(</span><span class="n">e</span><span class="p">)</span>
-
-                    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">mark_complete</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-                        <span class="k">try</span><span class="p">:</span>
-                            <span class="n">func</span><span class="p">,</span> <span class="n">value</span> <span class="o">=</span> <span class="n">set_result</span><span class="p">,</span> <span class="k">await</span> <span class="n">coro</span>
-                        <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
-                            <span class="n">func</span><span class="p">,</span> <span class="n">value</span> <span class="o">=</span> <span class="n">set_exception</span><span class="p">,</span> <span class="n">e</span>
-                        <span class="n">loop</span><span class="o">.</span><span class="n">call_soon_threadsafe</span><span class="p">(</span><span class="n">func</span><span class="p">,</span> <span class="n">fut</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
-
-                    <span class="n">PythonTask</span><span class="o">.</span><span class="n">from_coroutine</span><span class="p">(</span><span class="n">mark_complete</span><span class="p">())</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
-                    <span class="k">return</span> <span class="n">fut</span><span class="o">.</span><span class="fm">__await__</span><span class="p">()</span>
-                <span class="k">case</span> <span class="n">_Asyncio</span><span class="p">(</span><span class="n">fut</span><span class="o">=</span><span class="n">fut</span><span class="p">):</span>
-                    <span class="k">return</span> <span class="n">fut</span><span class="o">.</span><span class="fm">__await__</span><span class="p">()</span>
-                <span class="k">case</span> <span class="n">_Tokio</span><span class="p">(</span><span class="n">_</span><span class="p">):</span>
-                    <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
-                        <span class="s2">&quot;already converted into a tokio future, but being awaited from the asyncio loop.&quot;</span>
-                    <span class="p">)</span>
-                <span class="k">case</span><span class="w"> </span><span class="k">_</span><span class="p">:</span>
-                    <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
-                        <span class="s2">&quot;already converted into a synchronous future, use &#39;get&#39; to get the value.&quot;</span>
-                    <span class="p">)</span>
+            <span class="c1"># Asyncio callers observe through the Handle; `__await__` delegates</span>
+            <span class="c1"># to `as_asyncio()`.</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">as_asyncio</span><span class="p">()</span><span class="o">.</span><span class="fm">__await__</span><span class="p">()</span>
         <span class="k">elif</span> <span class="n">is_tokio_thread</span><span class="p">():</span>
             <span class="k">match</span> <span class="bp">self</span><span class="o">.</span><span class="n">_status</span><span class="p">:</span>
                 <span class="k">case</span> <span class="n">_Unawaited</span><span class="p">(</span><span class="n">coro</span><span class="o">=</span><span class="n">coro</span><span class="p">):</span>
@@ -1501,10 +1558,13 @@ document.write(`
                     <span class="k">return</span> <span class="n">shared</span><span class="o">.</span><span class="fm">__await__</span><span class="p">()</span>
                 <span class="k">case</span> <span class="n">_Tokio</span><span class="p">(</span><span class="n">shared</span><span class="o">=</span><span class="n">shared</span><span class="p">):</span>
                     <span class="k">return</span> <span class="n">shared</span><span class="o">.</span><span class="fm">__await__</span><span class="p">()</span>
-                <span class="k">case</span> <span class="n">_Asyncio</span><span class="p">(</span><span class="n">_</span><span class="p">):</span>
+                <span class="k">case</span> <span class="n">_Handle</span><span class="p">(</span><span class="n">_</span><span class="p">):</span>
                     <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
-                        <span class="s2">&quot;already converted into asyncio future, but being awaited from the tokio loop.&quot;</span>
+                        <span class="s2">&quot;Future is backed by a Handle and is not awaitable on a tokio thread; &quot;</span>
+                        <span class="s2">&quot;use get() or as_asyncio() from a sync/asyncio context.&quot;</span>
                     <span class="p">)</span>
+                <span class="k">case</span> <span class="n">_Taken</span><span class="p">():</span>
+                    <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;Future was consumed.&quot;</span><span class="p">)</span>
                 <span class="k">case</span><span class="w"> </span><span class="k">_</span><span class="p">:</span>
                     <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
                         <span class="s2">&quot;already converted into a synchronous future, use &#39;get&#39; to get the value.&quot;</span>
@@ -1514,25 +1574,62 @@ document.write(`
                 <span class="s2">&quot;__await__ with no active event loop (either asyncio or tokio)&quot;</span>
             <span class="p">)</span>
 
+<div class="viewcode-block" id="Future.as_asyncio"><a class="viewcode-back" href="../../../../api/monarch.actor.html#monarch.actor.Future.as_asyncio">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="nf">as_asyncio</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="s2">&quot;asyncio.Future[R]&quot;</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Return a standard ``asyncio.Future`` that resolves when this Future</span>
+<span class="sd">        does.</span>
+
+<span class="sd">        Requires a running event loop; off a loop it raises ``RuntimeError``</span>
+<span class="sd">        **without** consuming the underlying task (the Future stays unawaited, so</span>
+<span class="sd">        a later ``get()`` still drives it). Observation is non-consuming:</span>
+<span class="sd">        repeated ``as_asyncio()``/``await`` each return a fresh loop-local future</span>
+<span class="sd">        observing the same result.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">loop</span> <span class="o">=</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">_get_running_loop</span><span class="p">()</span>
+        <span class="k">if</span> <span class="n">loop</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s2">&quot;as_asyncio() requires a running asyncio event loop.&quot;</span><span class="p">)</span>
+        <span class="k">match</span> <span class="bp">self</span><span class="o">.</span><span class="n">_status</span><span class="p">:</span>
+            <span class="k">case</span> <span class="n">_Unawaited</span><span class="p">(</span><span class="n">coro</span><span class="o">=</span><span class="n">coro</span><span class="p">):</span>
+                <span class="c1"># The loop is confirmed above, so spawning is safe: an off-loop</span>
+                <span class="c1"># call raised already, leaving the Future in `_Unawaited`.</span>
+                <span class="n">handle</span> <span class="o">=</span> <span class="n">coro</span><span class="o">.</span><span class="n">spawn_handle</span><span class="p">()</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_status</span> <span class="o">=</span> <span class="n">_Handle</span><span class="p">(</span><span class="n">handle</span><span class="p">)</span>
+                <span class="k">return</span> <span class="n">handle</span><span class="o">.</span><span class="n">as_asyncio</span><span class="p">()</span>
+            <span class="k">case</span> <span class="n">_Handle</span><span class="p">(</span><span class="n">handle</span><span class="o">=</span><span class="n">handle</span><span class="p">):</span>
+                <span class="k">return</span> <span class="n">handle</span><span class="o">.</span><span class="n">as_asyncio</span><span class="p">()</span>
+            <span class="k">case</span> <span class="n">_Complete</span><span class="p">(</span><span class="n">value</span><span class="o">=</span><span class="n">value</span><span class="p">):</span>
+                <span class="n">done</span> <span class="o">=</span> <span class="n">loop</span><span class="o">.</span><span class="n">create_future</span><span class="p">()</span>
+                <span class="n">done</span><span class="o">.</span><span class="n">set_result</span><span class="p">(</span><span class="n">value</span><span class="p">)</span>
+                <span class="k">return</span> <span class="n">cast</span><span class="p">(</span><span class="s2">&quot;asyncio.Future[R]&quot;</span><span class="p">,</span> <span class="n">done</span><span class="p">)</span>
+            <span class="k">case</span> <span class="n">_Exception</span><span class="p">(</span><span class="n">exe</span><span class="o">=</span><span class="n">exe</span><span class="p">):</span>
+                <span class="n">failed</span> <span class="o">=</span> <span class="n">loop</span><span class="o">.</span><span class="n">create_future</span><span class="p">()</span>
+                <span class="c1"># asyncio.Future.set_exception rejects StopIteration (PEP 479);</span>
+                <span class="c1"># surface it as `raise StopIteration` already does out of a</span>
+                <span class="c1"># coroutine, matching the Handle observer path.</span>
+                <span class="n">failed</span><span class="o">.</span><span class="n">set_exception</span><span class="p">(</span>
+                    <span class="ne">RuntimeError</span><span class="p">(</span><span class="s2">&quot;coroutine raised StopIteration&quot;</span><span class="p">)</span>
+                    <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">exe</span><span class="p">,</span> <span class="ne">StopIteration</span><span class="p">)</span>
+                    <span class="k">else</span> <span class="n">exe</span>
+                <span class="p">)</span>
+                <span class="k">return</span> <span class="n">cast</span><span class="p">(</span><span class="s2">&quot;asyncio.Future[R]&quot;</span><span class="p">,</span> <span class="n">failed</span><span class="p">)</span>
+            <span class="k">case</span> <span class="n">_Tokio</span><span class="p">(</span><span class="n">_</span><span class="p">):</span>
+                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="n">_ALREADY_TOKIO_MSG</span><span class="p">)</span>
+            <span class="k">case</span> <span class="n">_Taken</span><span class="p">():</span>
+                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;Future was consumed.&quot;</span><span class="p">)</span>
+            <span class="k">case</span><span class="w"> </span><span class="k">_</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s2">&quot;unknown status&quot;</span><span class="p">)</span></div>
+
     <span class="c1"># compatibility with old tensor engine Future objects</span>
     <span class="c1"># hopefully we do not need done(), add_callback because</span>
     <span class="c1"># they are harder to implement right.</span>
-<div class="viewcode-block" id="Future.result">
-<a class="viewcode-back" href="../../../../api/monarch.actor.html#monarch.actor.Future.result">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">result</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">timeout</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">R</span><span class="p">:</span>
+<div class="viewcode-block" id="Future.result"><a class="viewcode-back" href="../../../../api/monarch.actor.html#monarch.actor.Future.result">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="nf">result</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">timeout</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">R</span><span class="p">:</span>
         <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">timeout</span><span class="p">)</span></div>
 
-
-<div class="viewcode-block" id="Future.exception">
-<a class="viewcode-back" href="../../../../api/monarch.actor.html#monarch.actor.Future.exception">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">exception</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">timeout</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Optional</span><span class="p">[</span><span class="ne">Exception</span><span class="p">]:</span>
+<div class="viewcode-block" id="Future.exception"><a class="viewcode-back" href="../../../../api/monarch.actor.html#monarch.actor.Future.exception">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="nf">exception</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">timeout</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Optional</span><span class="p">[</span><span class="ne">Exception</span><span class="p">]:</span>
         <span class="k">try</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">timeout</span><span class="p">)</span>
             <span class="k">return</span> <span class="kc">None</span>
         <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
-            <span class="k">return</span> <span class="n">e</span></div>
-</div>
-
+            <span class="k">return</span> <span class="n">e</span></div></div>
 </pre></div>
 
                 </article>
@@ -1685,7 +1782,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>
@@ -1714,7 +1811,7 @@ document.write(`
        "headline": "monarch._src.actor.future",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/_modules/monarch/_src/actor/future.html",
-       "articleBody": "Source code for monarch._src.actor.future # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-strict import asyncio import logging import warnings from typing import ( Any, cast, Coroutine, Generator, Generic, NamedTuple, Optional, TypeVar, ) from monarch._rust_bindings.monarch_hyperactor.pytokio import ( is_tokio_thread, PythonTask, Shared, ) from monarch._src.actor.telemetry import log_with_tracing R = TypeVar(\"R\") async def _aincomplete(impl: Any, self: Any) -\u003e Any: try: return self._set_result(await impl()) except Exception as e: self._set_exception(e) raise # Future is our generic mechanism for providing both a synchronous and asynchronous API for # Monarch Future objects. # We treat all code as running in one of two contexts: synchronous (asyncio._get_running_loop() is None) # or asynchronous. # Inside of asynchronous code, clients of our API must use `await` to wait for monarch Futures to prevent # blocking the surrounding event loop. # In synchronous code users must call get() because the call is comming from an non-async function so # await is not allowed. # [avoiding async code duplication] # Because we allow for two modes, it is tempting as developers of Monarch to start to write two copies of # of code for each mode. However, this results in a lot of confusing code duplication. # To avoid this, we utilize the fact that synchronous code is allowed to start/complete an asyncio event loop # via asyncio.run in order to complete the `get()` operation. So we can just write the async version and use # it to implement the synchronoous version. # However, starting and running an event loop is somewhat expensive. For simple messages, using an event loop # is about 4x slower than just directly waiting on the tokio result. To avoid this slow down we perform an # optimization. For any case where the `impl` coroutine of a future calls `await` only on PythonFuture # (a Tokio future returning a Python value) objects, we pass requires_loop=False to the Future. In this mode, # the future will just run the coroutine manually, and the PythonFuture object will recognize it is being awaited # without an event loop (search [avoiding code duplication]) and simply do a blocking wait. By avoiding the event # loop machinery, this gives it the same throughput as if we ran it synchronously. class _Unawaited(NamedTuple): coro: PythonTask[Any] class _Complete(NamedTuple): value: Any class _Exception(NamedTuple): exe: Exception class _Asyncio(NamedTuple): fut: asyncio.Future class _Tokio(NamedTuple): shared: Shared[Any] _Status = _Unawaited | _Complete | _Exception | _Asyncio | _Tokio [docs] class Future(Generic[R]): \"\"\" The Future class wraps a PythonTask, which is a handle to a asyncio coroutine running on the Tokio event loop. These coroutines do not use asyncio or asyncio.Future; instead, they are executed directly on the Tokio runtime. The Future class provides both synchronous (.get()) and asynchronous APIs (await) for interacting with these tasks. Args: coro (Coroutine[Any, Any, R] | PythonTask[R]): The coroutine or PythonTask representing the asynchronous computation. \"\"\" [docs] def __init__(self, *, coro: \"Coroutine[Any, Any, R] | PythonTask[R]\") -\u003e None: self._status: _Status = _Unawaited( coro if isinstance(coro, PythonTask) else PythonTask.from_coroutine(coro) ) [docs] def get(self, timeout: Optional[float] = None) -\u003e R: in_asyncio = asyncio._get_running_loop() is not None in_tokio = is_tokio_thread() if in_asyncio or in_tokio: warnings.warn( \"Future.get() called from within an active event loop blocks it; \" \"use \u0027await\u0027 instead. This will become a RuntimeError in monarch v0.6.\", DeprecationWarning, stacklevel=2, ) # Forward the event directly to Rust tracing so we capture it in # non-actor driver processes too, where no `TracingForwarder` # handler is attached to the Python logging chain. log_with_tracing( logging.WARNING, \"Future.get() called from within an active event loop\", extra={\"context\": \"asyncio\" if in_asyncio else \"tokio\"}, stacklevel=2, ) match self._status: case _Unawaited(coro=coro): try: if timeout is not None: coro = coro.with_timeout(timeout) v = coro.block_on() self._status = _Complete(v) return cast(\"R\", v) except Exception as e: self._status = _Exception(e) raise e from None case _Asyncio(_): raise ValueError( \"already converted into an asyncio.Future, use \u0027await\u0027 to get the value.\" ) case _Complete(value=value): return cast(\"R\", value) case _Exception(exe=exe): raise exe case _Tokio(_): raise ValueError( \"already converted into a pytokio.Shared object, use \u0027await\u0027 from a PythonTask coroutine to get the value.\" ) case _: raise RuntimeError(\"unknown status\") def __await__(self) -\u003e Generator[Any, Any, R]: if asyncio._get_running_loop() is not None: match self._status: case _Unawaited(coro=coro): loop = asyncio.get_running_loop() fut = loop.create_future() self._status = _Asyncio(fut) def set_result(fut: asyncio.Future[R], value: R) -\u003e None: if not fut.cancelled(): fut.set_result(value) def set_exception(fut: asyncio.Future[R], e: Exception) -\u003e None: if not fut.cancelled(): fut.set_exception(e) async def mark_complete() -\u003e None: try: func, value = set_result, await coro except Exception as e: func, value = set_exception, e loop.call_soon_threadsafe(func, fut, value) PythonTask.from_coroutine(mark_complete()).spawn() return fut.__await__() case _Asyncio(fut=fut): return fut.__await__() case _Tokio(_): raise ValueError( \"already converted into a tokio future, but being awaited from the asyncio loop.\" ) case _: raise ValueError( \"already converted into a synchronous future, use \u0027get\u0027 to get the value.\" ) elif is_tokio_thread(): match self._status: case _Unawaited(coro=coro): shared = coro.spawn() self._status = _Tokio(shared) return shared.__await__() case _Tokio(shared=shared): return shared.__await__() case _Asyncio(_): raise ValueError( \"already converted into asyncio future, but being awaited from the tokio loop.\" ) case _: raise ValueError( \"already converted into a synchronous future, use \u0027get\u0027 to get the value.\" ) else: raise ValueError( \"__await__ with no active event loop (either asyncio or tokio)\" ) # compatibility with old tensor engine Future objects # hopefully we do not need done(), add_callback because # they are harder to implement right. [docs] def result(self, timeout: Optional[float] = None) -\u003e R: return self.get(timeout) [docs] def exception(self, timeout: Optional[float] = None) -\u003e Optional[Exception]: try: self.get(timeout) return None except Exception as e: return e",
+       "articleBody": "Source code for monarch._src.actor.future # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-strict import asyncio import logging import math import warnings from typing import ( Any, cast, Coroutine, Generator, Generic, NamedTuple, Optional, TypeVar, ) from monarch._rust_bindings.monarch_hyperactor.pytokio import ( Handle, is_tokio_thread, PythonTask, Shared, WouldBlockRuntime, ) from monarch._src.actor.telemetry import log_with_tracing R = TypeVar(\"R\") async def _aincomplete(impl: Any, self: Any) -\u003e Any: try: return self._set_result(await impl()) except Exception as e: self._set_exception(e) raise # Future is our generic mechanism for providing both a synchronous and asynchronous API for # Monarch Future objects. # We treat all code as running in one of two contexts: synchronous (asyncio._get_running_loop() is None) # or asynchronous. # Inside of asynchronous code, clients of our API must use `await` to wait for monarch Futures to prevent # blocking the surrounding event loop. # In synchronous code users must call get() because the call is comming from an non-async function so # await is not allowed. # [avoiding async code duplication] # Because we allow for two modes, it is tempting as developers of Monarch to start to write two copies of # of code for each mode. However, this results in a lot of confusing code duplication. # To avoid this, we utilize the fact that synchronous code is allowed to start/complete an asyncio event loop # via asyncio.run in order to complete the `get()` operation. So we can just write the async version and use # it to implement the synchronoous version. # However, starting and running an event loop is somewhat expensive. For simple messages, using an event loop # is about 4x slower than just directly waiting on the tokio result. To avoid this slow down we perform an # optimization. For any case where the `impl` coroutine of a future calls `await` only on PythonFuture # (a Tokio future returning a Python value) objects, we pass requires_loop=False to the Future. In this mode, # the future will just run the coroutine manually, and the PythonFuture object will recognize it is being awaited # without an event loop (search [avoiding code duplication]) and simply do a blocking wait. By avoiding the event # loop machinery, this gives it the same throughput as if we ran it synchronously. class _Unawaited(NamedTuple): coro: PythonTask[Any] class _Complete(NamedTuple): value: Any class _Exception(NamedTuple): exe: Exception class _Handle(NamedTuple): handle: Handle[Any] class _Tokio(NamedTuple): shared: Shared[Any] class _Taken(NamedTuple): pass _Status = _Unawaited | _Complete | _Exception | _Handle | _Tokio | _Taken # The `_Tokio` state means the task was bridged to a pytokio `Shared` on a # tokio-thread await; `get()` and `as_asyncio()` both refuse it because that # value is only awaitable from a PythonTask coroutine. _ALREADY_TOKIO_MSG = ( \"already converted into a pytokio.Shared object, use \u0027await\u0027 from a \" \"PythonTask coroutine to get the value.\" ) [docs]class Future(Generic[R]): \"\"\" The Future class wraps a PythonTask, which is a handle to a asyncio coroutine running on the Tokio event loop. These coroutines do not use asyncio or asyncio.Future; instead, they are executed directly on the Tokio runtime. The Future class provides both synchronous (.get()) and asynchronous APIs (await) for interacting with these tasks. Args: coro (Coroutine[Any, Any, R] | PythonTask[R]): The coroutine or PythonTask representing the asynchronous computation. \"\"\" [docs] def __init__(self, *, coro: \"Coroutine[Any, Any, R] | PythonTask[R]\") -\u003e None: self._status: _Status = _Unawaited( coro if isinstance(coro, PythonTask) else PythonTask.from_coroutine(coro) ) def _take_inner(self) -\u003e \"PythonTask[R]\": \"\"\"Surrender the underlying ``PythonTask`` to a caller that needs to drive it directly (for example to await the raw Rust future without the GIL). Only valid on a Future that has not yet been awaited or resolved; the Future is spent afterward (a second take, or any get()/await, raises). \"\"\" match self._status: case _Unawaited(coro=coro): self._status = _Taken() return cast(\"PythonTask[R]\", coro) case _: raise ValueError(\"Future has already been awaited or resolved.\") [docs] def get(self, timeout: Optional[float] = None) -\u003e R: \"\"\"Get the result of the Future. Caveats: This method is designed to be used in places where event loops are not available. Besides that, you should avoid using this method if possible. Instead, use `as_asyncio()` (or `await`). This is because when Future.get() is called from within an active event loop, it blocks synchronously and does not yield control. That may degrade performance by preventing other tasks from running, and can potentially cause deadlocks if this future depends on them. A `timeout` never consumes the Future: on `TimeoutError` the underlying task keeps running, so a later `get()`/`await` still observes its result. examples: This is not recommended because `fut.get()` blocks the event loop and might lead to issues explained above. ``` def inner_func(fut): result = fut.get() # ... async def out_func(fut): inner_func(fut) ``` This is okay because everything is running synchronously. ``` def inner_func(fut): result = fut.get() # ... def main(): # ... inner_func(fut) ``` \"\"\" in_asyncio = asyncio._get_running_loop() is not None in_tokio = is_tokio_thread() if in_asyncio or in_tokio: # Forward the event to Rust tracing for every in-loop/tokio caller, # including non-actor driver processes where no `TracingForwarder` # handler is on the Python logging chain. A UserWarning (separate # from this trace) fires only on a running asyncio loop, never on a # Tokio thread: the blocking `_Unawaited`/`_Handle` paths raise # `WouldBlockRuntime` before warning, and cached `_Complete`/ # `_Exception` reads don\u0027t block or warn. On asyncio it fires once, # inline below for the no-timeout `_Unawaited` path, else via # `Handle.get()` for the `get(timeout=...)`/`_Handle` paths. log_with_tracing( logging.WARNING, \"Future.get() called from within an active event loop\", extra={\"context\": \"asyncio\" if in_asyncio else \"tokio\"}, stacklevel=2, ) match self._status: case _Unawaited(coro=coro): if in_tokio: # Cannot block inside a Tokio runtime. Refuse cleanly BEFORE # spawning or consuming the task (mirroring Handle.get()), for # BOTH the timeout and no-timeout paths, so a rejected call # never starts work or flips state and a later get()/await # from a valid context still drives the Future. (Otherwise the # no-timeout path\u0027s block_on() takes the task then panics, and # the timeout path spawns a Handle then raises -- both mutate.) raise WouldBlockRuntime( \"Future.get() cannot block from within a Tokio runtime; \" \"await the Future inside a PythonTask coroutine instead.\" ) if timeout is not None: # Validate the timeout BEFORE spawning: an invalid value must # not start work or flip state to _Handle. Handle.get() # re-validates authoritatively; this only avoids the spawn on # a bad argument. if not math.isfinite(timeout) or timeout \u003c 0: raise ValueError( f\"invalid timeout {timeout}: expected a non-negative, finite number of seconds\" ) # A timeout must not destroy the Future. Observe the task # through a Handle, which is non-cancelling on timeout, so a # later get()/poll()/await still resolves. Handle.get() applies # the context policy and emits the warning itself. handle = coro.spawn_handle() self._status = _Handle(handle) return cast(\"R\", handle.get(timeout)) if in_asyncio: warnings.warn( \"Future.get() was called from within an active event loop. Because this method blocks \" \"synchronously and does not yield control, it may degrade performance by preventing \" \"other tasks from running, and can potentially cause deadlocks if this future depends \" \"on them. It is encouraged to use as_asyncio() (or await) instead.\", UserWarning, stacklevel=2, ) try: v = coro.block_on() self._status = _Complete(v) return cast(\"R\", v) except Exception as e: self._status = _Exception(e) raise e from None case _Handle(handle=handle): # Observe the shared Handle. `Handle.get()` applies its own # context policy (warn on a live loop, `WouldBlockRuntime` in a # Tokio runtime context, block on a sync thread) and emits the # Python warning itself, so we do not warn again here. return cast(\"R\", handle.get(timeout)) case _Complete(value=value): return cast(\"R\", value) case _Exception(exe=exe): raise exe case _Tokio(_): raise ValueError(_ALREADY_TOKIO_MSG) case _Taken(): raise ValueError(\"Future was consumed.\") case _: raise RuntimeError(\"unknown status\") def __await__(self) -\u003e Generator[Any, Any, R]: if asyncio._get_running_loop() is not None: # Asyncio callers observe through the Handle; `__await__` delegates # to `as_asyncio()`. return self.as_asyncio().__await__() elif is_tokio_thread(): match self._status: case _Unawaited(coro=coro): shared = coro.spawn() self._status = _Tokio(shared) return shared.__await__() case _Tokio(shared=shared): return shared.__await__() case _Handle(_): raise ValueError( \"Future is backed by a Handle and is not awaitable on a tokio thread; \" \"use get() or as_asyncio() from a sync/asyncio context.\" ) case _Taken(): raise ValueError(\"Future was consumed.\") case _: raise ValueError( \"already converted into a synchronous future, use \u0027get\u0027 to get the value.\" ) else: raise ValueError( \"__await__ with no active event loop (either asyncio or tokio)\" ) [docs] def as_asyncio(self) -\u003e \"asyncio.Future[R]\": \"\"\"Return a standard ``asyncio.Future`` that resolves when this Future does. Requires a running event loop; off a loop it raises ``RuntimeError`` **without** consuming the underlying task (the Future stays unawaited, so a later ``get()`` still drives it). Observation is non-consuming: repeated ``as_asyncio()``/``await`` each return a fresh loop-local future observing the same result. \"\"\" loop = asyncio._get_running_loop() if loop is None: raise RuntimeError(\"as_asyncio() requires a running asyncio event loop.\") match self._status: case _Unawaited(coro=coro): # The loop is confirmed above, so spawning is safe: an off-loop # call raised already, leaving the Future in `_Unawaited`. handle = coro.spawn_handle() self._status = _Handle(handle) return handle.as_asyncio() case _Handle(handle=handle): return handle.as_asyncio() case _Complete(value=value): done = loop.create_future() done.set_result(value) return cast(\"asyncio.Future[R]\", done) case _Exception(exe=exe): failed = loop.create_future() # asyncio.Future.set_exception rejects StopIteration (PEP 479); # surface it as `raise StopIteration` already does out of a # coroutine, matching the Handle observer path. failed.set_exception( RuntimeError(\"coroutine raised StopIteration\") if isinstance(exe, StopIteration) else exe ) return cast(\"asyncio.Future[R]\", failed) case _Tokio(_): raise ValueError(_ALREADY_TOKIO_MSG) case _Taken(): raise ValueError(\"Future was consumed.\") case _: raise RuntimeError(\"unknown status\") # compatibility with old tensor engine Future objects # hopefully we do not need done(), add_callback because # they are harder to implement right. [docs] def result(self, timeout: Optional[float] = None) -\u003e R: return self.get(timeout) [docs] def exception(self, timeout: Optional[float] = None) -\u003e Optional[Exception]: try: self.get(timeout) return None except Exception as e: return e",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

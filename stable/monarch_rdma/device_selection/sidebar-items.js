@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["get_all_rdma_devices","get_cuda_pci_address","get_nic_pci_address","get_numa_pci_address","parse_device_string","parse_pci_topology"],"struct":["PCIDevice"]};
+window.SIDEBAR_ITEMS = {"enum":["MemoryLocation","PathType"],"fn":["cpu_path","get_cuda_pci_address","pci_path"],"struct":["PCIAddress","PciPath"]};

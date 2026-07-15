@@ -181,7 +181,6 @@ kubectl delete namespace monarch-tests
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | (unset) | Collector endpoint. When set, enables OTLP metric and log export. |
 | `OTEL_SERVICE_NAME` | `unknown_service` | Service name attached to all exported telemetry. |
 | `OTEL_METRIC_EXPORT_INTERVAL` | `1s` | How often the periodic metric reader pushes to the exporter. |
-| `USE_UNIFIED_LAYER` | `true` | Enables the unified tracing layer and OTLP log sink. Enabled by default. |
 | `ENABLE_OTEL_METRICS` | `true` | Set to `false` to disable OTel metrics entirely. |
 | `OTEL_EXPORTER_OTLP_HEADERS` | (unset) | Additional headers for the OTLP exporter (e.g., auth tokens). |
 | `OTEL_EXPORTER_OTLP_TIMEOUT` | (unset) | Timeout for OTLP export requests. |

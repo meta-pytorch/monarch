@@ -1,8 +1,9 @@
 
+
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../../../../" >
+<html lang="en" data-content_root="" >
 
   <head>
     <meta charset="utf-8" />
@@ -16,7 +17,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="An ActorId uniquely identifies an actor within a proc. It combines the owning ProcId with an actor uid. Construction: Fields are private; use named constructors: Methods:.uid() returns the actor id..." />
 
-    <title>ActorId &#8212; Monarch v0.5.0 documentation</title>
+    <title>ActorId &#8212; Monarch v0.6.0 documentation</title>
   
   
   
@@ -36,29 +37,29 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
-    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=a6c16915" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
   
   <!-- Pre-loaded scripts that we'll load fully later -->
   <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
-    <script src="../../../../_static/doctools.js?v=888ff710"></script>
-    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
+    <script src="../../../../_static/doctools.js"></script>
+    <script src="../../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../../_static/design-tabs.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-book/src/references/actor_id';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/references/actor_id.html" />
@@ -82,7 +83,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.5.0">
+<meta name="llm:version" content="v0.6.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +197,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.5.0');
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -1293,7 +1294,7 @@ document.write(`
                 <article class="bd-article">
                   
   <section id="actorid">
-<h1><code class="docutils literal notranslate"><span class="pre">ActorId</span></code><a class="headerlink" href="#actorid" title="Link to this heading">#</a></h1>
+<h1><code class="docutils literal notranslate"><span class="pre">ActorId</span></code><a class="headerlink" href="#actorid" title="Permalink to this heading">#</a></h1>
 <p>An <code class="docutils literal notranslate"><span class="pre">ActorId</span></code> uniquely identifies an actor within a proc. It combines the owning <code class="docutils literal notranslate"><span class="pre">ProcId</span></code> with an actor uid.</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="cp">#[derive(</span>
 <span class="cp">    Serialize,</span>
@@ -1307,9 +1308,9 @@ document.write(`
 </pre></div>
 </div>
 <section id="construction">
-<h2>Construction<a class="headerlink" href="#construction" title="Link to this heading">#</a></h2>
+<h2>Construction<a class="headerlink" href="#construction" title="Permalink to this heading">#</a></h2>
 <p>Fields are private; use named constructors:</p>
-<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">use</span><span class="w"> </span><span class="n">hyperactor</span><span class="p">::</span><span class="n">id</span><span class="p">::{</span><span class="n">ActorId</span><span class="p">,</span><span class="w"> </span><span class="n">Label</span><span class="p">,</span><span class="w"> </span><span class="n">ProcId</span><span class="p">};</span>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">use</span><span class="w"> </span><span class="n">hyperactor</span><span class="p">::{</span><span class="n">ActorId</span><span class="p">,</span><span class="w"> </span><span class="n">Label</span><span class="p">,</span><span class="w"> </span><span class="n">ProcId</span><span class="p">};</span>
 
 <span class="kd">let</span><span class="w"> </span><span class="n">proc</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ProcId</span><span class="p">::</span><span class="n">instance</span><span class="p">(</span><span class="n">Label</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="s">&quot;myproc&quot;</span><span class="p">).</span><span class="n">unwrap</span><span class="p">());</span>
 <span class="kd">let</span><span class="w"> </span><span class="n">anonymous</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ActorId</span><span class="p">::</span><span class="n">anonymous</span><span class="p">(</span><span class="n">proc</span><span class="p">.</span><span class="n">clone</span><span class="p">());</span>
@@ -1319,7 +1320,7 @@ document.write(`
 </div>
 </section>
 <section id="methods">
-<h2>Methods<a class="headerlink" href="#methods" title="Link to this heading">#</a></h2>
+<h2>Methods<a class="headerlink" href="#methods" title="Permalink to this heading">#</a></h2>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="w"> </span><span class="n">ActorId</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">uid</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Uid</span><span class="p">;</span>
 <span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">proc_id</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">ProcId</span><span class="p">;</span>
@@ -1334,7 +1335,7 @@ document.write(`
 </ul>
 </section>
 <section id="traits">
-<h2>Traits<a class="headerlink" href="#traits" title="Link to this heading">#</a></h2>
+<h2>Traits<a class="headerlink" href="#traits" title="Permalink to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">ActorId</span></code> implements:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">Display</span></code></p></li>
@@ -1343,7 +1344,7 @@ document.write(`
 </ul>
 </section>
 <section id="semantics">
-<h2>Semantics<a class="headerlink" href="#semantics" title="Link to this heading">#</a></h2>
+<h2>Semantics<a class="headerlink" href="#semantics" title="Permalink to this heading">#</a></h2>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">ActorId::anonymous(proc_id)</span></code> creates a fresh unlabeled actor identity.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">ActorId::instance(label,</span> <span class="pre">proc_id)</span></code> creates a fresh actor identity with label metadata.</p></li>
@@ -1579,7 +1580,7 @@ document.write(`
         <div class="footer-item">
 
   <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
     <br/>
   </p>
 </div>
@@ -1608,7 +1609,7 @@ document.write(`
        "headline": "ActorId",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/books/hyperactor-book/src/references/actor_id.html",
-       "articleBody": "ActorId# An ActorId uniquely identifies an actor within a proc. It combines the owning ProcId with an actor uid. #[derive( Serialize, Deserialize, Clone, )] pub struct ActorId { uid: Uid, proc_id: ProcId, } Construction# Fields are private; use named constructors: use hyperactor::id::{ActorId, Label, ProcId}; let proc = ProcId::instance(Label::new(\"myproc\").unwrap()); let anonymous = ActorId::anonymous(proc.clone()); let worker = ActorId::instance(Label::new(\"worker\").unwrap(), proc.clone()); let root = ActorId::singleton(Label::new(\"root\").unwrap(), proc); Methods# impl ActorId { pub fn uid(\u0026self) -\u003e \u0026Uid; pub fn proc_id(\u0026self) -\u003e \u0026ProcId; pub fn label(\u0026self) -\u003e Option\u003c\u0026Label\u003e; } .uid() returns the actor identity uid. .proc_id() returns the ProcId that owns this actor. .label() returns display metadata for instance ids, or the singleton name for singleton ids. Traits# ActorId implements: Display FromStr Clone, Eq, Ord, Hash \u2014 useful in maps, sets, and registries Semantics# ActorId::anonymous(proc_id) creates a fresh unlabeled actor identity. ActorId::instance(label, proc_id) creates a fresh actor identity with label metadata. ActorId::singleton(label, proc_id) creates an actor identity whose label is the uid identity.",
+       "articleBody": "ActorId# An ActorId uniquely identifies an actor within a proc. It combines the owning ProcId with an actor uid. #[derive( Serialize, Deserialize, Clone, )] pub struct ActorId { uid: Uid, proc_id: ProcId, } Construction# Fields are private; use named constructors: use hyperactor::{ActorId, Label, ProcId}; let proc = ProcId::instance(Label::new(\"myproc\").unwrap()); let anonymous = ActorId::anonymous(proc.clone()); let worker = ActorId::instance(Label::new(\"worker\").unwrap(), proc.clone()); let root = ActorId::singleton(Label::new(\"root\").unwrap(), proc); Methods# impl ActorId { pub fn uid(\u0026self) -\u003e \u0026Uid; pub fn proc_id(\u0026self) -\u003e \u0026ProcId; pub fn label(\u0026self) -\u003e Option\u003c\u0026Label\u003e; } .uid() returns the actor identity uid. .proc_id() returns the ProcId that owns this actor. .label() returns display metadata for instance ids, or the singleton name for singleton ids. Traits# ActorId implements: Display FromStr Clone, Eq, Ord, Hash \u2014 useful in maps, sets, and registries Semantics# ActorId::anonymous(proc_id) creates a fresh unlabeled actor identity. ActorId::instance(label, proc_id) creates a fresh actor identity with label metadata. ActorId::singleton(label, proc_id) creates an actor identity whose label is the uid identity.",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

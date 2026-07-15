@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["is_device_ptr"],"struct":["KeepaliveLocalMemory"],"trait":["Keepalive"]};
+window.SIDEBAR_ITEMS = {"fn":["is_device_ptr"],"struct":["KeepaliveLocalMemory","WeakLocalMemory"],"trait":["Keepalive","WeakKeepalive"]};
