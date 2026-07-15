@@ -7,6 +7,7 @@
  */
 
 #![allow(internal_features)]
+#![cfg_attr(target_os = "macos", feature(thread_id_value))]
 #![feature(sync_unsafe_cell)]
 #![feature(mpmc_channel)]
 #![feature(formatting_options)]
