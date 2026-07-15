@@ -16,7 +16,13 @@ export CI=true
 # BUILD MONARCH COMPLETELY - This is critical for API documentation
 echo "Building Monarch with Rust bindings..."
 export MONARCH_BUILD_MESH_ONLY=0
-python -m pip install -e ".[kubernetes]" --no-build-isolation
+# uv-created environments do not seed pip; keep this install on uv when available.
+if command -v uv >/dev/null 2>&1; then
+    python_executable=$(python -c 'import sys; print(sys.executable)')
+    uv pip install --python "$python_executable" --no-deps -e ".[kubernetes]" --no-build-isolation
+else
+    python -m pip install --no-deps -e ".[kubernetes]" --no-build-isolation
+fi
 
 # Verify Monarch installation and imports
 echo "Verifying Monarch installation..."

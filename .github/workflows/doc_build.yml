@@ -55,20 +55,20 @@ jobs:
         # Source common setup functions
         source scripts/common-setup.sh
 
-        # Setup build environment (conda + system deps + rust + build deps)
-        # docs build will use 3.13
-        setup_build_environment 3.13
-
-        # Install PyTorch with CUDA support (matching build-cuda.yml)
-        pip install --pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu132
+        # Setup build environment (conda + system deps + rust + build deps).
+        # Keep docs CI on Python 3.11 because this OSS job installs locked
+        # PyPI deps, and locked runtime deps such as numpy 1.24.4 can still
+        # expect distutils when they build from source on Python 3.12+.
+        setup_build_environment 3.11
 
         # Setup Tensor Engine
         setup_tensor_engine
 
         # Setup Python dependencies
-        python -m pip install --upgrade pip
-        pip install -r build-requirements.txt
-        pip install -r docs/requirements.txt
+        python -m pip install --upgrade pip uv
+        uv sync --frozen --python 3.11 --inexact --group docs --extra kubernetes --no-dev --no-install-project
+        uv pip install --python .venv/bin/python -r build-requirements.txt
+        uv pip install --python .venv/bin/python --pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu132
 
         # Set environment variables for CUDA build
         export USE_CUDA=1
@@ -77,10 +77,10 @@ jobs:
         export _GLIBCXX_USE_CXX11_ABI=1
 
         # Build Monarch completely for documentation - use dedicated script
-        ./scripts/build_monarch_for_docs.sh
+        uv run --frozen --python 3.11 --no-sync --project . bash ./scripts/build_monarch_for_docs.sh
 
         # Generate documentation for all workspace crates
-        cargo doc --workspace --no-deps
+        uv run --frozen --python 3.11 --no-sync --project . cargo doc --workspace --no-deps
 
         # Prepare documentation structure for Sphinx and final output
         mkdir -p docs/source/target
@@ -91,7 +91,7 @@ jobs:
         cd docs
 
         make clean
-        make html SPHINXOPTS="-v --keep-going"
+        make html UV_SYNC=":" SPHINXBUILD="uv run --frozen --python 3.11 --no-sync --project .. sphinx-build" SPHINXOPTS="-v --keep-going"
 
         cd ..
 

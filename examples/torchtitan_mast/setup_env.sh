@@ -45,10 +45,11 @@ mkdir -p "$CLIENT" "$WHEEL_DIR" "$WORKSPACE" "$BOOTSTRAP_WHEEL_DIR"
 "$CLIENT/bin/python3.12" -m pip install --upgrade --disable-pip-version-check \
     libclang numpy "setuptools>=64" setuptools-rust wheel
 ( cd "$MONARCH_SRC" && \
+    uv lock --check-exists && \
     USE_TENSOR_ENGINE=0 \
     LIBCLANG_PATH="$CLIENT/lib/python3.12/site-packages/clang/native" \
     BINDGEN_EXTRA_CLANG_ARGS="-I/usr/lib/gcc/x86_64-redhat-linux/11/include" \
-    uv build --wheel --no-build-isolation \
+    UV_FROZEN=1 uv build --wheel --no-build-isolation \
         --python "$CLIENT/bin/python3.12" --out-dir "$WHEEL_DIR" )
 # Cache the freshly-built wheel where simple_mast_job.build_bootstrap looks
 # first, so `monarch apply` reuses it instead of rebuilding the slim wheel.
