@@ -47,7 +47,7 @@ use super::IbvBuffer;
 use super::IbvOp;
 use super::domain::IbvDomain;
 use super::domain::IbvDomainImpl;
-use super::manager_actor::CreatePeerQueuePair;
+use super::manager_actor::Connect;
 use super::memory_region::IbvMemoryRegionView;
 use super::primitives::Gid;
 use super::primitives::GidScope;
@@ -148,16 +148,13 @@ pub enum PollTarget {
 /// the [`IbvQueuePair`] trait.
 pub mod legacy;
 
-/// Identifies a per-peer queue pair held by one
-/// [`super::manager_actor::IbvManagerActor`]. The same conceptual
-/// QP is referenced by two distinct keys, one from each side: each
-/// manager stores the local view (its own device, the peer's actor
-/// id, the peer's device).
+/// Identifies a per-peer queue pair within one device's
+/// [`super::domain::IbvDomain`]. The domain already fixes the local device, so
+/// the key only names the peer: its manager's actor id and the device it uses.
 #[derive(Clone, Hash, Eq, PartialEq, Debug, Serialize, Deserialize, Named)]
-pub(super) struct QpKey {
-    pub(super) self_device: String,
-    pub(super) other_id: ActorId,
-    pub(super) other_device: String,
+pub struct QpKey {
+    pub(crate) peer_id: ActorId,
+    pub(crate) peer_device: String,
 }
 
 // =====================================================================
@@ -172,10 +169,8 @@ pub(super) struct QpKey {
 // locally, which creates a fresh pair the same way.
 
 /// A NIC-backend queue pair: the unit of RDMA communication between two
-/// endpoints, and the operations a [`QueuePairActor`] performs on it. Each
-/// [`IbvDomainImpl`] names its concrete queue-pair type via
-/// [`IbvDomainImpl::QueuePair`](super::domain::IbvDomainImpl::QueuePair) and builds
-/// it through [`Self::new`].
+/// endpoints, and the low-level operations performed on it. Each backend builds
+/// its concrete implementation through [`Self::new`].
 pub trait IbvQueuePair: std::fmt::Debug + Send + Sync + 'static + Sized {
     /// Creates a queue pair against `domain` in the RESET state;
     /// [`Self::connect`] transitions it to RTS before use.
@@ -186,7 +181,7 @@ pub trait IbvQueuePair: std::fmt::Debug + Send + Sync + 'static + Sized {
     /// domain. Callers must ensure the PD outlives the QP; the easiest way to
     /// do this is for implementers to store a clone of `domain.pd()` (an
     /// `Arc<IbvPd>`) inside the QP.
-    unsafe fn new<I: IbvDomainImpl<QueuePair = Self>>(
+    unsafe fn new<I: IbvDomainImpl>(
         domain: &IbvDomain<I>,
         config: IbvConfig,
     ) -> Result<Self, anyhow::Error>;
@@ -236,7 +231,7 @@ pub trait IbvQueuePair: std::fmt::Debug + Send + Sync + 'static + Sized {
 }
 
 impl IbvQueuePair for legacy::IbvQueuePair {
-    unsafe fn new<I: IbvDomainImpl<QueuePair = Self>>(
+    unsafe fn new<I: IbvDomainImpl>(
         domain: &IbvDomain<I>,
         config: IbvConfig,
     ) -> Result<Self, anyhow::Error> {
@@ -583,7 +578,7 @@ impl RCQueuePair {
 }
 
 impl IbvQueuePair for RCQueuePair {
-    unsafe fn new<I: IbvDomainImpl<QueuePair = Self>>(
+    unsafe fn new<I: IbvDomainImpl>(
         domain: &IbvDomain<I>,
         config: IbvConfig,
     ) -> Result<Self, anyhow::Error> {
@@ -832,13 +827,10 @@ impl PollSleepPolicy {
 }
 
 /// Bundle of trait bounds for an actor type that can serve as the
-/// peer manager — i.e. the recipient of [`CreatePeerQueuePair`].
-pub(super) trait Manager:
-    Actor + Referable + RemoteHandles<CreatePeerQueuePair<Self>>
-{
-}
+/// peer manager — i.e. the recipient of [`Connect`].
+pub trait Manager: Actor + Referable + RemoteHandles<Connect<Self>> {}
 
-impl<T> Manager for T where T: Actor + Referable + RemoteHandles<CreatePeerQueuePair<T>> {}
+impl<T> Manager for T where T: Actor + Referable + RemoteHandles<Connect<T>> {}
 
 /// Per-op completion reply emitted by [`QueuePairActor`] back to the
 /// manager via [`ProcessOps::reply`]. A named newtype (rather than a
@@ -846,9 +838,8 @@ impl<T> Manager for T where T: Actor + Referable + RemoteHandles<CreatePeerQueue
 /// undeliverable `OpResult`s by type name in
 /// `handle_undeliverable_message` and absorb them when the original
 /// caller has gone away (typical at test teardown).
-#[allow(dead_code)] // not yet referenced by IbvManagerActor
 #[derive(Debug)]
-pub(super) struct OpResult {
+pub struct OpResult {
     pub(super) op_idx: usize,
     pub(super) result: Result<(), String>,
 }
@@ -863,8 +854,8 @@ pub(super) struct OpResult {
 /// observed (held back until the op's other WRs also report, so the
 /// MR registration outlives the data path).
 #[derive(Debug)]
-pub(super) struct ProcessOps<M: Referable> {
-    pub(super) items: Vec<(usize, IbvOp<M>, IbvMemoryRegionView)>,
+pub struct ProcessOps<M: Referable> {
+    pub(super) items: Vec<IbvOp<M>>,
     pub(super) reply: PortHandle<OpResult>,
 }
 
@@ -902,20 +893,21 @@ struct PostedOpEntry {
     first_error: Option<String>,
 }
 
-/// Per-peer queue-pair actor.
+/// Per-peer queue pair actor.
 ///
 /// Generic over the manager actor type `M` (so tests can swap in a
-/// mock) and the queue-pair type `Qp` (so unit tests run without
+/// mock) and the queue pair type `Qp` (so unit tests run without
 /// RDMA hardware). The QP is constructed by the spawning manager
 /// and handed in as a spawn param; the actor owns it for life and
 /// drops it when the actor stops.
 #[derive(Debug)]
-pub(super) struct QueuePairActor<M: Manager, Qp: IbvQueuePair> {
+pub struct QueuePairActor<M: Manager, Qp: IbvQueuePair> {
     qp_key: QpKey,
-    /// Filled into [`CreatePeerQueuePair::sender`] so the peer can
-    /// build its own [`QpKey`] from our identity.
+    local_device: String,
+    /// Filled into [`Connect::sender`] so the peer can build its own [`QpKey`]
+    /// from our identity.
     local_manager: ActorRef<M>,
-    /// Recipient of [`CreatePeerQueuePair`].
+    /// Recipient of [`Connect`].
     peer_manager: ActorRef<M>,
     qp: Qp,
     /// `true` when the peer QP is colocated with this actor's QP —
@@ -957,6 +949,7 @@ pub(super) struct QueuePairActor<M: Manager, Qp: IbvQueuePair> {
 impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
     pub(super) fn new(
         qp_key: QpKey,
+        local_device: String,
         local_manager: ActorRef<M>,
         peer_manager: ActorRef<M>,
         qp: Qp,
@@ -975,6 +968,7 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
         };
         Self {
             qp_key,
+            local_device,
             local_manager,
             peer_manager,
             qp,
@@ -1227,11 +1221,11 @@ impl<M: Manager, Qp: IbvQueuePair> Actor for QueuePairActor<M, Qp> {
             let (reply, rx) = this.mailbox().open_once_port::<Result<IbvQpInfo, String>>();
             self.peer_manager.post(
                 this,
-                CreatePeerQueuePair {
+                Connect {
                     sender: self.local_manager.clone(),
-                    sender_device: self.qp_key.self_device.clone(),
-                    receiver_device: self.qp_key.other_device.clone(),
-                    sender_info: local_info,
+                    sender_device: self.local_device.clone(),
+                    receiver_device: self.qp_key.peer_device.clone(),
+                    sender_qp_info: local_info,
                     reply: reply.bind(),
                 },
             );
@@ -1242,7 +1236,7 @@ impl<M: Manager, Qp: IbvQueuePair> Actor for QueuePairActor<M, Qp> {
                         qp_key = ?self.qp_key,
                         peer_manager = ?self.peer_manager,
                         error = %e,
-                        "QueuePairActor init: peer manager rejected CreatePeerQueuePair",
+                        "QueuePairActor init: peer manager rejected connection request",
                     );
                     return Err(anyhow::anyhow!("peer manager rejected QP request: {e}"));
                 }
@@ -1301,11 +1295,19 @@ impl<M: Manager, Qp: IbvQueuePair> Handler<ProcessOps<M>> for QueuePairActor<M, 
         cx: &Context<Self>,
         msg: ProcessOps<M>,
     ) -> Result<(), anyhow::Error> {
-        for (op_idx, op, mrv) in msg.items.into_iter() {
+        for op in msg.items.into_iter() {
+            // `resolve_local_mr` populated the op's shared MR slot before
+            // dispatch; read the view back to drive the transfer.
+            let mrv = op
+                .local_memory
+                .mr_slot()
+                .get()
+                .cloned()
+                .expect("resolve_local_mr populates the MR slot before dispatch");
             let wrs = Self::wr_count(op.local_memory.size());
             let is_read = matches!(op.op_type, RdmaOpType::ReadIntoLocal);
             self.queue.push_back(PendingOp {
-                op_idx,
+                op_idx: op.op_idx,
                 op,
                 mrv,
                 reply: msg.reply.clone(),
@@ -1420,9 +1422,8 @@ mod tests {
     // QueuePairActor init handshake
     // =================================================================
 
-    /// Captured fields from a `CreatePeerQueuePair` message; we
-    /// can't keep the original because the `reply` port is consumed
-    /// to send the response.
+    /// Captured fields from a `Connect` message; we can't keep the original
+    /// because the `reply` port is consumed to send the response.
     #[derive(Debug, Clone)]
     struct CreateCapture {
         sender_id: hyperactor::ActorId,
@@ -1447,9 +1448,9 @@ mod tests {
     /// Plays two roles:
     /// 1. As the *parent*, it spawns `QueuePairActor` children via
     ///    [`SpawnQpaChild`].
-    /// 2. As the *peer*, it handles `CreatePeerQueuePair`.
+    /// 2. As the *peer*, it handles `Connect`.
     #[derive(Debug)]
-    #[hyperactor::export(handlers = [CreatePeerQueuePair<QpaMockManager>])]
+    #[hyperactor::export(handlers = [Connect<QpaMockManager>])]
     struct QpaMockManager {
         state: Arc<Mutex<QpaMockState>>,
     }
@@ -1472,19 +1473,15 @@ mod tests {
     }
 
     #[async_trait]
-    impl Handler<CreatePeerQueuePair<QpaMockManager>> for QpaMockManager {
-        async fn handle(
-            &mut self,
-            cx: &Context<Self>,
-            msg: CreatePeerQueuePair<QpaMockManager>,
-        ) -> Result<()> {
+    impl Handler<Connect<QpaMockManager>> for QpaMockManager {
+        async fn handle(&mut self, cx: &Context<Self>, msg: Connect<QpaMockManager>) -> Result<()> {
             let response = {
                 let mut state = self.state.lock().unwrap();
                 state.creates.push(CreateCapture {
                     sender_id: msg.sender.actor_addr().id().clone(),
                     sender_device: msg.sender_device.clone(),
                     receiver_device: msg.receiver_device.clone(),
-                    sender_qp_num: msg.sender_info.qp_num,
+                    sender_qp_num: msg.sender_qp_info.qp_num,
                 });
                 state.response.take()
             };
@@ -1503,6 +1500,7 @@ mod tests {
     #[derive(Debug)]
     struct SpawnQpaChild {
         qp_key: QpKey,
+        local_device: String,
         peer_manager: ActorRef<QpaMockManager>,
         qp: MockQp,
         is_loopback: bool,
@@ -1517,6 +1515,7 @@ mod tests {
             let local_manager = cx.bind::<QpaMockManager>();
             let actor = QueuePairActor::new(
                 msg.qp_key,
+                msg.local_device,
                 local_manager,
                 msg.peer_manager,
                 msg.qp,
@@ -1635,7 +1634,7 @@ mod tests {
     }
 
     impl IbvQueuePair for MockQp {
-        unsafe fn new<I: IbvDomainImpl<QueuePair = Self>>(
+        unsafe fn new<I: IbvDomainImpl>(
             _domain: &IbvDomain<I>,
             _config: IbvConfig,
         ) -> Result<Self> {
@@ -1795,17 +1794,19 @@ mod tests {
         async fn spawn_actor(
             &self,
             qp_key: QpKey,
+            local_device: String,
             peer_manager: ActorRef<QpaMockManager>,
             qp: MockQp,
             is_loopback: bool,
         ) -> Result<ActorHandle<QueuePairActor<QpaMockManager, MockQp>>> {
-            self.spawn_actor_with_caps(qp_key, peer_manager, qp, is_loopback, 4, 2)
+            self.spawn_actor_with_caps(qp_key, local_device, peer_manager, qp, is_loopback, 4, 2)
                 .await
         }
 
         async fn spawn_actor_with_caps(
             &self,
             qp_key: QpKey,
+            local_device: String,
             peer_manager: ActorRef<QpaMockManager>,
             qp: MockQp,
             is_loopback: bool,
@@ -1817,6 +1818,7 @@ mod tests {
                 &self.client,
                 SpawnQpaChild {
                     qp_key,
+                    local_device,
                     peer_manager,
                     qp,
                     is_loopback,
@@ -1851,13 +1853,13 @@ mod tests {
 
         let (qp, _posted_rx) = MockQp::new(0x1234, 0xdead);
         let qp_key = QpKey {
-            self_device: "mlx5_0".into(),
-            other_id: harness.peer_id(),
-            other_device: "mlx5_1".into(),
+            peer_id: harness.peer_id(),
+            peer_device: "mlx5_1".into(),
         };
         let handle = harness
             .spawn_actor(
                 qp_key.clone(),
+                "mlx5_0".into(),
                 harness.peer.bind::<QpaMockManager>(),
                 qp.clone(),
                 false,
@@ -1892,13 +1894,13 @@ mod tests {
 
         let (qp, _posted_rx) = MockQp::new(0xaaa, 0xbbb);
         let qp_key = QpKey {
-            self_device: "mlx5_0".into(),
-            other_id: harness.parent_id(),
-            other_device: "mlx5_0".into(),
+            peer_id: harness.parent_id(),
+            peer_device: "mlx5_0".into(),
         };
         let handle = harness
             .spawn_actor(
                 qp_key,
+                "mlx5_0".into(),
                 harness.peer.bind::<QpaMockManager>(),
                 qp.clone(),
                 true,
@@ -1926,13 +1928,18 @@ mod tests {
             Some(Err("peer rejected, no domain on receiver_device".into()));
 
         let qp_key = QpKey {
-            self_device: "mlx5_0".into(),
-            other_id: harness.peer_id(),
-            other_device: "mlx5_99".into(),
+            peer_id: harness.peer_id(),
+            peer_device: "mlx5_99".into(),
         };
         let (qp, _posted_rx) = MockQp::new(1, 2);
         let handle = harness
-            .spawn_actor(qp_key, harness.peer.bind::<QpaMockManager>(), qp, false)
+            .spawn_actor(
+                qp_key,
+                "mlx5_0".into(),
+                harness.peer.bind::<QpaMockManager>(),
+                qp,
+                false,
+            )
             .await?;
 
         let event = harness.next_supervision_failure().await;
@@ -1961,13 +1968,18 @@ mod tests {
         let mut harness = QpaHarness::build()?;
 
         let qp_key = QpKey {
-            self_device: "mlx5_0".into(),
-            other_id: harness.peer_id(),
-            other_device: "mlx5_1".into(),
+            peer_id: harness.peer_id(),
+            peer_device: "mlx5_1".into(),
         };
         let (qp, _posted_rx) = MockQp::new(1, 2);
         let handle = harness
-            .spawn_actor(qp_key, harness.peer.bind::<QpaMockManager>(), qp, false)
+            .spawn_actor(
+                qp_key,
+                "mlx5_0".into(),
+                harness.peer.bind::<QpaMockManager>(),
+                qp,
+                false,
+            )
             .await?;
 
         let event = harness.next_supervision_failure().await;
@@ -2039,10 +2051,23 @@ mod tests {
         ActorRef::attest(proc_addr.actor_addr("remote-mgr"))
     }
 
-    fn make_op(op_type: RdmaOpType, addr: usize, size: usize) -> IbvOp<QpaMockManager> {
+    fn make_op(
+        op_idx: usize,
+        op_type: RdmaOpType,
+        addr: usize,
+        size: usize,
+    ) -> IbvOp<QpaMockManager> {
+        let local_memory = fake_local_memory(addr, size);
+        // Mirror `resolve_local_mr`: install the op's MR view in its shared slot
+        // so the actor can read it back at dispatch.
+        local_memory
+            .mr_slot()
+            .set(fake_mrv(addr, size))
+            .expect("fresh MR slot");
         IbvOp {
+            op_idx,
             op_type,
-            local_memory: fake_local_memory(addr, size),
+            local_memory,
             remote_buffer: IbvBuffer {
                 lkey: 0,
                 rkey: 0,
@@ -2070,13 +2095,13 @@ mod tests {
         )> {
             let (qp, posted_rx) = MockQp::new(0x1, 0x2);
             let qp_key = QpKey {
-                self_device: "mlx5_0".into(),
-                other_id: self.parent_id(),
-                other_device: "mlx5_0".into(),
+                peer_id: self.parent_id(),
+                peer_device: "mlx5_0".into(),
             };
             let handle = self
                 .spawn_actor_with_caps(
                     qp_key,
+                    "mlx5_0".into(),
                     self.peer.bind::<QpaMockManager>(),
                     qp.clone(),
                     true,
@@ -2138,7 +2163,7 @@ mod tests {
     fn submit_ops(
         harness: &QpaHarness,
         actor: &ActorHandle<QueuePairActor<QpaMockManager, MockQp>>,
-        items: Vec<(usize, IbvOp<QpaMockManager>, IbvMemoryRegionView)>,
+        items: Vec<IbvOp<QpaMockManager>>,
     ) -> Result<hyperactor::mailbox::PortReceiver<OpResult>> {
         let (reply, rx) = harness.client.mailbox().open_port::<OpResult>();
         actor.try_post(&harness.client, ProcessOps { items, reply })?;
@@ -2181,11 +2206,7 @@ mod tests {
         let harness = QpaHarness::build()?;
         let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(4, 2).await?;
 
-        let items = vec![(
-            7usize,
-            make_op(RdmaOpType::WriteFromLocal, 0x1000, 4096),
-            fake_mrv(0x1000, 4096),
-        )];
+        let items = vec![make_op(7, RdmaOpType::WriteFromLocal, 0x1000, 4096)];
         let mut rx = submit_ops(&harness, &actor, items)?;
 
         // wr_ids start at 0 (fresh MockQp), so the single WR is wr 0.
@@ -2214,10 +2235,11 @@ mod tests {
 
         // A 3-chunk write (3 * MAX_RDMA_MSG_SIZE) splits into 3 WRs;
         // the op's reply must be held back until all 3 complete.
-        let items = vec![(
-            11usize,
-            make_op(RdmaOpType::WriteFromLocal, 0x1000, 3 * MAX_RDMA_MSG_SIZE),
-            fake_mrv(0x1000, 3 * MAX_RDMA_MSG_SIZE),
+        let items = vec![make_op(
+            11,
+            RdmaOpType::WriteFromLocal,
+            0x1000,
+            3 * MAX_RDMA_MSG_SIZE,
         )];
         let mut rx = submit_ops(&harness, &actor, items)?;
 
@@ -2250,10 +2272,11 @@ mod tests {
         // 3-WR write: simulate the second WR failing first; the op's
         // Err must not fire until the other 2 WRs have also reported
         // so the MR registration outlives every in-flight WR.
-        let items = vec![(
-            42usize,
-            make_op(RdmaOpType::WriteFromLocal, 0x1000, 3 * MAX_RDMA_MSG_SIZE),
-            fake_mrv(0x1000, 3 * MAX_RDMA_MSG_SIZE),
+        let items = vec![make_op(
+            42,
+            RdmaOpType::WriteFromLocal,
+            0x1000,
+            3 * MAX_RDMA_MSG_SIZE,
         )];
         let mut rx = submit_ops(&harness, &actor, items)?;
 
@@ -2298,16 +2321,8 @@ mod tests {
         // op_idx 1 is single-WR. One of op_idx 0's WRs fails;
         // op_idx 1's WR succeeds independently.
         let items = vec![
-            (
-                0usize,
-                make_op(RdmaOpType::WriteFromLocal, 0x1000, 3 * MAX_RDMA_MSG_SIZE),
-                fake_mrv(0x1000, 3 * MAX_RDMA_MSG_SIZE),
-            ),
-            (
-                1usize,
-                make_op(RdmaOpType::WriteFromLocal, 0x2000, 4096),
-                fake_mrv(0x2000, 4096),
-            ),
+            make_op(0, RdmaOpType::WriteFromLocal, 0x1000, 3 * MAX_RDMA_MSG_SIZE),
+            make_op(1, RdmaOpType::WriteFromLocal, 0x2000, 4096),
         ];
         let mut rx = submit_ops(&harness, &actor, items)?;
 
@@ -2347,13 +2362,7 @@ mod tests {
         let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(8, 2).await?;
 
         let items = (0..3usize)
-            .map(|i| {
-                (
-                    i,
-                    make_op(RdmaOpType::ReadIntoLocal, 0x1000 + i * 0x1000, 4096),
-                    fake_mrv(0x1000 + i * 0x1000, 4096),
-                )
-            })
+            .map(|i| make_op(i, RdmaOpType::ReadIntoLocal, 0x1000 + i * 0x1000, 4096))
             .collect();
         let mut rx = submit_ops(&harness, &actor, items)?;
 
@@ -2386,13 +2395,7 @@ mod tests {
         let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(2, 0).await?;
 
         let items = (0..3usize)
-            .map(|i| {
-                (
-                    i,
-                    make_op(RdmaOpType::ReadIntoLocal, 0x1000 + i * 0x1000, 4096),
-                    fake_mrv(0x1000 + i * 0x1000, 4096),
-                )
-            })
+            .map(|i| make_op(i, RdmaOpType::ReadIntoLocal, 0x1000 + i * 0x1000, 4096))
             .collect();
         let mut rx = submit_ops(&harness, &actor, items)?;
 
@@ -2424,13 +2427,7 @@ mod tests {
         let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(2, 8).await?;
 
         let items = (0..4usize)
-            .map(|i| {
-                (
-                    i,
-                    make_op(RdmaOpType::WriteFromLocal, 0x1000 + i * 0x1000, 4096),
-                    fake_mrv(0x1000 + i * 0x1000, 4096),
-                )
-            })
+            .map(|i| make_op(i, RdmaOpType::WriteFromLocal, 0x1000 + i * 0x1000, 4096))
             .collect();
         let mut rx = submit_ops(&harness, &actor, items)?;
 
@@ -2472,31 +2469,11 @@ mod tests {
         let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(4, 2).await?;
 
         let items = vec![
-            (
-                0usize,
-                make_op(RdmaOpType::ReadIntoLocal, 0x1000, 4096),
-                fake_mrv(0x1000, 4096),
-            ),
-            (
-                1usize,
-                make_op(RdmaOpType::WriteFromLocal, 0x2000, 4096),
-                fake_mrv(0x2000, 4096),
-            ),
-            (
-                2usize,
-                make_op(RdmaOpType::WriteFromLocal, 0x3000, 4096),
-                fake_mrv(0x3000, 4096),
-            ),
-            (
-                3usize,
-                make_op(RdmaOpType::WriteFromLocal, 0x4000, 4096),
-                fake_mrv(0x4000, 4096),
-            ),
-            (
-                4usize,
-                make_op(RdmaOpType::ReadIntoLocal, 0x5000, 2 * MAX_RDMA_MSG_SIZE),
-                fake_mrv(0x5000, 2 * MAX_RDMA_MSG_SIZE),
-            ),
+            make_op(0, RdmaOpType::ReadIntoLocal, 0x1000, 4096),
+            make_op(1, RdmaOpType::WriteFromLocal, 0x2000, 4096),
+            make_op(2, RdmaOpType::WriteFromLocal, 0x3000, 4096),
+            make_op(3, RdmaOpType::WriteFromLocal, 0x4000, 4096),
+            make_op(4, RdmaOpType::ReadIntoLocal, 0x5000, 2 * MAX_RDMA_MSG_SIZE),
         ];
         let mut rx = submit_ops(&harness, &actor, items)?;
 
@@ -2545,32 +2522,16 @@ mod tests {
 
         // Batch A: 2 writes with op_idx 10, 11.
         let batch_a = vec![
-            (
-                10usize,
-                make_op(RdmaOpType::WriteFromLocal, 0x1000, 4096),
-                fake_mrv(0x1000, 4096),
-            ),
-            (
-                11usize,
-                make_op(RdmaOpType::WriteFromLocal, 0x2000, 4096),
-                fake_mrv(0x2000, 4096),
-            ),
+            make_op(10, RdmaOpType::WriteFromLocal, 0x1000, 4096),
+            make_op(11, RdmaOpType::WriteFromLocal, 0x2000, 4096),
         ];
         let mut rx_a = submit_ops(&harness, &actor, batch_a)?;
 
         // Batch B: 2 writes with op_idx 20, 21. Shares the QP with
         // Batch A — together they sit at 4/4 max_send_wr.
         let batch_b = vec![
-            (
-                20usize,
-                make_op(RdmaOpType::WriteFromLocal, 0x3000, 4096),
-                fake_mrv(0x3000, 4096),
-            ),
-            (
-                21usize,
-                make_op(RdmaOpType::WriteFromLocal, 0x4000, 4096),
-                fake_mrv(0x4000, 4096),
-            ),
+            make_op(20, RdmaOpType::WriteFromLocal, 0x3000, 4096),
+            make_op(21, RdmaOpType::WriteFromLocal, 0x4000, 4096),
         ];
         let mut rx_b = submit_ops(&harness, &actor, batch_b)?;
 
@@ -2599,16 +2560,8 @@ mod tests {
         let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(1, 1).await?;
 
         let items = vec![
-            (
-                0usize,
-                make_op(RdmaOpType::WriteFromLocal, 0x1000, 2 * MAX_RDMA_MSG_SIZE),
-                fake_mrv(0x1000, 2 * MAX_RDMA_MSG_SIZE),
-            ),
-            (
-                1usize,
-                make_op(RdmaOpType::WriteFromLocal, 0x2000, 4096),
-                fake_mrv(0x2000, 4096),
-            ),
+            make_op(0, RdmaOpType::WriteFromLocal, 0x1000, 2 * MAX_RDMA_MSG_SIZE),
+            make_op(1, RdmaOpType::WriteFromLocal, 0x2000, 4096),
         ];
         let mut rx = submit_ops(&harness, &actor, items)?;
 
@@ -2637,11 +2590,7 @@ mod tests {
         let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(4, 2).await?;
 
         // Post one op so the next poll has something to look at.
-        let items = vec![(
-            0usize,
-            make_op(RdmaOpType::WriteFromLocal, 0x1000, 4096),
-            fake_mrv(0x1000, 4096),
-        )];
+        let items = vec![make_op(0, RdmaOpType::WriteFromLocal, 0x1000, 4096)];
         let _rx = submit_ops(&harness, &actor, items)?;
         let _ = recv_posted(&mut posted_rx).await;
         qp.queue_poll_error(PollCompletionError::for_test("simulated CQ poison"));
@@ -2667,11 +2616,7 @@ mod tests {
         let (actor, qp, _posted_rx) = harness.spawn_ready_actor(4, 2).await?;
 
         qp.queue_post_error("simulated post failure");
-        let items = vec![(
-            0usize,
-            make_op(RdmaOpType::WriteFromLocal, 0x1000, 4096),
-            fake_mrv(0x1000, 4096),
-        )];
+        let items = vec![make_op(0, RdmaOpType::WriteFromLocal, 0x1000, 4096)];
         let _rx = submit_ops(&harness, &actor, items)?;
 
         let event = harness.next_supervision_failure().await;

@@ -46,7 +46,7 @@ pub trait IbvDeviceImpl: Named + std::fmt::Debug + Send + Sync + 'static {
     /// The per-domain strategy used by this backend (how memory regions
     /// are registered and queue pairs built against a PD). [`IbvDomain`] is
     /// generic over this.
-    type Domain: IbvDomainImpl;
+    type Domain: IbvDomainImpl<Device = Self>;
 
     /// Human-readable display name for the backend this impl
     /// drives (e.g., `"mellanox"`, `"efa"`). Surfaced in
@@ -354,7 +354,10 @@ impl<I: IbvDeviceImpl> IbvDevice<I> {
 
     /// Returns the [`IbvDomain`] registered under `name`, creating (and
     /// caching) a new one via [`IbvDomain::new`] on first access.
-    pub fn get_or_create_domain(&mut self, name: &str) -> anyhow::Result<&IbvDomain<I::Domain>> {
+    pub fn get_or_create_domain(
+        &mut self,
+        name: &str,
+    ) -> anyhow::Result<&mut IbvDomain<I::Domain>> {
         if !self.domains.contains_key(name) {
             // SAFETY: `self.context` wraps the live `ibv_context` opened by
             // `IbvDevice::open`, valid for this device's lifetime.
@@ -369,7 +372,7 @@ impl<I: IbvDeviceImpl> IbvDevice<I> {
         }
         Ok(self
             .domains
-            .get(name)
+            .get_mut(name)
             .expect("domain just inserted or already present"))
     }
 

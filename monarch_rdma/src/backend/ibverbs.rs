@@ -76,6 +76,9 @@ impl From<&memory_region::IbvMemoryRegionView> for IbvBuffer {
 /// mock; production code uses the default `IbvOp<IbvManagerActor>`.
 #[derive(Debug, Named)]
 pub struct IbvOp<M: Referable = IbvManagerActor<MlxDevice>> {
+    /// Index of this op within its originating batch, carried through so the
+    /// per-op completion reply can be correlated back to the caller.
+    pub op_idx: usize,
     pub op_type: RdmaOpType,
     pub local_memory: KeepaliveLocalMemory,
     pub remote_buffer: IbvBuffer,
@@ -87,6 +90,7 @@ pub struct IbvOp<M: Referable = IbvManagerActor<MlxDevice>> {
 impl<M: Referable> Clone for IbvOp<M> {
     fn clone(&self) -> Self {
         Self {
+            op_idx: self.op_idx,
             op_type: self.op_type,
             local_memory: self.local_memory.clone(),
             remote_buffer: self.remote_buffer.clone(),

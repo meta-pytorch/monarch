@@ -20,13 +20,23 @@ use std::os::fd::OwnedFd;
 use std::result::Result;
 use std::sync::Arc;
 
+use hyperactor::Actor;
+use hyperactor::ActorHandle;
+use hyperactor::ActorId;
+use hyperactor::ActorRef;
+use hyperactor::Context;
+use hyperactor::Handler;
+
+use super::device::IbvDeviceImpl;
+use super::manager_actor::IbvManagerActor;
 use super::memory_region::IbvMemoryRegionView;
 use super::primitives::IbvConfig;
 use super::primitives::IbvContext;
 use super::primitives::IbvDeviceInfo;
 use super::primitives::IbvMr;
 use super::primitives::IbvPd;
-use super::queue_pair::IbvQueuePair;
+use super::primitives::IbvQpInfo;
+use super::queue_pair::ProcessOps;
 use crate::local_memory::KeepaliveLocalMemory;
 use crate::local_memory::is_device_ptr;
 
@@ -35,6 +45,8 @@ use crate::local_memory::is_device_ptr;
 /// # Fields
 ///
 /// * `device_info`: Metadata for the device this PD is allocated on.
+/// * `config`: The [`IbvConfig`] this domain — and every queue pair built
+///   against it — is created with.
 /// * `domain_impl`: The backend [`IbvDomainImpl`] strategy for this PD. It may
 ///   own FFI resources allocated against the PD, so it is declared before `pd`
 ///   and thus dropped first — releasing those resources while the PD is still
@@ -51,6 +63,7 @@ use crate::local_memory::is_device_ptr;
 /// Hand out [`Self::pd`] clones to share the protection domain.
 pub struct IbvDomain<I: IbvDomainImpl> {
     pub device_info: IbvDeviceInfo,
+    config: IbvConfig,
     domain_impl: I,
     pd: Arc<IbvPd>,
 }
@@ -116,6 +129,7 @@ impl<I: IbvDomainImpl> IbvDomain<I> {
         let pd = Arc::new(unsafe { IbvPd::create(context) }?);
         Ok(Self {
             device_info,
+            config: config.clone(),
             domain_impl,
             pd,
         })
@@ -135,6 +149,7 @@ impl<I: IbvDomainImpl> IbvDomain<I> {
     ) -> Self {
         Self {
             device_info,
+            config: IbvConfig::default(),
             domain_impl,
             pd,
         }
@@ -164,9 +179,19 @@ impl<I: IbvDomainImpl> IbvDomain<I> {
         &self.domain_impl
     }
 
+    /// Mutable access to the backend [`IbvDomainImpl`] strategy.
+    pub(super) fn domain_impl_mut(&mut self) -> &mut I {
+        &mut self.domain_impl
+    }
+
     /// Metadata for the device this domain's PD is allocated on.
     pub fn device_info(&self) -> &IbvDeviceInfo {
         &self.device_info
+    }
+
+    /// The [`IbvConfig`] this domain and its queue pairs are created with.
+    pub fn config(&self) -> &IbvConfig {
+        &self.config
     }
 
     /// Access flags used when registering memory regions and creating queue pairs
@@ -184,10 +209,27 @@ impl<I: IbvDomainImpl> IbvDomain<I> {
         unsafe { I::register_mr(self, mem) }
     }
 
-    /// Create a queue pair against this domain, dispatching to the backend
-    /// [`IbvDomainImpl`] strategy.
-    pub fn create_queue_pair(&self, config: &IbvConfig) -> anyhow::Result<I::QueuePair> {
-        I::create_queue_pair(self, config)
+    /// Get or create the queue pair actor responsible for DMAing the peer
+    /// `peer_ref`/`peer_device`, dispatching to the backend [`IbvDomainImpl`]
+    /// strategy.
+    pub(crate) fn get_or_create_queue_pair(
+        &mut self,
+        cx: &Context<IbvManagerActor<I::Device>>,
+        peer_ref: ActorRef<IbvManagerActor<I::Device>>,
+        peer_device: String,
+    ) -> anyhow::Result<ActorHandle<I::QueuePair>> {
+        I::get_or_create_queue_pair(self, cx, peer_ref, peer_device)
+    }
+
+    /// Process an incoming connection request from a peer, returning the local
+    /// endpoint the peer needs to complete the connection.
+    pub(crate) fn process_conn_request(
+        &mut self,
+        sender_id: ActorId,
+        sender_device: String,
+        sender_qp_info: &IbvQpInfo,
+    ) -> anyhow::Result<IbvQpInfo> {
+        I::process_conn_request(self, sender_id, sender_device, sender_qp_info)
     }
 }
 
@@ -197,11 +239,16 @@ impl<I: IbvDomainImpl> IbvDomain<I> {
 /// One strategy is constructed per domain via [`Self::new`], which
 /// inspects the device behind the context to decide backend-specific behavior
 /// up front, and is then stored in the [`IbvDomain`] it drives. The per-op
-/// methods are associated functions taking `&IbvDomain<Self>` and reach the
-/// strategy itself through [`IbvDomain::domain_impl`].
+/// methods are associated functions taking the [`IbvDomain<Self>`] they act on
+/// and reach the strategy itself through [`IbvDomain::domain_impl`].
 pub trait IbvDomainImpl: std::fmt::Debug + Send + Sync + 'static + Sized {
-    /// The concrete queue-pair type built against this domain's PD.
-    type QueuePair: IbvQueuePair;
+    /// The device backend type that owns this domain.
+    type Device: IbvDeviceImpl<Domain = Self>;
+
+    /// The queue pair actor this backend drives. The manager posts ops to a
+    /// handle of this type as [`ProcessOps`], without knowing the concrete
+    /// actor behind it.
+    type QueuePair: Actor + Handler<ProcessOps<IbvManagerActor<Self::Device>>>;
 
     /// Build the strategy for the device behind `context` (whose queried
     /// metadata is `device_info`), using `config` for any setup it performs.
@@ -239,16 +286,26 @@ pub trait IbvDomainImpl: std::fmt::Debug + Send + Sync + 'static + Sized {
         unsafe { register_host_or_dmabuf_mr(domain, mem) }
     }
 
-    /// Create a queue pair against `domain`. The default builds [`Self::QueuePair`]
-    /// directly; backends override to construct their own queue-pair type.
-    fn create_queue_pair(
-        domain: &IbvDomain<Self>,
-        config: &IbvConfig,
-    ) -> anyhow::Result<Self::QueuePair> {
-        // SAFETY: a fully-constructed `IbvDomain` holds a null-or-live PD per
-        // its construction contract, which is what `IbvQueuePair::new` requires.
-        unsafe { Self::QueuePair::new(domain, config.clone()) }
-    }
+    /// Get or create (and cache) the queue pair actor responsible for DMAing
+    /// the peer identified by `peer_ref`/`peer_device`, returning a handle to
+    /// it. The actor drives this backend's queue pair; the manager posts ops to
+    /// the returned handle.
+    fn get_or_create_queue_pair(
+        domain: &mut IbvDomain<Self>,
+        cx: &Context<IbvManagerActor<Self::Device>>,
+        peer_ref: ActorRef<IbvManagerActor<Self::Device>>,
+        peer_device: String,
+    ) -> anyhow::Result<ActorHandle<Self::QueuePair>>;
+
+    /// Process an incoming connection request from a peer whose queue pair
+    /// endpoint is `sender_qp_info`, returning the local endpoint the peer
+    /// needs to complete the connection.
+    fn process_conn_request(
+        domain: &mut IbvDomain<Self>,
+        sender_id: ActorId,
+        sender_device: String,
+        sender_qp_info: &IbvQpInfo,
+    ) -> anyhow::Result<IbvQpInfo>;
 }
 
 /// Register host memory as a standard MR via `ibv_reg_mr`.
