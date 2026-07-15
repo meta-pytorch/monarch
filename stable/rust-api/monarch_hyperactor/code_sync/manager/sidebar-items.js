@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["CodeSyncMessage","CodeSyncMethod","Method"],"fn":["code_sync_mesh"],"struct":["CodeSyncManager","CodeSyncManagerParams","SetActorMeshMessage","WorkspaceConfig","WorkspaceShape"],"trait":["CodeSyncMessageClient","CodeSyncMessageHandler"]};

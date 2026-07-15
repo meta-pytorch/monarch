@@ -1,0 +1,100 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Snapshot capture service."><title>monarch_introspection_snapshot::service - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-17e0aaed.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="monarch_introspection_snapshot" data-themes="" data-resource-suffix="" data-rustdoc-version="1.96.0-nightly (02c7f9bec 2026-04-10)" data-channel="nightly" data-search-js="search-b5634cc7.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../sidebar-items.js"></script><script defer src="../../static.files/main-5013f961.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Module service</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../monarch_introspection_snapshot/index.html">monarch_<wbr>introspection_<wbr>snapshot</a><span class="version">0.0.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module service</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#usage" title="Usage">Usage</a></li><li><a href="#service-invariants-sv-" title="Service invariants (SV-*)">Service invariants (SV-*)</a></li><li><a href="#periodic-trigger-invariants-pt-" title="Periodic-trigger invariants (PT-*)">Periodic-trigger invariants (PT-*)</a></li></ul><h3><a href="#structs">Module Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li></ul></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="../index.html">In crate monarch_<wbr>introspection_<wbr>snapshot</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">monarch_introspection_snapshot</a></div><h1>Module <span>service</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/monarch_introspection_snapshot/service.rs.html#9-1080">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Snapshot capture service.</p>
+<p><a href="struct.SnapshotService.html" title="struct monarch_introspection_snapshot::service::SnapshotService"><code>SnapshotService</code></a> owns the capture pipeline as a single
+operation and publishes to the telemetry HTTP API, a durable bundle,
+or both.</p>
+<p>The service captures once via BFS, drains to <code>RecordBatch</code> pairs
+once via <a href="../push/fn.drain_to_batches.html" title="fn monarch_introspection_snapshot::push::drain_to_batches"><code>drain_to_batches</code></a>, and publishes the same batches to
+whichever destinations are active.</p>
+<h2 id="usage"><a class="doc-anchor" href="#usage">§</a>Usage</h2>
+<p><a href="struct.SnapshotService.html#method.capture" title="method monarch_introspection_snapshot::service::SnapshotService::capture"><code>SnapshotService::capture</code></a> takes a <em>resolver</em> — a closure
+<code>Fn(&amp;NodeRef) -&gt; Future&lt;Result&lt;NodePayload&gt;&gt;</code> that resolves a
+single node reference via the mesh admin. In production this calls
+<code>MeshAdminAgent::resolve</code>; in tests it can be a stub backed by a
+<code>HashMap</code>.</p>
+<p><strong>One-shot capture</strong> — capture a mesh snapshot on demand:</p>
+
+<div class="example-wrap ignore"><a href="#" class="tooltip" title="This example is not tested">ⓘ</a><pre class="rust rust-example-rendered"><code><span class="comment">// Build a resolver that calls MeshAdminAgent::resolve for
+// each NodeRef.
+</span><span class="kw">let </span>resolve = |node_ref: <span class="kw-2">&amp;</span>NodeRef| {
+    <span class="kw">let </span>admin_ref = admin_ref.clone();
+    <span class="kw">let </span>ref_string = node_ref.to_string();
+    <span class="kw">async move </span>{
+        <span class="kw">let </span>resp = admin_ref.resolve(instance, ref_string).<span class="kw">await</span><span class="question-mark">?</span>;
+        resp.<span class="number">0</span>.map_err(|e| <span class="macro">anyhow::anyhow!</span>(<span class="string">"{}"</span>, e))
+    }
+};
+
+<span class="kw">let </span>service = SnapshotService::new(<span class="prelude-val">Some</span>(HttpPublisher::new(base_url)));
+<span class="kw">let </span>result = service.capture(resolve, <span class="prelude-val">None</span>).<span class="kw">await</span><span class="question-mark">?</span>;
+<span class="macro">println!</span>(<span class="string">"{} nodes captured"</span>, result.node_counts.nodes);</code></pre></div>
+<p><a href="struct.SnapshotService.html#method.capture" title="method monarch_introspection_snapshot::service::SnapshotService::capture"><code>capture</code></a> is the full pipeline: BFS
+traversal, drain to <code>RecordBatch</code> pairs, publish to the configured
+live publisher and/or bundle export.</p>
+<p><strong>Periodic capture</strong> — spawn a <a href="struct.SnapshotCaptureActor.html" title="struct monarch_introspection_snapshot::service::SnapshotCaptureActor"><code>SnapshotCaptureActor</code></a>:</p>
+
+<div class="example-wrap ignore"><a href="#" class="tooltip" title="This example is not tested">ⓘ</a><pre class="rust rust-example-rendered"><code><span class="kw">let </span>actor = SnapshotCaptureActor::new(
+    HttpPublisher::new(base_url),
+    admin_ref,
+    Duration::from_secs(<span class="number">30</span>),
+);
+proc.spawn_with_uid(
+    hyperactor::Uid::singleton(hyperactor::Label::strip(<span class="string">"snapshot_capture"</span>)),
+    actor,
+)<span class="question-mark">?</span>;
+<span class="comment">// Actor is stopped by framework lifecycle on proc teardown.</span></code></pre></div>
+<p>The actor reuses the same capture pipeline but is live-ingest only
+(<code>export_root</code> is always <code>None</code>). Overlapping ticks are skipped,
+not queued. Capture errors are logged and do not stop the timer.</p>
+<h2 id="service-invariants-sv-"><a class="doc-anchor" href="#service-invariants-sv-">§</a>Service invariants (SV-*)</h2>
+<ul>
+<li><strong>SV-1 (destination required):</strong> <code>capture</code> returns <code>Err</code> when both
+live telemetry and <code>export_root</code> are absent.</li>
+<li><strong>SV-2 (single capture):</strong> Each <code>capture</code> call performs exactly
+one BFS traversal and one <code>drain_to_batches</code>.</li>
+<li><strong>SV-3 (live publication):</strong> When live telemetry is configured,
+all 13 tables are ingested or published (delegates to PS-1..PS-7).
+Publication is not atomic — a failure partway through may leave
+some tables ingested/published and others not.</li>
+<li><strong>SV-4 (counts before drain):</strong> <a href="struct.NodeCounts.html" title="struct monarch_introspection_snapshot::service::NodeCounts"><code>NodeCounts</code></a> is computed from
+<a href="../capture/struct.SnapshotData.html" title="struct monarch_introspection_snapshot::capture::SnapshotData"><code>SnapshotData</code></a> before <code>drain_to_batches</code> consumes it.</li>
+<li><strong>SV-5 (metadata correctness):</strong> <a href="struct.CaptureResult.html" title="struct monarch_introspection_snapshot::service::CaptureResult"><code>CaptureResult</code></a> contains the
+snapshot ID generated for this capture, <code>snapshot_ts</code> from the
+snapshot row produced by <code>capture_snapshot</code>, accurate node
+counts, non-negative wall-clock duration, and <code>bundle_path</code>
+when a bundle was exported.</li>
+<li><strong>SV-6 (bundle path derivation):</strong> When <code>export_root</code> is <code>Some</code>,
+the service derives the bundle directory as
+<code>{export_root}/snapshot-{snapshot_id}/</code> after generating the
+snapshot ID. The two cannot diverge (delegates to BN-7).</li>
+<li><strong>SV-7 (cross-destination non-atomicity):</strong> When live telemetry and
+bundle export are both active, the operation is not atomic. If live ingest
+succeeds and bundle writing fails (or vice versa), you have
+partial success. The destinations are independent and the service
+reports the error.</li>
+</ul>
+<h2 id="periodic-trigger-invariants-pt-"><a class="doc-anchor" href="#periodic-trigger-invariants-pt-">§</a>Periodic-trigger invariants (PT-*)</h2>
+<ul>
+<li><strong>PT-1 (positive interval):</strong> Zero interval rejected before
+spawn.</li>
+<li><strong>PT-2 (live publisher by construction):</strong> The periodic path takes a
+concrete <code>HttpPublisher</code>, not an <code>Option</code>. A live publisher is guaranteed
+by the API shape.</li>
+<li><strong>PT-3 (immediate first fire):</strong> First capture fires at spawn
+time. Subsequent captures fire after each interval.</li>
+<li><strong>PT-4 (single in-flight):</strong> Overlapping ticks skipped via CAS.
+<code>in_flight</code> is consulted only by the periodic loop; on-demand
+<code>capture</code> calls do not check it.</li>
+<li><strong>PT-5 (actor lifecycle):</strong> The actor is stopped by framework
+lifecycle (proc teardown via <code>DrainAndStop</code>). The framework
+guarantees the current handler runs to completion before
+stopping. At most one additional queued capture may execute
+during drain. After stop, snapshot count stabilizes — no
+unbounded reschedule tail. Tested by
+<code>test_pt5_drain_halts_future_captures</code>.</li>
+<li><strong>PT-6 (failure resilience):</strong> Capture <code>Err</code> logged, loop
+continues.</li>
+<li><strong>PT-7 (live-ingest only):</strong> Always <code>export_root = None</code>.</li>
+</ul>
+</div></details><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.CaptureResult.html" title="struct monarch_introspection_snapshot::service::CaptureResult">Capture<wbr>Result</a></dt><dd>Result metadata from a snapshot capture operation.</dd><dt><a class="struct" href="struct.CaptureSnapshot.html" title="struct monarch_introspection_snapshot::service::CaptureSnapshot">Capture<wbr>Snapshot</a></dt><dd>Self-message that triggers one periodic capture cycle. See PT-3,
+PT-5.</dd><dt><a class="struct" href="struct.HttpPublisher.html" title="struct monarch_introspection_snapshot::service::HttpPublisher">Http<wbr>Publisher</a></dt><dd>Publishes snapshot batches to the telemetry sidecar HTTP ingest API.</dd><dt><a class="struct" href="struct.NodeCounts.html" title="struct monarch_introspection_snapshot::service::NodeCounts">Node<wbr>Counts</a></dt><dd>Summary counts of entities in a captured snapshot.</dd><dt><a class="struct" href="struct.SnapshotCaptureActor.html" title="struct monarch_introspection_snapshot::service::SnapshotCaptureActor">Snapshot<wbr>Capture<wbr>Actor</a></dt><dd>Periodic snapshot capture actor. Owns scheduling and lifecycle;
+delegates per-tick execution to [<code>run_periodic_tick</code>].</dd><dt><a class="struct" href="struct.SnapshotService.html" title="struct monarch_introspection_snapshot::service::SnapshotService">Snapshot<wbr>Service</a></dt><dd>Snapshot capture service.</dd></dl></section></div></main></body></html>

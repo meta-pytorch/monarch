@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["is_efa_device","mr_access_flags"]};

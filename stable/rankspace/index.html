@@ -1,0 +1,161 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Affine and sparse coordinate spaces over ranks."><title>rankspace - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../static.files/rustdoc-17e0aaed.css"><meta name="rustdoc-vars" data-root-path="../" data-static-root-path="../static.files/" data-current-crate="rankspace" data-themes="" data-resource-suffix="" data-rustdoc-version="1.96.0-nightly (02c7f9bec 2026-04-10)" data-channel="nightly" data-search-js="search-b5634cc7.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../static.files/storage-41dd4d93.js"></script><script defer src="../crates.js"></script><script defer src="../static.files/main-5013f961.js"></script><noscript><link rel="stylesheet" href="../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../static.files/favicon-044be391.svg"></head><body class="rustdoc mod crate"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Crate rankspace</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../rankspace/index.html">rankspace</a><span class="version">0.0.0</span></h2></div><div class="sidebar-elems"><ul class="block"><li><a id="all-types" href="all.html">All Items</a></li></ul><section id="rustdoc-toc"><h3><a href="#modules">Crate Items</a></h3><ul class="block"><li><a href="#modules" title="Modules">Modules</a></li><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#enums" title="Enums">Enums</a></li></ul></section><div id="rustdoc-modnav"></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1>Crate <span>rankspace</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../src/rankspace/lib.rs.html#9-2877">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Affine and sparse coordinate spaces over ranks.</p>
+<p>A rank space is a small geometry object. It names a rectangular local
+coordinate system, embeds that system into a flat base-rank coordinate
+system, and can hide base ranks that are not defined.</p>
+<p>Intuitively, a <a href="struct.Rank.html" title="struct rankspace::Rank"><code>Rank</code></a> is an index into an underlying flat array.
+<code>rankspace</code> does not own that array. It models the geometry that tells us
+which array index a local coordinate refers to:</p>
+<div class="example-wrap"><pre class="language-text"><code>local coordinate [host = 1, gpu = 2]
+       |
+       v
+rank = 6
+       |
+       v
+data[6]</code></pre></div>
+<p>This separation lets the same rank space act as pure geometry, as a set of
+defined ranks, or as an indexing scheme for external storage through
+<a href="view/index.html" title="mod rankspace::view"><code>view</code></a>.</p>
+<p>The core abstraction is an affine embedding:</p>
+<div class="example-wrap"><pre class="language-text"><code>rank = offset + coord[0] * stride[0] + ... + coord[n - 1] * stride[n - 1]</code></pre></div>
+<p>This representation is compact. A large rectangular region is stored as one
+<a href="struct.Extent.html" title="struct rankspace::Extent"><code>Extent</code></a>, one <a href="struct.Rank.html" title="struct rankspace::Rank"><code>Rank</code></a> offset, and one stride per dimension. We do not need
+to materialize every rank in the region:</p>
+<div class="example-wrap"><pre class="language-text"><code>explicit ranks for [host: 2, gpu: 4]:
+  [0, 1, 2, 3, 4, 5, 6, 7]
+
+affine representation:
+  extent  = [host: 2, gpu: 4]
+  offset  = 0
+  strides = [4, 1]</code></pre></div>
+<p>It also makes common coordinate transforms cheap. Slicing, fixing a
+dimension index, and re-indexing can usually be expressed by changing the
+offset, extent, and strides while preserving the underlying base-rank
+identity:</p>
+<div class="example-wrap"><pre class="language-text"><code>operation                     metadata change
+---------                     ---------------
+select gpu = 1.. step 2       offset += 1 * stride[gpu]
+                              size[gpu] = 2
+                              stride[gpu] *= 2
+
+fix host = 1                  offset += 1 * stride[host]
+                              remove host from extent
+                              remove stride[host]
+
+re-index a subspace           keep base ranks; change the local extent
+                              and strides that project into them</code></pre></div>
+<p><a href="struct.Dim.html" title="struct rankspace::Dim"><code>Dim</code></a> and <a href="struct.Extent.html" title="struct rankspace::Extent"><code>Extent</code></a> describe only the local coordinate shape. They name
+dimensions and give their sizes, but they do not assign ranks:</p>
+<div class="example-wrap"><pre class="language-text"><code>extent = [host: 2, gpu: 4]
+
+local coordinates:
+          gpu
+        0  1  2  3
+host 0  .  .  .  .
+     1  .  .  .  .</code></pre></div>
+<p><a href="struct.RankRect.html" title="struct rankspace::RankRect"><code>RankRect</code></a> adds the affine embedding. A dense row-major rectangle with
+<code>offset = 0</code> and <code>strides = [4, 1]</code> maps the same local coordinates to base
+ranks:</p>
+<div class="example-wrap"><pre class="language-text"><code>extent  = [host: 2, gpu: 4]
+offset  = 0
+strides = [4, 1]
+
+          gpu
+        0  1  2  3
+host 0  0  1  2  3
+     1  4  5  6  7</code></pre></div>
+<p>Subspace operations preserve the meaning of base ranks. For example,
+selecting every other <code>gpu</code> element starting at <code>1</code> produces a smaller
+local coordinate system that still points into the original base ranks:</p>
+<div class="example-wrap"><pre class="language-text"><code>base ranks:
+          gpu
+        0  1  2  3
+host 0  0  1  2  3
+     1  4  5  6  7
+
+select gpu = 1.. step 2
+
+extent  = [host: 2, gpu: 2]
+offset  = 1
+strides = [4, 2]
+
+          local gpu
+            0  1
+host 0      1  3
+     1      5  7</code></pre></div>
+<p>Projection and embedding let you separate a reusable local pattern from the
+concrete base ranks where that pattern happens to appear. <a href="struct.RankRect.html#method.project" title="method rankspace::RankRect::project"><code>RankRect::project</code></a>
+captures a rectangle as parent-local row-major indices. <a href="struct.RankRect.html#method.embed" title="method rankspace::RankRect::embed"><code>RankRect::embed</code></a>
+interprets such a captured pattern in a parent rectangle:</p>
+<div class="example-wrap"><pre class="language-text"><code>project: concrete base ranks -&gt; parent-local pattern
+embed:   parent-local pattern -&gt; concrete base ranks</code></pre></div>
+<p>This is useful for operations such as tiling. Suppose one parent maps local
+indices to base ranks with <code>offset = 10</code> and <code>strides = [8, 2]</code>:</p>
+<div class="example-wrap"><pre class="language-text"><code>parent A coordinates -&gt; parent A base ranks
+
+          gpu
+        0   1   2   3
+host 0  10  12  14  16
+     1  18  20  22  24</code></pre></div>
+<p>The right half of that rectangle is the concrete tile <code>{14, 16, 22, 24}</code>:</p>
+<div class="example-wrap"><pre class="language-text"><code>tile in parent A base ranks
+
+          local gpu
+          0   1
+host 0    14  16
+     1    22  24</code></pre></div>
+<p>Projecting the tile through parent A captures the shape as parent-local
+indices <code>{2, 3, 6, 7}</code>:</p>
+<div class="example-wrap"><pre class="language-text"><code>captured tile pattern
+
+          local gpu
+          0  1
+host 0    2  3
+     1    6  7</code></pre></div>
+<p>That captured pattern can then be embedded into another compatible parent.
+If parent B has <code>offset = 100</code> and <code>strides = [40, 5]</code>, the same tile
+pattern resolves to different base ranks:</p>
+<div class="example-wrap"><pre class="language-text"><code>parent B coordinates -&gt; parent B base ranks
+
+          gpu
+        0    1    2    3
+host 0  100  105  110  115
+     1  140  145  150  155
+
+captured tile pattern embedded in parent B
+
+          local gpu
+          0    1
+host 0    110  115
+     1    150  155</code></pre></div>
+<p>The captured pattern is more than an extent: it includes offset and strides
+in parent-local index space. This lets it represent affine slices, strided
+tiles, and fixed-dimension subspaces. If a target parent cannot realize that
+affine local-index pattern, embedding returns an error.</p>
+<p><a href="enum.RankMask.html" title="enum rankspace::RankMask"><code>RankMask</code></a> is a set of ranks in base-rank coordinates. Masks are not
+relative to a particular subspace or view. This keeps set operations about
+ranks, while projection into local coordinates remains a view concern:</p>
+<div class="example-wrap"><pre class="language-text"><code>mask = {5}
+
+base ranks:
+          gpu
+        0  1  2  3
+host 0  0  1  2  3
+     1  4  x  6  7</code></pre></div>
+<p><a href="struct.RankSpace.html" title="struct rankspace::RankSpace"><code>RankSpace</code></a> is a visible space: a base <a href="struct.RankRect.html" title="struct rankspace::RankRect"><code>RankRect</code></a> minus base-rank
+occlusions. A rank can be a valid array index but not a visible point in a
+particular sparse space:</p>
+<div class="example-wrap"><pre class="language-text"><code>base array indices:
+  0 1 2 3 4 5 6 7
+
+visible ranks after masking rank 5:
+  0 1 2 3 4   6 7</code></pre></div>
+<p>Visible ranks retain their base-rank identity, but they also have a compact
+visible order:</p>
+<div class="example-wrap"><pre class="language-text"><code>compact index: 0 1 2 3 4 5 6
+visible rank:  0 1 2 3 4 6 7</code></pre></div>
+<p>Value containers are intentionally layered on top in <a href="view/index.html" title="mod rankspace::view"><code>view</code></a>. The core
+module computes ranks and visible membership; the <code>view</code> module decides how
+those ranks address user data. A <a href="view/struct.BaseView.html" title="struct rankspace::view::BaseView"><code>view::BaseView</code></a> stores values by base
+rank (<code>rank -&gt; data[rank]</code>), while a <a href="view/struct.CompactView.html" title="struct rankspace::view::CompactView"><code>view::CompactView</code></a> stores values by
+compact visible order (<code>rank -&gt; visible_index -&gt; data[visible_index]</code>).</p>
+</div></details><h2 id="modules" class="section-header">Modules<a href="#modules" class="anchor">§</a></h2><dl class="item-table"><dt><a class="mod" href="strategy/index.html" title="mod rankspace::strategy">strategy</a></dt><dd>Property-based generators for <a href="struct.RankRect.html" title="struct rankspace::RankRect"><code>RankRect</code></a> and related types.</dd><dt><a class="mod" href="view/index.html" title="mod rankspace::view">view</a></dt><dd>Value containers indexed by <a href="struct.RankSpace.html" title="struct rankspace::RankSpace"><code>RankSpace</code></a>.</dd></dl><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.Coord.html" title="struct rankspace::Coord">Coord</a></dt><dd>A coordinate in a rank rectangle or rank space.</dd><dt><a class="struct" href="struct.Dim.html" title="struct rankspace::Dim">Dim</a></dt><dd>A named rank-space dimension.</dd><dt><a class="struct" href="struct.DimRange.html" title="struct rankspace::DimRange">DimRange</a></dt><dd>A range along one dimension.</dd><dt><a class="struct" href="struct.Extent.html" title="struct rankspace::Extent">Extent</a></dt><dd>A named coordinate extent.</dd><dt><a class="struct" href="struct.Rank.html" title="struct rankspace::Rank">Rank</a></dt><dd>A flat rank in the base rank coordinate system.</dd><dt><a class="struct" href="struct.RankBounds.html" title="struct rankspace::RankBounds">Rank<wbr>Bounds</a></dt><dd>A coarse half-open interval over base ranks.</dd><dt><a class="struct" href="struct.RankRect.html" title="struct rankspace::RankRect">Rank<wbr>Rect</a></dt><dd>A dense affine rectangular embedding into base rank space.</dd><dt><a class="struct" href="struct.RankRectRanks.html" title="struct rankspace::RankRectRanks">Rank<wbr>Rect<wbr>Ranks</a></dt><dd>Iterator over ranks in a <a href="struct.RankRect.html" title="struct rankspace::RankRect"><code>RankRect</code></a>.</dd><dt><a class="struct" href="struct.RankSpace.html" title="struct rankspace::RankSpace">Rank<wbr>Space</a></dt><dd>A possibly sparse rank space: a dense base rectangle minus occluded ranks.</dd></dl><h2 id="enums" class="section-header">Enums<a href="#enums" class="anchor">§</a></h2><dl class="item-table"><dt><a class="enum" href="enum.RankMask.html" title="enum rankspace::RankMask">Rank<wbr>Mask</a></dt><dd>A set of ranks in base-rank coordinates.</dd><dt><a class="enum" href="enum.RankSpaceError.html" title="enum rankspace::RankSpaceError">Rank<wbr>Space<wbr>Error</a></dt><dd>Errors produced by rank-space construction and operations.</dd></dl></section></div></main></body></html>

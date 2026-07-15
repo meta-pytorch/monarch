@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["ACTORS","ACTOR_STATUS_EVENTS","MESHES","MESSAGES","MESSAGE_STATUS_EVENTS","SENT_MESSAGES"],"struct":["Actor","ActorBuffer","ActorStatusEvent","ActorStatusEventBuffer","Mesh","MeshBuffer","Message","MessageBuffer","MessageStatusEvent","MessageStatusEventBuffer","SentMessage","SentMessageBuffer"]};

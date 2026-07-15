@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["ShoppingList"],"fn":["main"],"struct":["ClearList","GetItemCount","ShoppingApi","ShoppingListActor"],"trait":["ClearListClient","ClearListHandler","GetItemCountClient","GetItemCountHandler","ShoppingListClient","ShoppingListHandler"]};

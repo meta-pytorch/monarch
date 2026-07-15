@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["OrphanPolicy","RemoteActorDisposition","SupervisorEvent","WorkerCommand"],"struct":["Gspawn","SpawnActor","SpawnProc","Supervise","SupervisionOptions","WorkerLike"],"trait":["SpawnActorClient","SpawnActorHandler","SpawnProcClient","SpawnProcHandler","SuperviseClient","SuperviseHandler","WorkerCommandClient","WorkerCommandHandler"]};
