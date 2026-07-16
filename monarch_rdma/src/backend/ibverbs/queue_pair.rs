@@ -18,13 +18,21 @@ const MAX_RDMA_MSG_SIZE: usize = 1024 * 1024 * 1024;
 use std::io::Error;
 use std::result::Result;
 
+use hyperactor::Actor;
+use hyperactor::ActorHandle;
+use hyperactor::ActorId;
+use hyperactor::ActorRef;
+use hyperactor::Context;
+use hyperactor::Handler;
 use hyperactor::PortHandle;
 use hyperactor::actor::Referable;
 
 use super::IbvBuffer;
 use super::IbvOp;
+use super::device::IbvDeviceImpl;
 use super::domain::IbvDomain;
 use super::domain::IbvDomainImpl;
+use super::manager_actor::IbvManagerActor;
 use super::memory_region::IbvMemoryRegionView;
 use super::primitives::Gid;
 use super::primitives::IbvConfig;
@@ -108,15 +116,13 @@ pub enum PollTarget {
 pub mod legacy;
 /// mlx5 queue pair built on the mlx5dv extended verbs.
 pub mod mlx_queue_pair;
-/// Reliable-connection queue pair, its `connect` helper, and the actor that
-/// drives it.
+/// Reliable-connection queue pair, its `connect` helper, the actor that drives
+/// it, and the RC connection manager.
 pub mod rc_queue_pair;
 
 /// A NIC-backend queue pair: the unit of RDMA communication between two
-/// endpoints, and the low-level operations performed on it. Each
-/// [`IbvDomainImpl`] names its concrete queue-pair type via
-/// [`IbvDomainImpl::QueuePair`](super::domain::IbvDomainImpl::QueuePair) and builds
-/// it through [`Self::new`].
+/// endpoints, and the low-level operations performed on it. Each backend builds
+/// its concrete implementation through [`Self::new`].
 pub trait IbvQueuePair: std::fmt::Debug + Send + Sync + 'static + Sized {
     /// Creates a queue pair against `domain` in the RESET state;
     /// [`Self::connect`] transitions it to RTS before use.
@@ -127,7 +133,7 @@ pub trait IbvQueuePair: std::fmt::Debug + Send + Sync + 'static + Sized {
     /// domain. Callers must ensure the PD outlives the QP; the easiest way to
     /// do this is for implementers to store a clone of `domain.pd()` (an
     /// `Arc<IbvPd>`) inside the QP.
-    unsafe fn new<I: IbvDomainImpl<QueuePair = Self>>(
+    unsafe fn new<I: IbvDomainImpl>(
         domain: &IbvDomain<I>,
         config: IbvConfig,
     ) -> Result<Self, anyhow::Error>;
@@ -244,7 +250,7 @@ unsafe fn state(qp: *mut rdmaxcel_sys::ibv_qp) -> Result<u32, anyhow::Error> {
 /// `handle_undeliverable_message` and absorb them when the original
 /// caller has gone away (typical at test teardown).
 #[derive(Debug)]
-pub(crate) struct OpResult {
+pub struct OpResult {
     pub(super) op_idx: usize,
     pub(super) result: Result<(), String>,
 }
@@ -259,7 +265,45 @@ pub(crate) struct OpResult {
 /// observed (held back until the op's other WRs also report, so the
 /// MR registration outlives the data path).
 #[derive(Debug)]
-pub(crate) struct ProcessOps<M: Referable> {
+pub struct ProcessOps<M: Referable> {
     pub(super) items: Vec<(usize, IbvOp<M>, IbvMemoryRegionView)>,
     pub(super) reply: PortHandle<OpResult>,
+}
+
+/// Per-backend strategy for establishing and managing queue pair connections to
+/// peers. It vends the actor that carries RDMA ops to a peer, and services
+/// connection requests initiated by peers. Built against a device's resources
+/// (its [`IbvDomain`]), which it borrows to create queue pairs but does not own.
+pub trait QueuePairManager: std::fmt::Debug + Send + Sync + 'static {
+    /// The device backend this strategy serves.
+    type Device: IbvDeviceImpl;
+
+    /// The actor that carries RDMA ops to a peer, accepting a batch as
+    /// [`ProcessOps`] and reporting per-op results.
+    type QueuePair: Actor + Handler<ProcessOps<IbvManagerActor<Self::Device>>>;
+
+    /// Builds a strategy for a device opened with `config`.
+    fn new(config: IbvConfig) -> Self;
+
+    /// Returns the actor that DMAs the peer `peer_ref`/`peer_device` from the
+    /// device `domain` lives on, establishing the connection if it does not yet
+    /// exist. A peer may be reachable through more than one local device, so the
+    /// actor is identified by both `domain`'s device and the peer.
+    fn get_or_create_queue_pair(
+        &mut self,
+        cx: &Context<'_, IbvManagerActor<Self::Device>>,
+        domain: &IbvDomain<<Self::Device as IbvDeviceImpl>::Domain>,
+        peer_ref: ActorRef<IbvManagerActor<Self::Device>>,
+        peer_device: String,
+    ) -> anyhow::Result<ActorHandle<Self::QueuePair>>;
+
+    /// Handles a connection request from a peer, returning the local endpoint
+    /// the peer needs to complete it. `domain` is the local device's domain.
+    fn process_conn_request(
+        &mut self,
+        domain: &IbvDomain<<Self::Device as IbvDeviceImpl>::Domain>,
+        peer_id: ActorId,
+        peer_device: String,
+        peer_qp_info: &IbvQpInfo,
+    ) -> anyhow::Result<IbvQpInfo>;
 }

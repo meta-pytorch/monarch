@@ -868,7 +868,7 @@ impl IbvQueuePair {
 }
 
 impl super::IbvQueuePair for IbvQueuePair {
-    unsafe fn new<I: IbvDomainImpl<QueuePair = Self>>(
+    unsafe fn new<I: IbvDomainImpl>(
         domain: &IbvDomain<I>,
         config: IbvConfig,
     ) -> Result<Self, anyhow::Error> {

@@ -796,8 +796,6 @@ impl MlxDomain {
 }
 
 impl IbvDomainImpl for MlxDomain {
-    type QueuePair = MlxQueuePair;
-
     unsafe fn new(context: &IbvContext, device_info: &IbvDeviceInfo, config: &IbvConfig) -> Self {
         Self::new_with_ops(
             Arc::new(ProdMlxDomainOps::new(context, device_info)),

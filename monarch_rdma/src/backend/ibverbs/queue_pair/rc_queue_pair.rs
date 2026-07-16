@@ -22,6 +22,7 @@ use backoff::ExponentialBackoff;
 use backoff::ExponentialBackoffBuilder;
 use backoff::backoff::Backoff;
 use hyperactor::Actor;
+use hyperactor::ActorHandle;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Context;
@@ -42,15 +43,18 @@ use super::OpResult;
 use super::PollCompletionError;
 use super::PollTarget;
 use super::ProcessOps;
+use super::QueuePairManager;
 use super::WorkRequestError;
 use super::get_qp_info;
 use super::state;
 use crate::RdmaOpType;
 use crate::backend::ibverbs::IbvBuffer;
 use crate::backend::ibverbs::IbvOp;
+use crate::backend::ibverbs::device::IbvDeviceImpl;
 use crate::backend::ibverbs::domain::IbvDomain;
 use crate::backend::ibverbs::domain::IbvDomainImpl;
-use crate::backend::ibverbs::manager_actor::CreatePeerQueuePair;
+use crate::backend::ibverbs::manager_actor::Connect;
+use crate::backend::ibverbs::manager_actor::IbvManagerActor;
 use crate::backend::ibverbs::memory_region::IbvMemoryRegionView;
 use crate::backend::ibverbs::primitives::Gid;
 use crate::backend::ibverbs::primitives::GidScope;
@@ -325,7 +329,7 @@ impl RCQueuePair {
 }
 
 impl IbvQueuePair for RCQueuePair {
-    unsafe fn new<I: IbvDomainImpl<QueuePair = Self>>(
+    unsafe fn new<I: IbvDomainImpl>(
         domain: &IbvDomain<I>,
         config: IbvConfig,
     ) -> Result<Self, anyhow::Error> {
@@ -574,13 +578,10 @@ impl PollSleepPolicy {
 }
 
 /// Bundle of trait bounds for an actor type that can serve as the
-/// peer manager — i.e. the recipient of [`CreatePeerQueuePair`].
-pub(crate) trait Manager:
-    Actor + Referable + RemoteHandles<CreatePeerQueuePair<Self>>
-{
-}
+/// peer manager — i.e. the recipient of [`Connect`].
+pub trait Manager: Actor + Referable + RemoteHandles<Connect<Self>> {}
 
-impl<T> Manager for T where T: Actor + Referable + RemoteHandles<CreatePeerQueuePair<T>> {}
+impl<T> Manager for T where T: Actor + Referable + RemoteHandles<Connect<T>> {}
 /// Local-only self-message that drives one round of the scheduler.
 #[derive(Debug)]
 struct Tick;
@@ -623,12 +624,12 @@ struct PostedOpEntry {
 /// and handed in as a spawn param; the actor owns it for life and
 /// drops it when the actor stops.
 #[derive(Debug)]
-pub(crate) struct RCQueuePairActor<M: Manager, Qp: IbvQueuePair> {
+pub struct RCQueuePairActor<M: Manager, Qp: IbvQueuePair> {
     qp_key: QpKey,
-    /// Filled into [`CreatePeerQueuePair::sender`] so the peer can
+    /// Filled into [`Connect::sender`] so the peer can
     /// build its own [`QpKey`] from our identity.
     local_manager: ActorRef<M>,
-    /// Recipient of [`CreatePeerQueuePair`].
+    /// Recipient of [`Connect`].
     peer_manager: ActorRef<M>,
     qp: Qp,
     /// `true` when the peer QP is colocated with this actor's QP —
@@ -940,7 +941,7 @@ impl<M: Manager, Qp: IbvQueuePair> Actor for RCQueuePairActor<M, Qp> {
             let (reply, rx) = this.mailbox().open_once_port::<Result<IbvQpInfo, String>>();
             self.peer_manager.post(
                 this,
-                CreatePeerQueuePair {
+                Connect {
                     sender: self.local_manager.clone(),
                     sender_device: self.qp_key.self_device.clone(),
                     receiver_device: self.qp_key.other_device.clone(),
@@ -955,7 +956,7 @@ impl<M: Manager, Qp: IbvQueuePair> Actor for RCQueuePairActor<M, Qp> {
                         qp_key = ?self.qp_key,
                         peer_manager = ?self.peer_manager,
                         error = %e,
-                        "RCQueuePairActor init: peer manager rejected CreatePeerQueuePair",
+                        "RCQueuePairActor init: peer manager rejected Connect",
                     );
                     return Err(anyhow::anyhow!("peer manager rejected QP request: {e}"));
                 }
@@ -1041,6 +1042,116 @@ impl<M: Manager, Qp: IbvQueuePair> Handler<Tick> for RCQueuePairActor<M, Qp> {
         self.tick_armed = false;
         self.advance(cx)?;
         Ok(())
+    }
+}
+
+/// Reliable-connection [`QueuePairManager`]. A connection is keyed by the local
+/// device and the peer — a peer reached through two local devices gets two
+/// connections — with the active side driven by an [`RCQueuePairActor`] and the
+/// peer holding a passive connected mirror queue pair so the active side can
+/// read and write its memory.
+///
+/// Generic over the raw queue pair type `Qp` so the same connection logic serves
+/// every reliable-connection backend (`MlxQueuePair`, the legacy queue pair,
+/// ...).
+pub struct RCQueuePairManager<D: IbvDeviceImpl, Qp: IbvQueuePair> {
+    /// Active-side [`RCQueuePairActor`] children, one per (local device, peer).
+    qp_handles: HashMap<QpKey, ActorHandle<RCQueuePairActor<IbvManagerActor<D>, Qp>>>,
+    /// Passive mirror queue pairs, connected to peers that DMA into this device.
+    /// The map's `Drop` destroys each QP via its own `Drop`.
+    peer_created_qps: HashMap<QpKey, Qp>,
+    config: IbvConfig,
+}
+
+impl<D: IbvDeviceImpl, Qp: IbvQueuePair> std::fmt::Debug for RCQueuePairManager<D, Qp> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RCQueuePairManager").finish_non_exhaustive()
+    }
+}
+
+impl<D: IbvDeviceImpl, Qp: IbvQueuePair> QueuePairManager for RCQueuePairManager<D, Qp> {
+    type Device = D;
+    type QueuePair = RCQueuePairActor<IbvManagerActor<D>, Qp>;
+
+    fn new(config: IbvConfig) -> Self {
+        Self {
+            qp_handles: HashMap::new(),
+            peer_created_qps: HashMap::new(),
+            config,
+        }
+    }
+
+    fn get_or_create_queue_pair(
+        &mut self,
+        cx: &Context<'_, IbvManagerActor<D>>,
+        domain: &IbvDomain<<D as IbvDeviceImpl>::Domain>,
+        peer_ref: ActorRef<IbvManagerActor<D>>,
+        peer_device: String,
+    ) -> anyhow::Result<ActorHandle<Self::QueuePair>> {
+        let qp_key = QpKey {
+            self_device: domain.device_info().name().clone(),
+            other_id: peer_ref.actor_addr().id().clone(),
+            other_device: peer_device,
+        };
+        if let Some(handle) = self.qp_handles.get(&qp_key) {
+            return Ok(handle.clone());
+        }
+        // SAFETY: an `IbvDomain` holds a null-or-live PD and context per its
+        // construction contract, which is `IbvQueuePair::new`'s requirement.
+        let qp = unsafe { Qp::new(domain, self.config.clone()) }
+            .map_err(|e| anyhow::anyhow!("could not create IbvQueuePair for {qp_key:?}: {e}"))?;
+        let local_manager: ActorRef<IbvManagerActor<D>> = cx.bind();
+        let is_loopback = local_manager.actor_addr() == peer_ref.actor_addr()
+            && qp_key.self_device == qp_key.other_device;
+        let actor = cx.spawn(RCQueuePairActor::new(
+            qp_key.clone(),
+            local_manager,
+            peer_ref,
+            qp,
+            is_loopback,
+            self.config.max_send_wr,
+            self.config.max_rd_atomic as u32,
+        ));
+        self.qp_handles.insert(qp_key, actor.clone());
+        Ok(actor)
+    }
+
+    fn process_conn_request(
+        &mut self,
+        domain: &IbvDomain<<D as IbvDeviceImpl>::Domain>,
+        peer_id: ActorId,
+        peer_device: String,
+        peer_qp_info: &IbvQpInfo,
+    ) -> anyhow::Result<IbvQpInfo> {
+        let qp_key = QpKey {
+            self_device: domain.device_info().name().clone(),
+            other_id: peer_id,
+            other_device: peer_device,
+        };
+        if self.peer_created_qps.contains_key(&qp_key) {
+            anyhow::bail!("peer queue pair already exists for {qp_key:?}");
+        }
+        // SAFETY: as in `get_or_create_queue_pair`.
+        let mut qp = unsafe { Qp::new(domain, self.config.clone()) }
+            .map_err(|e| anyhow::anyhow!("could not create peer IbvQueuePair: {e}"))?;
+        let local_info = qp
+            .get_qp_info()
+            .map_err(|e| anyhow::anyhow!("could not extract peer QP info: {e}"))?;
+        qp.connect(peer_qp_info)
+            .map_err(|e| anyhow::anyhow!("could not connect peer QP: {e}"))?;
+        self.peer_created_qps.insert(qp_key, qp);
+        Ok(local_info)
+    }
+}
+
+impl<D: IbvDeviceImpl, Qp: IbvQueuePair> Drop for RCQueuePairManager<D, Qp> {
+    fn drop(&mut self) {
+        // Drain the active-side QP actors; each finishes its in-flight ops and
+        // drops its owned QP. The passive mirror QPs free their FFI resources
+        // through their own `Drop`s.
+        for (_key, handle) in self.qp_handles.drain() {
+            let _ = handle.drain_and_stop("RCQueuePairManager dropped");
+        }
     }
 }
 
@@ -1134,7 +1245,7 @@ mod tests {
     // RCQueuePairActor init handshake
     // =================================================================
 
-    /// Captured fields from a `CreatePeerQueuePair` message; we
+    /// Captured fields from a `Connect` message; we
     /// can't keep the original because the `reply` port is consumed
     /// to send the response.
     #[derive(Debug, Clone)]
@@ -1161,9 +1272,9 @@ mod tests {
     /// Plays two roles:
     /// 1. As the *parent*, it spawns `RCQueuePairActor` children via
     ///    [`SpawnQpaChild`].
-    /// 2. As the *peer*, it handles `CreatePeerQueuePair`.
+    /// 2. As the *peer*, it handles `Connect`.
     #[derive(Debug)]
-    #[hyperactor::export(handlers = [CreatePeerQueuePair<QpaMockManager>])]
+    #[hyperactor::export(handlers = [Connect<QpaMockManager>])]
     struct QpaMockManager {
         state: Arc<Mutex<QpaMockState>>,
     }
@@ -1186,12 +1297,8 @@ mod tests {
     }
 
     #[async_trait]
-    impl Handler<CreatePeerQueuePair<QpaMockManager>> for QpaMockManager {
-        async fn handle(
-            &mut self,
-            cx: &Context<Self>,
-            msg: CreatePeerQueuePair<QpaMockManager>,
-        ) -> Result<()> {
+    impl Handler<Connect<QpaMockManager>> for QpaMockManager {
+        async fn handle(&mut self, cx: &Context<Self>, msg: Connect<QpaMockManager>) -> Result<()> {
             let response = {
                 let mut state = self.state.lock().unwrap();
                 state.creates.push(CreateCapture {
@@ -1349,7 +1456,7 @@ mod tests {
     }
 
     impl IbvQueuePair for MockQp {
-        unsafe fn new<I: IbvDomainImpl<QueuePair = Self>>(
+        unsafe fn new<I: IbvDomainImpl>(
             _domain: &IbvDomain<I>,
             _config: IbvConfig,
         ) -> Result<Self> {

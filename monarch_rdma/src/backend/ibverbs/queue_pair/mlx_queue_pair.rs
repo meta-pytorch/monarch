@@ -116,7 +116,7 @@ impl MlxQueuePair {
 }
 
 impl IbvQueuePair for MlxQueuePair {
-    unsafe fn new<I: IbvDomainImpl<QueuePair = Self>>(
+    unsafe fn new<I: IbvDomainImpl>(
         domain: &IbvDomain<I>,
         config: IbvConfig,
     ) -> Result<Self, anyhow::Error> {
