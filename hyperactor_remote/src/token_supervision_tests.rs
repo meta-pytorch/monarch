@@ -419,9 +419,9 @@ async fn test_token_join_parent_exit_drain_and_stops_child_first() -> anyhow::Re
 
 // Same topology as `test_token_join_parent_exit_stops_child_first`.
 //
-// Killing the parent actor is the in-process hard-stop path. The parent still
-// owns a local supervision tree, so the runtime stops Supervisor while cleaning
-// up that tree, and Supervisor forwards the stop to Worker.
+// Killing the parent actor is the in-process hard-stop path. The runtime kills
+// the local Supervisor instead of running its graceful stop handler, so the
+// worker-side orphan policy stops the child when the liveness link fails.
 #[tokio::test]
 async fn test_token_join_parent_kill_stops_child() -> anyhow::Result<()> {
     let mut harness = Harness::new().await?;
@@ -431,7 +431,7 @@ async fn test_token_join_parent_kill_stops_child() -> anyhow::Result<()> {
         .post(&harness.observer, ParentControl::Kill);
 
     let reason = recv(&mut harness.child_stopped_rx).await?;
-    assert_eq!(reason, "parent stopping");
+    assert_eq!(reason, "supervision liveness failed");
     harness.stop().await?;
     Ok(())
 }
