@@ -3038,59 +3038,56 @@ impl<A: Actor> Instance<A> {
             tracing::error!("{}: actor failure: {}", self.self_addr(), err);
         }
 
-        // After this point, we know we won't spawn any more children,
-        // so we can safely read the current child keys.
-        let mut to_unlink = Vec::new();
-        let child_signal = match ChildTeardown::from_run_result(&result) {
-            ChildTeardown::Cooperative(mode) => ChildTeardown::cooperative_signal(mode),
-            ChildTeardown::Kill => {
-                // TODO: fan out kill once child teardown can detach
-                // unresponsive children without blocking this parent.
-                ChildTeardown::cooperative_signal(StopMode::Stop)
-            }
-        };
-        for child in self.inner.cell.child_iter() {
-            if let Err(err) = child.value().signal(child_signal.clone()) {
-                tracing::error!(
-                    "{}: failed to send stop signal to child pid {}: {:?}",
-                    self.self_addr(),
-                    child.key(),
-                    err
-                );
-                to_unlink.push(child.value().clone());
-            }
-        }
-        // Manually unlink children that have already been stopped.
-        for child in to_unlink {
-            self.inner.cell.unlink(&child);
-        }
-
         let (mut signal_receiver, _) = actor_loop_receivers;
-        while self.inner.cell.child_count() > 0 {
-            match tokio::time::timeout(Duration::from_millis(500), signal_receiver.recv()).await {
-                Ok(Some(Signal::ChildStopped(uid))) => {
-                    assert!(self.inner.cell.get_child(&uid).is_none());
+        // Cooperative teardown preserves parent-child ordering. Kill teardown
+        // breaks that wait by promoting unresponsive children out of this
+        // subtree.
+        match ChildTeardown::from_run_result(&result) {
+            ChildTeardown::Kill => {
+                self.kill_and_promote_children("parent killed");
+            }
+            ChildTeardown::Cooperative(mode) => {
+                // After this point, we know we won't spawn any more children,
+                // so we can safely read the current child keys.
+                let mut to_unlink = Vec::new();
+                let child_signal = ChildTeardown::cooperative_signal(mode);
+                for child in self.inner.cell.child_iter() {
+                    if let Err(err) = child.value().signal(child_signal.clone()) {
+                        tracing::error!(
+                            "{}: failed to send stop signal to child pid {}: {:?}",
+                            self.self_addr(),
+                            child.key(),
+                            err
+                        );
+                        to_unlink.push(child.value().clone());
+                    }
                 }
-                // Drain only tracks child termination; other signals are
-                // intentionally swallowed here.
-                Ok(Some(_)) => {}
-                Ok(None) => {
-                    // Signal channel closed: no further ChildStopped will
-                    // arrive, so we can no longer track child termination.
-                    // Drop remaining links and exit the drain loop, mirroring
-                    // the timeout branch below.
-                    self.inner.cell.unlink_all();
-                    break;
+                // Manually unlink children that have already been stopped.
+                for child in to_unlink {
+                    self.inner.cell.unlink(&child);
                 }
-                Err(_) => {
-                    tracing::warn!(
-                        "timeout waiting for ChildStopped signal from child on actor: {}, ignoring",
-                        self.self_addr()
-                    );
-                    // No more waiting to receive messages. Unlink all remaining
-                    // children.
-                    self.inner.cell.unlink_all();
-                    break;
+
+                while self.inner.cell.child_count() > 0 {
+                    match signal_receiver.recv().await {
+                        Some(Signal::ChildStopped(uid)) => {
+                            assert!(self.inner.cell.get_child(&uid).is_none());
+                        }
+                        Some(Signal::Kill(_)) => {
+                            self.kill_and_promote_children(
+                                "parent killed while waiting for children",
+                            );
+                            break;
+                        }
+                        // Drain only tracks child termination; other signals are
+                        // intentionally swallowed here.
+                        Some(_) => {}
+                        None => {
+                            // Signal channel closed: no further ChildStopped will
+                            // arrive, so we can no longer track child termination.
+                            self.inner.cell.unlink_all();
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -3136,6 +3133,41 @@ impl<A: Actor> Instance<A> {
         // If the original exit was not an error, let cleanup errors be
         // surfaced.
         result.and_then(|stopped| cleanup_result.map(|_| stopped.reason))
+    }
+
+    fn kill_and_promote_children(&self, reason: &str) {
+        let children: Vec<InstanceCell> = self
+            .inner
+            .cell
+            .child_iter()
+            .map(|child| child.value().clone())
+            .collect();
+        let mut children_to_kill = Vec::new();
+
+        for child in children {
+            if child.status().borrow().is_terminal() {
+                continue;
+            }
+            child.promote_to_root();
+            child.change_status(ActorStatus::zombie(format!(
+                "{}; child {} unresponsive to kill",
+                reason,
+                child.actor_addr()
+            )));
+            children_to_kill.push(child);
+        }
+
+        let signal = Signal::Kill(reason.to_string());
+        for child in children_to_kill {
+            if let Err(err) = child.signal(signal.clone()) {
+                tracing::error!(
+                    "{}: failed to send kill to child {}: {:?}",
+                    self.self_addr(),
+                    child.actor_addr(),
+                    err
+                );
+            }
+        }
     }
 
     /// Initialize and run the actor until it fails or is stopped. On success,
@@ -3545,7 +3577,7 @@ impl<A: Actor> Instance<A> {
 
     /// Return a handle to this instance's parent actor, if it has one.
     pub fn parent_handle<P: Actor>(&self) -> Option<ActorHandle<P>> {
-        let parent_cell = self.inner.cell.inner.parent.upgrade()?;
+        let parent_cell = self.inner.cell.inner.parent.read().unwrap().upgrade()?;
         let ports = if let Ok(ports) = parent_cell.inner.ports.clone().downcast() {
             ports
         } else {
@@ -3757,7 +3789,7 @@ struct InstanceCellState {
     status: watch::Receiver<ActorStatus>,
 
     /// A weak reference to this instance's parent.
-    parent: WeakInstanceCell,
+    parent: RwLock<WeakInstanceCell>,
 
     /// This instance's children by their uids.
     children: DashMap<crate::id::Uid, InstanceCell>,
@@ -3865,6 +3897,8 @@ impl InstanceCellState {
     /// the parent is returned.
     fn maybe_unlink_parent(&self) -> Option<InstanceCell> {
         self.parent
+            .read()
+            .unwrap()
             .upgrade()
             .filter(|parent| parent.inner.unlink(self))
     }
@@ -3982,7 +4016,9 @@ impl InstanceCell {
                 actor_loop,
                 status_tx,
                 status,
-                parent: parent.map_or_else(WeakInstanceCell::new, |cell| cell.downgrade()),
+                parent: RwLock::new(
+                    parent.map_or_else(WeakInstanceCell::new, |cell| cell.downgrade()),
+                ),
                 children: DashMap::new(),
                 actor_task_handle: OnceLock::new(),
                 exported_named_ports: DashMap::new(),
@@ -4281,7 +4317,7 @@ impl InstanceCell {
 
     /// Link this instance to its parent, if it has one.
     fn maybe_link_parent(&self) {
-        if let Some(parent) = self.inner.parent.upgrade() {
+        if let Some(parent) = self.inner.parent.read().unwrap().upgrade() {
             parent.link(self.clone());
         }
     }
@@ -4407,7 +4443,20 @@ impl InstanceCell {
 
     /// Get parent instance cell, if it exists.
     pub fn parent(&self) -> Option<InstanceCell> {
-        self.inner.parent.upgrade()
+        self.inner.parent.read().unwrap().upgrade()
+    }
+
+    pub(crate) fn promote_to_root(&self) {
+        // Promotion detaches a wedged child from a stopping parent so the
+        // parent can finish while the proc still owns and can later abort the
+        // child task.
+        let _ = self.maybe_unlink_parent();
+        *self.inner.parent.write().unwrap() = WeakInstanceCell::new();
+        self.inner
+            .proc
+            .inner
+            .root_actors
+            .insert(self.actor_addr().id().clone());
     }
 
     /// The actor's type name.
@@ -6119,7 +6168,14 @@ mod tests {
             parent.actor_addr().proc_addr()
         );
         assert_eq!(
-            child.inner.parent.upgrade().unwrap().actor_addr(),
+            child
+                .inner
+                .parent
+                .read()
+                .unwrap()
+                .upgrade()
+                .unwrap()
+                .actor_addr(),
             parent.actor_addr()
         );
         assert_matches!(
@@ -6179,7 +6235,16 @@ mod tests {
         // Supervision tree is constructed correctly.
         validate_link(third.cell(), second.cell());
         validate_link(second.cell(), first.cell());
-        assert!(first.cell().inner.parent.upgrade().is_none());
+        assert!(
+            first
+                .cell()
+                .inner
+                .parent
+                .read()
+                .unwrap()
+                .upgrade()
+                .is_none()
+        );
 
         // Supervision tree is torn down correctly.
         // Once each actor is stopped, it should have no linked children.
@@ -6442,6 +6507,155 @@ mod tests {
         assert_matches!(parent.await, ActorStatus::Stopped(reason) if reason == "test");
         assert_matches!(child.await, ActorStatus::Stopped(reason) if reason == "parent draining");
         assert_eq!(handled.load(Ordering::SeqCst), 5);
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn draining_parent_waits_for_blocked_child() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let parent = proc.spawn(TestActor);
+        let handled = Arc::new(AtomicUsize::new(0));
+        let child = proc.spawn_child(
+            parent.cell().clone(),
+            DrainCountingActor {
+                handled: handled.clone(),
+            },
+        );
+        let release = block_and_queue_counts(&client, &child, 1).await;
+        let mut parent_status = parent.status();
+
+        parent.drain_and_stop("test").unwrap();
+        parent_status
+            .wait_for(ActorStatus::is_stopping)
+            .await
+            .unwrap();
+
+        let result = tokio::time::timeout(
+            Duration::from_millis(750),
+            parent_status.wait_for(ActorStatus::is_terminal),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "parent must wait for blocked child instead of unlinking it"
+        );
+
+        release.send(()).unwrap();
+        assert_matches!(parent.await, ActorStatus::Stopped(reason) if reason == "test");
+        assert_matches!(child.await, ActorStatus::Stopped(reason) if reason == "parent draining");
+        assert_eq!(handled.load(Ordering::SeqCst), 1);
+    }
+
+    #[derive(Debug)]
+    struct SupervisingTestActor;
+
+    #[async_trait]
+    impl Actor for SupervisingTestActor {
+        async fn handle_supervision_event(
+            &mut self,
+            _this: &Instance<Self>,
+            _event: &ActorSupervisionEvent,
+        ) -> Result<bool, anyhow::Error> {
+            Ok(true)
+        }
+    }
+
+    #[derive(Debug)]
+    struct CleanupStatusActor {
+        cleanup_status: Option<oneshot::Sender<ActorStatus>>,
+    }
+
+    #[async_trait]
+    impl Actor for CleanupStatusActor {
+        async fn cleanup(
+            &mut self,
+            this: &Instance<Self>,
+            _err: Option<&ActorError>,
+        ) -> Result<(), anyhow::Error> {
+            let status = this.inner.cell.status().borrow().clone();
+            let _ = self
+                .cleanup_status
+                .take()
+                .expect("cleanup status sender should be present")
+                .send(status);
+            Ok(())
+        }
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn kill_marks_responsive_child_zombie_before_signalling() {
+        let proc = Proc::isolated();
+        let grandparent = proc.spawn(SupervisingTestActor);
+        let parent = proc.spawn_child(grandparent.cell().clone(), TestActor);
+        let (cleanup_status_tx, cleanup_status_rx) = oneshot::channel();
+        let child = proc.spawn_child(
+            parent.cell().clone(),
+            CleanupStatusActor {
+                cleanup_status: Some(cleanup_status_tx),
+            },
+        );
+        child
+            .status()
+            .clone()
+            .wait_for(ActorStatus::is_idle)
+            .await
+            .expect("child should become idle");
+
+        parent.kill("test").unwrap();
+
+        let cleanup_status = cleanup_status_rx
+            .await
+            .expect("responsive child should report its cleanup status");
+        assert!(
+            cleanup_status.is_zombie(),
+            "child must be marked zombie before it receives kill"
+        );
+        assert_matches!(parent.await, ActorStatus::Failed(_));
+        assert_matches!(child.await, ActorStatus::Failed(_));
+
+        grandparent.drain_and_stop("test").unwrap();
+        assert_matches!(grandparent.await, ActorStatus::Stopped(reason) if reason == "test");
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn kill_promotes_unresponsive_child_to_root() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let grandparent = proc.spawn(SupervisingTestActor);
+        let parent = proc.spawn_child(grandparent.cell().clone(), TestActor);
+        let parent_cell = parent.cell().clone();
+        let handled = Arc::new(AtomicUsize::new(0));
+        let child = proc.spawn_child(
+            parent.cell().clone(),
+            DrainCountingActor {
+                handled: handled.clone(),
+            },
+        );
+        let child_addr = child.cell().actor_addr().clone();
+        let release = block_and_queue_counts(&client, &child, 0).await;
+
+        parent.kill("test").unwrap();
+        assert_matches!(parent.await, ActorStatus::Failed(_));
+
+        child
+            .cell()
+            .status()
+            .clone()
+            .wait_for(ActorStatus::is_zombie)
+            .await
+            .expect("child should be marked zombie");
+        assert!(child.cell().parent().is_none());
+        assert_eq!(parent_cell.child_count(), 0);
+        assert!(!grandparent.cell().child_actor_ids().contains(&child_addr));
+        assert!(proc.root_actor_ids().contains(&child_addr));
+        assert!(proc.get_instance(&child_addr).is_some());
+
+        release.send(()).unwrap();
+        assert_matches!(child.await, ActorStatus::Failed(_));
+
+        grandparent.drain_and_stop("test").unwrap();
+        assert_matches!(grandparent.await, ActorStatus::Stopped(reason) if reason == "test");
+        assert_eq!(handled.load(Ordering::SeqCst), 0);
     }
 
     #[async_timed_test(timeout_secs = 30)]

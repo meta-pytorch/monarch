@@ -1252,10 +1252,10 @@ mod tests {
     //         └── supervisor: Supervisor
     //             └── supervisor-side liveness actor: KeepaliveSupervisor
     //
-    // Killing Parent still tears down its local supervision subtree. Grandparent
+    // Killing Parent hard-kills its local supervision subtree. Grandparent
     // handles the parent failure so the test process does not treat it as an
-    // unhandled root failure. Parent stops Supervisor, Supervisor forwards the
-    // stop to Worker, and Worker stops TestChild.
+    // unhandled root failure. Since Supervisor does not run its graceful stop
+    // handler, Worker stops TestChild through the liveness orphan policy.
     #[tokio::test]
     async fn test_parent_kill_stops_remote_child() {
         let proc = Proc::isolated();
@@ -1289,7 +1289,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(reason, "parent stopping");
+        assert_eq!(reason, "supervision liveness failed");
 
         let event = tokio::time::timeout(Duration::from_secs(5), event_rx.recv())
             .await
