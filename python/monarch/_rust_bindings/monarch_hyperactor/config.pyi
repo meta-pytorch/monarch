@@ -55,7 +55,6 @@ def configure(
     split_max_buffer_size: int = ...,
     split_max_buffer_age: str = ...,
     stop_actor_timeout: str = ...,
-    cleanup_timeout: str = ...,
     default_encoding: Encoding = ...,
     channel_net_rx_buffer_full_check_interval: str = ...,
     message_latency_sampling_rate: float = ...,
@@ -126,7 +125,6 @@ def configure(
         split_max_buffer_age: Maximum age for split message buffers
             (humantime)
         stop_actor_timeout: Timeout for stopping actors (humantime)
-        cleanup_timeout: Timeout for cleanup operations (humantime)
         default_encoding: Default message encoding (Encoding.Bincode,
             Encoding.Json, or Encoding.Multipart)
         channel_net_rx_buffer_full_check_interval: Network receive buffer

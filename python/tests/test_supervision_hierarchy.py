@@ -15,7 +15,7 @@ import monarch.actor
 from isolate_in_subprocess import isolate_in_subprocess
 from monarch._rust_bindings.monarch_hyperactor.supervision import MeshFailure
 from monarch.actor import Actor, endpoint, this_host
-from monarch.config import parametrize_config
+from monarch.config import configured, parametrize_config
 
 
 T = TypeVar("T")
@@ -119,9 +119,12 @@ def test_proc_failure():
     """
     If a proc dies, the client should receive an unhandled fault.
     """
-    with FaultCapture() as capture:
-        actor = this_host().spawn_procs().spawn("top", Nest)
-        actor.kill_nest.call_one().get()
+    # Fault propagation waits for proc-death detection and mesh cleanup. Use
+    # short caller-level waits so this test does not race FaultCapture's 30s wait.
+    with configured(message_delivery_timeout="5s", actor_spawn_max_idle="5s"):
+        with FaultCapture() as capture:
+            actor = this_host().spawn_procs().spawn("top", Nest)
+            actor.kill_nest.call_one().get()
 
     # Any actors on the proc mesh can report the proc failure, so it might be
     # "nested" or it might be other broken actors such as "logger".

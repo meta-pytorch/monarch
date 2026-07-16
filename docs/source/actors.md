@@ -190,7 +190,6 @@ class FileWriter(Actor):
 **When It Runs:**
 - Called automatically in both normal and error termination
 - *Not* called on fatal failures such as OOMs, panics, or fatal signals (e.g., `SIGSEGV`)
-- Cancelled if it exceeds `HYPERACTOR_CLEANUP_TIMEOUT`, which puts the actor in an error state
 
 **What Has Already Happened:**
 - Every mesh this actor owns has already been stopped recursively

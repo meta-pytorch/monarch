@@ -173,14 +173,6 @@ declare_attrs! {
     ))
     pub attr STOP_ACTOR_TIMEOUT: Duration = Duration::from_secs(10);
 
-    /// Timeout used by proc for running the cleanup callback on an actor.
-    /// Should be less than the timeout for STOP_ACTOR_TIMEOUT.
-    @meta(CONFIG = ConfigAttr::new(
-        Some("HYPERACTOR_CLEANUP_TIMEOUT".to_string()),
-        Some("cleanup_timeout".to_string()),
-    ))
-    pub attr CLEANUP_TIMEOUT: Duration = Duration::from_secs(3);
-
     /// How often to check for full MPSC channel on NetRx.
     @meta(CONFIG = ConfigAttr::new(
         Some("HYPERACTOR_CHANNEL_NET_RX_BUFFER_FULL_CHECK_INTERVAL".to_string()),
@@ -353,7 +345,6 @@ mod tests {
             export HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT=1m
             # export HYPERACTOR_CODEC_MAX_FRAME_LENGTH=10737418240
             export HYPERACTOR_CODEC_MAX_FRAME_LENGTH=1024
-            # export HYPERACTOR_CLEANUP_TIMEOUT=3s
             # export HYPERACTOR_SPLIT_MAX_BUFFER_AGE=50ms
             # export HYPERACTOR_DEFAULT_ENCODING=serde_multipart
             # export HYPERACTOR_HOST_SPAWN_READY_TIMEOUT=30s
