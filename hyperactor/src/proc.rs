@@ -3092,30 +3092,15 @@ impl<A: Actor> Instance<A> {
             }
         }
         // Run the actor cleanup function before the actor stops to delete
-        // resources. If it times out, continue with stopping the actor.
-        // Don't call it if there was a panic, because the actor may
+        // resources. Don't call it if there was a panic, because the actor may
         // be in an invalid state and unable to access anything, for example
         // the GIL.
         let cleanup_result = if !did_panic {
-            let cleanup_timeout = hyperactor_config::global::get(config::CLEANUP_TIMEOUT);
-            match tokio::time::timeout(
-                cleanup_timeout,
-                self.inner
-                    .proc
-                    .with_current(actor.cleanup(self, result.as_ref().err())),
-            )
-            .await
-            {
-                Ok(Ok(x)) => Ok(x),
-                Ok(Err(e)) => Err(ActorError::new(
-                    self.self_addr(),
-                    ActorErrorKind::cleanup(e),
-                )),
-                Err(e) => Err(ActorError::new(
-                    self.self_addr(),
-                    ActorErrorKind::cleanup(e.into()),
-                )),
-            }
+            self.inner
+                .proc
+                .with_current(actor.cleanup(self, result.as_ref().err()))
+                .await
+                .map_err(|e| ActorError::new(self.self_addr(), ActorErrorKind::cleanup(e)))
         } else {
             Ok(())
         };

@@ -1702,8 +1702,7 @@ class Actor(MeshTrait):
         because of an error. The same ``__cleanup__`` runs in both cases;
         ``exc`` is ``None`` on a normal stop and carries the exception on an
         error stop. It is *not* called on fatal failures such as OOMs, panics,
-        or signals like ``SIGSEGV``. If it exceeds ``HYPERACTOR_CLEANUP_TIMEOUT``,
-        it is cancelled and the actor is placed in an error state.
+        or signals like ``SIGSEGV``.
 
         By the time this runs, every mesh this actor owns has already been
         stopped recursively, and each owned actor's ``__cleanup__`` has already

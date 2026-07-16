@@ -173,13 +173,6 @@ Timeouts
     - **Default**: ``"10s"``
     - **Environment**: ``HYPERACTOR_STOP_ACTOR_TIMEOUT``
 
-``cleanup_timeout``
-    Timeout for cleanup operations during shutdown.
-
-    - **Type**: ``str`` (duration format)
-    - **Default**: ``"3s"``
-    - **Environment**: ``HYPERACTOR_CLEANUP_TIMEOUT``
-
 ``actor_spawn_max_idle``
     Maximum idle time between updates while spawning actors in a proc mesh.
 
