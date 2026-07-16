@@ -24,6 +24,10 @@ needs_cuda = pytest.mark.skipif(
     not torch.cuda.is_available() or torch.version.hip is not None,
     reason="cross-rank tensor transport requires CUDA+NCCL (not ROCm/HIP)",
 )
+needs_multiple_gpus = pytest.mark.skipif(
+    torch.cuda.device_count() < 2,
+    reason="Not enough GPUs, this test requires at least 2 GPUs",
+)
 
 
 def _tensor_device() -> torch.device:
@@ -31,6 +35,7 @@ def _tensor_device() -> torch.device:
 
 
 @needs_tensor_engine
+@needs_multiple_gpus
 def test_tensor_engine() -> None:
     pm = this_host().spawn_procs(per_host={"gpus": 2})
 
@@ -61,6 +66,7 @@ def test_tensor_engine() -> None:
 # exercises cross-rank `to_mesh()` transport, which still uses the CUDA/NCCL
 # communication path today.
 @needs_cuda
+@needs_multiple_gpus
 def test_proc_mesh_tensor_engine() -> None:
     pm = this_host().spawn_procs(per_host={"gpus": 2})
     device = _tensor_device()
