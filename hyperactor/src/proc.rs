@@ -2937,11 +2937,10 @@ impl<A: Actor> Instance<A> {
             },
         };
 
-        // Supervision policy is driven by the event status, not the live cell status.
-        // After teardown marks an actor zombie, publish that lifecycle verdict instead
-        // of a late task failure so default supervision treats it as non-error.
         let current_status = self.inner.cell.status().borrow().clone();
-        let event = if current_status.is_zombie() {
+        // Supervisors observe the zombie lifecycle verdict, while the event
+        // stored below must describe the terminal status for introspection.
+        let event_to_deliver = if current_status.is_zombie() {
             Some(ActorSupervisionEvent::new(
                 self.inner.cell.actor_addr().clone(),
                 actor.display_name(),
@@ -2949,7 +2948,7 @@ impl<A: Actor> Instance<A> {
                 None,
             ))
         } else {
-            event
+            event.clone()
         };
 
         self.mailbox().close(terminal_status.clone());
@@ -2963,7 +2962,7 @@ impl<A: Actor> Instance<A> {
         // terminal state can only see it once the event has been
         // enqueued at its destination.
         if let Some(parent) = self.inner.cell.maybe_unlink_parent() {
-            if let Some(event) = event {
+            if let Some(event) = event_to_deliver {
                 // Parent exists, failure should be propagated to the parent.
                 parent.send_supervision_event_or_crash(event);
             }
@@ -2983,7 +2982,7 @@ impl<A: Actor> Instance<A> {
             //
             // Note that orphaned actor is unexpected and would only happen if
             // there is a bug.
-            if let Some(event) = event {
+            if let Some(event) = event_to_deliver {
                 self.inner
                     .proc
                     .handle_unhandled_supervision_event(&self, event);
@@ -6291,12 +6290,14 @@ mod tests {
     }
 
     #[async_timed_test(timeout_secs = 30)]
-    async fn zombie_task_failure_reports_non_error_supervision_event() {
+    async fn zombie_task_failure_stores_terminal_event_and_reports_zombie() {
         let proc = Proc::isolated();
         let client = proc.client("client");
         let (mut reported_event, _coordinator) =
             ProcSupervisionCoordinator::set(&proc).await.unwrap();
         let handle = proc.spawn_with_label::<TestActor>("alive", TestActor);
+        let actor_id = handle.actor_addr().clone();
+        let cell = handle.cell().clone();
         handle
             .status()
             .clone()
@@ -6311,18 +6312,41 @@ mod tests {
             .fail(&client, anyhow::anyhow!("zombie failure"))
             .await
             .unwrap();
-        assert_matches!(handle.await, ActorStatus::Failed(_));
+        let terminal_status = handle.await;
+        assert!(
+            terminal_status.is_failed(),
+            "zombie task failure should reach a failed terminal status"
+        );
 
-        let event = tokio::time::timeout(Duration::from_secs(1), reported_event.recv())
+        let event = cell
+            .supervision_event()
+            .expect("failed zombie must store its terminal supervision event");
+        assert!(
+            event.actor_status.is_failed(),
+            "zombie terminal event should preserve the failed status"
+        );
+        assert_eq!(event.actor_status, terminal_status);
+
+        let propagated = tokio::time::timeout(Duration::from_secs(1), reported_event.recv())
             .await
             .expect("zombie supervision event should arrive");
         assert!(
-            event.actor_status.is_zombie(),
-            "zombie actor task failure should report zombie status"
+            propagated.actor_status.is_zombie(),
+            "zombie task failure should report its zombie lifecycle verdict"
         );
         assert!(
-            !event.is_error(),
-            "zombie actor task failure should report a non-error supervision event"
+            !propagated.is_error(),
+            "zombie supervision event should remain non-error"
+        );
+
+        let snapshot = wait_for_terminated_snapshot(&proc, &actor_id).await;
+        let attrs: hyperactor_config::Attrs =
+            serde_json::from_str(&snapshot.attrs).expect("snapshot attrs must be valid");
+        assert!(
+            attrs
+                .get(crate::introspect::FAILURE_ERROR_MESSAGE)
+                .is_some(),
+            "failed zombie snapshot must retain failure information"
         );
     }
 
