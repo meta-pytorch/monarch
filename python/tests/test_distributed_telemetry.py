@@ -28,6 +28,7 @@ from monarch._src.actor.proc_mesh import (
     SetupActor,
     unregister_proc_mesh_spawn_callback,
 )
+from monarch.actor import span
 from monarch.job import MeshAdminConfig, ProcessJob, TelemetryConfig
 from scoped_state import scoped_state
 
@@ -38,6 +39,12 @@ class WorkerActor(Actor):
     @endpoint
     def ping(self) -> None:
         pass
+
+    @endpoint
+    def emit_trace(self, name: str) -> None:
+        """Emit a named user span."""
+        with span(name):
+            pass
 
 
 class SenderActor(Actor):
@@ -2035,3 +2042,30 @@ def test_snapshot_periodic_capture_populates_tables(cleanup_callbacks) -> None:
             f"expected host or root ancestor for {actor_node_id}, "
             f"got kinds={ancestor_kinds}, ids={ancestor_ids}"
         )
+
+
+@pytest.mark.timeout(60)
+def test_public_custom_trace_is_queryable(cleanup_callbacks) -> None:
+    trace_name = f"custom_trace_{uuid.uuid4().hex}"
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
+        cached_path=None,
+    ) as state:
+        _assert_sidecar(state)
+
+        workers = state.hosts.spawn_procs(per_host={"workers": 1}).spawn(
+            "custom_trace_worker", WorkerActor
+        )
+        workers.initialized.get()
+        workers.emit_trace.call(trace_name).get()
+
+        result = _query(
+            state,
+            "SELECT name, fields_json FROM spans "
+            "WHERE name = 'python_user_span' "
+            f"AND fields_json LIKE '%{trace_name}%'",
+        )
+
+        assert result.get("name") == ["python_user_span"]
+        fields = json.loads(result["fields_json"][0])
+        assert fields["name"] == trace_name
