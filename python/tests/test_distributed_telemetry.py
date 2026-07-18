@@ -864,7 +864,7 @@ def test_actor_status_events_table() -> None:
                 "JOIN actors a ON ase.actor_id = a.id "
                 "JOIN meshes m ON a.mesh_id = m.id "
                 "WHERE m.given_name = 'status_test_worker'",
-                min_rows=4,
+                min_rows=6,
             )
         )
         statuses_by_actor = {
@@ -875,7 +875,7 @@ def test_actor_status_events_table() -> None:
         }
         assert len(statuses_by_actor) == 2
         assert all(
-            statuses == {"Initializing", "Idle"}
+            statuses == {"Created", "Initializing", "Idle"}
             for statuses in statuses_by_actor.values()
         ), statuses_by_actor
         assert all(row["reason"] is None for row in worker_rows)
@@ -911,12 +911,20 @@ def test_actor_status_events_table() -> None:
 
 
 @pytest.mark.timeout(120)
-@pytest.mark.xfail(
-    strict=True,
-    reason="User actors omit the Created or Processing transition",
-)
 @isolate_in_subprocess
-@pytest.mark.parametrize("required_status", ["Created", "Processing"])
+@pytest.mark.parametrize(
+    "required_status",
+    [
+        "Created",
+        pytest.param(
+            "Processing",
+            marks=pytest.mark.xfail(
+                strict=True,
+                reason="User actor Processing transitions are suppressed",
+            ),
+        ),
+    ],
+)
 def test_user_actor_status_missing_transition(required_status: str) -> None:
     with scoped_state(
         ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
@@ -981,10 +989,11 @@ def test_actor_status_events_failed_actor() -> None:
                 state,
                 "SELECT new_status, reason FROM actor_status_events "
                 f"WHERE actor_id = {actor_id}",
-                min_rows=4,
+                min_rows=5,
             )
         )
         assert {row["new_status"] for row in rows} == {
+            "Created",
             "Initializing",
             "Idle",
             "Stopping",
@@ -1795,7 +1804,7 @@ def test_query_after_stopping_actor_mesh(cleanup_callbacks) -> None:
                 "JOIN actors a ON ase.actor_id = a.id "
                 "JOIN meshes m ON a.mesh_id = m.id "
                 "WHERE m.given_name = 'actor_stop_worker'",
-                min_rows=8,
+                min_rows=10,
             )
         )
         statuses_by_actor = {
@@ -1805,7 +1814,7 @@ def test_query_after_stopping_actor_mesh(cleanup_callbacks) -> None:
             for actor_id in {row["actor_id"] for row in status_rows}
         }
         assert all(
-            statuses == {"Initializing", "Idle", "Stopping", "Stopped"}
+            statuses == {"Created", "Initializing", "Idle", "Stopping", "Stopped"}
             for statuses in statuses_by_actor.values()
         ), statuses_by_actor
         assert all(
