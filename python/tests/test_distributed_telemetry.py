@@ -1513,10 +1513,6 @@ def test_message_status_events_table() -> None:
 
 
 @pytest.mark.timeout(120)
-@pytest.mark.xfail(
-    strict=True,
-    reason="A failed handler is recorded as complete instead of failed",
-)
 @isolate_in_subprocess
 def test_message_status_events_failed_handler() -> None:
     with scoped_state(

@@ -119,6 +119,7 @@ pub use actor::AnyActorGuard;
 pub use actor::AnyActorHandle;
 pub use actor::Handler;
 pub use actor::HandlerInfo;
+pub use actor::MessageStatusReporting;
 pub use actor::RemoteHandles;
 pub use actor::RemoteSpawn;
 pub use actor_local::ActorLocal;

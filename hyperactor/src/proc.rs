@@ -171,6 +171,7 @@ use crate::actor::ActorStoppingReason;
 use crate::actor::AnyActorHandle;
 use crate::actor::Binds;
 use crate::actor::HandlerInfo;
+use crate::actor::MessageStatusReporting;
 use crate::actor::Referable;
 use crate::actor::RemoteHandles;
 use crate::actor::Signal;
@@ -3397,12 +3398,17 @@ impl<A: Actor> Instance<A> {
             .total_processing_time_us
             .fetch_add(elapsed_us, Ordering::SeqCst);
 
-        if let Some(message_id) = message_id {
+        let terminal_status = match (&result, A::message_status_reporting()) {
+            (Err(_), _) => Some("failed"),
+            (Ok(_), MessageStatusReporting::Immediate) => Some("complete"),
+            (Ok(_), MessageStatusReporting::Deferred) => None,
+        };
+        if let (Some(message_id), Some(status)) = (message_id, terminal_status) {
             notify_message_status(hyperactor_telemetry::MessageStatusEvent {
                 timestamp: std::time::SystemTime::now(),
                 id: hyperactor_telemetry::generate_status_event_id(message_id),
                 message_id,
-                status: "complete".to_string(),
+                status: status.to_string(),
             });
         }
 

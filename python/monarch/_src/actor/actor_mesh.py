@@ -1285,18 +1285,24 @@ async def _handle_queued_message(actor: Any, msg: "QueuedMessage") -> None:
     """Handle a single queued message."""
 
     panic_flag = _QueuePanicFlag()
-    await actor.handle(
-        msg.context,
-        msg.method,
-        msg.bytes,
-        panic_flag,  # pyre-ignore[6]: _QueuePanicFlag implements PanicFlag protocol
-        msg.local_state,
-        msg.refs,
-        msg.response_port,
-    )
-    # If a panic was signaled, re-raise it after handle() has cleaned up.
-    if panic_flag.panic_exception is not None:
-        raise panic_flag.panic_exception
+    try:
+        await actor.handle(
+            msg.context,
+            msg.method,
+            msg.bytes,
+            panic_flag,  # pyre-ignore[6]: _QueuePanicFlag implements PanicFlag protocol
+            msg.local_state,
+            msg.refs,
+            msg.response_port,
+        )
+        # If a panic was signaled, re-raise it after handle() has cleaned up.
+        if panic_flag.panic_exception is not None:
+            raise panic_flag.panic_exception
+    except BaseException:
+        msg._report_failed()
+        raise
+    else:
+        msg._report_complete()
 
 
 class _Actor:
