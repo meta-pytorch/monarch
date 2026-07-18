@@ -17,17 +17,14 @@
 //! Data flows directly Rust-to-Rust via PortRef for efficiency.
 
 pub mod database_scanner;
-mod entity_batch_sink;
 pub mod pyspy_table;
 pub mod query_engine;
-mod record_batch_sink;
 pub mod socket_ingest;
 
 pub use database_scanner::DatabaseScanner;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::record_batch::RecordBatch;
-pub use entity_batch_sink::EntityBatchSink;
 use monarch_record_batch::RecordBatchBuffer;
 use monarch_telemetry_schema::entity_tables::ACTOR_STATUS_EVENTS;
 use monarch_telemetry_schema::entity_tables::ACTORS;
@@ -54,8 +51,6 @@ pub use pyspy_table::PySpyFrame;
 pub use pyspy_table::PySpyLocalVariable;
 pub use pyspy_table::PySpyStackTrace;
 pub use query_engine::QueryEngine;
-pub use record_batch_sink::FlushCallback;
-pub use record_batch_sink::RecordBatchSink;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_multipart::Part;

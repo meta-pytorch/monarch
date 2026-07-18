@@ -38,9 +38,7 @@ use pyo3::types::PyModule;
 use serde_multipart::Part;
 use tokio::task::AbortHandle;
 
-use crate::EntityBatchSink;
 use crate::QueryResponse;
-use crate::RecordBatchSink;
 use crate::pyspy_table::PySpyDumpBuffer;
 use crate::pyspy_table::PySpyFrameBuffer;
 use crate::pyspy_table::PySpyLocalVariableBuffer;
@@ -272,10 +270,6 @@ pub struct DatabaseScanner {
     rank: usize,
     /// Retention window in microseconds.
     retention_us: i64,
-    /// Handle to flush the RecordBatchSink for trace events (spans, events)
-    sink: Option<RecordBatchSink>,
-    /// Handle to flush the entity batch sink for entity events.
-    entity_sink: Option<EntityBatchSink>,
     /// Socket ingest tasks owned by this scanner.
     ///
     /// Keeping the handles here keeps the listener tasks alive for the scanner
@@ -292,26 +286,15 @@ pub struct DatabaseScanner {
 #[pymethods]
 impl DatabaseScanner {
     #[new]
-    #[pyo3(signature = (rank, batch_size=1000, retention_secs=DEFAULT_RETENTION_SECS))]
-    fn new(rank: usize, batch_size: usize, retention_secs: u64) -> PyResult<Self> {
-        let mut scanner = Self {
+    #[pyo3(signature = (rank, retention_secs=DEFAULT_RETENTION_SECS))]
+    fn new(rank: usize, retention_secs: u64) -> PyResult<Self> {
+        let scanner = Self {
             table_data: Arc::new(StdMutex::new(HashMap::new())),
             rank,
             retention_us: retention_secs as i64 * 1_000_000,
-            sink: None,
-            entity_sink: None,
             socket_ingest_handles: StdMutex::new(Vec::new()),
             retention_task: StdMutex::new(None),
         };
-
-        // Create and register a RecordBatchSink for trace events (spans, events)
-        let sink = scanner.create_record_batch_sink(batch_size);
-        scanner.sink = Some(sink.clone());
-        hyperactor_telemetry::register_sink(Box::new(sink));
-
-        let entity_sink = scanner.create_entity_batch_sink(batch_size);
-        scanner.entity_sink = Some(entity_sink.clone());
-        hyperactor_telemetry::register_sink(Box::new(entity_sink));
 
         // Pre-register py-spy tables so QueryEngine discovers them at setup time
         for (name, batch) in [
@@ -342,22 +325,6 @@ impl DatabaseScanner {
         Ok(scanner)
     }
 
-    /// Flush any pending trace events and entity events to the tables,
-    /// then apply time-based retention policies.
-    fn flush(&self) -> PyResult<()> {
-        if let Some(ref sink) = self.sink {
-            sink.flush()
-                .map_err(|e| PyException::new_err(format!("failed to flush sink: {}", e)))?;
-        }
-        if let Some(ref entity_sink) = self.entity_sink {
-            entity_sink
-                .flush()
-                .map_err(|e| PyException::new_err(format!("failed to flush entity sink: {}", e)))?;
-        }
-        self.apply_retention_policies()?;
-        Ok(())
-    }
-
     /// Filter a single table, keeping only rows that match the WHERE clause.
     fn apply_retention(&self, table_name: &str, where_clause: &str) -> PyResult<()> {
         let table = {
@@ -383,7 +350,7 @@ impl DatabaseScanner {
 
     /// Get list of table names.
     fn table_names(&self) -> PyResult<Vec<String>> {
-        self.flush()?;
+        self.apply_retention_policies()?;
         let guard = self
             .table_data
             .lock()
@@ -393,7 +360,7 @@ impl DatabaseScanner {
 
     /// Get schema for a table in Arrow IPC format.
     fn schema_for<'py>(&self, py: Python<'py>, table: &str) -> PyResult<Bound<'py, PyBytes>> {
-        self.flush()?;
+        self.apply_retention_policies()?;
         let guard = self
             .table_data
             .lock()
@@ -449,7 +416,7 @@ impl DatabaseScanner {
         limit: Option<usize>,
         filter_expr: Option<String>,
     ) -> PyResult<usize> {
-        self.flush()?;
+        self.apply_retention_policies()?;
 
         // Get actor instance from context and extract the Rust Instance once
         let actor_module = py.import("monarch.actor")?;
@@ -642,40 +609,6 @@ impl DatabaseScanner {
             get_tokio_runtime().block_on(table.push(batch));
         }
         Ok(())
-    }
-
-    /// Create a RecordBatchSink that pushes batches to this scanner's tables.
-    ///
-    /// The sink can be registered with hyperactor_telemetry::register_sink()
-    /// to receive trace events and store them as queryable tables.
-    pub fn create_record_batch_sink(&self, batch_size: usize) -> RecordBatchSink {
-        let table_data = self.table_data.clone();
-
-        RecordBatchSink::new(
-            batch_size,
-            Box::new(move |table_name, batch| {
-                if let Err(e) = Self::push_batch_to_tables(&table_data, table_name, batch) {
-                    tracing::error!("Failed to push batch to table {}: {}", table_name, e);
-                }
-            }),
-        )
-    }
-
-    /// Create an entity batch sink that pushes batches to this scanner's tables.
-    ///
-    /// The sink can be registered with `hyperactor_telemetry::register_sink`
-    /// to receive `TraceEvent::Entity` events and store them as queryable tables.
-    pub fn create_entity_batch_sink(&self, batch_size: usize) -> EntityBatchSink {
-        let table_data = self.table_data.clone();
-
-        EntityBatchSink::new(
-            batch_size,
-            Box::new(move |table_name, batch| {
-                if let Err(e) = Self::push_batch_to_tables(&table_data, table_name, batch) {
-                    tracing::error!("Failed to push batch to table {}: {}", table_name, e);
-                }
-            }),
-        )
     }
 
     /// Parse a py-spy result JSON and store data in normalized py-spy tables.
@@ -1077,8 +1010,6 @@ mod tests {
             table_data: Arc::new(StdMutex::new(HashMap::new())),
             rank: 0,
             retention_us,
-            sink: None,
-            entity_sink: None,
             socket_ingest_handles: StdMutex::new(Vec::new()),
             retention_task: StdMutex::new(None),
         }

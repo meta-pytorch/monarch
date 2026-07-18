@@ -197,6 +197,25 @@ def test_telemetry_actor_reports_activation_failure() -> None:
         _remove_socket_dir(apply_id)
 
 
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
+def test_collector_telemetry_is_ingested_once() -> None:
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
+        cached_path=None,
+    ) as state:
+        _assert_sidecar(state)
+
+        result = _query(
+            state,
+            "SELECT id, COUNT(*) AS copies FROM meshes "
+            "WHERE given_name = 'telemetry_hosts' GROUP BY id",
+        )
+
+        assert len(result.get("id", [])) == 1, result
+        assert result["copies"] == [1], result
+
+
 @pytest.fixture
 def cleanup_callbacks():
     """Fixture to clean up any callbacks registered during tests."""
