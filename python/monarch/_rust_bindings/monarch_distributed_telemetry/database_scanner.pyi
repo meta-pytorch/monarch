@@ -12,12 +12,8 @@ class DatabaseScanner:
     def __new__(
         cls,
         rank: int,
-        batch_size: int = 1000,
         retention_secs: int = 600,
     ) -> "DatabaseScanner": ...
-    def flush(self) -> None:
-        """Flush any pending trace events to the tables."""
-        ...
     def apply_retention(self, table_name: str, where_clause: str) -> None:
         """Filter a table, keeping only rows that match the WHERE clause."""
         ...
