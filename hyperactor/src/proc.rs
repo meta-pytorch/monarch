@@ -4118,21 +4118,20 @@ impl InstanceCell {
         let old = old_status.expect("status change should capture previous status");
         let actor_id = hash_to_u64(self.actor_addr().id());
 
-        // Actor status changes between Idle and Processing when handling every
-        // message. It creates too many logs if we want to log these 2 states.
-        // Also, sometimes the actor transitions from Processing -> Processing.
-        // Therefore we skip the status changes between them.
+        let new_status = new.arm().unwrap_or("unknown");
+        let change_reason = match &new {
+            ActorStatus::Failed(reason) => Some(reason.to_string()),
+            ActorStatus::Stopping(ActorStoppingReason::Zombie(reason)) => Some(reason.clone()),
+            ActorStatus::Stopped(reason) => Some(reason.clone()),
+            _ => None,
+        };
+
+        // Idle/Processing transitions are persisted but omitted from logs because
+        // they occur for every message.
         if !((old.is_idle() && new.is_processing())
             || (old.is_processing() && new.is_idle())
             || old == new)
         {
-            let new_status = new.arm().unwrap_or("unknown");
-            let change_reason = match &new {
-                ActorStatus::Failed(reason) => reason.to_string(),
-                ActorStatus::Stopping(ActorStoppingReason::Zombie(reason)) => reason.clone(),
-                ActorStatus::Stopped(reason) => reason.clone(),
-                _ => "".to_string(),
-            };
             tracing::info!(
                 name = "ActorStatus",
                 actor_id = %self.actor_addr(),
@@ -4140,20 +4139,16 @@ impl InstanceCell {
                 status = new_status,
                 prev_status = old.arm().unwrap_or("unknown"),
                 caller = %PanicLocation::caller(),
-                change_reason,
+                change_reason = change_reason.as_deref().unwrap_or(""),
             );
-            notify_actor_status_changed(ActorStatusEvent {
-                id: generate_actor_status_event_id(actor_id),
-                timestamp: std::time::SystemTime::now(),
-                actor_id,
-                new_status: new_status.to_string(),
-                reason: if change_reason.is_empty() {
-                    None
-                } else {
-                    Some(change_reason)
-                },
-            });
         }
+        notify_actor_status_changed(ActorStatusEvent {
+            id: generate_actor_status_event_id(actor_id),
+            timestamp: std::time::SystemTime::now(),
+            actor_id,
+            new_status: new_status.to_string(),
+            reason: change_reason,
+        });
     }
 
     fn publish_dropped_status(&self, terminal_status: ActorStatus) {
