@@ -3336,10 +3336,7 @@ impl<A: Actor> Instance<A> {
         let now = std::time::SystemTime::now();
         let handler_info = Some(handler_info);
         self.change_status(ActorStatus::Processing(now, handler_info.clone()));
-        crate::mailbox::headers::log_message_latency_if_sampling(
-            &headers,
-            self.self_addr().to_string(),
-        );
+        crate::mailbox::headers::log_message_latency_if_sampling(&headers, self.self_addr());
 
         let message_id = headers.get(crate::mailbox::headers::TELEMETRY_MESSAGE_ID);
 

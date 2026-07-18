@@ -140,11 +140,12 @@ pub(crate) fn stamp_sender_actor_id_fresh(
 /// This function checks the configured sampling rate and, if the random sample passes,
 /// calculates the latency between the send timestamp and the current time, then records
 /// the latency metric with the associated actor ID.
-pub fn log_message_latency_if_sampling(headers: &Flattrs, actor_id: String) {
+pub fn log_message_latency_if_sampling(headers: &Flattrs, actor_addr: &ActorAddr) {
     if fastrand::f32() > global::get(crate::config::MESSAGE_LATENCY_SAMPLING_RATE) {
         return;
     }
 
+    let actor_id = actor_addr.to_string();
     if !headers.contains_key(SEND_TIMESTAMP) {
         tracing::debug!(
             actor_id = actor_id,
