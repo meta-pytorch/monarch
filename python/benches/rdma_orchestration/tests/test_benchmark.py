@@ -6,18 +6,22 @@
 
 # pyre-strict
 
-"""Pure law tests for the RDMA orchestration benchmark's analysis half (Diff A).
-
-Each test cites the ROB-* law it witnesses. No Monarch/RDMA import; runs anywhere.
+"""Pure tests for the RDMA orchestration benchmark: the analysis half and the
+measurement helpers. Each test cites the ROB-* law it witnesses. No Monarch/RDMA
+import; runs anywhere.
 """
 
+import asyncio
+import hashlib
 import os
 import tempfile
 import unittest
-from typing import Mapping, Optional
+from typing import Awaitable, Mapping, Optional
 
 from monarch.python.benches.rdma_orchestration.benchmark import (
     _percentile_nearest_rank,
+    check_read_witness,
+    check_write_witness,
     COLD_SAMPLES,
     CompatiblePair,
     CONCURRENT_BATCHES,
@@ -27,7 +31,9 @@ from monarch.python.benches.rdma_orchestration.benchmark import (
     Floor,
     GATED_STATS,
     GateRefused,
+    issue_all_then_observe,
     K,
+    measure_steady,
     MIN_ARTIFACTS_PER_SIDE,
     PAYLOAD_BYTES,
     read_artifact,
@@ -36,10 +42,12 @@ from monarch.python.benches.rdma_orchestration.benchmark import (
     RunShape,
     SERIAL_SAMPLES,
     SERIAL_WARMUPS,
+    SteadyTrial,
     summarize,
     ThresholdPolicy,
     TimeoutPolicy,
     Verdict,
+    WitnessError,
     write_artifact,
 )
 
@@ -247,6 +255,69 @@ class EligibilityTest(unittest.TestCase):
     def test_compatible_pair_raises_on_smoke(self) -> None:
         with self.assertRaises(GateRefused):
             CompatiblePair.build(_side(smoke=True), _side())
+
+
+class SteadyMeasurementTest(unittest.TestCase):
+    def test_measure_steady_orders_phases(self) -> None:
+        # ROB-3: prepare -> clock -> issue/observe -> clock -> validate.
+        events: list[str] = []
+
+        async def prep() -> object:
+            events.append("prepare")
+            return "exp"
+
+        async def issue() -> object:
+            events.append("issue")
+            return "obs"
+
+        async def val(expected: object, observed: object) -> None:
+            events.append("validate")
+            self.assertEqual((expected, observed), ("exp", "obs"))
+
+        ns = asyncio.run(measure_steady(SteadyTrial(prep, issue, val)))
+        self.assertEqual(events, ["prepare", "issue", "validate"])
+        self.assertGreaterEqual(ns, 0)
+
+    def test_all_k_dispatched_before_first_observed(self) -> None:
+        # ROB-4: every op is dispatched (.as_asyncio) before any is observed.
+        order: list[tuple[str, int]] = []
+
+        class FakeOp:
+            def __init__(self, i: int) -> None:
+                self._i = i
+
+            def as_asyncio(self) -> Awaitable[object]:
+                order.append(("dispatch", self._i))
+
+                async def _observe() -> object:
+                    order.append(("observe", self._i))
+                    return None
+
+                return _observe()
+
+        asyncio.run(issue_all_then_observe(lambda i: FakeOp(i), 3))
+        first_observe = next(idx for idx, ev in enumerate(order) if ev[0] == "observe")
+        dispatch_idxs = [idx for idx, ev in enumerate(order) if ev[0] == "dispatch"]
+        self.assertEqual(len(dispatch_idxs), 3)
+        self.assertTrue(all(idx < first_observe for idx in dispatch_idxs))
+
+
+class WitnessTest(unittest.TestCase):
+    def test_read_witness_detects_noop(self) -> None:
+        # ROB-5: a poisoned destination left unchanged by a no-op read fails.
+        source = bytes(range(64))
+        poison = bytes([0xFF] * 64)
+        check_read_witness(source, source)
+        with self.assertRaises(WitnessError):
+            check_read_witness(source, poison)
+
+    def test_write_witness_detects_drop(self) -> None:
+        # ROB-5: a dropped write leaves prior bytes; the digest mismatches.
+        payload = b"payload-with-counter"
+        good = hashlib.sha256(payload).digest()
+        check_write_witness(good, good)
+        with self.assertRaises(WitnessError):
+            check_write_witness(good, hashlib.sha256(b"stale").digest())
 
 
 if __name__ == "__main__":
