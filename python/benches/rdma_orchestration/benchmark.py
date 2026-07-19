@@ -46,10 +46,12 @@ under test.
 """
 
 import hashlib
+import itertools
 import json
 import math
 import os
 import platform
+import random
 import socket
 import tempfile
 import time
@@ -271,20 +273,27 @@ def _artifact_from_dict(d: Mapping[str, object]) -> RunArtifact:
     )
 
 
-def write_artifact(artifact: RunArtifact, path: str, overwrite: bool) -> None:
-    """Atomically write one artifact; refuse an existing path unless overwrite."""
+def _atomic_write_json(
+    payload: Mapping[str, object], path: str, overwrite: bool
+) -> None:
+    """Write JSON atomically; refuse an existing path unless overwrite (ROB-7)."""
     if os.path.exists(path) and not overwrite:
         raise FileExistsError(f"{path} exists; pass --overwrite to replace it")
     directory = os.path.dirname(os.path.abspath(path)) or "."
     fd, tmp = tempfile.mkstemp(dir=directory, suffix=".tmp")
     try:
         with os.fdopen(fd, "w") as fh:
-            json.dump(_artifact_to_dict(artifact), fh, indent=1, sort_keys=True)
+            json.dump(dict(payload), fh, indent=1, sort_keys=True)
         os.replace(tmp, path)
     except BaseException:
         if os.path.exists(tmp):
             os.unlink(tmp)
         raise
+
+
+def write_artifact(artifact: RunArtifact, path: str, overwrite: bool) -> None:
+    """Atomically write one artifact; refuse an existing path unless overwrite."""
+    _atomic_write_json(_artifact_to_dict(artifact), path, overwrite)
 
 
 def read_artifact(path: str) -> RunArtifact:
@@ -398,6 +407,132 @@ def _check_policy_applies(pair: CompatiblePair, policy: ThresholdPolicy) -> None
         for stat in stats:
             if stat not in policy.floors.get(metric, {}):
                 raise GateRefused(f"policy is missing a floor for {metric}.{stat}")
+
+
+# ---------------------------------------------------------------------------
+# Calibration: derive a backend's policy from a homogeneous artifact set, in the
+# gate's own median-of-five estimator space (matches `_aggregate`). Pure.
+# ---------------------------------------------------------------------------
+
+# Provisional sensitivity policy (revisit once real TCP/ibverbs data exists): the
+# noise envelope is at least 1 us, at least 1% of the metric's median, and 1.5x
+# the largest median-of-five split disagreement observed during calibration.
+CALIB_MIN_ABSOLUTE_NS: int = 1000
+CALIB_REL_OF_MEDIAN: float = 0.01
+CALIB_SAFETY: float = 1.5
+# Evaluate every disjoint 5-vs-5 split at or below this many (252 at n=10),
+# otherwise a deterministic resample of this size.
+CALIB_MAX_SPLITS: int = 5000
+CALIB_SPLIT_SEED: int = 0
+
+
+@dataclass(frozen=True)
+class StatCalibration:
+    """Per-statistic calibration diagnostics (reported, not stored in the policy)."""
+
+    metric: str
+    stat: str
+    median_ns: int
+    dmax_ns: int  # largest median-of-five split disagreement seen
+    floor: Floor
+    mde: float  # minimum detectable effect (relative), given the floor
+
+
+def _five_five_splits(n: int) -> list[tuple[tuple[int, ...], tuple[int, ...]]]:
+    """All disjoint (baseline-of-5, candidate-of-5) index splits -- the shape a real
+    gate compares. Exhaustive when the count is <= CALIB_MAX_SPLITS (252 at n=10),
+    otherwise a deterministic resample."""
+    half = MIN_ARTIFACTS_PER_SIDE
+    if n < 2 * half:
+        raise GateRefused(f"calibration needs >= {2 * half} artifacts, has {n}")
+    total = math.comb(n, half) * math.comb(n - half, half)
+    if total <= CALIB_MAX_SPLITS:
+        out: list[tuple[tuple[int, ...], tuple[int, ...]]] = []
+        for base in itertools.combinations(range(n), half):
+            rest = [i for i in range(n) if i not in base]
+            for cand in itertools.combinations(rest, half):
+                out.append((base, cand))
+        return out
+    rng = random.Random(CALIB_SPLIT_SEED)
+    seen: set[tuple[tuple[int, ...], tuple[int, ...]]] = set()
+    while len(seen) < CALIB_MAX_SPLITS:
+        perm = list(range(n))
+        rng.shuffle(perm)
+        seen.add((tuple(sorted(perm[:half])), tuple(sorted(perm[half : 2 * half]))))
+    return sorted(seen)
+
+
+def calibrate(
+    artifacts: Sequence[RunArtifact], version: str
+) -> tuple[ThresholdPolicy, tuple[StatCalibration, ...]]:
+    """Derive a backend's threshold policy from a homogeneous artifact set in the
+    gate's median-of-five estimator space. Returns the policy plus per-statistic
+    diagnostics (including each statistic's minimum detectable effect)."""
+    if len(artifacts) < 2 * MIN_ARTIFACTS_PER_SIDE:
+        raise GateRefused(
+            f"calibration needs >= {2 * MIN_ARTIFACTS_PER_SIDE} artifacts, "
+            f"has {len(artifacts)}"
+        )
+    if len({_compat_key(a) for a in artifacts}) != 1:
+        raise GateRefused("calibration artifacts are not mutually compatible")
+    for a in artifacts:
+        if a.run_shape.smoke:
+            raise GateRefused("smoke artifact is never calibratable")
+        _require_reportable(a)
+    ref = artifacts[0]
+    splits = _five_five_splits(len(artifacts))
+    floors: dict[str, dict[str, Floor]] = {}
+    diagnostics: list[StatCalibration] = []
+    for metric, stats in GATED_STATS.items():
+        floors[metric] = {}
+        for stat in stats:
+            values = [summarize(a)[metric][stat] for a in artifacts]
+            m = _median_int(values)
+            dmax = 0
+            for base_idx, cand_idx in splits:
+                b = _median_int([values[i] for i in base_idx])
+                c = _median_int([values[i] for i in cand_idx])
+                dmax = max(dmax, abs(c - b))
+            absolute_ns = math.ceil(
+                max(
+                    float(CALIB_MIN_ABSOLUTE_NS),
+                    CALIB_REL_OF_MEDIAN * m,
+                    CALIB_SAFETY * dmax,
+                )
+            )
+            relative = absolute_ns / m if m > 0 else math.inf
+            floor = Floor(relative=relative, absolute_ns=absolute_ns)
+            floors[metric][stat] = floor
+            mde = (max(absolute_ns, relative * m) / m) if m > 0 else math.inf
+            diagnostics.append(StatCalibration(metric, stat, m, dmax, floor, mde))
+    policy = ThresholdPolicy(
+        version=version,
+        backend=ref.run_shape.backend,
+        source_sha256=ref.source_sha256,
+        run_shape=ref.run_shape,
+        floors=floors,
+        calibration_artifacts=tuple(a.environment.timestamp_utc for a in artifacts),
+    )
+    return policy, tuple(diagnostics)
+
+
+def dump_threshold_policy(policy: ThresholdPolicy) -> dict[str, object]:
+    return {
+        "version": policy.version,
+        "backend": policy.backend,
+        "source_sha256": policy.source_sha256,
+        "run_shape": asdict(policy.run_shape),
+        "floors": {
+            metric: {stat: asdict(f) for stat, f in stat_map.items()}
+            for metric, stat_map in policy.floors.items()
+        },
+        "calibration_artifacts": list(policy.calibration_artifacts),
+    }
+
+
+def write_threshold_policy(policy: ThresholdPolicy, path: str, overwrite: bool) -> None:
+    """Atomically write a calibrated policy; refuse an existing path unless overwrite."""
+    _atomic_write_json(dump_threshold_policy(policy), path, overwrite)
 
 
 # ---------------------------------------------------------------------------
