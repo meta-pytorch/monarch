@@ -83,6 +83,7 @@ def configure(
     rdma_allow_tcp_fallback: bool = ...,
     rdma_disable_ibverbs: bool = ...,
     rdma_max_chunk_size_mb: int = ...,
+    rdma_ibverbs_target: str = ...,
     **kwargs: object,
 ) -> None:
     """Configure Hyperactor runtime defaults for this process.
@@ -180,6 +181,11 @@ def configure(
             causing all RDMA operations to use the TCP fallback backend.
         rdma_max_chunk_size_mb: Maximum chunk size in MiB for
             TCP-based RDMA transfers (default: 64)
+        rdma_ibverbs_target: Pin ibverbs registrations to one explicit
+            device ("cpu:<numa>", "gpu:<ordinal>", or "nic:<name>", e.g.
+            "nic:mlx5_0"). When unset, device selection is automatic and
+            host memory is hash-spread across NICs, which on a multi-NIC
+            host can place two peers on different NICs.
         **kwargs: Reserved for future configuration keys
 
     For historical reasons, this API is named ``configure(...)``;
