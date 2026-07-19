@@ -184,6 +184,88 @@ async def _bench_async(
 
             return await bm.run_block(make_trial, rounds, warmups, samples)
 
+        @endpoint
+        async def concurrent_read_block(
+            self,
+            holder: _Holder,
+            read_src: RDMABuffer,
+            k: int,
+            rounds: int,
+            warmups: int,
+            batches: int,
+            op_timeout: int,
+        ) -> list[int]:
+            # one batch of K parallel reads is one timed sample (ROB-4). K disjoint
+            # local destinations so the reads don't collide.
+            expected = bytes(await holder.source_bytes.call_one())
+            dsts = [bytearray(read_src.size()) for _ in range(k)]
+
+            def make_trial(_i: int) -> bm.SteadyTrial:
+                async def prepare() -> object:
+                    for d in dsts:
+                        d[:] = bm.poison_pattern(len(d))
+                    return None
+
+                async def issue() -> object:
+                    def make_op(j: int) -> bm.LazyOp:
+                        return read_src.read_into(
+                            memoryview(dsts[j]), timeout=op_timeout
+                        )
+
+                    await bm.issue_all_then_observe(make_op, k)
+                    return None
+
+                async def validate(_e: object, _o: object) -> None:
+                    for d in dsts:
+                        bm.check_read_witness(expected, bytes(d))
+
+                return bm.SteadyTrial(prepare, issue, validate)
+
+            return await bm.run_block(make_trial, rounds, warmups, batches)
+
+        @endpoint
+        async def concurrent_write_block(
+            self,
+            holder: _Holder,
+            write_targets: list[RDMABuffer],
+            k: int,
+            rounds: int,
+            warmups: int,
+            batches: int,
+            op_timeout: int,
+        ) -> list[int]:
+            # one batch of K parallel writes into K disjoint targets is one timed
+            # sample (ROB-4); each slot carries a distinct counter (ROB-5).
+            payloads: list[bytes] = [b""] * k
+
+            def make_trial(i: int) -> bm.SteadyTrial:
+                async def prepare() -> object:
+                    for j in range(k):
+                        payloads[j] = bm.write_payload(
+                            write_targets[j].size(), i * k + j + 1
+                        )
+                    return None
+
+                async def issue() -> object:
+                    def make_op(j: int) -> bm.LazyOp:
+                        return write_targets[j].write_from(
+                            memoryview(payloads[j]), timeout=op_timeout
+                        )
+
+                    await bm.issue_all_then_observe(make_op, k)
+                    return None
+
+                async def validate(_e: object, _o: object) -> None:
+                    for j in range(k):
+                        digest = bytes(await holder.slot_digest.call_one(j))
+                        bm.check_write_witness(
+                            hashlib.sha256(payloads[j]).digest(), digest
+                        )
+
+                return bm.SteadyTrial(prepare, issue, validate)
+
+            return await bm.run_block(make_trial, rounds, warmups, batches)
+
     with configured(**cm_kwargs):
         holder_procs = this_host().spawn_procs(per_host={"processes": 1})
         driver_procs = this_host().spawn_procs(per_host={"processes": 1})
@@ -223,12 +305,30 @@ async def _bench_async(
                 shape.serial_samples,
                 timeout,
             )
+            concurrent_read = await driver.concurrent_read_block.call_one(
+                holder,
+                read_src,
+                shape.k,
+                shape.rounds,
+                shape.concurrent_warmups,
+                shape.concurrent_batches,
+                timeout,
+            )
+            concurrent_write = await driver.concurrent_write_block.call_one(
+                holder,
+                targets,
+                shape.k,
+                shape.rounds,
+                shape.concurrent_warmups,
+                shape.concurrent_batches,
+                timeout,
+            )
             samples: dict[str, list[int]] = {
                 "ping": ping,
                 "serial_read": serial_read,
                 "serial_write": serial_write,
-                "concurrent_read": [],
-                "concurrent_write": [],
+                "concurrent_read": concurrent_read,
+                "concurrent_write": concurrent_write,
                 "cold_init": [],
             }
             artifact = bm.RunArtifact(
