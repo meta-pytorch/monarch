@@ -19,9 +19,11 @@ import unittest
 from typing import Awaitable, Mapping, Optional
 
 from monarch.python.benches.rdma_orchestration.benchmark import (
+    _five_five_splits,
     _percentile_nearest_rank,
     _sha256_over_files,
     backend_plan,
+    calibrate,
     check_read_witness,
     check_write_witness,
     COLD_SAMPLES,
@@ -36,6 +38,7 @@ from monarch.python.benches.rdma_orchestration.benchmark import (
     GateRefused,
     issue_all_then_observe,
     K,
+    load_threshold_policy,
     measure_steady,
     MIN_ARTIFACTS_PER_SIDE,
     PAYLOAD_BYTES,
@@ -57,6 +60,7 @@ from monarch.python.benches.rdma_orchestration.benchmark import (
     WitnessError,
     write_artifact,
     write_payload,
+    write_threshold_policy,
 )
 
 # Realized sample counts per metric in the gate shape (5 rounds).
@@ -415,6 +419,59 @@ class SourceHashTest(unittest.TestCase):
             with open(b, "wb") as fh:
                 fh.write(b"bbb-changed")
             self.assertNotEqual(before, _sha256_over_files([a, b]))
+
+
+class FiveFiveSplitsTest(unittest.TestCase):
+    def test_exhaustive_at_ten(self) -> None:
+        # C(10,5) = 252 disjoint 5-vs-5 splits, matching the gate's shape.
+        splits = _five_five_splits(10)
+        self.assertEqual(len(splits), 252)
+        for base, cand in splits:
+            self.assertEqual(len(base), 5)
+            self.assertEqual(len(cand), 5)
+            self.assertEqual(set(base) & set(cand), set())
+
+
+class CalibrateTest(unittest.TestCase):
+    def test_identical_runs_hit_the_minimum_floor(self) -> None:
+        # no spread -> Dmax=0, so the floor is the 1% / 1us minimum envelope.
+        policy, diags = calibrate([_artifact() for _ in range(10)], "v1")
+        floor = policy.floors["serial_read"]["p50"]
+        self.assertEqual(floor.absolute_ns, 1000)  # 0.01 * 100_000
+        self.assertAlmostEqual(floor.relative, 0.01)
+        self.assertEqual(len(diags), sum(len(s) for s in GATED_STATS.values()))
+
+    def test_spread_drives_the_floor(self) -> None:
+        # five low + five high -> the all-low vs all-high split gives Dmax=20us;
+        # 1.5x that (30us) dominates the minimum envelope.
+        low = [_artifact({"serial_read": 100_000}) for _ in range(5)]
+        high = [_artifact({"serial_read": 120_000}) for _ in range(5)]
+        policy, _d = calibrate(low + high, "v1")
+        self.assertEqual(policy.floors["serial_read"]["p50"].absolute_ns, 30_000)
+        # a metric with no spread stays at the minimum.
+        self.assertEqual(policy.floors["ping"]["p50"].absolute_ns, 1000)
+
+    def test_refuses_too_few(self) -> None:
+        with self.assertRaises(GateRefused):
+            calibrate([_artifact() for _ in range(9)], "v1")
+
+    def test_refuses_smoke(self) -> None:
+        with self.assertRaises(GateRefused):
+            calibrate([_artifact(smoke=True) for _ in range(10)], "v1")
+
+    def test_refuses_incompatible(self) -> None:
+        arts = [_artifact() for _ in range(9)] + [_artifact(source="other")]
+        with self.assertRaises(GateRefused):
+            calibrate(arts, "v1")
+
+
+class PolicyRoundTripTest(unittest.TestCase):
+    def test_write_then_load(self) -> None:
+        policy, _d = calibrate([_artifact() for _ in range(10)], "v1")
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "policy.json")
+            write_threshold_policy(policy, p, overwrite=False)
+            self.assertEqual(load_threshold_policy(p), policy)
 
 
 if __name__ == "__main__":

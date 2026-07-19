@@ -471,6 +471,25 @@ def _cmd_compare(args: argparse.Namespace) -> int:
     return outcome.exit_code
 
 
+def _cmd_calibrate(args: argparse.Namespace) -> int:
+    artifacts = [bm.read_artifact(p) for p in args.artifacts]
+    try:
+        policy, diagnostics = bm.calibrate(artifacts, args.version)
+    except bm.GateRefused as e:
+        print(f"error: {e}")
+        return 1
+    bm.write_threshold_policy(policy, args.out, args.overwrite)
+    print(f"wrote {args.out} ({policy.backend}, {len(artifacts)} artifacts)")
+    print("minimum detectable effect per statistic:")
+    for d in diagnostics:
+        print(
+            f"  {d.metric}.{d.stat}: MDE {d.mde:.2%} "
+            f"(floor {d.floor.absolute_ns} ns / {d.floor.relative:.2%}, "
+            f"median {d.median_ns} ns, Dmax {d.dmax_ns} ns)"
+        )
+    return 0
+
+
 def _cmd_cold_child(args: argparse.Namespace) -> int:
     plan = bm.backend_plan(args.backend, is_ibverbs_available(), skip_unsupported=False)
     if plan is None:  # pragma: no cover - the parent only spawns supported backends
@@ -508,6 +527,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_cmp.add_argument("--candidate", nargs="+", required=True)
     p_cmp.add_argument("--policy", required=True, help="threshold policy JSON")
     p_cmp.set_defaults(func=_cmd_compare)
+
+    p_cal = sub.add_parser("calibrate", help="derive a threshold policy from artifacts")
+    p_cal.add_argument("--artifacts", nargs="+", required=True)
+    p_cal.add_argument("--out", required=True, help="output threshold policy JSON")
+    p_cal.add_argument("--version", required=True, help="policy version label")
+    p_cal.add_argument("--overwrite", action="store_true")
+    p_cal.set_defaults(func=_cmd_calibrate)
     return parser
 
 
