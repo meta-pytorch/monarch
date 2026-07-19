@@ -265,6 +265,12 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
                 config
             }
         };
+
+        // A caller-provided target wins; otherwise honor the runtime
+        // `RDMA_IBVERBS_TARGET` so every registration uses one deterministic
+        // NIC instead of the per-region hash spread, which can otherwise place
+        // two host-memory peers on different NICs.
+        config.target = super::device_selection::effective_ibverbs_target(config.target.take())?;
         tracing::debug!("rdma is enabled, config target: {:?}", config.target);
 
         // check config and hardware support align
