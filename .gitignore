@@ -2,6 +2,8 @@ syntax: glob
 
 python/**/*.so
 python/**/*.json
+# calibrated benchmark threshold policies are checked-in source, not generated
+!python/benches/rdma_orchestration/thresholds/*.json
 python/**/*.html
 python/**/*.pkl
 python/**/__pycache__
