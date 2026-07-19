@@ -749,19 +749,42 @@ PING_PAYLOAD: bytes = bytes(range(PAYLOAD_BYTES))
 
 
 def backend_plan(
-    backend: str, ibverbs_available: bool, skip_unsupported: bool
+    backend: str,
+    ibverbs_available: bool,
+    skip_unsupported: bool,
+    ibverbs_target: Optional[str] = None,
 ) -> Optional[tuple[dict[str, str], dict[str, object]]]:
     """Pure backend resolution: returns (recorded config, `configured` kwargs), or
     None to skip (ibverbs unavailable under --skip-unsupported). Raises for an
     unsupported request without --skip-unsupported -- silent TCP fallback is
-    forbidden."""
+    forbidden.
+
+    ibverbs pins one explicit device (`ibverbs_target`, e.g. `cpu:0` or
+    `nic:mlx5_0`). This is required, not optional: with no target Monarch
+    hash-spreads host-memory registrations across every tied-best NIC, so two
+    peers (or two runs) can land on different NICs -- an unreproducible data
+    plane, and on a multi-NIC host a cross-NIC QP that cannot loopback. The
+    target is recorded in the artifact config so it is part of gate
+    compatibility (ROB-2)."""
     if backend == "tcp":
         return ({"rdma_disable_ibverbs": "true"}, {"rdma_disable_ibverbs": True})
     if backend == "ibverbs":
         if ibverbs_available:
+            if not ibverbs_target:
+                raise ValueError(
+                    "ibverbs requires an explicit device target (e.g. cpu:0 or "
+                    "nic:mlx5_0); without one Monarch hash-spreads host memory "
+                    "across NICs, which is not a reproducible data plane"
+                )
             return (
-                {"rdma_allow_tcp_fallback": "false"},
-                {"rdma_allow_tcp_fallback": False},
+                {
+                    "rdma_allow_tcp_fallback": "false",
+                    "rdma_ibverbs_target": ibverbs_target,
+                },
+                {
+                    "rdma_allow_tcp_fallback": False,
+                    "rdma_ibverbs_target": ibverbs_target,
+                },
             )
         if skip_unsupported:
             return None
