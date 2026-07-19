@@ -545,6 +545,27 @@ async def issue_all_then_observe(make_op: Callable[[int], LazyOp], k: int) -> No
         await aw
 
 
+async def run_block(
+    make_trial: Callable[[int], SteadyTrial],
+    rounds: int,
+    warmups: int,
+    samples: int,
+) -> list[int]:
+    """Drive one metric's block: `rounds` x (`warmups` discarded, then `samples`
+    recorded), each through `measure_steady`. The trial index is monotonic across
+    the whole block so per-sample write counters stay unique (ROB-5)."""
+    out_ns: list[int] = []
+    index = 0
+    for _ in range(rounds):
+        for _ in range(warmups):
+            await measure_steady(make_trial(index))
+            index += 1
+        for _ in range(samples):
+            out_ns.append(await measure_steady(make_trial(index)))
+            index += 1
+    return out_ns
+
+
 class WitnessError(AssertionError):
     """A measured transfer failed its correctness witness (ROB-5)."""
 

@@ -42,6 +42,7 @@ from monarch.python.benches.rdma_orchestration.benchmark import (
     poison_pattern,
     read_artifact,
     ROUNDS,
+    run_block,
     RunArtifact,
     RunShape,
     SERIAL_SAMPLES,
@@ -325,6 +326,29 @@ class WitnessTest(unittest.TestCase):
         check_write_witness(good, good)
         with self.assertRaises(WitnessError):
             check_write_witness(good, hashlib.sha256(b"stale").digest())
+
+
+class RunBlockTest(unittest.TestCase):
+    def test_records_samples_not_warmups_monotonic_index(self) -> None:
+        # rounds x (warmups discarded, samples recorded); index monotonic (ROB-5).
+        seen: list[int] = []
+
+        def make_trial(i: int) -> SteadyTrial:
+            async def prepare() -> object:
+                return None
+
+            async def issue() -> object:
+                seen.append(i)
+                return None
+
+            async def validate(_e: object, _o: object) -> None:
+                return None
+
+            return SteadyTrial(prepare, issue, validate)
+
+        out = asyncio.run(run_block(make_trial, rounds=2, warmups=1, samples=3))
+        self.assertEqual(len(out), 6)  # 2 rounds x 3 recorded samples
+        self.assertEqual(seen, list(range(8)))  # 2 x (1 warmup + 3), monotonic
 
 
 class BackendPlanTest(unittest.TestCase):
