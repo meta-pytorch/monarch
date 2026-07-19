@@ -79,4 +79,20 @@ declare_attrs! {
         Some("rdma_qp_init_timeout".to_string()),
     ))
     pub attr RDMA_QP_INIT_TIMEOUT: Duration = Duration::from_secs(30);
+
+    /// Explicit ibverbs device target for RDMA registrations.
+    ///
+    /// A caller-supplied `IbvConfig::target` wins; otherwise this
+    /// runtime value pins every registration to one deterministic
+    /// NIC. Its forms mirror the backend's test vocabulary:
+    /// `cpu:<numa>`, `gpu:<ordinal>`, or `nic:<name>` (e.g.
+    /// `nic:mlx5_0`). When empty (the default), the consumer picks the
+    /// device itself -- the CUDA-co-located NIC for device memory, or a
+    /// per-region hash-assigned NIC for host memory, which on a
+    /// multi-NIC host can place two peers on different NICs.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("MONARCH_RDMA_IBVERBS_TARGET".to_string()),
+        Some("rdma_ibverbs_target".to_string()),
+    ))
+    pub attr RDMA_IBVERBS_TARGET: String = String::new();
 }
