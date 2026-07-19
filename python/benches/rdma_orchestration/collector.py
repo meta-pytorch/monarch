@@ -402,14 +402,20 @@ async def _cold_child_async(
             await _teardown(holder_procs, driver_procs)
 
 
-def _collect_cold_samples(backend: str, n: int, timeout_s: int) -> list[int]:
+def _collect_cold_samples(
+    backend: str, n: int, timeout_s: int, ibverbs_target: str | None
+) -> list[int]:
     """Run `n` fresh `_cold-init-child` subprocesses and collect one sample each
     (ROB-6). Each child is bounded by `timeout_s` (ROB-9); any failure or timeout
-    aborts the whole run so no partial artifact is published."""
+    aborts the whole run so no partial artifact is published. The child inherits
+    `ibverbs_target` so cold samples pin the same NIC as the steady-state ones."""
+    cmd = [sys.argv[0], "_cold-init-child", "--backend", backend]
+    if ibverbs_target is not None:
+        cmd += ["--ibverbs-target", ibverbs_target]
     samples: list[int] = []
     for _ in range(n):
         proc = subprocess.run(
-            [sys.argv[0], "_cold-init-child", "--backend", backend],
+            cmd,
             capture_output=True,
             text=True,
             timeout=timeout_s,
@@ -434,7 +440,10 @@ def _cmd_bench(args: argparse.Namespace) -> int:
     shape = bm.gate_shape(args.backend, args.smoke)
     try:
         plan = bm.backend_plan(
-            args.backend, is_ibverbs_available(), args.skip_unsupported
+            args.backend,
+            is_ibverbs_available(),
+            args.skip_unsupported,
+            args.ibverbs_target,
         )
     except bm.UnsupportedBackend as e:
         print(f"error: {e}")
@@ -443,8 +452,26 @@ def _cmd_bench(args: argparse.Namespace) -> int:
         print("SKIPPED: ibverbs requested but unavailable")
         return 0
     config, cm_kwargs = plan
+    if args.backend == "ibverbs":
+        # This benchmark registers host (CPU) memory, so RdmaXcel finds no CUDA
+        # context and logs "[RdmaXcel] Failed to get current CUDA context" once
+        # per registration. That is expected on the host-memory path and is
+        # benign -- the ibverbs data plane is unaffected. Warn once so the noise
+        # is not mistaken for a failure. Goes to stderr so it never mixes with
+        # the artifact path on stdout.
+        print(
+            "note: the '[RdmaXcel] Failed to get current CUDA context' lines "
+            "below are expected -- this benchmark registers host (CPU) memory, "
+            "which has no CUDA context. The ibverbs transfers still run over the "
+            "NIC; the messages are benign.",
+            file=sys.stderr,
+            flush=True,
+        )
     cold_init = _collect_cold_samples(
-        args.backend, shape.cold_samples, bm.TimeoutPolicy().cold_child_s
+        args.backend,
+        shape.cold_samples,
+        bm.TimeoutPolicy().cold_child_s,
+        args.ibverbs_target,
     )
     asyncio.run(
         _bench_async(
@@ -491,7 +518,12 @@ def _cmd_calibrate(args: argparse.Namespace) -> int:
 
 
 def _cmd_cold_child(args: argparse.Namespace) -> int:
-    plan = bm.backend_plan(args.backend, is_ibverbs_available(), skip_unsupported=False)
+    plan = bm.backend_plan(
+        args.backend,
+        is_ibverbs_available(),
+        skip_unsupported=False,
+        ibverbs_target=args.ibverbs_target,
+    )
     if plan is None:  # pragma: no cover - the parent only spawns supported backends
         raise SystemExit("cold-init child: backend unavailable")
     _config, cm_kwargs = plan
@@ -515,11 +547,22 @@ def build_parser() -> argparse.ArgumentParser:
     p_bench.add_argument("--skip-unsupported", action="store_true")
     p_bench.add_argument("--label", default="")
     p_bench.add_argument("--timeout", type=int, default=bm.TimeoutPolicy().op_timeout_s)
+    p_bench.add_argument(
+        "--ibverbs-target",
+        default=None,
+        help=(
+            "ibverbs device to pin: cpu:<numa>, gpu:<ordinal>, or nic:<name> "
+            "(e.g. nic:mlx5_0). Required for --backend ibverbs; without it host "
+            "memory is hash-spread across NICs and the data plane is not "
+            "reproducible."
+        ),
+    )
     p_bench.set_defaults(func=_cmd_bench)
 
     p_cold = sub.add_parser("_cold-init-child", help=argparse.SUPPRESS)
     p_cold.add_argument("--backend", choices=["tcp", "ibverbs"], default="tcp")
     p_cold.add_argument("--timeout", type=int, default=bm.TimeoutPolicy().op_timeout_s)
+    p_cold.add_argument("--ibverbs-target", default=None)
     p_cold.set_defaults(func=_cmd_cold_child)
 
     p_cmp = sub.add_parser("compare", help="gate two sets of artifacts")

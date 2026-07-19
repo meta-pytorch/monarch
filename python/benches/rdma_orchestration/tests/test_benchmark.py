@@ -363,11 +363,28 @@ class BackendPlanTest(unittest.TestCase):
         self.assertEqual(kwargs, {"rdma_disable_ibverbs": True})
         self.assertEqual(config, {"rdma_disable_ibverbs": "true"})
 
-    def test_ibverbs_when_available(self) -> None:
-        result = backend_plan("ibverbs", ibverbs_available=True, skip_unsupported=False)
+    def test_ibverbs_pins_target(self) -> None:
+        # ibverbs pins the explicit device in both the recorded config and the
+        # `configured()` kwargs so the data plane is reproducible (ROB-2).
+        result = backend_plan(
+            "ibverbs",
+            ibverbs_available=True,
+            skip_unsupported=False,
+            ibverbs_target="cpu:0",
+        )
         assert result is not None
-        _config, kwargs = result
-        self.assertEqual(kwargs, {"rdma_allow_tcp_fallback": False})
+        config, kwargs = result
+        self.assertEqual(
+            kwargs,
+            {"rdma_allow_tcp_fallback": False, "rdma_ibverbs_target": "cpu:0"},
+        )
+        self.assertEqual(config["rdma_ibverbs_target"], "cpu:0")
+
+    def test_ibverbs_requires_target(self) -> None:
+        # no target -> refuse: automatic host-memory selection hash-spreads
+        # across NICs and is not a reproducible data plane.
+        with self.assertRaises(ValueError):
+            backend_plan("ibverbs", ibverbs_available=True, skip_unsupported=False)
 
     def test_ibverbs_unavailable_skips(self) -> None:
         # --skip-unsupported turns an unavailable backend into a clean skip.
