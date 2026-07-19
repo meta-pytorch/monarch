@@ -11,10 +11,11 @@
 RDMA orchestration benchmark -- a stable speedometer for Monarch's RDMA control
 path (pytokio-removal). See pytokio-removal-rdma-benchmark-plan.md.
 
-Implemented: the analysis half (artifact schema + atomic JSON IO, `summarize`,
-`CompatiblePair`, and the comparator/verdict algebra) and the measurement helpers
-(`measure_steady`, `issue_all_then_observe`, the read/write correctness checks).
-Not implemented yet: the collector -- `bench` and `_cold-init-child` raise.
+This module is the Monarch-free half: the artifact schema + atomic JSON IO,
+`summarize`, `CompatiblePair`, the comparator/verdict algebra, the measurement
+helpers (`measure_steady`, `issue_all_then_observe`, the read/write correctness
+checks), and the collector's pure helpers (`backend_plan`, `gate_shape`, byte
+patterns). The RDMA-driving collector and the CLI live in `collector.py`.
 
 Invariant registry (ROB-*, stable + append-only; never renumber or reuse an ID):
 
@@ -44,17 +45,18 @@ Invariant registry (ROB-*, stable + append-only; never renumber or reuse an ID):
 under test.
 """
 
-import argparse
 import hashlib
 import json
 import math
 import os
-import sys
+import platform
+import socket
 import tempfile
 import time
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from enum import Enum
-from typing import Awaitable, Callable, Mapping, Protocol, Sequence
+from typing import Awaitable, Callable, Mapping, Optional, Protocol, Sequence
 
 SCHEMA_VERSION: int = 1
 
@@ -216,10 +218,22 @@ def _median_int(values: Sequence[int]) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _sha256_over_files(paths: Sequence[str]) -> str:
+    h = hashlib.sha256()
+    for path in paths:
+        with open(path, "rb") as fh:
+            h.update(fh.read())
+    return h.hexdigest()
+
+
 def benchmark_source_sha256() -> str:
-    """SHA-256 of this benchmark source file (ROB-1 artifact identity)."""
-    with open(os.path.abspath(__file__), "rb") as fh:
-        return hashlib.sha256(fh.read()).hexdigest()
+    """SHA-256 over the benchmark's source -- both modules, so a change to how a
+    measurement is produced (either file) changes artifact identity (ROB-1). The
+    analysis half alone would miss changes to the RDMA-driving collector."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    return _sha256_over_files(
+        [os.path.join(here, name) for name in ("benchmark.py", "collector.py")]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -551,45 +565,78 @@ def check_write_witness(expected_digest: bytes, holder_digest: bytes) -> None:
 
 
 # ---------------------------------------------------------------------------
-# CLI. `compare` is implemented; `bench` / `_cold-init-child` are not yet.
+# Collector-side pure helpers (backends, run shape, byte patterns). Monarch-free
+# and independently testable; consumed by `collector.py`.
 # ---------------------------------------------------------------------------
 
 
-def _cmd_compare(args: argparse.Namespace) -> int:
-    baseline = [read_artifact(p) for p in args.baseline]
-    candidate = [read_artifact(p) for p in args.candidate]
-    policy = load_threshold_policy(args.policy)
-    outcome = evaluate(baseline, candidate, policy)
-    print(render(outcome))
-    return outcome.exit_code
+class UnsupportedBackend(Exception):
+    """The requested backend is unavailable and no fallback is allowed."""
 
 
-def _cmd_not_yet(_args: argparse.Namespace) -> int:
-    raise SystemExit("the bench collector is not implemented yet")
+def source_pattern(nbytes: int, seed: int) -> bytes:
+    return bytes((seed * 31 + i) & 0xFF for i in range(nbytes))
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
-    sub = parser.add_subparsers(dest="command", required=True)
-
-    p_bench = sub.add_parser("bench", help="collect one artifact (Diff B)")
-    p_bench.set_defaults(func=_cmd_not_yet)
-
-    p_cold = sub.add_parser("_cold-init-child", help=argparse.SUPPRESS)
-    p_cold.set_defaults(func=_cmd_not_yet)
-
-    p_cmp = sub.add_parser("compare", help="gate two sets of artifacts")
-    p_cmp.add_argument("--baseline", nargs="+", required=True)
-    p_cmp.add_argument("--candidate", nargs="+", required=True)
-    p_cmp.add_argument("--policy", required=True, help="threshold policy JSON")
-    p_cmp.set_defaults(func=_cmd_compare)
-    return parser
+def poison_pattern(nbytes: int) -> bytes:
+    return b"\xa5" * nbytes
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    return int(args.func(args))
+def write_payload(nbytes: int, counter: int) -> bytes:
+    """A write payload stamped with an 8-byte counter (ROB-5), in a byte family
+    distinct from the source and poison patterns."""
+    body = bytes((0xC0 ^ (i & 0xFF)) for i in range(max(nbytes - 8, 0)))
+    return (counter.to_bytes(8, "little") + body)[:nbytes]
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+PING_PAYLOAD: bytes = bytes(range(PAYLOAD_BYTES))
+
+
+def backend_plan(
+    backend: str, ibverbs_available: bool, skip_unsupported: bool
+) -> Optional[tuple[dict[str, str], dict[str, object]]]:
+    """Pure backend resolution: returns (recorded config, `configured` kwargs), or
+    None to skip (ibverbs unavailable under --skip-unsupported). Raises for an
+    unsupported request without --skip-unsupported -- silent TCP fallback is
+    forbidden."""
+    if backend == "tcp":
+        return ({"rdma_disable_ibverbs": "true"}, {"rdma_disable_ibverbs": True})
+    if backend == "ibverbs":
+        if ibverbs_available:
+            return (
+                {"rdma_allow_tcp_fallback": "false"},
+                {"rdma_allow_tcp_fallback": False},
+            )
+        if skip_unsupported:
+            return None
+        raise UnsupportedBackend("ibverbs requested but not available")
+    raise ValueError(f"unknown backend {backend!r}")
+
+
+def gate_shape(backend: str, smoke: bool) -> RunShape:
+    if smoke:
+        return RunShape(backend, PAYLOAD_BYTES, K, 1, 2, 20, 1, 5, 1, True)
+    return RunShape(
+        backend,
+        PAYLOAD_BYTES,
+        K,
+        ROUNDS,
+        SERIAL_WARMUPS,
+        SERIAL_SAMPLES,
+        CONCURRENT_WARMUPS,
+        CONCURRENT_BATCHES,
+        COLD_SAMPLES,
+        False,
+    )
+
+
+def environment(label: str) -> Environment:
+    return Environment(
+        hostname=socket.gethostname(),
+        platform=platform.platform(),
+        cpu=platform.processor() or "unknown",
+        python_version=platform.python_version(),
+        monarch_revision="",
+        timestamp_utc=datetime.now(timezone.utc).isoformat(),
+        label=label,
+    )
