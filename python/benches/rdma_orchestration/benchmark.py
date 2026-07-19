@@ -11,10 +11,10 @@
 RDMA orchestration benchmark -- a stable speedometer for Monarch's RDMA control
 path (pytokio-removal). See pytokio-removal-rdma-benchmark-plan.md.
 
-This diff (Diff A) implements the **pure analysis half** only: the artifact
-schema + atomic IO, `summarize`, `CompatiblePair`, and the comparator/verdict
-algebra. The collector (`bench` / `_cold-init-child`) lands in Diff B; those
-subcommands raise here.
+Implemented: the analysis half (artifact schema + atomic JSON IO, `summarize`,
+`CompatiblePair`, and the comparator/verdict algebra) and the measurement helpers
+(`measure_steady`, `issue_all_then_observe`, the read/write correctness checks).
+Not implemented yet: the collector -- `bench` and `_cold-init-child` raise.
 
 Invariant registry (ROB-*, stable + append-only; never renumber or reuse an ID):
 
@@ -51,9 +51,10 @@ import math
 import os
 import sys
 import tempfile
+import time
 from dataclasses import asdict, dataclass
 from enum import Enum
-from typing import Mapping, Sequence
+from typing import Awaitable, Callable, Mapping, Protocol, Sequence
 
 SCHEMA_VERSION: int = 1
 
@@ -490,7 +491,67 @@ def render(outcome: GateOutcome) -> str:
 
 
 # ---------------------------------------------------------------------------
-# CLI. `compare` is implemented here; `bench` / `_cold-init-child` land in Diff B.
+# Steady-state measurement (ROB-3/4/5). Harness-level and Monarch-free; the
+# actors and the RDMA data plane are lazily imported inside the collector so
+# importing this module for `compare` never pulls in Monarch.
+# ---------------------------------------------------------------------------
+
+
+class LazyOp(Protocol):
+    """A lazy Monarch future: calling `.as_asyncio()` is what dispatches it."""
+
+    def as_asyncio(self) -> Awaitable[object]: ...
+
+
+@dataclass(frozen=True)
+class SteadyTrial:
+    prepare: Callable[[], Awaitable[object]]
+    issue_and_observe: Callable[[], Awaitable[object]]
+    validate: Callable[[object, object], Awaitable[None]]
+
+
+async def measure_steady(trial: SteadyTrial) -> int:
+    """The sole steady-state clock seam (ROB-3): prepare, clock, issue/observe,
+    clock, validate. Preparation and validation sit outside the timed region."""
+    expected = await trial.prepare()
+    t0 = time.perf_counter_ns()
+    observed = await trial.issue_and_observe()
+    sample_ns = time.perf_counter_ns() - t0
+    await trial.validate(expected, observed)
+    return sample_ns
+
+
+async def issue_all_then_observe(make_op: Callable[[int], LazyOp], k: int) -> None:
+    """ROB-4: dispatch all K lazy ops before observing the first
+    (`issue^K ; observe_all`), never `fold(issue ; observe)`. Monarch futures are
+    lazy, so `.as_asyncio()` is what starts each op; hoisting the K calls above the
+    drain is what makes the batch concurrent rather than K serial ops."""
+    pending = [make_op(i).as_asyncio() for i in range(k)]
+    for aw in pending:
+        await aw
+
+
+class WitnessError(AssertionError):
+    """A measured transfer failed its correctness witness (ROB-5)."""
+
+
+def check_read_witness(expected: bytes, observed: bytes) -> None:
+    """ROB-5: a read destination is poisoned (to a pattern != source) before every
+    timed sample and must equal the source afterward; a dropped/no-op read leaves
+    the poison and fails here."""
+    if observed != expected:
+        raise WitnessError("read destination does not match the source pattern")
+
+
+def check_write_witness(expected_digest: bytes, holder_digest: bytes) -> None:
+    """ROB-5: the holder's digest of the written slot must match the payload's
+    digest; a dropped write leaves the prior bytes and fails here."""
+    if holder_digest != expected_digest:
+        raise WitnessError("write target digest does not match the payload")
+
+
+# ---------------------------------------------------------------------------
+# CLI. `compare` is implemented; `bench` / `_cold-init-child` are not yet.
 # ---------------------------------------------------------------------------
 
 
@@ -504,7 +565,7 @@ def _cmd_compare(args: argparse.Namespace) -> int:
 
 
 def _cmd_not_yet(_args: argparse.Namespace) -> int:
-    raise SystemExit("this subcommand lands in Diff B (the collector)")
+    raise SystemExit("the bench collector is not implemented yet")
 
 
 def build_parser() -> argparse.ArgumentParser:
