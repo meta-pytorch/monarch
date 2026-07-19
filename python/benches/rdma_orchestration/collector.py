@@ -104,26 +104,85 @@ async def _bench_async(
             samples: int,
             payload: bytes,
         ) -> list[int]:
-            def trial() -> bm.SteadyTrial:
+            def make_trial(_i: int) -> bm.SteadyTrial:
                 async def prepare() -> object:
-                    return payload
+                    return None
 
                 async def issue() -> object:
                     return await holder.ping.call_one(payload)
 
-                async def validate(expected: object, observed: object) -> None:
-                    if observed != expected:
+                async def validate(_e: object, observed: object) -> None:
+                    if observed != payload:
                         raise bm.WitnessError("ping echo mismatch")
 
                 return bm.SteadyTrial(prepare, issue, validate)
 
-            out_ns: list[int] = []
-            for _ in range(rounds):
-                for _ in range(warmups):
-                    await bm.measure_steady(trial())
-                for _ in range(samples):
-                    out_ns.append(await bm.measure_steady(trial()))
-            return out_ns
+            return await bm.run_block(make_trial, rounds, warmups, samples)
+
+        @endpoint
+        async def serial_read_block(
+            self,
+            holder: _Holder,
+            read_src: RDMABuffer,
+            rounds: int,
+            warmups: int,
+            samples: int,
+            op_timeout: int,
+        ) -> list[int]:
+            expected = bytes(await holder.source_bytes.call_one())
+            dst = bytearray(read_src.size())
+
+            def make_trial(_i: int) -> bm.SteadyTrial:
+                async def prepare() -> object:
+                    # poison before every sample so a no-op read is caught (ROB-5).
+                    dst[:] = bm.poison_pattern(len(dst))
+                    return None
+
+                async def issue() -> object:
+                    await read_src.read_into(memoryview(dst), timeout=op_timeout)
+                    return None
+
+                async def validate(_e: object, _o: object) -> None:
+                    bm.check_read_witness(expected, bytes(dst))
+
+                return bm.SteadyTrial(prepare, issue, validate)
+
+            return await bm.run_block(make_trial, rounds, warmups, samples)
+
+        @endpoint
+        async def serial_write_block(
+            self,
+            holder: _Holder,
+            write_target: RDMABuffer,
+            slot: int,
+            rounds: int,
+            warmups: int,
+            samples: int,
+            op_timeout: int,
+        ) -> list[int]:
+            box: dict[str, bytes] = {}
+
+            def make_trial(i: int) -> bm.SteadyTrial:
+                async def prepare() -> object:
+                    # a monotonic counter makes each write distinguishable (ROB-5).
+                    box["payload"] = bm.write_payload(write_target.size(), i + 1)
+                    return None
+
+                async def issue() -> object:
+                    await write_target.write_from(
+                        memoryview(box["payload"]), timeout=op_timeout
+                    )
+                    return None
+
+                async def validate(_e: object, _o: object) -> None:
+                    digest = bytes(await holder.slot_digest.call_one(slot))
+                    bm.check_write_witness(
+                        hashlib.sha256(box["payload"]).digest(), digest
+                    )
+
+                return bm.SteadyTrial(prepare, issue, validate)
+
+            return await bm.run_block(make_trial, rounds, warmups, samples)
 
     with configured(**cm_kwargs):
         holder_procs = this_host().spawn_procs(per_host={"processes": 1})
@@ -147,10 +206,27 @@ async def _bench_async(
                 shape.serial_samples,
                 bm.PING_PAYLOAD,
             )
+            serial_read = await driver.serial_read_block.call_one(
+                holder,
+                read_src,
+                shape.rounds,
+                shape.serial_warmups,
+                shape.serial_samples,
+                timeout,
+            )
+            serial_write = await driver.serial_write_block.call_one(
+                holder,
+                targets[0],
+                0,
+                shape.rounds,
+                shape.serial_warmups,
+                shape.serial_samples,
+                timeout,
+            )
             samples: dict[str, list[int]] = {
                 "ping": ping,
-                "serial_read": [],
-                "serial_write": [],
+                "serial_read": serial_read,
+                "serial_write": serial_write,
                 "concurrent_read": [],
                 "concurrent_write": [],
                 "cold_init": [],
