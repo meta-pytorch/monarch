@@ -86,6 +86,7 @@ if TYPE_CHECKING:
             rdma_allow_tcp_fallback: NotRequired[bool]
             rdma_disable_ibverbs: NotRequired[bool]
             rdma_max_chunk_size_mb: NotRequired[int]
+            rdma_ibverbs_target: NotRequired[str]
 
         # pyrefly: ignore [invalid-annotation]
         ConfigureKwargsType = Unpack[ConfigureArgs]
@@ -182,6 +183,13 @@ def configure(**kwargs: "ConfigureKwargsType") -> None:
                 causing all RDMA operations to use the TCP fallback backend.
             rdma_max_chunk_size_mb: Maximum chunk size in megabytes for RDMA
                 transfers.
+            rdma_ibverbs_target: Pin ibverbs registrations to one explicit
+                device. Accepts ``"cpu:<numa>"``, ``"gpu:<ordinal>"``, or
+                ``"nic:<name>"`` (e.g. ``"nic:mlx5_0"``). When unset, device
+                selection is automatic: the CUDA-co-located NIC for GPU
+                memory, or a per-region hash-assigned NIC for host memory,
+                which on a multi-NIC host can place two peers on different
+                NICs. Set this for a deterministic data plane.
 
         **kwargs: Reserved for future configuration keys exposed by Rust bindings.
     """

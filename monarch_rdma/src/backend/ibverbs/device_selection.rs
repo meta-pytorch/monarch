@@ -9,6 +9,7 @@
 //! ibverbs-specific device selection: pairs a [`MemoryLocation`] with the
 //! RDMA NIC(s) that have the best PCIe path to it.
 
+use std::str::FromStr;
 use std::sync::LazyLock;
 
 use anyhow::Context;
@@ -49,6 +50,63 @@ impl IbvDeviceTarget {
     /// Target the NIC with the given device name.
     pub fn nic(name: impl Into<String>) -> Self {
         Self::Nic(name.into())
+    }
+}
+
+impl FromStr for IbvDeviceTarget {
+    type Err = anyhow::Error;
+
+    /// Parse a `kind:value` spec: `cpu:<numa>`, `gpu:<ordinal>`, or
+    /// `nic:<name>` (e.g. `nic:mlx5_0`). This is the string form the
+    /// `rdma_ibverbs_target` runtime config accepts.
+    fn from_str(s: &str) -> Result<Self> {
+        let (kind, value) = s.split_once(':').with_context(|| {
+            format!("ibverbs target {s:?} must be `cpu:<numa>`, `gpu:<ordinal>`, or `nic:<name>`")
+        })?;
+        match kind {
+            "cpu" => Ok(Self::cpu(value.parse().with_context(|| {
+                format!("cpu target numa node {value:?} is not a u32")
+            })?)),
+            "gpu" => Ok(Self::gpu(value.parse().with_context(|| {
+                format!("gpu target ordinal {value:?} is not a u32")
+            })?)),
+            "nic" => {
+                anyhow::ensure!(
+                    !value.is_empty(),
+                    "nic target must name a device, e.g. `nic:mlx5_0`"
+                );
+                Ok(Self::nic(value))
+            }
+            other => {
+                anyhow::bail!(
+                    "unknown ibverbs target kind {other:?}; expected `cpu`, `gpu`, or `nic`"
+                )
+            }
+        }
+    }
+}
+
+/// The ibverbs device target from the `RDMA_IBVERBS_TARGET` runtime config,
+/// parsed from its `cpu:<numa>` / `gpu:<ordinal>` / `nic:<name>` form, or
+/// `None` when the attr is empty (leaving device selection to the consumer).
+pub fn runtime_ibverbs_target() -> Result<Option<IbvDeviceTarget>> {
+    let spec = hyperactor_config::global::get_cloned(crate::config::RDMA_IBVERBS_TARGET);
+    if spec.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(spec.parse()?))
+}
+
+/// The effective ibverbs target: a caller-provided `explicit` target wins;
+/// otherwise fall back to the runtime `RDMA_IBVERBS_TARGET` config. This is the
+/// precedence [`super::manager_actor::IbvManagerActor::new`] applies, so a
+/// caller that sets `IbvConfig::target` is never overridden by config.
+pub fn effective_ibverbs_target(
+    explicit: Option<IbvDeviceTarget>,
+) -> Result<Option<IbvDeviceTarget>> {
+    match explicit {
+        Some(target) => Ok(Some(target)),
+        None => runtime_ibverbs_target(),
     }
 }
 
@@ -186,4 +244,71 @@ pub fn get_cuda_device_to_ibv_device<I: IbvDeviceImpl>() -> &'static Vec<Option<
             .collect();
         Box::leak(Box::new(result))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_each_target_kind() {
+        assert_eq!(
+            "cpu:0".parse::<IbvDeviceTarget>().unwrap(),
+            IbvDeviceTarget::cpu(0),
+        );
+        assert_eq!(
+            "gpu:1".parse::<IbvDeviceTarget>().unwrap(),
+            IbvDeviceTarget::gpu(1),
+        );
+        assert_eq!(
+            "nic:mlx5_0".parse::<IbvDeviceTarget>().unwrap(),
+            IbvDeviceTarget::nic("mlx5_0"),
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_targets() {
+        // No separator, unknown kind, missing or non-numeric value, and an
+        // empty NIC name must all fail rather than silently misparse.
+        for bad in ["", "cpu", "cpu:", "cpu:x", "gpu:-1", "nic:", "bogus:0"] {
+            assert!(
+                bad.parse::<IbvDeviceTarget>().is_err(),
+                "expected {bad:?} to fail to parse",
+            );
+        }
+    }
+
+    #[test]
+    fn runtime_target_reflects_config() {
+        let lock = hyperactor_config::global::lock();
+        // Empty by default: selection is left to the consumer.
+        assert_eq!(runtime_ibverbs_target().unwrap(), None);
+        {
+            let _guard =
+                lock.override_key(crate::config::RDMA_IBVERBS_TARGET, "nic:mlx5_0".to_string());
+            assert_eq!(
+                runtime_ibverbs_target().unwrap(),
+                Some(IbvDeviceTarget::nic("mlx5_0")),
+            );
+        }
+        // Once the override is dropped the target is unset again.
+        assert_eq!(runtime_ibverbs_target().unwrap(), None);
+    }
+
+    #[test]
+    fn explicit_target_beats_runtime_config() {
+        let lock = hyperactor_config::global::lock();
+        let _guard =
+            lock.override_key(crate::config::RDMA_IBVERBS_TARGET, "nic:mlx5_1".to_string());
+        // A caller-provided target wins over the runtime config.
+        assert_eq!(
+            effective_ibverbs_target(Some(IbvDeviceTarget::nic("mlx5_0"))).unwrap(),
+            Some(IbvDeviceTarget::nic("mlx5_0")),
+        );
+        // With no explicit target, the runtime config fills in.
+        assert_eq!(
+            effective_ibverbs_target(None).unwrap(),
+            Some(IbvDeviceTarget::nic("mlx5_1")),
+        );
+    }
 }
