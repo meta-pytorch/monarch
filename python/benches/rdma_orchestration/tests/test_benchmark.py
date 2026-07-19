@@ -20,6 +20,8 @@ from typing import Awaitable, Mapping, Optional
 
 from monarch.python.benches.rdma_orchestration.benchmark import (
     _percentile_nearest_rank,
+    _sha256_over_files,
+    backend_plan,
     check_read_witness,
     check_write_witness,
     COLD_SAMPLES,
@@ -29,6 +31,7 @@ from monarch.python.benches.rdma_orchestration.benchmark import (
     Environment,
     evaluate,
     Floor,
+    gate_shape,
     GATED_STATS,
     GateRefused,
     issue_all_then_observe,
@@ -36,19 +39,23 @@ from monarch.python.benches.rdma_orchestration.benchmark import (
     measure_steady,
     MIN_ARTIFACTS_PER_SIDE,
     PAYLOAD_BYTES,
+    poison_pattern,
     read_artifact,
     ROUNDS,
     RunArtifact,
     RunShape,
     SERIAL_SAMPLES,
     SERIAL_WARMUPS,
+    source_pattern,
     SteadyTrial,
     summarize,
     ThresholdPolicy,
     TimeoutPolicy,
+    UnsupportedBackend,
     Verdict,
     WitnessError,
     write_artifact,
+    write_payload,
 )
 
 # Realized sample counts per metric in the gate shape (5 rounds).
@@ -318,6 +325,72 @@ class WitnessTest(unittest.TestCase):
         check_write_witness(good, good)
         with self.assertRaises(WitnessError):
             check_write_witness(good, hashlib.sha256(b"stale").digest())
+
+
+class BackendPlanTest(unittest.TestCase):
+    def test_tcp_disables_ibverbs(self) -> None:
+        result = backend_plan("tcp", ibverbs_available=False, skip_unsupported=False)
+        assert result is not None
+        config, kwargs = result
+        self.assertEqual(kwargs, {"rdma_disable_ibverbs": True})
+        self.assertEqual(config, {"rdma_disable_ibverbs": "true"})
+
+    def test_ibverbs_when_available(self) -> None:
+        result = backend_plan("ibverbs", ibverbs_available=True, skip_unsupported=False)
+        assert result is not None
+        _config, kwargs = result
+        self.assertEqual(kwargs, {"rdma_allow_tcp_fallback": False})
+
+    def test_ibverbs_unavailable_skips(self) -> None:
+        # --skip-unsupported turns an unavailable backend into a clean skip.
+        self.assertIsNone(
+            backend_plan("ibverbs", ibverbs_available=False, skip_unsupported=True)
+        )
+
+    def test_ibverbs_unavailable_without_skip_raises(self) -> None:
+        # no silent TCP fallback: an unsupported request is an error.
+        with self.assertRaises(UnsupportedBackend):
+            backend_plan("ibverbs", ibverbs_available=False, skip_unsupported=False)
+
+
+class ShapeAndPayloadTest(unittest.TestCase):
+    def test_smoke_shape_is_smaller(self) -> None:
+        gate = gate_shape("tcp", smoke=False)
+        smoke = gate_shape("tcp", smoke=True)
+        self.assertFalse(gate.smoke)
+        self.assertTrue(smoke.smoke)
+        self.assertLess(smoke.serial_samples, gate.serial_samples)
+
+    def test_write_payload_stamps_counter(self) -> None:
+        # ROB-5: the 8-byte counter prefix makes each write distinguishable.
+        p7 = write_payload(PAYLOAD_BYTES, 7)
+        p8 = write_payload(PAYLOAD_BYTES, 8)
+        self.assertEqual(len(p7), PAYLOAD_BYTES)
+        self.assertEqual(int.from_bytes(p7[:8], "little"), 7)
+        self.assertNotEqual(p7, p8)
+
+    def test_poison_differs_from_source(self) -> None:
+        # ROB-5: poison must differ from the source so a no-op read is caught.
+        self.assertNotEqual(
+            source_pattern(PAYLOAD_BYTES, 0), poison_pattern(PAYLOAD_BYTES)
+        )
+
+
+class SourceHashTest(unittest.TestCase):
+    def test_every_file_affects_the_hash(self) -> None:
+        # ROB-1: the identity hash must cover every source file, so a change in any
+        # one of them changes it -- this is what a single-file hash missed.
+        with tempfile.TemporaryDirectory() as d:
+            a = os.path.join(d, "a.py")
+            b = os.path.join(d, "b.py")
+            with open(a, "wb") as fh:
+                fh.write(b"aaa")
+            with open(b, "wb") as fh:
+                fh.write(b"bbb")
+            before = _sha256_over_files([a, b])
+            with open(b, "wb") as fh:
+                fh.write(b"bbb-changed")
+            self.assertNotEqual(before, _sha256_over_files([a, b]))
 
 
 if __name__ == "__main__":
