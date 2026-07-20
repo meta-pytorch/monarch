@@ -2364,6 +2364,14 @@ impl<A: Actor> Instance<A> {
             queue_depth,
             inbound_ordering_snapshot,
         );
+        let actor_id = hash_to_u64(cell.actor_addr().id());
+        notify_actor_status_changed(ActorStatusEvent {
+            id: generate_actor_status_event_id(actor_id),
+            timestamp: cell.created_at(),
+            actor_id,
+            new_status: ActorStatus::Created.arm().unwrap_or("unknown").to_string(),
+            reason: None,
+        });
         let inner = Arc::new(InstanceState {
             proc,
             cell,
@@ -4108,22 +4116,22 @@ impl InstanceCell {
             return;
         }
         let old = old_status.expect("status change should capture previous status");
+        let actor_id = hash_to_u64(self.actor_addr().id());
 
-        // Actor status changes between Idle and Processing when handling every
-        // message. It creates too many logs if we want to log these 2 states.
-        // Also, sometimes the actor transitions from Processing -> Processing.
-        // Therefore we skip the status changes between them.
+        let new_status = new.arm().unwrap_or("unknown");
+        let change_reason = match &new {
+            ActorStatus::Failed(reason) => Some(reason.to_string()),
+            ActorStatus::Stopping(ActorStoppingReason::Zombie(reason)) => Some(reason.clone()),
+            ActorStatus::Stopped(reason) => Some(reason.clone()),
+            _ => None,
+        };
+
+        // Idle/Processing transitions are persisted but omitted from logs because
+        // they occur for every message.
         if !((old.is_idle() && new.is_processing())
             || (old.is_processing() && new.is_idle())
             || old == new)
         {
-            let new_status = new.arm().unwrap_or("unknown");
-            let change_reason = match &new {
-                ActorStatus::Failed(reason) => reason.to_string(),
-                ActorStatus::Stopping(ActorStoppingReason::Zombie(reason)) => reason.clone(),
-                ActorStatus::Stopped(reason) => reason.clone(),
-                _ => "".to_string(),
-            };
             tracing::info!(
                 name = "ActorStatus",
                 actor_id = %self.actor_addr(),
@@ -4131,21 +4139,16 @@ impl InstanceCell {
                 status = new_status,
                 prev_status = old.arm().unwrap_or("unknown"),
                 caller = %PanicLocation::caller(),
-                change_reason,
+                change_reason = change_reason.as_deref().unwrap_or(""),
             );
-            let actor_id = hash_to_u64(self.actor_addr().id());
-            notify_actor_status_changed(ActorStatusEvent {
-                id: generate_actor_status_event_id(actor_id),
-                timestamp: std::time::SystemTime::now(),
-                actor_id,
-                new_status: new_status.to_string(),
-                reason: if change_reason.is_empty() {
-                    None
-                } else {
-                    Some(change_reason)
-                },
-            });
         }
+        notify_actor_status_changed(ActorStatusEvent {
+            id: generate_actor_status_event_id(actor_id),
+            timestamp: std::time::SystemTime::now(),
+            actor_id,
+            new_status: new_status.to_string(),
+            reason: change_reason,
+        });
     }
 
     fn publish_dropped_status(&self, terminal_status: ActorStatus) {
@@ -4787,8 +4790,12 @@ impl<A: Actor> HandlerPorts<A> {
 mod tests {
     use std::assert_matches;
     use std::sync::atomic::AtomicBool;
+    use std::sync::mpsc as std_mpsc;
 
     use hyperactor_macros::export;
+    use hyperactor_telemetry::EntityEvent;
+    use hyperactor_telemetry::TraceEvent;
+    use hyperactor_telemetry::TraceEventSink;
     use serde_json::json;
     use timed_test::async_timed_test;
     use tokio::sync::Barrier;
@@ -4817,6 +4824,26 @@ mod tests {
     struct TestActor;
 
     impl Actor for TestActor {}
+
+    struct ActorStatusSink {
+        actor_id: u64,
+        sender: std_mpsc::Sender<ActorStatusEvent>,
+    }
+
+    impl TraceEventSink for ActorStatusSink {
+        fn consume(&mut self, event: &TraceEvent) -> Result<(), anyhow::Error> {
+            if let TraceEvent::Entity(EntityEvent::ActorStatus(status)) = event
+                && status.actor_id == self.actor_id
+            {
+                let _ = self.sender.send(status.clone());
+            }
+            Ok(())
+        }
+
+        fn flush(&mut self) -> Result<(), anyhow::Error> {
+            Ok(())
+        }
+    }
 
     async fn get_status(client: &Client, actor_addr: &ActorAddr) -> Option<ActorStatus> {
         let (reply_port, reply_rx) = client.open_once_port::<Option<ActorStatus>>();
@@ -4910,6 +4937,27 @@ mod tests {
                 "{label}: {old} -> {new}"
             );
         }
+    }
+
+    #[test]
+    fn instance_creation_emits_created_status() {
+        hyperactor_telemetry::initialize_logging_for_test();
+        let proc = Proc::isolated();
+        let actor_addr = proc.allocate_root_type::<TestActor>();
+        let actor_id = hash_to_u64(actor_addr.id());
+        let (sender, receiver) = std_mpsc::channel();
+        hyperactor_telemetry::register_sink(Box::new(ActorStatusSink { actor_id, sender }));
+
+        let (instance, _receivers) = Instance::<TestActor>::new(proc, actor_addr, false, None);
+
+        assert_eq!(*instance.status().borrow(), ActorStatus::Created);
+        let event = receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("created status should be emitted during instance construction");
+        assert_eq!(event.actor_id, actor_id);
+        assert_eq!(event.timestamp, instance.inner.cell.created_at());
+        assert_eq!(event.new_status, "Created");
+        assert_eq!(event.reason, None);
     }
 
     #[derive(Debug)]
