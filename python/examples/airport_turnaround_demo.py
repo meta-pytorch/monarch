@@ -35,6 +35,12 @@ What to watch in the TUI:
 Usage::
 
     buck2 run fbcode//monarch/python/examples:airport_turnaround_demo -- --flights 8
+
+Add ``--dashboard`` to also serve the live-telemetry Monarch Dashboard (default
+port 8265; on a devvm it serves HTTPS via the Nest Dev Proxy URL printed at
+startup)::
+
+    buck2 run fbcode//monarch/python/examples:airport_turnaround_demo -- --dashboard
 """
 
 import argparse
@@ -45,7 +51,7 @@ import random
 
 from monarch._src.actor.telemetry import TracingForwarder
 from monarch.actor import Actor, concurrent_endpoint, context, endpoint
-from monarch.job import ProcessJob
+from monarch.job import ProcessJob, TelemetryConfig
 
 logger: logging.Logger = logging.getLogger("airport_turnaround_demo")
 logger.addHandler(TracingForwarder())
@@ -253,7 +259,15 @@ class FlightActor(Actor):
 
 
 async def async_main(args: argparse.Namespace) -> None:
-    job = ProcessJob({"hosts": 1}).enable_admin()
+    job = ProcessJob({"hosts": 1})
+    job.enable_admin()
+    if args.dashboard:
+        job.enable_telemetry(
+            TelemetryConfig(
+                include_dashboard=True,
+                dashboard_port=args.dashboard_port,
+            )
+        )
     state = job.state(cached_path=None)
     host = state.hosts
 
@@ -313,6 +327,12 @@ async def async_main(args: argparse.Namespace) -> None:
     print("  - fuel_truck_pool     -> Execution: request_refuel xK")
     print("  - baggage_crew_pool   -> Execution: request_baggage_service xK")
     print(f"  raw ids: gate_manager={gate_ref}  flight[0]={flight0_ref}")
+    if args.dashboard:
+        print(
+            f"\nMonarch Dashboard enabled on port {args.dashboard_port}. "
+            "On a devvm it serves HTTPS: open the Nest Dev Proxy URL printed "
+            "above (plain http://localhost hangs against the TLS socket)."
+        )
     print(
         f"\n{args.flights} flights; {args.gates} gates, {args.runways} runways, "
         f"{args.fuel_trucks} fuel trucks, {args.baggage_crews} baggage crews. "
@@ -367,6 +387,17 @@ def main() -> None:
         description="execution-surface airport-turnaround observability demo"
     )
     parser.add_argument("--flights", type=int, default=8)
+    parser.add_argument(
+        "--dashboard",
+        action="store_true",
+        help="Launch the Monarch Dashboard for live telemetry",
+    )
+    parser.add_argument(
+        "--dashboard-port",
+        type=int,
+        default=8265,
+        help="Dashboard port (default: 8265); only used with --dashboard",
+    )
     parser.add_argument("--gates", type=int, default=3)
     parser.add_argument("--runways", type=int, default=2)
     parser.add_argument("--fuel-trucks", type=int, default=2)
