@@ -241,6 +241,9 @@ impl<A: Referable> ActorMesh<A> {
                     None,
                 ),
                 crashed_ranks: vec![],
+                // MFCA-4: synthesized locally by the mesh handle, not a
+                // controller report.
+                reporting_controller: None,
             }));
 
             result?;
@@ -1083,6 +1086,9 @@ impl<A: Referable> ActorMeshRef<A> {
                             None,
                         ),
                         crashed_ranks: vec![],
+                        // MFCA-4: synthesized locally when the controller is
+                        // unreachable, not a controller report.
+                        reporting_controller: None,
                     })
                 }
             }?

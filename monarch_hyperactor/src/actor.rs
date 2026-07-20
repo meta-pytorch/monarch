@@ -1600,6 +1600,9 @@ impl Actor for PythonActor {
                 actor_mesh_name: self.mesh_base_name.clone(),
                 event: event.clone(),
                 crashed_ranks: vec![],
+                // MFCA-4: direct actor-handled supervision conversion, not a
+                // controller report.
+                reporting_controller: None,
             },
         )
         .await

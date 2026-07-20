@@ -328,6 +328,9 @@ fn send_state_change(
         actor_mesh_name: Some(mesh_name.to_string()),
         event: event.clone(),
         crashed_ranks: vec![rank],
+        // MFCA-1/MFCA-2: stamp this controller's id so the owner attributes the
+        // failure by controller, whatever the event subject is.
+        reporting_controller: Some(cx.instance().self_addr().id().clone()),
     };
     health_state.crashed_ranks.insert(rank, event.clone());
     health_state.unhealthy_event = Some(if is_proc_stopped {
@@ -1316,6 +1319,8 @@ impl<A: Referable> Controlled for ActorMeshControlPlane<A> {
             actor_mesh_name: Some(mesh_name.to_string()),
             event,
             crashed_ranks: vec![],
+            // MFCA-1: controller-generated stop report.
+            reporting_controller: Some(cx.instance().self_addr().id().clone()),
         };
         health_state.unhealthy_event = Some(Unhealthy::StreamClosed(failure_message.clone()));
         // We don't send a message to the owner on stops, because only the owner
@@ -1527,6 +1532,8 @@ impl Controlled for ProcMeshRef {
             actor_mesh_name: Some(mesh_name.to_string()),
             event,
             crashed_ranks: vec![],
+            // MFCA-1: controller-generated stop report.
+            reporting_controller: Some(cx.instance().self_addr().id().clone()),
         };
         health_state.unhealthy_event = Some(Unhealthy::StreamClosed(failure_message.clone()));
         for subscriber in health_state.subscribers.iter() {
@@ -1739,6 +1746,61 @@ mod tests {
 
         assert_eq!(health_state.first_non_terminating_rank(), None);
         assert_eq!(owner_rx.try_recv().unwrap(), None);
+    }
+
+    // MFCA-1/MFCA-3: `send_state_change` stamps the reporting controller's id on
+    // the owner post (and the subscriber copy) even when the event subject is a
+    // ProcAgent rather than the controller or a mesh member.
+    #[tokio::test]
+    async fn owner_post_carries_reporting_controller_with_procagent_subject() {
+        let instance = testing::instance();
+        let (owner_port, mut owner_rx) = instance.open_port::<MeshFailure>();
+        let (sub_port, mut sub_rx) = instance.open_port::<Option<MeshFailure>>();
+        let mesh_name = ResourceId::instance(Label::new("workers").unwrap());
+        let region: ndslice::Region = ndslice::extent!(gpus = 1).into();
+        let statuses = std::iter::once((
+            region.extent().point_of_rank(0).unwrap(),
+            resource::Status::Running,
+        ))
+        .collect();
+        let mut health_state = HealthState::new(statuses, Some(owner_port.bind()));
+        health_state.subscribers.insert(sub_port.bind());
+
+        // Event subject is a ProcAgent, distinct from the controller (the
+        // synthesized-timeout shape that defeats event-subject inference).
+        let procagent = ResourceId::proc_addr_from_name(ChannelAddr::Local(0), "agent_proc")
+            .actor_addr("proc_agent");
+        let event = ActorSupervisionEvent::new(
+            procagent.clone(),
+            None,
+            ActorStatus::Failed(ActorErrorKind::Generic(
+                "unable to query for actor states".to_string(),
+            )),
+            None,
+        );
+        assert!(
+            health_state.mark_rank_terminating(0, resource::Status::Failed("boom".to_string()))
+        );
+        send_state_change(&instance, 0, event, &mesh_name, false, &mut health_state);
+
+        let controller_id = instance.self_addr().id().clone();
+        let owner_failure = owner_rx.recv().await.unwrap();
+        // MFCA-1: the owner post carries the controller id.
+        assert_eq!(
+            owner_failure.reporting_controller,
+            Some(controller_id.clone())
+        );
+        // MFCA-3: the event subject stays the ProcAgent, distinct from the reporter.
+        assert_eq!(owner_failure.event.actor_id, procagent);
+        assert_ne!(owner_failure.event.actor_id.id(), &controller_id);
+
+        // The subscriber copy carries the same reporter after the clone.
+        let sub_failure = sub_rx
+            .recv()
+            .await
+            .unwrap()
+            .expect("subscriber failure is Some");
+        assert_eq!(sub_failure.reporting_controller, Some(controller_id));
     }
 
     fn failed_event(rank: usize, message: &str) -> ActorSupervisionEvent {
