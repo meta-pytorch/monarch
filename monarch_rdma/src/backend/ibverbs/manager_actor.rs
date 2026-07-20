@@ -60,9 +60,9 @@ use super::primitives::ibverbs_supported;
 use super::queue_pair::IbvQueuePair;
 use super::queue_pair::OpResult;
 use super::queue_pair::ProcessOps;
-use super::queue_pair::QpKey;
-use super::queue_pair::QueuePairActor;
 use super::queue_pair::legacy;
+use super::queue_pair::rc_queue_pair::QpKey;
+use super::queue_pair::rc_queue_pair::RCQueuePairActor;
 use crate::RdmaOp;
 use crate::RdmaTransportLevel;
 use crate::backend::RdmaBackend;
@@ -76,12 +76,12 @@ use crate::rdma_manager_actor::RdmaManagerActor;
 use crate::validate_execution_context;
 
 /// Cross-proc message: the active side asks the peer's manager to
-/// create and connect a mirror QP for an in-flight [`QueuePairActor`].
+/// create and connect a mirror QP for an in-flight [`RCQueuePairActor`].
 /// Generic over the manager actor type so test code can swap in a
 /// mock.
 #[derive(Debug, Serialize, Deserialize, Named)]
 #[serde(bound(serialize = "", deserialize = ""))]
-pub(super) struct CreatePeerQueuePair<M: Referable> {
+pub(crate) struct CreatePeerQueuePair<M: Referable> {
     /// The active side's manager.
     pub(super) sender: ActorRef<M>,
     /// Device the active side picked for its QP.
@@ -99,7 +99,7 @@ wirevalue::register_type!(CreatePeerQueuePair<IbvManagerActor<EfaDevice>>);
 /// Local-only message: submit a batch of RDMA ops for end-to-end
 /// execution. The manager iterates the batch, resolves each op's
 /// local MR via [`IbvManagerActor::resolve_local_mr`], looks up
-/// (or spawns) the active-side [`QueuePairActor`] for the op's
+/// (or spawns) the active-side [`RCQueuePairActor`] for the op's
 /// [`QpKey`], and immediately dispatches a one-item [`ProcessOps`]
 /// to that QP — so the QP can start posting op `i` while the
 /// manager resolves the MR for op `i+1`.
@@ -116,7 +116,7 @@ pub(super) struct SubmitOps<I: IbvDeviceImpl> {
 /// the connection itself — exchange [`IbvQpInfo`] with the other endpoint's QP
 /// and call `connect` on each side. Lets doorbell tests and the
 /// `cuda_ping_pong` example poke a real QP without going through
-/// [`QueuePairActor`]; both want the legacy queue pair for its direct
+/// [`RCQueuePairActor`]; both want the legacy queue pair for its direct
 /// device-doorbell data path, independent of the backend's production
 /// [`IbvDomainImpl::QueuePair`].
 pub struct RawQueuePair {
@@ -173,17 +173,17 @@ const DEFAULT_DOMAIN: &str = "default";
 pub struct IbvManagerActor<I: IbvDeviceImpl> {
     owner: OnceLock<ActorHandle<RdmaManagerActor>>,
 
-    /// Active-side [`QueuePairActor`] children, keyed from this
+    /// Active-side [`RCQueuePairActor`] children, keyed from this
     /// manager's perspective. Lazily populated on the first
     /// [`SubmitOps`] that targets a new `(self_device, peer,
     /// other_device)` triple.
     qp_handles: HashMap<
         QpKey,
-        ActorHandle<QueuePairActor<IbvManagerActor<I>, <I::Domain as IbvDomainImpl>::QueuePair>>,
+        ActorHandle<RCQueuePairActor<IbvManagerActor<I>, <I::Domain as IbvDomainImpl>::QueuePair>>,
     >,
 
     /// Passive-side mirror QPs, created in response to a peer's
-    /// [`CreatePeerQueuePair`]. The peer's [`QueuePairActor`] owns
+    /// [`CreatePeerQueuePair`]. The peer's [`RCQueuePairActor`] owns
     /// the active side; we hold the connected mirror here so the
     /// peer can read/write our memory. The map's `Drop` destroys
     /// each QP via its own `Drop`.
@@ -442,7 +442,7 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
 
     /// Lazy active-side QP actor: if `qp_key` is absent from
     /// [`Self::qp_handles`], create an [`IbvQueuePair`] on the
-    /// requested device and spawn a [`QueuePairActor`] to drive its
+    /// requested device and spawn a [`RCQueuePairActor`] to drive its
     /// handshake + data path. Returns a clone of the actor handle.
     fn ensure_qp_actor(
         &mut self,
@@ -450,7 +450,7 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
         qp_key: &QpKey,
         peer_manager: ActorRef<Self>,
     ) -> Result<
-        ActorHandle<QueuePairActor<Self, <I::Domain as IbvDomainImpl>::QueuePair>>,
+        ActorHandle<RCQueuePairActor<Self, <I::Domain as IbvDomainImpl>::QueuePair>>,
         anyhow::Error,
     > {
         if let Some(h) = self.qp_handles.get(qp_key) {
@@ -465,7 +465,7 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
         let local_manager: ActorRef<Self> = cx.bind();
         let is_loopback = local_manager.actor_addr() == peer_manager.actor_addr()
             && qp_key.self_device == qp_key.other_device;
-        let actor = cx.spawn(QueuePairActor::new(
+        let actor = cx.spawn(RCQueuePairActor::new(
             qp_key.clone(),
             local_manager,
             peer_manager,
@@ -761,7 +761,7 @@ where
     /// Translates each op to an `IbvOp`, then ships the whole batch to
     /// [`IbvManagerActor`] via [`SubmitOps`]. The manager interleaves
     /// local-MR resolution with per-op dispatch: each op is sent to its
-    /// [`QueuePairActor`] as a one-item [`ProcessOps`] the moment its MR
+    /// [`RCQueuePairActor`] as a one-item [`ProcessOps`] the moment its MR
     /// is ready, so QP work on op `i` overlaps MR registration for op
     /// `i+1`.
     ///
@@ -850,7 +850,7 @@ where
 #[cfg(test)]
 mod tests {
     //! End-to-end coverage of the [`SubmitOps`] → [`ProcessOps`] →
-    //! [`QueuePairActor`] data path.
+    //! [`RCQueuePairActor`] data path.
     //!
     //! Each test stands up two RDMA participants in two
     //! [`Proc::direct`] procs in the test process. Each proc hosts an
@@ -1430,7 +1430,7 @@ mod tests {
     }
 
     /// True loopback write: both buffers registered with the same
-    /// `RdmaManagerActor` on the same device. The `QueuePairActor`
+    /// `RdmaManagerActor` on the same device. The `RCQueuePairActor`
     /// sees `is_loopback = true` and connects its QP to its own
     /// endpoint without going through `CreatePeerQueuePair`.
     #[timed_test::async_timed_test(timeout_secs = 60)]
@@ -1469,7 +1469,7 @@ mod tests {
 
     /// One write + one read in a single `IbvBackend::submit` batch.
     /// Both ops share the same `QpKey` so the manager groups them
-    /// into a single `ProcessOps` dispatched to one `QueuePairActor`.
+    /// into a single `ProcessOps` dispatched to one `RCQueuePairActor`.
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_multi_op_same_qp_cpu() -> Result<(), anyhow::Error> {
         require_rdma();
@@ -1661,7 +1661,7 @@ mod tests {
     }
 
     /// Two `IbvBackend::submit` calls back-to-back through the same
-    /// helper. The second batch reuses the cached `QueuePairActor`
+    /// helper. The second batch reuses the cached `RCQueuePairActor`
     /// from the first (the manager's `qp_handles` entry persists
     /// across submits).
     #[timed_test::async_timed_test(timeout_secs = 60)]

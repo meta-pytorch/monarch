@@ -23,7 +23,6 @@ pub mod manager_actor;
 pub mod memory_region;
 pub mod mlx_device;
 pub mod mlx_domain;
-pub mod mlx_queue_pair;
 pub mod primitives;
 pub mod queue_pair;
 
