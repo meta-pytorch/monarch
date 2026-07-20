@@ -86,12 +86,16 @@ struct Arena {
       : next_free_(inline_buffer_), remaining_size_(sizeof(inline_buffer_)) {}
   template <typename T, typename... Args>
   T* allocate(Args&&... args) {
-    static_assert(std::is_pod<T>::value, "T must be a POD type.");
+    static_assert(
+        std::is_standard_layout_v<T> && std::is_trivial_v<T>,
+        "T must be a POD type.");
     return allocate_slice<T>(1, std::forward<Args>(args)...).begin();
   }
   template <typename T, typename... Args>
   Slice<T> allocate_slice(size_t n, Args&&... args) {
-    static_assert(std::is_pod<T>::value, "T must be a POD type.");
+    static_assert(
+        std::is_standard_layout_v<T> && std::is_trivial_v<T>,
+        "T must be a POD type.");
     size_t alignment = alignof(T);
     size_t bytes_needed = n * sizeof(T);
     size_t to_align = 0;

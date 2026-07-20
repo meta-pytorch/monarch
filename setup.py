@@ -341,7 +341,7 @@ def create_cpp_extension(
     return Extension(
         name,
         sources,
-        extra_compile_args=["-std=c++17", "-g", "-O3"],
+        extra_compile_args=["-std=c++20", "-g", "-O3"],
         extra_link_args=extra_link_args,
         define_macros=define_macros or [],
         libraries=libraries,
