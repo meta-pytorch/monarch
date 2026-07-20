@@ -326,9 +326,23 @@ impl Binds<()> for () {
     }
 }
 
+/// Determines which layer reports a message's terminal telemetry status.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MessageStatusReporting {
+    /// The actor runtime reports status when the handler future resolves.
+    Immediate,
+    /// The handler reports status after asynchronously dispatched work resolves.
+    Deferred,
+}
+
 /// A Handler allows an actor to handle a specific message type.
 #[async_trait]
 pub trait Handler<M>: Actor {
+    /// Select which layer reports the message's terminal telemetry status.
+    fn message_status_reporting() -> MessageStatusReporting {
+        MessageStatusReporting::Immediate
+    }
+
     /// Handle the next M-typed message.
     async fn handle(&mut self, cx: &Context<Self>, message: M) -> Result<(), anyhow::Error>;
 }

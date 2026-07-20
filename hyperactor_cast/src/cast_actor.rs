@@ -837,6 +837,7 @@ impl Handler<CastMessage> for CastActor {
             let dest = domain
                 .local_actor
                 .port_addr(Port::handler_id(message.dest_port, None));
+            hyperactor::mailbox::headers::stamp_sender_actor_id_hash(&mut headers, &message.sender);
             hyperactor::mailbox::headers::stamp_sender_actor_id(
                 &mut headers,
                 &seq_info,

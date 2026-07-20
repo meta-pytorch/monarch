@@ -15,13 +15,16 @@ import time
 import types
 import unittest.mock
 import uuid
+from collections import Counter
 from typing import Any, cast
 
 import monarch._src.job.telemetry_actor as job_telemetry_actor
+import monarch.actor
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr
-from monarch._src.actor.actor_mesh import Actor, ActorMesh
+from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
+from monarch._src.actor.actor_mesh import Actor, ActorMesh, current_rank
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.proc_mesh import (
     _proc_mesh_spawn_callbacks,
@@ -56,6 +59,37 @@ class SenderActor(Actor):
         target.ping.call().get()
 
 
+class TelemetryWorkerActor(Actor):
+    """Worker that exercises multi-hop actor messaging."""
+
+    @endpoint
+    def start(self, coordinator: Any) -> None:
+        coordinator.request.call_one(current_rank().rank).get()
+
+    @endpoint
+    def reply(self) -> None:
+        pass
+
+
+class TelemetryCoordinatorActor(Actor):
+    """Coordinator that replies to the requesting worker."""
+
+    def __init__(self, workers: Any) -> None:
+        self.workers = workers
+
+    @endpoint
+    def request(self, rank: int) -> None:
+        self.workers.slice(replica=rank).reply.broadcast()
+
+
+class TelemetryFailureActor(Actor):
+    """Actor whose fire-and-forget endpoint fails the actor."""
+
+    @endpoint
+    def fail(self) -> None:
+        raise RuntimeError("telemetry failure")
+
+
 def _telemetry_config(**kwargs: Any) -> TelemetryConfig:
     kwargs.setdefault("dashboard_port", 0)
     return TelemetryConfig(**kwargs)
@@ -81,6 +115,16 @@ def _rows_to_pydict(rows: list[dict[str, Any]]) -> dict[str, list[Any]]:
     if not rows:
         return {}
     return {column: [row.get(column) for row in rows] for column in rows[0].keys()}
+
+
+def _pydict_to_rows(columns: dict[str, list[Any]]) -> list[dict[str, Any]]:
+    if not columns:
+        return []
+    names = list(columns)
+    return [
+        dict(zip(names, values, strict=True))
+        for values in zip(*(columns[name] for name in names), strict=True)
+    ]
 
 
 def _query(
@@ -112,6 +156,54 @@ def _remove_socket_dir(apply_id: str) -> None:
     shutil.rmtree(
         job_telemetry_actor.telemetry_socket_dir(apply_id), ignore_errors=True
     )
+
+
+_TELEMETRY_WORKER_MESH = "telemetry_worker"
+_TELEMETRY_COORDINATOR_MESH = "telemetry_coordinator"
+_TELEMETRY_FAILURE_MESH = "telemetry_failure"
+
+
+def _start_telemetry_workload(state) -> None:
+    hosts = state.hosts
+    worker_procs = hosts.spawn_procs(
+        per_host={"replica": 2}, name="telemetry_worker_procs"
+    )
+    coordinator_proc = hosts.spawn_procs(name=_TELEMETRY_COORDINATOR_MESH)
+    workers = worker_procs.spawn(_TELEMETRY_WORKER_MESH, TelemetryWorkerActor)
+    coordinator = coordinator_proc.spawn(
+        _TELEMETRY_COORDINATOR_MESH, TelemetryCoordinatorActor, workers
+    )
+    workers.initialized.get()
+    coordinator.initialized.get()
+    workers.start.broadcast(coordinator)
+
+
+def _start_failed_actor(state) -> tuple[int, int]:
+    monarch.actor.unhandled_fault_hook = lambda failure: None
+    failure_procs = state.hosts.spawn_procs(name="telemetry_failure_procs")
+    failure_actor = failure_procs.spawn(_TELEMETRY_FAILURE_MESH, TelemetryFailureActor)
+    failure_actor.initialized.get()
+    actor_id = _query(
+        state,
+        "SELECT a.id FROM actors a JOIN meshes m ON a.mesh_id = m.id "
+        f"WHERE m.given_name = '{_TELEMETRY_FAILURE_MESH}'",
+    )["id"][0]
+
+    failure_actor.fail.broadcast()
+    _query(
+        state,
+        "SELECT id FROM actor_status_events "
+        f"WHERE actor_id = {actor_id} AND new_status = 'Failed'",
+    )
+    message_id = _query(
+        state,
+        "SELECT msg.id FROM messages msg "
+        "JOIN actors a ON msg.to_actor_id = a.id "
+        "JOIN meshes m ON a.mesh_id = m.id "
+        f"WHERE m.given_name = '{_TELEMETRY_FAILURE_MESH}' "
+        "AND msg.endpoint = 'fail'",
+    )["id"][0]
+    return actor_id, message_id
 
 
 @pytest.mark.timeout(30)
@@ -286,6 +378,47 @@ def test_actors_table() -> None:
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
+def test_telemetry_workload_actor_topology() -> None:
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
+        cached_path=None,
+    ) as state:
+        _assert_sidecar(state)
+        _start_telemetry_workload(state)
+
+        result = _query(
+            state,
+            "SELECT a.id, a.timestamp_us, a.rank, a.full_name, "
+            "m.given_name, m.class FROM actors a "
+            "JOIN meshes m ON a.mesh_id = m.id "
+            f"WHERE m.given_name IN ('{_TELEMETRY_WORKER_MESH}', "
+            f"'{_TELEMETRY_COORDINATOR_MESH}')",
+            min_rows=4,
+        )
+        rows = _pydict_to_rows(result)
+        assert len(rows) == 4, rows
+        assert Counter(row["class"] for row in rows) == {
+            "Proc": 1,
+            "Python<TelemetryWorkerActor>": 2,
+            "Python<TelemetryCoordinatorActor>": 1,
+        }
+
+        workers = [
+            row for row in rows if row["class"] == "Python<TelemetryWorkerActor>"
+        ]
+        assert sorted(row["rank"] for row in workers) == [0, 1]
+        assert [
+            row["rank"]
+            for row in rows
+            if row["class"] == "Python<TelemetryCoordinatorActor>"
+        ] == [0]
+        assert len({row["id"] for row in rows}) == 4
+        assert all(row["timestamp_us"] > 0 for row in rows)
+        assert all(ActorAddr.from_string(row["full_name"]) for row in rows)
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
 def test_meshes_table() -> None:
     """Test that the meshes table is populated when actor meshes are spawned."""
     # Spawn some worker actors - this should trigger notify_mesh_created
@@ -378,6 +511,51 @@ def test_meshes_table() -> None:
                 assert sizes[workers_idx] == 2, (
                     f"Expected 2 workers in shape, got: {sizes[workers_idx]}"
                 )
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
+def test_telemetry_workload_mesh_topology() -> None:
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
+        cached_path=None,
+    ) as state:
+        _assert_sidecar(state)
+        _start_telemetry_workload(state)
+
+        rows = _pydict_to_rows(
+            _query(
+                state,
+                "SELECT id, timestamp_us, class, given_name, shape_json, "
+                "parent_mesh_id FROM meshes "
+                f"WHERE given_name IN ('{_TELEMETRY_WORKER_MESH}', "
+                f"'{_TELEMETRY_COORDINATOR_MESH}')",
+                min_rows=3,
+            )
+        )
+        assert len(rows) == 3, rows
+        assert Counter(row["class"] for row in rows) == {
+            "Proc": 1,
+            "Python<TelemetryWorkerActor>": 1,
+            "Python<TelemetryCoordinatorActor>": 1,
+        }
+        assert len({row["id"] for row in rows}) == 3
+        assert all(row["timestamp_us"] > 0 for row in rows)
+
+        worker_mesh = next(
+            row for row in rows if row["class"] == "Python<TelemetryWorkerActor>"
+        )
+        worker_shape = json.loads(worker_mesh["shape_json"])["inner"]
+        assert worker_shape == {
+            "labels": ["hosts", "replica"],
+            "sizes": [1, 2],
+        }
+
+        coordinator_proc = next(row for row in rows if row["class"] == "Proc")
+        coordinator_actor_mesh = next(
+            row for row in rows if row["class"] == "Python<TelemetryCoordinatorActor>"
+        )
+        assert coordinator_actor_mesh["parent_mesh_id"] == coordinator_proc["id"]
 
 
 @pytest.mark.timeout(120)
@@ -655,7 +833,6 @@ def test_all_actors_in_host_mesh(cleanup_callbacks) -> None:
 @isolate_in_subprocess
 def test_actor_status_events_table() -> None:
     """Test that the actor_status_events table is populated when actors change status."""
-    # Spawn worker actors — actors go through status transitions during spawn
     with scoped_state(
         ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
         cached_path=None,
@@ -666,13 +843,7 @@ def test_actor_status_events_table() -> None:
         workers = worker_procs.spawn("status_test_worker", WorkerActor)
         workers.initialized.get()
 
-        # Query the actor_status_events table
-        result_dict = _query(
-            state,
-            "SELECT * FROM actor_status_events",
-        )
-
-        # Verify the schema has the expected columns
+        result_dict = _query(state, "SELECT * FROM actor_status_events")
         expected_columns = {
             "id",
             "timestamp_us",
@@ -685,26 +856,38 @@ def test_actor_status_events_table() -> None:
             f"Expected columns {expected_columns}, got {actual_columns}"
         )
 
-        # We should have at least some status events (actors transition through
-        # Created -> Initializing -> Idle at minimum)
-        event_count = len(result_dict.get("timestamp_us", []))
-        assert event_count > 0, (
-            f"Expected at least one actor status event, got {event_count}"
+        worker_rows = _pydict_to_rows(
+            _query(
+                state,
+                "SELECT ase.actor_id, ase.new_status, ase.reason "
+                "FROM actor_status_events ase "
+                "JOIN actors a ON ase.actor_id = a.id "
+                "JOIN meshes m ON a.mesh_id = m.id "
+                "WHERE m.given_name = 'status_test_worker'",
+                min_rows=6,
+            )
         )
+        statuses_by_actor = {
+            actor_id: {
+                row["new_status"] for row in worker_rows if row["actor_id"] == actor_id
+            }
+            for actor_id in {row["actor_id"] for row in worker_rows}
+        }
+        assert len(statuses_by_actor) == 2
+        assert all(
+            statuses == {"Created", "Initializing", "Idle"}
+            for statuses in statuses_by_actor.values()
+        ), statuses_by_actor
+        assert all(row["reason"] is None for row in worker_rows)
 
-        joined = _query(
+        client_rows = _query(
             state,
             "SELECT ase.id FROM actor_status_events ase "
-            "INNER JOIN actors a ON ase.actor_id = a.id "
-            "WHERE a.display_name LIKE '%status_test_worker%'",
+            "JOIN actors a ON ase.actor_id = a.id "
+            "WHERE a.display_name = '<root>' AND ase.new_status = 'Client'",
         )
-        joined_count = len(joined.get("id", []))
-        assert joined_count > 0, (
-            "Expected actor_status_events.actor_id to join actors.id for "
-            f"status_test_worker, got {joined_count} joined rows"
-        )
+        assert client_rows["id"]
 
-        # Verify new_status values are valid ActorStatus arm names
         valid_statuses = {
             "Unknown",
             "Created",
@@ -712,16 +895,136 @@ def test_actor_status_events_table() -> None:
             "Client",
             "Idle",
             "Processing",
-            "Saving",
-            "Loading",
             "Stopping",
             "Stopped",
             "Failed",
         }
-        new_statuses = set(result_dict.get("new_status", []))
+        new_statuses = set(
+            _query(state, "SELECT DISTINCT new_status FROM actor_status_events")[
+                "new_status"
+            ]
+        )
         assert new_statuses.issubset(valid_statuses), (
             f"Found unexpected status values: {new_statuses - valid_statuses}"
         )
+        assert "Unknown" not in new_statuses
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
+@pytest.mark.parametrize("required_status", ["Created", "Processing"])
+def test_user_actor_status_lifecycle(required_status: str) -> None:
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
+        cached_path=None,
+    ) as state:
+        _assert_sidecar(state)
+        _start_telemetry_workload(state)
+
+        _query(
+            state,
+            "SELECT msg.id FROM messages msg "
+            "JOIN actors a ON msg.to_actor_id = a.id "
+            "JOIN meshes m ON a.mesh_id = m.id "
+            f"WHERE m.given_name IN ('{_TELEMETRY_WORKER_MESH}', "
+            f"'{_TELEMETRY_COORDINATOR_MESH}') "
+            "AND msg.endpoint IN ('start', 'request', 'reply')",
+            min_rows=6,
+        )
+        actors = _query(
+            state,
+            "SELECT a.id FROM actors a JOIN meshes m ON a.mesh_id = m.id "
+            f"WHERE m.given_name IN ('{_TELEMETRY_WORKER_MESH}', "
+            f"'{_TELEMETRY_COORDINATOR_MESH}') AND m.class LIKE 'Python<%'",
+            min_rows=3,
+        )["id"]
+        actor_ids = ", ".join(str(actor_id) for actor_id in actors)
+        required_count = 3 if required_status == "Created" else 6
+        _query(
+            state,
+            "SELECT ase.id FROM actor_status_events ase "
+            "JOIN actors a ON ase.actor_id = a.id "
+            "JOIN meshes m ON a.mesh_id = m.id "
+            f"WHERE m.given_name IN ('{_TELEMETRY_WORKER_MESH}', "
+            f"'{_TELEMETRY_COORDINATOR_MESH}') "
+            f"AND ase.new_status = '{required_status}'",
+            min_rows=required_count,
+        )
+        if required_status == "Processing":
+            _query(
+                state,
+                "SELECT ase.id FROM actor_status_events ase "
+                "WHERE ase.new_status = 'Idle' "
+                f"AND ase.actor_id IN ({actor_ids})",
+                min_rows=9,
+            )
+        status_rows = _pydict_to_rows(
+            _query(
+                state,
+                "SELECT actor_id, timestamp_us, new_status, reason "
+                "FROM actor_status_events "
+                f"WHERE actor_id IN ({actor_ids})",
+                min_rows=9,
+            )
+        )
+
+        statuses_by_actor = {
+            actor_id: {
+                row["new_status"] for row in status_rows if row["actor_id"] == actor_id
+            }
+            for actor_id in actors
+        }
+        missing = {
+            actor_id: statuses
+            for actor_id, statuses in statuses_by_actor.items()
+            if required_status not in statuses
+        }
+        assert not missing, missing
+        if required_status == "Processing":
+            for actor_id in actors:
+                processing_at = max(
+                    row["timestamp_us"]
+                    for row in status_rows
+                    if row["actor_id"] == actor_id and row["new_status"] == "Processing"
+                )
+                idle_at = max(
+                    row["timestamp_us"]
+                    for row in status_rows
+                    if row["actor_id"] == actor_id and row["new_status"] == "Idle"
+                )
+                assert idle_at >= processing_at
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
+def test_actor_status_events_failed_actor() -> None:
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
+        cached_path=None,
+    ) as state:
+        _assert_sidecar(state)
+        actor_id, _ = _start_failed_actor(state)
+
+        rows = _pydict_to_rows(
+            _query(
+                state,
+                "SELECT new_status, reason FROM actor_status_events "
+                f"WHERE actor_id = {actor_id}",
+                min_rows=7,
+            )
+        )
+        assert {row["new_status"] for row in rows} == {
+            "Created",
+            "Initializing",
+            "Idle",
+            "Processing",
+            "Stopping",
+            "Failed",
+        }, rows
+        failed_reason = next(
+            row["reason"] for row in rows if row["new_status"] == "Failed"
+        )
+        assert "telemetry failure" in failed_reason
 
 
 @pytest.mark.timeout(120)
@@ -868,15 +1171,16 @@ def test_sent_messages_table(
                 "SELECT column_name FROM information_schema.columns "
                 "WHERE table_name = 'sent_messages' ORDER BY ordinal_position",
             )
-            column_names = result.get("column_name", [])
-            assert column_names == [
+            required_columns = {
                 "id",
                 "timestamp_us",
                 "sender_actor_id",
                 "actor_mesh_id",
                 "view_json",
                 "shape_json",
-            ], f"Unexpected columns: {column_names}"
+            }
+            column_names = set(result.get("column_name", []))
+            assert required_columns.issubset(column_names), column_names
 
         # Verify 42 sent_messages join with the correct mesh
         joined = _query(
@@ -941,6 +1245,36 @@ def test_sent_messages_table(
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
+def test_telemetry_workload_sent_message_fanout() -> None:
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
+        cached_path=None,
+    ) as state:
+        _assert_sidecar(state)
+        _start_telemetry_workload(state)
+
+        rows = _pydict_to_rows(
+            _query(
+                state,
+                "SELECT sm.id, sm.timestamp_us, m.given_name "
+                "FROM sent_messages sm JOIN meshes m ON sm.actor_mesh_id = m.id "
+                f"WHERE m.given_name IN ('{_TELEMETRY_WORKER_MESH}', "
+                f"'{_TELEMETRY_COORDINATOR_MESH}') "
+                "AND m.class LIKE 'Python<%'",
+                min_rows=5,
+            )
+        )
+        assert len(rows) == 5, rows
+        assert Counter(row["given_name"] for row in rows) == {
+            _TELEMETRY_WORKER_MESH: 3,
+            _TELEMETRY_COORDINATOR_MESH: 2,
+        }
+        assert len({row["id"] for row in rows}) == 5
+        assert all(row["timestamp_us"] > 0 for row in rows)
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
 def test_messages_table(cleanup_callbacks) -> None:
     """Test that the messages table is populated when messages are received."""
     with scoped_state(
@@ -983,7 +1317,7 @@ def test_messages_table(cleanup_callbacks) -> None:
         # Verify to_actor_id joins with actors table (receiver is a known actor)
         joined = _query(
             state,
-            "SELECT m.id FROM messages m "
+            "SELECT m.id, m.from_actor_id FROM messages m "
             "JOIN actors a ON m.to_actor_id = a.id "
             "JOIN meshes mesh ON a.mesh_id = mesh.id "
             "WHERE mesh.given_name = 'msg_test_worker'",
@@ -994,6 +1328,21 @@ def test_messages_table(cleanup_callbacks) -> None:
         assert joined_count == 10, (
             f"Expected 10 messages received by msg_test_worker, got {joined_count}"
         )
+
+        sent = _query(
+            state,
+            "SELECT sm.sender_actor_id FROM sent_messages sm "
+            "JOIN meshes mesh ON sm.actor_mesh_id = mesh.id "
+            "WHERE mesh.given_name = 'msg_test_worker'",
+            min_rows=5,
+        )
+        assert len(sent["sender_actor_id"]) == 5, sent
+        expected_sender_ids = set(sent["sender_actor_id"])
+        assert len(expected_sender_ids) == 1, sent
+        assert set(joined["from_actor_id"]) == expected_sender_ids, {
+            "expected_sender_ids": expected_sender_ids,
+            "received_sender_ids": set(joined["from_actor_id"]),
+        }
 
         ports_by_actor = _query(
             state,
@@ -1011,6 +1360,41 @@ def test_messages_table(cleanup_callbacks) -> None:
         assert len(ports_by_actor["to_actor_id"]) == 2, ports_by_actor
         assert ports_by_actor["message_count"] == [5, 5], ports_by_actor
         assert ports_by_actor["port_count"] == [1, 1], ports_by_actor
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
+def test_telemetry_workload_message_fanout() -> None:
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
+        cached_path=None,
+    ) as state:
+        _assert_sidecar(state)
+        _start_telemetry_workload(state)
+
+        rows = _pydict_to_rows(
+            _query(
+                state,
+                "SELECT msg.endpoint, target.given_name "
+                "FROM messages msg "
+                "JOIN actors receiver ON msg.to_actor_id = receiver.id "
+                "JOIN meshes target ON receiver.mesh_id = target.id "
+                f"WHERE target.given_name IN ('{_TELEMETRY_WORKER_MESH}', "
+                f"'{_TELEMETRY_COORDINATOR_MESH}') "
+                "AND msg.endpoint IN ('start', 'request', 'reply')",
+                min_rows=6,
+            )
+        )
+        assert len(rows) == 6, rows
+        assert Counter(row["endpoint"] for row in rows) == {
+            "start": 2,
+            "request": 2,
+            "reply": 2,
+        }
+        assert Counter(row["given_name"] for row in rows) == {
+            _TELEMETRY_WORKER_MESH: 4,
+            _TELEMETRY_COORDINATOR_MESH: 2,
+        }
 
 
 @pytest.mark.timeout(120)
@@ -1054,23 +1438,15 @@ def test_messages_endpoint(cleanup_callbacks) -> None:
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
-def test_message_status_events_table(cleanup_callbacks) -> None:
-    """Test that message_status_events captures queued/active/complete transitions."""
+def test_message_status_events_table() -> None:
+    """Test the complete status lifecycle for successful received messages."""
     with scoped_state(
         ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
         cached_path=None,
     ) as state:
         _assert_sidecar(state)
-        hosts = state.hosts
-        worker_procs = hosts.spawn_procs(
-            per_host={"workers": 1}, name="status_workers_procs"
-        )
-        workers = worker_procs.spawn("status_test_worker", WorkerActor)
-        workers.initialized.get()
+        _start_telemetry_workload(state)
 
-        workers.ping.call().get()
-
-        # Verify schema
         result = _query(
             state,
             "SELECT column_name FROM information_schema.columns "
@@ -1084,25 +1460,78 @@ def test_message_status_events_table(cleanup_callbacks) -> None:
             "status",
         ], f"Unexpected columns: {column_names}"
 
-        # Verify status values include queued, active, complete
-        result = _query(state, "SELECT DISTINCT status FROM message_status_events")
-        statuses = set(result.get("status", []))
-        expected_statuses = {"queued", "active", "complete"}
-        assert expected_statuses.issubset(statuses), (
-            f"Expected statuses {expected_statuses} to be subset of {statuses}"
+        messages = _pydict_to_rows(
+            _query(
+                state,
+                "SELECT msg.id, msg.timestamp_us FROM messages msg "
+                "JOIN actors receiver ON msg.to_actor_id = receiver.id "
+                "JOIN meshes target ON receiver.mesh_id = target.id "
+                f"WHERE target.given_name IN ('{_TELEMETRY_WORKER_MESH}', "
+                f"'{_TELEMETRY_COORDINATOR_MESH}') "
+                "AND msg.endpoint IN ('start', 'request', 'reply')",
+                min_rows=6,
+            )
         )
+        assert len(messages) == 6, messages
+        message_timestamps = {
+            message["id"]: message["timestamp_us"] for message in messages
+        }
+        message_ids = ", ".join(str(message_id) for message_id in message_timestamps)
 
-        # Verify at least one message has all 3 status events (queued, active, complete)
-        result_dict = _query(
-            state,
-            "SELECT message_id, COUNT(*) as cnt "
-            "FROM message_status_events "
-            "GROUP BY message_id "
-            "HAVING COUNT(*) = 3",
+        events = _pydict_to_rows(
+            _query(
+                state,
+                "SELECT id, timestamp_us, message_id, status "
+                "FROM message_status_events "
+                f"WHERE message_id IN ({message_ids})",
+                min_rows=18,
+            )
         )
-        assert len(result_dict.get("message_id", [])) > 0, (
-            "Expected at least one message with all 3 status events"
+        assert len(events) == 18, events
+        assert len({event["id"] for event in events}) == 18
+        assert Counter(event["status"] for event in events) == {
+            "queued": 6,
+            "active": 6,
+            "complete": 6,
+        }
+        assert {event["message_id"] for event in events} == set(message_timestamps)
+
+        for message_id, message_timestamp in message_timestamps.items():
+            message_events = [
+                event for event in events if event["message_id"] == message_id
+            ]
+            assert Counter(event["status"] for event in message_events) == {
+                "queued": 1,
+                "active": 1,
+                "complete": 1,
+            }
+            timestamps = {
+                event["status"]: event["timestamp_us"] for event in message_events
+            }
+            assert timestamps["active"] == message_timestamp
+            assert timestamps["complete"] >= timestamps["active"]
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
+def test_message_status_events_failed_handler() -> None:
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
+        cached_path=None,
+    ) as state:
+        _assert_sidecar(state)
+        _, message_id = _start_failed_actor(state)
+
+        events = _pydict_to_rows(
+            _query(
+                state,
+                "SELECT status, timestamp_us FROM message_status_events "
+                f"WHERE message_id = {message_id}",
+                min_rows=3,
+            )
         )
+        statuses = {event["status"] for event in events}
+        assert "failed" in statuses and "complete" not in statuses, events
 
 
 @pytest.mark.timeout(120)
@@ -1366,26 +1795,76 @@ def test_query_after_stopping_actor_mesh(cleanup_callbacks) -> None:
         assert pre_stop_msg_count > 0, (
             "Expected received messages for actor_stop_worker before stopping"
         )
+        pre_stop_statuses = _query(
+            state,
+            "SELECT mse.id FROM message_status_events mse "
+            "JOIN messages msg ON mse.message_id = msg.id "
+            "JOIN actors a ON msg.to_actor_id = a.id "
+            "JOIN meshes mesh ON a.mesh_id = mesh.id "
+            "WHERE mesh.given_name = 'actor_stop_worker'",
+            min_rows=6,
+        )
+        pre_stop_status_count = len(pre_stop_statuses["id"])
 
         # Stop only the user ActorMesh, not the ProcMesh.
         # The telemetry actors on the ProcMesh remain alive.
         cast(ActorMesh[WorkerActor], workers).stop().get()
 
-        # The actor_status_events table should show a Stopped status for the
-        # stopped actors. This event fires on the child process, and is
-        # queryable because the ProcMesh (and its telemetry actor) is still alive.
-        status_result = _query(
+        status_rows = _pydict_to_rows(
+            _query(
+                state,
+                "SELECT ase.actor_id, ase.new_status, ase.reason "
+                "FROM actor_status_events ase "
+                "JOIN actors a ON ase.actor_id = a.id "
+                "JOIN meshes m ON a.mesh_id = m.id "
+                "WHERE m.given_name = 'actor_stop_worker'",
+                min_rows=14,
+            )
+        )
+        statuses_by_actor = {
+            actor_id: {
+                row["new_status"] for row in status_rows if row["actor_id"] == actor_id
+            }
+            for actor_id in {row["actor_id"] for row in status_rows}
+        }
+        assert all(
+            statuses
+            == {"Created", "Initializing", "Idle", "Processing", "Stopping", "Stopped"}
+            for statuses in statuses_by_actor.values()
+        ), statuses_by_actor
+        assert all(
+            row["reason"] for row in status_rows if row["new_status"] == "Stopped"
+        )
+
+        sent_after_stop = _query(
             state,
-            "SELECT ase.new_status FROM actor_status_events ase "
+            "SELECT sm.id FROM sent_messages sm "
+            "JOIN meshes m ON sm.actor_mesh_id = m.id "
+            "WHERE m.given_name = 'actor_stop_worker'",
+        )
+        sent_after_stop_count = len(sent_after_stop["id"])
+
+        monarch.actor.unhandled_fault_hook = lambda failure: None
+        with pytest.raises(SupervisionError, match="stopped"):
+            workers.ping.call().get()
+
+        failed_send = _query(
+            state,
+            "SELECT sm.id FROM sent_messages sm "
+            "JOIN meshes m ON sm.actor_mesh_id = m.id "
+            "WHERE m.given_name = 'actor_stop_worker'",
+            min_rows=sent_after_stop_count + 1,
+        )
+        assert len(failed_send["id"]) == sent_after_stop_count + 1
+
+        client_processing = _query(
+            state,
+            "SELECT ase.id FROM actor_status_events ase "
             "JOIN actors a ON ase.actor_id = a.id "
-            "JOIN meshes m ON a.mesh_id = m.id "
-            "WHERE m.given_name = 'actor_stop_worker' AND ase.new_status = 'Stopped'",
+            "WHERE a.display_name = '<root>' "
+            "AND ase.new_status = 'Processing'",
         )
-        statuses = set(status_result.get("new_status", []))
-        assert "Stopped" in statuses, (
-            f"Expected 'Stopped' in actor status events after ActorMesh.stop(), "
-            f"got: {statuses}"
-        )
+        assert client_processing["id"]
 
         # Query should still work — the telemetry children are unaffected
         result_dict = _query(state, "SELECT * FROM actors")
@@ -1421,6 +1900,16 @@ def test_query_after_stopping_actor_mesh(cleanup_callbacks) -> None:
             f"Expected {pre_stop_msg_count} received messages after stopping ActorMesh, "
             f"got {post_stop_msg_count} (data should be preserved)"
         )
+        post_stop_statuses = _query(
+            state,
+            "SELECT mse.id FROM message_status_events mse "
+            "JOIN messages msg ON mse.message_id = msg.id "
+            "JOIN actors a ON msg.to_actor_id = a.id "
+            "JOIN meshes mesh ON a.mesh_id = mesh.id "
+            "WHERE mesh.given_name = 'actor_stop_worker'",
+            min_rows=pre_stop_status_count,
+        )
+        assert len(post_stop_statuses["id"]) == pre_stop_status_count
 
 
 @pytest.mark.timeout(60)

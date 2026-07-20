@@ -440,7 +440,7 @@ pub struct MessageStatusEvent {
     pub id: u64,
     /// The message whose status changed (FK to MessageEvent.id).
     pub message_id: u64,
-    /// New status: "queued", "active", or "complete".
+    /// New status: "queued", "active", "complete", or "failed".
     pub status: String,
 }
 
