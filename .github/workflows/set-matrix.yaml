@@ -16,7 +16,7 @@ on:
         # (caffe2/.github/workflows/generated-linux-binary-manywheel-nightly.yml).
         # PR CI builds and tests at CUDA 13.0 because pytorch's own PR/trunk
         # GPU jobs do the same (test-h100.yml runs on cuda13.0); release
-        # wheels ship cu132 from build-dist.yml on a CPU runner.
+        # wheels ship cu132 from wheels.yml / publish_release.yml on a CPU runner.
         default: linux.g4dn.4xlarge.nvidia.gpu
     outputs:
       test-matrix:

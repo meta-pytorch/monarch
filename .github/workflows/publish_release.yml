@@ -15,45 +15,111 @@ on:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
   cancel-in-progress: true
+
+permissions:
+  id-token: write
+  contents: read
+
 jobs:
   build-x86_64:
-    uses: ./.github/workflows/build-dist.yml
+    name: Build and upload stable CUDA x86_64 wheels
+    uses: pytorch/test-infra/.github/workflows/build_wheels_linux.yml@main
     with:
-      # TODO add 3.14 once we figure out py03 issue
-      python-versions: '["3.10", "3.11", "3.12", "3.13"]'
-      # Stable releases ship cu132 even though PR CI tests at cu130 (see
-      # set-matrix.yaml): pytorch core does the same split — publish cu132
-      # binaries, GPU-test only at cu130 — because no g4dn-fleet AMI yet
-      # carries an NVIDIA driver that satisfies nvidia-container-cli's
-      # cuda>=13.2 check.
-      #
-      # Building a wheel needs the CUDA toolkit (nvcc, headers, libs) but not
-      # host-GPU access. The cuda13.2 builder image supplies the toolkit; we
-      # set gpu-arch-type=cpu so test-infra's linux_job_v2.yml skips the
-      # `setup-nvidia` step that mounts `--gpus all` and triggers
-      # nvidia-container-cli's host-driver-vs-CUDA version check. Passing an
-      # already-tagged docker-image makes test-infra use it verbatim instead
-      # of auto-suffixing it from gpu-arch-type/version.
-      runner: linux.c7i.2xlarge
-      docker-image: 'pytorch/manylinux2_28-builder:cuda13.2'
-      torch-spec: 'torch==2.13.0 --extra-index-url https://download.pytorch.org/whl/cu132'
-      gpu-arch-type: cpu
-      gpu-arch-version: ''
-      arch-label: cuda13.2
-      version: ${{ github.event.inputs.version }}
-      platform: x86_64
+      repository: meta-pytorch/monarch
+      ref: ""
+      test-infra-repository: pytorch/test-infra
+      test-infra-ref: main
+      build-matrix: |
+        {
+          "include": [
+            {"python_version": "3.10", "gpu_arch_type": "cpu", "gpu_arch_version": "", "desired_cuda": "cu132", "container_image": "pytorch/manylinux2_28-builder:cuda13.2", "build_name": "monarch-py3_10-cu132-x86_64", "validation_runner": "linux.c7i.2xlarge", "upload_to_base_bucket": "no"},
+            {"python_version": "3.11", "gpu_arch_type": "cpu", "gpu_arch_version": "", "desired_cuda": "cu132", "container_image": "pytorch/manylinux2_28-builder:cuda13.2", "build_name": "monarch-py3_11-cu132-x86_64", "validation_runner": "linux.c7i.2xlarge", "upload_to_base_bucket": "no"},
+            {"python_version": "3.12", "gpu_arch_type": "cpu", "gpu_arch_version": "", "desired_cuda": "cu132", "container_image": "pytorch/manylinux2_28-builder:cuda13.2", "build_name": "monarch-py3_12-cu132-x86_64", "validation_runner": "linux.c7i.2xlarge", "upload_to_base_bucket": "no"},
+            {"python_version": "3.13", "gpu_arch_type": "cpu", "gpu_arch_version": "", "desired_cuda": "cu132", "container_image": "pytorch/manylinux2_28-builder:cuda13.2", "build_name": "monarch-py3_13-cu132-x86_64", "validation_runner": "linux.c7i.2xlarge", "upload_to_base_bucket": "no"}
+          ]
+        }
+      pre-script: packaging/pre_build_script.sh
+      post-script: packaging/post_build_script.sh
+      env-var-script: packaging/release_binary_build_env.sh
+      package-name: monarch
+      build-platform: python-build-package
+      build-command: bash packaging/build_wheel.sh "${{ github.event.inputs.version }}"
+      trigger-event: schedule
+      wheel-upload-path: whl/cu132/
+      wheel-nightly-policy: gha_workflow_promote_wheels
+      run-smoke-test: false
+      timeout: 120
+    secrets:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
 
   build-aarch64:
-    uses: ./.github/workflows/build-dist.yml
+    name: Build and upload stable CUDA aarch64 wheels
+    uses: pytorch/test-infra/.github/workflows/build_wheels_linux.yml@main
     with:
-      python-versions: '["3.10", "3.11", "3.12", "3.13"]'
-      runner: linux.arm64.2xlarge
-      docker-image: 'pytorch/manylinuxaarch64-builder:cuda13.2'
-      torch-spec: 'torch==2.13.0 --extra-index-url https://download.pytorch.org/whl/cu132'
-      gpu-arch-type: cuda
-      gpu-arch-version: '13.2'
-      version: ${{ github.event.inputs.version }}
-      platform: aarch64
+      repository: meta-pytorch/monarch
+      ref: ""
+      test-infra-repository: pytorch/test-infra
+      test-infra-ref: main
+      architecture: aarch64
+      build-matrix: |
+        {
+          "include": [
+            {"python_version": "3.10", "gpu_arch_type": "cpu", "gpu_arch_version": "", "desired_cuda": "cu132", "container_image": "pytorch/manylinuxaarch64-builder:cuda13.2", "build_name": "monarch-py3_10-cu132-aarch64", "validation_runner": "linux.arm64.2xlarge", "upload_to_base_bucket": "no"},
+            {"python_version": "3.11", "gpu_arch_type": "cpu", "gpu_arch_version": "", "desired_cuda": "cu132", "container_image": "pytorch/manylinuxaarch64-builder:cuda13.2", "build_name": "monarch-py3_11-cu132-aarch64", "validation_runner": "linux.arm64.2xlarge", "upload_to_base_bucket": "no"},
+            {"python_version": "3.12", "gpu_arch_type": "cpu", "gpu_arch_version": "", "desired_cuda": "cu132", "container_image": "pytorch/manylinuxaarch64-builder:cuda13.2", "build_name": "monarch-py3_12-cu132-aarch64", "validation_runner": "linux.arm64.2xlarge", "upload_to_base_bucket": "no"},
+            {"python_version": "3.13", "gpu_arch_type": "cpu", "gpu_arch_version": "", "desired_cuda": "cu132", "container_image": "pytorch/manylinuxaarch64-builder:cuda13.2", "build_name": "monarch-py3_13-cu132-aarch64", "validation_runner": "linux.arm64.2xlarge", "upload_to_base_bucket": "no"}
+          ]
+        }
+      pre-script: packaging/pre_build_script.sh
+      post-script: packaging/post_build_script.sh
+      env-var-script: packaging/release_binary_build_env.sh
+      package-name: monarch
+      build-platform: python-build-package
+      build-command: bash packaging/build_wheel.sh "${{ github.event.inputs.version }}"
+      trigger-event: schedule
+      wheel-upload-path: whl/cu132/
+      wheel-nightly-policy: gha_workflow_promote_wheels
+      run-smoke-test: false
+      timeout: 120
+    secrets:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+
+  build-rocm-x86_64:
+    name: Build and upload stable ROCm x86_64 wheels
+    uses: pytorch/test-infra/.github/workflows/build_wheels_linux.yml@main
+    with:
+      repository: meta-pytorch/monarch
+      ref: ""
+      test-infra-repository: pytorch/test-infra
+      test-infra-ref: main
+      build-matrix: |
+        {
+          "include": [
+            {"python_version": "3.10", "gpu_arch_type": "rocm", "gpu_arch_version": "7.2", "desired_cuda": "rocm7.2", "container_image": "pytorch/manylinux2_28-builder:rocm7.2", "build_name": "monarch-py3_10-rocm7_2-x86_64", "validation_runner": "linux.rocm.gpu.gfx942.1.meta-pytorch", "upload_to_base_bucket": "no"},
+            {"python_version": "3.11", "gpu_arch_type": "rocm", "gpu_arch_version": "7.2", "desired_cuda": "rocm7.2", "container_image": "pytorch/manylinux2_28-builder:rocm7.2", "build_name": "monarch-py3_11-rocm7_2-x86_64", "validation_runner": "linux.rocm.gpu.gfx942.1.meta-pytorch", "upload_to_base_bucket": "no"},
+            {"python_version": "3.12", "gpu_arch_type": "rocm", "gpu_arch_version": "7.2", "desired_cuda": "rocm7.2", "container_image": "pytorch/manylinux2_28-builder:rocm7.2", "build_name": "monarch-py3_12-rocm7_2-x86_64", "validation_runner": "linux.rocm.gpu.gfx942.1.meta-pytorch", "upload_to_base_bucket": "no"},
+            {"python_version": "3.13", "gpu_arch_type": "rocm", "gpu_arch_version": "7.2", "desired_cuda": "rocm7.2", "container_image": "pytorch/manylinux2_28-builder:rocm7.2", "build_name": "monarch-py3_13-rocm7_2-x86_64", "validation_runner": "linux.rocm.gpu.gfx942.1.meta-pytorch", "upload_to_base_bucket": "no"}
+          ]
+        }
+      pre-script: packaging/pre_build_script.sh
+      post-script: packaging/post_build_script.sh
+      env-var-script: packaging/release_binary_build_env.sh
+      package-name: monarch
+      build-platform: python-build-package
+      build-command: bash packaging/build_wheel.sh "${{ github.event.inputs.version }}"
+      trigger-event: schedule
+      wheel-upload-path: whl/rocm7.2/
+      wheel-nightly-policy: gha_workflow_promote_wheels
+      run-smoke-test: false
+      timeout: 120
+    secrets:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
 
   build-macos:
     uses: ./.github/workflows/build-macos.yml
@@ -63,29 +129,38 @@ jobs:
       torch-spec: 'torch==2.13.0 --extra-index-url https://download.pytorch.org/whl/cpu'
       version: ${{ github.event.inputs.version }}
 
+  upload-macos:
+    name: Upload stable macOS CPU wheels
+    needs: build-macos
+    uses: pytorch/test-infra/.github/workflows/_binary_upload.yml@main
+    with:
+      repository: meta-pytorch/monarch
+      ref: ""
+      test-infra-repository: pytorch/test-infra
+      test-infra-ref: main
+      trigger-event: schedule
+      wheel-upload-path: whl/cpu/
+      wheel-nightly-policy: gha_workflow_promote_wheels
+      build-matrix: |
+        {
+          "include": [
+            {"python_version": "3.10", "desired_cuda": "cpu", "upload_to_base_bucket": "no", "build_name": "monarch-py3_10-cpu-macos"},
+            {"python_version": "3.11", "desired_cuda": "cpu", "upload_to_base_bucket": "no", "build_name": "monarch-py3_11-cpu-macos"},
+            {"python_version": "3.12", "desired_cuda": "cpu", "upload_to_base_bucket": "no", "build_name": "monarch-py3_12-cpu-macos"},
+            {"python_version": "3.13", "desired_cuda": "cpu", "upload_to_base_bucket": "no", "build_name": "monarch-py3_13-cpu-macos"}
+          ]
+        }
+    secrets:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+
   publish:
-    name: Publish to PyPI
-    needs: [build-x86_64, build-aarch64, build-macos]
+    name: Publish to download.pytorch.org
+    needs: [build-x86_64, build-aarch64, build-rocm-x86_64, upload-macos]
     runs-on: ubuntu-latest
-    environment: stable
-    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
-    permissions:
-      id-token: write  # Required for PyPI trusted publishing
-      contents: read
     steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
-
-      - name: Display structure of downloaded files
-        run: ls -R dist/
-
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          verbose: true
+      - run: echo "Uploaded Monarch wheels to download.pytorch.org"
 
   build-and-push-stable:
     name: Build and push stable docker image
