@@ -83,7 +83,6 @@ use monarch_messages::worker::WorkerParams;
 use monarch_types::ReduceOp;
 use monarch_types::UniqueId;
 use ndslice::Slice;
-use pyo3::Python;
 use pyo3::types::PyAnyMethods;
 use serde::Deserialize;
 use serde::Serialize;
@@ -338,7 +337,7 @@ impl WorkerMessageHandler for WorkerActor {
             cx,
             cell,
             ReduceOp::Sum,
-            torch_sys_cuda::cuda::Stream::get_current_stream(),
+            torch_sys_cuda::cuda::Stream::get_current_stream()?,
         )
         .await?;
 
@@ -1113,7 +1112,6 @@ mod tests {
     use monarch_messages::controller::WorkerError;
     use monarch_messages::worker::WorkerMessageClient;
     use monarch_types::PickledPyObject;
-    use pyo3::Python;
     use pyo3::prelude::*;
     use pyo3::types::PyList;
     use pyo3::types::PyString;

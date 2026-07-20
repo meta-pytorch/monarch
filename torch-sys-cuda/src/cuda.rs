@@ -46,12 +46,12 @@ impl Clone for Stream {
 
 impl Stream {
     /// Create a new stream on the current device, at priority 0.
-    pub fn new() -> Self {
+    pub fn new() -> PyResult<Self> {
         Python::attach(|py| {
-            let stream = cuda_stream_class(py).call0().unwrap();
-            Self {
+            let stream = cuda_stream_class(py).call0()?;
+            Ok(Self {
                 inner: stream.into(),
-            }
+            })
         })
     }
 
@@ -63,68 +63,62 @@ impl Stream {
     }
 
     /// Create a new stream on the specified device, at priority 0.
-    pub fn new_with_device(device: CudaDevice) -> Self {
+    pub fn new_with_device(device: CudaDevice) -> PyResult<Self> {
         Python::attach(|py| {
             let device_idx: i8 = device.index().into();
-            let stream = cuda_stream_class(py).call1((device_idx,)).unwrap();
-            Self {
+            let stream = cuda_stream_class(py).call1((device_idx,))?;
+            Ok(Self {
                 inner: stream.into(),
-            }
+            })
         })
     }
 
     /// Get the current stream on the current device.
-    pub fn get_current_stream() -> Self {
+    pub fn get_current_stream() -> PyResult<Self> {
         Python::attach(|py| {
-            let stream = cuda_current_stream(py).call0().unwrap();
-            Self {
+            let stream = cuda_current_stream(py).call0()?;
+            Ok(Self {
                 inner: stream.into(),
-            }
+            })
         })
     }
 
     /// Get the current stream on the specified device.
-    pub fn get_current_stream_on_device(device: CudaDevice) -> Self {
+    pub fn get_current_stream_on_device(device: CudaDevice) -> PyResult<Self> {
         Python::attach(|py| {
             let device_idx: i8 = device.index().into();
-            let stream = cuda_current_stream(py).call1((device_idx,)).unwrap();
-            Self {
+            let stream = cuda_current_stream(py).call1((device_idx,))?;
+            Ok(Self {
                 inner: stream.into(),
-            }
+            })
         })
     }
 
     /// Set the provided stream as the current stream. Also sets the current
     /// device to be the same as the stream's device.
-    pub fn set_current_stream(stream: &Stream) {
+    pub fn set_current_stream(stream: &Stream) -> PyResult<()> {
         Python::attach(|py| {
             let stream_obj = stream.inner.bind(py);
 
             // Get current device and stream device
-            let current_device = cuda_current_device(py)
-                .call0()
-                .unwrap()
-                .extract::<i64>()
-                .unwrap();
+            let current_device = cuda_current_device(py).call0()?.extract::<i64>()?;
 
-            let stream_device = stream_obj
-                .getattr("device_index")
-                .unwrap()
-                .extract::<i64>()
-                .unwrap();
+            let stream_device = stream_obj.getattr("device_index")?.extract::<i64>()?;
 
             // Set device if different
             if current_device != stream_device {
-                cuda_set_device(py).call1((stream_device,)).unwrap();
+                cuda_set_device(py).call1((stream_device,))?;
             }
 
             // Set the stream
-            cuda_set_stream(py).call1((stream_obj,)).unwrap();
+            cuda_set_stream(py).call1((stream_obj,))?;
+
+            Ok(())
         })
     }
 
     /// Make all future work submitted to this stream wait for an event.
-    pub fn wait_event(&self, event: &mut Event) {
+    pub fn wait_event(&self, event: &mut Event) -> PyResult<()> {
         event.wait(Some(self))
     }
 
@@ -132,49 +126,49 @@ impl Stream {
     ///
     /// All future work submitted to this stream will wait until all kernels
     /// submitted to a given stream at the time of call entry complete.
-    pub fn wait_stream(&self, stream: &Stream) {
-        self.wait_event(&mut stream.record_event(None))
+    pub fn wait_stream(&self, stream: &Stream) -> PyResult<()> {
+        self.wait_event(&mut stream.record_event(None)?)
     }
 
     /// Record an event on this stream. If no event is provided one will be
     /// created.
-    pub fn record_event(&self, event: Option<Event>) -> Event {
-        let mut event = event.unwrap_or(Event::new());
-        event.record(Some(self));
-        event
+    pub fn record_event(&self, event: Option<Event>) -> PyResult<Event> {
+        let mut event = match event {
+            Some(event) => event,
+            None => Event::new()?,
+        };
+        event.record(Some(self))?;
+        Ok(event)
     }
 
     /// Check if all work submitted to this stream has completed.
-    pub fn query(&self) -> bool {
+    pub fn query(&self) -> PyResult<bool> {
         Python::attach(|py| {
             let stream_obj = self.inner.bind(py);
-            stream_obj
-                .call_method0("query")
-                .unwrap()
-                .extract::<bool>()
-                .unwrap()
+            stream_obj.call_method0("query")?.extract::<bool>()
         })
     }
 
     /// Wait for all kernels in this stream to complete.
-    pub fn synchronize(&self) {
+    pub fn synchronize(&self) -> PyResult<()> {
         Python::attach(|py| {
             let stream_obj = self.inner.bind(py);
-            stream_obj.call_method0("synchronize").unwrap();
+            stream_obj.call_method0("synchronize")?;
+            Ok(())
         })
     }
 
     /// Get the raw CUDA stream pointer. Only available with the `cuda` feature.
     #[cfg(feature = "cuda")]
-    pub fn stream(&self) -> nccl_sys::cudaStream_t {
+    pub fn stream(&self) -> PyResult<nccl_sys::cudaStream_t> {
         Python::attach(|py| {
             let stream_obj = self.inner.bind(py);
-            let cuda_stream = stream_obj.getattr("cuda_stream").unwrap();
+            let cuda_stream = stream_obj.getattr("cuda_stream")?;
 
             // Extract the raw pointer
-            let ptr = cuda_stream.extract::<usize>().unwrap();
+            let ptr = cuda_stream.extract::<usize>()?;
 
-            ptr as nccl_sys::cudaStream_t
+            Ok(ptr as nccl_sys::cudaStream_t)
         })
     }
 }
@@ -183,7 +177,11 @@ impl PartialEq for Stream {
     fn eq(&self, other: &Self) -> bool {
         #[cfg(feature = "cuda")]
         {
-            self.stream() == other.stream()
+            self.stream()
+                .expect("cuda_stream attribute should be readable")
+                == other
+                    .stream()
+                    .expect("cuda_stream attribute should be readable")
         }
 
         #[cfg(not(feature = "cuda"))]
@@ -221,62 +219,62 @@ impl Clone for Event {
 impl Event {
     /// Create a new event.
     // TODO: add support for flags.
-    pub fn new() -> Self {
+    pub fn new() -> PyResult<Self> {
         Python::attach(|py| {
-            let event = cuda_event_class(py).call0().unwrap();
-            Self {
+            let event = cuda_event_class(py).call0()?;
+            Ok(Self {
                 inner: event.into(),
-            }
+            })
         })
     }
 
     /// Record the event on the current stream.
     ///
     /// Uses the current stream if no stream is provided.
-    pub fn record(&mut self, stream: Option<&Stream>) {
+    pub fn record(&mut self, stream: Option<&Stream>) -> PyResult<()> {
         Python::attach(|py| {
             let event_obj = self.inner.bind(py);
 
             match stream {
                 Some(stream) => {
                     let stream_obj = stream.inner.bind(py);
-                    event_obj.call_method1("record", (stream_obj,)).unwrap();
+                    event_obj.call_method1("record", (stream_obj,))?;
                 }
                 None => {
-                    event_obj.call_method0("record").unwrap();
+                    event_obj.call_method0("record")?;
                 }
             }
+
+            Ok(())
         })
     }
 
     /// Make all future work submitted to the given stream wait for this event.
     ///
     /// Uses the current stream if no stream is specified.
-    pub fn wait(&mut self, stream: Option<&Stream>) {
+    pub fn wait(&mut self, stream: Option<&Stream>) -> PyResult<()> {
         Python::attach(|py| {
             let event_obj = self.inner.bind(py);
 
             match stream {
                 Some(stream) => {
                     let stream_obj = stream.inner.bind(py);
-                    event_obj.call_method1("wait", (stream_obj,)).unwrap();
+                    event_obj.call_method1("wait", (stream_obj,))?;
                 }
                 None => {
-                    event_obj.call_method0("wait").unwrap();
+                    event_obj.call_method0("wait")?;
                 }
             }
+
+            Ok(())
         })
     }
 
     /// Check if all work currently captured by event has completed.
-    pub fn query(&self) -> bool {
+    pub fn query(&self) -> PyResult<bool> {
         Python::attach(|py| {
             let event_obj = self.inner.bind(py);
-            event_obj
-                .call_method0("query")
-                .unwrap()
-                .extract::<bool>()
-                .unwrap()
+            event_obj.call_method0("query")?.extract::<bool>()
         })
     }
 
@@ -284,28 +282,27 @@ impl Event {
     ///
     /// Time reported in after the event was recorded and before the end_event
     /// was recorded.
-    pub fn elapsed_time(&self, end_event: &Event) -> Duration {
+    pub fn elapsed_time(&self, end_event: &Event) -> PyResult<Duration> {
         Python::attach(|py| {
             let event_obj = self.inner.bind(py);
             let end_event_obj = end_event.inner.bind(py);
 
             let elapsed_ms = event_obj
-                .call_method1("elapsed_time", (end_event_obj,))
-                .unwrap()
-                .extract::<f64>()
-                .unwrap();
+                .call_method1("elapsed_time", (end_event_obj,))?
+                .extract::<f64>()?;
 
-            Duration::from_millis(elapsed_ms as u64)
+            Ok(Duration::from_millis(elapsed_ms as u64))
         })
     }
 
     /// Wait for the event to complete.
     /// Waits until the completion of all work currently captured in this event.
     /// This prevents the CPU thread from proceeding until the event completes.
-    pub fn synchronize(&self) {
+    pub fn synchronize(&self) -> PyResult<()> {
         Python::attach(|py| {
             let event_obj = self.inner.bind(py);
-            event_obj.call_method0("synchronize").unwrap();
+            event_obj.call_method0("synchronize")?;
+            Ok(())
         })
     }
 }

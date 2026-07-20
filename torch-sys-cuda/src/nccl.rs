@@ -261,7 +261,9 @@ impl Communicator {
                 data_type.into(),
                 reduce_op_to_nccl(reduce_op),
                 self.inner,
-                stream.stream(),
+                stream
+                    .stream()
+                    .expect("cuda_stream attribute should be readable"),
             ))?)
         }
     }
@@ -287,7 +289,9 @@ impl Communicator {
                 data_type.into(),
                 root,
                 self.inner,
-                stream.stream(),
+                stream
+                    .stream()
+                    .expect("cuda_stream attribute should be readable"),
             ))?)
         }
     }
@@ -319,7 +323,9 @@ impl Communicator {
                 reduce_op_to_nccl(reduce_op),
                 root,
                 self.inner,
-                stream.stream(),
+                stream
+                    .stream()
+                    .expect("cuda_stream attribute should be readable"),
             ))?)
         }
     }
@@ -372,7 +378,9 @@ impl Communicator {
                         data_type.into(),
                         rank,
                         self.inner,
-                        stream.stream(),
+                        stream
+                            .stream()
+                            .expect("cuda_stream attribute should be readable"),
                     ))?;
                 } else {
                     nccl_check(ncclBroadcast(
@@ -382,7 +390,9 @@ impl Communicator {
                         data_type.into(),
                         rank,
                         self.inner,
-                        stream.stream(),
+                        stream
+                            .stream()
+                            .expect("cuda_stream attribute should be readable"),
                     ))?;
                 }
             }
@@ -427,7 +437,9 @@ impl Communicator {
                 input.numel() as usize,
                 data_type.into(),
                 self.inner,
-                stream.stream(),
+                stream
+                    .stream()
+                    .expect("cuda_stream attribute should be readable"),
             ))?)
         }
     }
@@ -475,7 +487,9 @@ impl Communicator {
                 data_type.into(),
                 reduce_op_to_nccl(reduce_op),
                 self.inner,
-                stream.stream(),
+                stream
+                    .stream()
+                    .expect("cuda_stream attribute should be readable"),
             ))?)
         }
     }
@@ -500,7 +514,9 @@ impl Communicator {
                 data_type.into(),
                 dst,
                 self.inner,
-                stream.stream(),
+                stream
+                    .stream()
+                    .expect("cuda_stream attribute should be readable"),
             ))?)
         }
     }
@@ -525,7 +541,9 @@ impl Communicator {
                 data_type.into(),
                 src,
                 self.inner,
-                stream.stream(),
+                stream
+                    .stream()
+                    .expect("cuda_stream attribute should be readable"),
             ))?)
         }
     }
@@ -572,7 +590,9 @@ impl Communicator {
                     data_type.into(),
                     r,
                     self.inner,
-                    stream.stream(),
+                    stream
+                        .stream()
+                        .expect("cuda_stream attribute should be readable"),
                 ))?;
                 nccl_check(ncclRecv(
                     recv_buff.offset(r as isize * rank_stride),
@@ -580,7 +600,9 @@ impl Communicator {
                     data_type.into(),
                     r,
                     self.inner,
-                    stream.stream(),
+                    stream
+                        .stream()
+                        .expect("cuda_stream attribute should be readable"),
                 ))?;
             }
 
@@ -607,7 +629,9 @@ impl Communicator {
                 data_type.into(),
                 reduce_op_to_nccl(ReduceOp::Sum),
                 self.inner,
-                stream.stream(),
+                stream
+                    .stream()
+                    .expect("cuda_stream attribute should be readable"),
             ))?)
         }
     }
@@ -649,14 +673,14 @@ mod tests {
             handles.push(std::thread::spawn(move || {
                 let device = CudaDevice::new(DeviceIndex(i));
                 set_device(device).unwrap();
-                let stream = Stream::new();
+                let stream = Stream::new().unwrap();
                 let tensor = cuda_full(&[2, 2], 1.0);
                 let expected = cuda_full(&[2, 2], 2.0);
 
                 let cell = TensorCell::new(tensor);
                 let mut comm = Communicator::new(device, 2, unique_id, i.into()).unwrap();
                 comm.all_reduce(&cell, ReduceOp::Sum, &stream).unwrap();
-                stream.synchronize();
+                stream.synchronize().unwrap();
                 assert!(allclose(&cell.borrow(), &expected).unwrap());
             }));
         }
@@ -675,13 +699,13 @@ mod tests {
             handles.push(std::thread::spawn(move || {
                 let device = CudaDevice::new(DeviceIndex(i));
                 set_device(device).unwrap();
-                let stream = Stream::new();
+                let stream = Stream::new().unwrap();
                 let tensor = cuda_full(&[2, 2], i as f32);
 
                 let cell = TensorCell::new(tensor);
                 let mut comm = Communicator::new(device, 2, unique_id, i.into()).unwrap();
                 comm.broadcast(&cell, 1, &stream).unwrap();
-                stream.synchronize();
+                stream.synchronize().unwrap();
                 assert!(allclose(&cell.borrow(), &cuda_full(&[2, 2], 1.0)).unwrap());
             }));
         }
@@ -700,13 +724,13 @@ mod tests {
             handles.push(std::thread::spawn(move || {
                 let device = CudaDevice::new(DeviceIndex(i));
                 set_device(device).unwrap();
-                let stream = Stream::new();
+                let stream = Stream::new().unwrap();
                 let tensor = cuda_full(&[2, 2], 2.0);
 
                 let cell = TensorCell::new(tensor);
                 let mut comm = Communicator::new(device, 2, unique_id, i.into()).unwrap();
                 comm.reduce(&cell, ReduceOp::Sum, 0, &stream).unwrap();
-                stream.synchronize();
+                stream.synchronize().unwrap();
                 match i {
                     0 => assert!(allclose(&cell.borrow(), &cuda_full(&[2, 2], 4.0)).unwrap()),
                     1 => assert!(allclose(&cell.borrow(), &cuda_full(&[2, 2], 2.0)).unwrap()),
@@ -729,7 +753,7 @@ mod tests {
             handles.push(std::thread::spawn(move || {
                 let device = CudaDevice::new(DeviceIndex(i));
                 set_device(device).unwrap();
-                let stream = Stream::new();
+                let stream = Stream::new().unwrap();
                 let input_tensor = cuda_full(&[2, 2], i as f32);
                 let output_tensor = cuda_full(&[2, 2, 2], 0.0);
 
@@ -745,7 +769,7 @@ mod tests {
                 let mut comm = Communicator::new(device, 2, unique_id, i.into()).unwrap();
                 comm.all_gather_into_tensor(&output_cell, &input_cell, &stream)
                     .unwrap();
-                stream.synchronize();
+                stream.synchronize().unwrap();
                 assert!(allclose(&output_cell.borrow(), &expected).unwrap());
             }));
         }
@@ -763,26 +787,26 @@ mod tests {
         handles.push(std::thread::spawn(move || {
             let device = CudaDevice::new(DeviceIndex(0));
             set_device(device).unwrap();
-            let stream = Stream::new();
+            let stream = Stream::new().unwrap();
             let tensor = cuda_full(&[2, 2], 0.0);
 
             let cell = TensorCell::new(tensor);
             let mut comm = Communicator::new(device, 2, unique_id_, 0).unwrap();
             comm.send(&cell, 1, &stream).unwrap();
-            stream.synchronize();
+            stream.synchronize().unwrap();
         }));
         let unique_id_ = unique_id.clone();
         handles.push(std::thread::spawn(move || {
             let device = CudaDevice::new(DeviceIndex(1));
             set_device(device).unwrap();
-            let stream = Stream::new();
+            let stream = Stream::new().unwrap();
             let tensor = cuda_full(&[2, 2], 1.1);
             let expected = cuda_full(&[2, 2], 0.0);
 
             let cell = TensorCell::new(tensor);
             let mut comm = Communicator::new(device, 2, unique_id_, 1).unwrap();
             comm.recv(&cell, 0, &stream).unwrap();
-            stream.synchronize();
+            stream.synchronize().unwrap();
             assert!(allclose(&cell.borrow(), &expected).unwrap());
         }));
         for handle in handles {
@@ -800,7 +824,7 @@ mod tests {
             handles.push(std::thread::spawn(move || {
                 let device = CudaDevice::new(DeviceIndex(i));
                 set_device(device).unwrap();
-                let stream = Stream::new();
+                let stream = Stream::new().unwrap();
                 let input = match i {
                     0 => factory_float_tensor(&[0.0, 1.0], device.into()),
                     1 => factory_float_tensor(&[2.0, 3.0], device.into()),
@@ -813,7 +837,7 @@ mod tests {
 
                 let mut comm = Communicator::new(device, 2, unique_id, i.into()).unwrap();
                 comm.all_to_all_single(&output, &input, &stream).unwrap();
-                stream.synchronize();
+                stream.synchronize().unwrap();
 
                 let expected = match i {
                     0 => factory_float_tensor(&[0.0, 2.0], device.into()),
@@ -838,7 +862,7 @@ mod tests {
             handles.push(std::thread::spawn(move || {
                 let device = CudaDevice::new(DeviceIndex(i));
                 set_device(device).unwrap();
-                let stream = Stream::new();
+                let stream = Stream::new().unwrap();
                 let input = factory_float_tensor(&[0.0, 1.0, 2.0, 3.0], device.into());
                 let output = cuda_full(&[2], 1.0);
 
@@ -848,7 +872,7 @@ mod tests {
                 let mut comm = Communicator::new(device, 2, unique_id, i.into()).unwrap();
                 comm.reduce_scatter_tensor(&output, &input, ReduceOp::Sum, &stream)
                     .unwrap();
-                stream.synchronize();
+                stream.synchronize().unwrap();
 
                 let expected = match i {
                     0 => factory_float_tensor(&[0.0, 2.0], device.into()),
@@ -873,7 +897,7 @@ mod tests {
             handles.push(std::thread::spawn(move || {
                 let device = CudaDevice::new(DeviceIndex(i));
                 set_device(device).unwrap();
-                let stream = Stream::new();
+                let stream = Stream::new().unwrap();
                 let tensor = cuda_full(&[2, 2], 1.0);
                 let cell = TensorCell::new(tensor);
                 let mut comm = Communicator::new(device, 2, unique_id, i.into()).unwrap();
@@ -893,7 +917,7 @@ mod tests {
                             .unwrap()
                             .all_reduce(&cell, ReduceOp::Sum, &stream)
                             .unwrap();
-                        stream.synchronize();
+                        stream.synchronize().unwrap();
                         let expected = cuda_full(&[2, 2], 1.0);
                         assert!(allclose(&cell.borrow(), &expected).unwrap());
                     }

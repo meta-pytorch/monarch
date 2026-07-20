@@ -516,8 +516,8 @@ impl Actor for StreamActor {
                 .ok()
         });
         // Set the current stream for this actor thread.
-        if let Some(stream) = self.cuda_stream() {
-            Stream::set_current_stream(stream);
+        if let Some(stream) = self.cuda_stream()? {
+            Stream::set_current_stream(stream)?;
         }
         Ok(())
     }
@@ -630,17 +630,25 @@ impl StreamActor {
         Ok(TensorCell::new(tensor))
     }
 
-    fn cuda_stream(&self) -> Option<&Stream> {
-        self.cuda_stream
-            .get_or_init(|| {
-                self.device.map(|device| match self.creation_mode {
+    fn cuda_stream(&self) -> PyResult<Option<&Stream>> {
+        if self.cuda_stream.get().is_none() {
+            let stream = match self.device {
+                Some(device) => Some(match self.creation_mode {
                     StreamCreationMode::UseDefaultStream => {
-                        Stream::get_current_stream_on_device(device)
+                        Stream::get_current_stream_on_device(device)?
                     }
-                    StreamCreationMode::CreateNewStream => Stream::new_with_device(device),
-                })
-            })
-            .as_ref()
+                    StreamCreationMode::CreateNewStream => Stream::new_with_device(device)?,
+                }),
+                None => None,
+            };
+            // Another thread may have won the initialization race; keep whichever value is stored.
+            let _ = self.cuda_stream.set(stream);
+        }
+        Ok(self
+            .cuda_stream
+            .get()
+            .expect("stream initialized above")
+            .as_ref())
     }
 
     fn ref_to_pyobject(&self, ref_: &Ref) -> Result<Py<PyAny>, CallFunctionError> {
@@ -1092,7 +1100,10 @@ impl StreamMessageHandler for StreamActor {
             Err(e) => Err(e.clone()),
         };
 
-        let event = self.cuda_stream().map(|stream| stream.record_event(None));
+        let event = self
+            .cuda_stream()?
+            .map(|stream| stream.record_event(None))
+            .transpose()?;
         first_use_sender.post(cx, (event, result));
         Ok(())
     }
@@ -1127,10 +1138,10 @@ impl StreamMessageHandler for StreamActor {
                     )
                 })?;
 
-        if let Some(stream) = self.cuda_stream() {
+        if let Some(stream) = self.cuda_stream()? {
             stream.wait_event(
                 &mut first_use_event.expect("sent borrow to CUDA stream, expected a CUDA event"),
-            );
+            )?;
         }
         match cell {
             Ok(cell) => {
@@ -1160,7 +1171,10 @@ impl StreamMessageHandler for StreamActor {
             return Ok(());
         }
 
-        let event = self.cuda_stream().map(|stream| stream.record_event(None));
+        let event = self
+            .cuda_stream()?
+            .map(|stream| stream.record_event(None))
+            .transpose()?;
         let pyobj_or_err = self.env.remove(&result).ok_or(anyhow!(
             "Invalid reference for borrow_last_use: {result:#?}"
         ))?;
@@ -1205,10 +1219,10 @@ impl StreamMessageHandler for StreamActor {
                 )
             })?;
 
-        if let Some(stream) = self.cuda_stream() {
+        if let Some(stream) = self.cuda_stream()? {
             stream.wait_event(
                 &mut last_use_event.expect("sent borrow to CUDA stream, expected a CUDA event"),
-            );
+            )?;
         }
         // let the cell drop.
         Ok(())
@@ -1276,7 +1290,7 @@ impl StreamMessageHandler for StreamActor {
         }
 
         let stream = self
-            .cuda_stream()
+            .cuda_stream()?
             .expect("reductions not yet supported for non-CUDA workers")
             .clone();
         let input_cell = self.get_or_fake_on_err(local_tensor, &factory)?;
@@ -1431,7 +1445,7 @@ impl StreamMessageHandler for StreamActor {
             messages.push(CommMessage::Send(
                 input_cell,
                 to_rank.try_into().unwrap(),
-                self.cuda_stream()
+                self.cuda_stream()?
                     .expect("tried to send_tensor on non-cuda stream")
                     .clone(),
                 cx.open_once_port().0,
@@ -1448,7 +1462,7 @@ impl StreamMessageHandler for StreamActor {
             messages.push(CommMessage::Recv(
                 output_cell.clone(),
                 from_rank.try_into().unwrap(),
-                self.cuda_stream()
+                self.cuda_stream()?
                     .expect("tried to send_tensor on non-cuda stream")
                     .clone(),
                 cx.open_once_port().0,
@@ -1460,7 +1474,7 @@ impl StreamMessageHandler for StreamActor {
         comm.group(
             cx,
             messages,
-            self.cuda_stream()
+            self.cuda_stream()?
                 .expect("tried to send_tensor on non-cuda stream")
                 .clone(),
         )

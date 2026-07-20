@@ -130,7 +130,7 @@ impl NcclCommActor {
         spawn_blocking(move || {
             let status = op(comm)?;
             match status {
-                NcclStatus::Success => Ok(stream.record_event(None)),
+                NcclStatus::Success => Ok(stream.record_event(None)?),
                 _ => bail!("nccl {op_name} failed: {status:?}"),
             }
         })
@@ -391,7 +391,7 @@ impl CommMessageHandler for NcclCommActor {
             }
             group_end(ticket)?;
             // Make an end event on this stream.
-            Ok(stream.record_event(None))
+            Ok(stream.record_event(None)?)
         })
         .await
         .unwrap()?)
@@ -466,7 +466,7 @@ mod tests {
             &client,
             cell0.clone(),
             ReduceOp::Sum,
-            Stream::get_current_stream_on_device(device0),
+            Stream::get_current_stream_on_device(device0).unwrap(),
         );
 
         let cell1 = TensorCell::new(factory_float_tensor(&[2.0], device1.into()));
@@ -475,7 +475,7 @@ mod tests {
             &client,
             cell1.clone(),
             ReduceOp::Sum,
-            Stream::get_current_stream_on_device(device1),
+            Stream::get_current_stream_on_device(device1).unwrap(),
         );
 
         let (res0, res1) = tokio::join!(fut0, fut1);
@@ -534,10 +534,10 @@ mod tests {
             vec![CommMessage::Send(
                 cell0.clone(),
                 1,
-                Stream::get_current_stream_on_device(device0),
+                Stream::get_current_stream_on_device(device0).unwrap(),
                 client.open_once_port().0,
             )],
-            Stream::get_current_stream_on_device(device0),
+            Stream::get_current_stream_on_device(device0).unwrap(),
         );
 
         let cell1 = TensorCell::new(factory_float_tensor(&[2.0], device1.into()));
@@ -547,10 +547,10 @@ mod tests {
             vec![CommMessage::Recv(
                 cell1.clone(),
                 0,
-                Stream::get_current_stream_on_device(device1),
+                Stream::get_current_stream_on_device(device1).unwrap(),
                 client.open_once_port().0,
             )],
-            Stream::get_current_stream_on_device(device1),
+            Stream::get_current_stream_on_device(device1).unwrap(),
         );
 
         let (res0, res1) = tokio::join!(fut0, fut1);
@@ -608,7 +608,7 @@ mod tests {
             cell0.clone(),
             ReduceOp::Sum,
             dest_rank,
-            Stream::get_current_stream_on_device(device0),
+            Stream::get_current_stream_on_device(device0)?,
         );
 
         let cell1 = TensorCell::new(factory_float_tensor(&[2.0], device1.into()));
@@ -618,7 +618,7 @@ mod tests {
             cell1.clone(),
             ReduceOp::Sum,
             dest_rank,
-            Stream::get_current_stream_on_device(device1),
+            Stream::get_current_stream_on_device(device1)?,
         );
 
         let (res0, res1) = tokio::join!(fut0, fut1);
