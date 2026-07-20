@@ -6,8 +6,31 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::sync::Arc;
+use std::time::Duration;
+
+use serde::Deserialize;
+use serde::Serialize;
+use typeuri::Named;
+
+use super::rc_queue_pair::connect;
 use super::*;
+use crate::backend::ibverbs::primitives::GidScope;
+use crate::backend::ibverbs::primitives::GidType;
+use crate::backend::ibverbs::primitives::IbvOperation;
 use crate::backend::ibverbs::primitives::IbvPd;
+use crate::backend::ibverbs::primitives::resolve_qp_type;
+
+/// A doorbell trigger for batched RDMA operations.
+///
+/// Rings the hardware doorbell to execute previously enqueued work requests.
+#[derive(Debug, Named, Clone, Serialize, Deserialize)]
+pub struct DoorBell {
+    pub src_ptr: usize,
+    pub dst_ptr: usize,
+    pub size: usize,
+}
+wirevalue::register_type!(DoorBell);
 
 /// An RDMA Queue Pair (QP) for communication between two endpoints.
 ///
@@ -260,7 +283,7 @@ impl IbvQueuePair {
         let qp = self.qp as *mut rdmaxcel_sys::rdmaxcel_qp;
         // SAFETY: `(*qp).ibv_qp` is the live `ibv_qp` owned by this `rdmaxcel_qp`.
         unsafe {
-            super::connect(
+            connect(
                 (*qp).ibv_qp,
                 &self.config,
                 access_flags,
@@ -841,5 +864,49 @@ impl IbvQueuePair {
             }
             Ok(Some(Ok(IbvWc::from(wc))))
         }
+    }
+}
+
+impl super::IbvQueuePair for IbvQueuePair {
+    unsafe fn new<I: IbvDomainImpl>(
+        domain: &IbvDomain<I>,
+        config: IbvConfig,
+    ) -> Result<Self, anyhow::Error> {
+        IbvQueuePair::new(domain, config)
+    }
+
+    fn connect(&mut self, info: &IbvQpInfo) -> Result<(), anyhow::Error> {
+        IbvQueuePair::connect(self, info)
+    }
+
+    fn get_qp_info(&mut self) -> Result<IbvQpInfo, anyhow::Error> {
+        IbvQueuePair::get_qp_info(self)
+    }
+
+    fn state(&mut self) -> Result<u32, anyhow::Error> {
+        IbvQueuePair::state(self)
+    }
+
+    fn put(
+        &mut self,
+        remote_dst: IbvBuffer,
+        local_src: IbvBuffer,
+    ) -> Result<Vec<u64>, anyhow::Error> {
+        IbvQueuePair::put(self, local_src, remote_dst)
+    }
+
+    fn get(
+        &mut self,
+        local_dst: IbvBuffer,
+        remote_src: IbvBuffer,
+    ) -> Result<Vec<u64>, anyhow::Error> {
+        IbvQueuePair::get(self, local_dst, remote_src)
+    }
+
+    fn poll_completion(
+        &mut self,
+        target: PollTarget,
+    ) -> Result<Option<Result<IbvWc, WorkRequestError>>, PollCompletionError> {
+        IbvQueuePair::poll_completion(self, target)
     }
 }

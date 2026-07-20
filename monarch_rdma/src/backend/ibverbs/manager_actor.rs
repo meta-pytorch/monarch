@@ -28,6 +28,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
+use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
@@ -50,18 +51,15 @@ use super::device::IbvDeviceImpl;
 use super::device_selection::resolve_target;
 use super::device_selection::select_optimal_ibv_devices;
 use super::domain::IbvDomain;
-use super::domain::IbvDomainImpl;
 use super::efa_device::EfaDevice;
 use super::memory_region::IbvMemoryRegionView;
 use super::mlx_device::MlxDevice;
 use super::primitives::IbvConfig;
 use super::primitives::IbvQpInfo;
 use super::primitives::ibverbs_supported;
-use super::queue_pair::IbvQueuePair;
 use super::queue_pair::OpResult;
 use super::queue_pair::ProcessOps;
-use super::queue_pair::QpKey;
-use super::queue_pair::QueuePairActor;
+use super::queue_pair::QueuePairManager;
 use super::queue_pair::legacy;
 use crate::RdmaOp;
 use crate::RdmaTransportLevel;
@@ -75,34 +73,33 @@ use crate::rdma_components::RdmaRemoteBuffer;
 use crate::rdma_manager_actor::RdmaManagerActor;
 use crate::validate_execution_context;
 
-/// Cross-proc message: the active side asks the peer's manager to
-/// create and connect a mirror QP for an in-flight [`QueuePairActor`].
-/// Generic over the manager actor type so test code can swap in a
-/// mock.
+/// Cross-proc connection request: a peer's in-flight queue pair actor asks this
+/// manager to set up its side of the connection and return the local endpoint.
+/// Generic over the manager actor type so test code can swap in a mock.
 #[derive(Debug, Serialize, Deserialize, Named)]
 #[serde(bound(serialize = "", deserialize = ""))]
-pub(super) struct CreatePeerQueuePair<M: Referable> {
+pub struct Connect<M: Referable> {
     /// The active side's manager.
     pub(super) sender: ActorRef<M>,
     /// Device the active side picked for its QP.
     pub(super) sender_device: String,
-    /// Device the peer should create its mirror QP on.
+    /// Device the peer should use for its side of the connection.
     pub(super) receiver_device: String,
     /// Active side's endpoint, captured right after QP creation.
     pub(super) sender_info: IbvQpInfo,
     /// One-shot reply carrying the peer's endpoint, or an error.
     pub(super) reply: OncePortRef<Result<IbvQpInfo, String>>,
 }
-wirevalue::register_type!(CreatePeerQueuePair<IbvManagerActor<MlxDevice>>);
-wirevalue::register_type!(CreatePeerQueuePair<IbvManagerActor<EfaDevice>>);
+wirevalue::register_type!(Connect<IbvManagerActor<MlxDevice>>);
+wirevalue::register_type!(Connect<IbvManagerActor<EfaDevice>>);
 
 /// Local-only message: submit a batch of RDMA ops for end-to-end
 /// execution. The manager iterates the batch, resolves each op's
 /// local MR via [`IbvManagerActor::resolve_local_mr`], looks up
-/// (or spawns) the active-side [`QueuePairActor`] for the op's
-/// [`QpKey`], and immediately dispatches a one-item [`ProcessOps`]
-/// to that QP — so the QP can start posting op `i` while the
-/// manager resolves the MR for op `i+1`.
+/// (or creates) the queue pair for the op's peer via the device's
+/// [`QueuePairManager`], and immediately dispatches a one-item
+/// [`ProcessOps`] to that QP — so the QP can start posting op `i`
+/// while the manager resolves the MR for op `i+1`.
 ///
 /// Per-op completion notifications stream back on `reply` as
 /// [`OpResult`] values.
@@ -115,10 +112,9 @@ pub(super) struct SubmitOps<I: IbvDeviceImpl> {
 /// [`legacy::IbvQueuePair`] on `self_device` and return it. The caller drives
 /// the connection itself — exchange [`IbvQpInfo`] with the other endpoint's QP
 /// and call `connect` on each side. Lets doorbell tests and the
-/// `cuda_ping_pong` example poke a real QP without going through
-/// [`QueuePairActor`]; both want the legacy queue pair for its direct
-/// device-doorbell data path, independent of the backend's production
-/// [`IbvDomainImpl::QueuePair`].
+/// `cuda_ping_pong` example poke a real QP without going through the
+/// backend's production [`QueuePairManager`]; both want the legacy queue
+/// pair for its direct device-doorbell data path.
 pub struct RawQueuePair {
     pub self_device: String,
     pub reply: OncePortHandle<Result<legacy::IbvQueuePair, String>>,
@@ -167,27 +163,16 @@ const DEFAULT_DOMAIN: &str = "default";
 #[hyperactor::export(
     handlers = [
         IbvManagerMessage,
-        CreatePeerQueuePair<IbvManagerActor<I>>,
+        Connect<IbvManagerActor<I>>,
     ],
 )]
 pub struct IbvManagerActor<I: IbvDeviceImpl> {
     owner: OnceLock<ActorHandle<RdmaManagerActor>>,
 
-    /// Active-side [`QueuePairActor`] children, keyed from this
-    /// manager's perspective. Lazily populated on the first
-    /// [`SubmitOps`] that targets a new `(self_device, peer,
-    /// other_device)` triple.
-    qp_handles: HashMap<
-        QpKey,
-        ActorHandle<QueuePairActor<IbvManagerActor<I>, <I::Domain as IbvDomainImpl>::QueuePair>>,
-    >,
-
-    /// Passive-side mirror QPs, created in response to a peer's
-    /// [`CreatePeerQueuePair`]. The peer's [`QueuePairActor`] owns
-    /// the active side; we hold the connected mirror here so the
-    /// peer can read/write our memory. The map's `Drop` destroys
-    /// each QP via its own `Drop`.
-    peer_created_qps: HashMap<QpKey, <I::Domain as IbvDomainImpl>::QueuePair>,
+    /// The backend's connection strategy: it owns the queue pair state this
+    /// manager routes ops through, across every device this manager serves, and
+    /// vends the actors ops are dispatched to. Its `Drop` tears that state down.
+    qp_manager: I::QueuePairManager,
 
     /// Map of RDMA device names to their opened [`IbvDevice<I>`], each of
     /// which owns the per-device `Arc<IbvContext>` and the `DEFAULT_DOMAIN`
@@ -230,22 +215,6 @@ impl<I: IbvDeviceImpl> Actor for IbvManagerActor<I> {
     }
 }
 
-impl<I: IbvDeviceImpl> Drop for IbvManagerActor<I> {
-    fn drop(&mut self) {
-        // Drain active-side QP actors. Each child owns its
-        // `IbvQueuePair`; `drain_and_stop` schedules the actor to
-        // finish in-flight ops and exit, dropping the QP via its
-        // own `Drop`.
-        for (_key, handle) in self.qp_handles.drain() {
-            let _ = handle.drain_and_stop("IbvManagerActor dropped");
-        }
-
-        // The remaining fields (`peer_created_qps`,
-        // `buffer_registrations`, `devices`) free their FFI resources
-        // through their elements' `Drop`s when this struct is dropped.
-    }
-}
-
 impl<I: IbvDeviceImpl> IbvManagerActor<I> {
     /// Create a new IbvManagerActor with the given configuration.
     pub async fn new(params: Option<IbvConfig>) -> Result<Self, anyhow::Error> {
@@ -285,8 +254,7 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
 
         let actor = Self {
             owner: OnceLock::new(),
-            qp_handles: HashMap::new(),
-            peer_created_qps: HashMap::new(),
+            qp_manager: <I::QueuePairManager as QueuePairManager>::new(config.clone()),
             devices: HashMap::new(),
             config,
             buffer_registrations: HashMap::new(),
@@ -412,70 +380,51 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
         Ok(mem.mr_slot().get_or_init(|| mrv).clone())
     }
 
-    /// Build a passive-side mirror QP for `qp_key`, connect it to
-    /// `sender_info`, and store it in [`Self::peer_created_qps`].
-    /// Returns the local endpoint the active side needs to finish
-    /// its own `connect`. Called from
-    /// [`Handler<CreatePeerQueuePair>`].
-    fn create_peer_qp(
-        &mut self,
-        qp_key: &QpKey,
-        sender_info: &IbvQpInfo,
-    ) -> Result<IbvQpInfo, anyhow::Error> {
-        if self.peer_created_qps.contains_key(qp_key) {
-            anyhow::bail!("peer queue pair already exists for {qp_key:?}");
-        }
-        let self_device = &qp_key.self_device;
-        let config = self.config.clone();
-        let domain = self.get_or_create_device_domain(self_device)?;
-        let mut qp = domain
-            .create_queue_pair(&config)
-            .map_err(|e| anyhow::anyhow!("could not create peer IbvQueuePair: {}", e))?;
-        let local_info = qp
-            .get_qp_info()
-            .map_err(|e| anyhow::anyhow!("could not extract peer QP info: {}", e))?;
-        qp.connect(sender_info)
-            .map_err(|e| anyhow::anyhow!("could not connect peer QP: {}", e))?;
-        self.peer_created_qps.insert(qp_key.clone(), qp);
-        Ok(local_info)
-    }
-
-    /// Lazy active-side QP actor: if `qp_key` is absent from
-    /// [`Self::qp_handles`], create an [`IbvQueuePair`] on the
-    /// requested device and spawn a [`QueuePairActor`] to drive its
-    /// handshake + data path. Returns a clone of the actor handle.
-    fn ensure_qp_actor(
+    /// Returns the queue pair actor that DMAs `peer_ref`/`peer_device` over
+    /// `device_name`, delegating to the backend's [`QueuePairManager`].
+    fn get_or_create_queue_pair(
         &mut self,
         cx: &Context<'_, Self>,
-        qp_key: &QpKey,
-        peer_manager: ActorRef<Self>,
-    ) -> Result<
-        ActorHandle<QueuePairActor<Self, <I::Domain as IbvDomainImpl>::QueuePair>>,
-        anyhow::Error,
-    > {
-        if let Some(h) = self.qp_handles.get(qp_key) {
-            return Ok(h.clone());
-        }
-        let self_device = &qp_key.self_device;
-        let config = self.config.clone();
-        let domain = self.get_or_create_device_domain(self_device)?;
-        let qp = domain
-            .create_queue_pair(&config)
-            .map_err(|e| anyhow::anyhow!("could not create IbvQueuePair for {qp_key:?}: {}", e))?;
-        let local_manager: ActorRef<Self> = cx.bind();
-        let is_loopback = local_manager.actor_addr() == peer_manager.actor_addr()
-            && qp_key.self_device == qp_key.other_device;
-        let actor = cx.spawn(QueuePairActor::new(
-            qp_key.clone(),
-            local_manager,
-            peer_manager,
-            qp,
-            is_loopback,
-            config.max_send_wr,
-            config.max_rd_atomic as u32,
-        ));
-        self.qp_handles.insert(qp_key.clone(), actor.clone());
-        Ok(actor)
+        device_name: &str,
+        peer_ref: ActorRef<Self>,
+        peer_device: String,
+    ) -> Result<ActorHandle<<I::QueuePairManager as QueuePairManager>::QueuePair>, anyhow::Error>
+    {
+        self.get_or_create_device_domain(device_name)?;
+        let Self {
+            devices,
+            qp_manager,
+            ..
+        } = self;
+        let domain = devices
+            .get(device_name)
+            .expect("device just ensured")
+            .domain(DEFAULT_DOMAIN)
+            .expect("domain just ensured");
+        qp_manager.get_or_create_queue_pair(cx, domain, peer_ref, peer_device)
+    }
+
+    /// Handles a peer's connection request on `device_name`, delegating to the
+    /// backend's [`QueuePairManager`].
+    fn process_conn_request(
+        &mut self,
+        device_name: &str,
+        peer_id: ActorId,
+        peer_device: String,
+        peer_info: &IbvQpInfo,
+    ) -> Result<IbvQpInfo, anyhow::Error> {
+        self.get_or_create_device_domain(device_name)?;
+        let Self {
+            devices,
+            qp_manager,
+            ..
+        } = self;
+        let domain = devices
+            .get(device_name)
+            .expect("device just ensured")
+            .domain(DEFAULT_DOMAIN)
+            .expect("domain just ensured");
+        qp_manager.process_conn_request(domain, peer_id, peer_device, peer_info)
     }
 }
 
@@ -531,25 +480,22 @@ impl<I: IbvDeviceImpl> Handler<SubmitOps<I>> for IbvManagerActor<I> {
                     continue;
                 }
             };
-            let qp_key = QpKey {
-                self_device: mrv.device_name.clone(),
-                other_id: op.remote_manager.actor_addr().id().clone(),
-                other_device: op.remote_buffer.device_name.clone(),
-            };
-            let peer_manager = op.remote_manager.clone();
-            let handle = match self.ensure_qp_actor(cx, &qp_key, peer_manager) {
-                Ok(h) => h,
-                Err(e) => {
-                    reply.try_post(
-                        cx,
-                        OpResult {
-                            op_idx: i,
-                            result: Err(e.to_string()),
-                        },
-                    )?;
-                    continue;
-                }
-            };
+            let peer_ref = op.remote_manager.clone();
+            let peer_device = op.remote_buffer.device_name.clone();
+            let handle =
+                match self.get_or_create_queue_pair(cx, &mrv.device_name, peer_ref, peer_device) {
+                    Ok(h) => h,
+                    Err(e) => {
+                        reply.try_post(
+                            cx,
+                            OpResult {
+                                op_idx: i,
+                                result: Err(e.to_string()),
+                            },
+                        )?;
+                        continue;
+                    }
+                };
             handle.try_post(
                 cx,
                 ProcessOps {
@@ -579,25 +525,21 @@ impl<I: IbvDeviceImpl> Handler<RawQueuePair> for IbvManagerActor<I> {
 }
 
 #[async_trait]
-impl<I: IbvDeviceImpl> Handler<CreatePeerQueuePair<IbvManagerActor<I>>> for IbvManagerActor<I> {
+impl<I: IbvDeviceImpl> Handler<Connect<IbvManagerActor<I>>> for IbvManagerActor<I> {
     async fn handle(
         &mut self,
         cx: &Context<Self>,
-        msg: CreatePeerQueuePair<IbvManagerActor<I>>,
+        msg: Connect<IbvManagerActor<I>>,
     ) -> Result<(), anyhow::Error> {
-        let CreatePeerQueuePair {
+        let Connect {
             sender,
             sender_device,
             receiver_device,
             sender_info,
             reply,
         } = msg;
-        let qp_key = QpKey {
-            self_device: receiver_device,
-            other_id: sender.actor_addr().id().clone(),
-            other_device: sender_device,
-        };
-        match self.create_peer_qp(&qp_key, &sender_info) {
+        let sender_id = sender.actor_addr().id().clone();
+        match self.process_conn_request(&receiver_device, sender_id, sender_device, &sender_info) {
             Ok(local_info) => reply.post(cx, Ok(local_info)),
             Err(e) => reply.post(cx, Err(e.to_string())),
         }
@@ -761,7 +703,7 @@ where
     /// Translates each op to an `IbvOp`, then ships the whole batch to
     /// [`IbvManagerActor`] via [`SubmitOps`]. The manager interleaves
     /// local-MR resolution with per-op dispatch: each op is sent to its
-    /// [`QueuePairActor`] as a one-item [`ProcessOps`] the moment its MR
+    /// [`RCQueuePairActor`] as a one-item [`ProcessOps`] the moment its MR
     /// is ready, so QP work on op `i` overlaps MR registration for op
     /// `i+1`.
     ///
@@ -850,7 +792,7 @@ where
 #[cfg(test)]
 mod tests {
     //! End-to-end coverage of the [`SubmitOps`] → [`ProcessOps`] →
-    //! [`QueuePairActor`] data path.
+    //! [`RCQueuePairActor`] data path.
     //!
     //! Each test stands up two RDMA participants in two
     //! [`Proc::direct`] procs in the test process. Each proc hosts an
@@ -1337,7 +1279,7 @@ mod tests {
     /// *same* `RdmaManagerActor` on the *same* device. Exercises the
     /// loopback path (`is_loopback = true`) where the active actor
     /// connects its QP to its own endpoint and skips the
-    /// `CreatePeerQueuePair` round trip.
+    /// `Connect` round trip.
     async fn run_true_loopback(
         env: &TestEnv,
         dev: BufferDevice,
@@ -1410,7 +1352,7 @@ mod tests {
 
     /// Cross-actor RDMA write over a single device (both sides target
     /// `cpu:0`). The two `RdmaManagerActor`s differ — this exercises
-    /// the asymmetric `CreatePeerQueuePair` handshake even though the
+    /// the asymmetric `Connect` handshake even though the
     /// underlying device is shared.
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_cross_actor_same_device_write() -> Result<(), anyhow::Error> {
@@ -1430,9 +1372,9 @@ mod tests {
     }
 
     /// True loopback write: both buffers registered with the same
-    /// `RdmaManagerActor` on the same device. The `QueuePairActor`
+    /// `RdmaManagerActor` on the same device. The `RCQueuePairActor`
     /// sees `is_loopback = true` and connects its QP to its own
-    /// endpoint without going through `CreatePeerQueuePair`.
+    /// endpoint without going through `Connect`.
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_loopback_write() -> Result<(), anyhow::Error> {
         require_rdma();
@@ -1469,7 +1411,7 @@ mod tests {
 
     /// One write + one read in a single `IbvBackend::submit` batch.
     /// Both ops share the same `QpKey` so the manager groups them
-    /// into a single `ProcessOps` dispatched to one `QueuePairActor`.
+    /// into a single `ProcessOps` dispatched to one `RCQueuePairActor`.
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_multi_op_same_qp_cpu() -> Result<(), anyhow::Error> {
         require_rdma();
@@ -1661,7 +1603,7 @@ mod tests {
     }
 
     /// Two `IbvBackend::submit` calls back-to-back through the same
-    /// helper. The second batch reuses the cached `QueuePairActor`
+    /// helper. The second batch reuses the cached `RCQueuePairActor`
     /// from the first (the manager's `qp_handles` entry persists
     /// across submits).
     #[timed_test::async_timed_test(timeout_secs = 60)]

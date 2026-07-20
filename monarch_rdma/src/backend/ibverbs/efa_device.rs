@@ -16,6 +16,8 @@ use super::device::IbvDeviceImpl;
 use super::efa_domain::EfaDomain;
 use super::primitives::IbvConfig;
 use super::primitives::IbvContext;
+use super::queue_pair::legacy;
+use super::queue_pair::rc_queue_pair::RCQueuePairManager;
 use crate::register_ibv_device_impl;
 
 /// AWS EFA (Elastic Fabric Adapter) backend.
@@ -24,6 +26,9 @@ pub struct EfaDevice;
 
 impl IbvDeviceImpl for EfaDevice {
     type Domain = EfaDomain;
+    // Temporary: EFA rides the reliable-connection manager (with the legacy
+    // queue pair) until it gets its own SRD `QueuePairManager`.
+    type QueuePairManager = RCQueuePairManager<EfaDevice, legacy::IbvQueuePair>;
 
     fn backend_name() -> &'static str {
         "efa"

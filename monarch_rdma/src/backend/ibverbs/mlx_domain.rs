@@ -35,7 +35,6 @@ use super::domain::register_dmabuf_range;
 use super::domain::register_host_or_dmabuf_mr;
 use super::memory_region::IbvMemoryRegionKeepalive;
 use super::memory_region::IbvMemoryRegionView;
-use super::mlx_queue_pair::MlxQueuePair;
 use super::primitives::GidScope;
 use super::primitives::GidType;
 use super::primitives::IbvConfig;
@@ -44,8 +43,9 @@ use super::primitives::IbvDeviceInfo;
 use super::primitives::IbvMr;
 use super::primitives::IbvPd;
 use super::primitives::IbvQp;
-use super::queue_pair::connect;
 use super::queue_pair::get_qp_info;
+use super::queue_pair::mlx_queue_pair::MlxQueuePair;
+use super::queue_pair::rc_queue_pair::connect;
 use crate::backend::ibverbs::mlx_device::MlxDevice;
 use crate::local_memory::KeepaliveLocalMemory;
 use crate::local_memory::is_device_ptr;
@@ -796,8 +796,6 @@ impl MlxDomain {
 }
 
 impl IbvDomainImpl for MlxDomain {
-    type QueuePair = MlxQueuePair;
-
     unsafe fn new(context: &IbvContext, device_info: &IbvDeviceInfo, config: &IbvConfig) -> Self {
         Self::new_with_ops(
             Arc::new(ProdMlxDomainOps::new(context, device_info)),
