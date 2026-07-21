@@ -157,6 +157,9 @@ pub(crate) trait ActorMeshProtocol: Send + Sync {
         PyPythonTask::new(async { Ok(None::<()>) })
     }
 
+    /// The stable ID of the mesh.
+    fn id(&self) -> String;
+
     /// The name of the mesh.
     fn name(&self) -> PyResult<PyPythonTask>;
 }
@@ -176,13 +179,13 @@ pub(crate) struct PythonActorMesh {
 }
 
 impl PythonActorMesh {
-    pub(crate) fn new<F>(f: F, supervised: bool) -> Self
+    pub(crate) fn new<F>(id: String, f: F, supervised: bool) -> Self
     where
         F: Future<Output = PyResult<Box<dyn SupervisableActorMesh>>> + Send + 'static,
     {
         let f = async move { Ok(Arc::from(f.await?)) }.boxed().shared();
         PythonActorMesh {
-            inner: Arc::new(AsyncActorMesh::new_queue(f, supervised)),
+            inner: Arc::new(AsyncActorMesh::new_queue(id, f, supervised)),
         }
     }
 
@@ -247,6 +250,11 @@ impl PythonActorMesh {
         self.inner.initialized()
     }
 
+    #[getter]
+    fn id(&self) -> String {
+        self.inner.id()
+    }
+
     fn name(&self) -> PyResult<PyPythonTask> {
         self.inner.name()
     }
@@ -282,13 +290,14 @@ type ActorMeshResult = Result<Arc<dyn SupervisableActorMesh>, ClonePyErr>;
 type ActorMeshFut = Shared<Pin<Box<dyn Future<Output = ActorMeshResult> + Send + 'static>>>;
 
 pub(crate) struct AsyncActorMesh {
+    id: String,
     mesh: ActorMeshFut,
     queue: UnboundedSender<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>,
     supervised: bool,
 }
 
 impl AsyncActorMesh {
-    pub(crate) fn new_queue(f: ActorMeshFut, supervised: bool) -> AsyncActorMesh {
+    pub(crate) fn new_queue(id: String, f: ActorMeshFut, supervised: bool) -> AsyncActorMesh {
         let (queue, mut recv) = unbounded_channel();
 
         get_tokio_runtime().spawn(async move {
@@ -302,7 +311,7 @@ impl AsyncActorMesh {
             }
         });
 
-        let mesh = AsyncActorMesh::new(queue, supervised, f);
+        let mesh = AsyncActorMesh::new(id, queue, supervised, f);
         // Eagerly trigger the mesh initialization by pushing an init task onto
         // the queue. This ensures actors are spawned immediately rather than
         // waiting for the first endpoint call, which is critical for:
@@ -318,11 +327,13 @@ impl AsyncActorMesh {
     }
 
     fn new(
+        id: String,
         queue: UnboundedSender<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>,
         supervised: bool,
         f: ActorMeshFut,
     ) -> AsyncActorMesh {
         AsyncActorMesh {
+            id,
             mesh: f,
             queue,
             supervised,
@@ -337,12 +348,13 @@ impl AsyncActorMesh {
     }
 
     pub(crate) fn from_impl(mesh: Arc<dyn SupervisableActorMesh>) -> Self {
+        let id = mesh.id();
         let fut = future::ready(Ok::<Arc<dyn SupervisableActorMesh>, ClonePyErr>(mesh))
             .boxed()
             .shared();
         // Poll the future so that its result can be observed without blocking the tokio runtime.
         let _ = futures::executor::block_on(fut.clone());
-        Self::new_queue(fut, true)
+        Self::new_queue(id, fut, true)
     }
 }
 
@@ -499,6 +511,10 @@ impl ActorMeshProtocol for AsyncActorMesh {
         })
     }
 
+    fn id(&self) -> String {
+        self.id.clone()
+    }
+
     fn name(&self) -> PyResult<PyPythonTask> {
         let mesh = self.mesh.clone();
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -531,6 +547,7 @@ impl SupervisableActorMesh for AsyncActorMesh {
         let mesh = self.mesh.clone();
         let region = region.clone();
         Ok(Box::new(AsyncActorMesh::new(
+            self.id.clone(),
             self.queue.clone(),
             self.supervised,
             async move { Ok(Arc::from(mesh.await?.new_with_region(&region)?)) }
@@ -658,6 +675,10 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
         Ok(PythonActorMeshImpl::mesh_ref(self).clone())
     }
 
+    fn id(&self) -> String {
+        self.mesh_ref().id().to_string()
+    }
+
     fn name(&self) -> PyResult<PyPythonTask> {
         let name = self.mesh_ref().id().to_string();
         PyPythonTask::new(async move { Ok(name) })
@@ -754,8 +775,12 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
         Ok(self.clone())
     }
 
+    fn id(&self) -> String {
+        ActorMeshRef::id(self).to_string()
+    }
+
     fn name(&self) -> PyResult<PyPythonTask> {
-        let name = self.id().to_string();
+        let name = ActorMeshRef::id(self).to_string();
         PyPythonTask::new(async move { Ok(name) })
     }
 }
@@ -1007,7 +1032,7 @@ mod tests {
             .unwrap()
         });
 
-        let actor_params = PythonActorParams::new(pickled_type, None, None);
+        let actor_params = PythonActorParams::new(pickled_type, None, None, None);
         let config_lock = hyperactor_config::global::lock();
         let _queue_dispatch_guard = config_lock.override_key(ACTOR_QUEUE_DISPATCH, false);
         let actor_mesh = proc_mesh
@@ -1018,11 +1043,13 @@ mod tests {
         drop(config_lock);
 
         let controller = actor_mesh.controller().as_ref().unwrap().clone();
+        let mesh_id = actor_mesh.id().to_string();
 
         // Wrap using the production code path from PyProcMesh::spawn_async.
         let mesh_impl =
             async move { Ok::<_, PyErr>(Box::new(PythonActorMeshImpl::new_owned(actor_mesh))) };
         let python_actor_mesh = PythonActorMesh::new(
+            mesh_id,
             async move {
                 let mesh_impl: Box<dyn SupervisableActorMesh> = mesh_impl.await?;
                 Ok(mesh_impl)

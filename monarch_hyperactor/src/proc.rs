@@ -98,7 +98,7 @@ impl PyProc {
         let proc = self.inner.clone();
         let pickled_type = PickledPyObject::pickle(actor.as_any())?;
         crate::runtime::future_into_py(py, async move {
-            let actor = PythonActor::new(pickled_type, None, None, None)?;
+            let actor = PythonActor::new(pickled_type, None, None, None, None)?;
             Ok(PythonActorHandle {
                 inner: proc.spawn_with_label(name.as_deref().unwrap_or("anon"), actor),
             })
@@ -116,7 +116,7 @@ impl PyProc {
         let pickled_type = PickledPyObject::pickle(actor.as_any())?;
         Ok(PythonActorHandle {
             inner: signal_safe_block_on(py, async move {
-                let actor = PythonActor::new(pickled_type, None, None, None)?;
+                let actor = PythonActor::new(pickled_type, None, None, None, None)?;
                 Ok(proc.spawn_with_label(name.as_deref().unwrap_or("anon"), actor))
             })
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
