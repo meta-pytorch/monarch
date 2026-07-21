@@ -95,7 +95,7 @@ jobs:
         else
           export MONARCH_VERSION=0.6.0.dev$(date +'%Y%m%d')
         fi
-        python setup.py bdist_wheel
+        python -m build --wheel --no-isolation
 
         echo "=== sccache stats ==="
         sccache --show-stats || true

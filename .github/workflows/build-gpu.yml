@@ -34,4 +34,4 @@ jobs:
         pip install ${{ matrix.torch-spec }}
         pip install -r build-requirements.txt
         setup_tensor_engine
-        python setup.py bdist_wheel
+        python -m build --wheel --no-isolation

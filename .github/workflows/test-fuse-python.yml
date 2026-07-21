@@ -54,7 +54,7 @@ jobs:
         command -v nvcc &> /dev/null || setup_cuda_toolkit
 
         # Build monarch (No tensor engine, CPU version)
-        USE_TENSOR_ENGINE=0 python setup.py bdist_wheel
+        USE_TENSOR_ENGINE=0 python -m build --wheel --no-isolation
 
         echo "=== sccache stats ==="
         sccache --show-stats || true

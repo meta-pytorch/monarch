@@ -265,7 +265,7 @@ Key configuration sections:
 
 ### Common Issues
 
-1. **Import Errors**: Ensure Monarch is properly installed with `python setup.py develop`
+1. **Import Errors**: Ensure Monarch is properly installed with `python -m pip install -e .`
 2. **Missing Rust Docs**: Run `cargo doc --workspace --no-deps` before building
 3. **Theme Issues**: Check that all theme dependencies are installed
 4. **Build Failures**: Use `make clean` then `make html` for a fresh build

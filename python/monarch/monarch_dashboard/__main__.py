@@ -28,7 +28,8 @@ def start_dashboard(db_path, host="0.0.0.0", port=5000):
     else:
         print(
             ">> WARNING: No frontend build found. Serving API-only.\n"
-            ">> To build the frontend, run: python setup.py build_frontend or run uv build --wheel --no-build-isolation"
+            ">> To build the frontend, run: "
+            "python -m build --wheel --no-isolation"
         )
 
     app = create_app(SQLiteAdapter(db_path))
@@ -95,9 +96,8 @@ def main():
     )
     args = parser.parse_args()
 
-    sim_proc = None
     if args.simulate:
-        sim_proc = _launch_simulator(args.db, args.interval, args.failure_at)
+        _launch_simulator(args.db, args.interval, args.failure_at)
     elif not os.path.exists(args.db):
         print(f"Database not found: {args.db}")
         exit(1)

@@ -88,11 +88,11 @@ For external/open-source development:
 ```bash
 # Build with tensor_engine (CUDA/GPU support) - default
 uv sync
-python setup.py bdist_wheel
+uv build --wheel --no-build-isolation
 
 # Build without tensor_engine (CPU-only)
 USE_TENSOR_ENGINE=0 uv sync
-USE_TENSOR_ENGINE=0 python setup.py bdist_wheel
+USE_TENSOR_ENGINE=0 uv build --wheel --no-build-isolation
 
 # Development installation
 pip install -e .
@@ -139,7 +139,7 @@ The `check` script provides a unified workflow for linting, typechecking, and te
 ```bash
 # Full build with GPU support (requires CUDA, torch, RDMA libraries)
 uv sync
-python setup.py bdist_wheel
+uv build --wheel --no-build-isolation
 
 # CPU-only build (no CUDA/RDMA required)
 USE_TENSOR_ENGINE=0 uv sync
@@ -312,7 +312,7 @@ Default pytest timeout is 5 minutes (configured in `pyproject.toml`).
 ### OSS Contribution Workflow
 
 1. Make changes to Rust or Python code
-2. Build: `uv sync && python setup.py develop`
+2. Build: `uv sync`
 3. Test: `uv run pytest python/tests/ -v -m "not oss_skip"`
 4. Run Rust tests: `uv run cargo nextest run`
 5. Format: `cargo fmt` (Rust), ensure `.flake8` compliance (Python)

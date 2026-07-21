@@ -41,7 +41,7 @@ jobs:
         pip install -r build-requirements.txt
 
         # Build monarch (No tensor engine, CPU version)
-        USE_TENSOR_ENGINE=0 python setup.py bdist_wheel
+        USE_TENSOR_ENGINE=0 python -m build --wheel --no-isolation
 
         echo "=== sccache stats ==="
         sccache --show-stats || true

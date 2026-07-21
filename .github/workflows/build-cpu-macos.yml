@@ -57,7 +57,7 @@ jobs:
           python -m pip install --upgrade "setuptools>=77" wheel
           python -m pip install -r build-requirements.txt
           python -m pip install --pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cpu
-          python setup.py bdist_wheel
+          python -m build --wheel --no-isolation
 
       - name: Upload wheel artifact
         uses: actions/upload-artifact@v4

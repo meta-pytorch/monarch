@@ -72,7 +72,7 @@ jobs:
             export MONARCH_VERSION=0.6.0.dev$(date +'%Y%m%d')
           fi
 
-          python setup.py bdist_wheel
+          python -m build --wheel --no-isolation
           ls -la dist/
           python -m pip install dist/*.whl
           python -c "import monarch"
