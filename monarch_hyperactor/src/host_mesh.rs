@@ -159,7 +159,12 @@ impl PyHostMesh {
 
 #[pymethods]
 impl PyHostMesh {
-    #[pyo3(signature = (instance, name, per_host, proc_bind = None, per_rank_bootstrap = None))]
+    #[staticmethod]
+    fn create_proc_mesh_id(name: &str) -> String {
+        ProcMeshId::instance(Label::strip(name)).to_string()
+    }
+
+    #[pyo3(signature = (instance, name, per_host, proc_bind = None, per_rank_bootstrap = None, mesh_id = None))]
     fn spawn_nonblocking(
         &self,
         _py: Python<'_>,
@@ -168,8 +173,15 @@ impl PyHostMesh {
         per_host: &PyExtent,
         proc_bind: Option<Vec<HashMap<String, String>>>,
         per_rank_bootstrap: Option<Py<PyAny>>,
+        mesh_id: Option<String>,
     ) -> PyResult<PyPythonTask> {
         let host_mesh = self.mesh_ref()?.clone();
+        let mesh_id = match mesh_id {
+            Some(mesh_id) => mesh_id
+                .parse::<ProcMeshId>()
+                .map_err(|error| PyValueError::new_err(error.to_string()))?,
+            None => ProcMeshId::instance(Label::strip(&name)),
+        };
         let per_rank_bootstrap: Option<Box<PerRankBootstrapFn>> = per_rank_bootstrap
             .map(|callable| -> PyResult<Box<PerRankBootstrapFn>> {
                 Ok(Box::new(move |point| {
@@ -197,9 +209,9 @@ impl PyHostMesh {
         let proc_bind = proc_bind.map(|v| v.into_iter().map(ProcBind::from).collect());
         let mesh_impl = async move {
             let proc_mesh = host_mesh
-                .spawn(
+                .spawn_with_id(
                     instance.deref(),
-                    &name,
+                    mesh_id,
                     per_host,
                     proc_bind,
                     per_rank_bootstrap,
@@ -236,6 +248,16 @@ impl PyHostMesh {
     #[getter]
     fn region(&self) -> PyResult<PyRegion> {
         Ok(PyRegion::from(self.mesh_ref()?.region()))
+    }
+
+    #[getter]
+    fn id(&self) -> PyResult<String> {
+        Ok(self.mesh_ref()?.id().to_string())
+    }
+
+    fn name(&self) -> PyResult<PyPythonTask> {
+        let name = self.mesh_ref()?.id().to_string();
+        PyPythonTask::new(async move { Ok(name) })
     }
 
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {

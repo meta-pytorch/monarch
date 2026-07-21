@@ -8,8 +8,10 @@
 
 from typing import final, Optional
 
+from monarch._rust_bindings.monarch_hyperactor.actor_mesh import ActorSupervisionEvent
 from monarch._rust_bindings.monarch_hyperactor.context import Instance
 from monarch._rust_bindings.monarch_hyperactor.pytokio import Shared
+from monarch._rust_bindings.monarch_hyperactor.shape import Point
 
 @final
 class SupervisionError(RuntimeError):
@@ -31,9 +33,27 @@ class MeshFailure:
     @property
     def mesh(self) -> object: ...
     @property
-    def mesh_name(self) -> str:
-        """The name of the mesh that this failure occurred on. Can be compared
-        to existing meshes names to determine identity"""
+    def mesh_name(self) -> str | None:
+        """Optional user-facing display name for diagnostics. Use
+        ``mesh_id`` for identity comparisons."""
+        ...
+
+    @property
+    def mesh_id(self) -> str | None:
+        """Stable internal mesh ID. Compare this with a mesh object's ``id``."""
+        ...
+
+    @property
+    def coordinate(self) -> Point | None:
+        """The coordinate of the point in the mesh where the failure occurred.
+        For single-point failures, this is the coordinate of the failed point.
+        For whole-mesh failures, this is None."""
+        ...
+
+    @property
+    def event(self) -> ActorSupervisionEvent:
+        """The interior ActorSupervisionEvent that caused this mesh failure.
+        Provides access to the actor_id, display_name, actor_status, etc."""
         ...
 
     def report(self) -> str:
