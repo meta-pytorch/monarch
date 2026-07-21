@@ -85,12 +85,14 @@ class HostMesh(MeshTrait):
     def __init__(
         self,
         hy_host_mesh: Shared[HyHostMesh],
+        mesh_id: str,
         region: Region,
         stream_logs: bool,
         is_fake_in_process: bool,
         code_sync_proc_mesh: Optional["_Lazy[ProcMesh]"],
     ) -> None:
         self._inner_host_mesh: Optional[Shared[HyHostMesh]] = hy_host_mesh
+        self._id = mesh_id
         self._region = region
         self._stream_logs = stream_logs
         self._is_fake_in_process = is_fake_in_process
@@ -169,6 +171,8 @@ class HostMesh(MeshTrait):
         if self._inner_host_mesh is None:
             raise RuntimeError("HostMesh has already been shut down")
 
+        mesh_id = HyHostMesh.create_proc_mesh_id(name)
+
         per_rank_bootstrap: Callable[[Point], BootstrapCommand] | None = None
 
         if bootstrap_command is not None:
@@ -195,6 +199,7 @@ class HostMesh(MeshTrait):
                 per_host,
                 proc_bind,
                 per_rank_bootstrap,
+                mesh_id,
             )
 
         spawn_shared = PythonTask.from_coroutine(task()).spawn()
@@ -203,6 +208,7 @@ class HostMesh(MeshTrait):
         pm = ProcMesh.from_host_mesh(
             self,
             spawn_shared,
+            mesh_id,
             Extent(
                 self._labels + tuple(per_host.labels),
                 self.region.slice().sizes + list(per_host.sizes),
@@ -237,6 +243,7 @@ class HostMesh(MeshTrait):
 
         return HostMesh(
             sliced_hy_hm,
+            self._id,
             shape.region,
             self.stream_logs,
             self.is_fake_in_process,
@@ -261,6 +268,7 @@ class HostMesh(MeshTrait):
     ) -> "HostMesh":
         return HostMesh(
             Shared.from_value(hy_host_mesh),
+            hy_host_mesh.id,
             region,
             stream_logs,
             is_fake_in_process,
@@ -307,6 +315,7 @@ class HostMesh(MeshTrait):
 
         return HostMesh(
             PythonTask.from_coroutine(task()).spawn(),
+            self._id,
             self._region,
             self._stream_logs,
             self._is_fake_in_process,
@@ -334,6 +343,7 @@ class HostMesh(MeshTrait):
                 )
         return HostMesh, (
             self._hy_host_mesh,
+            self._id,
             self._region,
             self.stream_logs,
             self.is_fake_in_process,
@@ -467,6 +477,11 @@ class HostMesh(MeshTrait):
             return True
 
         return Future(coro=task())
+
+    @property
+    def id(self) -> str:
+        """Stable internal mesh ID."""
+        return self._id
 
     @property
     def _hy_host_mesh(self) -> Shared[HyHostMesh]:

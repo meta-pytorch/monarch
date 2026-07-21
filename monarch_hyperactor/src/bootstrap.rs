@@ -120,7 +120,7 @@ pub fn attach_to_workers(
     instance: &crate::context::PyInstance,
     workers: Vec<Bound<'_, PyPythonTask>>,
     name: Option<&str>,
-) -> PyResult<PyPythonTask> {
+) -> PyResult<(String, PyPythonTask)> {
     let tasks = workers
         .into_iter()
         .map(|x| x.borrow_mut().take_task())
@@ -131,8 +131,9 @@ pub fn attach_to_workers(
     // derived from experiment / job names that may contain uppercase or punctuation;
     // rejecting them surfaces as an opaque PyException far from the input site.
     let name = HostMeshId::instance(Label::strip(name.unwrap_or("hosts")));
+    let id = name.to_string();
     let instance = instance.clone();
-    PyPythonTask::new(async move {
+    let task = PyPythonTask::new(async move {
         let results = try_join_all(tasks).await?;
 
         let addresses: Result<Vec<ChannelAddr>, anyhow::Error> =
@@ -152,7 +153,8 @@ pub fn attach_to_workers(
             .await
             .map_err(|e| anyhow::anyhow!("attach failed: {}", e))?;
         Ok(PyHostMesh::new_owned(host_mesh))
-    })
+    })?;
+    Ok((id, task))
 }
 
 pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResult<()> {

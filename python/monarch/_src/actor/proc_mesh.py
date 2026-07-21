@@ -342,6 +342,7 @@ class ProcMesh(MeshTrait):
         self,
         hy_proc_mesh: "Shared[HyProcMesh]",
         host_mesh: "HostMesh",
+        mesh_id: str,
         region: Region,
         root_region: Region,
         _device_mesh: Optional["DeviceMesh"] = None,
@@ -350,6 +351,7 @@ class ProcMesh(MeshTrait):
 
         self._proc_mesh = hy_proc_mesh
         self._host_mesh = host_mesh
+        self._id = mesh_id
         self._region = region
         self._root_region = root_region
         self._maybe_device_mesh = _device_mesh
@@ -373,6 +375,11 @@ class ProcMesh(MeshTrait):
             return True
 
         return Future(coro=task())
+
+    @property
+    def id(self) -> str:
+        """Stable internal mesh ID."""
+        return self._id
 
     @property
     def host_mesh(self) -> "HostMesh":
@@ -414,6 +421,7 @@ class ProcMesh(MeshTrait):
         return ProcMesh(
             sliced_hy_pm,
             self._host_mesh,
+            self._id,
             shape.region,
             self._root_region,
             _device_mesh=device_mesh,
@@ -469,11 +477,12 @@ class ProcMesh(MeshTrait):
         self,
         host_mesh: "HostMesh",
         hy_proc_mesh: "Shared[HyProcMesh]",
+        mesh_id: str,
         region: Region,
         setup: Callable[[], None] | Callable[[], Awaitable[None]] | None = None,
         _attach_controller_controller: bool = True,
     ) -> "ProcMesh":
-        pm = ProcMesh(hy_proc_mesh, host_mesh, region, region, None)
+        pm = ProcMesh(hy_proc_mesh, host_mesh, mesh_id, region, region, None)
 
         if _attach_controller_controller:
             instance = context().actor_instance
@@ -712,6 +721,7 @@ class ProcMesh(MeshTrait):
         return ProcMesh(
             Shared.from_value(hy_proc_mesh),
             host_mesh,
+            hy_proc_mesh.id,
             region,
             root_region,
         )
@@ -738,6 +748,7 @@ class ProcMesh(MeshTrait):
         return ProcMesh, (
             self._proc_mesh,
             self._host_mesh,
+            self._id,
             self._region,
             self._root_region,
         )
@@ -909,8 +920,8 @@ class _ControllerController(Actor):
         # Store failed actors in the dict so we can forward their failures to
         # the user.
         self._controllers: Dict[str, Actor | MeshFailure] = {}
-        # Internal mesh name mapped back to the key from _controllers.
-        self._mesh_name_to_name: Dict[str, str] = {}
+        # Internal mesh ID mapped back to the key from _controllers.
+        self._mesh_id_to_name: Dict[str, str] = {}
 
     @endpoint
     def get_or_spawn(
@@ -927,9 +938,9 @@ class _ControllerController(Actor):
             proc = this_proc()
             proc._controller_controller = self_ref
             mesh = proc.spawn(name, Class, *args, **kwargs)
-            mesh_name = cast(ActorMesh[Actor], mesh)._name.get()
+            mesh_id = cast(ActorMesh[Actor], mesh).id
             self._controllers[name] = mesh
-            self._mesh_name_to_name[mesh_name] = name
+            self._mesh_id_to_name[mesh_id] = name
         actor = cast(TActor, self._controllers[name])
         if isinstance(actor, MeshFailure):
             raise ValueError(f"Failure on {name}: {actor}")
@@ -937,7 +948,10 @@ class _ControllerController(Actor):
             return actor
 
     def __supervise__(self, failure: MeshFailure) -> bool:
-        controller_name = self._mesh_name_to_name.get(failure.mesh_name)
+        controller_name = None
+        mesh_id = failure.mesh_id
+        if mesh_id is not None:
+            controller_name = self._mesh_id_to_name.get(mesh_id)
         if controller_name is not None:
             controller = self._controllers.get(controller_name)
             if controller is not None:

@@ -302,6 +302,8 @@ fn send_state_change(
     rank: usize,
     event: ActorSupervisionEvent,
     mesh_name: &ResourceId,
+    display_name: Option<&str>,
+    region: Option<&ndslice::Region>,
     is_proc_stopped: bool,
     health_state: &mut HealthState,
 ) {
@@ -324,13 +326,17 @@ fn send_state_change(
         );
     }
 
+    let coordinate = region.and_then(|r| r.point_of_base_rank(rank).ok());
+
     let failure_message = MeshFailure {
-        actor_mesh_name: Some(mesh_name.to_string()),
+        actor_mesh_name: display_name.map(|s| s.to_string()),
+        mesh_id: Some(mesh_name.to_string()),
         event: event.clone(),
         crashed_ranks: vec![rank],
         // MFCA-1/MFCA-2: stamp this controller's id so the owner attributes the
         // failure by controller, whatever the event subject is.
         reporting_controller: Some(cx.instance().self_addr().id().clone()),
+        coordinate,
     };
     health_state.crashed_ranks.insert(rank, event.clone());
     health_state.unhealthy_event = Some(if is_proc_stopped {
@@ -357,13 +363,24 @@ fn send_poll_failure(
     cx: &impl context::Actor,
     event: ActorSupervisionEvent,
     mesh_name: &ResourceId,
+    display_name: Option<&str>,
+    region: Option<&ndslice::Region>,
     health_state: &mut HealthState,
 ) -> PollResult {
     let Some(rank) = health_state.first_non_terminating_rank() else {
         return PollResult::StopMonitoring;
     };
     health_state.mark_rank_terminating(rank, resource::Status::Failed(event.to_string()));
-    send_state_change(cx, rank, event, mesh_name, false, health_state);
+    send_state_change(
+        cx,
+        rank,
+        event,
+        mesh_name,
+        display_name,
+        region,
+        false,
+        health_state,
+    );
     PollResult::StopMonitoring
 }
 
@@ -531,6 +548,7 @@ pub trait Controlled: Clone + Debug + Send + Sync + 'static {
         &self,
         cx: &impl context::Actor,
         state: resource::RankedState<Self::StateInner>,
+        supervision_display_name: &str,
         health_state: &mut HealthState,
     ) -> bool;
 
@@ -1088,7 +1106,9 @@ where
         cx: &Context<Self>,
         state: resource::RankedState<T::StateInner>,
     ) -> anyhow::Result<()> {
-        self.mesh.process_state(cx, state, &mut self.health_state);
+        let display = self.supervision_display_name();
+        self.mesh
+            .process_state(cx, state, &display, &mut self.health_state);
         self.stop_if_all_terminating();
         Ok(())
     }
@@ -1160,6 +1180,8 @@ impl<A: Referable> Controlled for ActorMeshControlPlane<A> {
                     None,
                 ),
                 mesh_name,
+                Some(supervision_display_name),
+                Some(Controlled::region(self)),
                 health_state,
             );
         }
@@ -1193,11 +1215,29 @@ impl<A: Referable> Controlled for ActorMeshControlPlane<A> {
                         point.rank(),
                         resource::Status::Failed(event.to_string()),
                     ) {
-                        send_state_change(cx, point.rank(), event, mesh_name, true, health_state);
+                        send_state_change(
+                            cx,
+                            point.rank(),
+                            event,
+                            mesh_name,
+                            Some(supervision_display_name),
+                            Some(Controlled::region(self)),
+                            true,
+                            health_state,
+                        );
                     }
                     return PollResult::StopMonitoring;
                 } else {
-                    send_state_change(cx, point.rank(), event, mesh_name, true, health_state);
+                    send_state_change(
+                        cx,
+                        point.rank(),
+                        event,
+                        mesh_name,
+                        Some(supervision_display_name),
+                        Some(Controlled::region(self)),
+                        true,
+                        health_state,
+                    );
                     return PollResult::Reschedule;
                 }
             }
@@ -1221,6 +1261,8 @@ impl<A: Referable> Controlled for ActorMeshControlPlane<A> {
                     None,
                 ),
                 mesh_name,
+                Some(supervision_display_name),
+                Some(Controlled::region(self)),
                 health_state,
             ),
             Ok(states) => {
@@ -1241,6 +1283,8 @@ impl<A: Referable> Controlled for ActorMeshControlPlane<A> {
                             point.rank(),
                             events[0].clone(),
                             mesh_name,
+                            Some(supervision_display_name),
+                            Some(Controlled::region(self)),
                             false,
                             health_state,
                         );
@@ -1255,6 +1299,7 @@ impl<A: Referable> Controlled for ActorMeshControlPlane<A> {
         &self,
         cx: &impl context::Actor,
         state: resource::RankedState<ActorState>,
+        supervision_display_name: &str,
         health_state: &mut HealthState,
     ) -> bool {
         let resource::RankedState { rank, state } = state;
@@ -1275,6 +1320,8 @@ impl<A: Referable> Controlled for ActorMeshControlPlane<A> {
                 rank,
                 events[0].clone(),
                 Controlled::id(self),
+                Some(supervision_display_name),
+                Some(Controlled::region(self)),
                 false,
                 health_state,
             );
@@ -1316,11 +1363,13 @@ impl<A: Referable> Controlled for ActorMeshControlPlane<A> {
             None,
         );
         let failure_message = MeshFailure {
-            actor_mesh_name: Some(mesh_name.to_string()),
+            actor_mesh_name: None,
+            mesh_id: Some(mesh_name.to_string()),
             event,
             crashed_ranks: vec![],
             // MFCA-1: controller-generated stop report.
             reporting_controller: Some(cx.instance().self_addr().id().clone()),
+            coordinate: None,
         };
         health_state.unhealthy_event = Some(Unhealthy::StreamClosed(failure_message.clone()));
         // We don't send a message to the owner on stops, because only the owner
@@ -1467,6 +1516,8 @@ impl Controlled for ProcMeshRef {
                     None,
                 ),
                 mesh_name,
+                Some(supervision_display_name),
+                Some(Controlled::region(self)),
                 health_state,
             ),
             Ok(None) => PollResult::Processed { did_notify: false },
@@ -1491,6 +1542,7 @@ impl Controlled for ProcMeshRef {
         &self,
         cx: &impl context::Actor,
         state: resource::RankedState<Self::StateInner>,
+        supervision_display_name: &str,
         health_state: &mut HealthState,
     ) -> bool {
         let resource::RankedState { rank, state } = state;
@@ -1504,8 +1556,7 @@ impl Controlled for ProcMeshRef {
         if !changed {
             return false;
         }
-        let display = Controlled::id(self).to_string();
-        self.notify_proc_state_change(cx, &display, state, health_state)
+        self.notify_proc_state_change(cx, supervision_display_name, state, health_state)
     }
 
     async fn handle_stop_request(
@@ -1529,11 +1580,13 @@ impl Controlled for ProcMeshRef {
             None,
         );
         let failure_message = MeshFailure {
-            actor_mesh_name: Some(mesh_name.to_string()),
+            actor_mesh_name: None,
+            mesh_id: Some(mesh_name.to_string()),
             event,
             crashed_ranks: vec![],
             // MFCA-1: controller-generated stop report.
             reporting_controller: Some(cx.instance().self_addr().id().clone()),
+            coordinate: None,
         };
         health_state.unhealthy_event = Some(Unhealthy::StreamClosed(failure_message.clone()));
         for subscriber in health_state.subscribers.iter() {
@@ -1626,13 +1679,23 @@ impl ProcMeshRef {
             })
             .map(|p| p.rank())
             .unwrap_or(0);
-        send_state_change(cx, rank, event, Controlled::id(self), true, health_state);
+        send_state_change(
+            cx,
+            rank,
+            event,
+            Controlled::id(self),
+            Some(supervision_display_name),
+            Some(Controlled::region(self)),
+            true,
+            health_state,
+        );
         true
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::ops::Deref;
     use std::time::Duration;
 
@@ -1665,9 +1728,97 @@ mod tests {
     use crate::proc_agent::MESH_ORPHAN_TIMEOUT;
     use crate::resource;
     use crate::supervision::MeshFailure;
+    use crate::supervision::Unhealthy;
     use crate::test_utils::local_host_mesh;
     use crate::testactor;
     use crate::testing;
+
+    #[tokio::test]
+    async fn send_state_change_records_display_name_mesh_id_and_coordinate() {
+        let instance = testing::instance();
+        let mesh_name = ResourceId::instance(Label::new("workers").unwrap());
+        let internal_mesh_id = mesh_name.to_string();
+        let region: ndslice::Region = ndslice::extent!(gpus = 4).into();
+        let mut health_state = HealthState::new(HashMap::new(), None);
+        let event = ActorSupervisionEvent::new(
+            ResourceId::proc_addr_from_name(ChannelAddr::Local(0), "test_proc")
+                .actor_addr("worker"),
+            None,
+            ActorStatus::Failed(ActorErrorKind::Generic("boom".to_string())),
+            None,
+        );
+
+        send_state_change(
+            &instance,
+            2,
+            event.clone(),
+            &mesh_name,
+            Some("workers"),
+            Some(&region),
+            false,
+            &mut health_state,
+        );
+
+        assert_eq!(health_state.crashed_ranks.get(&2), Some(&event));
+        let failure = match health_state
+            .unhealthy_event
+            .as_ref()
+            .expect("failure should be recorded")
+        {
+            Unhealthy::Crashed(failure) => failure,
+            Unhealthy::StreamClosed(_) => panic!("expected crashed failure"),
+        };
+        assert_eq!(failure.actor_mesh_name.as_deref(), Some("workers"));
+        assert_eq!(failure.mesh_id.as_deref(), Some(internal_mesh_id.as_str()));
+        assert_ne!(failure.actor_mesh_name, failure.mesh_id);
+        assert_eq!(failure.crashed_ranks, vec![2]);
+        assert_eq!(failure.event, event);
+
+        let coordinate = failure
+            .coordinate
+            .as_ref()
+            .expect("single-rank failure should include coordinate");
+        assert_eq!(coordinate.rank(), 2);
+        assert_eq!(coordinate.coord(0), 2);
+    }
+
+    #[tokio::test]
+    async fn send_state_change_does_not_use_mesh_id_as_display_name() {
+        let instance = testing::instance();
+        let mesh_name = ResourceId::instance(Label::new("workers").unwrap());
+        let internal_mesh_id = mesh_name.to_string();
+        let region: ndslice::Region = ndslice::extent!(gpus = 4).into();
+        let mut health_state = HealthState::new(HashMap::new(), None);
+        let event = ActorSupervisionEvent::new(
+            ResourceId::proc_addr_from_name(ChannelAddr::Local(0), "test_proc")
+                .actor_addr("worker"),
+            None,
+            ActorStatus::Failed(ActorErrorKind::Generic("boom".to_string())),
+            None,
+        );
+
+        send_state_change(
+            &instance,
+            2,
+            event,
+            &mesh_name,
+            None,
+            Some(&region),
+            false,
+            &mut health_state,
+        );
+
+        let failure = match health_state
+            .unhealthy_event
+            .as_ref()
+            .expect("failure should be recorded")
+        {
+            Unhealthy::Crashed(failure) => failure,
+            Unhealthy::StreamClosed(_) => panic!("expected crashed failure"),
+        };
+        assert_eq!(failure.actor_mesh_name, None);
+        assert_eq!(failure.mesh_id.as_deref(), Some(internal_mesh_id.as_str()));
+    }
 
     #[tokio::test]
     async fn poll_failure_consumes_one_terminal_rank_for_owner_notification_bound() {
@@ -1695,6 +1846,8 @@ mod tests {
             0,
             rank0_event.clone(),
             &mesh_name,
+            Some("workers"),
+            Some(&region),
             false,
             &mut health_state,
         );
@@ -1704,7 +1857,14 @@ mod tests {
 
         let poll_event = failed_event(99, "unable to query for actor states");
         assert!(matches!(
-            send_poll_failure(&instance, poll_event.clone(), &mesh_name, &mut health_state),
+            send_poll_failure(
+                &instance,
+                poll_event.clone(),
+                &mesh_name,
+                Some("workers"),
+                Some(&region),
+                &mut health_state,
+            ),
             PollResult::StopMonitoring
         ));
         let poll_failure = owner_rx.recv().await.unwrap();
@@ -1721,6 +1881,8 @@ mod tests {
                 1,
                 late_rank1_event,
                 &mesh_name,
+                Some("workers"),
+                Some(&region),
                 false,
                 &mut health_state,
             );
@@ -1737,6 +1899,8 @@ mod tests {
             2,
             rank2_event.clone(),
             &mesh_name,
+            Some("workers"),
+            Some(&region),
             false,
             &mut health_state,
         );
