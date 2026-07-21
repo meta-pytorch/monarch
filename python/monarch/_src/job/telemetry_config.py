@@ -57,7 +57,7 @@ from monarch._src.job.telemetry_actor import (
     telemetry_socket_path,
     TelemetryActor,
 )
-from monarch.actor import context, HostMesh, ProcMesh, shutdown_context
+from monarch.actor import context, HostMesh, shutdown_context
 from monarch.distributed_telemetry.engine import QueryEngine
 from monarch.monarch_dashboard.server.app import start_dashboard
 from monarch.monarch_dashboard.server.query_engine_adapter import QueryEngineAdapter
@@ -226,9 +226,7 @@ class _TelemetryHandle:
         self._client_actor: Any | None = None
         self._query_engine: QueryEngine | None = None
         self._dashboard_info: dict[str, object] | None = None
-        # None means worker fan-out has not run yet. An empty list means fan-out
-        # ran, but no worker collectors became active.
-        self._worker_proc_meshes: list[ProcMesh] | None = None
+        self._worker_collectors_started: bool = False
 
     @property
     def client_socket_path(self) -> str:
@@ -249,12 +247,12 @@ class _TelemetryHandle:
             # the in-memory telemetry store and re-bind the data socket.
             logger.warning("telemetry handle config drift ignored")
 
-        if host_meshes and self._worker_proc_meshes is None:
-            self._worker_proc_meshes = self._spawn_telemetry_actors(
+        if host_meshes and not self._worker_collectors_started:
+            self._spawn_telemetry_actors(
                 host_meshes,
-                parsed,
                 spawn_worker_collectors=spawn_worker_collectors,
             )
+            self._worker_collectors_started = True
 
         dashboard_info = self._dashboard_info
         if dashboard_info is None:
@@ -307,98 +305,33 @@ class _TelemetryHandle:
     def _spawn_telemetry_actors(
         self,
         host_meshes: Mapping[str, HostMesh],
-        config: TelemetryConfig,
         *,
         spawn_worker_collectors: bool = True,
-    ) -> list[ProcMesh]:
+    ) -> None:
         client_actor = self._client_actor
         if client_actor is None:
             raise RuntimeError("telemetry handle has no client actor")
 
-        worker_proc_meshes: list[ProcMesh] = []
-        worker_collector_meshes: list[Any] = []
         for host_mesh in host_meshes.values():
             try:
-                proc_mesh, worker_collector_mesh = (
-                    self._start_worker_telemetry_collector(
-                        host_mesh,
-                        config,
-                        spawn_worker_collector=spawn_worker_collectors,
-                    )
-                )
+                client_actor.start_worker_collector.call_one(
+                    host_mesh,
+                    spawn_worker_collectors,
+                ).get()
             except Exception:
                 logger.warning(
                     "failed to start worker telemetry collector",
                     exc_info=True,
                 )
-                continue
-            worker_proc_meshes.append(proc_mesh)
-            if worker_collector_mesh is not None:
-                worker_collector_meshes.append(worker_collector_mesh)
-
-        client_actor.set_worker_collector_meshes.call_one(worker_collector_meshes).get()
-        return worker_proc_meshes
-
-    def _start_worker_telemetry_collector(
-        self,
-        host_mesh: HostMesh,
-        config: TelemetryConfig,
-        *,
-        spawn_worker_collector: bool = True,
-    ) -> tuple[ProcMesh, Any | None]:
-        proc_mesh = host_mesh.spawn_procs(name="telemetry_hosts")
-        if not spawn_worker_collector:
-            return proc_mesh, None
-
-        try:
-            worker_collector_mesh = proc_mesh.spawn(
-                "TelemetryActor",
-                TelemetryActor,
-                self._apply_id,
-                config.retention_secs,
-            )
-            active = any(
-                active for _rank, active in worker_collector_mesh.activate.call().get()
-            )
-        except Exception:
-            self._stop_worker_mesh(
-                proc_mesh,
-                "telemetry collector startup failed",
-                "failed to stop failed telemetry worker proc mesh",
-            )
-            raise
-
-        if active:
-            return proc_mesh, worker_collector_mesh
-
-        # Only one live collector may own a host-local socket namespace. Keep
-        # the proc alive so mesh-admin snapshots can still resolve it, but stop
-        # the inactive actor so queries do not fan out to it.
-        self._stop_worker_mesh(
-            worker_collector_mesh,
-            "telemetry collector inactive",
-            "failed to stop inactive telemetry worker collector",
-        )
-        return proc_mesh, None
-
-    def _stop_worker_mesh(
-        self,
-        mesh: Any,
-        reason: str,
-        log_message: str,
-    ) -> None:
-        try:
-            mesh.stop(reason).get()
-        except Exception:
-            logger.info(log_message, exc_info=True)
 
     def shutdown(self) -> None:
-        for proc_mesh in self._worker_proc_meshes or []:
+        client_actor = self._client_actor
+        if client_actor is not None:
             try:
-                proc_mesh.stop("telemetry shutdown").get()
+                client_actor.stop_worker_collectors.call_one().get(timeout=5.0)
             except Exception:
                 logger.info(
-                    "failed to stop telemetry worker proc mesh",
+                    "failed to stop telemetry worker collectors",
                     exc_info=True,
                 )
         # Drain in-flight async work with a short cap. Beyond that, we
