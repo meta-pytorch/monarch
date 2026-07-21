@@ -21,7 +21,11 @@
 //! │   └── latest -> {execution_id}/   # symlink to most recent
 //! ```
 
+use std::collections::HashMap;
 use std::fs;
+use std::hash::DefaultHasher;
+use std::hash::Hash;
+use std::hash::Hasher;
 use std::io::Read;
 use std::io::Write;
 use std::path::Path;
@@ -35,6 +39,8 @@ use tracing::info;
 use tracing_perfetto_sdk_schema::Trace;
 use tracing_perfetto_sdk_schema::TracePacket;
 use tracing_perfetto_sdk_schema::trace_packet::Data;
+use tracing_perfetto_sdk_schema::trace_packet::OptionalTrustedPacketSequenceId;
+use tracing_perfetto_sdk_schema::track_event::Type as TrackEventType;
 
 use crate::Sink;
 
@@ -156,6 +162,8 @@ fn find_pftrace_files(execution_dir: &Path) -> Result<Vec<PathBuf>> {
         }
     }
 
+    files.sort();
+
     if files.is_empty() {
         bail!("No .pftrace files found in {}", execution_dir.display());
     }
@@ -166,26 +174,36 @@ fn find_pftrace_files(execution_dir: &Path) -> Result<Vec<PathBuf>> {
 
 /// Reads and merges trace files from an execution directory.
 ///
-/// Track UUIDs are offset to avoid collisions between different processes.
-/// Since process_name is globally unique within an execution, we just need
-/// a simple per-file offset that's large enough to not collide with the
-/// max UUID count within a single process.
+/// Track UUIDs and packet sequence IDs are rewritten to avoid collisions
+/// between processes in the merged trace.
 pub fn merge_traces_from_dir<S: Sink>(execution_dir: &Path, sink: &mut S) -> Result<()> {
-    for (file_idx, path) in find_pftrace_files(execution_dir)?.iter().enumerate() {
+    let files = find_pftrace_files(execution_dir)?;
+    merge_trace_files(&files, sink)
+}
+
+fn merge_trace_files<S: Sink>(files: &[PathBuf], sink: &mut S) -> Result<()> {
+    for (file_idx, path) in files.iter().enumerate() {
         // We have to offset UUIDs here since within a single process,
         // we generate these by just incrementing a counter.
         let uuid_offset = (file_idx as u64 + 1) * 1_000_000;
+        let sequence_id = u32::try_from(file_idx + 1)
+            .context("too many trace files to assign unique packet sequence ids")?;
 
-        read_and_offset_trace_file(path, uuid_offset, sink)?;
+        read_and_rewrite_trace_file(path, uuid_offset, sequence_id, sink)?;
     }
 
     Ok(())
 }
 
-/// Reads a single .pftrace file and sends packets to the sink with offset UUIDs.
+/// Reads a single .pftrace file and sends packets to the sink with rewritten IDs.
 ///
 /// The file may contain multiple concatenated `Trace` messages (protobuf containers).
-fn read_and_offset_trace_file<S: Sink>(path: &Path, uuid_offset: u64, sink: &mut S) -> Result<()> {
+fn read_and_rewrite_trace_file<S: Sink>(
+    path: &Path,
+    uuid_offset: u64,
+    sequence_id: u32,
+    sink: &mut S,
+) -> Result<()> {
     let mut file = fs::File::open(path)?;
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer)?;
@@ -197,7 +215,7 @@ fn read_and_offset_trace_file<S: Sink>(path: &Path, uuid_offset: u64, sink: &mut
                 let encoded_len = trace.encoded_len();
 
                 for mut packet in trace.packet {
-                    offset_packet_uuids(&mut packet, uuid_offset);
+                    rewrite_packet_ids(&mut packet, uuid_offset, sequence_id);
                     sink.consume(packet);
                 }
 
@@ -215,21 +233,26 @@ fn read_and_offset_trace_file<S: Sink>(path: &Path, uuid_offset: u64, sink: &mut
     Ok(())
 }
 
-/// Offsets all track UUIDs in a packet by the given amount.
-fn offset_packet_uuids(packet: &mut TracePacket, offset: u64) {
+fn rewrite_packet_ids(packet: &mut TracePacket, uuid_offset: u64, sequence_id: u32) {
+    if packet.optional_trusted_packet_sequence_id.is_some() {
+        packet.optional_trusted_packet_sequence_id = Some(
+            OptionalTrustedPacketSequenceId::TrustedPacketSequenceId(sequence_id),
+        );
+    }
+
     if let Some(ref mut data) = packet.data {
         match data {
             Data::TrackDescriptor(td) => {
                 if let Some(ref mut uuid) = td.uuid {
-                    *uuid += offset;
+                    *uuid += uuid_offset;
                 }
                 if let Some(ref mut parent) = td.parent_uuid {
-                    *parent += offset;
+                    *parent += uuid_offset;
                 }
             }
             Data::TrackEvent(te) => {
                 if let Some(ref mut uuid) = te.track_uuid {
-                    *uuid += offset;
+                    *uuid += uuid_offset;
                 }
             }
             _ => {}
@@ -314,9 +337,172 @@ pub fn merge_to_file(
     let edir = execution_dir(&tdir, Some(&exec_id))?;
     info!("Reading from execution: {}", edir.display());
 
+    let files = find_pftrace_files(&edir)?;
+    // Retain only correlated packet metadata across files, then stream a second
+    // pass while applying the resulting flow edits.
+    let mut scanner = CorrelationScanner::default();
+    merge_trace_files(&files, &mut scanner)?;
+    let flow_plan = scanner.into_flow_plan();
+
     let mut sink = Collector::new(output);
-    merge_traces_from_dir(&edir, &mut sink)?;
+    {
+        let mut injecting_sink = FlowInjectingSink {
+            inner: &mut sink,
+            flow_plan: &flow_plan,
+            packet_index: 0,
+        };
+        merge_trace_files(&files, &mut injecting_sink)?;
+    }
     sink.flush()?;
 
     Ok(exec_id)
+}
+
+const CORRELATION_ID_ANNOTATION: &str = "correlation_id";
+
+fn slice_begin_correlation_id(
+    packet: &TracePacket,
+    interned_names: &HashMap<u64, String>,
+) -> Option<u64> {
+    let Data::TrackEvent(track_event) = packet.data.as_ref()? else {
+        return None;
+    };
+    if track_event.r#type != Some(TrackEventType::SliceBegin as i32) {
+        return None;
+    }
+    track_event.debug_annotations.iter().find_map(|ann| {
+        let matches = match &ann.name_field {
+            Some(tracing_perfetto_sdk_schema::debug_annotation::NameField::Name(name)) => {
+                name == CORRELATION_ID_ANNOTATION
+            }
+            Some(tracing_perfetto_sdk_schema::debug_annotation::NameField::NameIid(iid)) => {
+                interned_names
+                    .get(iid)
+                    .is_some_and(|name| name == CORRELATION_ID_ANNOTATION)
+            }
+            _ => false,
+        };
+        if matches {
+            match &ann.value {
+                Some(tracing_perfetto_sdk_schema::debug_annotation::Value::IntValue(value)) => {
+                    Some(*value as u64)
+                }
+                _ => None,
+            }
+        } else {
+            None
+        }
+    })
+}
+
+/// Derives a distinct Perfetto flow id for the (correlation_id, receiver)
+/// pair. Hashing keeps ids for different correlation_ids from overlapping the
+/// way `correlation_id + offset` would when two correlation_ids fall within
+/// `num_receivers` of each other.
+fn flow_id(correlation_id: u64, offset: usize) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    correlation_id.hash(&mut hasher);
+    (offset as u64).hash(&mut hasher);
+    hasher.finish()
+}
+
+#[derive(Default)]
+struct FlowEdits {
+    flow_ids: Vec<u64>,
+    terminating_flow_ids: Vec<u64>,
+}
+
+#[derive(Default)]
+struct CorrelationScanner {
+    packet_index: usize,
+    annotation_names: HashMap<u32, HashMap<u64, String>>,
+    correlated_packets: HashMap<u64, Vec<(usize, u64)>>,
+}
+
+impl CorrelationScanner {
+    fn into_flow_plan(mut self) -> HashMap<usize, FlowEdits> {
+        let mut flow_plan: HashMap<usize, FlowEdits> = HashMap::new();
+        for (correlation_id, packets) in &mut self.correlated_packets {
+            // Merge order is file-based, so timestamps determine caller before receiver.
+            packets.sort_by_key(|&(index, timestamp)| (timestamp, index));
+            let Some(((sender_index, _), receivers)) = packets.split_first() else {
+                continue;
+            };
+            if receivers.is_empty() {
+                continue;
+            }
+
+            for (offset, &(receiver_index, _)) in receivers.iter().enumerate() {
+                let id = flow_id(*correlation_id, offset);
+                flow_plan
+                    .entry(*sender_index)
+                    .or_default()
+                    .flow_ids
+                    .push(id);
+                flow_plan
+                    .entry(receiver_index)
+                    .or_default()
+                    .terminating_flow_ids
+                    .push(id);
+            }
+        }
+        flow_plan
+    }
+}
+
+impl Sink for CorrelationScanner {
+    fn consume(&mut self, packet: TracePacket) {
+        let index = self.packet_index;
+        self.packet_index += 1;
+
+        let sequence_id = packet
+            .optional_trusted_packet_sequence_id
+            .map(|OptionalTrustedPacketSequenceId::TrustedPacketSequenceId(id)| id);
+        if packet.incremental_state_cleared == Some(true)
+            && let Some(sequence_id) = sequence_id
+        {
+            self.annotation_names.remove(&sequence_id);
+        }
+
+        if let (Some(sequence_id), Some(interned)) = (sequence_id, packet.interned_data.as_ref()) {
+            let names = self.annotation_names.entry(sequence_id).or_default();
+            for annotation_name in &interned.debug_annotation_names {
+                if let (Some(iid), Some(name)) = (annotation_name.iid, &annotation_name.name) {
+                    names.insert(iid, name.clone());
+                }
+            }
+        }
+
+        let empty = HashMap::new();
+        let interned_names = sequence_id
+            .and_then(|id| self.annotation_names.get(&id))
+            .unwrap_or(&empty);
+        if let Some(correlation_id) = slice_begin_correlation_id(&packet, interned_names) {
+            self.correlated_packets
+                .entry(correlation_id)
+                .or_default()
+                .push((index, packet.timestamp.unwrap_or(u64::MAX)));
+        }
+    }
+}
+
+struct FlowInjectingSink<'a, S> {
+    inner: &'a mut S,
+    flow_plan: &'a HashMap<usize, FlowEdits>,
+    packet_index: usize,
+}
+
+impl<S: Sink> Sink for FlowInjectingSink<'_, S> {
+    fn consume(&mut self, mut packet: TracePacket) {
+        if let (Some(edits), Some(Data::TrackEvent(track_event))) =
+            (self.flow_plan.get(&self.packet_index), packet.data.as_mut())
+        {
+            track_event.flow_ids.extend_from_slice(&edits.flow_ids);
+            track_event
+                .terminating_flow_ids
+                .extend_from_slice(&edits.terminating_flow_ids);
+        }
+        self.packet_index += 1;
+        self.inner.consume(packet);
+    }
 }
