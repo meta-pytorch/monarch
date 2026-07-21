@@ -96,6 +96,7 @@ class RemoteImpl(Generic[P, R]):
         kwargs: Dict[str, Any],
         port: "Optional[PortRef | OncePortRef]" = None,
         selection: Selection = "all",
+        correlation_id: int | None = None,
     ) -> None:
         ambient_mesh = device_mesh._active
         propagator = self._fetch_propagate
@@ -139,6 +140,7 @@ class RemoteImpl(Generic[P, R]):
                 args,
                 kwargs,
                 stream_ref,
+                correlation_id,
             ),
         )
         # we have to ask for status updates

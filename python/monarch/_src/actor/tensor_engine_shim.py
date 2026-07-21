@@ -74,6 +74,7 @@ def create_actor_message_kind(
     proc_mesh: "Optional[Any]",
     refs: "Sequence[Any]",
     port: "Optional[PortRef | OncePortRef]",
+    correlation_id: "Optional[int]" = None,
 ) -> "Any": ...
 
 
