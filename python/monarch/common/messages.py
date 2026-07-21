@@ -156,6 +156,7 @@ class SendValue(NamedTuple):
     args: Tuple[object, ...]
     kwargs: Dict[str, object]
     stream: StreamRef
+    correlation_id: int | None = None
 
 
 # Worker -> Controller comm only handled differently

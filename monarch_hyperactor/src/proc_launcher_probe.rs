@@ -124,6 +124,7 @@ pub(crate) fn probe_exit_port_via_mesh(
             name: method_name.clone(),
         },
         response_port: Some(EitherPortRef::Once(PythonOncePortRef::from(bound_port))),
+        correlation_id: None,
     };
 
     // Create a PendingMessage using py_new which takes PyRefMut
