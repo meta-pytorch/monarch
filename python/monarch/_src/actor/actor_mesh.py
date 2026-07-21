@@ -1872,6 +1872,11 @@ class ActorMesh(MeshTrait, Generic[T]):
         return Future(coro=self._inner.initialized())
 
     @property
+    def id(self) -> str:
+        """Stable internal mesh ID, matching ``MeshFailure.mesh_id``."""
+        return self._inner.id
+
+    @property
     def _name(self) -> Future[str]:
         """Retrieves the name stored in the ActorMesh internally."""
         # Not called "name" to avoid clashing with a common endpoint name.
