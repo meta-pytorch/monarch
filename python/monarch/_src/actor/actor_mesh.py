@@ -85,7 +85,7 @@ from monarch._src.actor.mpsc import Receiver  # noqa: F401 - used in annotations
 from monarch._src.actor.python_extension_methods import rust_struct
 from monarch._src.actor.shape import MeshTrait, NDSlice
 from monarch._src.actor.sync_state import fake_sync_state
-from monarch._src.actor.telemetry import METER, span
+from monarch._src.actor.telemetry import METER, span_with_correlation_id
 from monarch._src.actor.tensor_engine_shim import actor_rref, create_actor_message_kind
 from opentelemetry.metrics import Counter
 from typing_extensions import Self
@@ -737,6 +737,7 @@ def _create_endpoint_message(
     kwargs: Dict[str, Any],
     port_ref: "Optional[PortRef | OncePortRef]",
     proc_mesh: "Optional[ProcMesh]",
+    correlation_id: int | None = None,
 ) -> PendingMessage:
     """
     Create a PythonMessage for sending to an actor endpoint.
@@ -755,11 +756,17 @@ def _create_endpoint_message(
     )
     objects = pickling_state.tensor_engine_references()
     if not objects:
+        # `PythonMessageKind.CallMethod` is a pyo3 complex-enum variant; both type
+        # checkers model it as the classmethod-property getter, not the constructor.
         # pyrefly: ignore [bad-argument-count]
-        message_kind = PythonMessageKind.CallMethod(method_name, port_ref)
+        message_kind = PythonMessageKind.CallMethod(
+            method_name,  # pyre-ignore[19]
+            port_ref,
+            correlation_id,
+        )
     else:
         message_kind = create_actor_message_kind(
-            method_name, proc_mesh, objects, port_ref
+            method_name, proc_mesh, objects, port_ref, correlation_id
         )
 
     # pyrefly: ignore [bad-argument-type]
@@ -1293,6 +1300,7 @@ async def _handle_queued_message(actor: Any, msg: "QueuedMessage") -> None:
         msg.local_state,
         msg.refs,
         msg.response_port,
+        msg.correlation_id,
     )
     # If a panic was signaled, re-raise it after handle() has cleaned up.
     if panic_flag.panic_exception is not None:
@@ -1329,6 +1337,7 @@ class _Actor:
         local_state: List[Any],
         mesh_references: List[Any],
         response_port: "PortProtocol[Any]",
+        correlation_id: int | None = None,
     ) -> None:
         MESSAGES_HANDLED.add(1)
 
@@ -1430,7 +1439,7 @@ class _Actor:
             try:
                 if is_coro:
                     if should_instrument:
-                        with span(method_name):
+                        with span_with_correlation_id(method_name, correlation_id):
                             result = await the_method(*args, **kwargs)
                     else:
                         result = await the_method(*args, **kwargs)
@@ -1438,7 +1447,7 @@ class _Actor:
                 else:
                     with fake_sync_state():
                         if should_instrument:
-                            with span(method_name):
+                            with span_with_correlation_id(method_name, correlation_id):
                                 result = the_method(*args, **kwargs)
                         else:
                             result = the_method(*args, **kwargs)

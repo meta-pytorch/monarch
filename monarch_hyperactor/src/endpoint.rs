@@ -93,6 +93,7 @@ pub(crate) enum EndpointAdverb {
     CallOne,
     Choose,
     Stream,
+    Broadcast,
 }
 
 impl EndpointAdverb {
@@ -102,6 +103,7 @@ impl EndpointAdverb {
             Self::CallOne => "call_one",
             Self::Choose => "choose",
             Self::Stream => "stream",
+            Self::Broadcast => "broadcast",
         }
     }
 }
@@ -138,8 +140,8 @@ impl RecordEndpointGuard {
             EndpointAdverb::Choose => {
                 ENDPOINT_CHOOSE_THROUGHPUT.add(1, attributes);
             }
-            EndpointAdverb::Stream => {
-                // Throughput already recorded once at stream creation in py_stream_collector
+            EndpointAdverb::Stream | EndpointAdverb::Broadcast => {
+                // Throughput already recorded at the call site
             }
         }
 
@@ -180,6 +182,7 @@ impl Drop for RecordEndpointGuard {
             EndpointAdverb::Stream => {
                 ENDPOINT_STREAM_LATENCY_US_HISTOGRAM.record(duration_us as f64, attributes);
             }
+            EndpointAdverb::Broadcast => {}
         }
 
         if self.error_occurred.get() {
@@ -196,6 +199,7 @@ impl Drop for RecordEndpointGuard {
                 EndpointAdverb::Stream => {
                     ENDPOINT_STREAM_ERROR.add(1, attributes);
                 }
+                EndpointAdverb::Broadcast => {}
             }
         }
     }
@@ -212,7 +216,13 @@ pub(crate) struct SpanGuard {
 }
 
 impl SpanGuard {
-    fn actor_endpoint(name: &'static str, actor_id: &ActorAddr, mesh: &str, method: &str) -> Self {
+    fn actor_endpoint(
+        name: &'static str,
+        actor_id: &ActorAddr,
+        mesh: &str,
+        method: &str,
+        correlation_id: u64,
+    ) -> Self {
         Self {
             id: hyperactor_telemetry::start_user_span(
                 name,
@@ -232,12 +242,21 @@ impl SpanGuard {
                         "method",
                         hyperactor_telemetry::trace_dispatcher::FieldValue::Str(method.to_string()),
                     ),
+                    (
+                        "correlation_id",
+                        hyperactor_telemetry::trace_dispatcher::FieldValue::U64(correlation_id),
+                    ),
                 ],
             ),
         }
     }
 
-    fn remote(name: &'static str, actor_id: &ActorAddr, call_name: &str) -> Self {
+    fn remote(
+        name: &'static str,
+        actor_id: &ActorAddr,
+        call_name: &str,
+        correlation_id: u64,
+    ) -> Self {
         Self {
             id: hyperactor_telemetry::start_user_span(
                 name,
@@ -254,6 +273,10 @@ impl SpanGuard {
                         hyperactor_telemetry::trace_dispatcher::FieldValue::Str(
                             call_name.to_string(),
                         ),
+                    ),
+                    (
+                        "correlation_id",
+                        hyperactor_telemetry::trace_dispatcher::FieldValue::U64(correlation_id),
                     ),
                 ],
             ),
@@ -628,6 +651,7 @@ pub(crate) trait Endpoint {
         port_ref: Option<EitherPortRef>,
         selection: AllOrChoose,
         instance: &Instance<PythonActor>,
+        correlation_id: Option<u64>,
     ) -> PyResult<()>;
 
     /// Like `send_message` but stamps `caller_headers` onto the
@@ -643,8 +667,17 @@ pub(crate) trait Endpoint {
         selection: AllOrChoose,
         instance: &Instance<PythonActor>,
         _caller_headers: hyperactor_config::Flattrs,
+        correlation_id: Option<u64>,
     ) -> PyResult<()> {
-        self.send_message(py, args, kwargs, port_ref, selection, instance)
+        self.send_message(
+            py,
+            args,
+            kwargs,
+            port_ref,
+            selection,
+            instance,
+            correlation_id,
+        )
     }
 
     /// Build the operation-context envelope headers to stamp on an
@@ -656,12 +689,7 @@ pub(crate) trait Endpoint {
         &self,
         adverb: EndpointAdverb,
     ) -> hyperactor_config::Flattrs {
-        let adverb_str = match adverb {
-            EndpointAdverb::Call => "call",
-            EndpointAdverb::CallOne => "call_one",
-            EndpointAdverb::Choose => "choose",
-            EndpointAdverb::Stream => "stream",
-        };
+        let adverb_str = adverb.as_str();
         let attrs = crate::operation_context::build_operation_context_attrs(
             self.get_qualified_name(),
             Some(adverb_str),
@@ -683,7 +711,12 @@ pub(crate) trait Endpoint {
     /// for Remote) and route the slice to an actor-specific track. The adverb is the span name,
     /// so no formatting happens at the call site and the sink formats only when
     /// it renders the slice.
-    fn enter_endpoint_span(&self, adverb: EndpointAdverb, actor_id: &ActorAddr) -> SpanGuard;
+    fn enter_endpoint_span(
+        &self,
+        adverb: EndpointAdverb,
+        actor_id: &ActorAddr,
+        correlation_id: u64,
+    ) -> SpanGuard;
 
     fn get_current_instance(&self, py: Python<'_>) -> PyResult<Instance<PythonActor>> {
         let context = get_context(py).call0()?;
@@ -718,7 +751,9 @@ pub(crate) trait Endpoint {
         kwargs: Option<&Bound<'py, PyDict>>,
     ) -> PyResult<Py<PyAny>> {
         let instance = self.get_current_instance(py)?;
-        let span_guard = self.enter_endpoint_span(EndpointAdverb::Call, instance.self_addr());
+        let correlation_id: u64 = fastrand::u64(..);
+        let span_guard =
+            self.enter_endpoint_span(EndpointAdverb::Call, instance.self_addr(), correlation_id);
 
         let extent = self.get_extent(py)?;
         let method_name = self.get_method_name().to_string();
@@ -736,6 +771,7 @@ pub(crate) trait Endpoint {
             AllOrChoose::All,
             &instance,
             caller_headers,
+            Some(correlation_id),
         )?;
 
         let instance_for_task = instance.clone_for_py();
@@ -764,7 +800,9 @@ pub(crate) trait Endpoint {
         kwargs: Option<&Bound<'py, PyDict>>,
     ) -> PyResult<Py<PyAny>> {
         let instance = self.get_current_instance(py)?;
-        let span_guard = self.enter_endpoint_span(EndpointAdverb::Choose, instance.self_addr());
+        let correlation_id: u64 = fastrand::u64(..);
+        let span_guard =
+            self.enter_endpoint_span(EndpointAdverb::Choose, instance.self_addr(), correlation_id);
         let (port_ref, receiver) = self.open_response_port(&instance);
 
         let caller_headers = self.build_operation_context_headers(EndpointAdverb::Choose);
@@ -776,6 +814,7 @@ pub(crate) trait Endpoint {
             AllOrChoose::Choose,
             &instance,
             caller_headers,
+            Some(correlation_id),
         )?;
 
         let task = value_collector(
@@ -808,7 +847,12 @@ pub(crate) trait Endpoint {
         }
 
         let instance = self.get_current_instance(py)?;
-        let span_guard = self.enter_endpoint_span(EndpointAdverb::CallOne, instance.self_addr());
+        let correlation_id: u64 = fastrand::u64(..);
+        let span_guard = self.enter_endpoint_span(
+            EndpointAdverb::CallOne,
+            instance.self_addr(),
+            correlation_id,
+        );
         let (port_ref, receiver) = self.open_response_port(&instance);
 
         let caller_headers = self.build_operation_context_headers(EndpointAdverb::CallOne);
@@ -820,6 +864,7 @@ pub(crate) trait Endpoint {
             AllOrChoose::All,
             &instance,
             caller_headers,
+            Some(correlation_id),
         )?;
 
         let task = value_collector(
@@ -848,6 +893,11 @@ pub(crate) trait Endpoint {
         let instance = self.get_current_instance(py)?;
         let (port_ref, receiver) = self.open_response_port(&instance);
 
+        let correlation_id: u64 = fastrand::u64(..);
+        // Send-time caller span so the correlation id has a sender for the flow
+        // arrow; without it the receiver spans are the only ones carrying the id.
+        let _span_guard =
+            self.enter_endpoint_span(EndpointAdverb::Stream, instance.self_addr(), correlation_id);
         let caller_headers = self.build_operation_context_headers(EndpointAdverb::Stream);
         self.send_message_with_headers(
             py,
@@ -857,6 +907,7 @@ pub(crate) trait Endpoint {
             AllOrChoose::All,
             &instance,
             caller_headers,
+            Some(correlation_id),
         )?;
 
         let actor_count = extent.num_ranks();
@@ -893,12 +944,27 @@ pub(crate) trait Endpoint {
         kwargs: Option<&Bound<'py, PyDict>>,
     ) -> PyResult<()> {
         let instance = self.get_current_instance(py)?;
+        let correlation_id: u64 = fastrand::u64(..);
+        let _span_guard = self.enter_endpoint_span(
+            EndpointAdverb::Broadcast,
+            instance.self_addr(),
+            correlation_id,
+        );
+
         let method_name = self.get_method_name();
         let attributes = hyperactor_telemetry::kv_pairs!(
             "method" => method_name.to_string()
         );
 
-        match self.send_message(py, args, kwargs, None, AllOrChoose::All, &instance) {
+        match self.send_message(
+            py,
+            args,
+            kwargs,
+            None,
+            AllOrChoose::All,
+            &instance,
+            Some(correlation_id),
+        ) {
             Ok(()) => {
                 ENDPOINT_BROADCAST_THROUGHPUT.add(1, attributes);
                 Ok(())
@@ -932,6 +998,7 @@ impl ActorEndpoint {
         args: &Bound<'py, PyTuple>,
         kwargs: Option<&Bound<'py, PyDict>>,
         port_ref: Option<EitherPortRef>,
+        correlation_id: Option<u64>,
     ) -> PyResult<PendingMessage> {
         let port_ref_py: Py<PyAny> = match port_ref {
             Some(pr) => pr.clone().into_pyobject(py)?.unbind(),
@@ -951,6 +1018,7 @@ impl ActorEndpoint {
             self.proc_mesh
                 .as_ref()
                 .map_or_else(|| py.None(), |p| p.clone_ref(py)),
+            correlation_id,
         ))?;
         let mut pending: PyRefMut<'_, PendingMessage> = result.extract()?;
         pending.take()
@@ -974,8 +1042,9 @@ impl Endpoint for ActorEndpoint {
         port_ref: Option<EitherPortRef>,
         selection: AllOrChoose,
         instance: &Instance<PythonActor>,
+        correlation_id: Option<u64>,
     ) -> PyResult<()> {
-        let message = self.create_message(py, args, kwargs, port_ref)?;
+        let message = self.create_message(py, args, kwargs, port_ref, correlation_id)?;
         self.inner.cast_unresolved(message, selection, instance)
     }
 
@@ -988,8 +1057,9 @@ impl Endpoint for ActorEndpoint {
         selection: AllOrChoose,
         instance: &Instance<PythonActor>,
         caller_headers: hyperactor_config::Flattrs,
+        correlation_id: Option<u64>,
     ) -> PyResult<()> {
-        let message = self.create_message(py, args, kwargs, port_ref)?;
+        let message = self.create_message(py, args, kwargs, port_ref, correlation_id)?;
         self.inner
             .cast_unresolved_with_headers(message, selection, instance, caller_headers)
     }
@@ -1002,10 +1072,15 @@ impl Endpoint for ActorEndpoint {
         Some(format!("{}.{}()", self.mesh_name, self.method.name()))
     }
 
-    fn enter_endpoint_span(&self, adverb: EndpointAdverb, actor_id: &ActorAddr) -> SpanGuard {
+    fn enter_endpoint_span(
+        &self,
+        adverb: EndpointAdverb,
+        actor_id: &ActorAddr,
+        correlation_id: u64,
+    ) -> SpanGuard {
         let mesh = self.mesh_name.as_str();
         let method = self.method.name();
-        SpanGuard::actor_endpoint(adverb.as_str(), actor_id, mesh, method)
+        SpanGuard::actor_endpoint(adverb.as_str(), actor_id, mesh, method, correlation_id)
     }
 }
 
@@ -1200,7 +1275,16 @@ impl ActorEndpoint {
     ) -> PyResult<()> {
         let instance = self.get_current_instance(py)?;
         let sel = to_all_or_choose(selection)?;
-        self.send_message(py, args, Some(kwargs), port, sel, &instance)
+        let correlation_id: u64 = fastrand::u64(..);
+        self.send_message(
+            py,
+            args,
+            Some(kwargs),
+            port,
+            sel,
+            &instance,
+            Some(correlation_id),
+        )
     }
 }
 
@@ -1235,6 +1319,7 @@ impl Endpoint for Remote {
         port_ref: Option<EitherPortRef>,
         selection: AllOrChoose,
         _instance: &Instance<PythonActor>,
+        correlation_id: Option<u64>,
     ) -> PyResult<()> {
         let send_kwargs = PyDict::new(py);
         match port_ref {
@@ -1243,6 +1328,7 @@ impl Endpoint for Remote {
         }
 
         send_kwargs.set_item("selection", selection.as_str())?;
+        send_kwargs.set_item("correlation_id", correlation_id)?;
 
         let kwargs_dict = kwargs.map_or_else(|| PyDict::new(py), |d| d.clone());
         self.inner
@@ -1259,7 +1345,12 @@ impl Endpoint for Remote {
         None // Remote endpoints don't have qualified names
     }
 
-    fn enter_endpoint_span(&self, adverb: EndpointAdverb, actor_id: &ActorAddr) -> SpanGuard {
+    fn enter_endpoint_span(
+        &self,
+        adverb: EndpointAdverb,
+        actor_id: &ActorAddr,
+        correlation_id: u64,
+    ) -> SpanGuard {
         let call_name = monarch_with_gil_blocking(GilSite::DisplayName, |py| {
             self.inner
                 .call_method0(py, "_call_name")
@@ -1267,7 +1358,7 @@ impl Endpoint for Remote {
                 .and_then(|v| v.extract::<String>(py).ok())
         });
         let call_name = call_name.as_deref().unwrap_or("");
-        SpanGuard::remote(adverb.as_str(), actor_id, call_name)
+        SpanGuard::remote(adverb.as_str(), actor_id, call_name, correlation_id)
     }
 }
 
@@ -1538,6 +1629,7 @@ mod tests {
             _port_ref: Option<EitherPortRef>,
             _selection: AllOrChoose,
             _instance: &Instance<PythonActor>,
+            _correlation_id: Option<u64>,
         ) -> PyResult<()> {
             unreachable!()
         }
@@ -1547,7 +1639,12 @@ mod tests {
         fn get_qualified_name(&self) -> Option<String> {
             self.qualified_name.clone()
         }
-        fn enter_endpoint_span(&self, _adverb: EndpointAdverb, _actor_id: &ActorAddr) -> SpanGuard {
+        fn enter_endpoint_span(
+            &self,
+            _adverb: EndpointAdverb,
+            _actor_id: &ActorAddr,
+            _correlation_id: u64,
+        ) -> SpanGuard {
             unreachable!()
         }
     }
