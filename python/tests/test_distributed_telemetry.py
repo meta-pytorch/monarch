@@ -18,9 +18,11 @@ import uuid
 from typing import Any, cast
 
 import monarch._src.job.telemetry_actor as job_telemetry_actor
+import monarch.actor
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr
+from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
 from monarch._src.actor.actor_mesh import Actor, ActorMesh
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.proc_mesh import (
@@ -29,6 +31,7 @@ from monarch._src.actor.proc_mesh import (
     unregister_proc_mesh_spawn_callback,
 )
 from monarch.actor import span
+from monarch.distributed_telemetry.engine import QueryEngine
 from monarch.job import MeshAdminConfig, ProcessJob, TelemetryConfig
 from scoped_state import scoped_state
 
@@ -54,6 +57,46 @@ class SenderActor(Actor):
     def send_ping(self, target: WorkerActor) -> None:
         """Cast to the target actor mesh from within this actor."""
         target.ping.call().get()
+
+
+class _TelemetryActorFailure(BaseException):
+    pass
+
+
+class _CrashingTelemetryActor(job_telemetry_actor.TelemetryActor):
+    @endpoint
+    def crash(self) -> None:
+        raise _TelemetryActorFailure("intentional telemetry actor failure")
+
+
+class _FailureTestTelemetryRoot(job_telemetry_actor.TelemetryActor):
+    @endpoint
+    def start_failing_collector(self, host_mesh: Any, apply_id: str) -> Any:
+        failing = self._start_worker_collector(
+            host_mesh,
+            _CrashingTelemetryActor,
+            apply_id,
+            "telemetry_failure_procs",
+        )
+        if failing is None:
+            raise RuntimeError("failure test collector did not activate")
+        return failing
+
+    @endpoint
+    def start_healthy_collector(self, host_mesh: Any, apply_id: str) -> Any:
+        healthy = self._start_worker_collector(
+            host_mesh,
+            job_telemetry_actor.TelemetryActor,
+            apply_id,
+            "telemetry_healthy_procs",
+        )
+        if healthy is None:
+            raise RuntimeError("healthy test collector did not activate")
+        return healthy
+
+    @endpoint
+    def worker_collector_count(self) -> int:
+        return len(self._worker_collectors)
 
 
 def _telemetry_config(**kwargs: Any) -> TelemetryConfig:
@@ -111,6 +154,39 @@ def _new_apply_id() -> str:
 def _remove_socket_dir(apply_id: str) -> None:
     shutil.rmtree(
         job_telemetry_actor.telemetry_socket_dir(apply_id), ignore_errors=True
+    )
+
+
+def _sample_pyspy_dump_json() -> str:
+    return json.dumps(
+        {
+            "Ok": {
+                "pid": 1234,
+                "binary": "python3",
+                "stack_traces": [
+                    {
+                        "pid": 1234,
+                        "thread_id": 1,
+                        "thread_name": "MainThread",
+                        "os_thread_id": 100,
+                        "active": True,
+                        "owns_gil": True,
+                        "frames": [
+                            {
+                                "name": "main",
+                                "filename": "app.py",
+                                "module": "app",
+                                "short_filename": "app.py",
+                                "line": 5,
+                                "locals": [],
+                                "is_entry": True,
+                            }
+                        ],
+                    }
+                ],
+                "warnings": [],
+            }
+        }
     )
 
 
@@ -1234,6 +1310,107 @@ def test_sent_messages_sender_actor_id(cleanup_callbacks) -> None:
             assert sender_id not in target_actor_ids, (
                 f"sender_actor_id {sender_id} should NOT be a target actor"
             )
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
+def test_worker_telemetry_actor_failure_preserves_query_root() -> None:
+    apply_ids = {
+        "root": _new_apply_id(),
+        "failing": _new_apply_id(),
+    }
+    for apply_id in apply_ids.values():
+        _remove_socket_dir(apply_id)
+
+    try:
+        with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
+            root = monarch.actor.context().actor_instance.proc_mesh.spawn(
+                "root_telemetry",
+                _FailureTestTelemetryRoot,
+                apply_ids["root"],
+                0,
+            )
+            assert root.activate.call_one().get()
+            failing = root.start_failing_collector.call_one(
+                state.hosts, apply_ids["failing"]
+            ).get()
+            assert root.worker_collector_count.call_one().get() == 1
+            query_engine = QueryEngine(root)
+            sql = "SELECT dump_id FROM pyspy_dumps"
+            assert query_engine.query(sql).num_rows == 0
+
+            with pytest.raises(SupervisionError):
+                failing.crash.call_one().get(timeout=30)
+
+            deadline = time.monotonic() + 30
+            worker_count = 1
+            while worker_count != 0 and time.monotonic() < deadline:
+                worker_count = root.worker_collector_count.call_one().get()
+                time.sleep(0.1)
+            assert worker_count == 0
+
+            assert query_engine.query(sql).num_rows == 0
+            assert "pyspy_dumps" in root.table_names.call_one().get(timeout=30)
+    finally:
+        for apply_id in apply_ids.values():
+            _remove_socket_dir(apply_id)
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
+def test_worker_telemetry_failure_preserves_other_workers() -> None:
+    apply_ids = {
+        "root": _new_apply_id(),
+        "healthy": _new_apply_id(),
+        "failing": _new_apply_id(),
+    }
+    for apply_id in apply_ids.values():
+        _remove_socket_dir(apply_id)
+
+    try:
+        with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
+            root = monarch.actor.context().actor_instance.proc_mesh.spawn(
+                "root_telemetry",
+                _FailureTestTelemetryRoot,
+                apply_ids["root"],
+                0,
+            )
+            assert root.activate.call_one().get()
+
+            healthy = root.start_healthy_collector.call_one(
+                state.hosts, apply_ids["healthy"]
+            ).get()
+            failing = root.start_failing_collector.call_one(
+                state.hosts, apply_ids["failing"]
+            ).get()
+            assert root.worker_collector_count.call_one().get() == 2
+
+            # Seed a row in the healthy worker only, so a non-zero result proves
+            # the root actually fanned the scan out to it.
+            healthy.store_pyspy_dump.call_one(
+                "healthy-dump", "proc[0]", _sample_pyspy_dump_json()
+            ).get()
+
+            query_engine = QueryEngine(root)
+            sql = "SELECT dump_id FROM pyspy_dumps"
+            assert query_engine.query(sql).num_rows == 1
+
+            with pytest.raises(SupervisionError):
+                failing.crash.call_one().get(timeout=30)
+
+            deadline = time.monotonic() + 30
+            worker_count = 2
+            while worker_count != 1 and time.monotonic() < deadline:
+                worker_count = root.worker_collector_count.call_one().get()
+                time.sleep(0.1)
+            assert worker_count == 1
+
+            # Only the failed collector was pruned: the surviving healthy worker
+            # is still scanned and still contributes its row.
+            assert query_engine.query(sql).num_rows == 1
+    finally:
+        for apply_id in apply_ids.values():
+            _remove_socket_dir(apply_id)
 
 
 @pytest.mark.timeout(120)
