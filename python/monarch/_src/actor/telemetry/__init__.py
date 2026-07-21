@@ -99,6 +99,10 @@ def traced(
     return decorator
 
 
+def span_with_correlation_id(name: str, correlation_id: int | None = None) -> PySpan:
+    return PySpan(name, _current_actor_id(), correlation_id)
+
+
 def log_with_tracing(
     level: int,
     msg: object,

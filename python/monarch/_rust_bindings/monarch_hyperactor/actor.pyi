@@ -56,12 +56,17 @@ class Exception(PythonMessageKind):
 
 class CallMethod(PythonMessageKind):
     def __init__(
-        self, name: MethodSpecifier, response_port: PortRef | OncePortRef | None
+        self,
+        name: MethodSpecifier,
+        response_port: PortRef | OncePortRef | None,
+        correlation_id: int | None = None,
     ) -> None: ...
     @property
     def name(self) -> MethodSpecifier: ...
     @property
     def response_port(self) -> PortRef | OncePortRef | None: ...
+    @property
+    def correlation_id(self) -> int | None: ...
 
 class MethodSpecifier:
     @classmethod
@@ -96,6 +101,7 @@ class CallMethodIndirect(PythonMessageKind):
         broker_id: Tuple[str, int],
         id: int,
         unflatten_args: List[UnflattenArg],
+        correlation_id: int | None = None,
     ) -> None: ...
     @property
     def name(self) -> MethodSpecifier: ...
@@ -105,6 +111,8 @@ class CallMethodIndirect(PythonMessageKind):
     def id(self) -> int: ...
     @property
     def unflatten_args(self) -> List[UnflattenArg]: ...
+    @property
+    def correlation_id(self) -> int | None: ...
 
 class Uninit(PythonMessageKind):
     pass
@@ -216,6 +224,7 @@ class Actor(Protocol):
         local_state: List[Any],
         mesh_references: List[Any],
         response_port: PortProtocol[Any],
+        correlation_id: int | None = None,
     ) -> None: ...
 
 @final
@@ -253,4 +262,9 @@ class QueuedMessage:
     @property
     def response_port(self) -> PortProtocol[Any]:
         """The response port for this message."""
+        ...
+
+    @property
+    def correlation_id(self) -> int | None:
+        """The correlation ID for RPC flow tracing."""
         ...

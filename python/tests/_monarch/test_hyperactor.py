@@ -45,6 +45,7 @@ class MyActor:
         local_state: Iterable[Any],
         mesh_references: Iterable[Any],
         response_port: "PortProtocol[Any]",
+        correlation_id: int | None = None,
     ) -> None:
         match method:
             # pyrefly: ignore [invalid-pattern]
