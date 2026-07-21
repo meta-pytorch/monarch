@@ -44,11 +44,12 @@ Here are some suggested steps to get started with Monarch:
 1. **Installation**: Check out the [Install guide](installation) for getting monarch installed.
 2. **Getting Started**: The [getting started](./generated/examples/getting_started) provides an introduction to Monarch's core API
 3. **Explore Examples**: Review the [Examples](./generated/examples/index) to see Monarch in action
-4. **Dive Deeper**: Explore the API Documentation for more detailed information:
+4. **Cookbook**: Browse the [Cookbook](cookbook) for short, task-oriented recipes.
+5. **Dive Deeper**: Explore the API Documentation for more detailed information:
     - [Python API](api/index)
     - [Rust API](rust-api)
-5. **Deep Understanding of Actors**: Gain comprehensive knowledge of [Actors](actors), the foundational building blocks of Monarch.
-6. **Monitoring Tools**: Inspect running meshes with the [Admin TUI](admin-tui) (terminal) or the [Monarch Dashboard](monarch-dashboard) (web GUI).
+6. **Deep Understanding of Actors**: Gain comprehensive knowledge of [Actors](actors), the foundational building blocks of Monarch.
+7. **Monitoring Tools**: Inspect running meshes with the [Admin TUI](admin-tui) (terminal) or the [Monarch Dashboard](monarch-dashboard) (web GUI).
 
 ```{toctree}
 :maxdepth: 2
@@ -57,6 +58,7 @@ Here are some suggested steps to get started with Monarch:
 installation
 ./generated/examples/getting_started
 ./generated/examples/index
+cookbook
 api/index
 rust-api
 actors

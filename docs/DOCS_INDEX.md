@@ -6,6 +6,7 @@
 |----------|----------|
 | **Getting Started Tutorial** | `docs/source/examples/getting_started.py` |
 | **Actors Complete Guide** | `docs/source/actors.md` |
+| **Cookbook** (task-oriented recipes) | `docs/source/cookbook.md` (snippets from `python/tests/test_cookbook.py`) |
 | **Debugging Guide** | `docs/source/examples/debugging.py` |
 | **Installation** | `docs/source/installation.md` |
 
