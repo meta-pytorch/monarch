@@ -260,7 +260,6 @@ class FlightActor(Actor):
 
 async def async_main(args: argparse.Namespace) -> None:
     job = ProcessJob({"hosts": 1})
-    job.enable_admin()
     if args.dashboard:
         job.enable_telemetry(
             TelemetryConfig(
@@ -268,6 +267,8 @@ async def async_main(args: argparse.Namespace) -> None:
                 dashboard_port=args.dashboard_port,
             )
         )
+    else:
+        job.enable_admin()
     state = job.state(cached_path=None)
     host = state.hosts
 

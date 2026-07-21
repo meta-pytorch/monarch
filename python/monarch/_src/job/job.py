@@ -422,20 +422,25 @@ class JobTrait(ABC):
     def enable_telemetry(
         self,
         config: "Optional[TelemetryConfig]" = None,
+        *,
+        mesh_admin_config: "Optional[MeshAdminConfig]" = None,
         **kwargs,
         # pyrefly: ignore [not-a-type]
     ) -> Self:
-        """Configure automatic telemetry startup on the next :meth:`state` call.
+        """Configure telemetry services on the next :meth:`state` call.
 
         Args:
             config: A :class:`TelemetryConfig` instance.  If omitted, one is
                 constructed from *kwargs* (forwarded to ``TelemetryConfig``).
+            mesh_admin_config: A :class:`MeshAdminConfig` instance. If omitted,
+                the default is configured unless mesh admin was already configured.
 
         Returns:
             ``self``, for chaining.
         """
         self._components.configure_telemetry(
-            config if config is not None else TelemetryConfig(**kwargs)
+            config if config is not None else TelemetryConfig(**kwargs),
+            mesh_admin_config=mesh_admin_config,
         )
         return self
 

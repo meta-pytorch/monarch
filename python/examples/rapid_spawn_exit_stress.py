@@ -63,13 +63,7 @@ async def main():
     )
     args = parser.parse_args()
 
-    job = (
-        ProcessJob({"hosts": 1})
-        .enable_telemetry(
-            TelemetryConfig(dashboard_port=0, snapshot_interval_secs=30.0)
-        )
-        .enable_admin()
-    )
+    job = ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(dashboard_port=0))
     try:
         job_state = job.state(cached_path=None)
         proc_mesh = job_state.hosts.spawn_procs(per_host={"gpus": 1})

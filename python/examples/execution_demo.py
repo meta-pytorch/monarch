@@ -127,7 +127,7 @@ async def async_main(args: argparse.Namespace) -> None:
     think_ms = (args.think_ms_min, args.think_ms_max)
     eat_ms = (args.eat_ms_min, args.eat_ms_max)
 
-    job = ProcessJob({"hosts": 1}).enable_admin()
+    job = ProcessJob({"hosts": 1}).enable_telemetry()
     loops = []
     try:
         state = job.state(cached_path=None)

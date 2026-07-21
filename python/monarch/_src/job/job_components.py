@@ -56,14 +56,14 @@ logger: logging.Logger = logging.getLogger(__name__)
 class MeshAdminConfig:
     """Configuration for automatic mesh admin agent startup.
 
-    When configured via ``JobTrait.enable_admin``, a MeshAdminAgent HTTP
-    server is spawned when ``state()`` is called. The server aggregates
-    topology across all host meshes and exposes it via a REST API that the
-    admin TUI can attach to.
+    When passed to ``JobTrait.enable_telemetry``, a MeshAdminAgent HTTP server
+    is spawned when ``state()`` is called. The server aggregates topology
+    across all host meshes and exposes it via a REST API that the admin TUI
+    can attach to.
 
     Args:
-        admin_addr: Bind address for the admin HTTP server.  When
-            ``None`` the server picks an available address automatically.
+        admin_addr: Bind address for the admin HTTP server. When ``None``, the
+            server uses the configured ``MESH_ADMIN_ADDR``.
     """
 
     admin_addr: Optional[str] = None
@@ -412,35 +412,50 @@ class JobComponents:
         for component in reversed(self._ordered()):
             component.reset_runtime()
 
-    def configure_telemetry(self, config: TelemetryConfig) -> None:
-        if self.telemetry is None:
-            self.telemetry = TelemetryComponent(config)
+    def configure_telemetry(
+        self,
+        config: TelemetryConfig,
+        mesh_admin_config: Optional[MeshAdminConfig] = None,
+    ) -> None:
+        """Configure telemetry and its mesh admin and snapshot dependencies."""
+        telemetry = self.telemetry
+        if telemetry is None:
+            telemetry = TelemetryComponent(config)
+            self.telemetry = telemetry
             telemetry_changed = True
         else:
-            telemetry_changed = self.telemetry._config != config
+            telemetry_changed = telemetry._config != config
             if telemetry_changed:
-                self.telemetry.reset_runtime()
-            self.telemetry._config = config
+                telemetry.reset_runtime()
+            telemetry._config = config
         if telemetry_changed:
             self._warn_if_snapshot_stale()
-        if self.admin is not None:
-            if telemetry_changed:
-                self.admin.reset_runtime()
-            # Admin config is unchanged here; only rewire its telemetry handle.
-            self.admin._telemetry = self.telemetry
-        self._configure_snapshot()
-
-    def configure_admin(self, config: MeshAdminConfig) -> None:
-        if self.admin is None:
-            self.admin = AdminComponent(config, self.telemetry)
-        else:
-            self._set_admin_inputs(config)
-        self._configure_snapshot()
-
-    def _set_admin_inputs(self, config: MeshAdminConfig) -> None:
         admin = self.admin
         if admin is None:
-            return
+            admin = AdminComponent(
+                mesh_admin_config
+                if mesh_admin_config is not None
+                else MeshAdminConfig(),
+                telemetry,
+            )
+            self.admin = admin
+        else:
+            if telemetry_changed:
+                admin.reset_runtime()
+            admin._telemetry = telemetry
+            if mesh_admin_config is not None:
+                self._set_admin_inputs(admin, mesh_admin_config)
+        if self.snapshot is None:
+            self.snapshot = SnapshotComponent(telemetry, admin)
+
+    def configure_admin(self, config: MeshAdminConfig) -> None:
+        admin = self.admin
+        if admin is None:
+            self.admin = AdminComponent(config, self.telemetry)
+        else:
+            self._set_admin_inputs(admin, config)
+
+    def _set_admin_inputs(self, admin: AdminComponent, config: MeshAdminConfig) -> None:
         if admin._config != config:
             admin.reset_runtime()
             self._warn_if_snapshot_stale()
@@ -463,13 +478,3 @@ class JobComponents:
                 "telemetry or admin config changed while periodic snapshots are running: "
                 "snapshots stay bound to the original runtime until the job is killed and re-applied"
             )
-
-    def _configure_snapshot(self) -> None:
-        if self.telemetry is not None and self.admin is not None:
-            if self.snapshot is None:
-                self.snapshot = SnapshotComponent(self.telemetry, self.admin)
-            else:
-                self.snapshot._telemetry = self.telemetry
-                self.snapshot._admin = self.admin
-        elif self.snapshot is not None:
-            self.snapshot = None

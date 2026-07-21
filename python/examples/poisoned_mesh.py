@@ -83,13 +83,7 @@ class Worker(Actor):
 
 
 async def async_main(num_procs: int) -> None:
-    job = (
-        ProcessJob({"hosts": 1})
-        .enable_telemetry(
-            TelemetryConfig(dashboard_port=0, snapshot_interval_secs=30.0)
-        )
-        .enable_admin()
-    )
+    job = ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(dashboard_port=0))
     try:
         state = job.state(cached_path=None)
         host = state.hosts

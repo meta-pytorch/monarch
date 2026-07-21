@@ -102,7 +102,7 @@ class Sender(Actor):
 
 
 async def async_main(args: argparse.Namespace) -> None:
-    job = ProcessJob({"hosts": 1}).enable_admin()
+    job = ProcessJob({"hosts": 1}).enable_telemetry()
     try:
         state = job.state(cached_path=None)
         host = state.hosts

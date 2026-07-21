@@ -124,8 +124,7 @@ from monarch.job import LocalJob, ProcessJob, KubernetesJob, SlurmJob, Telemetry
 # job = ...
 dashboard_port = 8265
 
-# Enable admin API and telemetry/dashboard as they work together.
-job.enable_admin()
+# Enable telemetry, mesh admin, snapshots, and the dashboard together.
 job.enable_telemetry(
     TelemetryConfig(include_dashboard=True, dashboard_port=dashboard_port)
 )

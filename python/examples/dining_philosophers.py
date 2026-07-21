@@ -172,7 +172,6 @@ async def async_main(
     telemetry: bool = True,
 ) -> None:
     job = ProcessJob({"hosts": 1})
-    job.enable_admin()
     if telemetry:
         resolved_dashboard_port = dashboard_port
         if resolved_dashboard_port is None:
@@ -182,9 +181,10 @@ async def async_main(
             TelemetryConfig(
                 include_dashboard=dashboard,
                 dashboard_port=resolved_dashboard_port,
-                snapshot_interval_secs=30.0,
             )
         )
+    else:
+        job.enable_admin()
     try:
         state = job.state(cached_path=None)
         host = state.hosts

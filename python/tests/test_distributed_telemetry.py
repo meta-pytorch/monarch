@@ -29,6 +29,7 @@ from monarch._src.actor.proc_mesh import (
     unregister_proc_mesh_spawn_callback,
 )
 from monarch.actor import span
+from monarch.config import configured
 from monarch.job import MeshAdminConfig, ProcessJob, TelemetryConfig
 from scoped_state import scoped_state
 
@@ -112,6 +113,12 @@ def _remove_socket_dir(apply_id: str) -> None:
     shutil.rmtree(
         job_telemetry_actor.telemetry_socket_dir(apply_id), ignore_errors=True
     )
+
+
+@pytest.fixture(autouse=True)
+def _ephemeral_mesh_admin_addr():
+    with configured(mesh_admin_addr="[::]:0"):
+        yield
 
 
 @pytest.mark.timeout(30)
@@ -1946,15 +1953,14 @@ def test_snapshot_periodic_capture_populates_tables(cleanup_callbacks) -> None:
     invariants in monarch_introspection_snapshot::integration.
     """
     with scoped_state(
-        ProcessJob({"hosts": 1})
-        .enable_telemetry(_sidecar_telemetry_config(snapshot_interval_secs=5))
-        .enable_admin(
-            MeshAdminConfig(
+        ProcessJob({"hosts": 1}).enable_telemetry(
+            _sidecar_telemetry_config(snapshot_interval_secs=5),
+            mesh_admin_config=MeshAdminConfig(
                 # Use an ephemeral admin port so concurrent --stress-runs
                 # replicas do not contend on the default fixed mesh-admin
                 # port.
                 admin_addr="[::]:0",
-            )
+            ),
         ),
         cached_path=None,
     ) as state:

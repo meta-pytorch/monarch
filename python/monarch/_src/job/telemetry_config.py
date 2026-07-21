@@ -70,10 +70,11 @@ _startup_provider_registered: bool = False
 
 @dataclass
 class TelemetryConfig:
-    """Configuration for automatic telemetry startup.
+    """Configuration for automatic telemetry and snapshot startup.
 
-    When configured via ``JobTrait.enable_telemetry``, telemetry
-    (and optionally a dashboard) is started when ``state()`` is called.
+    When configured via ``JobTrait.enable_telemetry``, telemetry, mesh admin,
+    and optionally snapshots and a dashboard are started when ``state()`` is
+    called.
 
     Args:
         retention_secs: Retention window in seconds for message tables.
@@ -82,20 +83,14 @@ class TelemetryConfig:
         dashboard_port: Preferred port for the dashboard.
         snapshot_interval_secs: Interval in seconds between periodic mesh
             introspection snapshots. Snapshots capture the mesh topology
-            into the telemetry query surface. 0 disables periodic capture
-            (default). When ``include_dashboard`` is True and this is 0,
-            it is automatically set to 30s because the dashboard requires
-            snapshot data for system actor filtering.
+            into the telemetry query surface. The default is 30 seconds;
+            0 disables periodic capture.
     """
 
     retention_secs: int = 600
     include_dashboard: bool = False
     dashboard_port: int = 8265
-    snapshot_interval_secs: float = 0  # 0 = disabled
-
-    def __post_init__(self) -> None:
-        if self.include_dashboard and self.snapshot_interval_secs <= 0:
-            self.snapshot_interval_secs = 30.0
+    snapshot_interval_secs: float = 30.0
 
 
 # Successful response from the telemetry handle's `open_or_refresh` control message,

@@ -234,7 +234,7 @@ async def _hold_task(actor, id: str, entered_port: "Port[str]") -> None:
 
 
 async def async_main() -> None:
-    job = ProcessJob({"hosts": 1}).enable_admin()
+    job = ProcessJob({"hosts": 1}).enable_telemetry()
     # In-flight held invocations, tracked so they can be cancelled at
     # shutdown.
     holds: dict[str, asyncio.Task] = {}

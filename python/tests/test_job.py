@@ -658,7 +658,7 @@ def test_state_query_engine_none_without_telemetry():
 
 
 def test_state_query_client_set_with_telemetry():
-    """Test that the sidecar query client is set when telemetry is configured."""
+    """Test that telemetry configures the sidecar and mesh admin."""
     with _patched_sidecar() as m:
         job = MockJobTrait().enable_telemetry(TelemetryConfig())
         state = job.state(cached_path=None)
@@ -666,6 +666,16 @@ def test_state_query_client_set_with_telemetry():
     assert state.query_engine is None
     assert state.query_engine_client is m.query_engine_client_cls.return_value
     assert state.telemetry_url == "http://sidecar"
+    assert state.admin_url == "http://localhost:1729"
+    assert job._components.snapshot is not None
+    _, kwargs = m.spawn_admin.call_args
+    assert kwargs["admin_addr"] is None
+    m.start_snapshots.assert_called_once_with(
+        base_url="http://sidecar",
+        admin_ref=m.admin_ref,
+        instance=m.snapshot_instance,
+        interval_secs=30.0,
+    )
 
 
 def test_component_configuration_after_apply_adds_telemetry():
@@ -924,104 +934,105 @@ def test_state_admin_url_none_without_mesh_admin():
     assert state.admin_url is None
 
 
-@patch("monarch._src.job.job_components._spawn_admin")
-def test_state_admin_url_set_with_mesh_admin(mock_spawn):
+def test_state_admin_url_set_with_telemetry():
     """Test that admin_url is available on the first state() call."""
-    mock_future = MagicMock()
-    mock_admin_ref = MagicMock()
-    mock_future.get.return_value = ("http://localhost:1729", mock_admin_ref)
-    mock_spawn.return_value = mock_future
+    with _patched_sidecar() as m:
+        job = MockJobTrait().enable_telemetry(TelemetryConfig())
+        state = job.state(cached_path=None)
 
-    job = MockJobTrait().enable_admin(MeshAdminConfig())
-    state = job.state(cached_path=None)
-
-    mock_spawn.assert_called_once()
+    m.spawn_admin.assert_called_once()
     assert state.admin_url == "http://localhost:1729"
 
 
-@patch("monarch._src.job.job_components._spawn_admin")
-def test_mesh_admin_started_only_once(mock_spawn):
+def test_mesh_admin_started_only_once():
     """Test that mesh admin is not restarted on subsequent state() calls."""
-    mock_future = MagicMock()
-    mock_admin_ref = MagicMock()
-    mock_future.get.return_value = ("http://localhost:1729", mock_admin_ref)
-    mock_spawn.return_value = mock_future
+    with _patched_sidecar() as m:
+        job = MockJobTrait().enable_telemetry(TelemetryConfig())
+        job.state(cached_path=None)
+        job.state(cached_path=None)
 
-    job = MockJobTrait().enable_admin(MeshAdminConfig())
-    job.state(cached_path=None)
-    job.state(cached_path=None)
-
-    mock_spawn.assert_called_once()
+    m.spawn_admin.assert_called_once()
 
 
-@patch("monarch._src.job.job_components._spawn_admin")
-def test_mesh_admin_dropped_on_pickle(mock_spawn):
+def test_mesh_admin_dropped_on_pickle():
     """Test that admin_url is dropped during pickling and restored after."""
-    mock_future = MagicMock()
-    mock_admin_ref = MagicMock()
-    mock_future.get.return_value = ("http://localhost:1729", mock_admin_ref)
-    mock_spawn.return_value = mock_future
+    with _patched_sidecar() as m:
+        job = MockJobTrait().enable_telemetry(TelemetryConfig())
+        job.state(cached_path=None)
+        assert m.spawn_admin.call_count == 1
 
-    job = MockJobTrait().enable_admin(MeshAdminConfig())
-    job.state(cached_path=None)
-    assert mock_spawn.call_count == 1
+        # Serialize and deserialize — live handles should be dropped
+        loaded_job = job_loads(job.dumps())
+        assert loaded_job._components.admin is not None
 
-    # Serialize and deserialize — live handles should be dropped
-    loaded_job = job_loads(job.dumps())
-    assert loaded_job._components.admin is not None
+        # Getting state again should re-spawn admin
+        state = loaded_job.state(cached_path=None)
 
-    # Getting state again should re-spawn admin
-    state = loaded_job.state(cached_path=None)
-    assert mock_spawn.call_count == 2
+    assert m.spawn_admin.call_count == 2
     assert state.admin_url is not None
 
 
-@patch("monarch._src.job.job_components._spawn_admin")
-def test_mesh_admin_receives_custom_addr(mock_spawn):
+def test_mesh_admin_receives_custom_addr():
     """Test that MeshAdminConfig.admin_addr is forwarded to _spawn_admin."""
-    mock_future = MagicMock()
-    mock_admin_ref = MagicMock()
-    mock_future.get.return_value = ("http://myhost:9999", mock_admin_ref)
-    mock_spawn.return_value = mock_future
+    with _patched_sidecar() as m:
+        job = MockJobTrait().enable_telemetry(
+            TelemetryConfig(),
+            mesh_admin_config=MeshAdminConfig(admin_addr="myhost:9999"),
+        )
+        job.state(cached_path=None)
 
-    job = MockJobTrait().enable_admin(MeshAdminConfig(admin_addr="myhost:9999"))
-    job.state(cached_path=None)
-
-    _, kwargs = mock_spawn.call_args
+    _, kwargs = m.spawn_admin.call_args
     assert kwargs.get("admin_addr") == "myhost:9999"
 
 
-@patch("monarch._src.job.job_components._spawn_admin")
-def test_mesh_admin_receives_telemetry_url(mock_spawn):
-    """Test that admin links to telemetry when both are configured."""
-    mock_future = MagicMock()
-    mock_admin_ref = MagicMock()
-    mock_future.get.return_value = ("http://localhost:1729", mock_admin_ref)
-    mock_spawn.return_value = mock_future
+def test_enable_admin_remains_independent_of_telemetry():
+    config = MeshAdminConfig(admin_addr="myhost:9999")
+    job = MockJobTrait()
 
-    with _patched_sidecar():
-        job = (
-            MockJobTrait()
-            .enable_telemetry(TelemetryConfig())
-            .enable_admin(MeshAdminConfig())
-        )
+    result = job.enable_admin(config)
+
+    assert result is job
+    assert job._components.telemetry is None
+    assert job._components.snapshot is None
+    assert job._components.admin is not None
+    assert job._components.admin._config is config
+
+
+def test_enable_telemetry_reuses_existing_mesh_admin():
+    config = MeshAdminConfig(admin_addr="myhost:9999")
+    job = MockJobTrait().enable_admin(config)
+    admin = job._components.admin
+
+    job.enable_telemetry(TelemetryConfig())
+
+    assert admin is not None
+    assert job._components.admin is admin
+    assert admin._config is config
+    assert admin._telemetry is job._components.telemetry
+    assert job._components.snapshot is not None
+    assert job._components.snapshot._admin is admin
+    assert job._components.snapshot._telemetry is job._components.telemetry
+
+
+def test_mesh_admin_receives_telemetry_url():
+    """Test that admin links to telemetry when both are configured."""
+    with _patched_sidecar() as m:
+        job = MockJobTrait().enable_telemetry(TelemetryConfig())
         state = job.state(cached_path=None)
 
-    _, kwargs = mock_spawn.call_args
+    _, kwargs = m.spawn_admin.call_args
     assert kwargs.get("telemetry_url") == "http://sidecar"
     assert state.telemetry_url == "http://sidecar"
     assert state.admin_url == "http://localhost:1729"
 
 
-@patch("monarch._src.job.job_components._spawn_admin")
-def test_mesh_admin_restarts_when_telemetry_config_changes(mock_spawn):
+def test_mesh_admin_restarts_when_telemetry_config_changes():
     mock_future = MagicMock()
     mock_admin_ref = MagicMock()
     mock_future.get.side_effect = [
         ("http://admin-one", mock_admin_ref),
         ("http://admin-two", mock_admin_ref),
     ]
-    mock_spawn.return_value = mock_future
     telemetry_one = {
         "telemetry_url": "http://telemetry-one",
         "dashboard_url": "http://dashboard-one",
@@ -1040,12 +1051,9 @@ def test_mesh_admin_restarts_when_telemetry_config_changes(mock_spawn):
             telemetry_two,
             telemetry_two,
         ]
-    ):
-        job = (
-            MockJobTrait()
-            .enable_telemetry(TelemetryConfig(retention_secs=1))
-            .enable_admin(MeshAdminConfig())
-        )
+    ) as m:
+        m.spawn_admin.return_value = mock_future
+        job = MockJobTrait().enable_telemetry(TelemetryConfig(retention_secs=1))
         state = job.state(cached_path=None)
         assert state.telemetry_url == "http://telemetry-one"
         assert state.admin_url == "http://admin-one"
@@ -1055,60 +1063,42 @@ def test_mesh_admin_restarts_when_telemetry_config_changes(mock_spawn):
 
     assert state.telemetry_url == "http://telemetry-two"
     assert state.admin_url == "http://admin-two"
-    assert mock_spawn.call_count == 2
-    assert [call.kwargs["telemetry_url"] for call in mock_spawn.call_args_list] == [
+    assert m.spawn_admin.call_count == 2
+    assert [call.kwargs["telemetry_url"] for call in m.spawn_admin.call_args_list] == [
         "http://telemetry-one",
         "http://telemetry-two",
     ]
 
 
-@patch(
-    "monarch._rust_bindings.monarch_extension.snapshot_integration._start_periodic_snapshots_http"
-)
-@patch("monarch.actor.context")
-@patch("monarch._src.job.job_components._spawn_admin")
-def test_snapshot_component_starts_once_after_telemetry_and_admin(
-    mock_spawn,
-    mock_context,
-    mock_start_snapshots,
-):
-    mock_admin_ref = MagicMock()
-    mock_instance = MagicMock()
-    mock_future = MagicMock()
-    mock_future.get.return_value = ("http://localhost:1729", mock_admin_ref)
-    mock_spawn.return_value = mock_future
-    mock_context.return_value.actor_instance._as_rust.return_value = mock_instance
-
-    with _patched_sidecar():
-        job = (
-            MockJobTrait()
-            .enable_telemetry(TelemetryConfig(snapshot_interval_secs=5.0))
-            .enable_admin(MeshAdminConfig())
+def test_snapshot_component_starts_once_after_telemetry_and_admin():
+    with _patched_sidecar() as m:
+        job = MockJobTrait().enable_telemetry(
+            TelemetryConfig(snapshot_interval_secs=5.0)
         )
         job.state(cached_path=None)
         job.state(cached_path=None)
 
-    mock_start_snapshots.assert_called_once_with(
+    m.start_snapshots.assert_called_once_with(
         base_url="http://sidecar",
-        admin_ref=mock_admin_ref,
-        instance=mock_instance,
+        admin_ref=m.admin_ref,
+        instance=m.snapshot_instance,
         interval_secs=5.0,
     )
 
 
-@patch("monarch._src.job.job_components._spawn_admin")
-def test_batch_job_shares_component_runtime_with_wrapped_job(mock_spawn):
-    mock_future = MagicMock()
-    mock_admin_ref = MagicMock()
-    mock_future.get.return_value = ("http://localhost:1729", mock_admin_ref)
-    mock_spawn.return_value = mock_future
-
+def test_snapshot_component_can_be_disabled():
     with _patched_sidecar() as m:
-        job = (
-            MockJobTrait(host_names=["hosts"])
-            .enable_telemetry(TelemetryConfig())
-            .enable_admin(MeshAdminConfig())
+        job = MockJobTrait().enable_telemetry(
+            TelemetryConfig(include_dashboard=True, snapshot_interval_secs=0)
         )
+        job.state(cached_path=None)
+
+    m.start_snapshots.assert_not_called()
+
+
+def test_batch_job_shares_component_runtime_with_wrapped_job():
+    with _patched_sidecar() as m:
+        job = MockJobTrait(host_names=["hosts"]).enable_telemetry(TelemetryConfig())
         batch = BatchJob(job)
         batch_state = batch.state(cached_path=None)
         job_state = job.state(cached_path=None)
@@ -1121,7 +1111,7 @@ def test_batch_job_shares_component_runtime_with_wrapped_job(mock_spawn):
     assert job_state.query_engine_client is m.query_engine_client_cls.return_value
     assert job_state.telemetry_url == "http://sidecar"
     assert job_state.admin_url == "http://localhost:1729"
-    mock_spawn.assert_called_once()
+    m.spawn_admin.assert_called_once()
 
 
 @contextlib.contextmanager
@@ -1132,6 +1122,11 @@ def _patched_sidecar(ensure_open_side_effect=None, ensure_open_return=None):
             "monarch._src.job.job_components.install_sidecar_socket_sink"
         ) as install_sink,
         patch("monarch._src.job.job_components.QueryEngineClient") as qec_cls,
+        patch("monarch._src.job.job_components._spawn_admin") as spawn_admin,
+        patch("monarch.actor.context") as actor_context,
+        patch(
+            "monarch._rust_bindings.monarch_extension.snapshot_integration._start_periodic_snapshots_http"
+        ) as start_snapshots,
     ):
         ensure_open = telemetry_cls.return_value.ensure_open
         if ensure_open_side_effect is not None:
@@ -1142,33 +1137,33 @@ def _patched_sidecar(ensure_open_side_effect=None, ensure_open_return=None):
                 "dashboard_url": "http://dashboard",
                 "socket_path": "/tmp/telemetry.sock",
             }
+        admin_ref = MagicMock()
+        admin_future = MagicMock()
+        admin_future.get.return_value = ("http://localhost:1729", admin_ref)
+        spawn_admin.return_value = admin_future
+        snapshot_instance = MagicMock()
+        actor_context.return_value.actor_instance._as_rust.return_value = (
+            snapshot_instance
+        )
         yield types.SimpleNamespace(
             ensure_open=ensure_open,
             install_sink=install_sink,
             query_engine_client_cls=qec_cls,
             telemetry_cls=telemetry_cls,
+            spawn_admin=spawn_admin,
+            admin_ref=admin_ref,
+            start_snapshots=start_snapshots,
+            snapshot_instance=snapshot_instance,
         )
 
 
 def test_mesh_admin_receives_sidecar_telemetry_url():
     """Admin links to sidecar telemetry when the sidecar path is configured."""
-    with (
-        _patched_sidecar(),
-        patch("monarch._src.job.job_components._spawn_admin") as mock_spawn,
-    ):
-        mock_future = MagicMock()
-        mock_admin_ref = MagicMock()
-        mock_future.get.return_value = ("http://localhost:1729", mock_admin_ref)
-        mock_spawn.return_value = mock_future
-
-        job = (
-            MockJobTrait(host_names=["hosts"])
-            .enable_telemetry(TelemetryConfig())
-            .enable_admin(MeshAdminConfig())
-        )
+    with _patched_sidecar() as m:
+        job = MockJobTrait(host_names=["hosts"]).enable_telemetry(TelemetryConfig())
         state = job.state(cached_path=None)
 
-    _, kwargs = mock_spawn.call_args
+    _, kwargs = m.spawn_admin.call_args
     assert kwargs.get("telemetry_url") == "http://sidecar"
     assert state.telemetry_url == "http://sidecar"
     assert state.admin_url == "http://localhost:1729"
