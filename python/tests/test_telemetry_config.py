@@ -277,6 +277,9 @@ def test_start_worker_collector_drops_inactive_actor() -> None:
 
     worker_collector_mesh = telemetry_actor._start_worker_collector(
         host_mesh,
+        tc.TelemetryActor,
+        "fanout_test",
+        "telemetry_hosts",
     )
 
     assert worker_collector_mesh is None
@@ -294,10 +297,46 @@ def test_start_worker_collector_retains_active_actor() -> None:
     proc_mesh.spawn.return_value = actor_mesh
     host_mesh.spawn_procs.return_value = proc_mesh
     actor_mesh.activate.call.return_value.get.return_value = [(0, True)]
+    actor_mesh.id = "active"
 
-    assert telemetry_actor._start_worker_collector(host_mesh) is actor_mesh
+    assert (
+        telemetry_actor._start_worker_collector(
+            host_mesh,
+            tc.TelemetryActor,
+            "fanout_test",
+            "telemetry_hosts",
+        )
+        is actor_mesh
+    )
     assert telemetry_actor._worker_proc_meshes == [proc_mesh]
-    assert telemetry_actor._worker_collector_meshes == [actor_mesh]
+    assert telemetry_actor._worker_collectors == {"active": actor_mesh}
+
+
+def test_telemetry_actor_supervision_prunes_only_matching_worker() -> None:
+    telemetry_actor = tc.TelemetryActor("fanout_test", 0)
+    failed = MagicMock()
+    healthy = MagicMock()
+    telemetry_actor._worker_collectors = {
+        "failed": failed,
+        "healthy": healthy,
+    }
+
+    failure = MagicMock(mesh_id="failed")
+    assert telemetry_actor.__supervise__(failure)
+    assert telemetry_actor._worker_collectors == {"healthy": healthy}
+
+    assert telemetry_actor.__supervise__(failure)
+    assert telemetry_actor.__supervise__(MagicMock(mesh_id="unknown"))
+    assert telemetry_actor._worker_collectors == {"healthy": healthy}
+
+
+def test_telemetry_actor_suppresses_undeliverable_worker_message() -> None:
+    telemetry_actor = tc.TelemetryActor("fanout_test", 0)
+
+    # A message the query root sent to a now-dead worker collector bounces back
+    # as undeliverable. Returning True suppresses escalation so the query root
+    # is not torn down.
+    assert telemetry_actor._handle_undeliverable_message(MagicMock())
 
 
 def test_open_or_refresh_continues_after_worker_setup_failure() -> None:
@@ -356,6 +395,9 @@ def test_start_worker_collector_stops_partially_started_proc_mesh(
     with pytest.raises(RuntimeError):
         telemetry_actor._start_worker_collector(
             host_mesh,
+            tc.TelemetryActor,
+            "fanout_test",
+            "telemetry_hosts",
         )
 
     host_mesh.spawn_procs.assert_called_once_with(name="telemetry_hosts")

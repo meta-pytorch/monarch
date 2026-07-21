@@ -37,7 +37,11 @@ from monarch._rust_bindings.monarch_distributed_telemetry.database_scanner impor
 from monarch._rust_bindings.monarch_extension.snapshot_integration import (
     _pre_register_snapshot_schemas,
 )
-from monarch._rust_bindings.monarch_hyperactor.mailbox import PortId
+from monarch._rust_bindings.monarch_hyperactor.mailbox import (
+    PortId,
+    UndeliverableMessageEnvelope,
+)
+from monarch._rust_bindings.monarch_hyperactor.supervision import MeshFailure
 from monarch.actor import Actor, current_rank, endpoint, HostMesh, ProcMesh
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -69,9 +73,11 @@ class TelemetryActor(Actor):
         # means this actor has not activated as the single live collector for
         # the host-local socket namespace.
         self._scanner: DatabaseScanner | None = None
-        # Worker actor meshes this collector fans queries out to. Empty for
-        # leaf collectors; the query-root collector owns the worker meshes.
-        self._worker_collector_meshes: list[Any] = []
+        # Worker actor meshes this collector fans queries out to, keyed by
+        # stable mesh id (matching `MeshFailure.mesh_id`). Empty for leaf
+        # collectors; the query-root collector owns and tracks the worker
+        # meshes so their failures can be removed before later scans.
+        self._worker_collectors: dict[str, Any] = {}
         self._worker_proc_meshes: list[ProcMesh] = []
 
     def _scanner_or_raise(self) -> DatabaseScanner:
@@ -125,15 +131,21 @@ class TelemetryActor(Actor):
         self._scanner_or_raise()
         self._start_worker_collector(
             host_mesh,
+            TelemetryActor,
+            self._apply_id,
+            "telemetry_hosts",
             spawn_worker_collector,
         )
 
     def _start_worker_collector(
         self,
         host_mesh: HostMesh,
+        actor_class: type[TelemetryActor],
+        apply_id: str,
+        proc_name: str,
         spawn_worker_collector: bool = True,
     ) -> Any | None:
-        proc_mesh = host_mesh.spawn_procs(name="telemetry_hosts")
+        proc_mesh = host_mesh.spawn_procs(name=proc_name)
         if not spawn_worker_collector:
             self._worker_proc_meshes.append(proc_mesh)
             return None
@@ -141,8 +153,8 @@ class TelemetryActor(Actor):
         try:
             worker_collector_mesh: Any = proc_mesh.spawn(
                 "TelemetryActor",
-                TelemetryActor,
-                self._apply_id,
+                actor_class,
+                apply_id,
                 self._retention_secs,
             )
             active = any(
@@ -157,7 +169,7 @@ class TelemetryActor(Actor):
 
         self._worker_proc_meshes.append(proc_mesh)
         if active:
-            self._worker_collector_meshes.append(worker_collector_mesh)
+            self._worker_collectors[worker_collector_mesh.id] = worker_collector_mesh
             return worker_collector_mesh
 
         self._stop_worker_mesh(
@@ -174,13 +186,26 @@ class TelemetryActor(Actor):
                 "telemetry shutdown",
             )
         self._worker_proc_meshes.clear()
-        self._worker_collector_meshes.clear()
+        self._worker_collectors.clear()
 
     def _stop_worker_mesh(self, mesh: Any, reason: str) -> None:
         try:
             mesh.stop(reason).get(timeout=5.0)
         except Exception:
             logger.info("failed to stop telemetry mesh: %s", reason, exc_info=True)
+
+    def _handle_undeliverable_message(
+        self, message: UndeliverableMessageEnvelope
+    ) -> bool:
+        logger.info("worker telemetry message was undeliverable, skipping: %s", message)
+        return True
+
+    def __supervise__(self, failure: MeshFailure) -> bool:
+        mesh_id = failure.mesh_id
+        if mesh_id is not None:
+            self._worker_collectors.pop(mesh_id, None)
+        logger.warning("worker telemetry failure, skipping: %s", failure)
+        return True
 
     @endpoint
     def table_names(self) -> List[str]:
@@ -225,28 +250,32 @@ class TelemetryActor(Actor):
         """Scan the local store and configured worker collector meshes."""
         # The client collector is the singleton query root: scan its local store
         # first, then fan out flat to active worker collector meshes. Worker
-        # collectors have an empty `_worker_collector_meshes` list, so the same
+        # collectors have an empty `_worker_collectors` registry, so the same
         # endpoint is leaf-only when invoked on a worker.
         local_count: int = self._scanner_or_raise().scan(
             dest, table_name, projection, limit, filter_expr
         )
 
         child_futures = []
-        for collector_mesh in self._worker_collector_meshes:
+        for mesh_id, collector_mesh in tuple(self._worker_collectors.items()):
             try:
                 # Constructing the call can fail if the actor ref is stale.
                 # Treat that as reduced result coverage, matching best-effort
                 # query behavior.
                 child_futures.append(
-                    collector_mesh.scan.call(
-                        dest, table_name, projection, limit, filter_expr
+                    (
+                        mesh_id,
+                        collector_mesh.scan.call(
+                            dest, table_name, projection, limit, filter_expr
+                        ),
                     )
                 )
             except Exception:
                 logger.info("worker telemetry scan call failed, skipping")
+                self._worker_collectors.pop(mesh_id, None)
 
         total_count = local_count
-        for future in child_futures:
+        for mesh_id, future in child_futures:
             try:
                 # Worker collectors are independent leaves. A slow or failed
                 # worker should reduce query coverage, not fail the root query.
@@ -260,5 +289,6 @@ class TelemetryActor(Actor):
                 )
             except Exception:
                 logger.info("worker telemetry scan failed, skipping")
+                self._worker_collectors.pop(mesh_id, None)
 
         return total_count
