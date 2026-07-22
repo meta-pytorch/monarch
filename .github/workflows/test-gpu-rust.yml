@@ -70,7 +70,10 @@ jobs:
         # failure (otherwise set -e would exit before any artifacts are
         # uploaded).
         rc=0
-        cargo nextest run --workspace --profile ci \
+        # CI disables the Send/Sync shortcut impls so rustc verifies the
+        # underlying auto-trait bounds structurally.
+        RUSTFLAGS="${RUSTFLAGS:-} --cfg hyperactor_verify_auto_traits" \
+          cargo nextest run --workspace --profile ci \
           -E "$(cat .config/nextest-filter.txt)" \
           --exclude monarch_messages \
           --exclude monarch_tensor_worker \

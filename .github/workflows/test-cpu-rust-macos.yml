@@ -52,7 +52,9 @@ jobs:
       - name: Run macOS CPU Rust tests
         shell: bash
         env:
-          RUSTFLAGS: --cfg tracing_unstable
+          # CI disables the Send/Sync shortcut impls so rustc verifies the
+          # underlying auto-trait bounds structurally.
+          RUSTFLAGS: --cfg tracing_unstable --cfg hyperactor_verify_auto_traits
         run: |
           set -eux
           cargo nextest run --workspace --profile ci \

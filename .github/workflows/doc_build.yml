@@ -80,7 +80,11 @@ jobs:
         uv run --frozen --python 3.11 --no-sync --project . bash ./scripts/build_monarch_for_docs.sh
 
         # Generate documentation for all workspace crates
-        uv run --frozen --python 3.11 --no-sync --project . cargo doc --workspace --no-deps
+        # CI disables the Send/Sync shortcut impls so rustc verifies the
+        # underlying auto-trait bounds structurally.
+        uv run --frozen --python 3.11 --no-sync --project . \
+          cargo --config 'build.rustflags=["--cfg", "hyperactor_verify_auto_traits"]' \
+          doc --workspace --no-deps
 
         # Prepare documentation structure for Sphinx and final output
         mkdir -p docs/source/target

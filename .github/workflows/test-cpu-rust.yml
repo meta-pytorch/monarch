@@ -62,7 +62,11 @@ jobs:
         # uploaded). Exclude crates that require GPU hardware, CUDA libraries,
         # or torch C++ headers (libtorch) not available on CPU-only runners.
         rc=0
-        CARGO_BUILD_JOBS=${{ matrix.cargo-jobs }} cargo nextest run --workspace --profile ci \
+        # CI disables the Send/Sync shortcut impls so rustc verifies the
+        # underlying auto-trait bounds structurally.
+        CARGO_BUILD_JOBS=${{ matrix.cargo-jobs }} \
+          RUSTFLAGS="${RUSTFLAGS:-} --cfg hyperactor_verify_auto_traits" \
+          cargo nextest run --workspace --profile ci \
           -E "$(cat .config/nextest-filter.txt)" \
           --exclude monarch_messages \
           --exclude monarch_tensor_worker \

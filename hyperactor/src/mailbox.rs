@@ -1730,6 +1730,23 @@ pub struct Mailbox {
     inner: Arc<State>,
 }
 
+// This explicit impl is only a compiler performance optimization. It is safe
+// to delete this module and cfg and let Rust derive the auto traits; see proc.rs.
+#[cfg(not(hyperactor_verify_auto_traits))]
+mod _send_sync_shortcut {
+    use super::*;
+
+    // SAFETY: the verification build structurally checks this bound.
+    unsafe impl Send for Mailbox {}
+    // SAFETY: the verification build structurally checks this bound.
+    unsafe impl Sync for Mailbox {}
+}
+
+const _: fn() = || {
+    fn assert<T: Send + Sync + ?Sized>() {}
+    assert::<Mailbox>();
+};
+
 impl Mailbox {
     /// Create a mailbox associated with the provided actor ID.
     pub fn new(actor_id: impl Into<ActorAddr>) -> Self {

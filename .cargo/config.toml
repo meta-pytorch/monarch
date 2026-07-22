@@ -2,6 +2,11 @@
 rustflags = [
     "--cfg",
     "tracing_unstable",
+    # Declare the opt-in verification cfg used by hyperactor's Send/Sync
+    # shortcuts (see hyperactor/src/proc.rs) so it is not flagged as an
+    # unexpected cfg in ordinary builds.
+    "--check-cfg",
+    "cfg(hyperactor_verify_auto_traits)",
     # Mirror fbsource-common.bcfg [rust] allow_lints so `cargo clippy`
     # surfaces the same lint set as `arc rust-clippy`. Lints re-enabled
     # in monarch's PACKAGE via `-W` are intentionally omitted from this

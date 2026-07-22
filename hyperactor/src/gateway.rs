@@ -249,6 +249,23 @@ pub struct Gateway {
     inner: Arc<GatewayState>,
 }
 
+// This explicit impl is only a compiler performance optimization. It is safe
+// to delete this module and cfg and let Rust derive the auto traits; see proc.rs.
+#[cfg(not(hyperactor_verify_auto_traits))]
+mod _send_sync_shortcut {
+    use super::*;
+
+    // SAFETY: the verification build structurally checks this bound.
+    unsafe impl Send for GatewayState {}
+    // SAFETY: the verification build structurally checks this bound.
+    unsafe impl Sync for GatewayState {}
+}
+
+const _: fn() = || {
+    fn assert<T: Send + Sync + ?Sized>() {}
+    assert::<GatewayState>();
+};
+
 /// Handle returned by [`Gateway::attach_proc`] that detaches the proc
 /// (removing its local-delivery registration) when dropped. This is the
 /// sole remover of the entry; it runs from `ProcState::drop`, so by the

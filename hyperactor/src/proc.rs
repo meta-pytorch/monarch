@@ -398,6 +398,38 @@ pub struct Proc {
     inner: Arc<ProcState>,
 }
 
+// Pre-assert `Send`/`Sync` on the concrete state types that own the deep
+// `dashmap`/`RwLock` towers. This makes rustc's auto-trait checker match a
+// one-step impl instead of structurally recursing those towers at every
+// monomorphization, which dominates downstream compile time (cuts
+// hyperactor_mesh's `evaluate_obligation` by ~88%).
+// This is only a compiler performance optimization. It is safe to delete the
+// explicit impls and cfg and let Rust derive the auto traits structurally.
+//
+// SAFETY: these types hold only `Send + Sync` data; the auto-derived bound
+// already held before these impls were added. The `hyperactor_verify_auto_traits`
+// cfg build used by CI drops these impls and forces the compiler to re-derive the
+// bound structurally, so any future non-`Send`/`Sync` field is caught there.
+#[cfg(not(hyperactor_verify_auto_traits))]
+mod _send_sync_shortcut {
+    use super::*;
+
+    // SAFETY: the verification build structurally checks this bound.
+    unsafe impl Send for ProcState {}
+    // SAFETY: the verification build structurally checks this bound.
+    unsafe impl Sync for ProcState {}
+    // SAFETY: the verification build structurally checks this bound.
+    unsafe impl Send for InstanceCellState {}
+    // SAFETY: the verification build structurally checks this bound.
+    unsafe impl Sync for InstanceCellState {}
+}
+
+const _: fn() = || {
+    fn assert<T: Send + Sync + ?Sized>() {}
+    assert::<ProcState>();
+    assert::<InstanceCellState>();
+};
+
 impl fmt::Debug for Proc {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Proc")

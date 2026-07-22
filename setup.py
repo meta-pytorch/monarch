@@ -213,6 +213,8 @@ if "PYO3_PYTHON" not in os.environ:
 
 # Set Rust and C++ flags
 rustflags = ["-Zthreads=16", "--cfg=tracing_unstable"]
+if os.environ.get("CI") == "true":
+    rustflags.append("--cfg=hyperactor_verify_auto_traits")
 if os.environ.get("ENABLE_MESSAGE_LOGGING"):
     rustflags.append("--cfg=enable_hyperactor_message_logging")
 
