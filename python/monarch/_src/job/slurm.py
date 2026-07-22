@@ -15,7 +15,10 @@ import sys
 from typing import Any, Dict, FrozenSet, List, Optional, Sequence
 
 from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
-from monarch._rust_bindings.monarch_hyperactor.config import configure
+from monarch._rust_bindings.monarch_hyperactor.config import (
+    configure,
+    get_propagatable_config_env,
+)
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.job._batch_env import in_batch_job
 from monarch._src.job._slurm_batch import _WORKER_BOOTSTRAP
@@ -203,6 +206,8 @@ class SlurmJob(JobTrait):
                 sbatch_directives.append(f"#SBATCH {arg}")
 
         batch_script = "\n".join(sbatch_directives)
+        for key, value in get_propagatable_config_env().items():
+            batch_script += f"\nexport {key}={shlex.quote(value)}"
         if client_script is None:
             # Workers only; an external controller attaches and manages the
             # lifetime. Shares _WORKER_BOOTSTRAP with the batch runner.
@@ -345,10 +350,9 @@ class SlurmJob(JobTrait):
         hostname_idx = 0
 
         for mesh_name, num_nodes in self._meshes.items():
-            mesh_hostnames = self._all_hostnames[
-                hostname_idx : hostname_idx + num_nodes
-            ]
-            hostname_idx += num_nodes
+            next_hostname_idx = hostname_idx + num_nodes
+            mesh_hostnames = self._all_hostnames[hostname_idx:next_hostname_idx]
+            hostname_idx = next_hostname_idx
 
             workers = [f"tcp://{hostname}:{self._port}" for hostname in mesh_hostnames]
             host_mesh = attach_to_workers(

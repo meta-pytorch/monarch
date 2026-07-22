@@ -27,7 +27,10 @@ except ImportError:
     )
 
 from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
-from monarch._rust_bindings.monarch_hyperactor.config import configure
+from monarch._rust_bindings.monarch_hyperactor.config import (
+    configure,
+    get_propagatable_config_env,
+)
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.job.job import JobState, JobTrait
 from monarch.actor import attach
@@ -441,12 +444,15 @@ class KubernetesJob(JobTrait):
                 requests=k8s_resources,
                 limits=k8s_resources,
             )
-        env = [client.V1EnvVar(name="MONARCH_PORT", value=str(port))]
+        worker_env = {**get_propagatable_config_env(), "MONARCH_PORT": str(port)}
         container = client.V1Container(
             name="worker",
             image=image_spec.image,
             command=["python", "-u", "-c", _WORKER_BOOTSTRAP_SCRIPT],
-            env=env,
+            env=[
+                client.V1EnvVar(name=key, value=value)
+                for key, value in worker_env.items()
+            ],
             resources=resources,
         )
         return client.V1PodTemplateSpec(
