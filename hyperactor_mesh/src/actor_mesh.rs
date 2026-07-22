@@ -464,6 +464,7 @@ impl ActorMeshCastDomain {
             members,
             self.region.clone(),
             self.tiling_policy,
+            self.proc_dims.clone().unwrap_or_default(),
             headers.clone(),
         )?;
 
@@ -2200,6 +2201,7 @@ mod tests {
                 members,
                 Region::from(ndslice::shape!(rank = 2)),
                 hyperactor_cast::cast_actor::TilingPolicy::BlockPartitioning,
+                Vec::new(),
                 hyperactor_config::Flattrs::new(),
             )
             .unwrap();

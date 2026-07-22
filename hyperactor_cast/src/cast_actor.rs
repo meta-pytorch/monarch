@@ -41,6 +41,7 @@ use hyperactor::value_mesh::ValueMesh;
 use hyperactor_config::Flattrs;
 use ndslice::Point;
 use ndslice::Region;
+use ndslice::Slice;
 use ndslice::view::MapIntoExt;
 use ndslice::view::View;
 use serde::Deserialize;
@@ -124,13 +125,16 @@ impl CastDomainId {
     ///
     /// `members` maps domain rank to member actor address. `region` describes
     /// the logical root region of the domain; tiling and communication are
-    /// derived internally.
+    /// derived internally. `unheaved_dims` lists the dimensions that each root
+    /// entry tile must span. An empty list applies the tiling policy to every
+    /// dimension.
     pub fn materialize(
         self,
         cx: &impl context::Actor,
         members: HashMap<usize, ActorAddr>,
         region: Region,
         tiling_policy: TilingPolicy,
+        unheaved_dims: Vec<usize>,
         headers: Flattrs,
     ) -> anyhow::Result<CastDomainRef> {
         anyhow::ensure!(
@@ -160,25 +164,37 @@ impl CastDomainId {
             Tile::from_view(&region),
             Arc::clone(&member_mesh),
         );
-        let root_actor = cast_actor_ref_for_member(
-            root_tile
-                .root_item()
-                .ok_or_else(|| anyhow::anyhow!("root tile must have at least one member"))?,
-        );
-        root_actor.port().post_with_headers(
-            cx,
-            headers,
-            CreateCastDomain {
-                cast_domain_id: self.clone(),
-                region: region.clone(),
-                tiling_policy,
-                tile: root_tile,
-            },
-        );
+        let entry_points =
+            root_heaved_entrypoint_tiles(&region, root_tile.tile(), tiling_policy, &unheaved_dims)?
+                .into_iter()
+                .map(|tile| {
+                    let tile = root_tile.subtile(tile);
+
+                    Ok(CastRegionRoot {
+                        root_actor: cast_actor_ref_for_member(tile.root_item().ok_or_else(
+                            || anyhow::anyhow!("cast target tile must have at least one member"),
+                        )?),
+                        region: Region::new(region.labels().to_vec(), tile.tile().space().clone()),
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+
+        for entry_point in &entry_points {
+            entry_point.root_actor.port().post_with_headers(
+                cx,
+                headers.clone(),
+                CreateCastDomain {
+                    cast_domain_id: self.clone(),
+                    region: region.clone(),
+                    tiling_policy,
+                    tile: root_tile.subtile(Tile::from_view(&entry_point.region)),
+                },
+            );
+        }
 
         Ok(CastDomainRef::from_entry_points(
             self,
-            vec![CastRegionRoot { root_actor, region }],
+            entry_points,
             member_mesh,
         ))
     }
@@ -406,6 +422,99 @@ fn next_tiles(
 /// One `CastActor` is expected to run on every proc under this name. Internal
 /// setup uses this known address to route setup commands to child tile roots.
 pub const CAST_ACTOR_NAME: &str = "cast";
+
+/// Derive entry-point tiles after projecting `unheaved_dims` to their root
+/// coordinates.
+///
+/// The tiling policy partitions only the remaining dimensions. The projected
+/// root point is also an entry point. Each result is then expanded across the
+/// original extent of every unheaved dimension.
+///
+/// For example, given this input:
+///
+/// ```text
+/// region/root_tile: hosts=4 x procs=4
+/// tiling_policy:    BlockPartitioning
+/// unheaved_dims:    [1]  // procs
+/// ```
+///
+/// the function projects `procs` to `P0`, tiles the `hosts` dimension, and
+/// returns:
+///
+/// ```text
+/// [
+///   H0: P0 P1 P2 P3,
+///   H1: P0 P1 P2 P3,
+///   H2: P0 P1 P2 P3,
+///   H3: P0 P1 P2 P3,
+/// ]
+/// ```
+fn root_heaved_entrypoint_tiles(
+    region: &Region,
+    root_tile: &Tile,
+    tiling_policy: TilingPolicy,
+    unheaved_dims: &[usize],
+) -> Result<Vec<Tile>> {
+    let num_dims = root_tile.space().sizes().len();
+
+    if let Some(dim) = unheaved_dims.iter().copied().find(|dim| *dim >= num_dims) {
+        anyhow::bail!(
+            "unheaved dimension {dim} is out of bounds for a {num_dims}-dimensional tile"
+        );
+    }
+
+    anyhow::ensure!(
+        !root_tile.space().is_empty(),
+        "cannot construct root-heaved entry-point tiles for an empty tile"
+    );
+
+    // Project each unheaved dimension to its root coordinate. In the example,
+    // H0..H3 x P0..P3 becomes H0..H3 x P0.
+    let mut projected_space = root_tile.space().clone();
+
+    for &dim in unheaved_dims {
+        projected_space = projected_space.select(dim, 0, 1, 1).map_err(|error| {
+            anyhow::anyhow!("failed to select root-local dimension {dim}: {error}")
+        })?;
+    }
+
+    let projected_root = Tile::from_view(&Region::new(region.labels().to_vec(), projected_space));
+
+    // Select the root coordinate of every dimension that the policy will
+    // heave. The example's explicit root entry point is H0 x P0.
+    let mut root_point_space = projected_root.space().clone();
+
+    for dim in (0..num_dims).filter(|dim| !unheaved_dims.contains(dim)) {
+        root_point_space = root_point_space.select(dim, 0, 1, 1)?;
+    }
+
+    let root_point = Tile::from_view(&Region::new(region.labels().to_vec(), root_point_space));
+
+    // Prepend that root to the policy's communication children. With the
+    // example's BlockPartitioning policy, the projected roots are now
+    // H0 x P0, H1 x P0, H2 x P0, and H3 x P0.
+    std::iter::once(root_point)
+        .chain(tiling_policy.children(&projected_root))
+        .map(|tile| {
+            // Tiling used size-one projections of the unheaved dimensions.
+            // Restore their root extents so every entry tile spans them fully.
+            // For root H0..H3 x P0..P3 and unheaved_dims=[1], a projected
+            // H2 x P0 tile becomes H2 x P0..P3.
+            let mut sizes = tile.space().sizes().to_vec();
+            for &dim in unheaved_dims {
+                sizes[dim] = root_tile.space().sizes()[dim];
+            }
+            Ok(Tile::from_view(&Region::new(
+                region.labels().to_vec(),
+                Slice::new(
+                    tile.space().offset(),
+                    sizes,
+                    tile.space().strides().to_vec(),
+                )?,
+            )))
+        })
+        .collect()
+}
 
 /// System actor that establishes casting domains.
 ///
@@ -1375,6 +1484,7 @@ mod tests {
                     self.domain_members(),
                     region,
                     TilingPolicy::BlockPartitioning,
+                    Vec::new(),
                     Flattrs::new(),
                 )
                 .unwrap()
@@ -1393,6 +1503,20 @@ mod tests {
                     self.member_ids.clone(),
                     region,
                     policy,
+                    Vec::new(),
+                    Flattrs::new(),
+                )
+                .unwrap()
+        }
+
+        fn root_heaved_domain(&self, region: Region, unheaved_dims: Vec<usize>) -> CastDomainRef {
+            CastDomainId::new()
+                .materialize(
+                    &self.client,
+                    self.domain_members(),
+                    region,
+                    TilingPolicy::BlockPartitioning,
+                    unheaved_dims,
                     Flattrs::new(),
                 )
                 .unwrap()
@@ -1685,6 +1809,46 @@ mod tests {
         .into_iter()
         .collect();
         assert_eq!(lineage_by_proc, expected_lineage);
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_root_heaved_block_partitioning_delivers_once_across_proc_dimensions() {
+        // GIVEN: four hosts with four proc ranks per host.
+        let mut test_mesh = CastTestMesh::new(16);
+        test_mesh.spawn_split_port_receivers();
+
+        // WHEN: block partitioning is first applied to every dimension.
+        let fully_heaved_domain =
+            test_mesh.root_heaved_domain(shape!(hosts = 4, procs = 4).into(), Vec::new());
+
+        // THEN: both host and proc coordinates select entrypoints.
+        let mut fully_heaved_entrypoint_ranks = fully_heaved_domain
+            .entry_points
+            .iter()
+            .map(|entry_point| entry_point.region.slice().offset())
+            .collect::<Vec<_>>();
+        fully_heaved_entrypoint_ranks.sort_unstable();
+        assert_eq!(fully_heaved_entrypoint_ranks, vec![0, 1, 2, 3, 4, 8, 12]);
+
+        // WHEN: block partitioning preserves the proc dimension.
+        let root_domain =
+            test_mesh.root_heaved_domain(shape!(hosts = 4, procs = 4).into(), vec![1]);
+
+        // THEN: each host is a separate entrypoint, while every proc receives
+        // exactly one reply-producing delivery.
+        assert_eq!(
+            root_domain
+                .entry_points
+                .iter()
+                .map(|entry_point| entry_point.region.slice().offset())
+                .collect::<Vec<_>>(),
+            vec![0, 4, 8, 12]
+        );
+        let proc_names = test_mesh.proc_names();
+        assert_eq!(
+            cast_and_collect_reply_counts(&test_mesh, &root_domain, "root-heaved").await,
+            expected_reply_counts(&proc_names.iter().map(String::as_str).collect::<Vec<_>>())
+        );
     }
 
     #[async_timed_test(timeout_secs = 30)]
