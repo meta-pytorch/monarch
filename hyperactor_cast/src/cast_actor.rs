@@ -142,11 +142,6 @@ impl CastDomainId {
             "members must contain exactly one actor address for every domain rank"
         );
 
-        let root_rank = region.slice().offset();
-        let entry_point = members
-            .get(&root_rank)
-            .expect("members coverage was checked above")
-            .clone();
         let member_mesh = Arc::new(ValueMesh::new(
             region.clone(),
             region
@@ -161,25 +156,31 @@ impl CastDomainId {
                 .collect(),
         )?);
 
-        let domain_ref = CastDomainRef::from_entry_point(
-            self.clone(),
-            cast_actor_ref_for_member(&entry_point),
+        let root_tile = MaterializedTile::from_value_mesh_with_tile(
+            Tile::from_view(&region),
             Arc::clone(&member_mesh),
         );
-        let root_tile =
-            MaterializedTile::from_value_mesh_with_tile(Tile::from_view(&region), member_mesh);
-
-        domain_ref.entry_point.port().post_with_headers(
+        let root_actor = cast_actor_ref_for_member(
+            root_tile
+                .root_item()
+                .ok_or_else(|| anyhow::anyhow!("root tile must have at least one member"))?,
+        );
+        root_actor.port().post_with_headers(
             cx,
             headers,
             CreateCastDomain {
-                cast_domain_id: self,
-                region,
+                cast_domain_id: self.clone(),
+                region: region.clone(),
                 tiling_policy,
                 tile: root_tile,
             },
         );
-        Ok(domain_ref)
+
+        Ok(CastDomainRef::from_entry_points(
+            self,
+            vec![CastRegionRoot { root_actor, region }],
+            member_mesh,
+        ))
     }
 }
 
@@ -191,28 +192,34 @@ impl std::fmt::Display for CastDomainId {
 
 /// Opaque local handle for initiating work against a materialized cast domain.
 ///
-/// Unlike [`CastDomainId`], this includes an entry-point [`CastActor`] ref so
+/// Unlike [`CastDomainId`], this includes entry-point [`CastActor`] refs so
 /// callers can cast into and otherwise address the domain. Callers obtain this
 /// only by materializing a [`CastDomainId`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CastDomainRef {
     id: CastDomainId,
-    /// Entry-point [`CastActor`] ref for initiating casts.
-    entry_point: ActorRef<CastActor>,
+    /// Entry-point [`CastActor`] refs for initiating casts.
+    entry_points: Vec<CastRegionRoot>,
     /// Destination actor addresses keyed by this domain's rank space.
     members: Arc<ValueMesh<ActorAddr>>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CastRegionRoot {
+    root_actor: ActorRef<CastActor>,
+    region: Region,
+}
+
 impl CastDomainRef {
-    /// Rebuild a cast-domain handle from a pure id plus its entry-point ref.
-    fn from_entry_point(
+    /// Rebuild a cast-domain handle from a pure id plus its entry-point refs.
+    fn from_entry_points(
         id: CastDomainId,
-        entry_point: ActorRef<CastActor>,
+        entry_points: Vec<CastRegionRoot>,
         members: Arc<ValueMesh<ActorAddr>>,
     ) -> Self {
         Self {
             id,
-            entry_point,
+            entry_points,
             members,
         }
     }
@@ -225,11 +232,6 @@ impl CastDomainRef {
     /// The domain's unique identifier.
     pub fn domain_id(&self) -> &Uid {
         self.id.domain_id()
-    }
-
-    /// The [`CastActor`] entry point for this domain.
-    pub fn entry_point(&self) -> &ActorRef<CastActor> {
-        &self.entry_point
     }
 
     /// Destination actor addresses keyed by this domain's rank space.
@@ -256,28 +258,26 @@ impl CastDomainRef {
             Arc::clone(&slice_member_mesh),
         );
 
-        let slice_entrypoint = cast_actor_ref_for_member(
+        let root_actor = cast_actor_ref_for_member(
             slice_tile
                 .root_item()
                 .ok_or_else(|| anyhow::anyhow!("slice root tile must have at least one member"))?,
         );
-
-        let slice_ref = CastDomainRef::from_entry_point(
-            slice_id.clone(),
-            slice_entrypoint.clone(),
-            slice_member_mesh,
-        );
-
-        slice_entrypoint.post(
+        root_actor.post(
             cx,
             CreateCastDomain {
                 cast_domain_id: slice_id.clone(),
-                region,
+                region: region.clone(),
                 tiling_policy,
                 tile: slice_tile,
             },
         );
-        Ok(slice_ref)
+
+        Ok(CastDomainRef::from_entry_points(
+            slice_id,
+            vec![CastRegionRoot { root_actor, region }],
+            slice_member_mesh,
+        ))
     }
 
     /// Cast a message to all members of this domain with caller-supplied headers.
@@ -291,27 +291,33 @@ impl CastDomainRef {
         headers: Flattrs,
         message: M,
     ) -> anyhow::Result<()> {
-        let data = wirevalue::Any::<wirevalue::encoding::Multipart>::serialize(&message)?;
+        let mut data = wirevalue::Any::<wirevalue::encoding::Multipart>::serialize(&message)?;
         let sender = cx.mailbox().actor_addr().clone();
         let dest_port = M::port();
         let (session_id, seqs) = self.seqs_for_cast(cx, dest_port)?;
 
         let cast_headers = headers.clone();
-        self.entry_point.port().post_with_headers(
-            cx,
-            headers,
-            CastMessage {
-                cast_domain_id: self.id.clone(),
-                sender,
-                session_id,
-                seqs,
-                #[cfg(test)]
-                lineage: Vec::new(),
-                headers: cast_headers,
-                dest_port,
-                data,
-            },
-        );
+        if self.entry_points.len() > 1 {
+            split_ports(cx, &mut data, self.entry_points.len(), false)?;
+        }
+
+        for entry_point in &self.entry_points {
+            entry_point.root_actor.port().post_with_headers(
+                cx,
+                headers.clone(),
+                CastMessage {
+                    cast_domain_id: self.id.clone(),
+                    sender: sender.clone(),
+                    session_id,
+                    seqs: seqs.subset(entry_point.region.clone())?,
+                    #[cfg(test)]
+                    lineage: Vec::new(),
+                    headers: cast_headers.clone(),
+                    dest_port,
+                    data: data.clone(),
+                },
+            );
+        }
         Ok(())
     }
 
@@ -324,22 +330,25 @@ impl CastDomainRef {
     /// returned to the originating actor's handler port, but successful teardown
     /// is not acknowledged.
     pub fn destroy(&self, cx: &impl context::Actor) {
-        self.entry_point.post(
-            cx,
-            DestroyCastDomain {
-                domain_id: self.id.clone(),
-                origin: cx.mailbox().actor_addr().clone(),
-            },
-        );
+        let origin = cx.mailbox().actor_addr().clone();
+        for entry_point in &self.entry_points {
+            entry_point.root_actor.post(
+                cx,
+                DestroyCastDomain {
+                    domain_id: self.id.clone(),
+                    origin: origin.clone(),
+                },
+            );
+        }
     }
 
     /// Allocate one normal sender-side sequence number per destination rank.
     ///
-    /// This is the same model used by v1 `CommActor`: the cast message carries
-    /// a complete `rank -> seq` snapshot, so forwarding hops do not need
-    /// route-local metadata to derive receiver ordering. `ValueMesh` preserves
-    /// the domain rank space while allowing compact representations when seqs
-    /// happen to be compressible.
+    /// This is the same model used by v1 `CommActor`: a complete `rank -> seq`
+    /// snapshot is allocated once, then partitioned among region roots, so
+    /// forwarding hops do not need route-local metadata to derive receiver
+    /// ordering. `ValueMesh` preserves the domain rank space while allowing
+    /// compact representations when seqs happen to be compressible.
     fn seqs_for_cast(
         &self,
         cx: &impl context::Actor,
@@ -647,7 +656,7 @@ impl Handler<CreateCastDomain> for CastActor {
 ///
 /// Ported from `hyperactor_mesh::comm::split_ports`.
 fn split_ports(
-    cx: &Context<'_, CastActor>,
+    cx: &impl context::Actor,
     data: &mut wirevalue::Any<wirevalue::encoding::Multipart>,
     num_next_hops: usize,
     deliver_here: bool,
