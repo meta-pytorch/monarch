@@ -49,7 +49,7 @@ use crate::time::Alarm;
 pub(crate) enum SeqInfoPolicy {
     /// Assign a new sequence number. Panics if SEQ_INFO is already set.
     AssignNew,
-    /// Allow externally-set SEQ_INFO. Used only by CommActor for mesh routing.
+    /// Allow externally-set SEQ_INFO for cast routing and ordered forwarding.
     AllowExternal,
 }
 

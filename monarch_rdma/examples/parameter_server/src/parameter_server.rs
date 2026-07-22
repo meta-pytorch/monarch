@@ -75,7 +75,7 @@ use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::Bootstrap;
 use hyperactor_mesh::HostBootstrapReady;
 use hyperactor_mesh::HostMeshRef;
-use hyperactor_mesh::comm::multicast::CastInfo;
+use hyperactor_mesh::casting::CastInfo;
 use hyperactor_mesh::context;
 use hyperactor_mesh::mesh_id::HostMeshId;
 use monarch_rdma::IbvConfig;

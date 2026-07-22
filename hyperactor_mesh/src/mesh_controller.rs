@@ -872,7 +872,7 @@ where
             Ok(())
         } else if returned.headers().get(CAST_ACTOR_MESH_ID).is_some() {
             // A cast message we sent (e.g. StreamState or KeepaliveGetState)
-            // was returned by the CommActor because it could not be forwarded.
+            // was returned by cast routing because it could not be forwarded.
             // This is expected when the network session is broken. Log and
             // continue — the supervision polling loop will detect the failure.
             tracing::warn!(

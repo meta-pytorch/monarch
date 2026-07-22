@@ -7,7 +7,6 @@
  */
 
 #![feature(duration_constructors)]
-#![feature(exit_status_error)]
 // NOTE: Until https://github.com/PyO3/pyo3/pull/4674, `pyo3::pymethods` trigger
 // and unsafe-op-in-unsafe-fn warnings.
 #![allow(unsafe_op_in_unsafe_fn)]
@@ -58,7 +57,7 @@ use hyperactor::RemoteSpawn;
 use hyperactor::actor::ActorHandle;
 use hyperactor::context;
 use hyperactor_config::Flattrs;
-use hyperactor_mesh::comm::multicast::CastInfo;
+use hyperactor_mesh::casting::CastInfo;
 use itertools::Itertools;
 use monarch_gil::GilSite;
 use monarch_gil::monarch_with_gil_blocking;

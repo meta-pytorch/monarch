@@ -335,8 +335,8 @@ impl CastDomainRef {
 
     /// Allocate one normal sender-side sequence number per destination rank.
     ///
-    /// This is the same model used by v1 `CommActor`: the cast message carries
-    /// a complete `rank -> seq` snapshot, so forwarding hops do not need
+    /// The cast message carries a complete `rank -> seq` snapshot, so forwarding
+    /// hops do not need
     /// route-local metadata to derive receiver ordering. `ValueMesh` preserves
     /// the domain rank space while allowing compact representations when seqs
     /// happen to be compressible.
@@ -491,7 +491,6 @@ impl CastActor {
         cx: &Instance<Self>,
         undelivered: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
-        // This is almost 1-1 copied from `hyperactor_mesh::comm::CommActor`.
         let mut message_envelope = match undelivered {
             Undeliverable::Returned(message_envelope) => message_envelope,
             Undeliverable::Report(report) => {
@@ -644,8 +643,6 @@ impl Handler<CreateCastDomain> for CastActor {
 /// of directly to the original sender. Each proxy port reduces
 /// replies from downstream next hops plus the optional local delivery,
 /// forming a reduction tree that mirrors the cast tree.
-///
-/// Ported from `hyperactor_mesh::comm::split_ports`.
 fn split_ports(
     cx: &Context<'_, CastActor>,
     data: &mut wirevalue::Any<wirevalue::encoding::Multipart>,
@@ -1948,8 +1945,7 @@ mod tests {
 
     // -- Port splitting test infrastructure --
     //
-    // Ported from `hyperactor_mesh::comm::tests`.  The `split_ports`
-    // function records (original, split, deliver_here) edges into a
+    // The `split_ports` function records (original, split, deliver_here) edges into a
     // global vec under `#[cfg(test)]`.  After a cast we reconstruct
     // the split-port tree and verify it mirrors the cast tree.
 

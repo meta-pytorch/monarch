@@ -8,67 +8,32 @@
 
 //! Casting utilities for actor meshes.
 
-use std::collections::BTreeSet;
-
-use hyperactor::ActorRef;
-use hyperactor::RemoteEndpoint as _;
-use hyperactor::RemoteHandles;
-use hyperactor::RemoteMessage;
-use hyperactor::actor::Referable;
-use hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER;
-use hyperactor::context;
-use hyperactor::mailbox;
+use hyperactor::Actor;
+use hyperactor::ActorAddr;
+use hyperactor::Context;
 use hyperactor::mailbox::MailboxSenderError;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
+pub use hyperactor_cast::cast_actor::CAST_ORIGINATING_SENDER;
+pub use hyperactor_cast::cast_actor::CAST_POINT;
 use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::declare_attrs;
+use ndslice::Extent;
+use ndslice::Point;
 use ndslice::Selection;
-use ndslice::Shape;
 use ndslice::ShapeError;
 use ndslice::SliceError;
-use ndslice::reshape::Limit;
 use ndslice::reshape::ReshapeError;
-use ndslice::reshape::ReshapeSliceExt;
-use ndslice::reshape::reshape_selection;
-use ndslice::selection;
-use ndslice::selection::EvalOpts;
-use ndslice::selection::ReifySlice;
-use ndslice::selection::normal;
 
-use crate::CommActor;
-use crate::comm::ENABLE_NATIVE_V1_CASTING;
-use crate::comm::multicast::CAST_ORIGINATING_SENDER;
-use crate::comm::multicast::CastMessage;
-use crate::comm::multicast::CastMessageEnvelope;
-use crate::comm::multicast::Uslice;
-use crate::config::MAX_CAST_DIMENSION_SIZE;
 use crate::mesh_id::ActorMeshId;
-use crate::metrics;
-
-/// Returns true if native V1 casting is enabled. Panics if V1 casting
-/// is on but the required dest actor reordering buffer is not.
-pub(crate) fn v1_casting_enabled() -> bool {
-    let enabled = hyperactor_config::global::get(ENABLE_NATIVE_V1_CASTING);
-    if enabled {
-        assert!(
-            hyperactor_config::global::get(ENABLE_DEST_ACTOR_REORDERING_BUFFER),
-            "native V1 casting requires ENABLE_DEST_ACTOR_REORDERING_BUFFER to be enabled",
-        );
-    }
-    enabled
-}
 
 declare_attrs! {
     /// Which mesh this message was cast to. Used for undeliverable message
-    /// handling, where the CastMessageEnvelope is serialized, and its content
-    /// cannot be inspected.
+    /// handling when the serialized cast payload cannot be inspected.
     pub attr CAST_ACTOR_MESH_ID: ActorMeshId;
 }
 
-/// An undeliverable might have its sender address set as the comm actor instead
-/// of the original sender. Update it based on the headers present in the message
-/// so it matches the sender.
+/// Update a cast undeliverable with the original sender recorded in its headers.
 pub fn update_undeliverable_envelope_for_casting(
     mut envelope: Undeliverable<MessageEnvelope>,
 ) -> Undeliverable<MessageEnvelope> {
@@ -79,143 +44,46 @@ pub fn update_undeliverable_envelope_for_casting(
     if let Some(actor_id) = message.headers().get(CAST_ORIGINATING_SENDER) {
         tracing::debug!(
             actor_id = %old_actor,
-            "remapped comm-actor id to id from CAST_ORIGINATING_SENDER {}", actor_id
+            "remapped cast sender to id from CAST_ORIGINATING_SENDER {}", actor_id
         );
         message.update_sender(actor_id);
     }
-    // Else do nothing, it wasn't from a comm actor.
+    // Else do nothing: the message was not sent through cast routing.
     envelope
 }
 
-/// Common implementation for `ActorMesh`s and `ActorMeshRef`s to cast
-/// an `M`-typed message.
-///
-/// `caller_headers` are caller-supplied envelope headers (e.g.
-/// operation-context keys) merged into the inner envelope headers so
-/// receivers see them on `cx.headers()`.
-#[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `CastError`.
-#[tracing::instrument(level = "debug", skip_all)]
-pub(crate) fn actor_mesh_cast<A, M>(
-    cx: &impl context::Actor,
-    actor_mesh_id: ActorMeshId,
-    comm_actor_ref: &ActorRef<CommActor>,
-    selection_of_root: Selection,
-    root_mesh_shape: &Shape,
-    cast_mesh_shape: &Shape,
-    message: M,
-    caller_headers: &Flattrs,
-) -> Result<(), CastError>
-where
-    A: Referable + RemoteHandles<M>,
-    M: RemoteMessage,
-{
-    let _ = metrics::ACTOR_MESH_CAST_DURATION.start(hyperactor::kv_pairs!(
-        "message_type" => M::typename(),
-        "message_variant" => message.arm().unwrap_or_default(),
-    ));
-
-    // Caller-known headers ride first; cast-info (timestamp,
-    // message type, mesh id) is stamped afterward and wins on
-    // collision because those keys are owned by this layer.
-    let mut headers = caller_headers.clone();
-    mailbox::headers::set_send_timestamp(&mut headers);
-    mailbox::headers::set_rust_message_type::<M>(&mut headers);
-    headers.set(CAST_ACTOR_MESH_ID, actor_mesh_id.clone());
-    let message = CastMessageEnvelope::new::<A, M>(
-        actor_mesh_id.clone(),
-        cx.mailbox().actor_addr().clone(),
-        cast_mesh_shape.clone(),
-        headers,
-        message,
-    )?;
-
-    // Mesh's shape might have large extents on some dimensions. Those
-    // dimensions would cause large fanout in our comm actor
-    // implementation. To avoid that, we reshape it by increasing
-    // dimensionality and limiting the extent of each dimension. Note
-    // the reshape is only visible to the internal algorithm. The
-    // shape that user sees maintains intact.
-    //
-    // For example, a typical shape is [hosts=1024, gpus=8]. By using
-    // limit 8, it becomes [8, 8, 8, 2, 8] during casting. In other
-    // words, it adds 3 extra layers to the comm actor tree, while
-    // keeping the fanout in each layer per dimension at 8 or smaller.
-    //
-    // An important note here is that max dimension size != max fanout.
-    // Rank 0 must send a message to all ranks at index 0 for every dimension.
-    // If our reshaped shape is [8, 8, 8, 2, 8], rank 0 must send
-    // 7 + 7 + 7 + 1 + 7 = 21 messages.
-
-    let slice_of_root = root_mesh_shape.slice();
-
-    let max_cast_dimension_size = hyperactor_config::global::get(MAX_CAST_DIMENSION_SIZE);
-
-    let slice_of_cast = slice_of_root.reshape_with_limit(Limit::from(max_cast_dimension_size));
-
-    let selection_of_cast =
-        reshape_selection(selection_of_root, root_mesh_shape.slice(), &slice_of_cast)?;
-
-    let cast_message = CastMessage {
-        dest: Uslice {
-            slice: slice_of_cast,
-            selection: selection_of_cast,
-        },
-        message,
-    };
-
-    // TEMPORARY: remove with v0 support. Same ownership rule as
-    // the inner envelope: caller-known headers ride first, cast-info
-    // wins on collision.
-    let mut headers = caller_headers.clone();
-    headers.set(CAST_ACTOR_MESH_ID, actor_mesh_id);
-
-    comm_actor_ref
-        .port()
-        .post_with_headers(cx, headers, cast_message);
-
-    Ok(())
+pub fn set_cast_info_on_headers(headers: &mut Flattrs, cast_point: Point, sender: ActorAddr) {
+    headers.set(
+        hyperactor::mailbox::headers::SENDER_ACTOR_ID_HASH,
+        hyperactor_telemetry::hash_to_u64(sender.id()),
+    );
+    headers.set(CAST_POINT, cast_point);
+    headers.set(CAST_ORIGINATING_SENDER, sender);
 }
 
-#[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `CastError`.
-pub(crate) fn cast_to_sliced_mesh<A, M>(
-    cx: &impl context::Actor,
-    actor_mesh_id: ActorMeshId,
-    comm_actor_ref: &ActorRef<CommActor>,
-    sel_of_sliced: &Selection,
-    message: M,
-    sliced_shape: &Shape,
-    root_mesh_shape: &Shape,
-    caller_headers: &Flattrs,
-) -> Result<(), CastError>
-where
-    A: Referable + RemoteHandles<M>,
-    M: RemoteMessage,
-{
-    let root_slice = root_mesh_shape.slice();
+pub trait CastInfo {
+    /// Get the cast rank and cast shape.
+    /// If something wasn't explicitly sent via a cast, represent it as the only
+    /// member of a zero-dimensional cast shape, which is the same as a singleton.
+    fn cast_point(&self) -> Point;
+    fn sender(&self) -> ActorAddr;
+}
 
-    // Casting to `*`?
-    let sel_of_root = if selection::normalize(sel_of_sliced) == normal::NormalizedSelection::True {
-        // Reify this view into base.
-        root_slice.reify_slice(sliced_shape.slice())?
-    } else {
-        // No, fall back on `of_ranks`.
-        let ranks = sel_of_sliced
-            .eval(&EvalOpts::strict(), sliced_shape.slice())?
-            .collect::<BTreeSet<_>>();
-        Selection::of_ranks(root_slice, &ranks)?
-    };
+impl<A: Actor> CastInfo for Context<'_, A> {
+    fn cast_point(&self) -> Point {
+        match self.headers().get(CAST_POINT) {
+            Some(point) => point,
+            None => Extent::unity()
+                .point_of_rank(0)
+                .expect("the unity extent contains rank 0"),
+        }
+    }
 
-    // Cast.
-    actor_mesh_cast::<A, M>(
-        cx,
-        actor_mesh_id,
-        comm_actor_ref,
-        sel_of_root,
-        root_mesh_shape,
-        sliced_shape,
-        message,
-        caller_headers,
-    )
+    fn sender(&self) -> ActorAddr {
+        self.headers()
+            .get(CAST_ORIGINATING_SENDER)
+            .expect("cast headers contain the originating sender")
+    }
 }
 
 /// The type of error of casting operations.

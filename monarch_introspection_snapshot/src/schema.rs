@@ -315,8 +315,7 @@ pub struct ActorInboundOrderingRow {
 ///
 /// `sender` is the session OWNER ActorAddr — the actor whose
 /// `Sequencer` assigned this session's SEQ_INFO. For direct sends and
-/// V1 cast that's the logical sender; for V0 legacy cast that's the
-/// forwarding `CommActor`. `None` is rare and occurs only when every
+/// casts, that's the logical sender. `None` is rare and occurs only when every
 /// message in this session bypassed the stamping path.
 #[derive(Debug, Clone, PartialEq, RecordBatchRow)]
 pub struct OrderingSessionRow {

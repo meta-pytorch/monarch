@@ -300,7 +300,7 @@ trace-level debugging is needed. Filter with:
 - `inbound_ordering.snapshot_complete == false` — **partial snapshot**. `sessions` excludes any session that was held by a concurrent send at snapshot time. Every `returned_*` rollup is a **lower bound** over returned sessions only; the skipped sessions may themselves carry buffered messages. **Refetch before concluding "no stalls"** — a `returned_buffered_message_count == 0` reading is only authoritative when `snapshot_complete == true`. Usually a refetch yields a complete view; don't alert on partiality alone.
 - `inbound_ordering.snapshot_complete == true && inbound_ordering.returned_buffered_message_count == 0` — no stalls.
 - Otherwise: filter `sessions` for `buffered_count > 0`. Each stalled session has:
-  - `sender` — a string `ActorAddr` of the **session owner** (the actor whose `Sequencer` assigned the SEQ_INFO for this session). For direct sends and V1 cast, the session owner IS the logical sender. For V0 legacy cast, it is the forwarding CommActor.
+  - `sender` — a string `ActorAddr` of the **session owner** (the actor whose `Sequencer` assigned the SEQ_INFO for this session). For direct sends and casts, the session owner IS the logical sender.
   - `expected_next_seq` — the seq the next contiguous send must carry to unblock the buffer.
   - `oldest_buffered_seq` / `newest_buffered_seq` — the buffered seq range.
 - Diagnosis template: "`{actor}` is waiting for seq `{expected_next_seq}` from session owner `{sender}`; `{buffered_count}` messages buffered from seq `{oldest_buffered_seq}` to `{newest_buffered_seq}`." The waiting happens at the receiver: the session owner has already done its part (its seqs are in the buffer); the receiver is blocked until the missing seq arrives.

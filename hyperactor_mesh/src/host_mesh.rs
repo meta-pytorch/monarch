@@ -1895,8 +1895,6 @@ mod tests {
     use std::assert_matches;
 
     #[cfg(fbcode_build)]
-    use hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER;
-    #[cfg(fbcode_build)]
     use hyperactor_config::attrs::Attrs;
     use ndslice::ViewExt;
     use ndslice::extent;
@@ -1914,8 +1912,6 @@ mod tests {
     use crate::Bootstrap;
     #[cfg(fbcode_build)]
     use crate::bootstrap::MESH_TAIL_LOG_LINES;
-    #[cfg(fbcode_build)]
-    use crate::comm::ENABLE_NATIVE_V1_CASTING;
     #[cfg(fbcode_build)]
     use crate::resource::Status;
     #[cfg(fbcode_build)]
@@ -2021,18 +2017,8 @@ mod tests {
 
     #[tokio::test]
     #[cfg(fbcode_build)]
-    async fn test_extrinsic_allocation_v0() {
+    async fn test_extrinsic_allocation() {
         let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, false);
-        execute_extrinsic_allocation(&config).await;
-    }
-
-    #[tokio::test]
-    #[cfg(fbcode_build)]
-    async fn test_extrinsic_allocation_v1() {
-        let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
-        let _guard1 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
         execute_extrinsic_allocation(&config).await;
     }
 

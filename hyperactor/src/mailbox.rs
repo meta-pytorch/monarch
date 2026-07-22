@@ -663,9 +663,7 @@ impl MessageEnvelope {
         }
     }
 
-    /// Change the sender on the envelope in case it was set incorrectly. This
-    /// should only be used by CommActor since it is forwarding from another
-    /// sender.
+    /// Change the sender on an envelope forwarded on behalf of another actor.
     pub fn update_sender(&mut self, sender: impl Into<ActorAddr>) {
         self.sender = sender.into();
     }
@@ -1912,7 +1910,7 @@ impl Mailbox {
     /// The accumulator type must have a ReducerSpec.
     ///
     /// The returned handle can be bound and embedded in cast messages.
-    /// When the message is split by CommActor, each destination receives a
+    /// When cast routing splits the message, each destination receives a
     /// split port. Responses to split ports are accumulated using the
     /// accumulator's reducer, and the final accumulated result is delivered
     /// to the returned receiver.

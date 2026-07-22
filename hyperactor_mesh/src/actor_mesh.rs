@@ -66,7 +66,7 @@ use tokio::sync::watch;
 use crate::Error;
 use crate::ProcMeshRef;
 use crate::ValueMesh;
-use crate::comm::multicast;
+use crate::casting;
 use crate::config::MAX_CAST_FANOUT;
 use crate::host_mesh::GET_PROC_STATE_MAX_IDLE;
 use crate::host_mesh::mesh_to_rankedvalues_with_default;
@@ -111,7 +111,7 @@ pub struct ActorMesh<A: Referable> {
     /// the mesh is stopped when the actor owning it is stopped, and can provide
     /// supervision events via subscribing.
     /// It may not be present for some types of actors, typically system actors
-    /// such as ProcAgent or CommActor.
+    /// such as ProcAgent or CastActor.
     controller: Option<ActorRef<ActorMeshController<A>>>,
 }
 
@@ -598,7 +598,7 @@ impl<A: Referable> ActorMeshRef<A> {
     pub fn cast<M>(&self, cx: &impl context::Actor, message: M) -> crate::Result<()>
     where
         A: RemoteHandles<M>,
-        M: RemoteMessage + Clone, // Clone is required until we are fully onto comm actor
+        M: RemoteMessage + Clone,
     {
         self.cast_with_headers(cx, &Flattrs::new(), message)
     }
@@ -625,7 +625,7 @@ impl<A: Referable> ActorMeshRef<A> {
 
         let mut headers = caller_headers.clone();
         headers.set(
-            multicast::CAST_ORIGINATING_SENDER,
+            casting::CAST_ORIGINATING_SENDER,
             cx.instance().self_addr().clone(),
         );
         headers.set(crate::casting::CAST_ACTOR_MESH_ID, self.id.clone());
@@ -658,7 +658,7 @@ impl<A: Referable> ActorMeshRef<A> {
             }
             n if threshold > 0 && n < threshold => {
                 // Point-to-point: send directly to each destination actor,
-                // bypassing the comm actor tree for lower latency when fanout
+                // bypassing the cast tree for lower latency when fanout
                 // is small.
                 let sender = cx.instance().self_addr().clone();
                 let dest_port = M::port();
@@ -728,7 +728,7 @@ impl<A: Referable> ActorMeshRef<A> {
 
                     let mut rank_headers = headers.clone();
 
-                    multicast::set_cast_info_on_headers(&mut rank_headers, point, sender.clone());
+                    casting::set_cast_info_on_headers(&mut rank_headers, point, sender.clone());
 
                     cx.instance().post(
                         actor
@@ -847,10 +847,10 @@ impl<A: Referable> ActorMeshRef<A> {
     {
         let create_rank = point.rank();
         let mut headers = caller_headers.clone();
-        multicast::set_cast_info_on_headers(&mut headers, point, cx.instance().self_addr().clone());
+        casting::set_cast_info_on_headers(&mut headers, point, cx.instance().self_addr().clone());
 
         // Make sure that we rewrite ranks, as these may be used for
-        // bootstrapping comm actors.
+        // bootstrapping actors.
         let mut data = wirevalue::Any::<wirevalue::encoding::Multipart>::serialize(&message)
             .map_err(|e| Error::CastingError(self.id.clone(), e.into()))?;
         data.visit_multipart_parts_mut::<resource::RankRepr, anyhow::Error>(
@@ -2015,12 +2015,8 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 60)]
     async fn test_sliced_actor_mesh_cast_v1_reaches_slice_members() {
-        use hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER;
-
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
-        let _v1 = config.override_key(crate::comm::ENABLE_NATIVE_V1_CASTING, true);
-        let _reorder = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
         let _proc_spawn = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
         let _host_spawn = config.override_key(
             hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
@@ -2168,12 +2164,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_cast_p2p() {
         let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(crate::comm::ENABLE_NATIVE_V1_CASTING, true);
-        let _guard2 = config.override_key(
-            hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER,
-            true,
-        );
-        let _guard3 = config.override_key(crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD, 1024);
+        let _guard = config.override_key(crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD, 1024);
         execute_cast(&config).await;
     }
     /// Test that undeliverable messages are properly returned to the

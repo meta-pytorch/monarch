@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 # Applied to the leaf name (last comma-separated component of full_name),
 # matching the old admin_dag._derive_label behavior.
 _SYSTEM_NAME_PATTERNS = re.compile(
-    r"(telemetry|setup[-_]|SetupActor|comm[-_]|CommActor|"
+    r"(telemetry|setup[-_]|SetupActor|cast[-_]|CastActor|"
     r"logger[-_]|LoggerActor|log_client|MeshAdminAgent|HostAgent|ProcAgent|"
     r"host_agent|proc_agent|mesh_admin|controller_controller|"
     r"proc_mesh_controller|actor_mesh_controller)",

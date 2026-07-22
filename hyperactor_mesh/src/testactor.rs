@@ -46,7 +46,7 @@ use crate::ActorMesh;
 #[cfg(test)]
 use crate::ActorMeshRef;
 use crate::ProcMeshRef;
-use crate::comm::multicast::CastInfo;
+use crate::casting::CastInfo;
 use crate::mesh_id::ActorMeshId;
 use crate::supervision::MeshFailure;
 #[cfg(test)]

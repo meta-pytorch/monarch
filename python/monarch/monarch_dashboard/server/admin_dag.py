@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 # Known system/infrastructure actor name patterns.
 # These actors are spawned by Monarch internals, not by user code.
 _SYSTEM_NAME_PATTERNS = re.compile(
-    r"(telemetry|setup[-_]|SetupActor|comm[-_]|CommActor|"
+    r"(telemetry|setup[-_]|SetupActor|cast[-_]|CastActor|"
     r"logger[-_]|LoggerActor|log_client|MeshAdminAgent|HostAgent|ProcAgent|"
     r"host_agent|proc_agent|mesh_admin|controller_controller|"
     r"proc_mesh_controller|actor_mesh_controller)",

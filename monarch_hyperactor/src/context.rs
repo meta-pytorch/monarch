@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use hyperactor::Instance;
 use hyperactor::context;
-use hyperactor_mesh::comm::multicast::CastInfo;
+use hyperactor_mesh::casting::CastInfo;
 use ndslice::Extent;
 use ndslice::Point;
 use pyo3::exceptions::PyRuntimeError;

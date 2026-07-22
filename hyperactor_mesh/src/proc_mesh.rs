@@ -1264,8 +1264,6 @@ mod tests {
     #[cfg(fbcode_build)]
     use hyperactor::accum::StreamingReducerOpts;
     #[cfg(fbcode_build)]
-    use hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER;
-    #[cfg(fbcode_build)]
     use hyperactor::context::Mailbox;
     #[cfg(fbcode_build)]
     use ndslice::ViewExt as _;
@@ -1284,8 +1282,6 @@ mod tests {
     use super::ACTOR_SPAWN_MAX_IDLE;
     #[cfg(fbcode_build)]
     use crate::ActorMesh;
-    #[cfg(fbcode_build)]
-    use crate::comm::ENABLE_NATIVE_V1_CASTING;
     #[cfg(fbcode_build)]
     use crate::host_mesh::PROC_SPAWN_MAX_IDLE;
     #[cfg(fbcode_build)]
@@ -1480,12 +1476,10 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 120)]
     #[cfg(fbcode_build)]
-    async fn test_spawn_actor_v1_casting() {
+    async fn test_spawn_actor_casting() {
         let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
-        let _guard2 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
-        let _guard3 = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(120));
-        let _guard4 = config.override_key(
+        let _guard = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(120));
+        let _guard2 = config.override_key(
             hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
             Duration::from_secs(120),
         );
@@ -1494,24 +1488,9 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 120)]
     #[cfg(fbcode_build)]
-    async fn test_spawn_actor_v1_casting_p2p() {
+    async fn test_spawn_actor_casting_p2p() {
         let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
-        let _guard2 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
-        let _guard3 = config.override_key(crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD, 1024);
-        let _guard4 = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(120));
-        let _guard5 = config.override_key(
-            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
-            Duration::from_secs(120),
-        );
-        execute_spawn_actor().await;
-    }
-
-    #[async_timed_test(timeout_secs = 120)]
-    #[cfg(fbcode_build)]
-    async fn test_spawn_actor_v0_casting() {
-        let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, false);
+        let _guard = config.override_key(crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD, 1024);
         let _guard2 = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(120));
         let _guard3 = config.override_key(
             hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
@@ -1550,10 +1529,8 @@ mod tests {
     #[cfg(fbcode_build)]
     async fn test_seq_from_same_sender_to_different_meshes() {
         let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
-        let _guard2 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
-        let _guard3 = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
-        let _guard4 = config.override_key(
+        let _guard = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
+        let _guard2 = config.override_key(
             hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
             Duration::from_secs(60),
         );
@@ -1598,10 +1575,8 @@ mod tests {
     #[cfg(fbcode_build)]
     async fn test_seq_from_same_sender_to_different_views() {
         let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
-        let _guard2 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
-        let _guard3 = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
-        let _guard4 = config.override_key(
+        let _guard = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
+        let _guard2 = config.override_key(
             hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
             Duration::from_secs(60),
         );
@@ -1659,10 +1634,8 @@ mod tests {
     #[cfg(fbcode_build)]
     async fn test_seq_from_different_senders() {
         let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
-        let _guard2 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
-        let _guard3 = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
-        let _guard4 = config.override_key(
+        let _guard = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
+        let _guard2 = config.override_key(
             hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
             Duration::from_secs(60),
         );
@@ -2000,10 +1973,8 @@ mod tests {
     #[cfg(fbcode_build)]
     async fn test_spawn_controllerless_service() {
         let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
-        let _guard2 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
-        let _guard3 = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(120));
-        let _guard4 = config.override_key(
+        let _guard = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(120));
+        let _guard2 = config.override_key(
             hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
             Duration::from_secs(120),
         );

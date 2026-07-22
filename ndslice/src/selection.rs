@@ -91,7 +91,6 @@ pub mod pretty;
 pub mod token_parser;
 
 /// Shape navigation guided by [`Selection`] expressions.
-pub mod routing;
 
 /// Normalization logic for `Selection`.
 pub mod normal;
@@ -353,7 +352,7 @@ pub fn structurally_equal(a: &Selection, b: &Selection) -> bool {
 /// This rewrites the selection to eliminate redundant subtrees and
 /// bring structurally similar selections into a common
 /// representation. The result is suitable for comparison, hashing,
-/// and deduplication (e.g., in [`RoutingFrameKey`]).
+/// and deduplication (e.g., in [`NormalizedSelectionKey`]).
 ///
 /// Normalization preserves semantics but may alter syntactic
 /// structure. It is designed to improve over time as additional
@@ -889,79 +888,6 @@ impl Selection {
             (Selection::False, _) | (_, Selection::False) => Selection::False,
             (Selection::True, other) | (other, Selection::True) => other.clone(),
             _ => Selection::Intersection(Box::new(self), Box::new(b)),
-        }
-    }
-
-    /// Canonicalizes this selection to the specified number of
-    /// dimensions.
-    ///
-    /// Ensures that the selection has exactly `num_dims` dimensions
-    /// by recursively wrapping it in combinators (`All`, `Any`, etc.)
-    /// where needed. This transformation enforces a canonical
-    /// structural form suitable for dimensional evaluation (e.g.,
-    /// routing via `next_steps`).
-    ///
-    /// Examples:
-    /// - `True` becomes `All(All(...(True)))`
-    /// - `Any(True)` becomes `Any(Any(...(True)))`
-    /// - Fully specified selections are left unchanged.
-    ///
-    /// ---
-    ///
-    /// # Panics
-    /// Panics if `num_dims == 0`. Use a canonical embedding (e.g., 0D
-    /// → 1D) before calling this (see e.g. `RoutingFrame::root`).
-    pub(crate) fn canonicalize_to_dimensions(self, num_dims: usize) -> Selection {
-        assert!(
-            num_dims > 0,
-            "canonicalize_to_dimensions requires num_dims > 0"
-        );
-        self.canonicalize_to_dimensions_rec(0, num_dims)
-    }
-
-    fn canonicalize_to_dimensions_rec(self, dim: usize, num_dims: usize) -> Selection {
-        use crate::selection::dsl::*;
-
-        match self {
-            Selection::True if dim < num_dims => {
-                let mut out = true_();
-                for _ in (dim..num_dims).rev() {
-                    out = all(out);
-                }
-                out
-            }
-            Selection::False if dim < num_dims => {
-                let mut out = false_();
-                for _ in (dim..num_dims).rev() {
-                    out = all(out);
-                }
-                out
-            }
-            Selection::Any(inner) if dim < num_dims && matches!(*inner, Selection::True) => {
-                let mut out = true_();
-                for _ in (dim..num_dims).rev() {
-                    out = any(out);
-                }
-                out
-            }
-            Selection::All(inner) => all(inner.canonicalize_to_dimensions_rec(dim + 1, num_dims)),
-            Selection::Any(inner) => any(inner.canonicalize_to_dimensions_rec(dim + 1, num_dims)),
-            Selection::First(inner) => {
-                first(inner.canonicalize_to_dimensions_rec(dim + 1, num_dims))
-            }
-            Selection::Range(r, inner) => {
-                range(r, inner.canonicalize_to_dimensions_rec(dim + 1, num_dims))
-            }
-            Selection::Intersection(a, b) => intersection(
-                a.canonicalize_to_dimensions_rec(dim, num_dims),
-                b.canonicalize_to_dimensions_rec(dim, num_dims),
-            ),
-            Selection::Union(a, b) => union(
-                a.canonicalize_to_dimensions_rec(dim, num_dims),
-                b.canonicalize_to_dimensions_rec(dim, num_dims),
-            ),
-
-            other => other,
         }
     }
 
@@ -2448,77 +2374,6 @@ mod tests {
                 .unwrap()
                 .collect::<Vec<_>>(),
             base.iter().collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn test_canonicalize_to_dimensions() {
-        assert_structurally_eq!(
-            true_().canonicalize_to_dimensions(3),
-            &all(all(all(true_())))
-        );
-        assert_structurally_eq!(
-            all(true_()).canonicalize_to_dimensions(3),
-            &all(all(all(true_())))
-        );
-        assert_structurally_eq!(
-            all(all(true_())).canonicalize_to_dimensions(3),
-            &all(all(all(true_())))
-        );
-        assert_structurally_eq!(
-            all(all(all(true_()))).canonicalize_to_dimensions(3),
-            &all(all(all(true_())))
-        );
-
-        assert_structurally_eq!(
-            false_().canonicalize_to_dimensions(3),
-            &all(all(all(false_())))
-        );
-        assert_structurally_eq!(
-            all(false_()).canonicalize_to_dimensions(3),
-            &all(all(all(false_())))
-        );
-        assert_structurally_eq!(
-            all(all(false_())).canonicalize_to_dimensions(3),
-            &all(all(all(false_())))
-        );
-        assert_structurally_eq!(
-            all(all(all(false_()))).canonicalize_to_dimensions(3),
-            &all(all(all(false_())))
-        );
-
-        assert_structurally_eq!(
-            any(true_()).canonicalize_to_dimensions(3),
-            &any(any(any(true_())))
-        );
-        assert_structurally_eq!(
-            any(any(true_())).canonicalize_to_dimensions(3),
-            &any(any(any(true_())))
-        );
-        assert_structurally_eq!(
-            any(any(any(true_()))).canonicalize_to_dimensions(3),
-            &any(any(any(true_())))
-        );
-
-        // 0:1 -> 0:1, *, * <=> range(0..1, all(all(true_())))
-        assert_structurally_eq!(
-            range(0..1, true_()).canonicalize_to_dimensions(3),
-            &range(0..1, all(all(true_())))
-        );
-        // *, 0:1 -> *, 0:1, * <=> all(range(0..1, all(true_())))
-        assert_structurally_eq!(
-            all(range(0..1, true_())).canonicalize_to_dimensions(3),
-            &all(range(0..1, all(true_())))
-        );
-        // 0:1, ? -> 0:1, ?, ? <=> range(0..1, any(any(true_())))
-        assert_structurally_eq!(
-            range(0..1, any(true_())).canonicalize_to_dimensions(3),
-            &range(0..1, any(any(true_())))
-        );
-        // 0:1, ?, * -> 0:1, ?, * <=> range(0..1, any(all(true_())))
-        assert_structurally_eq!(
-            range(0..1, any(all(true_()))).canonicalize_to_dimensions(3),
-            &range(0..1, any(all(true_())))
         );
     }
 }

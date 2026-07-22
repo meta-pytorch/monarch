@@ -37,7 +37,7 @@ declare_attrs! {
     /// Full ActorAddr of the session owner — the actor whose Sequencer
     /// assigned this message's SEQ_INFO. Stamped at SEQ_INFO
     /// assignment/install sites: MailboxExt::post, PortHandle::try_post,
-    /// and CommActor::deliver_to_dest (after V1 installs SEQ_INFO).
+    /// and cast delivery after it installs SEQ_INFO.
     /// Paired with the SEQ_INFO value.
     ///
     /// Framework-owned: stamping sites OVERWRITE caller-supplied values
@@ -104,9 +104,8 @@ pub fn set_rust_message_type<M>(headers: &mut Flattrs) {
 /// traffic. `caller_set_stale` defends against handlers that forward inbound
 /// headers verbatim.
 ///
-/// Callable from cross-crate sites (CommActor::deliver_to_dest in
-/// hyperactor_mesh), so visibility is `pub` with `#[doc(hidden)]` to keep
-/// it out of the public API surface.
+/// Callable from cross-crate cast-delivery sites, so visibility is `pub` with
+/// `#[doc(hidden)]` to keep it out of the public API surface.
 #[doc(hidden)]
 pub fn stamp_sender_actor_id(
     headers: &mut Flattrs,

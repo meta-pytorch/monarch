@@ -2749,11 +2749,11 @@ impl<A: Actor> Instance<A> {
         )
     }
 
-    /// Post a message with pre-set SEQ_INFO. Only for internal use by CommActor.
+    /// Post a message with pre-set SEQ_INFO. Only for internal cast routing.
     ///
     /// # Warning
     /// This method bypasses the SEQ_INFO assertion. Do not use unless you are
-    /// implementing mesh-level message routing (CommActor).
+    /// implementing mesh-level message routing.
     #[doc(hidden)]
     pub fn post_with_external_seq_info(
         &self,
