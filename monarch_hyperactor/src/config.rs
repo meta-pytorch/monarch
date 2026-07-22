@@ -821,6 +821,7 @@ mod tests {
         runtime[TEST_PROCESS_LOCAL_CONFIG] = true;
         hyperactor_config::global::set(Source::Runtime, runtime);
 
+        let execution_id = hyperactor_telemetry::env::execution_id();
         let env = propagatable_config_env();
         assert_eq!(
             env.get("MONARCH_TOKIO_WORKER_THREADS").map(String::as_str),
@@ -833,6 +834,10 @@ mod tests {
         assert!(
             !env.contains_key("TEST_PROCESS_LOCAL_CONFIG"),
             "process-local config values should not propagate"
+        );
+        assert_eq!(
+            env.get("HYPERACTOR_EXECUTION_ID").map(String::as_str),
+            Some(execution_id.as_str())
         );
         hyperactor_config::global::reset_to_defaults();
     }

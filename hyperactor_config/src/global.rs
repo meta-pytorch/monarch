@@ -656,6 +656,37 @@ pub fn try_get_cloned<T: AttrValue>(key: Key<T>) -> Option<T> {
     snapshot.get(key).cloned()
 }
 
+/// Return a config value, initializing it in the Runtime layer when absent.
+///
+/// A key is absent only when it is unset in every config layer and has no
+/// declared default. A declared default is returned without running the
+/// initializer or inserting a Runtime value.
+///
+/// The initializer runs outside the global write lock. If another caller
+/// installs a value first, that value wins and the generated candidate is
+/// discarded.
+pub fn get_or_insert_with<T, F>(key: Key<T>, make: F) -> T
+where
+    T: AttrValue,
+    F: FnOnce() -> T,
+{
+    if let Some(value) = try_get_cloned(key) {
+        return value;
+    }
+
+    let candidate = make();
+    let mut layers = GLOBAL.layers.write().unwrap();
+    if let Some(value) = layers.materialize().get(key).cloned() {
+        return value;
+    }
+
+    let mut attrs = Attrs::new();
+    attrs.set(key, candidate.clone());
+    layers.merge(Source::Runtime, attrs);
+    rematerialize(&layers);
+    candidate
+}
+
 /// Construct a [`Layer`] for the given [`Source`] using the provided
 /// `attrs`.
 ///
@@ -913,11 +944,11 @@ impl ConfigLock {
     /// restored to their prior state.
     ///
     /// The returned guard must not outlive this [`ConfigLock`].
-    pub fn override_key<'a, T: AttrValue>(
-        &'a self,
+    pub fn override_key<T: AttrValue>(
+        &self,
         key: crate::attrs::Key<T>,
         value: T,
-    ) -> ConfigValueGuard<'a, T> {
+    ) -> ConfigValueGuard<'_, T> {
         let token = OVERRIDE_TOKEN_SEQ.fetch_add(1, Ordering::Relaxed);
 
         let mut g = GLOBAL.layers.write().unwrap();
@@ -1169,6 +1200,36 @@ mod tests {
             None,
         ))
         pub attr CONFIG_KEY_NO_ENV: u32 = 100;
+
+        @meta(CONFIG = ConfigAttr::new(
+            Some("HYPERACTOR_GENERATED_TEST_VALUE".to_string()),
+            None,
+        ))
+        pub attr GENERATED_TEST_VALUE: String;
+    }
+
+    #[test]
+    fn test_get_or_insert_with_initializes_missing_config_once() {
+        let _lock = lock();
+        reset_to_defaults();
+
+        assert_eq!(try_get_cloned(GENERATED_TEST_VALUE), None);
+        assert_eq!(
+            get_or_insert_with(GENERATED_TEST_VALUE, || "generated".to_string()),
+            "generated"
+        );
+        assert_eq!(
+            get_or_insert_with(GENERATED_TEST_VALUE, || panic!("value already initialized")),
+            "generated"
+        );
+        assert_eq!(
+            runtime_attrs()
+                .get(GENERATED_TEST_VALUE)
+                .map(String::as_str),
+            Some("generated")
+        );
+
+        reset_to_defaults();
     }
 
     #[test]
