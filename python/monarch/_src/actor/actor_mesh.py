@@ -83,7 +83,12 @@ from monarch._src.actor.endpoint import (
 from monarch._src.actor.future import Future
 from monarch._src.actor.mpsc import Receiver  # noqa: F401 - used in annotations
 from monarch._src.actor.python_extension_methods import rust_struct
-from monarch._src.actor.shape import MeshTrait, NDSlice
+from monarch._src.actor.shape import (
+    DimensionSources,
+    MeshTrait,
+    NDSlice,
+    transform_dimension_set,
+)
 from monarch._src.actor.sync_state import fake_sync_state
 from monarch._src.actor.telemetry import METER, span
 from monarch._src.actor.tensor_engine_shim import actor_rref, create_actor_message_kind
@@ -1748,6 +1753,7 @@ class ActorMesh(MeshTrait, Generic[T]):
         inner: "ActorMeshProtocol",
         shape: Shape,
         proc_mesh: "Optional[ProcMesh]",
+        proc_dims: frozenset[str] | None = None,
     ) -> None:
         # Class name of the actor.
         self.__name__: str = Class.__name__
@@ -1757,6 +1763,7 @@ class ActorMesh(MeshTrait, Generic[T]):
         self._inner: "ActorMeshProtocol" = inner
         self._shape = shape
         self._proc_mesh = proc_mesh
+        self._proc_dims = proc_dims
 
         async_endpoints = []
         sync_endpoints = []
@@ -1845,6 +1852,7 @@ class ActorMesh(MeshTrait, Generic[T]):
             self._inner,
             self._shape,
             self._proc_mesh,
+            self._proc_dims,
         )
 
     @property
@@ -1857,8 +1865,27 @@ class ActorMesh(MeshTrait, Generic[T]):
         return self._shape.labels
 
     def _new_with_shape(self, shape: Shape) -> "ActorMesh[T]":
-        sliced = self._inner.new_with_region(shape.region)
-        return ActorMesh(self._class, self._mesh_name, sliced, shape, self._proc_mesh)
+        return self._new_with_shape_from(
+            shape, {name: (name,) for name in shape.labels}
+        )
+
+    def _new_with_shape_from(
+        self, shape: Shape, sources: DimensionSources
+    ) -> "ActorMesh[T]":
+        proc_dims = transform_dimension_set(self._proc_dims, sources)
+        return ActorMesh(
+            self._class,
+            self._mesh_name,
+            self._inner.new_with_region(
+                shape.region,
+                None
+                if proc_dims is None
+                else [i for i, name in enumerate(shape.labels) if name in proc_dims],
+            ),
+            shape,
+            self._proc_mesh,
+            proc_dims,
+        )
 
     def __repr__(self) -> str:
         return f"ActorMesh(class={self._class}, shape={self._shape}), inner={type(self._inner)})"

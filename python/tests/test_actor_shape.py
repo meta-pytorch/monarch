@@ -8,9 +8,8 @@
 
 from unittest import TestCase
 
-import pytest
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape, Slice
-from monarch._src.actor.shape import ShapeExt
+from monarch._src.actor.shape import ShapeExt, transform_dimension_set
 
 
 class TestShapeSlicing(TestCase):
@@ -113,3 +112,23 @@ class TestShapeSlicing(TestCase):
         result = ShapeExt.slice(shape, a=2, b=slice(1, 3))
         self.assertEqual(result.labels, ["b", "c"])
         self.assertEqual(result.ndslice.sizes, [2, 6])
+
+
+class DimensionSetTransformTest(TestCase):
+    def test_transform_preserves_provenance_or_reports_ambiguity(self) -> None:
+        dimensions = frozenset({"workers"})
+
+        self.assertEqual(
+            frozenset({"tp", "cp"}),
+            transform_dimension_set(
+                dimensions,
+                {"hosts": ("hosts",), "tp": ("workers",), "cp": ("workers",)},
+            ),
+        )
+        self.assertEqual(
+            frozenset({"tp"}),
+            transform_dimension_set(dimensions, {"tp": ("workers",)}),
+        )
+        self.assertIsNone(
+            transform_dimension_set(dimensions, {"world": ("hosts", "workers")})
+        )

@@ -374,7 +374,14 @@ impl ProcMeshRef {
                 actual: ranks.len(),
             });
         }
-        let proc_agent_mesh = Self::proc_agent_mesh_ref(&id, &region, &ranks)?;
+        let proc_agent_mesh = Self::proc_agent_mesh_ref(
+            &id,
+            &region,
+            &ranks,
+            host_mesh.as_ref().map(|host_mesh| {
+                (host_mesh.region().slice().num_dim()..region.slice().num_dim()).collect()
+            }),
+        )?;
         Ok(Self {
             id,
             region,
@@ -390,7 +397,7 @@ impl ProcMeshRef {
     pub fn new_singleton(id: ProcMeshId, proc_ref: ProcRef) -> crate::Result<Self> {
         let region: Region = Extent::unity().into();
         let ranks = Arc::new(vec![proc_ref]);
-        let proc_agent_mesh = Self::proc_agent_mesh_ref(&id, &region, &ranks)?;
+        let proc_agent_mesh = Self::proc_agent_mesh_ref(&id, &region, &ranks, None)?;
         Ok(Self {
             id,
             region,
@@ -421,6 +428,7 @@ impl ProcMeshRef {
         proc_mesh_id: &ProcMeshId,
         region: &Region,
         ranks: &[ProcRef],
+        proc_dims: Option<Vec<usize>>,
     ) -> crate::Result<ActorMeshRef<ProcAgent>> {
         let agent_label = ranks
             .first()
@@ -440,13 +448,33 @@ impl ProcMeshRef {
                 .map_err(|error| crate::Error::ConfigurationError(error.into()))?,
         );
 
-        Ok(ActorMeshRef::new(
+        Ok(ActorMeshRef::new_with_proc_dims(
             id,
             Some(proc_mesh_id.clone()),
             region.clone(),
             None,
             members,
+            proc_dims,
         ))
+    }
+
+    pub fn sliced_with_proc_dims(&self, region: Region, proc_dims: Option<Vec<usize>>) -> Self {
+        debug_assert!(region.is_subset(view::Ranked::region(self)));
+        Self {
+            id: self.id.clone(),
+            proc_agent_mesh: self
+                .proc_agent_mesh
+                .sliced_with_proc_dims(region.clone(), proc_dims),
+            ranks: Arc::new(
+                self.region()
+                    .remap(&region)
+                    .unwrap()
+                    .map(|index| self.get(index).unwrap().clone())
+                    .collect(),
+            ),
+            region,
+            host_mesh: self.host_mesh.clone(),
+        }
     }
 
     /// Query the state of all actors in this mesh matching the given id.
@@ -1210,21 +1238,7 @@ impl view::RankedSliceable for ProcMeshRef {
     /// The returned `ProcMeshRef` contains the selected dense `ProcRef`s, and
     /// its `proc_agent_mesh` carries a lazy actor-mesh slice descriptor.
     fn sliced(&self, region: Region) -> Self {
-        debug_assert!(region.is_subset(view::Ranked::region(self)));
-        let ranks = self
-            .region()
-            .remap(&region)
-            .unwrap()
-            .map(|index| self.get(index).unwrap().clone())
-            .collect::<Vec<_>>();
-
-        Self {
-            id: self.id.clone(),
-            proc_agent_mesh: self.proc_agent_mesh.sliced(region.clone()),
-            region,
-            ranks: Arc::new(ranks),
-            host_mesh: self.host_mesh.clone(),
-        }
+        self.sliced_with_proc_dims(region, None)
     }
 }
 

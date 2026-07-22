@@ -19,6 +19,10 @@
 //!   cast through that ref materializes the descriptor with the caller context
 //!   before sending the cast message, sequencing setup and delivery on the same
 //!   sender stream.
+//! - **AM-3 (dimension provenance):** mesh APIs that transform named dimensions
+//!   carry the resulting proc-dimension indices explicitly. Raw Rust slices do
+//!   not have that provenance and therefore fall back to ordinary bounded-fanout
+//!   materialization.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -55,6 +59,7 @@ use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::declare_attrs;
 use ndslice::ViewExt as _;
 use ndslice::view;
+use ndslice::view::RankedSliceable as _;
 use ndslice::view::Region;
 use ndslice::view::View;
 use serde::Deserialize;
@@ -123,12 +128,13 @@ impl<A: Referable> ActorMesh<A> {
         controller: Option<ActorRef<ActorMeshController<A>>>,
         members: Arc<ValueMesh<ActorAddr>>,
     ) -> Self {
-        let current_ref = ActorMeshRef::new(
+        let current_ref = ActorMeshRef::new_with_proc_dims(
             id.clone(),
             Some(proc_mesh.id().clone()),
             proc_mesh.region().clone(),
             controller.clone(),
             members,
+            proc_mesh.agent_mesh().cast_proc_dims(),
         );
 
         Self {
@@ -380,6 +386,7 @@ struct ActorMeshCastDomain {
     members: Arc<ValueMesh<ActorAddr>>,
     region: Region,
     tiling_policy: TilingPolicy,
+    proc_dims: Option<Vec<usize>>,
     cast_domain: ActorLocal<CastDomainRef>,
 }
 
@@ -390,17 +397,43 @@ impl std::fmt::Debug for ActorMeshCastDomain {
             .field("members", &self.members)
             .field("region", &self.region)
             .field("tiling_policy", &self.tiling_policy)
+            .field("proc_dims", &self.proc_dims)
             .finish_non_exhaustive()
     }
 }
 
 impl ActorMeshCastDomain {
     fn new(members: Arc<ValueMesh<ActorAddr>>, region: Region) -> Self {
+        Self::new_with_proc_dims(members, region, None)
+    }
+
+    fn new_with_proc_dims(
+        members: Arc<ValueMesh<ActorAddr>>,
+        region: Region,
+        proc_dims: Option<Vec<usize>>,
+    ) -> Self {
         Self {
             id: CastDomainId::new(),
             members,
             region,
             tiling_policy: default_cast_tiling_policy(),
+            proc_dims,
+            cast_domain: ActorLocal::new(),
+        }
+    }
+
+    fn derived(
+        members: Arc<ValueMesh<ActorAddr>>,
+        region: Region,
+        parent: &ActorMeshCastDomain,
+        proc_dims: Option<Vec<usize>>,
+    ) -> Self {
+        Self {
+            id: CastDomainId::new(),
+            members,
+            region,
+            tiling_policy: parent.tiling_policy,
+            proc_dims,
             cast_domain: ActorLocal::new(),
         }
     }
@@ -453,7 +486,14 @@ impl Serialize for ActorMeshCastDomain {
     where
         S: Serializer,
     {
-        (&self.id, &self.members, &self.region, self.tiling_policy).serialize(serializer)
+        (
+            &self.id,
+            &self.members,
+            &self.region,
+            self.tiling_policy,
+            &self.proc_dims,
+        )
+            .serialize(serializer)
     }
 }
 
@@ -462,17 +502,19 @@ impl<'de> Deserialize<'de> for ActorMeshCastDomain {
     where
         D: Deserializer<'de>,
     {
-        let (id, members, region, tiling_policy) = <(
+        let (id, members, region, tiling_policy, proc_dims) = <(
             CastDomainId,
             Arc<ValueMesh<ActorAddr>>,
             Region,
             TilingPolicy,
+            Option<Vec<usize>>,
         )>::deserialize(deserializer)?;
         Ok(Self {
             id,
             members,
             region,
             tiling_policy,
+            proc_dims,
             cast_domain: ActorLocal::new(),
         })
     }
@@ -877,6 +919,46 @@ impl<A: Referable> ActorMeshRef<A> {
         Self::with_page_size(id, proc_mesh_id, region, DEFAULT_PAGE, controller, members)
     }
 
+    pub(crate) fn new_with_proc_dims(
+        id: ActorMeshId,
+        proc_mesh_id: Option<ProcMeshId>,
+        region: Region,
+        controller: Option<ActorRef<ActorMeshController<A>>>,
+        members: Arc<ValueMesh<ActorAddr>>,
+        proc_dims: Option<Vec<usize>>,
+    ) -> Self {
+        Self::with_cast_domain(
+            id,
+            proc_mesh_id,
+            controller,
+            ActorMeshCastDomain::new_with_proc_dims(members, region, proc_dims),
+            DEFAULT_PAGE,
+        )
+    }
+
+    pub(crate) fn cast_proc_dims(&self) -> Option<Vec<usize>> {
+        self.cast_domain.proc_dims.clone()
+    }
+
+    pub fn sliced_with_proc_dims(&self, region: Region, proc_dims: Option<Vec<usize>>) -> Self {
+        debug_assert!(region.is_subset(view::Ranked::region(self)));
+        Self {
+            id: self.id.clone(),
+            proc_mesh_id: self.proc_mesh_id.clone(),
+            controller: self.controller.clone(),
+            cast_domain: ActorMeshCastDomain::derived(
+                Arc::new(self.cast_domain.members().sliced(region.clone())),
+                region,
+                &self.cast_domain,
+                proc_dims,
+            ),
+            health_state: self.health_state.clone(),
+            receiver: ActorLocal::new(),
+            pages: OnceCell::new(),
+            page_size: self.page_size,
+        }
+    }
+
     pub fn id(&self) -> &ActorMeshId {
         &self.id
     }
@@ -1254,20 +1336,7 @@ impl<A: Referable> view::RankedSliceable for ActorMeshRef<A> {
         // mesh ref so new sub-slices do not race the controller replay path.
         // The supervision receiver stays independent because each slice applies
         // its own region filter to future updates.
-        debug_assert!(region.is_subset(view::Ranked::region(self)));
-        Self {
-            id: self.id.clone(),
-            proc_mesh_id: self.proc_mesh_id.clone(),
-            controller: self.controller.clone(),
-            cast_domain: ActorMeshCastDomain::new(
-                Arc::new(self.cast_domain.members().sliced(region.clone())),
-                region.clone(),
-            ),
-            health_state: self.health_state.clone(),
-            receiver: ActorLocal::new(),
-            pages: OnceCell::new(),
-            page_size: self.page_size,
-        }
+        self.sliced_with_proc_dims(region, None)
     }
 }
 

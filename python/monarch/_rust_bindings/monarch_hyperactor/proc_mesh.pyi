@@ -42,7 +42,7 @@ class ProcMesh:
         ...
 
     def __repr__(self) -> str: ...
-    def sliced(self, region: Region) -> "ProcMesh":
+    def sliced(self, region: Region, proc_dims: list[int] | None = None) -> "ProcMesh":
         """
         Returns a new mesh that is a slice of this mesh with the given region.
         """

@@ -24,7 +24,6 @@ use hyperactor_mesh::actor_mesh::ActorMeshRef;
 use monarch_types::py_global;
 use monarch_types::py_module_add_function;
 use ndslice::view::Ranked;
-use ndslice::view::RankedSliceable;
 use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyNotImplementedError;
 use pyo3::exceptions::PyRuntimeError;
@@ -162,7 +161,11 @@ pub(crate) trait ActorMeshProtocol: Send + Sync {
 }
 
 pub(crate) trait SupervisableActorMesh: ActorMeshProtocol + Supervisable {
-    fn new_with_region(&self, region: &PyRegion) -> PyResult<Box<dyn SupervisableActorMesh>>;
+    fn new_with_region(
+        &self,
+        region: &PyRegion,
+        proc_dims: Option<Vec<usize>>,
+    ) -> PyResult<Box<dyn SupervisableActorMesh>>;
 }
 
 /// This just forwards to the rust trait that can implement these bindings
@@ -232,8 +235,13 @@ impl PythonActorMesh {
         self.inner.cast_unresolved(message, sel, instance)
     }
 
-    fn new_with_region(&self, region: &PyRegion) -> PyResult<PythonActorMesh> {
-        let inner = self.inner.new_with_region(region)?;
+    #[pyo3(signature = (region, proc_dims=None))]
+    fn new_with_region(
+        &self,
+        region: &PyRegion,
+        proc_dims: Option<Vec<usize>>,
+    ) -> PyResult<PythonActorMesh> {
+        let inner = self.inner.new_with_region(region, proc_dims)?;
         Ok(PythonActorMesh {
             inner: Arc::from(inner),
         })
@@ -527,13 +535,17 @@ impl Supervisable for AsyncActorMesh {
 }
 
 impl SupervisableActorMesh for AsyncActorMesh {
-    fn new_with_region(&self, region: &PyRegion) -> PyResult<Box<dyn SupervisableActorMesh>> {
+    fn new_with_region(
+        &self,
+        region: &PyRegion,
+        proc_dims: Option<Vec<usize>>,
+    ) -> PyResult<Box<dyn SupervisableActorMesh>> {
         let mesh = self.mesh.clone();
         let region = region.clone();
         Ok(Box::new(AsyncActorMesh::new(
             self.queue.clone(),
             self.supervised,
-            async move { Ok(Arc::from(mesh.await?.new_with_region(&region)?)) }
+            async move { Ok(Arc::from(mesh.await?.new_with_region(&region, proc_dims)?)) }
                 .boxed()
                 .shared(),
         )))
@@ -665,10 +677,15 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
 }
 
 impl SupervisableActorMesh for PythonActorMeshImpl {
-    fn new_with_region(&self, region: &PyRegion) -> PyResult<Box<dyn SupervisableActorMesh>> {
+    fn new_with_region(
+        &self,
+        region: &PyRegion,
+        proc_dims: Option<Vec<usize>>,
+    ) -> PyResult<Box<dyn SupervisableActorMesh>> {
         assert!(region.as_inner().is_subset(self.mesh_ref().region()));
         Ok(Box::new(PythonActorMeshImpl::new_ref(
-            self.mesh_ref().sliced(region.as_inner().clone()),
+            self.mesh_ref()
+                .sliced_with_proc_dims(region.as_inner().clone(), proc_dims),
         )))
     }
 }
