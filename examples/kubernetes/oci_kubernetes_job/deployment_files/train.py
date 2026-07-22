@@ -15,7 +15,6 @@ from glob import glob
 import numpy as np
 import timm
 import torch
-import torch.multiprocessing as mp
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
