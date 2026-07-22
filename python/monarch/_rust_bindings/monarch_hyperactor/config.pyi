@@ -39,6 +39,10 @@ def reset_config_to_defaults() -> None:
     """
     ...
 
+def get_propagatable_config_env() -> Dict[str, str]:
+    """Return env vars for the propagatable config snapshot."""
+    ...
+
 def configure(
     default_transport: ChannelTransport | str = ...,
     enable_log_forwarding: bool = ...,
