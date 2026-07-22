@@ -528,7 +528,14 @@ class TestCreate(unittest.TestCase):
 class TestBuildWorkerPodTemplate(unittest.TestCase):
     """Tests for KubernetesJob._build_worker_pod_template."""
 
-    def test_basic_pod_template(self) -> None:
+    @patch(
+        "monarch._src.job.kubernetes.get_propagatable_config_env",
+        return_value={
+            "MONARCH_TOKIO_WORKER_THREADS": "4",
+            "HYPERACTOR_EXECUTION_ID": "test-exec-id",
+        },
+    )
+    def test_basic_pod_template(self, mock_config_env: MagicMock) -> None:
         template = KubernetesJob._build_worker_pod_template(
             ImageSpec("myimage:latest"), port=26600
         )
@@ -539,14 +546,20 @@ class TestBuildWorkerPodTemplate(unittest.TestCase):
         self.assertEqual(
             container.command, ["python", "-u", "-c", _WORKER_BOOTSTRAP_SCRIPT]
         )
-        self.assertEqual(len(container.env), 1)
-        self.assertEqual(container.env[0].name, "MONARCH_PORT")
-        self.assertEqual(container.env[0].value, "26600")
+        env_dict = {e.name: e.value for e in container.env}
+        self.assertEqual(env_dict["MONARCH_PORT"], "26600")
+        self.assertEqual(env_dict["HYPERACTOR_EXECUTION_ID"], "test-exec-id")
+        self.assertEqual(env_dict["MONARCH_TOKIO_WORKER_THREADS"], "4")
         self.assertIsNone(container.resources)
 
-    def test_custom_port_in_env(self) -> None:
+    @patch(
+        "monarch._src.job.kubernetes.get_propagatable_config_env",
+        return_value={},
+    )
+    def test_custom_port_in_env(self, mock_config_env: MagicMock) -> None:
         template = KubernetesJob._build_worker_pod_template(ImageSpec("img"), port=9999)
-        self.assertEqual(template.spec.containers[0].env[0].value, "9999")
+        env_dict = {e.name: e.value for e in template.spec.containers[0].env}
+        self.assertEqual(env_dict["MONARCH_PORT"], "9999")
 
     def test_resources_set(self) -> None:
         template = KubernetesJob._build_worker_pod_template(
