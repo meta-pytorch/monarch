@@ -142,11 +142,6 @@ impl CastDomainId {
             "members must contain exactly one actor address for every domain rank"
         );
 
-        let root_rank = region.slice().offset();
-        let root_member = members
-            .get(&root_rank)
-            .expect("members coverage was checked above")
-            .clone();
         let member_mesh = Arc::new(ValueMesh::new(
             region.clone(),
             region
@@ -161,34 +156,67 @@ impl CastDomainId {
                 .collect(),
         )?);
 
-        let domain_ref = CastDomainRef::from_subtrees(
-            self.clone(),
-            vec![CastSubtree {
-                root_actor: cast_actor_ref_for_member(&root_member),
-                served_region: region.clone(),
-            }],
+        self.materialize_members(cx, member_mesh, region, tiling_policy, headers)
+    }
+
+    fn materialize_members(
+        self,
+        cx: &impl context::Actor,
+        member_mesh: Arc<ValueMesh<ActorAddr>>,
+        region: Region,
+        tiling_policy: TilingPolicy,
+        headers: Flattrs,
+    ) -> anyhow::Result<CastDomainRef> {
+        let root_tile = MaterializedTile::from_value_mesh_with_tile(
+            Tile::from_view(&region),
             Arc::clone(&member_mesh),
         );
-        let root_tile =
-            MaterializedTile::from_value_mesh_with_tile(Tile::from_view(&region), member_mesh);
+        anyhow::ensure!(
+            !root_tile.tile().space().is_empty(),
+            "cannot construct root-heaved subtree tiles for an empty tile"
+        );
 
-        domain_ref
-            .subtrees
-            .first()
-            .expect("domain_ref has a single subtree")
-            .root_actor
-            .port()
-            .post_with_headers(
+        let root_point = {
+            // Select index 0 in every dimension. For a 4 x 4 tile, H0..H3 x
+            // P0..P3 becomes the root point H0 x P0.
+            let mut root_point_space = root_tile.tile().space().clone();
+            for dim in 0..root_tile.tile().space().sizes().len() {
+                root_point_space = root_point_space.select(dim, 0, 1, 1)?;
+            }
+            Tile::from_view(&Region::new(region.labels().to_vec(), root_point_space))
+        };
+
+        let subtrees = std::iter::once(root_point)
+            .chain(tiling_policy.children(root_tile.tile()))
+            .map(|subtree_tile| {
+                let served_region =
+                    Region::new(region.labels().to_vec(), subtree_tile.space().clone());
+
+                Ok(CastSubtree {
+                    root_actor: cast_actor_ref_for_member(
+                        root_tile.subtile(subtree_tile).root_item().ok_or_else(|| {
+                            anyhow::anyhow!("cast target tile must have at least one member")
+                        })?,
+                    ),
+                    served_region,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        for subtree in &subtrees {
+            subtree.root_actor.port().post_with_headers(
                 cx,
-                headers,
+                headers.clone(),
                 CreateCastDomain {
-                    cast_domain_id: self,
-                    region,
+                    cast_domain_id: self.clone(),
+                    region: region.clone(),
                     tiling_policy,
-                    tile: root_tile,
+                    tile: root_tile.subtile(Tile::from_view(&subtree.served_region)),
                 },
             );
-        Ok(domain_ref)
+        }
+
+        Ok(CastDomainRef::from_subtrees(self, subtrees, member_mesh))
     }
 }
 
@@ -250,9 +278,9 @@ impl CastDomainRef {
     /// Materialize a new slice domain described relative to this domain.
     ///
     /// The returned ref is the handle for the slice. It gets a fresh domain id
-    /// whose subtree starts at the slice's actual root CastActor. The parent ref's
-    /// dense members are used only to derive the slice definition and sender
-    /// side sequence map; the cast path enters directly at the slice root.
+    /// whose subtrees are root-heaved within the sliced region. The parent ref's
+    /// dense members are used only to derive the slice definition and sender-side
+    /// sequence map.
     pub fn materialize_slice(
         &self,
         cx: &impl context::Actor,
@@ -261,41 +289,7 @@ impl CastDomainRef {
     ) -> anyhow::Result<CastDomainRef> {
         let slice_id = CastDomainId::new();
         let slice_member_mesh = Arc::new(self.members.subset(region.clone())?);
-        let slice_tile = MaterializedTile::from_value_mesh_with_tile(
-            Tile::from_view(&region),
-            Arc::clone(&slice_member_mesh),
-        );
-
-        let slice_root = cast_actor_ref_for_member(
-            slice_tile
-                .root_item()
-                .ok_or_else(|| anyhow::anyhow!("slice root tile must have at least one member"))?,
-        );
-
-        let slice_ref = CastDomainRef::from_subtrees(
-            slice_id.clone(),
-            vec![CastSubtree {
-                root_actor: slice_root,
-                served_region: region.clone(),
-            }],
-            slice_member_mesh,
-        );
-
-        slice_ref
-            .subtrees
-            .first()
-            .expect("slice_ref has a single subtree")
-            .root_actor
-            .post(
-                cx,
-                CreateCastDomain {
-                    cast_domain_id: slice_id,
-                    region,
-                    tiling_policy,
-                    tile: slice_tile,
-                },
-            );
-        Ok(slice_ref)
+        slice_id.materialize_members(cx, slice_member_mesh, region, tiling_policy, Flattrs::new())
     }
 
     /// Cast a message to all members of this domain with caller-supplied headers.
@@ -970,10 +964,12 @@ mod tests {
     use ndslice::Slice;
     use ndslice::ViewExt;
     use ndslice::shape;
+    use ndslice::strategy::gen_region_strided;
     use ndslice::view::BuildFromRegionIndexed;
     use ndslice::view::Ranked;
     use proptest::prelude::*;
     use timed_test::async_timed_test;
+    use tokio::runtime::Runtime;
     use typeuri::Named;
 
     use super::*;
@@ -1511,6 +1507,116 @@ mod tests {
         }
     }
 
+    fn materialization_regions() -> impl Strategy<Value = Region> {
+        prop_oneof![
+            small_shape_sizes().prop_map(|sizes| Region::from(shape_from_sizes(sizes.as_slice()))),
+            gen_region_strided(1..=4, 4, 3, 0),
+        ]
+    }
+
+    fn tiling_policies() -> impl Strategy<Value = TilingPolicy> {
+        prop_oneof![
+            Just(TilingPolicy::BlockPartitioning),
+            (1usize..=4).prop_map(|fanout| TilingPolicy::BoundedFanout {
+                fanout: NonZeroUsize::new(fanout).expect("generated fanout is nonzero"),
+            }),
+            Just(TilingPolicy::Bisection),
+        ]
+    }
+
+    fn materialization_client() -> &'static Client {
+        static PROC: OnceLock<Proc> = OnceLock::new();
+        static CLIENT: OnceLock<Client> = OnceLock::new();
+
+        CLIENT.get_or_init(|| {
+            PROC.get_or_init(|| {
+                Proc::direct(
+                    ChannelTransport::Unix.any(),
+                    "materialization_client_proc".into(),
+                )
+                .expect("materialization property test should create its client proc")
+            })
+            .client("materialization_client")
+        })
+    }
+
+    fn materialization_runtime() -> &'static Runtime {
+        static RUNTIME: OnceLock<Runtime> = OnceLock::new();
+
+        RUNTIME.get_or_init(|| {
+            Runtime::new().expect("materialization property test should create its runtime")
+        })
+    }
+
+    fn validate_materialized_subtrees(
+        region: Region,
+        policy: TilingPolicy,
+    ) -> Result<(), TestCaseError> {
+        // GIVEN: member actors covering a generated dense or affine region.
+        let members = region
+            .slice()
+            .iter()
+            .map(|rank| (rank, member(rank)))
+            .collect::<HashMap<_, _>>();
+
+        // WHEN: the region is materialized under the generated tiling policy.
+        let domain = CastDomainId::new()
+            .materialize(
+                materialization_client(),
+                members.clone(),
+                region.clone(),
+                policy,
+                Flattrs::new(),
+            )
+            .map_err(|error| TestCaseError::fail(error.to_string()))?;
+
+        // THEN: its subtrees are nonempty and disjoint, exactly cover the
+        // domain, and use their natural root actors.
+        let expected_ranks = region.slice().iter().collect::<BTreeSet<_>>();
+        let mut covered_ranks = BTreeSet::new();
+
+        for subtree in &domain.subtrees {
+            let subtree_ranks = subtree
+                .served_region
+                .slice()
+                .iter()
+                .collect::<BTreeSet<_>>();
+            prop_assert!(!subtree_ranks.is_empty());
+
+            for rank in subtree_ranks {
+                prop_assert!(expected_ranks.contains(&rank));
+                prop_assert!(covered_ranks.insert(rank));
+            }
+
+            let root_rank = Tile::from_view(&subtree.served_region).root_rank();
+            prop_assert_eq!(
+                subtree.root_actor.actor_addr().clone(),
+                cast_actor_ref_for_member(&members[&root_rank])
+                    .actor_addr()
+                    .clone(),
+            );
+        }
+
+        prop_assert_eq!(covered_ranks, expected_ranks);
+        Ok(())
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 64,
+            ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn prop_materialized_subtrees_partition_the_domain(
+            region in materialization_regions(),
+            policy in tiling_policies(),
+        ) {
+            let _runtime = materialization_runtime().enter();
+            validate_materialized_subtrees(region, policy)?;
+        }
+    }
+
     async fn cast_and_collect_histories(
         test_mesh: &CastTestMesh,
         cast_domain: &CastDomainRef,
@@ -1548,7 +1654,7 @@ mod tests {
 
         let region = Region::from(shape!(a = 2, b = 2, c = 2));
         let expected_next_hops: BTreeMap<String, BTreeSet<String>> = [
-            ("proc_0", vec!["proc_1", "proc_2", "proc_4"]),
+            ("proc_0", vec![]),
             ("proc_1", vec![]),
             ("proc_2", vec!["proc_3"]),
             ("proc_3", vec![]),
@@ -1694,17 +1800,43 @@ mod tests {
 
         let expected_lineage: BTreeMap<String, Vec<usize>> = [
             ("proc_0".to_string(), vec![0]),
-            ("proc_1".to_string(), vec![0, 1]),
-            ("proc_2".to_string(), vec![0, 2]),
-            ("proc_3".to_string(), vec![0, 2, 3]),
-            ("proc_4".to_string(), vec![0, 4]),
-            ("proc_5".to_string(), vec![0, 4, 5]),
-            ("proc_6".to_string(), vec![0, 4, 6]),
-            ("proc_7".to_string(), vec![0, 4, 6, 7]),
+            ("proc_1".to_string(), vec![1]),
+            ("proc_2".to_string(), vec![2]),
+            ("proc_3".to_string(), vec![2, 3]),
+            ("proc_4".to_string(), vec![4]),
+            ("proc_5".to_string(), vec![4, 5]),
+            ("proc_6".to_string(), vec![4, 6]),
+            ("proc_7".to_string(), vec![4, 6, 7]),
         ]
         .into_iter()
         .collect();
         assert_eq!(lineage_by_proc, expected_lineage);
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_root_heaved_block_partitioning_delivers_once() {
+        // GIVEN: four hosts with four proc ranks per host.
+        let mut test_mesh = CastTestMesh::new(16);
+        test_mesh.spawn_split_port_receivers();
+
+        // WHEN: block partitioning is applied to every dimension at the root.
+        let root_domain = test_mesh.root_domain(shape!(hosts = 4, procs = 4).into());
+
+        // THEN: both host and proc coordinates select subtree roots.
+        let mut subtree_root_ranks = root_domain
+            .subtrees
+            .iter()
+            .map(|subtree| subtree.served_region.slice().offset())
+            .collect::<Vec<_>>();
+        subtree_root_ranks.sort_unstable();
+        assert_eq!(subtree_root_ranks, vec![0, 1, 2, 3, 4, 8, 12]);
+
+        // Every proc receives exactly one reply-producing delivery.
+        let proc_names = test_mesh.proc_names();
+        assert_eq!(
+            cast_and_collect_reply_counts(&test_mesh, &root_domain, "root-heaved").await,
+            expected_reply_counts(&proc_names.iter().map(String::as_str).collect::<Vec<_>>())
+        );
     }
 
     #[async_timed_test(timeout_secs = 30)]
@@ -1842,16 +1974,18 @@ mod tests {
         test_mesh.spawn_split_port_receivers();
         let root_cast_domain = test_mesh.root_domain(shape!(a = 2, b = 2, c = 2).into());
 
-        for (case_name, range, expected_procs) in [
+        for (case_name, range, expected_procs, expected_subtree_roots) in [
             (
                 "a_0_to_1",
                 ndslice::Range(0, Some(1), 1),
                 ["proc_0", "proc_1", "proc_2", "proc_3"],
+                [0, 1, 2],
             ),
             (
                 "a_1_to_2",
                 ndslice::Range(1, Some(2), 1),
                 ["proc_4", "proc_5", "proc_6", "proc_7"],
+                [4, 5, 6],
             ),
         ] {
             let payload = format!("slice-{case_name}");
@@ -1866,6 +2000,14 @@ mod tests {
                 )
                 .unwrap();
 
+            assert_eq!(
+                slice_cast_domain
+                    .subtrees
+                    .iter()
+                    .map(|subtree| subtree.served_region.slice().offset())
+                    .collect::<BTreeSet<_>>(),
+                expected_subtree_roots.into_iter().collect()
+            );
             assert_eq!(
                 cast_and_collect_reply_counts(&test_mesh, &slice_cast_domain, &payload,).await,
                 expected_reply_counts(&expected_procs)
@@ -2068,8 +2210,8 @@ mod tests {
         result
     }
 
-    /// Extract the proc name (rank) from each `PortAddr` in a split-port
-    /// path, stripping the root (client) entry.
+    /// Extract the proc name (rank) from each `PortAddr` in a split-port path,
+    /// stripping leading sender entries before the path enters the domain.
     fn split_path_ranks(
         paths: &BTreeMap<PortAddr, Vec<PortAddr>>,
         rank_lookup: &HashMap<String, usize>,
@@ -2077,11 +2219,11 @@ mod tests {
         paths
             .iter()
             .map(|(leaf, path)| {
-                // First entry is the client's port — skip it.
-                let ranks: Vec<usize> = path[1..]
+                let ranks: Vec<usize> = path
                     .iter()
-                    .map(|pid| {
-                        let proc_name = pid.actor_addr().proc_addr().log_name().to_string();
+                    .map(|port| port.actor_addr().proc_addr().log_name().to_string())
+                    .skip_while(|proc_name| !rank_lookup.contains_key(proc_name))
+                    .map(|proc_name| {
                         *rank_lookup
                             .get(&proc_name)
                             .unwrap_or_else(|| panic!("unknown proc {proc_name} in split path"))
@@ -2254,13 +2396,13 @@ mod tests {
 
         let expected: BTreeMap<usize, Vec<usize>> = [
             (0, vec![0]),
-            (1, vec![0, 1]),
-            (2, vec![0, 2]),
-            (3, vec![0, 2, 3]),
-            (4, vec![0, 4]),
-            (5, vec![0, 4, 5]),
-            (6, vec![0, 4, 6]),
-            (7, vec![0, 4, 6, 7]),
+            (1, vec![1]),
+            (2, vec![2]),
+            (3, vec![2, 3]),
+            (4, vec![4]),
+            (5, vec![4, 5]),
+            (6, vec![4, 6]),
+            (7, vec![4, 6, 7]),
         ]
         .into_iter()
         .collect();
@@ -2271,15 +2413,16 @@ mod tests {
         );
     }
 
-    // Tests that a serialized BoundedFanout policy drives cast-domain setup
-    // end to end. Each CastActor installs one CastHop; the expected_next_hops
-    // map below is the adjacency-list representation of the send tree that
-    // BoundedFanout should produce for an 8-rank 1D domain with fanout 2.
+    // Tests that a serialized BoundedFanout policy drives root-heaved
+    // cast-domain setup end to end.
     #[async_timed_test(timeout_secs = 30)]
-    async fn test_create_cast_domain_with_bounded_fanout_installs_expected_hops() {
+    async fn test_root_heaved_bounded_fanout_installs_expected_hops() {
         clear_captured_domains();
 
+        // GIVEN: an 8-rank domain with fanout 2.
         let test_mesh = CastTestMesh::new(8);
+
+        // WHEN: the domain is materialized.
         let root_domain = test_mesh.root_domain_with_policy(
             shape!(a = 8).into(),
             TilingPolicy::BoundedFanout {
@@ -2290,12 +2433,22 @@ mod tests {
             .wait_for_domain_snapshots(root_domain.domain_id(), 8)
             .await;
 
+        // THEN: the caller owns the root point and the two immediate policy
+        // children as subtrees.
+        assert_eq!(
+            root_domain
+                .subtrees
+                .iter()
+                .map(|subtree| subtree.served_region.slice().offset())
+                .collect::<BTreeSet<_>>(),
+            [0, 1, 5].into_iter().collect()
+        );
+
         let region = Region::from(shape!(a = 8));
-        // Hand-derived from a 1D extent-8 root with fanout=2: away-from-root
-        // indices [1..8) split into two left-heavy groups [1..5) and [5..8);
-        // each group recurses with the same policy.
+        // Each subtree root actor owns only its recursive subtree. The caller
+        // owns the former edges from proc_0 to proc_1 and proc_5.
         let expected_next_hops: BTreeMap<String, BTreeSet<String>> = [
-            ("proc_0", vec!["proc_1", "proc_5"]),
+            ("proc_0", vec![]),
             ("proc_1", vec!["proc_2", "proc_4"]),
             ("proc_2", vec!["proc_3"]),
             ("proc_3", vec![]),
@@ -2337,27 +2490,38 @@ mod tests {
         }
     }
 
-    // Tests that a serialized Bisection policy drives cast-domain setup end
-    // to end. Each CastActor installs one CastHop; the expected_next_hops
-    // map below is the adjacency-list representation of the send tree that
-    // Bisection should produce for an 8-rank 1D domain.
+    // Tests that a serialized Bisection policy drives root-heaved cast-domain
+    // setup end to end.
     #[async_timed_test(timeout_secs = 30)]
-    async fn test_create_cast_domain_with_bisection_installs_expected_hops() {
+    async fn test_root_heaved_bisection_installs_expected_hops() {
         clear_captured_domains();
 
+        // GIVEN: an 8-rank domain with bisection tiling.
         let test_mesh = CastTestMesh::new(8);
+
+        // WHEN: the domain is materialized.
         let root_domain =
             test_mesh.root_domain_with_policy(shape!(a = 8).into(), TilingPolicy::Bisection);
         let snapshots = test_mesh
             .wait_for_domain_snapshots(root_domain.domain_id(), 8)
             .await;
 
+        // THEN: the caller owns the root point and the three immediate policy
+        // children as subtrees.
+        assert_eq!(
+            root_domain
+                .subtrees
+                .iter()
+                .map(|subtree| subtree.served_region.slice().offset())
+                .collect::<BTreeSet<_>>(),
+            [0, 1, 2, 4].into_iter().collect()
+        );
+
         let region = Region::from(shape!(a = 8));
-        // Hand-derived from recursive halving on a 1D extent-8 root: each
-        // step emits an upper sibling and a lower anchor; anchor contraction
-        // promotes sibling descendants from the lower-half spine.
+        // Each subtree root actor owns only its recursive subtree. The caller
+        // owns the former edges from proc_0 to proc_1, proc_2, and proc_4.
         let expected_next_hops: BTreeMap<String, BTreeSet<String>> = [
-            ("proc_0", vec!["proc_1", "proc_2", "proc_4"]),
+            ("proc_0", vec![]),
             ("proc_1", vec![]),
             ("proc_2", vec!["proc_3"]),
             ("proc_3", vec![]),
