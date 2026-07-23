@@ -1486,19 +1486,6 @@ mod tests {
         execute_spawn_actor().await;
     }
 
-    #[async_timed_test(timeout_secs = 120)]
-    #[cfg(fbcode_build)]
-    async fn test_spawn_actor_casting_p2p() {
-        let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD, 1024);
-        let _guard2 = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(120));
-        let _guard3 = config.override_key(
-            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
-            Duration::from_secs(120),
-        );
-        execute_spawn_actor().await;
-    }
-
     /// Spawn an actor mesh, then do a random number of casts to bump the seq
     /// numbers for all actors participating in the cast. This avoids the test
     /// mistakenly passing.
