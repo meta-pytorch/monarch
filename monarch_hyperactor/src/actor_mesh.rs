@@ -386,7 +386,10 @@ impl ActorMeshProtocol for AsyncActorMesh {
         self.push(
             async move {
                 let result = async {
-                    let resolved = message.resolve().await?;
+                    let resolved = match message.try_resolve_now()? {
+                        Ok(resolved) => resolved,
+                        Err(message) => message.resolve().await?,
+                    };
                     mesh.await?
                         .cast_with_headers(resolved, selection, &instance, caller_headers)
                 }

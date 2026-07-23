@@ -1089,7 +1089,9 @@ class Port(Generic[R]):
         )
         kind = cast(PythonMessageKind, cast(Any, PythonMessageKind.Result)(self._rank))
         message = PendingMessage(kind, state)
-        resolved = await Future(coro=cast(Any, message).resolve())
+        resolved = message.try_resolve_now()
+        if resolved is None:
+            resolved = await Future(coro=cast(Any, message).resolve())
         self.send_message(resolved)
 
     def exception(self, obj: Exception) -> None: ...

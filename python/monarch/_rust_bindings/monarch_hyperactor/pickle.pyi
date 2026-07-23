@@ -8,7 +8,10 @@
 
 from typing import Any, List
 
-from monarch._rust_bindings.monarch_hyperactor.actor import PythonMessageKind
+from monarch._rust_bindings.monarch_hyperactor.actor import (
+    PythonMessage,
+    PythonMessageKind,
+)
 from monarch._rust_bindings.monarch_hyperactor.buffers import FrozenBuffer
 from monarch._rust_bindings.monarch_hyperactor.pytokio import Shared
 
@@ -87,6 +90,14 @@ class PendingMessage:
     @property
     def kind(self) -> PythonMessageKind:
         """Get the message kind."""
+        ...
+
+    def try_resolve_now(self) -> PythonMessage | None:
+        """Resolve synchronously when no pending mesh fills remain.
+
+        Returns None without consuming the message when asynchronous resolution
+        is still required.
+        """
         ...
 
 def pickle(
