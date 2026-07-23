@@ -73,7 +73,7 @@ jobs:
         # CI disables the Send/Sync shortcut impls so rustc verifies the
         # underlying auto-trait bounds structurally.
         RUSTFLAGS="${RUSTFLAGS:-} --cfg hyperactor_verify_auto_traits" \
-          cargo nextest run --workspace --profile ci \
+          cargo nextest run --locked --workspace --profile ci \
           -E "$(cat .config/nextest-filter.txt)" \
           --exclude monarch_messages \
           --exclude monarch_tensor_worker \

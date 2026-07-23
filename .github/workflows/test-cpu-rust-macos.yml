@@ -57,7 +57,7 @@ jobs:
           RUSTFLAGS: --cfg tracing_unstable --cfg hyperactor_verify_auto_traits
         run: |
           set -eux
-          cargo nextest run --workspace --profile ci \
+          cargo nextest run --locked --workspace --profile ci \
             -E "$(cat .config/nextest-filter.txt)" \
             --exclude monarch_messages \
             --exclude monarch_tensor_worker \

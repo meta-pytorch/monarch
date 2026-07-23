@@ -381,6 +381,11 @@ if build_tensor_engine:
 
 # Rust extensions
 rust_extensions = []
+# Pass --locked as a *manifest* arg, not a build arg: setuptools-rust forwards
+# `args` only to `cargo build`, but also runs `cargo metadata` to locate the
+# built artifact, and an unlocked `cargo metadata` silently rewrites Cargo.lock.
+# `cargo_manifest_args` reaches every cargo invocation (metadata and build).
+locked_cargo_args = ["--locked"]
 
 # Main Python extension
 rust_features = ["extension-module", "distributed_sql_telemetry"]
@@ -399,6 +404,7 @@ rust_extensions.append(
         debug=False,
         features=rust_features,
         args=["--no-default-features"],
+        cargo_manifest_args=locked_cargo_args,
         rustc_flags=rust_link_flags,
     )
 )
@@ -410,6 +416,7 @@ rust_extensions.append(
         {"hyperactor_mesh_admin_tui": "monarch-tui"},
         path="hyperactor_mesh_admin_tui/Cargo.toml",
         debug=False,
+        cargo_manifest_args=locked_cargo_args,
     )
 )
 
