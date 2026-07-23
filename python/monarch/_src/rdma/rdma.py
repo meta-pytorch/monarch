@@ -7,20 +7,20 @@
 # pyre-unsafe
 import functools
 import logging
+import operator
 import sys
 import threading
 import warnings
 import weakref
-from typing import Any, cast, Dict, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Dict, Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
     import torch
 
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
-from monarch._src.actor.actor_mesh import Actor, context
-from monarch._src.actor.endpoint import endpoint
+from monarch._rust_bindings.monarch_hyperactor.pytokio import Handle
+from monarch._src.actor.actor_mesh import context
 from monarch._src.actor.future import Future
-from monarch._src.actor.proc_mesh import get_or_spawn_controller, ProcMesh
+from monarch._src.actor.proc_mesh import ProcMesh
 from pyre_extensions import none_throws
 
 _NATIVE_RDMA_IMPORT_ERROR: Optional[ImportError] = None
@@ -156,22 +156,50 @@ def get_rdma_backend() -> str:
     return "none"
 
 
-# Cached so that we don't have to call out to the root client every time,
-# which may be on a different host.
-@functools.cache
-def _ensure_init_rdma_manager() -> Shared[None]:
-    """Initialize the RDMA manager for this node's backend (ibverbs or EFA)."""
+# Weak keys keep readiness observation from extending a ProcMesh graph's Python
+# lifetime. The value retains only native actor/mesh state (RMB-8).
+_rdma_manager_init_cache: "weakref.WeakKeyDictionary[ProcMesh, Handle[None]]" = (
+    weakref.WeakKeyDictionary()
+)
+_rdma_manager_init_cache_lock = threading.Lock()
 
-    async def task() -> None:
-        # Ensure the proc mesh is initialized before we can send it over the wire,
-        # since pickling the proc mesh before it is initiliazed would block the
-        # tokio runtime and cause a panic.
-        await context().actor_instance.proc_mesh.initialized
-        await (
-            await get_or_spawn_controller("rdma_controller", RdmaController)
-        ).init_rdma_on_mesh.call_one(none_throws(context().actor_instance.proc_mesh))
 
-    return PythonTask.from_coroutine(task()).spawn()
+def _ensure_init_rdma_manager_on_mesh(proc_mesh: ProcMesh) -> Handle[None]:
+    """Ensure ``proc_mesh``'s per-proc RDMA managers are initialized through the
+    Rust owner, returning an observe-only ``Handle[None]`` for that exact mesh."""
+    with _rdma_manager_init_cache_lock:
+        cached = _rdma_manager_init_cache.get(proc_mesh)
+        if cached is not None:
+            return cached
+
+        # The native call only constructs and returns an eager Handle; it does
+        # not wait for initialization. Keep the lock through creation so a
+        # concurrent first use cannot start a second producer for this mesh.
+        created = _RdmaManager.ensure_init_rdma_manager_nonblocking(
+            proc_mesh._proc_mesh,
+            context().actor_instance,
+        )
+        _rdma_manager_init_cache[proc_mesh] = created
+        return created
+
+
+def _ensure_init_rdma_manager() -> Handle[None]:
+    """Ensure the RDMA managers for the current actor context's proc mesh.
+
+    Uncached: it resolves the caller's mesh each call and defers caching to the
+    mesh-keyed helper, so a process running distinct proc-mesh views never reuses
+    one mesh's Handle for another (RDC-2).
+    """
+    return _ensure_init_rdma_manager_on_mesh(
+        none_throws(context().actor_instance.proc_mesh)
+    )
+
+
+def _validate_timeout(timeout: int) -> int:
+    value = operator.index(timeout)
+    if value < 0 or value > (1 << 64) - 1:
+        raise OverflowError("timeout must fit in an unsigned 64-bit integer")
+    return value
 
 
 def _is_torch_tensor(obj: object) -> bool:
@@ -258,32 +286,6 @@ def _make_local_memory_handle(
             _local_memory_cache[key] = weak
             _local_memory_cache_refs[key] = ref
     return strong
-
-
-class RdmaController(Actor):
-    def __init__(self) -> None:
-        self._manager_futures: Dict[ProcMesh, Future[_RdmaManager]] = {}
-
-    @endpoint
-    async def init_rdma_on_mesh(self, proc_mesh: ProcMesh) -> None:
-        # Note: RdmaController acts as coordinator and can run on any node
-        # The RDMA support check should happen on the target proc_mesh nodes, not on RdmaController's node
-
-        if proc_mesh not in self._manager_futures:
-
-            async def create_manager() -> _RdmaManager:
-                proc_mesh_result = await Future(
-                    coro=cast("PythonTask[Any]", proc_mesh._proc_mesh.task())
-                )
-                return none_throws(
-                    await _RdmaManager.create_rdma_manager_nonblocking(
-                        proc_mesh_result, context().actor_instance
-                    )
-                )
-
-            self._manager_futures[proc_mesh] = Future(coro=create_manager())
-
-        await self._manager_futures[proc_mesh]
 
 
 def pt_cuda_allocator_compatibility() -> bool:
@@ -377,11 +379,13 @@ class RDMABuffer:
             _check_cuda_expandable_segments_enabled()
 
         backend = get_rdma_backend()
-        assert backend != "none", (
-            "Tried to create an RDMABuffer, but RDMA is not available on this platform. "
-            "To enable TCP fallback transport, call "
-            "monarch.configure(rdma_allow_tcp_fallback=True) before creating buffers."
-        )
+        if backend == "none":
+            raise RuntimeError(
+                "Tried to create an RDMABuffer, but RDMA is not available on this "
+                "platform. To enable TCP fallback transport, call "
+                "monarch.configure(rdma_allow_tcp_fallback=True) before creating "
+                "buffers."
+            )
         if backend == "tcp":
             warnings.warn(
                 "No ibverbs RDMA hardware detected. Falling back to TCP transport, "
@@ -391,19 +395,21 @@ class RDMABuffer:
                 RDMATcpFallbackWarning,
                 stacklevel=2,
             )
-        # We need to ensure that _RdmaManager is initialized at this point, because under the hood
-        # _RdmaBuffer.create_rdma_buffer_blocking relies on this being the case.
-        _ensure_init_rdma_manager().block_on()
-
+        # RDC-7: build and validate the local handle before eager init, so invalid
+        # input never starts an owner request.
         handle = _make_local_memory_handle(data)
+        if handle.size == 0:
+            raise ValueError("Cannot create RDMABuffer with size 0.")
 
         try:
-            if handle.size == 0:
-                raise ValueError("Cannot create RDMABuffer with size 0.")
             ctx = context()
+            # The native blocking constructor waits on this readiness Handle before
+            # requesting the buffer (RDC-3); no Handle is awaited on the Python side.
+            ready = _ensure_init_rdma_manager()
             self._buffer: _RdmaBuffer = _RdmaBuffer.create_rdma_buffer_blocking(
                 local=handle,
                 client=ctx.actor_instance,
+                rdma_manager_init=ready,
             )
         # TODO - specific exception
         except Exception as e:
@@ -470,14 +476,10 @@ class RDMABuffer:
         Release the handle on the memory that the src holds to this memory.
         """
         client = context().actor_instance
-
-        async def drop_nonblocking() -> None:
-            await _ensure_init_rdma_manager()
-            await self._buffer.drop(
-                client=client,
-            )
-
-        return Future(coro=drop_nonblocking())
+        # RDC-6: no Tokio-driven coroutine awaits the Handle; the native drop task
+        # waits on it and we wrap that task directly (RDC-3).
+        ready = _ensure_init_rdma_manager()
+        return Future(coro=self._buffer.drop(client=client, rdma_manager_init=ready))
 
     @property
     def owner(self) -> str:
@@ -537,11 +539,13 @@ class RDMAAction:
         completes, or until the timeout is reached. If any op fails, the
         Future resolves with an exception.
         """
+        timeout = _validate_timeout(timeout)
         client = context().actor_instance
-        inner = self._inner
-
-        async def run() -> None:
-            await _ensure_init_rdma_manager()
-            await inner.submit(client=client, timeout=timeout)
-
-        return Future(coro=run())
+        # RDC-6: no Tokio-driven coroutine awaits the Handle; the native submit task
+        # waits on it before taking the action lock, and we wrap that task directly.
+        ready = _ensure_init_rdma_manager()
+        return Future(
+            coro=self._inner.submit(
+                client=client, timeout=timeout, rdma_manager_init=ready
+            )
+        )

@@ -488,8 +488,16 @@ async fn bootstrap_host() -> GlobalState {
         ),
     )
     .expect("failed to create proc mesh ref");
+    // Bind the client-root API on this program's one root ProcAgent and seed the
+    // root client's environment with the resulting capability. Descendants
+    // inherit it through the actor-environment propagation paths (CROOT-1).
+    let client_root = crate::client_root::ClientRootRef::bind(&local_proc_agent);
+    let mut root_env = hyperactor::ActorEnvironment::default();
+    root_env
+        .set(crate::client_root::CLIENT_ROOT, client_root)
+        .expect("failed to seed client-root capability");
     let actor_instance = local_proc
-        .actor_instance::<GlobalClientActor>("client")
+        .actor_instance_in_environment::<GlobalClientActor>("client", root_env)
         .expect("failed to create root client instance");
 
     let hyperactor::proc::ActorInstance {
@@ -646,6 +654,18 @@ mod tests {
         assert!(
             try_registered_client_proc().is_none(),
             "registered-client-proc lookup must not fall back to Rust GLOBAL_CONTEXT",
+        );
+    }
+
+    /// CROOT-1 / CROOT-8: the Rust root bootstrap seeds the client-root
+    /// capability on the root client's environment, so `from_env` finds it.
+    #[tokio::test]
+    async fn test_bootstrap_seeds_client_root() {
+        let cx = context().await;
+        let environment = cx.actor_instance.actor_environment();
+        assert!(
+            crate::client_root::ClientRootRef::from_env(environment).is_ok(),
+            "bootstrap must seed the client-root capability on the root client",
         );
     }
 

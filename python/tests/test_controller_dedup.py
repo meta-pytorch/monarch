@@ -36,9 +36,12 @@ class _DedupProbe(Actor):
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
 async def test_concurrent_controller_init_dedups() -> None:
-    """Concurrent get_or_spawn_controller calls resolve to one coordinator, constructed once."""
+    """Concurrent get_or_spawn_controller calls resolve to one controller."""
     controllers = await asyncio.gather(
-        *(get_or_spawn_controller("rdma_dedup_probe", _DedupProbe) for _ in range(8))
+        *(
+            get_or_spawn_controller("controller_dedup_probe", _DedupProbe)
+            for _ in range(8)
+        )
     )
     # Each caller gets a distinct client-side wrapper, so compare a stable value, not `is`.
     instance_ids = await asyncio.gather(

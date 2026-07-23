@@ -6,5 +6,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+mod client_root;
 mod code_sync;
 mod telemetry;

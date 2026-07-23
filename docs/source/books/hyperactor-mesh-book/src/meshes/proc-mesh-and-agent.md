@@ -89,6 +89,7 @@ impl ProcMeshRef {
               spec: mesh_agent::ActorSpec {
                   actor_type: actor_type.clone(),
                   params_data: serialized_params.clone(),
+                  actor_environment: cx.instance().actor_environment().clone(),
               },
           },
       )?;
@@ -131,6 +132,7 @@ What this does, step by step:
            spec: mesh_agent::ActorSpec {
                actor_type: actor_type.clone(),
                params_data: serialized_params.clone(),
+               actor_environment: cx.instance().actor_environment().clone(),
            },
        },
    )?;
@@ -140,9 +142,10 @@ What this does, step by step:
    - `cast` sends the same `CreateOrUpdate<ActorSpec>` to **every** `ProcAgent`,
    - the `name` field is the *mesh-level* actor name ("this actor, on this mesh"),
    - `actor_type` is the *global* type name resolved via `Remote`,
-   - `params_data` is the serialized `A::Params`.
+   - `params_data` is the serialized `A::Params`,
+   - `actor_environment` is the spawning actor's persistent environment.
 
-At this point the proc mesh has done its part: it has told every proc in the mesh: "For mesh actor name, please ensure you have one local actor of type `actor_type`, constructed from `params_data`."
+At this point the proc mesh has done its part: it has told every proc in the mesh: "For this mesh actor, please ensure you have one local actor of type `actor_type`, constructed from `params_data`, and carrying this persistent environment."
 
 ### How `ProcAgent` handles `CreateOrUpdate<ActorSpec>`
 

@@ -260,7 +260,7 @@ pub trait ActorSpawnerEndpoint {
                 .actor_addr_uid(uid.clone()),
         );
         let actor_spawner = self.clone();
-        let gspawn = Gspawn::for_actor_uid::<A>(uid, params)?;
+        let gspawn = Gspawn::for_actor_uid::<A>(cx, uid, params)?;
         cx.instance().spawn(Supervisor::bootstrap_uid(
             liveness,
             SupervisionOptions::default(),
@@ -285,6 +285,7 @@ mod tests {
     use async_trait::async_trait;
     use hyperactor::Actor;
     use hyperactor::ActorAddr;
+    use hyperactor::ActorEnvironment;
     use hyperactor::ActorHandle;
     use hyperactor::Context;
     use hyperactor::Endpoint as _;
@@ -298,6 +299,7 @@ mod tests {
     use hyperactor::Uid;
     use hyperactor::supervision::ActorSupervisionEvent;
     use hyperactor_config::Flattrs;
+    use hyperactor_config::attrs::declare_attrs;
     use serde::Deserialize;
     use serde::Serialize;
     use typeuri::Named;
@@ -360,6 +362,54 @@ mod tests {
     }
 
     hyperactor::register_spawnable!(FailingChild);
+
+    declare_attrs! {
+        attr REMOTE_ENVIRONMENT_TAG: u64;
+        attr REMOTE_SERVER_ONLY_TAG: u64;
+    }
+
+    #[derive(Debug)]
+    #[hyperactor::export(handlers = [])]
+    struct EnvironmentChild {
+        reply: PortRef<(u64, u64, Option<u64>, Option<u64>)>,
+        constructor_value: u64,
+        constructor_server_only: Option<u64>,
+    }
+
+    #[async_trait]
+    impl Actor for EnvironmentChild {
+        async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
+            let stored_value = this
+                .actor_environment()
+                .get(REMOTE_ENVIRONMENT_TAG)
+                .unwrap_or_default();
+            self.reply.post(
+                this,
+                (
+                    self.constructor_value,
+                    stored_value,
+                    self.constructor_server_only,
+                    this.actor_environment().get(REMOTE_SERVER_ONLY_TAG),
+                ),
+            );
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl RemoteSpawn for EnvironmentChild {
+        type Params = PortRef<(u64, u64, Option<u64>, Option<u64>)>;
+
+        async fn new(reply: Self::Params, environment: Flattrs) -> anyhow::Result<Self> {
+            Ok(Self {
+                reply,
+                constructor_value: environment.get(REMOTE_ENVIRONMENT_TAG).unwrap_or_default(),
+                constructor_server_only: environment.get(REMOTE_SERVER_ONLY_TAG),
+            })
+        }
+    }
+
+    hyperactor::register_spawnable!(EnvironmentChild);
 
     #[derive(Debug)]
     struct PlainSpawner {
@@ -440,6 +490,7 @@ mod tests {
             client,
             SpawnActorMessage {
                 gspawn: Gspawn::for_actor_uid::<TestChild>(
+                    client,
                     Uid::instance(Label::new("test_child").unwrap()),
                     (),
                 )
@@ -524,6 +575,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn actor_spawner_carries_callers_actor_environment() {
+        const SENTINEL: u64 = 0xA0FE;
+
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let mut server_environment = ActorEnvironment::default();
+        server_environment
+            .set(REMOTE_ENVIRONMENT_TAG, SENTINEL + 1)
+            .expect("seed conflicting server environment");
+        server_environment
+            .set(REMOTE_SERVER_ONLY_TAG, 99)
+            .expect("seed server-only environment");
+        let server = proc
+            .actor_instance_in_environment::<TestChild>("seeded_server", server_environment)
+            .expect("create seeded server instance");
+        let actor_spawner = server.instance.spawn(ActorSpawner);
+        let (reply, mut reply_rx) = client.open_port::<(u64, u64, Option<u64>, Option<u64>)>();
+        let (ready, ready_rx) = client.open_once_port::<()>();
+
+        let mut environment = ActorEnvironment::default();
+        environment
+            .set(REMOTE_ENVIRONMENT_TAG, SENTINEL)
+            .expect("seed caller environment");
+        let caller = proc
+            .actor_instance_in_environment::<TestChild>("seeded_caller", environment)
+            .expect("create seeded caller instance");
+
+        actor_spawner
+            .spawn_uid_with_ready::<EnvironmentChild>(
+                &caller.instance,
+                Uid::instance(Label::new("environment_child").unwrap()),
+                reply.bind(),
+                ready,
+            )
+            .expect("request remote child");
+        tokio::time::timeout(Duration::from_secs(5), ready_rx.recv())
+            .await
+            .expect("remote child readiness timed out")
+            .expect("remote child readiness port closed");
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), reply_rx.recv())
+                .await
+                .expect("environment reply timed out")
+                .expect("environment reply port closed"),
+            (SENTINEL, SENTINEL, None, None),
+            "constructor and stored instance must receive only the caller's environment",
+        );
+
+        actor_spawner.stop("test").expect("stop actor spawner");
+        tokio::time::timeout(Duration::from_secs(5), actor_spawner)
+            .await
+            .expect("actor spawner stop timed out");
+    }
+
+    #[test]
+    fn gspawn_serializes_actor_environment() {
+        let mut environment = ActorEnvironment::default();
+        environment
+            .set(REMOTE_ENVIRONMENT_TAG, 17)
+            .expect("seed actor environment");
+        let gspawn = Gspawn::with_uid(
+            TestChild::typename(),
+            Uid::instance(Label::new("serialized_child").unwrap()),
+            encoded_unit(),
+            environment,
+        );
+
+        let encoded = bincode::serde::encode_to_vec(&gspawn, bincode::config::legacy())
+            .expect("serialize gspawn");
+        let restored: Gspawn =
+            bincode::serde::decode_from_slice(&encoded, bincode::config::legacy())
+                .map(|(value, _)| value)
+                .expect("deserialize gspawn");
+
+        assert_eq!(restored, gspawn);
+        assert_eq!(
+            restored.actor_environment().get(REMOTE_ENVIRONMENT_TAG),
+            Some(17),
+        );
+    }
+
+    #[tokio::test]
     async fn test_actor_spawner_worker_reports_child_failure() {
         let proc = Proc::isolated();
         let client = proc.client("client");
@@ -584,7 +717,12 @@ mod tests {
         actor_spawner.post(
             &client,
             SpawnActorMessage {
-                gspawn: Gspawn::with_uid("unknown::Actor", Uid::anonymous(), encoded_unit()),
+                gspawn: Gspawn::with_uid(
+                    "unknown::Actor",
+                    Uid::anonymous(),
+                    encoded_unit(),
+                    ActorEnvironment::default(),
+                ),
                 supervise: Supervise {
                     session_id: session_id.clone(),
                     supervisor: supervisor.bind(),

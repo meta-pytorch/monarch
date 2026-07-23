@@ -170,6 +170,7 @@ impl ProcMeshRef {
               spec: mesh_agent::ActorSpec {
                   actor_type: actor_type.clone(),      // ← string name sent over the wire
                   params_data: serialized_params.clone(),
+                  actor_environment: cx.instance().actor_environment().clone(),
               },
           },
       )?;
@@ -201,7 +202,8 @@ impl Remote {
 
 In a typical setup, higher-level code in a separate crate starts from a generic `A: RemoteSpawn`, uses `Remote::name_of::<A>()` to obtain the global type name, serializes `A::Params`, and sends a request containing:
 - `actor_type`: that global type name, and
-- `params_data`: serialized `A::Params`.
+- `params_data`: serialized `A::Params`, and
+- `actor_environment`: the spawning actor's persistent environment.
 
 On the receiving side, a control-plane or management actor calls:
 ```rust
@@ -213,7 +215,7 @@ to look up the corresponding `SpawnableActor` by `actor_type` and invoke its `gs
 
 Remote spawning in hyperactor involves two complementary pieces:
 1. **Type-level registration** Each `A: RemoteSpawn` contributes a `SpawnableActor` record when the user writes `#[spawnable]` on a concrete actor declaration or `register_spawnable!(A)` for a concrete instantiation. These records are collected at runtime by `Remote::collect()`.
-2. **Data-level spawn requests** Higher-level code starts from a concrete actor type (e.g. `A: RemoteSpawn`), uses `Remote::name_of::<A>()` to obtain it's global type name, serializes `A::Params`, and sends a request containing those two pieces of data.
+2. **Data-level spawn requests** Higher-level code starts from a concrete actor type (e.g. `A: RemoteSpawn`), uses `Remote::name_of::<A>()` to obtain it's global type name, serializes `A::Params`, and sends those values together with the spawning actor's persistent environment.
 
 On the receiving side, a management component reconstructs the actor by calling:
 ```rust

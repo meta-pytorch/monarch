@@ -6,7 +6,6 @@
 
 # pyre-unsafe
 import sys
-from typing import cast
 
 import pytest
 
@@ -14,9 +13,6 @@ if sys.platform != "linux":
     pytest.skip("linux-only", allow_module_level=True)
 
 from isolate_in_subprocess import isolate_in_subprocess
-from monarch._src.actor.actor_mesh import ActorMesh
-from monarch._src.actor.proc_mesh import get_or_spawn_controller
-from monarch._src.rdma.rdma import RdmaController
 from monarch.actor import Actor, endpoint, this_host
 from monarch.config import configured
 from monarch.rdma import RDMABuffer
@@ -52,18 +48,13 @@ class CpuActor(Actor):
         await buf.read_into(memoryview(dst))
         return bytes(dst)
 
-    @endpoint
-    async def coordinator_name(self) -> str:
-        # Internal mesh name of the shared coordinator; differs if it is respawned.
-        coord = await get_or_spawn_controller("rdma_controller", RdmaController)
-        return await cast(ActorMesh, coord)._name
-
 
 @pytest.mark.parametrize("rdma_backend", RDMA_BACKENDS)
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
-async def test_shared_rdma_coordinator_survives_consumer_exit(rdma_backend) -> None:
-    """A consumer's clean stop() leaves the shared RDMA coordinator usable and unchanged for others."""
+async def test_fresh_consumer_can_read_after_consumer_exit(rdma_backend) -> None:
+    """A fresh consumer on a new proc mesh can initialize and read after another
+    consumer's clean stop()."""
     with _backend_config(rdma_backend):
         producer_proc = this_host().spawn_procs(per_host={"processes": 1})
         consumer_a_proc = this_host().spawn_procs(per_host={"processes": 1})
@@ -75,16 +66,14 @@ async def test_shared_rdma_coordinator_survives_consumer_exit(rdma_backend) -> N
         buf = await producer.create_buffer.call_one()
 
         assert await consumer_a.read_buffer.call_one(buf) == _PAYLOAD
-        coordinator = await producer.coordinator_name.call_one()
 
         await consumer_a_proc.stop()
 
-        # Fresh proc = cold cache, so its read re-contacts the coordinator; a warm
+        # Fresh proc = cold cache, so its read re-contacts the owner; a warm
         # consumer would reuse its cached manager and never re-contact it.
         consumer_c_proc = this_host().spawn_procs(per_host={"processes": 1})
         consumer_c = consumer_c_proc.spawn("consumer_c", CpuActor)
         assert await consumer_c.read_buffer.call_one(buf) == _PAYLOAD
-        assert await consumer_c.coordinator_name.call_one() == coordinator
 
         await producer_proc.stop()
         await consumer_c_proc.stop()

@@ -914,6 +914,7 @@ impl ProcMeshRef {
                 spec: proc_agent::ActorSpec {
                     actor_type: actor_type.clone(),
                     params_data: serialized_params.clone(),
+                    actor_environment: cx.instance().actor_environment().clone(),
                 },
             },
         )?;
@@ -1253,12 +1254,16 @@ fn python_class_from_supervision_name(sdn: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     #[cfg(fbcode_build)]
+    use std::collections::HashMap;
+    #[cfg(fbcode_build)]
     use std::collections::HashSet;
     #[cfg(fbcode_build)]
     use std::ops::Deref;
     #[cfg(fbcode_build)]
     use std::time::Duration;
 
+    #[cfg(fbcode_build)]
+    use hyperactor::ActorEnvironment;
     #[cfg(fbcode_build)]
     use hyperactor::Instance;
     #[cfg(fbcode_build)]
@@ -1282,6 +1287,8 @@ mod tests {
     use super::ACTOR_SPAWN_MAX_IDLE;
     #[cfg(fbcode_build)]
     use crate::ActorMesh;
+    #[cfg(fbcode_build)]
+    use crate::casting::CAST_POINT;
     #[cfg(fbcode_build)]
     use crate::host_mesh::PROC_SPAWN_MAX_IDLE;
     #[cfg(fbcode_build)]
@@ -1308,6 +1315,158 @@ mod tests {
         testactor::assert_mesh_shape(actor_mesh).await;
 
         let _ = hm.shutdown(instance).await;
+    }
+
+    #[async_timed_test(timeout_secs = 300)]
+    #[cfg(fbcode_build)]
+    async fn actor_environment_survives_two_remote_hops_and_excludes_cast_point() {
+        const SENTINEL: u64 = 0xA0FE;
+        let operation_timeout = Duration::from_secs(120);
+
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(PROC_SPAWN_MAX_IDLE, operation_timeout);
+        let _guard2 = config.override_key(
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+            operation_timeout,
+        );
+
+        let base = testing::instance();
+        let persistent_point = extent!(persistent = 3).point_of_rank(2).unwrap();
+        let mut environment = ActorEnvironment::default();
+        environment
+            .set(testactor::ACTOR_ENVIRONMENT_TEST_TAG, SENTINEL)
+            .expect("seed persistent tag");
+        environment
+            .set(CAST_POINT, persistent_point.clone())
+            .expect("seed persistent cast-point collision");
+        let root = base
+            .proc()
+            .actor_instance_in_environment::<testing::TestRootClient>(
+                &format!("actor_environment_root_{}", Uuid::now_v7()),
+                environment,
+            )
+            .expect("create seeded root instance");
+
+        let mut hm = testing::host_mesh(1).await;
+        let proc_mesh = hm
+            .spawn(
+                &root.instance,
+                "actor_environment",
+                extent!(gpus = 2),
+                None,
+                None,
+            )
+            .await
+            .expect("spawn proc mesh");
+        let first_hop = proc_mesh
+            .range("gpus", 0..1)
+            .expect("first proc-mesh slice");
+        let second_hop = proc_mesh
+            .range("gpus", 1..2)
+            .expect("second proc-mesh slice");
+        let first_point = first_hop
+            .region()
+            .extent()
+            .point_of_rank(0)
+            .expect("first slice has rank zero");
+        let second_point = second_hop
+            .region()
+            .extent()
+            .point_of_rank(0)
+            .expect("second slice has rank zero");
+        let first_proc_addr = first_hop
+            .get(0)
+            .expect("first proc")
+            .proc_addr()
+            .to_string();
+        let second_proc_addr = second_hop
+            .get(0)
+            .expect("second proc")
+            .proc_addr()
+            .to_string();
+        assert_ne!(
+            first_proc_addr, second_proc_addr,
+            "the two hops must target distinct proc addresses",
+        );
+        assert!(
+            persistent_point != first_point && persistent_point != second_point,
+            "persistent and transient cast points must be distinct",
+        );
+
+        let (reply, mut replies) = root
+            .instance
+            .open_port::<testactor::ActorEnvironmentObservation>();
+        first_hop
+            .spawn_controllerless_service::<testactor::ActorEnvironmentProbe, _>(
+                &root.instance,
+                "actor_environment_hop_1",
+                &testactor::ActorEnvironmentProbeParams {
+                    label: "hop_1".to_string(),
+                    reply: reply.bind(),
+                    nested: Some((
+                        second_hop,
+                        "actor_environment_hop_2".to_string(),
+                        "hop_2".to_string(),
+                    )),
+                },
+            )
+            .await
+            .expect("spawn first environment probe");
+
+        let expected = HashMap::from([
+            ("hop_1".to_string(), (first_point, first_proc_addr)),
+            ("hop_2".to_string(), (second_point, second_proc_addr)),
+        ]);
+        let mut seen = HashSet::new();
+        let reply_deadline = tokio::time::Instant::now() + operation_timeout;
+        for _ in 0..2 {
+            let observed = tokio::time::timeout_at(reply_deadline, replies.recv())
+                .await
+                .expect("environment probe reply timed out")
+                .expect("environment probe reply port closed");
+            let (expected_point, expected_proc_addr) = expected
+                .get(&observed.label)
+                .unwrap_or_else(|| panic!("unexpected probe label {}", observed.label));
+            assert!(
+                seen.insert(observed.label.clone()),
+                "received duplicate observation from {}",
+                observed.label,
+            );
+            assert_eq!(
+                observed.persistent_tag,
+                Some(SENTINEL),
+                "{} must inherit the persistent tag",
+                observed.label,
+            );
+            assert_eq!(
+                observed.constructor_tag,
+                Some(SENTINEL),
+                "{} constructor must see the persistent tag",
+                observed.label,
+            );
+            assert_eq!(
+                observed.stored_point,
+                Some(persistent_point.clone()),
+                "{} must store only the persistent point",
+                observed.label,
+            );
+            assert_eq!(
+                observed.constructor_point,
+                Some(expected_point.clone()),
+                "{} constructor must see its real rank-local cast point",
+                observed.label,
+            );
+            assert_eq!(
+                &observed.proc_addr, expected_proc_addr,
+                "{} must run on its requested proc",
+                observed.label,
+            );
+        }
+        assert_eq!(seen.len(), expected.len(), "both hops must report");
+
+        hm.shutdown(&root.instance)
+            .await
+            .expect("host mesh shutdown should complete");
     }
 
     /// Reuse a per-proc singleton service across two overlapping proc-mesh views

@@ -20,6 +20,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorAddr;
+use hyperactor::ActorEnvironment;
 use hyperactor::ActorHandle;
 use hyperactor::Addr;
 use hyperactor::Client;
@@ -50,6 +51,12 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
+use crate::client_root::CLIENT_ROOT;
+use crate::client_root::ClientRootApi;
+use crate::client_root::ClientRootError;
+use crate::client_root::ClientRootRef;
+use crate::client_root::EnsureClientRootService;
+use crate::client_root::EnsureClientRootServiceReply;
 use crate::config_dump::ConfigDump;
 use crate::config_dump::ConfigDumpResult;
 use crate::introspect::ProcessMemoryStats;
@@ -171,6 +178,20 @@ struct ActorInstanceState {
     /// threshold, the delivered view rank at which to position the reply
     /// overlay, and the reply port to send once the threshold is met.
     pending_wait_status: Vec<(resource::Status, usize, PortRef<crate::StatusOverlay>)>,
+}
+
+/// Identity of a root-owned client-root service. `actor_states` (keyed by the
+/// service's instance `ResourceId`) remains the sole lifecycle registry; this
+/// records only what a repeat ensure must match exactly (CROOT-3, CROOT-9).
+#[derive(Debug)]
+struct ServiceEntry {
+    /// The registered remote actor type name.
+    actor_type: String,
+    /// The exact serialized `RemoteSpawn` parameter bytes.
+    params: Data,
+    /// The service actor's fresh instance id, whose `actor_states` entry stores
+    /// the spawn result.
+    id: ResourceId,
 }
 
 impl ActorInstanceState {
@@ -323,6 +344,10 @@ pub struct ProcAgent {
     stopping_all: bool,
     /// If set, check for expired actors whose keepalive has lapsed.
     mesh_orphan_timeout: Option<Duration>,
+    /// Root-owned client-root services keyed by validated static service name.
+    /// Populated only on the one root ProcAgent that binds `ClientRootApi`;
+    /// empty (and unreachable) on worker ProcAgents (CROOT-1, CROOT-4).
+    client_root_services: HashMap<Label, ServiceEntry>,
 }
 
 impl ProcAgent {
@@ -346,6 +371,7 @@ impl ProcAgent {
             shutdown_tx,
             stopping_all: false,
             mesh_orphan_timeout: orphan_timeout,
+            client_root_services: HashMap::new(),
         };
         proc.spawn_with_uid::<Self>(
             Uid::singleton(Label::new(PROC_AGENT_ACTOR_NAME).unwrap()),
@@ -882,6 +908,10 @@ pub struct ActorSpec {
     pub actor_type: String,
     /// serialized parameters
     pub params_data: Data,
+    /// The persistent environment to store on the spawned actor's instance.
+    /// Copied from the spawning context's instance and serialized per spawn
+    /// (AENV-3).
+    pub actor_environment: ActorEnvironment,
 }
 wirevalue::register_type!(ActorSpec);
 
@@ -899,6 +929,179 @@ pub struct ActorState {
 }
 wirevalue::register_type!(ActorState);
 
+impl ProcAgent {
+    /// Create a root-tracked actor and record its state under `id`, returning
+    /// whether a spawn was attempted.
+    ///
+    /// On a poisoned proc (an actor with an error supervision event) it records a
+    /// failed state without spawning and returns `false`. Otherwise it attempts
+    /// the spawn — merging the spec's persistent environment with `headers` (the
+    /// transient constructor headers) only for `RemoteSpawn::new` — and returns
+    /// `true` whether or not `gspawn` itself succeeded; a spawn failure is cached
+    /// in `actor_states`, which remains the sole lifecycle authority. Callers that
+    /// need the actual spawn result read it back from `actor_states` (see
+    /// `service_result`). Shared by the mesh `CreateOrUpdate` path and the
+    /// client-root ensure path.
+    async fn create_actor(
+        &mut self,
+        id: ResourceId,
+        create_rank: usize,
+        spec: ActorSpec,
+        headers: Flattrs,
+    ) -> bool {
+        let poisoned = self.actor_states.values().any(|s| s.has_errors());
+        let spawn = if poisoned {
+            Err(anyhow::anyhow!(
+                "Cannot spawn new actors on mesh with supervision events"
+            ))
+        } else {
+            let ActorSpec {
+                actor_type,
+                params_data,
+                actor_environment,
+            } = spec;
+            self.remote
+                .gspawn(
+                    &self.proc,
+                    &actor_type,
+                    id.uid().clone(),
+                    params_data,
+                    actor_environment,
+                    headers,
+                )
+                .await
+        };
+        self.actor_states.insert(
+            id,
+            ActorInstanceState {
+                create_rank,
+                spawn,
+                stop_initiated: false,
+                supervision_event: None,
+                subscribers: Vec::new(),
+                expiry_time: None,
+                generation: 1,
+                pending_wait_status: Vec::new(),
+            },
+        );
+        !poisoned
+    }
+
+    /// Create or reuse the statically named, root-owned service and return its
+    /// address. Runs entirely inside the serial ProcAgent handler, so concurrent
+    /// identical ensures collapse: the first records the entry and the rest
+    /// observe it (CROOT-3, CROOT-5).
+    async fn ensure_client_root_service(
+        &mut self,
+        cx: &Context<'_, Self>,
+        service_name: Label,
+        actor_type: String,
+        params: Data,
+    ) -> Result<ActorAddr, ClientRootError> {
+        let conflict = || ClientRootError::ConflictingSpec {
+            name: service_name.as_str().to_string(),
+        };
+
+        // Reuse an existing service only on an exact (type, params) match; a
+        // service that has since gone terminal fails closed in `service_result`.
+        if let Some(entry) = self.client_root_services.get(&service_name) {
+            if entry.actor_type != actor_type || entry.params != params {
+                return Err(conflict());
+            }
+            return Self::service_result(&self.actor_states, &entry.id, &service_name);
+        }
+
+        // Refuse to create a new service once shutdown has begun: a StopAll has
+        // already snapshotted and stopped the live actors, so a service created
+        // afterwards would never be stopped and would strand shutdown.
+        if self.stopping_all {
+            return Err(ClientRootError::Unavailable {
+                name: service_name.as_str().to_string(),
+                reason: "the client root is shutting down".to_string(),
+            });
+        }
+
+        // A fresh random instance id (CROOT-3): this avoids the predictable
+        // collision a name-derived id would create with a mesh actor or a
+        // preoccupying actor. The loop guards the negligible random-uid collision
+        // against the ids already present in `actor_states`.
+        let id = loop {
+            let candidate = ResourceId::instance(service_name.clone());
+            if !self.actor_states.contains_key(&candidate) {
+                break candidate;
+            }
+        };
+
+        // The created service inherits the same client-root capability so its own
+        // descendants stay in this root (CROOT-7).
+        let self_root = ClientRootRef::from_ref(
+            hyperactor::context::Actor::instance(cx).bind::<ClientRootApi>(),
+        );
+        let mut service_env = hyperactor::ActorEnvironment::default();
+        service_env
+            .set(CLIENT_ROOT, self_root)
+            .map_err(|e| ClientRootError::Spawn {
+                name: service_name.as_str().to_string(),
+                message: e.to_string(),
+            })?;
+        let spec = ActorSpec {
+            actor_type: actor_type.clone(),
+            params_data: params.clone(),
+            actor_environment: service_env,
+        };
+        // Root-owned construction uses empty transient headers: the requester's
+        // message headers are request-scoped and must not leak into a long-lived,
+        // root-owned service that outlives the requester (AENV-4).
+        let spawn_attempted = self.create_actor(id.clone(), 0, spec, Flattrs::new()).await;
+
+        // Record the identity so later ensures reuse it; the spawn result
+        // (including a cached failure) lives in `actor_states`.
+        self.client_root_services.insert(
+            service_name.clone(),
+            ServiceEntry {
+                actor_type,
+                params,
+                id: id.clone(),
+            },
+        );
+        // Reflect the new service in the root's introspect view, matching the
+        // mesh create path (whenever a spawn was attempted).
+        if spawn_attempted {
+            let _ = self.publish_introspect_properties(cx);
+        }
+        Self::service_result(&self.actor_states, &id, &service_name)
+    }
+
+    /// Read the recorded spawn result for a service's reserved id.
+    fn service_result(
+        actor_states: &HashMap<ResourceId, ActorInstanceState>,
+        id: &ResourceId,
+        service_name: &Label,
+    ) -> Result<ActorAddr, ClientRootError> {
+        let Some(state) = actor_states.get(id) else {
+            return Err(ClientRootError::Spawn {
+                name: service_name.as_str().to_string(),
+                message: "service actor state is missing".to_string(),
+            });
+        };
+        // A cached spawn failure (including a poisoned-proc failure) is returned
+        // as-is; proc poisoning is latched, so it is never retried.
+        let addr = state.spawn.as_ref().map_err(|e| ClientRootError::Spawn {
+            name: service_name.as_str().to_string(),
+            message: e.to_string(),
+        })?;
+        // Fail closed if the service spawned but has since gone terminal
+        // (stopped, failed, or stopping): reuse must never hand back a dead ref.
+        match state.status() {
+            resource::Status::Running => Ok(addr.clone()),
+            other => Err(ClientRootError::Unavailable {
+                name: service_name.as_str().to_string(),
+                reason: format!("service is {}", other),
+            }),
+        }
+    }
+}
+
 #[async_trait]
 impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcAgent {
     async fn handle(
@@ -910,57 +1113,51 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcAgent {
             // There is no update.
             return Ok(());
         }
-        let create_rank = create_or_update.rank.unwrap();
-        // If any actor on this proc has error supervision events,
-        // we disallow spawning new actors on it, as this proc may be in an
-        // invalid state.
-        if self.actor_states.values().any(|s| s.has_errors()) {
-            self.actor_states.insert(
-                create_or_update.id.clone(),
-                ActorInstanceState {
-                    spawn: Err(anyhow::anyhow!(
-                        "Cannot spawn new actors on mesh with supervision events"
-                    )),
-                    create_rank,
-                    stop_initiated: false,
-                    supervision_event: None,
-                    subscribers: Vec::new(),
-                    expiry_time: None,
-                    generation: 1,
-                    pending_wait_status: Vec::new(),
-                },
-            );
+        // Once shutdown has begun, a new actor would escape the StopAll snapshot
+        // and strand shutdown; do not create it.
+        if self.stopping_all {
             return Ok(());
         }
-
-        let ActorSpec {
-            actor_type,
-            params_data,
-        } = create_or_update.spec;
-        self.actor_states.insert(
-            create_or_update.id.clone(),
-            ActorInstanceState {
+        let create_rank = create_or_update.rank.unwrap();
+        // Publish introspect whenever a spawn was attempted (non-poisoned proc),
+        // matching the prior behavior; on a poisoned proc the helper records a
+        // failed state without spawning and does not publish.
+        let spawn_attempted = self
+            .create_actor(
+                create_or_update.id.clone(),
                 create_rank,
-                spawn: self
-                    .remote
-                    .gspawn(
-                        &self.proc,
-                        &actor_type,
-                        create_or_update.id.uid().clone(),
-                        params_data,
-                        cx.headers().clone(),
-                    )
-                    .await,
-                stop_initiated: false,
-                supervision_event: None,
-                subscribers: Vec::new(),
-                expiry_time: None,
-                generation: 1,
-                pending_wait_status: Vec::new(),
-            },
-        );
+                create_or_update.spec,
+                cx.headers().clone(),
+            )
+            .await;
+        if spawn_attempted {
+            let _ = self.publish_introspect_properties(cx);
+        }
+        Ok(())
+    }
+}
 
-        let _ = self.publish_introspect_properties(cx);
+#[async_trait]
+impl Handler<EnsureClientRootService> for ProcAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: EnsureClientRootService,
+    ) -> anyhow::Result<()> {
+        let EnsureClientRootService {
+            service_name,
+            actor_type,
+            params,
+            mut reply,
+        } = message;
+        // A departed requester must not fault the root: an undeliverable reply is
+        // dropped rather than returned to this ProcAgent (CROOT-11). Expected
+        // failures travel in the typed reply, and the handler always returns Ok.
+        reply.return_undeliverable(false);
+        let result = self
+            .ensure_client_root_service(cx, service_name, actor_type, params)
+            .await;
+        reply.post(cx, EnsureClientRootServiceReply(result));
         Ok(())
     }
 }
@@ -1580,6 +1777,7 @@ mod tests {
                 ActorSpec {
                     actor_type: actor_type.clone(),
                     params_data: actor_params.clone(),
+                    actor_environment: ActorEnvironment::default(),
                 },
             )
             .await
@@ -1630,6 +1828,7 @@ mod tests {
                 ActorSpec {
                     actor_type: actor_type.clone(),
                     params_data: actor_params.clone(),
+                    actor_environment: ActorEnvironment::default(),
                 },
             )
             .await
@@ -1829,5 +2028,589 @@ mod tests {
 
         // Unblock the actor.
         gate.notify_one();
+    }
+
+    hyperactor_config::attrs::declare_attrs! {
+        attr AENV_SPEC_TAG: u64;
+        attr AENV_SPEC_LABEL: String;
+    }
+
+    // AENV-3: the actor environment travels with `ActorSpec` through the same
+    // positional codec used for every remote spawn, and `ActorSpec` equality
+    // composes the environment's semantic (order-independent) equality rather
+    // than a raw-buffer comparison.
+    #[test]
+    fn actor_environment_serializes_in_actor_spec() {
+        let mut env = ActorEnvironment::default();
+        env.set(AENV_SPEC_TAG, 7u64).expect("insert tag");
+        env.set(AENV_SPEC_LABEL, "root".to_string())
+            .expect("insert label");
+
+        let spec = ActorSpec {
+            actor_type: "probe".to_string(),
+            params_data: vec![1, 2, 3],
+            actor_environment: env.clone(),
+        };
+
+        let bytes = bincode::serde::encode_to_vec(&spec, bincode::config::legacy()).unwrap();
+        let restored: ActorSpec =
+            bincode::serde::decode_from_slice(&bytes, bincode::config::legacy())
+                .map(|(v, _)| v)
+                .unwrap();
+
+        assert_eq!(restored.actor_environment.get(AENV_SPEC_TAG), Some(7u64));
+        assert_eq!(
+            restored.actor_environment.get(AENV_SPEC_LABEL),
+            Some("root".to_string())
+        );
+        assert_eq!(restored.actor_environment, env);
+        // Derived `ActorSpec` equality composes the semantic environment
+        // equality.
+        assert_eq!(restored, spec);
+    }
+
+    // ----- client-root capability proofs -----
+
+    // Boot a root ProcAgent and bind the client-root API on it.
+    async fn boot_client_root() -> (
+        hyperactor::Proc,
+        ActorHandle<ProcAgent>,
+        crate::client_root::ClientRootRef,
+    ) {
+        use hyperactor::Proc;
+        use hyperactor::actor::ActorStatus;
+        use hyperactor::channel::ChannelTransport;
+
+        let proc = Proc::direct(ChannelTransport::Unix.any(), "root".to_string()).unwrap();
+        let agent = ProcAgent::boot_v1(proc.clone(), None).unwrap();
+        agent
+            .status()
+            .wait_for(|s| matches!(s, ActorStatus::Idle))
+            .await
+            .unwrap();
+        let client_root = crate::client_root::ClientRootRef::bind(&agent);
+        (proc, agent, client_root)
+    }
+
+    // Proof 1: the capability serde-round-trips its bound reference, while its
+    // display/Debug are redacted and textual parse is rejected (CROOT-2).
+    #[tokio::test]
+    async fn client_root_ref_redacts_and_round_trips() {
+        use hyperactor_config::AttrValue;
+
+        use crate::client_root::ClientRootRef;
+
+        let (_proc, _agent, client_root) = boot_client_root().await;
+
+        let bytes = bincode::serde::encode_to_vec(&client_root, bincode::config::legacy()).unwrap();
+        let restored: ClientRootRef =
+            bincode::serde::decode_from_slice(&bytes, bincode::config::legacy())
+                .map(|(v, _)| v)
+                .unwrap();
+        assert_eq!(
+            restored, client_root,
+            "capability must round-trip via serde"
+        );
+
+        assert_eq!(client_root.display(), "<redacted>");
+        assert_eq!(format!("{:?}", client_root), "ClientRootRef(<redacted>)");
+        assert!(
+            ClientRootRef::parse("anything").is_err(),
+            "a bearer capability must not be reconstructible from text"
+        );
+    }
+
+    // Proof 10: binding the API twice on the same root returns the same
+    // reference and adds no registration/activation state (CROOT-1).
+    #[tokio::test]
+    async fn client_root_bind_is_idempotent() {
+        use crate::client_root::ClientRootRef;
+
+        let (_proc, agent, first) = boot_client_root().await;
+        let second = ClientRootRef::bind(&agent);
+        assert_eq!(first, second);
+    }
+
+    // Proofs 3/5: ensuring the same service returns one root-owned actor, and a
+    // requester exiting does not stop it — a later requester observes the same
+    // address.
+    #[tokio::test]
+    async fn client_root_ensure_is_root_owned_and_single_identity() {
+        use crate::client_root::ClientRootService;
+
+        let (proc, _agent, client_root) = boot_client_root().await;
+        let service = ClientRootService::<ExtraActor>::declare("probe-service");
+
+        let caller_a = proc.client("caller-a");
+        let first = service
+            .ensure(&caller_a, &client_root, ())
+            .await
+            .expect("first ensure creates the service");
+        // The first requester context is gone; a later ensure still reuses the
+        // one service (CROOT-3). Departed-requester survival and the in-flight
+        // drop are covered by `client_root_departed_requester_does_not_fault_root`.
+        drop(caller_a);
+
+        let caller_b = proc.client("caller-b");
+        let second = service
+            .ensure(&caller_b, &client_root, ())
+            .await
+            .expect("second ensure reuses the service after requester exit");
+        assert_eq!(
+            first.actor_addr(),
+            second.actor_addr(),
+            "identical ensures must resolve to the one root-owned service (CROOT-3)"
+        );
+    }
+
+    // A second registered actor type, distinct from `ExtraActor`, so a repeat
+    // ensure under the same name with a different type conflicts.
+    #[derive(Debug, Default, Serialize, Deserialize)]
+    #[hyperactor::export(handlers = [])]
+    struct OtherActor;
+    impl hyperactor::Actor for OtherActor {}
+    hyperactor::register_spawnable!(OtherActor);
+
+    // CROOT-3: the same service name with a different actor type conflicts and
+    // surfaces as a transparent `Error::ClientRootError(ConflictingSpec)`.
+    #[tokio::test]
+    async fn client_root_conflicting_type_is_rejected() {
+        use crate::client_root::ClientRootError;
+        use crate::client_root::ClientRootService;
+
+        let (proc, _agent, client_root) = boot_client_root().await;
+        let caller = proc.client("caller");
+
+        ClientRootService::<ExtraActor>::declare("shared")
+            .ensure(&caller, &client_root, ())
+            .await
+            .expect("first ensure creates the service");
+
+        let err = ClientRootService::<OtherActor>::declare("shared")
+            .ensure(&caller, &client_root, ())
+            .await
+            .expect_err("a different actor type for the same name must conflict");
+        assert!(
+            matches!(
+                err,
+                crate::Error::ClientRootError(ClientRootError::ConflictingSpec { .. })
+            ),
+            "expected ClientRootError::ConflictingSpec, got {err:?}"
+        );
+    }
+
+    // H5 / CROOT-3: the service actor uses a fresh instance id, not a
+    // deterministic `client-root-<name>` singleton, avoiding the predictable
+    // collision a name-derived id would create with a mesh actor.
+    #[tokio::test]
+    async fn client_root_service_uses_instance_id() {
+        use crate::client_root::ClientRootService;
+
+        let (proc, _agent, client_root) = boot_client_root().await;
+        let caller = proc.client("caller");
+        let svc = ClientRootService::<ExtraActor>::declare("probe")
+            .ensure(&caller, &client_root, ())
+            .await
+            .expect("ensure creates the service");
+        assert!(
+            !svc.actor_addr().is_root(),
+            "a client-root service must use a fresh instance uid, not a singleton id"
+        );
+    }
+
+    // A spawnable actor whose remote constructor increments a global counter, so
+    // a test can prove single-flight *construction*, not just a single identity.
+    static COUNTING_ACTOR_BUILDS: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+
+    #[derive(Debug)]
+    #[hyperactor::export(handlers = [])]
+    #[hyperactor::spawnable]
+    struct CountingActor;
+    impl hyperactor::Actor for CountingActor {}
+
+    #[async_trait::async_trait]
+    impl hyperactor::RemoteSpawn for CountingActor {
+        type Params = ();
+        async fn new(_params: (), _environment: Flattrs) -> anyhow::Result<Self> {
+            COUNTING_ACTOR_BUILDS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Self)
+        }
+    }
+
+    // Proof 2: concurrent identical ensures collapse through the serial root
+    // ProcAgent to a single service identity AND a single construction.
+    #[tokio::test]
+    async fn client_root_concurrent_ensures_collapse() {
+        use std::sync::atomic::Ordering;
+
+        use crate::client_root::ClientRootService;
+
+        COUNTING_ACTOR_BUILDS.store(0, Ordering::SeqCst);
+        let (proc, _agent, client_root) = boot_client_root().await;
+        let ensure = |name: &'static str| {
+            let caller = proc.client(name);
+            let client_root = &client_root;
+            async move {
+                ClientRootService::<CountingActor>::declare("concurrent")
+                    .ensure(&caller, client_root, ())
+                    .await
+                    .expect("ensure succeeds")
+                    .actor_addr()
+                    .clone()
+            }
+        };
+
+        let (a, b, c, d) = tokio::join!(
+            ensure("caller-0"),
+            ensure("caller-1"),
+            ensure("caller-2"),
+            ensure("caller-3"),
+        );
+        assert_eq!(a, b, "concurrent ensures must resolve to one service");
+        assert_eq!(a, c, "concurrent ensures must resolve to one service");
+        assert_eq!(a, d, "concurrent ensures must resolve to one service");
+        assert_eq!(
+            COUNTING_ACTOR_BUILDS.load(Ordering::SeqCst),
+            1,
+            "single-flight: identical concurrent ensures must construct once"
+        );
+    }
+
+    // H3: `service_result` fails closed for a service that has gone terminal or
+    // never spawned; only a running service returns its address.
+    #[tokio::test]
+    async fn client_root_service_result_fails_closed_on_terminal() {
+        use hyperactor::actor::ActorStatus;
+
+        use crate::client_root::ClientRootError;
+
+        let (_proc, agent, _client_root) = boot_client_root().await;
+        let addr = agent.bind::<ProcAgent>().actor_addr().clone();
+        let name = Label::new("svc").unwrap();
+        let id = ResourceId::instance(name.clone());
+
+        let mk = |spawn: Result<ActorAddr, anyhow::Error>,
+                  stop_initiated: bool,
+                  supervision_event: Option<ActorSupervisionEvent>| {
+            ActorInstanceState {
+                create_rank: 0,
+                spawn,
+                stop_initiated,
+                supervision_event,
+                subscribers: Vec::new(),
+                expiry_time: None,
+                generation: 1,
+                pending_wait_status: Vec::new(),
+            }
+        };
+
+        // Running -> Ok(addr).
+        let mut states = HashMap::new();
+        states.insert(id.clone(), mk(Ok(addr.clone()), false, None));
+        assert_eq!(
+            ProcAgent::service_result(&states, &id, &name).expect("running service resolves"),
+            addr
+        );
+
+        // Stopping (stop initiated, no event yet) -> Unavailable.
+        let mut states = HashMap::new();
+        states.insert(id.clone(), mk(Ok(addr.clone()), true, None));
+        assert!(matches!(
+            ProcAgent::service_result(&states, &id, &name),
+            Err(ClientRootError::Unavailable { .. })
+        ));
+
+        // Terminal via a supervision event -> Unavailable.
+        let mut states = HashMap::new();
+        let event = ActorSupervisionEvent::new(
+            addr.clone(),
+            None,
+            ActorStatus::Stopped("done".into()),
+            None,
+        );
+        states.insert(id.clone(), mk(Ok(addr.clone()), false, Some(event)));
+        assert!(matches!(
+            ProcAgent::service_result(&states, &id, &name),
+            Err(ClientRootError::Unavailable { .. })
+        ));
+
+        // Cached spawn failure -> Spawn.
+        let mut states = HashMap::new();
+        states.insert(id.clone(), mk(Err(anyhow::anyhow!("boom")), false, None));
+        assert!(matches!(
+            ProcAgent::service_result(&states, &id, &name),
+            Err(ClientRootError::Spawn { .. })
+        ));
+
+        // Missing state -> Spawn.
+        let states: HashMap<ResourceId, ActorInstanceState> = HashMap::new();
+        assert!(matches!(
+            ProcAgent::service_result(&states, &id, &name),
+            Err(ClientRootError::Spawn { .. })
+        ));
+    }
+
+    // CROOT-6: reading the capability from an environment that lacks it fails
+    // closed with the typed `MissingClientRoot`, not a silent absence.
+    #[tokio::test]
+    async fn client_root_from_env_absent_fails_closed() {
+        use crate::client_root::ClientRootRef;
+
+        let (proc, _agent, _client_root) = boot_client_root().await;
+        let caller = proc.client("no-capability");
+        let environment = hyperactor::context::Actor::instance(&caller).actor_environment();
+        assert!(
+            matches!(
+                ClientRootRef::from_env(environment),
+                Err(crate::Error::MissingClientRoot)
+            ),
+            "a caller without the capability must fail closed with MissingClientRoot"
+        );
+    }
+
+    // Boot a root ProcAgent with a shutdown channel so a StopAll signals the
+    // exit code instead of calling `process::exit`.
+    async fn boot_client_root_with_shutdown() -> (
+        hyperactor::Proc,
+        ActorHandle<ProcAgent>,
+        crate::client_root::ClientRootRef,
+        tokio::sync::oneshot::Receiver<i32>,
+    ) {
+        use hyperactor::Proc;
+        use hyperactor::actor::ActorStatus;
+        use hyperactor::channel::ChannelTransport;
+
+        let proc = Proc::direct(ChannelTransport::Unix.any(), "root".to_string()).unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let agent = ProcAgent::boot_v1(proc.clone(), Some(tx)).unwrap();
+        agent
+            .status()
+            .wait_for(|s| matches!(s, ActorStatus::Idle))
+            .await
+            .unwrap();
+        let client_root = crate::client_root::ClientRootRef::bind(&agent);
+        (proc, agent, client_root, rx)
+    }
+
+    // A root-owned service that reports the client-root capability it reads back
+    // from its own environment, so a test can compare its exact identity.
+    #[derive(Debug, Serialize, Deserialize, Named)]
+    struct ClientRootObservation(Option<crate::client_root::ClientRootRef>);
+    wirevalue::register_type!(ClientRootObservation);
+
+    #[derive(Debug, Serialize, Deserialize, Named)]
+    struct ObserveClientRoot {
+        reply: hyperactor::OncePortRef<ClientRootObservation>,
+    }
+    wirevalue::register_type!(ObserveClientRoot);
+
+    #[derive(Debug, Default, Serialize, Deserialize)]
+    #[hyperactor::export(handlers = [ObserveClientRoot])]
+    struct EnvProbeActor;
+    impl hyperactor::Actor for EnvProbeActor {}
+    hyperactor::register_spawnable!(EnvProbeActor);
+
+    #[async_trait::async_trait]
+    impl Handler<ObserveClientRoot> for EnvProbeActor {
+        async fn handle(
+            &mut self,
+            cx: &Context<Self>,
+            msg: ObserveClientRoot,
+        ) -> anyhow::Result<()> {
+            let environment = hyperactor::context::Actor::instance(cx).actor_environment();
+            let observed = crate::client_root::ClientRootRef::from_env(environment).ok();
+            msg.reply.post(cx, ClientRootObservation(observed));
+            Ok(())
+        }
+    }
+
+    // H1 / CROOT-11: a requester that departs before the reply lands must not
+    // fault the root. The reply is posted to a dropped once-port, which without
+    // `return_undeliverable(false)` would return to the root's fatal
+    // `handle_invalid_reference`. The root must still serve a later request.
+    #[tokio::test]
+    async fn client_root_departed_requester_does_not_fault_root() {
+        use std::time::Duration;
+
+        use hyperactor::ActorRef;
+        use hyperactor::Endpoint;
+
+        use crate::client_root::ClientRootApi;
+        use crate::client_root::ClientRootService;
+
+        let (proc, _agent, client_root) = boot_client_root().await;
+
+        {
+            let caller = proc.client("ephemeral");
+            let (reply_handle, reply_receiver) =
+                caller.open_once_port::<EnsureClientRootServiceReply>();
+            let reply = reply_handle.bind();
+            // Drop the receiver BEFORE posting so the reply is guaranteed
+            // undeliverable; otherwise the root could answer before the port is
+            // gone and the fatal-return path would never be exercised.
+            drop(reply_receiver);
+            let actor_type = Remote::collect()
+                .name_of::<ExtraActor>()
+                .unwrap()
+                .to_string();
+            let params = bincode::serde::encode_to_vec((), bincode::config::legacy()).unwrap();
+            let api = ActorRef::<ClientRootApi>::attest(client_root.addr().clone());
+            api.post(
+                &caller,
+                EnsureClientRootService {
+                    service_name: Label::new("ephemeral-svc").unwrap(),
+                    actor_type,
+                    params,
+                    reply,
+                },
+            );
+            drop(caller);
+        }
+
+        // Two sequential survivor ensures. The undeliverable reply-return is
+        // enqueued to the root while it handles the request above, so by the time
+        // the second ensure completes the root has processed it; a fatal return
+        // would fail (or hang) one of these rather than slip past a single fast
+        // reply.
+        let survivor = proc.client("survivor");
+        for name in ["after-departure-1", "after-departure-2"] {
+            tokio::time::timeout(
+                Duration::from_secs(15),
+                ClientRootService::<ExtraActor>::declare(name).ensure(&survivor, &client_root, ()),
+            )
+            .await
+            .expect("root must stay responsive after a departed requester")
+            .expect("root must serve a new ensure after a departed requester");
+        }
+    }
+
+    // A stop-gated service: its handler blocks until released, so a test can hold
+    // a proc open across a StopAll and then observe shutdown run to completion.
+    // The gate is process-global (statics) because a remote-spawned actor cannot
+    // carry a non-serializable field.
+    static GATE_ENTERED: tokio::sync::Notify = tokio::sync::Notify::const_new();
+    static GATE_RELEASE: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+    #[derive(
+        Debug,
+        Clone,
+        Serialize,
+        Deserialize,
+        Named,
+        hyperactor::Handler,
+        hyperactor::HandleClient
+    )]
+    enum GateMsg {
+        Block(),
+    }
+    wirevalue::register_type!(GateMsg);
+
+    #[derive(Debug, Default, Serialize, Deserialize)]
+    #[hyperactor::export(handlers = [GateMsg])]
+    struct GateActor;
+    impl hyperactor::Actor for GateActor {}
+    hyperactor::register_spawnable!(GateActor);
+
+    #[async_trait::async_trait]
+    #[hyperactor::handle(GateMsg)]
+    impl GateMsgHandler for GateActor {
+        async fn block(&mut self, _cx: &Context<Self>) -> anyhow::Result<()> {
+            GATE_ENTERED.notify_one();
+            GATE_RELEASE.notified().await;
+            Ok(())
+        }
+    }
+
+    // H2: once shutdown has begun a NEW ensure is refused, so a service cannot
+    // escape the StopAll snapshot and strand shutdown. A gated keeper holds the
+    // proc open across StopAll; releasing it lets shutdown run to completion.
+    #[tokio::test]
+    async fn client_root_ensure_rejected_during_shutdown() {
+        use std::time::Duration;
+
+        use hyperactor::Endpoint;
+
+        use crate::client_root::ClientRootError;
+        use crate::client_root::ClientRootService;
+
+        let (proc, agent, client_root, shutdown_rx) = boot_client_root_with_shutdown().await;
+
+        // A gated keeper never reaches terminal state while blocked, so StopAll
+        // defers shutdown until we release it.
+        let keeper = ClientRootService::<GateActor>::declare("keeper")
+            .ensure(&proc.client("keeper-caller"), &client_root, ())
+            .await
+            .expect("keeper service is created before shutdown");
+        keeper.post(&proc.client("gate-driver"), GateMsg::Block());
+        GATE_ENTERED.notified().await;
+
+        // Begin shutdown; the blocked keeper defers it. A new ensure is refused.
+        let control = proc.client("control");
+        agent.bind::<ProcAgent>().post(
+            &control,
+            resource::StopAll {
+                reason: "test shutdown".to_string(),
+            },
+        );
+        let err = tokio::time::timeout(
+            Duration::from_secs(15),
+            ClientRootService::<ExtraActor>::declare("too-late").ensure(&control, &client_root, ()),
+        )
+        .await
+        .expect("agent must answer while the keeper defers shutdown")
+        .expect_err("a new ensure during shutdown must be rejected");
+        assert!(
+            matches!(
+                err,
+                crate::Error::ClientRootError(ClientRootError::Unavailable { .. })
+            ),
+            "ensure during shutdown must be Unavailable, got {err:?}"
+        );
+
+        // Release the keeper; it terminates and shutdown completes, delivering a
+        // clean exit code through `shutdown_rx`.
+        GATE_RELEASE.notify_one();
+        let code = tokio::time::timeout(Duration::from_secs(30), shutdown_rx)
+            .await
+            .expect("shutdown must complete once the last actor terminates")
+            .expect("shutdown channel delivered an exit code");
+        assert_eq!(code, 0, "clean shutdown exit code");
+    }
+
+    // CROOT-7: a service spawned through ensure inherits the client-root
+    // capability in its environment and reads it back with `from_env`.
+    #[tokio::test]
+    async fn client_root_service_observes_inherited_capability() {
+        use std::time::Duration;
+
+        use hyperactor::Endpoint;
+
+        use crate::client_root::ClientRootService;
+
+        let (proc, _agent, client_root) = boot_client_root().await;
+        let caller = proc.client("caller");
+        let probe = ClientRootService::<EnvProbeActor>::declare("env-probe")
+            .ensure(&caller, &client_root, ())
+            .await
+            .expect("ensure creates the probe service");
+
+        let (reply_handle, reply_receiver) = caller.open_once_port::<ClientRootObservation>();
+        probe.post(
+            &caller,
+            ObserveClientRoot {
+                reply: reply_handle.bind(),
+            },
+        );
+        let ClientRootObservation(observed) =
+            tokio::time::timeout(Duration::from_secs(15), reply_receiver.recv())
+                .await
+                .expect("probe must reply")
+                .expect("reply channel is open");
+        assert_eq!(
+            observed,
+            Some(client_root.clone()),
+            "a service must inherit the exact client-root capability, not merely some capability"
+        );
     }
 }

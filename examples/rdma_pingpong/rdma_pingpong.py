@@ -54,15 +54,6 @@ class PingPongActor(Actor):
             raise ValueError(f"Unknown buffer_type: {buffer_type!r}")
 
     @endpoint
-    async def init_rdma(self):
-        """Pre-initialize the RDMA manager (avoids block_on deadlock)."""
-        from monarch._src.actor.future import Future
-        from monarch._src.rdma.rdma import _ensure_init_rdma_manager
-
-        # pyrefly: ignore [bad-argument-type]
-        await Future(coro=_ensure_init_rdma_manager())
-
-    @endpoint
     async def get_buffer(self) -> RDMABuffer:
         if self.buffer_type in ("cpu_tensor", "cuda_tensor"):
             return RDMABuffer(self.data.view(torch.uint8).flatten())
@@ -223,8 +214,6 @@ def main(
     a0 = procs.spawn("a0", PingPongActor, size, buffer_type).slice(hosts=0)
     a1 = procs.spawn("a1", PingPongActor, size, buffer_type).slice(hosts=1)
 
-    a0.init_rdma.call_one().get()
-    a1.init_rdma.call_one().get()
     buf0 = a0.get_buffer.call_one().get()
     buf1 = a1.get_buffer.call_one().get()
     cksum0 = a0.checksum.call_one("data").get()

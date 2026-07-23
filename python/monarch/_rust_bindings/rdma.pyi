@@ -7,7 +7,7 @@
 # pyre-strict
 from typing import Any, final
 
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
+from monarch._rust_bindings.monarch_hyperactor.pytokio import Handle, PythonTask
 
 @final
 class _RdmaMemoryRegionView:
@@ -40,14 +40,17 @@ def _get_memoryview_addr_and_size(mv: memoryview) -> tuple[int, int]: ...
 def _get_tensor_addr_and_size(tensor: Any) -> tuple[int, int]: ...
 @final
 class _RdmaManager:
-    device: str
-    def __repr__(self) -> str: ...
     @classmethod
-    def create_rdma_manager_nonblocking(
-        self,
-        proc_mesh: Any,
-        client: Any,
-    ) -> PythonTask[_RdmaManager | None]: ...
+    def ensure_init_rdma_manager_nonblocking(
+        cls,
+        proc_mesh_shared: Any,
+        caller: Any,
+    ) -> Handle[None]: ...
+
+class RdmaInitError(Exception):
+    """Raised when the RDMA manager owner reports a typed initialization failure."""
+
+    ...
 
 @final
 class _RdmaBuffer:
@@ -55,25 +58,14 @@ class _RdmaBuffer:
 
     @classmethod
     def create_rdma_buffer_blocking(
-        cls, local: _LocalMemoryHandle, client: Any
+        cls,
+        local: _LocalMemoryHandle,
+        client: Any,
+        rdma_manager_init: Handle[None],
     ) -> _RdmaBuffer: ...
-    @classmethod
-    def create_rdma_buffer_nonblocking(
-        cls, local: _LocalMemoryHandle, client: Any
-    ) -> PythonTask[Any]: ...
-    def drop(self, client: Any) -> PythonTask[None]: ...
-    def read_into(
-        self,
-        dst: _LocalMemoryHandle,
-        client: Any,
-        timeout: int,
-    ) -> PythonTask[Any]: ...
-    def write_from(
-        self,
-        src: _LocalMemoryHandle,
-        client: Any,
-        timeout: int,
-    ) -> PythonTask[Any]: ...
+    def drop(
+        self, client: Any, rdma_manager_init: Handle[None]
+    ) -> PythonTask[None]: ...
     def size(self) -> int: ...
     def owner_actor_id(self) -> str: ...
     def __reduce__(self) -> tuple[Any, ...]: ...
@@ -96,7 +88,9 @@ class _RdmaAction:
     def add_write_from_local(
         self, remote: _RdmaBuffer, local: _LocalMemoryHandle
     ) -> None: ...
-    def submit(self, client: Any, timeout: int) -> PythonTask[None]: ...
+    def submit(
+        self, client: Any, timeout: int, rdma_manager_init: Handle[None]
+    ) -> PythonTask[None]: ...
 
 def is_ibverbs_available() -> bool: ...
 def rdma_supported() -> bool: ...

@@ -351,6 +351,14 @@ static HOST_SHUTDOWN_HANDLE: OnceLock<
 /// This creates a proper Host with BootstrapProcManager, spawns the root client
 /// actor on the Host's local_proc.
 ///
+/// The root client actor is the program's singleton root orchestration actor;
+/// it is distinct from the root ProcAgent on the same proc. Before creating the
+/// actor, bootstrap binds the restricted client-root service API on that
+/// ProcAgent and places the resulting `ClientRootRef` in the actor's persistent
+/// environment. Descendants inherit the capability, giving Python and non-Python
+/// actors the same route to services owned by the program root. Worker
+/// ProcAgents do not bind this API.
+///
 /// Returns a tuple of (HostMesh, ProcMesh, PyInstance) where:
 /// - PyHostMesh: the bootstrapped (local) host mesh; and
 /// - PyProcMesh: the local ProcMesh on this HostMesh; and
@@ -444,8 +452,23 @@ fn bootstrap_host(
             .await
             .map_err(|e| PyException::new_err(e.to_string()))?;
 
+        // Bind the client-root API on this program's one root ProcAgent and seed
+        // the Python root client's environment with the resulting capability, so
+        // descendants inherit it exactly as the Rust root's descendants do.
+        // Worker ProcAgents never bind the API.
+        let client_root = hyperactor_mesh::client_root::ClientRootRef::bind(&local_proc_agent);
+        let mut root_env = hyperactor::ActorEnvironment::default();
+        root_env
+            .set(hyperactor_mesh::client_root::CLIENT_ROOT, client_root)
+            .map_err(|e| PyException::new_err(e.to_string()))?;
+
         let (instance, _handle) = monarch_with_gil(GilSite::Bootstrap, |py| {
-            PythonActor::bootstrap_client_inner(py, local_proc, &ROOT_CLIENT_INSTANCE_FOR_HOST)
+            PythonActor::bootstrap_client_inner(
+                py,
+                local_proc,
+                root_env,
+                &ROOT_CLIENT_INSTANCE_FOR_HOST,
+            )
         })
         .await;
 

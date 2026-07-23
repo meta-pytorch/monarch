@@ -17,6 +17,7 @@ use std::sync::LazyLock;
 use hyperactor_config::Flattrs;
 
 use crate::Actor;
+use crate::ActorEnvironment;
 use crate::AnyActorHandle;
 use crate::Data;
 use crate::id::Uid;
@@ -69,24 +70,30 @@ pub struct SpawnableActor {
     pub name: &'static LazyLock<&'static str>,
 
     /// Type-erased root spawn function. This is the type's
-    /// [`RemoteSpawn::gspawn_root_bind`].
+    /// [`RemoteSpawn::gspawn_root_bind`]. The `ActorEnvironment` is the
+    /// persistent environment stored on the new instance; the `Flattrs` are the
+    /// transient constructor headers overlaid only for `RemoteSpawn::new`.
     pub gspawn_root_bind: fn(
         &Proc,
         Uid,
         Data,
+        ActorEnvironment,
         Flattrs,
     ) -> Pin<
         Box<dyn Future<Output = Result<crate::ActorAddr, anyhow::Error>> + Send>,
     >,
 
     /// Type-erased child spawn function. This is the type's
-    /// [`RemoteSpawn::gspawn_child`].
+    /// [`RemoteSpawn::gspawn_child`]. The `ActorEnvironment` is the persistent
+    /// environment stored on the new instance; the `Flattrs` are the transient
+    /// constructor headers overlaid only for `RemoteSpawn::new`.
     pub gspawn_child:
         fn(
             &Proc,
             InstanceCell,
             Uid,
             Data,
+            ActorEnvironment,
             Flattrs,
         ) -> Pin<Box<dyn Future<Output = Result<AnyActorHandle, anyhow::Error>> + Send>>,
 
@@ -150,13 +157,14 @@ impl Remote {
         actor_type: &str,
         actor_uid: Uid,
         params: Data,
-        environment: Flattrs,
+        environment: ActorEnvironment,
+        transient: Flattrs,
     ) -> Result<crate::ActorAddr, anyhow::Error> {
         let entry = self
             .by_name
             .get(actor_type)
             .ok_or_else(|| anyhow::anyhow!("actor type {} not registered", actor_type))?;
-        (entry.gspawn_root_bind)(proc, actor_uid, params, environment).await
+        (entry.gspawn_root_bind)(proc, actor_uid, params, environment, transient).await
     }
 
     /// Spawns the actor as a child of the provided parent. Returns an
@@ -168,13 +176,38 @@ impl Remote {
         actor_type: &str,
         actor_uid: Uid,
         params: Data,
-        environment: Flattrs,
+        transient: Flattrs,
+    ) -> Result<AnyActorHandle, anyhow::Error> {
+        let environment = parent.actor_environment().clone();
+        self.gspawn_child_in_environment(
+            proc,
+            parent,
+            actor_type,
+            actor_uid,
+            params,
+            environment,
+            transient,
+        )
+        .await
+    }
+
+    /// Spawn a child with an explicit environment instead of inheriting from
+    /// its physical parent.
+    pub(crate) async fn gspawn_child_in_environment(
+        &self,
+        proc: &Proc,
+        parent: InstanceCell,
+        actor_type: &str,
+        actor_uid: Uid,
+        params: Data,
+        environment: ActorEnvironment,
+        transient: Flattrs,
     ) -> Result<AnyActorHandle, anyhow::Error> {
         let entry = self
             .by_name
             .get(actor_type)
             .ok_or_else(|| anyhow::anyhow!("actor type {} not registered", actor_type))?;
-        (entry.gspawn_child)(proc, parent, actor_uid, params, environment).await
+        (entry.gspawn_child)(proc, parent, actor_uid, params, environment, transient).await
     }
 }
 
@@ -264,6 +297,7 @@ mod tests {
                 "hyperactor::actor::remote::tests::MyActor",
                 Uid::instance(Label::new("actor").unwrap()),
                 bincode::serde::encode_to_vec(true, bincode::config::legacy()).unwrap(),
+                ActorEnvironment::default(),
                 Flattrs::default(),
             )
             .await
@@ -275,6 +309,7 @@ mod tests {
                 "hyperactor::actor::remote::tests::MyActor",
                 Uid::instance(Label::new("actor").unwrap()),
                 bincode::serde::encode_to_vec(false, bincode::config::legacy()).unwrap(),
+                ActorEnvironment::default(),
                 Flattrs::default(),
             )
             .await

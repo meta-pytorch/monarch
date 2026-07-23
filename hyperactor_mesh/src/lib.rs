@@ -23,6 +23,7 @@ pub mod actor_mesh;
 mod assign;
 pub mod bootstrap;
 pub mod casting;
+pub mod client_root;
 pub mod config;
 pub mod config_dump;
 pub mod connect;
@@ -165,6 +166,12 @@ pub enum Error {
 
     #[error("actor not registered for type {0}")]
     ActorTypeNotRegistered(String),
+
+    #[error(transparent)]
+    ClientRootError(#[from] crate::client_root::ClientRootError),
+
+    #[error("client-root capability is absent from this actor's environment")]
+    MissingClientRoot,
 
     // TODO: this should be a valuemesh of statuses
     #[error("error while spawning actor {0}: {1}")]

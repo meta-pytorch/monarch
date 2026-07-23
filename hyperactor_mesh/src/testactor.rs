@@ -32,6 +32,7 @@ use hyperactor::ordering::SEQ_INFO;
 use hyperactor::ordering::SeqInfo;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Flattrs;
+use hyperactor_config::attrs::declare_attrs;
 use hyperactor_config::global::Source;
 use ndslice::Point;
 #[cfg(test)]
@@ -46,6 +47,7 @@ use crate::ActorMesh;
 #[cfg(test)]
 use crate::ActorMeshRef;
 use crate::ProcMeshRef;
+use crate::casting::CAST_POINT;
 use crate::casting::CastInfo;
 use crate::mesh_id::ActorMeshId;
 use crate::supervision::MeshFailure;
@@ -281,6 +283,93 @@ impl hyperactor::RemoteSpawn for FailingCreateTestActor {
         Err(anyhow::anyhow!("test failure"))
     }
 }
+
+declare_attrs! {
+    /// Persistent sentinel used by actor-environment transport tests.
+    pub attr ACTOR_ENVIRONMENT_TEST_TAG: u64;
+}
+
+/// What an [`ActorEnvironmentProbe`] observed at construction and after its
+/// native instance was installed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Named)]
+pub struct ActorEnvironmentObservation {
+    pub label: String,
+    pub persistent_tag: Option<u64>,
+    pub constructor_tag: Option<u64>,
+    pub constructor_point: Option<Point>,
+    pub stored_point: Option<Point>,
+    pub proc_addr: String,
+}
+wirevalue::register_type!(ActorEnvironmentObservation);
+
+/// Construction parameters for [`ActorEnvironmentProbe`].
+#[derive(Clone, Debug, Serialize, Deserialize, Named)]
+pub struct ActorEnvironmentProbeParams {
+    pub label: String,
+    pub reply: hyperactor::PortRef<ActorEnvironmentObservation>,
+    pub nested: Option<(ProcMeshRef, String, String)>,
+}
+wirevalue::register_type!(ActorEnvironmentProbeParams);
+
+/// A remote-spawn probe that optionally performs one nested ProcMesh spawn.
+#[derive(Debug)]
+#[hyperactor::export(handlers = [])]
+pub struct ActorEnvironmentProbe {
+    label: String,
+    reply: hyperactor::PortRef<ActorEnvironmentObservation>,
+    nested: Option<(ProcMeshRef, String, String)>,
+    constructor_tag: Option<u64>,
+    constructor_point: Option<Point>,
+}
+
+#[async_trait]
+impl Actor for ActorEnvironmentProbe {
+    async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
+        self.reply.post(
+            this,
+            ActorEnvironmentObservation {
+                label: self.label.clone(),
+                persistent_tag: this.actor_environment().get(ACTOR_ENVIRONMENT_TEST_TAG),
+                constructor_tag: self.constructor_tag,
+                constructor_point: self.constructor_point.clone(),
+                stored_point: this.actor_environment().get(CAST_POINT),
+                proc_addr: this.proc().proc_addr().to_string(),
+            },
+        );
+
+        if let Some((proc_mesh, name, label)) = self.nested.take() {
+            proc_mesh
+                .spawn_controllerless_service::<Self, _>(
+                    this,
+                    &name,
+                    &ActorEnvironmentProbeParams {
+                        label,
+                        reply: self.reply.clone(),
+                        nested: None,
+                    },
+                )
+                .await?;
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl hyperactor::RemoteSpawn for ActorEnvironmentProbe {
+    type Params = ActorEnvironmentProbeParams;
+
+    async fn new(params: Self::Params, environment: Flattrs) -> anyhow::Result<Self> {
+        Ok(Self {
+            label: params.label,
+            reply: params.reply,
+            nested: params.nested,
+            constructor_tag: environment.get(ACTOR_ENVIRONMENT_TEST_TAG),
+            constructor_point: environment.get(CAST_POINT),
+        })
+    }
+}
+
+hyperactor::register_spawnable!(ActorEnvironmentProbe);
 
 #[derive(Clone, Debug, Serialize, Deserialize, Named)]
 pub struct SetConfigAttrs(pub Vec<u8>);
