@@ -493,7 +493,7 @@ pub trait Rx<M: RemoteMessage> {
 pub enum TcpMode {
     /// Use localhost/loopback for the connection.
     Localhost,
-    /// Use host domain name for the connection.
+    /// Use a non-loopback address resolved from the host domain name.
     Hostname,
 }
 
@@ -938,37 +938,45 @@ impl From<tokio::net::unix::SocketAddr> for ChannelAddr {
     }
 }
 
-/// Return the first non-link-local address from a list.
+fn is_routable_address(addr: &IpAddr) -> bool {
+    !addr.is_loopback()
+        && match addr {
+            IpAddr::V6(v6) => !v6.is_unicast_link_local(),
+            IpAddr::V4(v4) => !v4.is_link_local(),
+        }
+}
+
+/// Return the first non-loopback, non-link-local address from a list.
 fn find_routable_address(addresses: &[IpAddr]) -> Option<IpAddr> {
     addresses
         .iter()
-        .find(|addr| match addr {
-            IpAddr::V6(v6) => !v6.is_unicast_link_local(),
-            IpAddr::V4(v4) => !v4.is_link_local(),
-        })
+        .find(|addr| is_routable_address(addr))
         .cloned()
 }
 
 impl ChannelAddr {
-    /// The "any" address for the given transport type. This is used to
-    /// servers to "any" address.
+    /// Returns the "any" address for the given transport.
+    ///
+    /// For [`TcpMode::Hostname`], this resolves the host name to a
+    /// non-loopback, non-link-local address with port zero.
+    ///
+    /// # Panics
+    ///
+    /// Panics if host name resolution fails or produces no routable address.
     pub fn any(transport: ChannelTransport) -> Self {
         match transport {
             ChannelTransport::Tcp(mode) => {
                 let ip = match mode {
                     TcpMode::Localhost => IpAddr::V6(Ipv6Addr::LOCALHOST),
                     TcpMode::Hostname => {
-                        hostname::get()
-                            .ok()
-                            .and_then(|hostname| {
-                                // TODO: Avoid using DNS directly once we figure out a good extensibility story here
-                                hostname.to_str().and_then(|hostname_str| {
-                                    dns_lookup::lookup_host(hostname_str)
-                                        .ok()
-                                        .and_then(|addresses| find_routable_address(&addresses))
-                                })
-                            })
-                            .unwrap_or(IpAddr::V6(Ipv6Addr::LOCALHOST))
+                        let hostname = hostname::get().expect("failed to retrieve hostname");
+                        let hostname = hostname.to_str().expect("hostname is not valid UTF-8");
+                        // TODO: Avoid using DNS directly once we figure out a good extensibility story here
+                        let addresses =
+                            dns_lookup::lookup_host(hostname).expect("failed to resolve hostname");
+                        find_routable_address(&addresses).expect(
+                            "hostname resolved to no non-loopback, non-link-local address; configure an explicit transport address",
+                        )
                     }
                 };
                 Self::Tcp(SocketAddr::new(ip, 0))
@@ -2084,6 +2092,34 @@ mod tests {
         // addresses. This demonstrates that the bracket stripping in
         // normalize_host is necessary.
         assert!("[::1]".parse::<IpAddr>().is_err());
+    }
+
+    #[test]
+    fn test_find_routable_address_skips_loopback() {
+        let addresses = [
+            "127.0.1.1".parse::<IpAddr>().unwrap(),
+            "169.254.1.1".parse::<IpAddr>().unwrap(),
+            "::1".parse::<IpAddr>().unwrap(),
+            "fe80::1".parse::<IpAddr>().unwrap(),
+            "192.0.2.10".parse::<IpAddr>().unwrap(),
+        ];
+
+        assert_eq!(
+            find_routable_address(&addresses),
+            Some("192.0.2.10".parse::<IpAddr>().unwrap())
+        );
+    }
+
+    #[test]
+    fn test_find_routable_address_rejects_unroutable_addresses() {
+        let addresses = [
+            "127.0.1.1".parse::<IpAddr>().unwrap(),
+            "169.254.1.1".parse::<IpAddr>().unwrap(),
+            "::1".parse::<IpAddr>().unwrap(),
+            "fe80::1".parse::<IpAddr>().unwrap(),
+        ];
+
+        assert_eq!(find_routable_address(&addresses), None);
     }
 
     #[test]
