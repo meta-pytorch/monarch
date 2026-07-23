@@ -33,18 +33,14 @@ use hyperactor::ActorAddr;
 use hyperactor::ActorLocal;
 use hyperactor::ActorRef;
 use hyperactor::Endpoint as _;
-use hyperactor::OncePortRefRepr;
 use hyperactor::PortRef;
-use hyperactor::PortRefRepr;
 use hyperactor::RemoteEndpoint as _;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
-use hyperactor::accum::ReducerMode;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Referable;
 use hyperactor::context;
 use hyperactor::mailbox::PortReceiver;
-use hyperactor::port::Port;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_cast::TilingPolicy;
 use hyperactor_cast::cast_actor::CastDomainId;
@@ -630,123 +626,14 @@ impl<A: Referable> ActorMeshRef<A> {
         );
         headers.set(crate::casting::CAST_ACTOR_MESH_ID, self.id.clone());
 
-        let threshold =
-            hyperactor_config::global::get(crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD);
-
-        let num_ranks = self.len();
-
-        match num_ranks {
-            0 => Ok(()),
-            1 if threshold >= 1 => {
-                // Avoid paying tax of conversion to IndexedErasedUnbound and port splitting
-                // when the threshold enables direct singleton sends.
-                let point = self
-                    .cast_domain
-                    .region()
-                    .extent()
-                    .point_of_rank(0)
-                    .map_err(|err| Error::CastingError(self.id.clone(), err.into()))?;
-
-                let actor = self.materialize(0).ok_or_else(|| {
-                    Error::CastingError(
-                        self.id.clone(),
-                        anyhow::anyhow!("missing actor for rank 0"),
-                    )
-                })?;
-
-                self.post_cast_direct(cx, point, actor, message, &headers)
-            }
-            n if threshold > 0 && n < threshold => {
-                // Point-to-point: send directly to each destination actor,
-                // bypassing the cast tree for lower latency when fanout
-                // is small.
-                let sender = cx.instance().self_addr().clone();
-                let dest_port = M::port();
-                let mut data =
-                    wirevalue::Any::<wirevalue::encoding::Multipart>::serialize(&message)
-                        .expect("cast message serialization should not fail");
-
-                // Split ports for N destinations, matching the comm tree's
-                // split_ports behavior.
-                data.visit_multipart_parts_mut::<PortRefRepr, anyhow::Error>(|port| {
-                    if port.unsplit() {
-                        return Ok(());
-                    }
-                    let split = port.port_addr().split(
-                        cx,
-                        port.reducer_spec().clone(),
-                        ReducerMode::Streaming(port.streaming_opts().clone()),
-                        port.get_return_undeliverable(),
-                    )?;
-                    port.update_port_addr(split);
-                    Ok(())
-                })
-                .map_err(|e| Error::CastingError(self.id.clone(), e))?;
-
-                data.visit_multipart_parts_mut::<OncePortRefRepr, anyhow::Error>(|port| {
-                    if port.unsplit() || port.reducer_spec().is_none() {
-                        // Once ports without reducers pass through. If used more
-                        // than once, only one destination can reply.
-                        return Ok(());
-                    }
-                    let split = port.port_addr().split(
-                        cx,
-                        port.reducer_spec().clone(),
-                        ReducerMode::Once(n),
-                        port.get_return_undeliverable(),
-                    )?;
-                    port.update_port_addr(split);
-                    Ok(())
-                })
-                .map_err(|e| Error::CastingError(self.id.clone(), e))?;
-
-                for rank in 0..n {
-                    let point = self
-                        .cast_domain
-                        .region()
-                        .extent()
-                        .point_of_rank(rank)
-                        .map_err(|err| Error::CastingError(self.id.clone(), err.into()))?;
-
-                    let actor = self.materialize(rank).ok_or_else(|| {
-                        Error::CastingError(
-                            self.id.clone(),
-                            anyhow::anyhow!("missing actor for rank {rank}"),
-                        )
-                    })?;
-
-                    let mut rank_data = data.clone();
-
-                    rank_data
-                        .visit_multipart_parts_mut::<resource::RankRepr, anyhow::Error>(
-                            |resource::RankRepr(rank)| {
-                                *rank = Some(point.rank());
-                                Ok(())
-                            },
-                        )
-                        .map_err(|e| Error::CastingError(self.id.clone(), e))?;
-
-                    let mut rank_headers = headers.clone();
-
-                    casting::set_cast_info_on_headers(&mut rank_headers, point, sender.clone());
-
-                    cx.instance().post(
-                        actor
-                            .actor_addr()
-                            .port_addr(Port::handler_id(dest_port, None)),
-                        rank_headers,
-                        rank_data.erase_encoding(),
-                    );
-                }
-
-                Ok(())
-            }
-            _ => self
-                .cast_domain
+        if self.len() == 0 {
+            Ok(())
+        } else {
+            self.cast_domain
                 .ensure_materialized(cx, &headers)
                 .map_err(|e| Error::CastingError(self.id.clone(), e))?
                 .cast(cx, headers, message)
-                .map_err(|e| Error::CastingError(self.id.clone(), e)),
+                .map_err(|e| Error::CastingError(self.id.clone(), e))
         }
     }
 
@@ -2161,12 +2048,6 @@ mod tests {
         execute_cast(&config).await;
     }
 
-    #[async_timed_test(timeout_secs = 30)]
-    async fn test_cast_p2p() {
-        let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD, 1024);
-        execute_cast(&config).await;
-    }
     /// Test that undeliverable messages are properly returned to the
     /// sender when communication to a proc is broken.
     ///
