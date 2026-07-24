@@ -6,10 +6,11 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! A bounded, typed environment for persistent actor context.
+//! The persistent, language-independent environment carried by an actor
+//! [`Instance`](crate::proc::Instance).
 //!
-//! An [`ActorEnvironment`] is a small set of typed attributes with a stable,
-//! language-independent wire representation.
+//! An [`ActorEnvironment`] is a small, immutable set of typed attributes fixed
+//! when the instance is constructed. Local children inherit the exact value.
 //!
 //! `hyperactor` owns how this environment is carried through actor creation,
 //! while higher-level crates own the values it contains. Those crates declare
@@ -23,6 +24,15 @@
 //!
 //! - **AENV-0 (value integrity):** every `ActorEnvironment` is structurally
 //!   valid, bounded, unique-keyed, and updated atomically.
+//! - **AENV-1 (instance ownership):** every [`Instance`](crate::proc::Instance)
+//!   stores exactly one immutable environment in its type-erased instance cell,
+//!   fixed at construction and exposed read-only.
+//! - **AENV-2 (local inheritance):** ordinary local child/client construction
+//!   derives its parent's exact environment from that cell.
+//! - **AENV-4 (transient separation):** message/cast constructor headers may
+//!   override the merged view passed to [`RemoteSpawn::new`](crate::actor::RemoteSpawn)
+//!   but never enter the stored/inherited environment; persistent capability
+//!   consumers read only the stored instance environment.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -90,10 +100,12 @@ pub enum ActorEnvironmentError {
     InvalidEncoding(#[from] FlattrsValidationError),
 }
 
-/// A bounded collection of typed actor-context attributes.
+/// The persistent environment owned by an actor instance.
 ///
 /// The inner buffer is never exposed. Clones share the immutable buffer; a
-/// subsequent builder mutation creates a bounded private copy.
+/// subsequent builder mutation creates a bounded private copy. Once placed on
+/// an [`Instance`](crate::proc::Instance), only a shared view is exposed
+/// (AENV-1).
 #[derive(Clone)]
 pub struct ActorEnvironment(Arc<Flattrs>);
 
@@ -107,8 +119,8 @@ impl ActorEnvironment {
     /// Store `value` under `key` while enforcing the environment's entry and
     /// serialized-size bounds.
     ///
-    /// This is a construction API; successful updates replace the underlying
-    /// immutable buffer atomically.
+    /// This is a construction API. The environment stored on an `Instance` is
+    /// immutable because the runtime exposes no mutable instance accessor.
     pub fn set<T: Serialize>(
         &mut self,
         key: Key<T>,
@@ -141,6 +153,27 @@ impl ActorEnvironment {
     /// The number of entries in the environment.
     pub fn len(&self) -> usize {
         self.0.len()
+    }
+
+    /// Build the constructor view handed to
+    /// [`RemoteSpawn::new`](crate::actor::RemoteSpawn). Persistent entries are
+    /// included only when the transient headers do not define the same key, so
+    /// transient values win on collision (AENV-4). The transient buffer's
+    /// ordering and duplicate-key behavior are preserved, and the stored
+    /// environment is unchanged.
+    pub(crate) fn constructor_view(
+        &self,
+        mut transient: Flattrs,
+    ) -> Result<Flattrs, ActorEnvironmentError> {
+        transient.validate_wire()?;
+        let transient_keys: HashSet<_> = transient.iter().map(|(key_hash, _)| key_hash).collect();
+        for (key_hash, value) in self.0.iter() {
+            if !transient_keys.contains(&key_hash) {
+                transient.set_serialized(key_hash, value);
+            }
+        }
+        transient.validate_wire()?;
+        Ok(transient)
     }
 }
 
@@ -418,5 +451,53 @@ mod tests {
                 .map(|(value, _)| value)
                 .expect("deserialize boundary environment");
         assert_eq!(restored, boundary);
+    }
+
+    #[test]
+    fn constructor_view_overlays_transient() {
+        let mut env = ActorEnvironment::default();
+        env.set(TEST_TAG, 100u64).expect("insert tag");
+        env.set(TEST_LABEL, "persistent".to_string())
+            .expect("insert label");
+
+        let mut transient = Flattrs::new();
+        transient.set(TEST_TAG, 999u64);
+
+        let view = env
+            .constructor_view(transient)
+            .expect("merge valid constructor headers");
+        assert_eq!(view.get(TEST_TAG), Some(999u64));
+        assert_eq!(view.get(TEST_LABEL), Some("persistent".to_string()));
+        assert_eq!(env.get(TEST_TAG), Some(100u64));
+    }
+
+    #[test]
+    fn constructor_view_preserves_transient_duplicates_and_rejects_overflow() {
+        let first = bincode::serde::encode_to_vec(1u64, bincode::config::legacy())
+            .expect("serialize first value");
+        let second = bincode::serde::encode_to_vec(2u64, bincode::config::legacy())
+            .expect("serialize second value");
+        let mut raw = 2u16.to_le_bytes().to_vec();
+        append_entry(&mut raw, TEST_TAG.key_hash(), &first);
+        append_entry(&mut raw, TEST_TAG.key_hash(), &second);
+        let transient = Flattrs::from_part(Part::from(raw));
+
+        let mut env = ActorEnvironment::default();
+        env.set(TEST_TAG, 100u64).expect("insert persistent tag");
+        let view = env
+            .constructor_view(transient)
+            .expect("merge duplicate transient headers");
+        assert_eq!(view.get(TEST_TAG), Some(1u64));
+        assert_eq!(view.len(), 2, "transient duplicates must remain intact");
+
+        let mut raw = u16::MAX.to_le_bytes().to_vec();
+        for _ in 0..u16::MAX {
+            append_entry(&mut raw, TEST_TAG.key_hash().wrapping_add(1), &[]);
+        }
+        let full = Flattrs::from_part(Part::from(raw));
+        assert!(
+            env.constructor_view(full).is_err(),
+            "adding a persistent key must not wrap the Flattrs entry count"
+        );
     }
 }

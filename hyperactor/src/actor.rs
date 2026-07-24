@@ -34,6 +34,7 @@ use typeuri::Named;
 
 use crate as hyperactor; // for macros
 use crate::ActorAddr;
+use crate::ActorEnvironment;
 use crate::ActorRef;
 use crate::Addr;
 #[cfg(test)]
@@ -533,14 +534,18 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
         parent: InstanceCell,
         uid: crate::id::Uid,
         serialized_params: Data,
-        environment: Flattrs,
+        environment: ActorEnvironment,
+        transient: Flattrs,
     ) -> Pin<Box<dyn Future<Output = Result<AnyActorHandle, anyhow::Error>> + Send>> {
         let proc = proc.clone();
         Box::pin(async move {
             let params =
                 bincode::serde::decode_from_slice(&serialized_params, bincode::config::legacy())
                     .map(|(v, _)| v)?;
-            let actor = Self::new(params, environment).await?;
+            // The constructor sees persistent + transient headers (transient
+            // wins on collision); only the persistent environment is stored on
+            // the instance (AENV-2, AENV-4).
+            let actor = Self::new(params, environment.constructor_view(transient)?).await?;
             let handle = proc.spawn_child_with_uid(parent, uid, actor)?;
             handle.bind::<Self>();
             Ok(handle.into_any())

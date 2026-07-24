@@ -17,6 +17,7 @@ use std::sync::LazyLock;
 use hyperactor_config::Flattrs;
 
 use crate::Actor;
+use crate::ActorEnvironment;
 use crate::AnyActorHandle;
 use crate::Data;
 use crate::id::Uid;
@@ -80,13 +81,16 @@ pub struct SpawnableActor {
     >,
 
     /// Type-erased child spawn function. This is the type's
-    /// [`RemoteSpawn::gspawn_child`].
+    /// [`RemoteSpawn::gspawn_child`]. The `ActorEnvironment` is the persistent
+    /// environment stored on the new instance; the `Flattrs` are the transient
+    /// constructor headers overlaid only for `RemoteSpawn::new`.
     pub gspawn_child:
         fn(
             &Proc,
             InstanceCell,
             Uid,
             Data,
+            ActorEnvironment,
             Flattrs,
         ) -> Pin<Box<dyn Future<Output = Result<AnyActorHandle, anyhow::Error>> + Send>>,
 
@@ -168,13 +172,14 @@ impl Remote {
         actor_type: &str,
         actor_uid: Uid,
         params: Data,
-        environment: Flattrs,
+        transient: Flattrs,
     ) -> Result<AnyActorHandle, anyhow::Error> {
+        let environment = parent.actor_environment().clone();
         let entry = self
             .by_name
             .get(actor_type)
             .ok_or_else(|| anyhow::anyhow!("actor type {} not registered", actor_type))?;
-        (entry.gspawn_child)(proc, parent, actor_uid, params, environment).await
+        (entry.gspawn_child)(proc, parent, actor_uid, params, environment, transient).await
     }
 }
 

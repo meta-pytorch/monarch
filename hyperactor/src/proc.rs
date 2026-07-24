@@ -185,6 +185,7 @@ use crate::config;
 use crate::context;
 use crate::context::Mailbox as _;
 use crate::endpoint::Endpoint as _;
+use crate::environment::ActorEnvironment;
 use crate::gateway::Gateway;
 use crate::id::ActorId;
 use crate::id::Label;
@@ -1101,7 +1102,7 @@ impl Proc {
     /// Spawn a root actor with a fresh uid labeled from the actor type.
     pub fn spawn<A: Actor>(&self, actor: A) -> ActorHandle<A> {
         let actor_id: ActorAddr = self.allocate_root_type::<A>();
-        self.spawn_inner(actor_id, actor, None)
+        self.spawn_inner(actor_id, actor, None, ActorEnvironment::default())
     }
 
     /// Spawn a root actor with a fresh uid carrying a display label.
@@ -1110,7 +1111,7 @@ impl Proc {
     /// identity.
     pub fn spawn_with_label<A: Actor>(&self, label: &str, actor: A) -> ActorHandle<A> {
         let actor_id: ActorAddr = self.allocate_root_label(label);
-        self.spawn_inner(actor_id, actor, None)
+        self.spawn_inner(actor_id, actor, None, ActorEnvironment::default())
     }
 
     /// Spawn a root actor on this proc using an explicit uid.
@@ -1125,17 +1126,20 @@ impl Proc {
         actor: A,
     ) -> Result<ActorHandle<A>, anyhow::Error> {
         let actor_id: ActorAddr = self.allocate_root_uid(uid)?;
-        Ok(self.spawn_inner(actor_id, actor, None))
+        Ok(self.spawn_inner(actor_id, actor, None, ActorEnvironment::default()))
     }
 
-    /// Common spawn logic for both root and child actors.
+    /// Common spawn logic for both root and child actors. `environment` is
+    /// required so no private path can silently default it (AENV-1).
     fn spawn_inner<A: Actor>(
         &self,
         actor_id: ActorAddr,
         actor: A,
         parent: Option<InstanceCell>,
+        environment: ActorEnvironment,
     ) -> ActorHandle<A> {
-        let (instance, receivers) = Instance::new(self.clone(), actor_id, false, parent);
+        let (instance, receivers) =
+            Instance::new(self.clone(), actor_id, false, parent, environment);
         instance.start(actor, receivers)
     }
 
@@ -1145,8 +1149,13 @@ impl Proc {
     /// `tokio::spawn`.
     pub fn client(&self, label: &str) -> Client {
         let actor_id = self.allocate_client_id(label);
-        let (instance, _receivers) =
-            Instance::<ClientActor>::new(self.clone(), actor_id, false, None);
+        let (instance, _receivers) = Instance::<ClientActor>::new(
+            self.clone(),
+            actor_id,
+            false,
+            None,
+            ActorEnvironment::default(),
+        );
         instance.change_status(ActorStatus::Client);
         Client::new(instance)
     }
@@ -1168,7 +1177,13 @@ impl Proc {
         name: &str,
     ) -> Result<(Instance<()>, ActorHandle<()>), anyhow::Error> {
         let actor_id: ActorAddr = self.allocate_root_id(name)?;
-        let (instance, receivers) = Instance::new(self.clone(), actor_id, false, None);
+        let (instance, receivers) = Instance::new(
+            self.clone(),
+            actor_id,
+            false,
+            None,
+            ActorEnvironment::default(),
+        );
         let handle = ActorHandle::new(instance.inner.cell.clone(), instance.inner.ports.clone());
         instance.change_status(ActorStatus::Client);
         instance.spawn_detached_introspect(receivers.introspect);
@@ -1181,13 +1196,27 @@ impl Proc {
     /// launch child actors, etc. The actor itself does not handle any
     /// messages unless driven by the caller.
     pub fn actor_instance<A: Actor>(&self, name: &str) -> Result<ActorInstance<A>, anyhow::Error> {
+        self.actor_instance_in_environment(name, ActorEnvironment::default())
+    }
+
+    /// Create an inverted actor instance with an explicit environment.
+    ///
+    /// This is the root-construction boundary used by runtimes that seed stable
+    /// context before driving the returned instance. The environment is fixed
+    /// before the instance becomes observable (AENV-1).
+    pub fn actor_instance_in_environment<A: Actor>(
+        &self,
+        name: &str,
+        environment: ActorEnvironment,
+    ) -> Result<ActorInstance<A>, anyhow::Error> {
         let actor_id: ActorAddr = self.allocate_root_id(name)?;
         let span = tracing::debug_span!(
             "actor_instance",
             subject = %actor_id.subject(),
         );
         let _guard = span.enter();
-        let (instance, receivers) = Instance::new(self.clone(), actor_id.clone(), false, None);
+        let (instance, receivers) =
+            Instance::new(self.clone(), actor_id.clone(), false, None, environment);
         let handle = ActorHandle::new(instance.inner.cell.clone(), instance.inner.ports.clone());
         instance.change_status(ActorStatus::Client);
 
@@ -1320,7 +1349,9 @@ impl Proc {
             subject = %actor_id.subject(),
         );
 
-        let (instance, _receivers) = Instance::new(self.clone(), actor_id, false, Some(parent));
+        let environment = parent.actor_environment().clone();
+        let (instance, _receivers) =
+            Instance::new(self.clone(), actor_id, false, Some(parent), environment);
         // Client-mode instance: no actor loop, no introspect task.
         // Receivers are intentionally dropped.
         let handle = ActorHandle::new(instance.inner.cell.clone(), instance.inner.ports.clone());
@@ -1335,7 +1366,8 @@ impl Proc {
     /// with its parent.
     pub(crate) fn spawn_child<A: Actor>(&self, parent: InstanceCell, actor: A) -> ActorHandle<A> {
         let actor_id = self.allocate_child_id::<A>(parent.actor_addr());
-        self.spawn_inner(actor_id, actor, Some(parent))
+        let environment = parent.actor_environment().clone();
+        self.spawn_inner(actor_id, actor, Some(parent), environment)
     }
 
     /// Spawn a child actor from the provided parent using an explicit uid.
@@ -1345,8 +1377,9 @@ impl Proc {
         uid: Uid,
         actor: A,
     ) -> Result<ActorHandle<A>, anyhow::Error> {
+        let environment = parent.actor_environment().clone();
         let actor_id = self.ensure_child_uid(parent.actor_addr(), uid)?;
-        Ok(self.spawn_inner(actor_id, actor, Some(parent)))
+        Ok(self.spawn_inner(actor_id, actor, Some(parent), environment))
     }
 
     /// Spawn a named child actor. Same as `spawn_child` but the child
@@ -1359,7 +1392,8 @@ impl Proc {
         actor: A,
     ) -> ActorHandle<A> {
         let actor_id = self.allocate_named_child_id(parent.actor_addr(), name);
-        self.spawn_inner(actor_id, actor, Some(parent))
+        let environment = parent.actor_environment().clone();
+        self.spawn_inner(actor_id, actor, Some(parent), environment)
     }
 
     /// Call `abort` on the `JoinHandle` associated with the given
@@ -2323,11 +2357,16 @@ pub struct InstanceReceivers<A: Actor> {
 
 impl<A: Actor> Instance<A> {
     /// Create a new actor instance in Created state.
+    ///
+    /// `actor_environment` is required and always stored. Ordinary child
+    /// helpers derive it from the parent cell before calling this constructor;
+    /// root and remote-override paths supply it explicitly (AENV-1, AENV-2).
     fn new(
         proc: Proc,
         actor_id: ActorAddr,
         detached: bool,
         parent: Option<InstanceCell>,
+        actor_environment: ActorEnvironment,
     ) -> (Self, InstanceReceivers<A>) {
         // Set up messaging
         let mailbox = Mailbox::new(actor_id.clone());
@@ -2387,6 +2426,7 @@ impl<A: Actor> Instance<A> {
             actor_id,
             instance_id,
             actor_type,
+            actor_environment,
             proc.clone(),
             actor_loop,
             status_tx,
@@ -3476,7 +3516,7 @@ impl<A: Actor> Instance<A> {
     /// Spawn a registered actor as this instance's child.
     ///
     /// The actor type is resolved through the remote spawn registry. The child
-    /// receives an empty environment.
+    /// inherits this instance's environment (AENV-2).
     pub async fn gspawn(&self, actor_type: &str, params: Data) -> anyhow::Result<AnyActorHandle> {
         self.gspawn_uid(actor_type, crate::id::Uid::anonymous(), params)
             .await
@@ -3485,7 +3525,8 @@ impl<A: Actor> Instance<A> {
     /// Spawn a registered actor as this instance's child using an explicit uid.
     ///
     /// The actor type is resolved through the remote spawn registry. The child
-    /// receives an empty environment.
+    /// inherits this instance's environment (AENV-2). No transient constructor
+    /// headers are supplied on this local path.
     pub async fn gspawn_uid(
         &self,
         actor_type: &str,
@@ -3499,7 +3540,7 @@ impl<A: Actor> Instance<A> {
                 actor_type,
                 uid,
                 params,
-                Flattrs::default(),
+                Flattrs::new(),
             )
             .await
     }
@@ -3532,6 +3573,15 @@ impl<A: Actor> Instance<A> {
     /// The owning proc.
     pub fn proc(&self) -> &Proc {
         &self.inner.proc
+    }
+
+    /// This instance's persistent environment.
+    ///
+    /// The environment is fixed at construction and inherited by local children
+    /// (AENV-1, AENV-2). Only a shared, read-only view is returned; there is no
+    /// mutable accessor.
+    pub fn actor_environment(&self) -> &ActorEnvironment {
+        self.inner.cell.actor_environment()
     }
 
     /// Clone this Instance to get an owned struct that can be
@@ -3598,6 +3648,7 @@ impl Instance<ClientActor> {
             actor_id,
             false,
             Some(self.inner.cell.clone()),
+            self.inner.cell.actor_environment().clone(),
         );
         instance.change_status(ActorStatus::Client);
         Client::new(instance)
@@ -3764,6 +3815,9 @@ impl fmt::Debug for InstanceCell {
 struct InstanceCellState {
     /// The actor's id.
     actor_id: ActorAddr,
+
+    /// Persistent, type-erased context fixed when the instance is created.
+    actor_environment: ActorEnvironment,
 
     /// The actor instance's `Uuid::now_v7()` identity. Stable for the
     /// lifetime of this instance; surfaced via `InstanceCell::instance_id`
@@ -3991,6 +4045,7 @@ impl InstanceCell {
         actor_id: ActorAddr,
         instance_id: Uuid,
         actor_type: ActorType,
+        actor_environment: ActorEnvironment,
         proc: Proc,
         actor_loop: Option<(
             mpsc::UnboundedSender<Signal>,
@@ -4012,6 +4067,7 @@ impl InstanceCell {
                 actor_id: actor_id.clone(),
                 instance_id,
                 actor_type,
+                actor_environment,
                 proc: proc.clone(),
                 actor_loop,
                 status_tx,
@@ -4054,6 +4110,11 @@ impl InstanceCell {
     /// The actor's address.
     pub fn actor_addr(&self) -> &ActorAddr {
         &self.inner.actor_id
+    }
+
+    /// The persistent environment fixed when this instance was created.
+    pub(crate) fn actor_environment(&self) -> &ActorEnvironment {
+        &self.inner.actor_environment
     }
 
     /// The proc in which this actor is running.
@@ -8159,5 +8220,125 @@ mod tests {
             ChildTeardown::from_run_result(&failed),
             ChildTeardown::Cooperative(StopMode::Stop)
         );
+    }
+
+    hyperactor_config::attrs::declare_attrs! {
+        attr AENV_TEST_TAG: u64;
+    }
+
+    /// Sentinel stored under `AENV_TEST_TAG` by a seeded environment. Non-zero
+    /// so it is distinguishable from the empty-environment reading of `0`.
+    const AENV_SENTINEL: u64 = 0xA0FE;
+
+    /// A registered probe that, at construction (`Actor::init`), reports the
+    /// value stored under `AENV_TEST_TAG` in its own instance environment to a
+    /// reply port. Used to observe inherited environments across every local
+    /// child path (AENV-2).
+    #[derive(Debug)]
+    #[hyperactor::export(())]
+    struct EnvProbe {
+        reply: PortRef<u64>,
+    }
+
+    #[async_trait]
+    impl Actor for EnvProbe {
+        async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+            let observed = this.actor_environment().get(AENV_TEST_TAG).unwrap_or(0);
+            self.reply.post(this, observed);
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl Handler<()> for EnvProbe {
+        async fn handle(&mut self, _cx: &Context<Self>, _message: ()) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl crate::RemoteSpawn for EnvProbe {
+        type Params = PortRef<u64>;
+
+        async fn new(reply: PortRef<u64>, _environment: Flattrs) -> anyhow::Result<Self> {
+            Ok(Self { reply })
+        }
+    }
+
+    crate::register_spawnable!(EnvProbe);
+
+    // AENV-1: ordinary root/client instances start with an empty environment.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn aenv_ordinary_instances_start_empty() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        assert!(
+            context::Actor::instance(&client)
+                .actor_environment()
+                .is_empty()
+        );
+
+        // A root actor observes an empty environment (reads back the `0`
+        // fallback for the absent tag).
+        let (tx, mut rx) = client.open_port::<u64>();
+        let _root = proc.spawn(EnvProbe { reply: tx.bind() });
+        assert_eq!(rx.recv().await.unwrap(), 0);
+    }
+
+    // AENV-1, AENV-2: a seeded parent's environment is inherited exactly by
+    // every local child construction path.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn aenv_local_children_inherit_environment() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+
+        let mut seed = ActorEnvironment::default();
+        seed.set(AENV_TEST_TAG, AENV_SENTINEL)
+            .expect("seed actor environment");
+        let parent = proc
+            .actor_instance_in_environment::<EnvProbe>("seeded", seed.clone())
+            .expect("create seeded root instance");
+        assert_eq!(parent.instance.actor_environment(), &seed);
+
+        // Direct child/client: inspected synchronously.
+        assert_eq!(parent.instance.child().0.actor_environment(), &seed);
+
+        let client_parent = proc
+            .actor_instance_in_environment::<ClientActor>("seeded_client", seed.clone())
+            .expect("create seeded client instance");
+        let child_client = client_parent.instance.child_client();
+        assert_eq!(
+            context::Actor::instance(&child_client).actor_environment(),
+            &seed,
+        );
+
+        // Ordinary child.
+        let (tx, mut rx) = client.open_port::<u64>();
+        let _ordinary = parent.instance.spawn(EnvProbe { reply: tx.bind() });
+        assert_eq!(rx.recv().await.unwrap(), AENV_SENTINEL);
+
+        // Named child.
+        let (tx, mut rx) = client.open_port::<u64>();
+        let _named = parent
+            .instance
+            .spawn_with_label("named", EnvProbe { reply: tx.bind() });
+        assert_eq!(rx.recv().await.unwrap(), AENV_SENTINEL);
+
+        // Explicit-uid child.
+        let (tx, mut rx) = client.open_port::<u64>();
+        let _uid = parent
+            .instance
+            .spawn_with_uid(crate::id::Uid::anonymous(), EnvProbe { reply: tx.bind() })
+            .unwrap();
+        assert_eq!(rx.recv().await.unwrap(), AENV_SENTINEL);
+
+        // Registered gspawn child.
+        let (tx, mut rx) = client.open_port::<u64>();
+        let params = bincode::serde::encode_to_vec(tx.bind(), bincode::config::legacy()).unwrap();
+        let type_name = crate::actor::remote::Remote::global()
+            .name_of::<EnvProbe>()
+            .expect("EnvProbe is registered");
+        let _gspawned = parent.instance.gspawn(type_name, params).await.unwrap();
+        assert_eq!(rx.recv().await.unwrap(), AENV_SENTINEL);
     }
 }
