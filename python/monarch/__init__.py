@@ -9,15 +9,67 @@
 from importlib import import_module as _import_module
 from typing import TYPE_CHECKING
 
-# Import before monarch to pre-load torch DSOs as, in exploded wheel flows,
-# our RPATHs won't correctly find them.
+import os as _os
+import sys as _sys
+
+
+def _preload_torch_hip_runtime() -> bool:
+    """Preload torch's bundled ROCm HIP shared library before our native
+    extension loads.
+
+    On ROCm, ``monarch._rust_bindings`` links the *system* ``libamdhip64`` while
+    torch ships its *own* copy. Whichever HIP runtime initializes first wins
+    ``rocprofiler-register``; if the system copy wins, the first HIP call made
+    afterward aborts the process
+    (``hip.cpp:512 "hipApiName has non-null function pointer ..."``). Loading
+    torch's ``libamdhip64`` here makes torch's runtime win regardless of the
+    order in which the user imports torch and monarch.
+
+    This is cheap (~tens of ms, just a dlopen) and does NOT import the torch
+    Python module, so it never pulls torch into non-torch workloads. It is a
+    no-op when torch is not installed or is a CUDA/CPU build (the HIP DSO is
+    absent). Set ``MONARCH_PRELOAD_TORCH=0`` to skip it.
+
+    Returns True when torch's HIP runtime is present (already imported, or loaded
+    here) so callers can record that the load ordering is safe.
+    """
+    if _os.environ.get("MONARCH_PRELOAD_TORCH") == "0":
+        return "torch" in _sys.modules
+    if "torch" in _sys.modules:
+        return True  # torch already imported: its HIP runtime is already loaded
+    try:
+        import ctypes
+        import importlib.util
+
+        spec = importlib.util.find_spec("torch")
+        if spec is None or spec.origin is None:
+            return False
+        lib = _os.path.join(_os.path.dirname(spec.origin), "lib", "libamdhip64.so")
+        if not _os.path.exists(lib):
+            return False  # CUDA/CPU torch build: no HIP runtime to preload
+        ctypes.CDLL(lib, mode=ctypes.RTLD_GLOBAL)
+        return True
+    except Exception:
+        return False
+
+
+# Preload torch's HIP runtime (ROCm) BEFORE importing our native extension so
+# torch's copy wins rocprofiler-register; otherwise the first HIP call aborts
+# (hip.cpp:512 "hipApiName ..."). Cheap and torch-module-free; no-op off ROCm.
+# The RDMA path checks the flag below to raise a clear error instead of a hard
+# SIGABRT if the ordering still could not be guaranteed. See
+# monarch/_src/rdma/rdma.py:_ensure_hip_runtime_ordering.
+_TORCH_HIP_RUNTIME_PRELOADED = _preload_torch_hip_runtime()
 try:
     import monarch._rust_bindings  # @manual  # noqa: F401
 except ImportError:
+    # Exploded-wheel flow: our RPATHs may not resolve torch's DSOs until torch
+    # itself is imported. Fall back to a full torch import, then retry.
     try:
         import torch  # @manual  # noqa: F401
     except ImportError:
         pass
+    _TORCH_HIP_RUNTIME_PRELOADED = _TORCH_HIP_RUNTIME_PRELOADED or ("torch" in _sys.modules)
     import monarch._rust_bindings  # @manual  # noqa: F401
 
 # submodules of monarch should not be imported in this

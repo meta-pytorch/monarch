@@ -221,9 +221,49 @@ def _evict_local_memory(key: Tuple[int, int, int], ref: "weakref.ref") -> None:
             _local_memory_cache.pop(key, None)
 
 
+def _ensure_hip_runtime_ordering() -> None:
+    """On ROCm, raise a clear error instead of a hard SIGABRT when monarch's
+    native extension initialized the system HIP runtime before torch loaded its
+    bundled copy.
+
+    In that state the first HIP driver call (made by the local-memory probe)
+    aborts inside rocprofiler-register with
+    ``hip.cpp:512 "hipApiName has non-null function pointer ..."`` and takes the
+    whole process down. We detect the condition here and turn it into an
+    actionable exception. No-op on CUDA/CPU and whenever torch's runtime won.
+    """
+    monarch_pkg = sys.modules.get("monarch")
+    if getattr(monarch_pkg, "_TORCH_HIP_RUNTIME_PRELOADED", True):
+        return  # torch's HIP runtime loaded first (or preloaded): safe
+    torch_mod = sys.modules.get("torch")
+    if torch_mod is None:
+        return  # no second HIP runtime loaded; the single system copy is safe
+    if getattr(getattr(torch_mod, "version", None), "hip", None) is None:
+        return  # CUDA / CPU torch: not the ROCm dual-runtime hazard
+    # Only error if two distinct libamdhip64 copies are actually mapped.
+    try:
+        with open("/proc/self/maps") as f:
+            maps = f.read()
+    except OSError:
+        return
+    import re
+
+    libs = set(re.findall(r"/\S*libamdhip64\.so[.0-9]*", maps))
+    if len(libs) < 2:
+        return  # single HIP runtime: safe
+    raise RuntimeError(
+        "monarch loaded the system ROCm HIP runtime before torch loaded its "
+        "bundled copy; the HIP call needed for RDMA would abort the process "
+        "(hip.cpp:512 'hipApiName has non-null function pointer ...'). "
+        "On ROCm, import torch before importing monarch, or set the environment "
+        "variable MONARCH_PRELOAD_TORCH=1 before importing monarch."
+    )
+
+
 def _make_local_memory_handle(
     data: "torch.Tensor | memoryview",
 ) -> _LocalMemoryHandle:
+    _ensure_hip_runtime_ordering()
     _assert_1d_contiguous(data)
     if isinstance(data, memoryview):
         addr, size = _get_memoryview_addr_and_size(data)
