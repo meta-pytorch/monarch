@@ -70,11 +70,14 @@ pub struct SpawnableActor {
     pub name: &'static LazyLock<&'static str>,
 
     /// Type-erased root spawn function. This is the type's
-    /// [`RemoteSpawn::gspawn_root_bind`].
+    /// [`RemoteSpawn::gspawn_root_bind`]. The `ActorEnvironment` is the
+    /// persistent environment stored on the new instance; the `Flattrs` are the
+    /// transient constructor headers overlaid only for `RemoteSpawn::new`.
     pub gspawn_root_bind: fn(
         &Proc,
         Uid,
         Data,
+        ActorEnvironment,
         Flattrs,
     ) -> Pin<
         Box<dyn Future<Output = Result<crate::ActorAddr, anyhow::Error>> + Send>,
@@ -154,13 +157,14 @@ impl Remote {
         actor_type: &str,
         actor_uid: Uid,
         params: Data,
-        environment: Flattrs,
+        environment: ActorEnvironment,
+        transient: Flattrs,
     ) -> Result<crate::ActorAddr, anyhow::Error> {
         let entry = self
             .by_name
             .get(actor_type)
             .ok_or_else(|| anyhow::anyhow!("actor type {} not registered", actor_type))?;
-        (entry.gspawn_root_bind)(proc, actor_uid, params, environment).await
+        (entry.gspawn_root_bind)(proc, actor_uid, params, environment, transient).await
     }
 
     /// Spawns the actor as a child of the provided parent. Returns an
@@ -269,6 +273,7 @@ mod tests {
                 "hyperactor::actor::remote::tests::MyActor",
                 Uid::instance(Label::new("actor").unwrap()),
                 bincode::serde::encode_to_vec(true, bincode::config::legacy()).unwrap(),
+                ActorEnvironment::default(),
                 Flattrs::default(),
             )
             .await
@@ -280,6 +285,7 @@ mod tests {
                 "hyperactor::actor::remote::tests::MyActor",
                 Uid::instance(Label::new("actor").unwrap()),
                 bincode::serde::encode_to_vec(false, bincode::config::legacy()).unwrap(),
+                ActorEnvironment::default(),
                 Flattrs::default(),
             )
             .await

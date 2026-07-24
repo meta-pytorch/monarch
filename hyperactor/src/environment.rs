@@ -10,7 +10,8 @@
 //! [`Instance`](crate::proc::Instance).
 //!
 //! An [`ActorEnvironment`] is a small, immutable set of typed attributes fixed
-//! when the instance is constructed. Local children inherit the exact value.
+//! when the instance is constructed. Local children inherit the exact value,
+//! and `ProcMesh` root spawns serialize it across the proc boundary.
 //!
 //! `hyperactor` owns how this environment is carried through actor creation,
 //! while higher-level crates own the values it contains. Those crates declare
@@ -29,6 +30,8 @@
 //!   fixed at construction and exposed read-only.
 //! - **AENV-2 (local inheritance):** ordinary local child/client construction
 //!   derives its parent's exact environment from that cell.
+//! - **AENV-3 (remote inheritance):** `ProcMesh` root spawn serializes the
+//!   spawning instance's exact environment through `ActorSpec`.
 //! - **AENV-4 (transient separation):** message/cast constructor headers may
 //!   override the merged view passed to [`RemoteSpawn::new`](crate::actor::RemoteSpawn)
 //!   but never enter the stored/inherited environment; persistent capability

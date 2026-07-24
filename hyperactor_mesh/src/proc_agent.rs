@@ -20,6 +20,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorAddr;
+use hyperactor::ActorEnvironment;
 use hyperactor::ActorHandle;
 use hyperactor::Addr;
 use hyperactor::Client;
@@ -882,6 +883,10 @@ pub struct ActorSpec {
     pub actor_type: String,
     /// serialized parameters
     pub params_data: Data,
+    /// The persistent environment to store on the spawned actor's instance.
+    /// Copied from the spawning context's instance and serialized per spawn
+    /// (AENV-3).
+    pub actor_environment: ActorEnvironment,
 }
 wirevalue::register_type!(ActorSpec);
 
@@ -936,6 +941,7 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcAgent {
         let ActorSpec {
             actor_type,
             params_data,
+            actor_environment,
         } = create_or_update.spec;
         self.actor_states.insert(
             create_or_update.id.clone(),
@@ -948,6 +954,7 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcAgent {
                         &actor_type,
                         create_or_update.id.uid().clone(),
                         params_data,
+                        actor_environment,
                         cx.headers().clone(),
                     )
                     .await,
@@ -1580,6 +1587,7 @@ mod tests {
                 ActorSpec {
                     actor_type: actor_type.clone(),
                     params_data: actor_params.clone(),
+                    actor_environment: ActorEnvironment::default(),
                 },
             )
             .await
@@ -1630,6 +1638,7 @@ mod tests {
                 ActorSpec {
                     actor_type: actor_type.clone(),
                     params_data: actor_params.clone(),
+                    actor_environment: ActorEnvironment::default(),
                 },
             )
             .await
@@ -1829,5 +1838,44 @@ mod tests {
 
         // Unblock the actor.
         gate.notify_one();
+    }
+
+    hyperactor_config::attrs::declare_attrs! {
+        attr AENV_SPEC_TAG: u64;
+        attr AENV_SPEC_LABEL: String;
+    }
+
+    // AENV-3: the actor environment travels with `ActorSpec` through the same
+    // positional codec used for every remote spawn, and `ActorSpec` equality
+    // composes the environment's semantic (order-independent) equality rather
+    // than a raw-buffer comparison.
+    #[test]
+    fn actor_environment_serializes_in_actor_spec() {
+        let mut env = ActorEnvironment::default();
+        env.set(AENV_SPEC_TAG, 7u64).expect("insert tag");
+        env.set(AENV_SPEC_LABEL, "root".to_string())
+            .expect("insert label");
+
+        let spec = ActorSpec {
+            actor_type: "probe".to_string(),
+            params_data: vec![1, 2, 3],
+            actor_environment: env.clone(),
+        };
+
+        let bytes = bincode::serde::encode_to_vec(&spec, bincode::config::legacy()).unwrap();
+        let restored: ActorSpec =
+            bincode::serde::decode_from_slice(&bytes, bincode::config::legacy())
+                .map(|(v, _)| v)
+                .unwrap();
+
+        assert_eq!(restored.actor_environment.get(AENV_SPEC_TAG), Some(7u64));
+        assert_eq!(
+            restored.actor_environment.get(AENV_SPEC_LABEL),
+            Some("root".to_string())
+        );
+        assert_eq!(restored.actor_environment, env);
+        // Derived `ActorSpec` equality composes the semantic environment
+        // equality.
+        assert_eq!(restored, spec);
     }
 }

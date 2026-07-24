@@ -1125,8 +1125,24 @@ impl Proc {
         uid: Uid,
         actor: A,
     ) -> Result<ActorHandle<A>, anyhow::Error> {
+        self.spawn_with_uid_in_environment(uid, actor, ActorEnvironment::default())
+    }
+
+    /// Spawn a root actor on this proc using an explicit uid and an explicit
+    /// environment.
+    ///
+    /// The environment-carrying counterpart to
+    /// [`spawn_with_uid`](Self::spawn_with_uid), used by the type-erased remote
+    /// root-spawn path to store the environment transported in `ActorSpec`
+    /// (AENV-3).
+    pub(crate) fn spawn_with_uid_in_environment<A: Actor>(
+        &self,
+        uid: Uid,
+        actor: A,
+        environment: ActorEnvironment,
+    ) -> Result<ActorHandle<A>, anyhow::Error> {
         let actor_id: ActorAddr = self.allocate_root_uid(uid)?;
-        Ok(self.spawn_inner(actor_id, actor, None, ActorEnvironment::default()))
+        Ok(self.spawn_inner(actor_id, actor, None, environment))
     }
 
     /// Common spawn logic for both root and child actors. `environment` is

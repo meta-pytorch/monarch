@@ -501,15 +501,19 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
         proc: &Proc,
         uid: crate::id::Uid,
         serialized_params: Data,
-        environment: Flattrs,
+        environment: ActorEnvironment,
+        transient: Flattrs,
     ) -> Pin<Box<dyn Future<Output = Result<ActorAddr, anyhow::Error>> + Send>> {
         let proc = proc.clone();
         Box::pin(async move {
             let params =
                 bincode::serde::decode_from_slice(&serialized_params, bincode::config::legacy())
                     .map(|(v, _)| v)?;
-            let actor = Self::new(params, environment).await?;
-            let handle = proc.spawn_with_uid(uid, actor)?;
+            // The constructor sees persistent + transient headers (transient
+            // wins on collision); only the persistent environment is stored on
+            // the instance (AENV-3, AENV-4).
+            let actor = Self::new(params, environment.constructor_view(transient)?).await?;
+            let handle = proc.spawn_with_uid_in_environment(uid, actor, environment)?;
             // We return only the ActorAddr, not a typed ActorRef.
             // Callers that hold this ID can interact with the actor
             // only via the serialized/opaque messaging path, which
