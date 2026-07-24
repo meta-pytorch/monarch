@@ -238,6 +238,10 @@ impl PicklingState {
         })
     }
 
+    fn has_pending_mesh_fills(&self) -> PyResult<bool> {
+        Ok(!self.inner_ref()?.pending_mesh_fills.is_empty())
+    }
+
     /// Build a PicklingState directly from already-separated parts: the pickled
     /// `buffer`, the ordered local-state/tensor-engine list, and the resolved
     /// mesh-reference table. Used by `PythonMessage::decode` so a message's
@@ -426,23 +430,13 @@ impl PendingMessage {
         })
     }
 
-    /// Resolve any reserved mesh slots and convert this into a PythonMessage.
-    ///
-    /// This is an async method that:
-    /// 1. Fills the reserved mesh slots from their pending handles
-    /// 2. Builds a PythonMessage with the resolved bytes and `refs` table
-    pub async fn resolve(self) -> PyResult<PythonMessage> {
-        // Fill any reserved mesh slots, then build the message with the
-        // finalized `refs` table. No GIL needed for the assembly: neither the
-        // Part nor the MeshRef table holds Py<> values.
-        let mut resolved_state = self.state.resolve().await?;
-
-        let inner = resolved_state.take_inner()?;
+    fn into_python_message(mut self) -> PyResult<PythonMessage> {
+        let inner = self.state.take_inner()?;
         let refs: Vec<MeshRef> = inner
             .mesh_references
             .into_iter()
-            .map(|r| {
-                r.ok_or_else(|| {
+            .map(|reference| {
+                reference.ok_or_else(|| {
                     pyo3::exceptions::PyRuntimeError::new_err(
                         "mesh reference slot was never filled",
                     )
@@ -454,6 +448,33 @@ impl PendingMessage {
             inner.buffer,
             refs,
         ))
+    }
+
+    /// Convert this message synchronously when no mesh fills are pending.
+    ///
+    /// A pending message is returned unchanged in the inner `Err` so the
+    /// caller can use the existing asynchronous resolution path.
+    /// Every reserved `None` mesh slot is created together with one pending
+    /// fill entry, while resolved and reconstructed slots are always `Some`.
+    /// Therefore a fresh zero-fill message cannot fail assembly due to an
+    /// unfilled slot.
+    pub fn try_resolve_now(self) -> PyResult<Result<PythonMessage, PendingMessage>> {
+        if self.state.has_pending_mesh_fills()? {
+            return Ok(Err(self));
+        }
+
+        Ok(Ok(self.into_python_message()?))
+    }
+
+    /// Resolve any reserved mesh slots and convert this into a PythonMessage.
+    ///
+    /// This is an async method that:
+    /// 1. Fills the reserved mesh slots from their pending handles
+    /// 2. Builds a PythonMessage with the resolved bytes and `refs` table
+    pub async fn resolve(self) -> PyResult<PythonMessage> {
+        let Self { kind, state } = self;
+        let state = state.resolve().await?;
+        Self::new(kind, state).into_python_message()
     }
 }
 
@@ -477,6 +498,18 @@ impl PendingMessage {
     #[getter]
     fn kind(&self) -> PythonMessageKind {
         self.kind.clone()
+    }
+
+    /// Return a materialized message when no mesh fills are pending.
+    ///
+    /// A `None` result leaves this object unchanged for `resolve()`.
+    #[pyo3(name = "try_resolve_now")]
+    fn py_try_resolve_now(&mut self) -> PyResult<Option<PythonMessage>> {
+        if self.state.has_pending_mesh_fills()? {
+            return Ok(None);
+        }
+
+        self.take()?.into_python_message().map(Some)
     }
 
     /// Fill reserved mesh slots and return a fully materialized PythonMessage.
@@ -756,4 +789,82 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_get_mesh_pop_count, module)?)?;
     module.add_function(wrap_pyfunction!(_reset_mesh_pop_count, module)?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use hyperactor::ActorRef;
+    use hyperactor::ProcAddr;
+    use hyperactor::ProcId;
+    use hyperactor::channel::ChannelAddr;
+    use hyperactor::id::Label;
+    use hyperactor::id::Uid;
+    use hyperactor_mesh::mesh_id::ProcMeshId;
+    use hyperactor_mesh::proc_agent::PROC_AGENT_ACTOR_NAME;
+    use hyperactor_mesh::proc_agent::ProcAgent;
+    use hyperactor_mesh::proc_mesh::ProcMeshRef;
+    use hyperactor_mesh::proc_mesh::ProcRef;
+
+    use super::*;
+
+    fn resolved_proc_mesh_ref() -> MeshRef {
+        let proc_id = ProcId::new(
+            Uid::Instance(1, None),
+            Some(Label::new("local").expect("test label should be valid")),
+        );
+        let proc_addr = ProcAddr::new(proc_id, ChannelAddr::Local(1).into());
+        let agent: ActorRef<ProcAgent> =
+            ActorRef::attest(proc_addr.actor_addr(PROC_AGENT_ACTOR_NAME));
+        let proc_ref = ProcRef::new(proc_addr, 0, agent);
+        MeshRef::Proc(Box::new(
+            ProcMeshRef::new_singleton(
+                ProcMeshId::singleton(Label::new("mesh").expect("test label should be valid")),
+                proc_ref,
+            )
+            .expect("test proc mesh should be valid"),
+        ))
+    }
+
+    fn pending_message(
+        kind: PythonMessageKind,
+        buffer: Vec<u8>,
+        refs: Vec<MeshRef>,
+    ) -> PendingMessage {
+        PendingMessage::new(
+            kind,
+            PicklingState {
+                inner: Some(PicklingStateInner {
+                    buffer: Part::from(buffer),
+                    tensor_engine_references: VecDeque::new(),
+                    mesh_references: refs.into_iter().map(Some).collect(),
+                    pending_mesh_fills: Vec::new(),
+                }),
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn try_resolve_now_matches_async_resolution_with_resolved_refs() {
+        let kind = PythonMessageKind::Result { rank: Some(7) };
+        let buffer = vec![0, 1, 2, 3, 127, 128, 254, 255];
+
+        for refs in [Vec::new(), vec![resolved_proc_mesh_ref()]] {
+            let synchronous = match pending_message(kind.clone(), buffer.clone(), refs.clone())
+                .try_resolve_now()
+                .expect("zero-pending probe should succeed")
+            {
+                Ok(message) => message,
+                Err(_) => panic!("zero-pending message should resolve synchronously"),
+            };
+            let asynchronous = pending_message(kind.clone(), buffer.clone(), refs)
+                .resolve()
+                .await
+                .expect("zero-pending async resolution should succeed");
+
+            assert_eq!(
+                synchronous, asynchronous,
+                "sync and async resolution should preserve kind, bytes, and refs"
+            );
+        }
+    }
 }
