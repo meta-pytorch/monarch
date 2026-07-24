@@ -1131,15 +1131,27 @@ impl PythonActor {
         )
         .unwrap();
 
-        Self::bootstrap_client_inner(py, client_proc, &ROOT_CLIENT_INSTANCE)
+        // The legacy path seeds no inherited capabilities.
+        Self::bootstrap_client_inner(
+            py,
+            client_proc,
+            hyperactor::ActorEnvironment::default(),
+            &ROOT_CLIENT_INSTANCE,
+        )
     }
 
     /// Bootstrap the client proc, storing the root client instance in given static.
     /// This is passed in because we require storage, as the instance is shared.
     /// This can be simplified when we remove v0.
+    ///
+    /// `environment` is the root client's persistent
+    /// [`ActorEnvironment`](hyperactor::ActorEnvironment): the caller seeds any
+    /// inherited capabilities into it (e.g. the client-root reference) and
+    /// descendants inherit them through the environment.
     pub(crate) fn bootstrap_client_inner(
         py: Python<'_>,
         client_proc: Proc,
+        environment: hyperactor::ActorEnvironment,
         root_client_instance: &'static OnceLock<Instance<PythonActor>>,
     ) -> (&'static Instance<Self>, ActorHandle<Self>) {
         let actor_mesh_mod = py
@@ -1175,12 +1187,13 @@ impl PythonActor {
         .expect("create client PythonActor");
 
         let ai = client_proc
-            .actor_instance(
+            .actor_instance_in_environment(
                 root_client_class
                     .getattr("name")
                     .expect("get RootClientActor.name")
                     .extract()
                     .expect("extract RootClientActor.name"),
+                environment,
             )
             .expect("root instance create");
 
