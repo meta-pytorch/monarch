@@ -510,8 +510,10 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
                 bincode::serde::decode_from_slice(&serialized_params, bincode::config::legacy())
                     .map(|(v, _)| v)?;
             // The constructor sees persistent + transient headers (transient
-            // wins on collision); only the persistent environment is stored on
-            // the instance (AENV-3, AENV-4).
+            // wins); the instance stores only `environment`. Local callers
+            // derive it from the parent (AENV-2); remote callers transport the
+            // spawning actor's value (AENV-3). Transient headers are never
+            // stored (AENV-4).
             let actor = Self::new(params, environment.constructor_view(transient)?).await?;
             let handle = proc.spawn_with_uid_in_environment(uid, actor, environment)?;
             // We return only the ActorAddr, not a typed ActorRef.
@@ -548,9 +550,10 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
                     .map(|(v, _)| v)?;
             // The constructor sees persistent + transient headers (transient
             // wins on collision); only the persistent environment is stored on
-            // the instance (AENV-2, AENV-4).
+            // the instance (AENV-3, AENV-4).
             let actor = Self::new(params, environment.constructor_view(transient)?).await?;
-            let handle = proc.spawn_child_with_uid(parent, uid, actor)?;
+            let handle =
+                proc.spawn_child_with_uid_in_environment(parent, uid, actor, environment)?;
             handle.bind::<Self>();
             Ok(handle.into_any())
         })

@@ -179,6 +179,30 @@ impl Remote {
         transient: Flattrs,
     ) -> Result<AnyActorHandle, anyhow::Error> {
         let environment = parent.actor_environment().clone();
+        self.gspawn_child_in_environment(
+            proc,
+            parent,
+            actor_type,
+            actor_uid,
+            params,
+            environment,
+            transient,
+        )
+        .await
+    }
+
+    /// Spawn a child with an explicit environment instead of inheriting from
+    /// its physical parent.
+    pub(crate) async fn gspawn_child_in_environment(
+        &self,
+        proc: &Proc,
+        parent: InstanceCell,
+        actor_type: &str,
+        actor_uid: Uid,
+        params: Data,
+        environment: ActorEnvironment,
+        transient: Flattrs,
+    ) -> Result<AnyActorHandle, anyhow::Error> {
         let entry = self
             .by_name
             .get(actor_type)

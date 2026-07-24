@@ -1394,6 +1394,18 @@ impl Proc {
         actor: A,
     ) -> Result<ActorHandle<A>, anyhow::Error> {
         let environment = parent.actor_environment().clone();
+        self.spawn_child_with_uid_in_environment(parent, uid, actor, environment)
+    }
+
+    /// Spawn a child actor with an explicit environment instead of inheriting
+    /// from its physical parent.
+    pub(crate) fn spawn_child_with_uid_in_environment<A: Actor>(
+        &self,
+        parent: InstanceCell,
+        uid: Uid,
+        actor: A,
+        environment: ActorEnvironment,
+    ) -> Result<ActorHandle<A>, anyhow::Error> {
         let actor_id = self.ensure_child_uid(parent.actor_addr(), uid)?;
         Ok(self.spawn_inner(actor_id, actor, Some(parent), environment))
     }
@@ -3556,6 +3568,32 @@ impl<A: Actor> Instance<A> {
                 actor_type,
                 uid,
                 params,
+                Flattrs::new(),
+            )
+            .await
+    }
+
+    /// Spawn a registered child with an explicitly transported environment.
+    ///
+    /// Native remote-spawn protocols use this after decoding the spawning
+    /// actor's environment (AENV-3). Ordinary local callers should use
+    /// [`gspawn_uid`], which inherits this instance's environment (AENV-2).
+    #[doc(hidden)]
+    pub async fn gspawn_uid_in_environment(
+        &self,
+        actor_type: &str,
+        uid: crate::id::Uid,
+        params: Data,
+        environment: ActorEnvironment,
+    ) -> anyhow::Result<AnyActorHandle> {
+        crate::actor::remote::Remote::global()
+            .gspawn_child_in_environment(
+                &self.inner.proc,
+                self.inner.cell.clone(),
+                actor_type,
+                uid,
+                params,
+                environment,
                 Flattrs::new(),
             )
             .await

@@ -10,8 +10,9 @@
 //! [`Instance`](crate::proc::Instance).
 //!
 //! An [`ActorEnvironment`] is a small, immutable set of typed attributes fixed
-//! when the instance is constructed. Local children inherit the exact value,
-//! and `ProcMesh` root spawns serialize it across the proc boundary.
+//! when the instance is constructed. It is inherited by local children and
+//! serialized to remote children, giving stable actor context a native home
+//! that does not depend on the actor's implementation language.
 //!
 //! `hyperactor` owns how this environment is carried through actor creation,
 //! while higher-level crates own the values it contains. Those crates declare
@@ -30,12 +31,16 @@
 //!   fixed at construction and exposed read-only.
 //! - **AENV-2 (local inheritance):** ordinary local child/client construction
 //!   derives its parent's exact environment from that cell.
-//! - **AENV-3 (remote inheritance):** `ProcMesh` root spawn serializes the
-//!   spawning instance's exact environment through `ActorSpec`.
+//! - **AENV-3 (remote inheritance):** native remote-spawn adapters serialize the
+//!   spawning instance's exact environment; nested remote spawn repeats that
+//!   operation independently.
 //! - **AENV-4 (transient separation):** message/cast constructor headers may
 //!   override the merged view passed to [`RemoteSpawn::new`](crate::actor::RemoteSpawn)
 //!   but never enter the stored/inherited environment; persistent capability
 //!   consumers read only the stored instance environment.
+//! - **AENV-5 (runtime neutrality):** inheritance is implemented by native
+//!   `Instance`/spawn plumbing and does not depend on the actor implementation
+//!   language.
 
 use std::collections::HashMap;
 use std::collections::HashSet;

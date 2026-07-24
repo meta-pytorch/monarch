@@ -19,6 +19,7 @@
 //! worker accepts only the active session.
 
 use hyperactor::ActorAddr;
+use hyperactor::ActorEnvironment;
 use hyperactor::Data;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
@@ -26,6 +27,7 @@ use hyperactor::PortRef;
 use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
 use hyperactor::actor::StopMode;
+use hyperactor::context;
 use hyperactor::id::Uid;
 use hyperactor::supervision::ActorSupervisionEvent;
 use serde::Deserialize;
@@ -40,20 +42,27 @@ pub struct Gspawn {
     actor_type: String,
     uid: Uid,
     params: Data,
+    environment: ActorEnvironment,
 }
 wirevalue::register_type!(Gspawn);
 
 impl Gspawn {
-    /// Create a spawn specification for the registered actor type with a fresh uid.
-    pub fn for_actor<A>(params: A::Params) -> anyhow::Result<Self>
+    /// Create a spawn specification for the registered actor type with a fresh
+    /// uid and the caller's persistent environment.
+    pub fn for_actor<A>(cx: &impl context::Actor, params: A::Params) -> anyhow::Result<Self>
     where
         A: RemoteSpawn + Named,
     {
-        Self::for_actor_uid::<A>(Uid::anonymous(), params)
+        Self::for_actor_uid::<A>(cx, Uid::anonymous(), params)
     }
 
-    /// Create a spawn specification for the registered actor type with an explicit uid.
-    pub fn for_actor_uid<A>(uid: Uid, params: A::Params) -> anyhow::Result<Self>
+    /// Create a spawn specification for the registered actor type with an
+    /// explicit uid and the caller's persistent environment.
+    pub fn for_actor_uid<A>(
+        cx: &impl context::Actor,
+        uid: Uid,
+        params: A::Params,
+    ) -> anyhow::Result<Self>
     where
         A: RemoteSpawn + Named,
     {
@@ -61,14 +70,21 @@ impl Gspawn {
             A::typename(),
             uid,
             bincode::serde::encode_to_vec(params, bincode::config::legacy())?,
+            cx.instance().actor_environment().clone(),
         ))
     }
 
-    pub(crate) fn with_uid(actor_type: impl Into<String>, uid: Uid, params: Data) -> Self {
+    pub(crate) fn with_uid(
+        actor_type: impl Into<String>,
+        uid: Uid,
+        params: Data,
+        environment: ActorEnvironment,
+    ) -> Self {
         Self {
             actor_type: actor_type.into(),
             uid,
             params,
+            environment,
         }
     }
 
@@ -87,14 +103,25 @@ impl Gspawn {
         &self.params
     }
 
+    /// The persistent environment to install on the spawned actor.
+    pub fn actor_environment(&self) -> &ActorEnvironment {
+        &self.environment
+    }
+
     /// Spawn the actor as a supervised child of `parent`.
     pub async fn spawn_child<C: hyperactor::context::Actor>(
         self,
         parent: &C,
     ) -> anyhow::Result<hyperactor::AnyActorHandle> {
+        let Self {
+            actor_type,
+            uid,
+            params,
+            environment,
+        } = self;
         parent
             .instance()
-            .gspawn_uid(&self.actor_type, self.uid, self.params)
+            .gspawn_uid_in_environment(&actor_type, uid, params, environment)
             .await
     }
 }
