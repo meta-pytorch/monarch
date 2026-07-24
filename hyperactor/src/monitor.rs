@@ -9,9 +9,13 @@
 //! Actor liveness monitoring.
 
 use std::future::Future;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use derivative::Derivative;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::watch;
@@ -21,13 +25,24 @@ use typeuri::Named;
 use crate::Actor;
 use crate::ActorAddr;
 use crate::ActorHandle;
+use crate::ActorRef;
 use crate::Context;
 use crate::Endpoint;
 use crate::Handler;
 use crate::Instance;
+use crate::Message;
+use crate::OncePortRef;
+use crate::PortRef;
+use crate::RemoteMessage;
 use crate::StatusMessage;
 use crate::actor::ActorStatus;
+use crate::actor::Referable;
 use crate::context;
+use crate::mailbox::MailboxError;
+use crate::mailbox::OncePortHandle;
+use crate::mailbox::PortHandle;
+use crate::mailbox::PortReceiver;
+use crate::supervision::local_fence;
 
 const DEFAULT_INITIAL_DELAY: Duration = Duration::from_secs(2);
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -109,25 +124,124 @@ wirevalue::register_type!(MonitorFailure);
     Clone,
     Serialize,
     Deserialize,
-    PartialEq,
-    Eq,
+    Derivative,
     Named
 )]
+#[derivative(PartialEq, Eq)]
 #[error("synthetic supervision event for {subject}: {failure}")]
 pub struct SyntheticSupervision {
     /// The actor whose liveness failure caused the synthetic event.
     pub subject: ActorAddr,
     /// The monitor failure that caused the event.
     pub failure: Box<MonitorFailure>,
+    #[serde(skip, default = "local_fence")]
+    #[derivative(PartialEq = "ignore")]
+    pub(crate) local_fence: Arc<AtomicBool>,
 }
 wirevalue::register_type!(SyntheticSupervision);
 
 /// A handle to a child actor that monitors another actor's liveness.
 #[derive(Debug)]
 pub struct ActorMonitor {
+    inner: Option<MonitorInner>,
+}
+
+/// A monitor that reports detected failures through actor supervision.
+#[derive(Debug)]
+pub struct ActorSupervisor {
+    inner: Option<MonitorInner>,
+}
+
+#[derive(Debug)]
+struct MonitorInner {
     target: ActorAddr,
     handle: ActorHandle<MonitorActor>,
     status: watch::Receiver<MonitorStatus>,
+    cancelled: Arc<AtomicBool>,
+}
+
+/// An endpoint whose owning actor can be monitored.
+pub trait MonitorableEndpoint {
+    /// Spawn a monitor actor for this endpoint's owning actor as a child of `cx`.
+    fn monitor<C>(&self, cx: &C) -> ActorMonitor
+    where
+        C: context::Actor,
+    {
+        ActorMonitor::spawn(cx, self.monitored_actor_addr())
+    }
+
+    /// The actor whose liveness determines this endpoint's liveness.
+    fn monitored_actor_addr(&self) -> ActorAddr;
+}
+
+impl<T> MonitorableEndpoint for &T
+where
+    T: MonitorableEndpoint + ?Sized,
+{
+    fn monitor<C>(&self, cx: &C) -> ActorMonitor
+    where
+        C: context::Actor,
+    {
+        (*self).monitor(cx)
+    }
+
+    fn monitored_actor_addr(&self) -> ActorAddr {
+        (*self).monitored_actor_addr()
+    }
+}
+
+impl<A> MonitorableEndpoint for ActorHandle<A>
+where
+    A: Actor,
+{
+    fn monitored_actor_addr(&self) -> ActorAddr {
+        self.actor_addr().clone()
+    }
+}
+
+impl<A> MonitorableEndpoint for ActorRef<A>
+where
+    A: Referable,
+{
+    fn monitored_actor_addr(&self) -> ActorAddr {
+        self.actor_addr().clone()
+    }
+}
+
+impl<M> MonitorableEndpoint for PortHandle<M>
+where
+    M: Message,
+{
+    fn monitored_actor_addr(&self) -> ActorAddr {
+        self.location().actor_addr()
+    }
+}
+
+impl<M> MonitorableEndpoint for OncePortHandle<M>
+where
+    M: Message,
+{
+    fn monitored_actor_addr(&self) -> ActorAddr {
+        self.port_addr().actor_addr()
+    }
+}
+
+impl<M> MonitorableEndpoint for PortRef<M>
+where
+    M: RemoteMessage,
+{
+    fn monitored_actor_addr(&self) -> ActorAddr {
+        self.port_addr().actor_addr()
+    }
+}
+
+impl<M> MonitorableEndpoint for OncePortRef<M>
+where
+    M: RemoteMessage,
+{
+    fn monitored_actor_addr(&self) -> ActorAddr {
+        self.port_addr().actor_addr()
+    }
 }
 
 impl ActorMonitor {
@@ -155,6 +269,7 @@ impl ActorMonitor {
     where
         C: context::Actor,
     {
+        let cancelled = Arc::new(AtomicBool::new(false));
         let (status_tx, status) = watch::channel(MonitorStatus::Checking);
         let handle = cx.spawn_with_label(
             "monitor",
@@ -164,59 +279,53 @@ impl ActorMonitor {
                 poll_interval,
                 request_timeout,
                 status_tx,
+                cancelled: cancelled.clone(),
                 failure: None,
                 pending_poll: false,
                 supervised: false,
             },
         );
         Self {
-            target,
-            handle,
-            status,
+            inner: Some(MonitorInner {
+                target,
+                handle,
+                status,
+                cancelled,
+            }),
         }
     }
 
     /// The actor being monitored.
     pub fn target(&self) -> &ActorAddr {
-        &self.target
-    }
-
-    /// The monitor child actor.
-    pub fn actor_addr(&self) -> &ActorAddr {
-        self.handle.actor_addr()
+        &self.inner().target
     }
 
     /// Return the monitor's current status.
     pub fn status(&self) -> MonitorStatus {
-        self.status.borrow().clone()
+        self.inner().status.borrow().clone()
     }
 
     async fn wait_for_failure(&self) -> MonitorFailure {
-        let mut status = self.status.clone();
+        let target = self.inner().target.clone();
+        let mut status = self.inner().status.clone();
         loop {
             if let MonitorStatus::Failed(failure) = &*status.borrow() {
                 return failure.clone();
             }
             if status.changed().await.is_err() {
-                return MonitorFailure::MonitorStopped {
-                    actor_id: self.target.clone(),
-                };
+                return MonitorFailure::MonitorStopped { actor_id: target };
             }
         }
     }
 
-    #[cfg(test)]
-    async fn failed(&self) -> MonitorFailure {
-        self.wait_for_failure().await
-    }
-
-    /// Fail the monitor child actor if this monitor detects a failure.
-    pub fn supervise_with<'a, C>(&'a self, cx: &C) -> SupervisedActorMonitor<'a>
+    /// Convert this monitor into one that reports detected failures through actor supervision.
+    pub fn into_supervisor<C>(mut self, cx: &C) -> ActorSupervisor
     where
         C: context::Actor,
     {
-        self.handle.post(cx, MonitorCommand::Supervise);
-        SupervisedActorMonitor { monitor: self }
+        let inner = self.inner.take().expect("monitor inner should be present");
+        inner.handle.post(cx, MonitorCommand::Supervise);
+        ActorSupervisor { inner: Some(inner) }
     }
 
     /// Run `fut` until it completes or the monitor fails.
@@ -230,41 +339,40 @@ impl ActorMonitor {
             failure = self.wait_for_failure() => Err(failure),
         }
     }
+
+    /// Receive the next message from `receiver` or return a monitor failure.
+    pub async fn recv<M>(
+        &self,
+        receiver: &mut PortReceiver<M>,
+    ) -> Result<Result<M, MailboxError>, MonitorFailure>
+    where
+        M: Message,
+    {
+        self.guard(receiver.recv()).await
+    }
+
+    fn inner(&self) -> &MonitorInner {
+        self.inner
+            .as_ref()
+            .expect("monitor inner should be present")
+    }
 }
 
 impl Drop for ActorMonitor {
     fn drop(&mut self) {
-        let _ = self.handle.stop("monitor dropped");
+        if let Some(inner) = self.inner.take() {
+            inner.cancelled.store(true, Ordering::Release);
+            let _ = inner.handle.stop("monitor dropped");
+        }
     }
 }
 
-/// A monitor that escalates detected failures through actor supervision.
-pub struct SupervisedActorMonitor<'a> {
-    monitor: &'a ActorMonitor,
-}
-
-impl SupervisedActorMonitor<'_> {
-    /// The actor being monitored.
-    pub fn target(&self) -> &ActorAddr {
-        self.monitor.target()
-    }
-
-    /// The monitor child actor.
-    pub fn actor_addr(&self) -> &ActorAddr {
-        self.monitor.actor_addr()
-    }
-
-    /// Return the monitor's current status.
-    pub fn status(&self) -> MonitorStatus {
-        self.monitor.status()
-    }
-
-    /// Run `fut` until it completes or the monitor fails.
-    pub async fn guard<F>(&self, fut: F) -> Result<F::Output, MonitorFailure>
-    where
-        F: Future,
-    {
-        self.monitor.guard(fut).await
+impl Drop for ActorSupervisor {
+    fn drop(&mut self) {
+        if let Some(inner) = self.inner.take() {
+            inner.cancelled.store(true, Ordering::Release);
+            let _ = inner.handle.stop("supervisor dropped");
+        }
     }
 }
 
@@ -275,6 +383,7 @@ struct MonitorActor {
     poll_interval: Duration,
     request_timeout: Duration,
     status_tx: watch::Sender<MonitorStatus>,
+    cancelled: Arc<AtomicBool>,
     failure: Option<MonitorFailure>,
     pending_poll: bool,
     supervised: bool,
@@ -408,7 +517,9 @@ impl Handler<MonitorCommand> for MonitorActor {
         match message {
             MonitorCommand::Supervise => {
                 self.supervised = true;
-                if let Some(failure) = self.failure.clone() {
+                if let Some(failure) = self.failure.clone()
+                    && !self.cancelled.load(Ordering::Acquire)
+                {
                     return self.fail_supervised(failure);
                 }
                 Ok(())
@@ -461,7 +572,7 @@ impl MonitorActor {
         self.failure = Some(failure.clone());
         self.status_tx
             .send_replace(MonitorStatus::Failed(failure.clone()));
-        if self.supervised {
+        if self.supervised && !self.cancelled.load(Ordering::Acquire) {
             self.fail_supervised(failure)
         } else {
             Ok(())
@@ -473,6 +584,7 @@ impl MonitorActor {
             Box::new(SyntheticSupervision {
                 subject: self.target.clone(),
                 failure: Box::new(failure),
+                local_fence: self.cancelled.clone(),
             },)
         ))
     }
@@ -490,18 +602,42 @@ mod tests {
     use crate::actor::ActorErrorKind;
     use crate::supervision::ActorSupervisionEvent;
 
-    #[derive(Debug)]
+    #[derive(Debug, typeuri::Named)]
     struct TestActor;
 
     #[async_trait]
     impl Actor for TestActor {}
+
+    impl crate::actor::Referable for TestActor {}
 
     #[derive(Debug)]
     struct SupervisorActor {
         target: ActorAddr,
         ready: Option<crate::OncePortRef<ActorAddr>>,
         events: crate::PortRef<ActorSupervisionEvent>,
-        monitor: Option<ActorMonitor>,
+        supervisor: Option<ActorSupervisor>,
+    }
+
+    #[derive(Debug)]
+    struct ConvertFailedMonitorActor {
+        target: ActorAddr,
+        ready: Option<crate::OncePortRef<ActorAddr>>,
+        events: crate::PortRef<ActorSupervisionEvent>,
+        supervisor: Option<ActorSupervisor>,
+    }
+
+    #[derive(Debug)]
+    struct DropSupervisorActor {
+        target: ActorAddr,
+        ready: Option<crate::OncePortRef<ActorAddr>>,
+        events: crate::PortRef<ActorSupervisionEvent>,
+    }
+
+    #[derive(Debug)]
+    struct DropQueuedSupervisorActor {
+        target: ActorHandle<TestActor>,
+        ready: Option<crate::OncePortRef<()>>,
+        events: crate::PortRef<ActorSupervisionEvent>,
     }
 
     #[async_trait]
@@ -514,13 +650,134 @@ mod tests {
                 Duration::from_millis(10),
                 Duration::from_millis(50),
             );
-            let monitor_id = monitor.actor_addr().clone();
-            let _supervised = monitor.supervise_with(this);
-            self.monitor = Some(monitor);
+            let monitor_id = monitor
+                .inner
+                .as_ref()
+                .expect("monitor inner should be present")
+                .handle
+                .actor_addr()
+                .clone();
+            self.supervisor = Some(monitor.into_supervisor(this));
             self.ready
                 .take()
                 .expect("ready port should be present")
                 .post(this, monitor_id);
+            Ok(())
+        }
+
+        async fn handle_supervision_event(
+            &mut self,
+            this: &Instance<Self>,
+            event: &ActorSupervisionEvent,
+        ) -> anyhow::Result<bool> {
+            self.events.post(this, event.clone());
+            Ok(true)
+        }
+    }
+
+    #[async_trait]
+    impl Actor for ConvertFailedMonitorActor {
+        async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
+            let monitor = ActorMonitor::spawn_with_timings(
+                this,
+                self.target.clone(),
+                Duration::ZERO,
+                Duration::from_millis(10),
+                Duration::from_millis(50),
+            );
+            let monitor_id = monitor
+                .inner
+                .as_ref()
+                .expect("monitor inner should be present")
+                .handle
+                .actor_addr()
+                .clone();
+            let _failure = monitor.wait_for_failure().await;
+            self.supervisor = Some(monitor.into_supervisor(this));
+            self.ready
+                .take()
+                .expect("ready port should be present")
+                .post(this, monitor_id);
+            Ok(())
+        }
+
+        async fn handle_supervision_event(
+            &mut self,
+            this: &Instance<Self>,
+            event: &ActorSupervisionEvent,
+        ) -> anyhow::Result<bool> {
+            self.events.post(this, event.clone());
+            Ok(true)
+        }
+    }
+
+    #[async_trait]
+    impl Actor for DropSupervisorActor {
+        async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
+            let monitor = ActorMonitor::spawn_with_timings(
+                this,
+                self.target.clone(),
+                Duration::ZERO,
+                Duration::from_millis(10),
+                Duration::from_millis(50),
+            );
+            let monitor_id = monitor
+                .inner
+                .as_ref()
+                .expect("monitor inner should be present")
+                .handle
+                .actor_addr()
+                .clone();
+            drop(monitor.into_supervisor(this));
+            self.ready
+                .take()
+                .expect("ready port should be present")
+                .post(this, monitor_id);
+            Ok(())
+        }
+
+        async fn handle_supervision_event(
+            &mut self,
+            this: &Instance<Self>,
+            event: &ActorSupervisionEvent,
+        ) -> anyhow::Result<bool> {
+            self.events.post(this, event.clone());
+            Ok(true)
+        }
+    }
+
+    #[async_trait]
+    impl Actor for DropQueuedSupervisorActor {
+        async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
+            let monitor = ActorMonitor::spawn_with_timings(
+                this,
+                self.target.actor_addr().clone(),
+                Duration::ZERO,
+                Duration::from_millis(10),
+                Duration::from_millis(50),
+            );
+            let supervisor = monitor.into_supervisor(this);
+            let mut status = supervisor
+                .inner
+                .as_ref()
+                .expect("supervisor inner should be present")
+                .status
+                .clone();
+
+            self.target.drain_and_stop("done").unwrap();
+
+            loop {
+                if matches!(*status.borrow(), MonitorStatus::Failed(_)) {
+                    break;
+                }
+                status.changed().await?;
+            }
+
+            drop(supervisor);
+            self.ready
+                .take()
+                .expect("ready port should be present")
+                .post(this, ());
             Ok(())
         }
 
@@ -579,7 +836,7 @@ mod tests {
         let monitor = short_monitor(&client, missing.clone());
 
         assert_eq!(
-            monitor.failed().await,
+            monitor.wait_for_failure().await,
             MonitorFailure::ActorGone { actor_id: missing }
         );
     }
@@ -598,12 +855,12 @@ mod tests {
         );
 
         assert!(
-            time::timeout(Duration::from_millis(20), monitor.failed())
+            time::timeout(Duration::from_millis(20), monitor.wait_for_failure())
                 .await
                 .is_err()
         );
         assert_eq!(
-            monitor.failed().await,
+            monitor.wait_for_failure().await,
             MonitorFailure::ActorGone { actor_id: missing }
         );
     }
@@ -625,7 +882,12 @@ mod tests {
             Duration::from_millis(10),
             Duration::from_millis(50),
         );
-        let mut status = monitor.status.clone();
+        let mut status = monitor
+            .inner
+            .as_ref()
+            .expect("monitor inner should be present")
+            .status
+            .clone();
 
         drop(monitor);
 
@@ -651,7 +913,7 @@ mod tests {
         handle.drain_and_stop("done").unwrap();
 
         assert_eq!(
-            monitor.failed().await,
+            monitor.wait_for_failure().await,
             MonitorFailure::ActorStopped {
                 actor_id,
                 status: ActorStatus::Stopped("done".to_string()),
@@ -686,6 +948,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_actor_ref_is_monitorable() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let handle = proc.spawn(TestActor);
+        let actor_ref = ActorRef::<TestActor>::attest(handle.actor_addr().clone());
+        let monitor = actor_ref.monitor(&client);
+
+        assert_eq!(monitor.target(), handle.actor_addr());
+        assert!(matches!(
+            wait_for_alive(&monitor).await,
+            ActorStatus::Idle | ActorStatus::Processing(_, _)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_ports_are_monitorable_by_owner_actor() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let (port, _rx) = client.open_port::<u64>();
+        let port_ref = port.bind();
+        let (once_port, _once_rx) = client.open_once_port::<u64>();
+        let once_port_ref = once_port.bind();
+
+        assert_eq!(port.monitor(&client).target(), client.self_addr());
+        assert_eq!(port_ref.monitor(&client).target(), client.self_addr());
+        assert_eq!(once_port_ref.monitor(&client).target(), client.self_addr());
+    }
+
+    #[tokio::test]
+    async fn test_monitor_recv_returns_message() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let handle = proc.spawn(TestActor);
+        let monitor = handle.monitor(&client);
+        let (port, mut rx) = client.open_port::<u64>();
+
+        port.post(&client, 123);
+
+        assert!(matches!(monitor.recv(&mut rx).await, Ok(Ok(123))));
+    }
+
+    #[tokio::test]
+    async fn test_monitor_recv_returns_monitor_failure() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let handle = proc.spawn(TestActor);
+        let actor_id = handle.actor_addr().clone();
+        let monitor = handle.monitor(&client);
+        let (_port, mut rx) = client.open_port::<u64>();
+
+        handle.drain_and_stop("done").unwrap();
+
+        match monitor.recv(&mut rx).await {
+            Err(MonitorFailure::ActorStopped {
+                actor_id: failed_actor_id,
+                status,
+            }) => {
+                assert_eq!(failed_actor_id, actor_id);
+                assert_eq!(status, ActorStatus::Stopped("done".to_string()));
+            }
+            other => panic!("expected monitor failure, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn test_monitor_times_out_when_status_proc_is_unreachable() {
         let proc = Proc::isolated();
         let client = proc.client("client");
@@ -695,7 +1022,7 @@ mod tests {
         let monitor = short_monitor(&client, unreachable.clone());
 
         assert_eq!(
-            monitor.failed().await,
+            monitor.wait_for_failure().await,
             MonitorFailure::StatusRequestTimedOut {
                 actor_id: unreachable,
                 timeout_millis: 50,
@@ -720,12 +1047,17 @@ mod tests {
 
         time::sleep(Duration::from_millis(20)).await;
         let (reply, reply_rx) = client.open_once_port();
-        monitor.handle.post(
-            &client,
-            MonitorProbe {
-                reply: reply.bind(),
-            },
-        );
+        monitor
+            .inner
+            .as_ref()
+            .expect("monitor inner should be present")
+            .handle
+            .post(
+                &client,
+                MonitorProbe {
+                    reply: reply.bind(),
+                },
+            );
 
         time::timeout(Duration::from_millis(100), reply_rx.recv())
             .await
@@ -745,7 +1077,7 @@ mod tests {
             target: target_id.clone(),
             ready: Some(ready.bind()),
             events: events.bind(),
-            monitor: None,
+            supervisor: None,
         });
 
         let monitor_id = ready_rx.recv().await.unwrap();
@@ -766,6 +1098,89 @@ mod tests {
                 ..
             }
         ));
+        supervisor.drain_and_stop("test complete").unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_failed_monitor_reports_synthetic_supervision_after_conversion() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let target_id = proc.proc_addr().actor_addr("missing");
+        let (ready, ready_rx) = client.open_once_port();
+        let (events, mut event_rx) = client.open_port();
+        let supervisor = proc.spawn(ConvertFailedMonitorActor {
+            target: target_id.clone(),
+            ready: Some(ready.bind()),
+            events: events.bind(),
+            supervisor: None,
+        });
+
+        let monitor_id = ready_rx.recv().await.unwrap();
+
+        let event = event_rx.recv().await.unwrap();
+        assert_eq!(event.actor_id, monitor_id);
+        let ActorStatus::Failed(ActorErrorKind::SyntheticSupervision(synthetic)) =
+            event.actor_status
+        else {
+            panic!("expected synthetic supervision event");
+        };
+        assert_eq!(synthetic.subject, target_id);
+        assert!(matches!(
+            *synthetic.failure,
+            MonitorFailure::ActorGone { .. }
+        ));
+        supervisor.drain_and_stop("test complete").unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_dropping_supervisor_disables_synthetic_supervision() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let target = proc.spawn(TestActor);
+        let (ready, ready_rx) = client.open_once_port();
+        let (events, mut event_rx) = client.open_port();
+        let supervisor = proc.spawn(DropSupervisorActor {
+            target: target.actor_addr().clone(),
+            ready: Some(ready.bind()),
+            events: events.bind(),
+        });
+
+        let monitor_id = ready_rx.recv().await.unwrap();
+
+        let stop_event = event_rx.recv().await.unwrap();
+        assert_eq!(stop_event.actor_id, monitor_id);
+        assert!(matches!(stop_event.actor_status, ActorStatus::Stopped(_)));
+
+        target.drain_and_stop("done").unwrap();
+
+        assert!(
+            time::timeout(Duration::from_millis(200), event_rx.recv())
+                .await
+                .is_err()
+        );
+        supervisor.drain_and_stop("test complete").unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_dropping_supervisor_drops_queued_synthetic_supervision() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let target = proc.spawn(TestActor);
+        let (ready, ready_rx) = client.open_once_port();
+        let (events, mut event_rx) = client.open_port();
+        let supervisor = proc.spawn(DropQueuedSupervisorActor {
+            target,
+            ready: Some(ready.bind()),
+            events: events.bind(),
+        });
+
+        ready_rx.recv().await.unwrap();
+
+        assert!(
+            time::timeout(Duration::from_millis(200), event_rx.recv())
+                .await
+                .is_err()
+        );
         supervisor.drain_and_stop("test complete").unwrap();
     }
 }
