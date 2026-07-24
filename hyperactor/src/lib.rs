@@ -68,6 +68,7 @@ pub mod client;
 pub mod config;
 pub mod context;
 pub mod endpoint;
+pub mod environment;
 /// Gateway management for proc connectivity.
 pub mod gateway;
 pub mod id;
@@ -132,6 +133,8 @@ pub use client::Client;
 pub use endpoint::Endpoint;
 pub use endpoint::EndpointLocation;
 pub use endpoint::RemoteEndpoint;
+pub use environment::ActorEnvironment;
+pub use environment::ActorEnvironmentError;
 pub use gateway::Gateway;
 #[doc(inline)]
 pub use hyperactor_macros::HandleClient;
