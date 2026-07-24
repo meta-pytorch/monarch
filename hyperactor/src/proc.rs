@@ -379,6 +379,7 @@ fn account_cancel_enqueue(queue_depth: &AtomicU64, proc_stats: &ProcQueueStats, 
     );
 }
 
+use crate::ordering::DeliveryProgress;
 use crate::ordering::SEQ_INFO;
 use crate::ordering::SeqInfo;
 use crate::ordering::Sequencer;
@@ -524,8 +525,27 @@ pub enum StatusMessage {
         /// `Some(status)` for a known actor.
         reply: crate::OncePortRef<Option<ActorStatus>>,
     },
+    /// Return receiver-side delivery progress for messages from `from`.
+    GetDeliveryProgress {
+        /// Sender whose delivery progress should be queried.
+        from: ActorAddr,
+        /// Reply port receiving the delivery progress query result.
+        reply: crate::OncePortRef<DeliveryProgressResponse>,
+    },
 }
 wirevalue::register_type!(StatusMessage);
+
+/// Response to a delivery progress query.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Named)]
+pub enum DeliveryProgressResponse {
+    /// The destination actor was not found.
+    ActorGone,
+    /// The receiver-side sequencing snapshot was incomplete.
+    Incomplete,
+    /// Delivery progress from the requested sender.
+    Progress(DeliveryProgress),
+}
+wirevalue::register_type!(DeliveryProgressResponse);
 
 struct StatusSender(WeakProc);
 
@@ -542,8 +562,8 @@ impl MailboxSender for StatusSender {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        let reply = match envelope.deserialized() {
-            Ok(StatusMessage::GetStatus { reply }) => reply,
+        let message = match envelope.deserialized() {
+            Ok(message) => message,
             Err(err) => {
                 let target = envelope.dest().clone();
                 let failure =
@@ -568,12 +588,28 @@ impl MailboxSender for StatusSender {
         };
 
         let actor_id = envelope.dest().actor_id().clone();
-        let status = proc.status_for_actor(&actor_id);
 
-        if let Err(err) =
-            proc.serialize_and_send_once(reply, status, crate::mailbox::monitored_return_handle())
-        {
-            tracing::error!("status reply failed: {err}");
+        match message {
+            StatusMessage::GetStatus { reply } => {
+                let status = proc.status_for_actor(&actor_id);
+                if let Err(err) = proc.serialize_and_send_once(
+                    reply,
+                    status,
+                    crate::mailbox::monitored_return_handle(),
+                ) {
+                    tracing::error!("status reply failed: {err}");
+                }
+            }
+            StatusMessage::GetDeliveryProgress { from, reply } => {
+                let progress = proc.delivery_progress_for_actor(&actor_id, &from);
+                if let Err(err) = proc.serialize_and_send_once(
+                    reply,
+                    progress,
+                    crate::mailbox::monitored_return_handle(),
+                ) {
+                    tracing::error!("delivery progress reply failed: {err}");
+                }
+            }
         }
     }
 }
@@ -816,6 +852,26 @@ impl Proc {
                 .get(actor_id)
                 .map(|entry| entry.value().clone())
         })
+    }
+
+    fn delivery_progress_for_actor(
+        &self,
+        actor_id: &ActorId,
+        from: &ActorAddr,
+    ) -> DeliveryProgressResponse {
+        let Some(cell) = self
+            .inner
+            .instances
+            .get(actor_id)
+            .and_then(|entry| entry.value().upgrade())
+        else {
+            return DeliveryProgressResponse::ActorGone;
+        };
+
+        match cell.delivery_progress_from(from) {
+            Some(progress) => DeliveryProgressResponse::Progress(progress),
+            None => DeliveryProgressResponse::Incomplete,
+        }
     }
 
     fn from_parts(proc_id: ProcId, gateway: Gateway) -> Self {
@@ -3023,6 +3079,19 @@ impl<A: Actor> Instance<A> {
                     let status = event.actor_status.clone();
                     (status, Some(event))
                 }
+                ActorErrorKind::SyntheticSupervision(synthetic) => {
+                    let local_fence = synthetic.local_fence.clone();
+                    let error_kind = ActorErrorKind::SyntheticSupervision(synthetic);
+                    let status = ActorStatus::Failed(error_kind);
+                    let event = ActorSupervisionEvent::new(
+                        self.inner.cell.actor_addr().clone(),
+                        actor.display_name(),
+                        status.clone(),
+                        None,
+                    )
+                    .with_local_fence(local_fence);
+                    (status, Some(event))
+                }
                 _ => {
                     let error_kind = ActorErrorKind::Generic(err.kind.to_string());
                     let status = ActorStatus::Failed(error_kind);
@@ -3361,6 +3430,10 @@ impl<A: Actor> Instance<A> {
         actor: &mut A,
         supervision_event: ActorSupervisionEvent,
     ) -> Result<(), ActorError> {
+        if supervision_event.is_locally_cancelled() {
+            return Ok(());
+        }
+
         // Handle the supervision event with the current actor.
         match self
             .inner
@@ -4511,6 +4584,12 @@ impl InstanceCell {
     /// (`try_lock`, non-blocking) and never perturbs ordering state.
     pub fn inbound_ordering_snapshot(&self) -> Option<crate::ordering::OrderingSnapshot> {
         self.inner.inbound_ordering_snapshot.as_ref().map(|f| f())
+    }
+
+    /// Receiver-side delivery progress for messages sent by `from`.
+    pub fn delivery_progress_from(&self, from: &ActorAddr) -> Option<DeliveryProgress> {
+        self.inbound_ordering_snapshot()
+            .and_then(|snapshot| snapshot.delivery_progress_from(from))
     }
 
     /// Install the actor-supplied introspection-attrs snapshot callback.
@@ -7997,6 +8076,59 @@ mod tests {
         // buffered_count asserted; IO-3 in introspect module doc).
         let _: u64 = cell.queue_depth();
         let _: u64 = view.queue_depth;
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_status_message_reports_delivery_progress() {
+        let config = hyperactor_config::global::lock();
+        let _g = config.override_key(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let handle = proc.spawn_with_label("a", BufferTestActor);
+        let actor_id = handle.actor_addr().clone();
+        let _actor_ref: crate::ActorRef<BufferTestActor> = handle.bind();
+        let handler_port = actor_id.port_addr(Port::handler::<BufferTestMsg>());
+
+        for _ in 0..3 {
+            handle.post(&client, BufferTestMsg);
+        }
+
+        assert_eq!(client.sequencer().last_sent(&handler_port), Some(3));
+
+        let progress = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let (reply, reply_rx) = client.open_once_port::<DeliveryProgressResponse>();
+                actor_id.status_port().post(
+                    &client,
+                    StatusMessage::GetDeliveryProgress {
+                        from: client.mailbox().actor_addr().clone(),
+                        reply: reply.bind(),
+                    },
+                );
+                let progress = reply_rx
+                    .recv()
+                    .await
+                    .expect("delivery progress reply should arrive");
+                let DeliveryProgressResponse::Progress(progress) = progress else {
+                    tokio::task::yield_now().await;
+                    continue;
+                };
+                if progress.largest_dequeueable_sequence >= 3 {
+                    break progress;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("delivery progress should advance");
+
+        assert_eq!(
+            progress,
+            DeliveryProgress {
+                largest_dequeueable_sequence: 3,
+            }
+        );
     }
 
     // PD-4/PD-5: proc-level queue pressure aggregation reports

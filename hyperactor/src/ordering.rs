@@ -99,6 +99,33 @@ impl OrderingSnapshot {
     pub fn is_complete(&self) -> bool {
         self.skipped_session_count == 0
     }
+
+    /// Delivery progress for messages sent by `sender`.
+    pub fn delivery_progress_from(&self, sender: &ActorAddr) -> Option<DeliveryProgress> {
+        if !self.is_complete() {
+            return None;
+        }
+
+        let largest_dequeueable_sequence = self
+            .sessions
+            .iter()
+            .filter(|session| session.sender.as_ref() == Some(sender))
+            .map(|session| session.last_released_seq)
+            .max()
+            .unwrap_or_default();
+
+        Some(DeliveryProgress {
+            largest_dequeueable_sequence,
+        })
+    }
+}
+
+/// Receiver-side delivery progress for a sender.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Named)]
+pub struct DeliveryProgress {
+    /// Largest sequence released from receiver-side ordering into the
+    /// actor's work queue.
+    pub largest_dequeueable_sequence: u64,
 }
 
 impl fmt::Display for OrderingSessionSnapshot {
@@ -219,14 +246,8 @@ impl Sequencer {
     /// - Ephemeral ports: get individual sequence schemes (keyed by PortAddr).
     /// - Control ports: bypass receive-side reordering and use [`SeqInfo::Direct`].
     pub fn assign_seq(&self, port_id: &PortAddr) -> SeqInfo {
-        if port_id.port().is_control() {
+        let Some(key) = Self::seq_key(port_id) else {
             return SeqInfo::Direct;
-        }
-
-        let key = if port_id.is_handler_port() {
-            SeqKey::Actor(port_id.actor_addr().clone())
-        } else {
-            SeqKey::Port(port_id.clone())
         };
 
         let mut guard = self.last_seqs.lock().unwrap();
@@ -235,6 +256,34 @@ impl Sequencer {
         SeqInfo::Session {
             session_id: self.session_id,
             seq: *entry,
+        }
+    }
+
+    /// Last sequence sent to `port_id`.
+    pub fn last_sent(&self, port_id: &PortAddr) -> Option<u64> {
+        let key = Self::seq_key(port_id)?;
+        self.last_seqs.lock().unwrap().get(&key).copied()
+    }
+
+    /// Last sequence sent to any handler port on `actor`.
+    pub fn last_sent_to_actor(&self, actor: &ActorAddr) -> u64 {
+        self.last_seqs
+            .lock()
+            .unwrap()
+            .get(&SeqKey::Actor(actor.clone()))
+            .copied()
+            .unwrap_or_default()
+    }
+
+    fn seq_key(port_id: &PortAddr) -> Option<SeqKey> {
+        if port_id.port().is_control() {
+            return None;
+        }
+
+        if port_id.is_handler_port() {
+            Some(SeqKey::Actor(port_id.actor_addr().clone()))
+        } else {
+            Some(SeqKey::Port(port_id.clone()))
         }
     }
 
@@ -425,6 +474,79 @@ mod tests {
         assert_eq!(get_seq(sequencer.assign_seq(&regular_actor_port)), 1);
         assert_eq!(sequencer.assign_seq(&introspect_port), SeqInfo::Direct);
         assert_eq!(get_seq(sequencer.assign_seq(&regular_actor_port)), 2);
+    }
+
+    #[test]
+    fn test_sequencer_reports_last_sent() {
+        let sequencer = Sequencer::new(Uuid::now_v7());
+        let actor_ref: ActorAddr = test_actor_id("test_0", "test");
+        let handler_port = actor_ref.port_addr(Port::handler::<TestMsg1>());
+        let other_handler_port = actor_ref.port_addr(Port::handler::<TestMsg2>());
+        let control_port = actor_ref.port_addr(Port::control(ControlPort::Status));
+
+        assert_eq!(sequencer.last_sent(&handler_port), None);
+        assert_eq!(get_seq(sequencer.assign_seq(&handler_port)), 1);
+        assert_eq!(get_seq(sequencer.assign_seq(&other_handler_port)), 2);
+        assert_eq!(sequencer.last_sent(&handler_port), Some(2));
+        assert_eq!(sequencer.last_sent(&control_port), None);
+    }
+
+    #[test]
+    fn test_ordering_snapshot_reports_delivery_progress_from_sender() {
+        let sender = test_actor_id("sender", "test");
+        let other = test_actor_id("other", "test");
+        let snapshot = OrderingSnapshot {
+            enabled: true,
+            sessions: vec![
+                OrderingSessionSnapshot {
+                    session_id: Uuid::from_u128(1),
+                    sender: Some(sender.clone()),
+                    last_released_seq: 3,
+                    expected_next_seq: 4,
+                    buffered_count: 0,
+                    oldest_buffered_seq: None,
+                    newest_buffered_seq: None,
+                },
+                OrderingSessionSnapshot {
+                    session_id: Uuid::from_u128(2),
+                    sender: Some(sender.clone()),
+                    last_released_seq: 5,
+                    expected_next_seq: 6,
+                    buffered_count: 1,
+                    oldest_buffered_seq: Some(7),
+                    newest_buffered_seq: Some(7),
+                },
+                OrderingSessionSnapshot {
+                    session_id: Uuid::from_u128(3),
+                    sender: Some(other.clone()),
+                    last_released_seq: 8,
+                    expected_next_seq: 9,
+                    buffered_count: 0,
+                    oldest_buffered_seq: None,
+                    newest_buffered_seq: None,
+                },
+            ],
+            skipped_session_count: 1,
+        };
+
+        assert_eq!(snapshot.delivery_progress_from(&sender), None,);
+
+        let snapshot = OrderingSnapshot {
+            skipped_session_count: 0,
+            ..snapshot
+        };
+        assert_eq!(
+            snapshot.delivery_progress_from(&sender),
+            Some(DeliveryProgress {
+                largest_dequeueable_sequence: 5,
+            })
+        );
+        assert_eq!(
+            snapshot.delivery_progress_from(&test_actor_id("missing", "test")),
+            Some(DeliveryProgress {
+                largest_dequeueable_sequence: 0,
+            })
+        );
     }
 
     /// Sequencer-level test for the debug-skip helper's underlying behavior:

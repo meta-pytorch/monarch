@@ -37,6 +37,9 @@
 use std::fmt;
 use std::fmt::Debug;
 use std::fmt::Write;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::time::SystemTime;
 
 use derivative::Derivative;
@@ -65,8 +68,15 @@ pub struct ActorSupervisionEvent {
     /// If this event is associated with a message, the message headers.
     #[derivative(PartialEq = "ignore")]
     pub message_headers: Option<Flattrs>,
+    #[serde(skip, default = "local_fence")]
+    #[derivative(PartialEq = "ignore")]
+    pub(crate) local_fence: Arc<AtomicBool>,
 }
 wirevalue::register_type!(ActorSupervisionEvent);
+
+pub(crate) fn local_fence() -> Arc<AtomicBool> {
+    Arc::new(AtomicBool::new(false))
+}
 
 impl ActorSupervisionEvent {
     /// Create a new supervision event. Timestamp is set to the current time.
@@ -82,7 +92,17 @@ impl ActorSupervisionEvent {
             occurred_at: std::time::SystemTime::now(),
             actor_status,
             message_headers,
+            local_fence: local_fence(),
         }
+    }
+
+    pub(crate) fn with_local_fence(mut self, local_fence: Arc<AtomicBool>) -> Self {
+        self.local_fence = local_fence;
+        self
+    }
+
+    pub(crate) fn is_locally_cancelled(&self) -> bool {
+        self.local_fence.load(Ordering::Acquire)
     }
 
     fn actor_name(&self) -> String {
