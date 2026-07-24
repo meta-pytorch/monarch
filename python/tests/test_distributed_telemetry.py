@@ -1374,10 +1374,6 @@ def test_telemetry_workload_sent_message_fanout() -> None:
 
 
 @pytest.mark.timeout(120)
-@pytest.mark.xfail(
-    strict=True,
-    reason="Received multicast rows do not preserve the logical sender actor ID",
-)
 @isolate_in_subprocess
 def test_messages_table(cleanup_callbacks) -> None:
     """Test that the messages table is populated when messages are received."""

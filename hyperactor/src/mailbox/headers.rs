@@ -18,6 +18,7 @@ use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::OPERATION_CONTEXT_HEADER;
 use hyperactor_config::attrs::declare_attrs;
 use hyperactor_config::global;
+use hyperactor_telemetry::hash_to_u64;
 
 use crate::ActorAddr;
 use crate::PortAddr;
@@ -95,6 +96,15 @@ pub fn set_send_timestamp(headers: &mut Flattrs) {
 /// Set the send timestamp for latency tracking if timestamp not already set.
 pub fn set_rust_message_type<M>(headers: &mut Flattrs) {
     headers.set(RUST_MESSAGE_TYPE, type_name::<M>().to_string());
+}
+
+/// Stamp the logical sender hash at a framework-owned delivery boundary.
+///
+/// This overwrites caller-supplied values so trusted routing state determines
+/// the sender recorded by received-message telemetry.
+#[doc(hidden)]
+pub fn stamp_sender_actor_id_hash(headers: &mut Flattrs, sender: &ActorAddr) {
+    headers.set(SENDER_ACTOR_ID_HASH, hash_to_u64(sender.id()));
 }
 
 /// Stamp `SENDER_ACTOR_ID` into `headers` if the gate conditions are met.
@@ -205,6 +215,20 @@ mod tests {
     // so its port is a handler port distinct from bypass ports.
     #[derive(typeuri::Named)]
     struct TestHandlerMsg;
+
+    #[test]
+    fn test_stamp_sender_actor_id_hash_overwrites_existing_value() {
+        let owner: ActorAddr = test_actor_id("test_0", "worker");
+        let mut headers = Flattrs::new();
+        headers.set(SENDER_ACTOR_ID_HASH, 123);
+
+        stamp_sender_actor_id_hash(&mut headers, &owner);
+
+        assert_eq!(
+            headers.get(SENDER_ACTOR_ID_HASH),
+            Some(hash_to_u64(owner.id()))
+        );
+    }
 
     #[test]
     fn test_stamp_helper_sets_sender_on_seq_1() {
