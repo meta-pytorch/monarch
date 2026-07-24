@@ -38,7 +38,7 @@ from monarch._rust_bindings.monarch_extension.snapshot_integration import (
     _pre_register_snapshot_schemas,
 )
 from monarch._rust_bindings.monarch_hyperactor.mailbox import PortId
-from monarch.actor import Actor, current_rank, endpoint
+from monarch.actor import Actor, current_rank, endpoint, HostMesh, ProcMesh
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -70,9 +70,9 @@ class TelemetryActor(Actor):
         # the host-local socket namespace.
         self._scanner: DatabaseScanner | None = None
         # Worker actor meshes this collector fans queries out to. Empty for
-        # leaf collectors; the query-root collector receives its list via
-        # `set_worker_collector_meshes` once the worker meshes exist.
+        # leaf collectors; the query-root collector owns the worker meshes.
         self._worker_collector_meshes: list[Any] = []
+        self._worker_proc_meshes: list[ProcMesh] = []
 
     def _scanner_or_raise(self) -> DatabaseScanner:
         scanner = self._scanner
@@ -116,10 +116,71 @@ class TelemetryActor(Actor):
         return self._activate_impl()
 
     @endpoint
-    def set_worker_collector_meshes(self, worker_collector_meshes: List[Any]) -> None:
-        """Replace the client collector's worker mesh list."""
+    def start_worker_collector(
+        self,
+        host_mesh: HostMesh,
+        spawn_worker_collector: bool = True,
+    ) -> None:
+        """Start and register the telemetry collector for a worker host mesh."""
         self._scanner_or_raise()
-        self._worker_collector_meshes = list(worker_collector_meshes)
+        self._start_worker_collector(
+            host_mesh,
+            spawn_worker_collector,
+        )
+
+    def _start_worker_collector(
+        self,
+        host_mesh: HostMesh,
+        spawn_worker_collector: bool = True,
+    ) -> Any | None:
+        proc_mesh = host_mesh.spawn_procs(name="telemetry_hosts")
+        if not spawn_worker_collector:
+            self._worker_proc_meshes.append(proc_mesh)
+            return None
+
+        try:
+            worker_collector_mesh: Any = proc_mesh.spawn(
+                "TelemetryActor",
+                TelemetryActor,
+                self._apply_id,
+                self._retention_secs,
+            )
+            active = any(
+                active for _rank, active in worker_collector_mesh.activate.call().get()
+            )
+        except Exception:
+            self._stop_worker_mesh(
+                proc_mesh,
+                "telemetry collector startup failed",
+            )
+            raise
+
+        self._worker_proc_meshes.append(proc_mesh)
+        if active:
+            self._worker_collector_meshes.append(worker_collector_mesh)
+            return worker_collector_mesh
+
+        self._stop_worker_mesh(
+            worker_collector_mesh,
+            "telemetry collector inactive",
+        )
+        return None
+
+    @endpoint
+    def stop_worker_collectors(self) -> None:
+        for proc_mesh in self._worker_proc_meshes:
+            self._stop_worker_mesh(
+                proc_mesh,
+                "telemetry shutdown",
+            )
+        self._worker_proc_meshes.clear()
+        self._worker_collector_meshes.clear()
+
+    def _stop_worker_mesh(self, mesh: Any, reason: str) -> None:
+        try:
+            mesh.stop(reason).get(timeout=5.0)
+        except Exception:
+            logger.info("failed to stop telemetry mesh: %s", reason, exc_info=True)
 
     @endpoint
     def table_names(self) -> List[str]:
@@ -173,9 +234,9 @@ class TelemetryActor(Actor):
         child_futures = []
         for collector_mesh in self._worker_collector_meshes:
             try:
-                # Constructing the call can fail if the sidecar holds a stale
-                # actor ref. Treat that as reduced result coverage, matching
-                # the legacy best-effort query behavior.
+                # Constructing the call can fail if the actor ref is stale.
+                # Treat that as reduced result coverage, matching best-effort
+                # query behavior.
                 child_futures.append(
                     collector_mesh.scan.call(
                         dest, table_name, projection, limit, filter_expr
