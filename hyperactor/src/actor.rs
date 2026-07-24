@@ -601,6 +601,10 @@ pub enum ActorErrorKind {
     #[error("{0}")]
     UnhandledSupervisionEvent(Box<ActorSupervisionEvent>),
 
+    /// The actor failed to synthesize a supervision event for another subject.
+    #[error("{0}")]
+    SyntheticSupervision(Box<crate::monitor::SyntheticSupervision>),
+
     /// The actor was explicitly aborted with the provided reason.
     #[error("actor explicitly aborted due to: {0}")]
     Aborted(String),
