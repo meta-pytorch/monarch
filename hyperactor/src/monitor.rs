@@ -32,6 +32,7 @@ use crate::Handler;
 use crate::Instance;
 use crate::Message;
 use crate::OncePortRef;
+use crate::PortAddr;
 use crate::PortRef;
 use crate::RemoteMessage;
 use crate::StatusMessage;
@@ -41,12 +42,16 @@ use crate::context;
 use crate::mailbox::MailboxError;
 use crate::mailbox::OncePortHandle;
 use crate::mailbox::PortHandle;
+use crate::mailbox::PortLocation;
 use crate::mailbox::PortReceiver;
+use crate::ordering::Sequencer;
+use crate::proc::DeliveryProgressResponse;
 use crate::supervision::local_fence;
 
 const DEFAULT_INITIAL_DELAY: Duration = Duration::from_secs(2);
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+const DEFAULT_DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The current state of an actor monitor.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Named)]
@@ -108,6 +113,42 @@ pub enum MonitorFailure {
         /// The monitored actor.
         actor_id: ActorAddr,
     },
+    /// The monitored actor has not made delivery progress for messages from `from`.
+    #[error(
+        "delivery progress to monitored actor {actor_id} from {from} stalled for {timeout_millis}ms: largest_sent={largest_sent}, largest_dequeueable={largest_dequeueable}"
+    )]
+    DeliveryProgressStalled {
+        /// The monitored actor.
+        actor_id: ActorAddr,
+        /// The actor that sent the monitored messages.
+        from: ActorAddr,
+        /// Largest sequence sent by `from`.
+        largest_sent: u64,
+        /// Largest sequence released into the monitored actor's work queue.
+        largest_dequeueable: u64,
+        /// The timeout, in milliseconds.
+        timeout_millis: u64,
+    },
+    /// The delivery progress request did not complete before the monitor timeout.
+    #[error(
+        "delivery progress request to monitored actor {actor_id} from {from} timed out after {timeout_millis}ms"
+    )]
+    DeliveryProgressRequestTimedOut {
+        /// The monitored actor.
+        actor_id: ActorAddr,
+        /// The actor that sent the monitored messages.
+        from: ActorAddr,
+        /// The timeout, in milliseconds.
+        timeout_millis: u64,
+    },
+    /// The delivery progress reply port closed before a reply arrived.
+    #[error("delivery progress reply from monitored actor {actor_id} for sender {from} closed")]
+    DeliveryProgressReplyClosed {
+        /// The monitored actor.
+        actor_id: ActorAddr,
+        /// The actor that sent the monitored messages.
+        from: ActorAddr,
+    },
     /// The monitor actor stopped before reporting a monitored failure.
     #[error("monitor for actor {actor_id} stopped before reporting a failure")]
     MonitorStopped {
@@ -160,6 +201,56 @@ struct MonitorInner {
     cancelled: Arc<AtomicBool>,
 }
 
+#[derive(Debug, Clone)]
+enum DeliveryDestination {
+    Actor(ActorAddr),
+    Port(PortAddr),
+}
+
+impl DeliveryDestination {
+    fn new(actor: ActorAddr, port: Option<PortAddr>) -> Self {
+        match port {
+            Some(port) => Self::Port(port),
+            None => Self::Actor(actor),
+        }
+    }
+
+    fn largest_sent(&self, sequencer: &Sequencer) -> u64 {
+        match self {
+            Self::Actor(actor) => sequencer.last_sent_to_actor(actor),
+            Self::Port(port) => sequencer.last_sent(port).unwrap_or_default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct DeliveryMonitor {
+    from: ActorAddr,
+    sequencer: Sequencer,
+    destination: DeliveryDestination,
+    timeout: Duration,
+    last_largest_dequeueable: u64,
+    last_progress_at: Option<time::Instant>,
+}
+
+impl DeliveryMonitor {
+    fn new(
+        from: ActorAddr,
+        sequencer: Sequencer,
+        destination: DeliveryDestination,
+        timeout: Duration,
+    ) -> Self {
+        Self {
+            from,
+            sequencer,
+            destination,
+            timeout,
+            last_largest_dequeueable: 0,
+            last_progress_at: None,
+        }
+    }
+}
+
 /// An endpoint whose owning actor can be monitored.
 pub trait MonitorableEndpoint {
     /// Spawn a monitor actor for this endpoint's owning actor as a child of `cx`.
@@ -167,11 +258,26 @@ pub trait MonitorableEndpoint {
     where
         C: context::Actor,
     {
-        ActorMonitor::spawn(cx, self.monitored_actor_addr())
+        let target = self.monitored_actor_addr();
+        ActorMonitor::spawn_with_delivery(
+            cx,
+            target.clone(),
+            DeliveryMonitor::new(
+                context::Mailbox::mailbox(cx).actor_addr().clone(),
+                cx.instance().sequencer().clone(),
+                DeliveryDestination::new(target, self.monitored_port_addr()),
+                DEFAULT_DELIVERY_TIMEOUT,
+            ),
+        )
     }
 
     /// The actor whose liveness determines this endpoint's liveness.
     fn monitored_actor_addr(&self) -> ActorAddr;
+
+    /// The concrete destination port, when monitoring a specific port.
+    fn monitored_port_addr(&self) -> Option<PortAddr> {
+        None
+    }
 }
 
 impl<T> MonitorableEndpoint for &T
@@ -187,6 +293,10 @@ where
 
     fn monitored_actor_addr(&self) -> ActorAddr {
         (*self).monitored_actor_addr()
+    }
+
+    fn monitored_port_addr(&self) -> Option<PortAddr> {
+        (*self).monitored_port_addr()
     }
 }
 
@@ -215,6 +325,13 @@ where
     fn monitored_actor_addr(&self) -> ActorAddr {
         self.location().actor_addr()
     }
+
+    fn monitored_port_addr(&self) -> Option<PortAddr> {
+        match self.location() {
+            PortLocation::Bound(port_addr) => Some(port_addr),
+            PortLocation::Unbound(_, _) => None,
+        }
+    }
 }
 
 impl<M> MonitorableEndpoint for OncePortHandle<M>
@@ -223,6 +340,10 @@ where
 {
     fn monitored_actor_addr(&self) -> ActorAddr {
         self.port_addr().actor_addr()
+    }
+
+    fn monitored_port_addr(&self) -> Option<PortAddr> {
+        Some(self.port_addr().clone())
     }
 }
 
@@ -233,6 +354,10 @@ where
     fn monitored_actor_addr(&self) -> ActorAddr {
         self.port_addr().actor_addr()
     }
+
+    fn monitored_port_addr(&self) -> Option<PortAddr> {
+        Some(self.port_addr().clone())
+    }
 }
 
 impl<M> MonitorableEndpoint for OncePortRef<M>
@@ -241,6 +366,10 @@ where
 {
     fn monitored_actor_addr(&self) -> ActorAddr {
         self.port_addr().actor_addr()
+    }
+
+    fn monitored_port_addr(&self) -> Option<PortAddr> {
+        Some(self.port_addr().clone())
     }
 }
 
@@ -256,6 +385,21 @@ impl ActorMonitor {
             DEFAULT_INITIAL_DELAY,
             DEFAULT_POLL_INTERVAL,
             DEFAULT_REQUEST_TIMEOUT,
+            None,
+        )
+    }
+
+    fn spawn_with_delivery<C>(cx: &C, target: ActorAddr, delivery: DeliveryMonitor) -> Self
+    where
+        C: context::Actor,
+    {
+        Self::spawn_with_timings(
+            cx,
+            target,
+            DEFAULT_INITIAL_DELAY,
+            DEFAULT_POLL_INTERVAL,
+            DEFAULT_REQUEST_TIMEOUT,
+            Some(delivery),
         )
     }
 
@@ -265,6 +409,7 @@ impl ActorMonitor {
         initial_delay: Duration,
         poll_interval: Duration,
         request_timeout: Duration,
+        delivery: Option<DeliveryMonitor>,
     ) -> Self
     where
         C: context::Actor,
@@ -283,6 +428,7 @@ impl ActorMonitor {
                 failure: None,
                 pending_poll: false,
                 supervised: false,
+                delivery,
             },
         );
         Self {
@@ -387,6 +533,7 @@ struct MonitorActor {
     failure: Option<MonitorFailure>,
     pending_poll: bool,
     supervised: bool,
+    delivery: Option<DeliveryMonitor>,
 }
 
 #[derive(Debug)]
@@ -397,6 +544,14 @@ struct MonitorPollActor {
     target: ActorAddr,
     request_timeout: Duration,
     monitor: ActorHandle<MonitorActor>,
+    delivery: Option<DeliveryPollRequest>,
+}
+
+#[derive(Debug, Clone)]
+struct DeliveryPollRequest {
+    from: ActorAddr,
+    sequencer: Sequencer,
+    destination: DeliveryDestination,
 }
 
 #[cfg(test)]
@@ -413,9 +568,25 @@ wirevalue::register_type!(MonitorCommand);
 
 #[derive(Debug)]
 enum MonitorPollResult {
-    Status(Option<ActorStatus>),
+    Status {
+        status: Option<ActorStatus>,
+        delivery: Option<DeliveryPollResult>,
+    },
     ReplyClosed,
     TimedOut,
+    DeliveryReplyClosed {
+        from: ActorAddr,
+    },
+    DeliveryTimedOut {
+        from: ActorAddr,
+    },
+}
+
+#[derive(Debug)]
+struct DeliveryPollResult {
+    from: ActorAddr,
+    largest_sent: u64,
+    response: DeliveryProgressResponse,
 }
 
 #[async_trait]
@@ -437,12 +608,61 @@ impl Actor for MonitorPollActor {
             },
         );
 
-        let result = match time::timeout(self.request_timeout, reply_rx.recv()).await {
-            Ok(Ok(status)) => MonitorPollResult::Status(status),
-            Ok(Err(_)) => MonitorPollResult::ReplyClosed,
-            Err(_) => MonitorPollResult::TimedOut,
+        let status = match time::timeout(self.request_timeout, reply_rx.recv()).await {
+            Ok(Ok(status)) => status,
+            Ok(Err(_)) => {
+                self.monitor.post(this, MonitorPollResult::ReplyClosed);
+                return this.exit("poll complete").map_err(anyhow::Error::from);
+            }
+            Err(_) => {
+                self.monitor.post(this, MonitorPollResult::TimedOut);
+                return this.exit("poll complete").map_err(anyhow::Error::from);
+            }
         };
-        self.monitor.post(this, result);
+
+        let delivery = if let Some(delivery) = self.delivery.clone() {
+            let (reply_port, reply_rx) = this.open_once_port::<DeliveryProgressResponse>();
+            self.target.status_port().post(
+                this,
+                StatusMessage::GetDeliveryProgress {
+                    from: delivery.from.clone(),
+                    reply: reply_port.bind(),
+                },
+            );
+
+            let response = match time::timeout(self.request_timeout, reply_rx.recv()).await {
+                Ok(Ok(response)) => response,
+                Ok(Err(_)) => {
+                    self.monitor.post(
+                        this,
+                        MonitorPollResult::DeliveryReplyClosed {
+                            from: delivery.from,
+                        },
+                    );
+                    return this.exit("poll complete").map_err(anyhow::Error::from);
+                }
+                Err(_) => {
+                    self.monitor.post(
+                        this,
+                        MonitorPollResult::DeliveryTimedOut {
+                            from: delivery.from,
+                        },
+                    );
+                    return this.exit("poll complete").map_err(anyhow::Error::from);
+                }
+            };
+
+            Some(DeliveryPollResult {
+                largest_sent: delivery.destination.largest_sent(&delivery.sequencer),
+                from: delivery.from,
+                response,
+            })
+        } else {
+            None
+        };
+
+        self.monitor
+            .post(this, MonitorPollResult::Status { status, delivery });
         this.exit("poll complete").map_err(anyhow::Error::from)
     }
 }
@@ -471,8 +691,8 @@ impl Handler<MonitorPollResult> for MonitorActor {
         }
         self.pending_poll = false;
 
-        match message {
-            MonitorPollResult::Status(status) => {
+        let poll_result = match message {
+            MonitorPollResult::Status { status, delivery } => {
                 let Some(status) = status else {
                     return self.record_failure(MonitorFailure::ActorGone {
                         actor_id: self.target.clone(),
@@ -480,24 +700,54 @@ impl Handler<MonitorPollResult> for MonitorActor {
                 };
 
                 if let Some(failure) = self.classify_failure(status.clone()) {
-                    self.record_failure(failure)
+                    Err(failure)
+                } else if let Some(delivery) = delivery {
+                    if matches!(delivery.response, DeliveryProgressResponse::ActorGone) {
+                        Err(MonitorFailure::ActorGone {
+                            actor_id: self.target.clone(),
+                        })
+                    } else if matches!(delivery.response, DeliveryProgressResponse::Incomplete) {
+                        self.status_tx.send_replace(MonitorStatus::Alive(status));
+                        Ok(())
+                    } else if let Some(failure) = self.classify_delivery_failure(delivery) {
+                        Err(failure)
+                    } else {
+                        self.status_tx.send_replace(MonitorStatus::Alive(status));
+                        Ok(())
+                    }
                 } else {
                     self.status_tx.send_replace(MonitorStatus::Alive(status));
-                    cx.post_after(cx, MonitorTick, self.poll_interval);
                     Ok(())
                 }
             }
-            MonitorPollResult::ReplyClosed => {
-                self.record_failure(MonitorFailure::StatusReplyClosed {
+            MonitorPollResult::ReplyClosed => Err(MonitorFailure::StatusReplyClosed {
+                actor_id: self.target.clone(),
+            }),
+            MonitorPollResult::TimedOut => Err(MonitorFailure::StatusRequestTimedOut {
+                actor_id: self.target.clone(),
+                timeout_millis: self.request_timeout.as_millis() as u64,
+            }),
+            MonitorPollResult::DeliveryReplyClosed { from } => {
+                Err(MonitorFailure::DeliveryProgressReplyClosed {
                     actor_id: self.target.clone(),
+                    from,
                 })
             }
-            MonitorPollResult::TimedOut => {
-                self.record_failure(MonitorFailure::StatusRequestTimedOut {
+            MonitorPollResult::DeliveryTimedOut { from } => {
+                Err(MonitorFailure::DeliveryProgressRequestTimedOut {
                     actor_id: self.target.clone(),
+                    from,
                     timeout_millis: self.request_timeout.as_millis() as u64,
                 })
             }
+        };
+
+        match poll_result {
+            Ok(()) => {
+                cx.post_after(cx, MonitorTick, self.poll_interval);
+                Ok(())
+            }
+            Err(failure) => self.record_failure(failure),
         }
     }
 }
@@ -543,6 +793,11 @@ impl MonitorActor {
                 target: self.target.clone(),
                 request_timeout: self.request_timeout,
                 monitor: cx.handle(),
+                delivery: self.delivery.as_ref().map(|delivery| DeliveryPollRequest {
+                    from: delivery.from.clone(),
+                    sequencer: delivery.sequencer.clone(),
+                    destination: delivery.destination.clone(),
+                }),
             },
         );
     }
@@ -566,6 +821,42 @@ impl MonitorActor {
             | ActorStatus::Processing(_, _)
             | ActorStatus::Stopping(_) => None,
         }
+    }
+
+    fn classify_delivery_failure(&mut self, result: DeliveryPollResult) -> Option<MonitorFailure> {
+        let delivery = self
+            .delivery
+            .as_mut()
+            .expect("delivery poll result requires delivery monitor state");
+        let DeliveryProgressResponse::Progress(progress) = result.response else {
+            return None;
+        };
+
+        let now = time::Instant::now();
+        let largest_dequeueable = progress.largest_dequeueable_sequence;
+        let is_caught_up = largest_dequeueable >= result.largest_sent;
+        let made_progress = largest_dequeueable > delivery.last_largest_dequeueable;
+
+        if is_caught_up || made_progress {
+            delivery.last_largest_dequeueable = largest_dequeueable;
+            delivery.last_progress_at = Some(now);
+            return None;
+        }
+
+        if largest_dequeueable < result.largest_sent {
+            let last_progress_at = delivery.last_progress_at.get_or_insert(now);
+            if now.duration_since(*last_progress_at) >= delivery.timeout {
+                return Some(MonitorFailure::DeliveryProgressStalled {
+                    actor_id: self.target.clone(),
+                    from: result.from,
+                    largest_sent: result.largest_sent,
+                    largest_dequeueable,
+                    timeout_millis: delivery.timeout.as_millis() as u64,
+                });
+            }
+        }
+
+        None
     }
 
     fn record_failure(&mut self, failure: MonitorFailure) -> anyhow::Result<()> {
@@ -598,8 +889,12 @@ mod tests {
     use tokio::time;
 
     use super::*;
+    use crate as hyperactor;
     use crate::Proc;
     use crate::actor::ActorErrorKind;
+    use crate::config;
+    use crate::ordering::DeliveryProgress;
+    use crate::port::Port;
     use crate::supervision::ActorSupervisionEvent;
 
     #[derive(Debug, typeuri::Named)]
@@ -609,6 +904,27 @@ mod tests {
     impl Actor for TestActor {}
 
     impl crate::actor::Referable for TestActor {}
+
+    #[derive(Debug, Clone, Serialize, Deserialize, Named)]
+    struct DeliveryTestMsg;
+
+    #[derive(Debug)]
+    #[hyperactor::export(handlers = [DeliveryTestMsg])]
+    struct DeliveryTestActor;
+
+    #[async_trait]
+    impl Actor for DeliveryTestActor {}
+
+    #[async_trait]
+    impl Handler<DeliveryTestMsg> for DeliveryTestActor {
+        async fn handle(
+            &mut self,
+            _cx: &Context<Self>,
+            _message: DeliveryTestMsg,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
 
     #[derive(Debug)]
     struct SupervisorActor {
@@ -649,6 +965,7 @@ mod tests {
                 Duration::ZERO,
                 Duration::from_millis(10),
                 Duration::from_millis(50),
+                None,
             );
             let monitor_id = monitor
                 .inner
@@ -684,6 +1001,7 @@ mod tests {
                 Duration::ZERO,
                 Duration::from_millis(10),
                 Duration::from_millis(50),
+                None,
             );
             let monitor_id = monitor
                 .inner
@@ -720,6 +1038,7 @@ mod tests {
                 Duration::ZERO,
                 Duration::from_millis(10),
                 Duration::from_millis(50),
+                None,
             );
             let monitor_id = monitor
                 .inner
@@ -755,6 +1074,7 @@ mod tests {
                 Duration::ZERO,
                 Duration::from_millis(10),
                 Duration::from_millis(50),
+                None,
             );
             let supervisor = monitor.into_supervisor(this);
             let mut status = supervisor
@@ -798,7 +1118,40 @@ mod tests {
             Duration::ZERO,
             Duration::from_millis(10),
             Duration::from_millis(50),
+            None,
         )
+    }
+
+    fn short_delivery_monitor(client: &crate::Client, target: ActorAddr) -> ActorMonitor {
+        ActorMonitor::spawn_with_timings(
+            client,
+            target.clone(),
+            Duration::ZERO,
+            Duration::from_millis(10),
+            Duration::from_millis(50),
+            Some(DeliveryMonitor::new(
+                context::Mailbox::mailbox(client).actor_addr().clone(),
+                client.sequencer().clone(),
+                DeliveryDestination::Actor(target),
+                Duration::from_millis(50),
+            )),
+        )
+    }
+
+    fn monitor_actor_for_delivery(target: ActorAddr, delivery: DeliveryMonitor) -> MonitorActor {
+        let (status_tx, _status_rx) = watch::channel(MonitorStatus::Checking);
+        MonitorActor {
+            target,
+            initial_delay: Duration::ZERO,
+            poll_interval: Duration::from_millis(10),
+            request_timeout: Duration::from_millis(50),
+            status_tx,
+            cancelled: Arc::new(AtomicBool::new(false)),
+            failure: None,
+            pending_poll: false,
+            supervised: false,
+            delivery: Some(delivery),
+        }
     }
 
     async fn wait_for_alive(monitor: &ActorMonitor) -> ActorStatus {
@@ -852,6 +1205,7 @@ mod tests {
             Duration::from_millis(100),
             Duration::from_millis(10),
             Duration::from_millis(50),
+            None,
         );
 
         assert!(
@@ -881,6 +1235,7 @@ mod tests {
             Duration::from_millis(200),
             Duration::from_millis(10),
             Duration::from_millis(50),
+            None,
         );
         let mut status = monitor
             .inner
@@ -1012,6 +1367,103 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_delivery_progress_advancing_while_behind_does_not_fail() {
+        let proc = Proc::isolated();
+        let target = proc.proc_addr().actor_addr("target");
+        let from = proc.proc_addr().actor_addr("sender");
+        let delivery = DeliveryMonitor::new(
+            from.clone(),
+            Sequencer::new(uuid::Uuid::now_v7()),
+            DeliveryDestination::Actor(target.clone()),
+            Duration::from_millis(50),
+        );
+        let mut monitor = monitor_actor_for_delivery(target, delivery);
+        let delivery = monitor
+            .delivery
+            .as_mut()
+            .expect("delivery monitor should be present");
+        delivery.last_largest_dequeueable = 1;
+        delivery.last_progress_at = Some(time::Instant::now() - Duration::from_millis(100));
+
+        assert!(
+            monitor
+                .classify_delivery_failure(DeliveryPollResult {
+                    from,
+                    largest_sent: 10,
+                    response: DeliveryProgressResponse::Progress(DeliveryProgress {
+                        largest_dequeueable_sequence: 2,
+                    }),
+                })
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn test_delivery_progress_increasing_sent_only_does_not_reset_stall() {
+        let proc = Proc::isolated();
+        let target = proc.proc_addr().actor_addr("target");
+        let from = proc.proc_addr().actor_addr("sender");
+        let delivery = DeliveryMonitor::new(
+            from.clone(),
+            Sequencer::new(uuid::Uuid::now_v7()),
+            DeliveryDestination::Actor(target.clone()),
+            Duration::from_millis(50),
+        );
+        let mut monitor = monitor_actor_for_delivery(target.clone(), delivery);
+        let delivery = monitor
+            .delivery
+            .as_mut()
+            .expect("delivery monitor should be present");
+        delivery.last_largest_dequeueable = 1;
+        delivery.last_progress_at = Some(time::Instant::now() - Duration::from_millis(100));
+
+        assert_eq!(
+            monitor.classify_delivery_failure(DeliveryPollResult {
+                from: from.clone(),
+                largest_sent: 10,
+                response: DeliveryProgressResponse::Progress(DeliveryProgress {
+                    largest_dequeueable_sequence: 1,
+                }),
+            }),
+            Some(MonitorFailure::DeliveryProgressStalled {
+                actor_id: target,
+                from,
+                largest_sent: 10,
+                largest_dequeueable: 1,
+                timeout_millis: 50,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn test_monitor_reports_delivery_progress_stalled() {
+        let config = hyperactor_config::global::lock();
+        let _g = config.override_key(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let handle = proc.spawn(DeliveryTestActor);
+        let target = handle.actor_addr().clone();
+        let _actor_ref: ActorRef<DeliveryTestActor> = handle.bind();
+        let handler_port = target.port_addr(Port::handler::<DeliveryTestMsg>());
+
+        let _ = client.sequencer().assign_seq(&handler_port);
+        let monitor = short_delivery_monitor(&client, target.clone());
+        handle.post(&client, DeliveryTestMsg);
+
+        assert_eq!(
+            monitor.wait_for_failure().await,
+            MonitorFailure::DeliveryProgressStalled {
+                actor_id: target,
+                from: context::Mailbox::mailbox(&client).actor_addr().clone(),
+                largest_sent: 2,
+                largest_dequeueable: 0,
+                timeout_millis: 50,
+            }
+        );
+    }
+
     #[tokio::test]
     async fn test_monitor_times_out_when_status_proc_is_unreachable() {
         let proc = Proc::isolated();
@@ -1043,6 +1495,7 @@ mod tests {
             Duration::ZERO,
             Duration::from_millis(10),
             Duration::from_secs(5),
+            None,
         );
 
         time::sleep(Duration::from_millis(20)).await;

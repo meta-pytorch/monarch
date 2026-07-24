@@ -265,6 +265,16 @@ impl Sequencer {
         self.last_seqs.lock().unwrap().get(&key).copied()
     }
 
+    /// Last sequence sent to any handler port on `actor`.
+    pub fn last_sent_to_actor(&self, actor: &ActorAddr) -> u64 {
+        self.last_seqs
+            .lock()
+            .unwrap()
+            .get(&SeqKey::Actor(actor.clone()))
+            .copied()
+            .unwrap_or_default()
+    }
+
     fn seq_key(port_id: &PortAddr) -> Option<SeqKey> {
         if port_id.port().is_control() {
             return None;
