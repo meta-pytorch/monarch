@@ -45,9 +45,9 @@
 //!
 //! ## Invariants (RMO-*)
 //!
-//! - **RMO-1** (single owner): Exactly one owner, living in the client process
-//!   (the Python client root) where it is spawned with the stable client-root
-//!   context; not caller-owned; torn down only when that process exits.
+//! - **RMO-1** (single owner): Exactly one owner is a statically declared service
+//!   of the program's root ProcAgent. Callers may live anywhere; the root owns the
+//!   service lifetime, and requester exit does not tear it down.
 //! - **RMO-2** (terminal-absorbing): `Ready`/`Failed` are terminal — an
 //!   `EnsureRdmaManager` for a resolved view replies from cache, and every
 //!   resolution path (`ReadyAck`, a live controller report, or controller-child
@@ -296,6 +296,9 @@ fn view_intersects(mesh: &ProcMeshRef, procs: &std::collections::HashSet<ProcId>
     let n = Ranked::region(mesh).num_ranks();
     (0..n).any(|rank| Ranked::get(mesh, rank).is_some_and(|p| procs.contains(p.proc_addr().id())))
 }
+
+/// Static client-root service name for the RDMA manager owner.
+pub const RDMA_MANAGER_OWNER_ACTOR_NAME: &str = "rdma_manager_owner";
 
 #[derive(Debug)]
 #[hyperactor::export(
@@ -854,6 +857,7 @@ mod tests {
     use super::EnsureRdmaManagerClient;
     use super::EntryId;
     use super::MeshState;
+    use super::RDMA_MANAGER_OWNER_ACTOR_NAME;
     use super::RdmaManagerOwnerActor;
     use super::ReadyAck;
     use crate::RdmaManagerActor;
@@ -1263,7 +1267,7 @@ mod tests {
         let owner_mesh = proc_mesh
             .spawn_controllerless_service::<RdmaManagerOwnerActor, _>(
                 client,
-                "rdma_manager_owner",
+                RDMA_MANAGER_OWNER_ACTOR_NAME,
                 &(),
             )
             .await?;
@@ -1313,14 +1317,14 @@ mod tests {
         let first = proc_mesh
             .spawn_controllerless_service::<RdmaManagerOwnerActor, _>(
                 client,
-                "rdma_manager_owner",
+                RDMA_MANAGER_OWNER_ACTOR_NAME,
                 &(),
             )
             .await?;
         let second = proc_mesh
             .spawn_controllerless_service::<RdmaManagerOwnerActor, _>(
                 client,
-                "rdma_manager_owner",
+                RDMA_MANAGER_OWNER_ACTOR_NAME,
                 &(),
             )
             .await?;

@@ -7,7 +7,7 @@
 # pyre-strict
 from typing import Any, final
 
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
+from monarch._rust_bindings.monarch_hyperactor.pytokio import Handle, PythonTask
 
 @final
 class _RdmaMemoryRegionView:
@@ -48,6 +48,17 @@ class _RdmaManager:
         proc_mesh: Any,
         client: Any,
     ) -> PythonTask[_RdmaManager | None]: ...
+    @classmethod
+    def ensure_init_rdma_manager_nonblocking(
+        cls,
+        proc_mesh_shared: Any,
+        caller: Any,
+    ) -> Handle[None]: ...
+
+class RdmaInitError(Exception):
+    """Raised when the RDMA manager owner reports a typed initialization failure."""
+
+    ...
 
 @final
 class _RdmaBuffer:
