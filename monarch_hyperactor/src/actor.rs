@@ -27,6 +27,7 @@ use hyperactor::Context;
 use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Instance;
+use hyperactor::MessageStatusReporting;
 use hyperactor::OncePortHandle;
 use hyperactor::Proc;
 use hyperactor::RemoteSpawn;
@@ -467,6 +468,29 @@ pub struct QueuedMessage {
     pub refs: Py<PyAny>,
     #[pyo3(get)]
     pub response_port: Py<PyAny>,
+    telemetry_message_id: Option<u64>,
+}
+
+fn report_message_status(message_id: Option<u64>, status: &str) {
+    if let Some(message_id) = message_id {
+        hyperactor_telemetry::notify_message_status(hyperactor_telemetry::MessageStatusEvent {
+            timestamp: std::time::SystemTime::now(),
+            id: hyperactor_telemetry::generate_status_event_id(message_id),
+            message_id,
+            status: status.to_string(),
+        });
+    }
+}
+
+#[pymethods]
+impl QueuedMessage {
+    fn _report_complete(&self) {
+        report_message_status(self.telemetry_message_id, "complete");
+    }
+
+    fn _report_failed(&self) {
+        report_message_status(self.telemetry_message_id, "failed");
+    }
 }
 
 impl PythonMessage {
@@ -1746,6 +1770,10 @@ impl PanicFlag {
 
 #[async_trait]
 impl Handler<PythonMessage> for PythonActor {
+    fn message_status_reporting() -> MessageStatusReporting {
+        MessageStatusReporting::Deferred
+    }
+
     #[tracing::instrument(level = "debug", skip_all)]
     async fn handle(
         &mut self,
@@ -1816,6 +1844,8 @@ impl PythonActor {
             receiver,
             cx.self_addr().to_string(),
             endpoint,
+            cx.headers()
+                .get(hyperactor::mailbox::headers::TELEMETRY_MESSAGE_ID),
         ));
         Ok(())
     }
@@ -1847,6 +1877,9 @@ impl PythonActor {
                         .unwrap_or_else(|| PyList::empty(py).unbind().into()),
                     refs: resolved.mesh_references.into_py_any(py)?,
                     response_port: resolved.response_port.into_py_any(py)?,
+                    telemetry_message_id: cx
+                        .headers()
+                        .get(hyperactor::mailbox::headers::TELEMETRY_MESSAGE_ID),
                 })
             },
         )
@@ -2024,6 +2057,7 @@ async fn handle_async_endpoint_panic(
     side_channel: oneshot::Receiver<Py<PyAny>>,
     actor_id: String,
     endpoint: String,
+    telemetry_message_id: Option<u64>,
 ) {
     // Create attributes for metrics with actor_id and endpoint
     let attributes =
@@ -2059,7 +2093,7 @@ async fn handle_async_endpoint_panic(
         }
     };
     let future = task.take();
-    if let Some(panic) = tokio::select! {
+    let panic = tokio::select! {
         result = future => {
             match result {
                 Ok(_) => None,
@@ -2069,7 +2103,16 @@ async fn handle_async_endpoint_panic(
         result = err_or_never => {
             result
         }
-    } {
+    };
+    report_message_status(
+        telemetry_message_id,
+        if panic.is_some() {
+            "failed"
+        } else {
+            "complete"
+        },
+    );
+    if let Some(panic) = panic {
         // Record error and panic metrics
         ENDPOINT_ACTOR_ERROR.add(1, attributes);
         if panic_sender.send(Signal::Kill(panic.to_string())).is_err() {
