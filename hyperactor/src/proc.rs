@@ -3023,6 +3023,17 @@ impl<A: Actor> Instance<A> {
                     let status = event.actor_status.clone();
                     (status, Some(event))
                 }
+                ActorErrorKind::SyntheticSupervision(synthetic) => {
+                    let error_kind = ActorErrorKind::SyntheticSupervision(synthetic);
+                    let status = ActorStatus::Failed(error_kind);
+                    let event = ActorSupervisionEvent::new(
+                        self.inner.cell.actor_addr().clone(),
+                        actor.display_name(),
+                        status.clone(),
+                        None,
+                    );
+                    (status, Some(event))
+                }
                 _ => {
                     let error_kind = ActorErrorKind::Generic(err.kind.to_string());
                     let status = ActorStatus::Failed(error_kind);
