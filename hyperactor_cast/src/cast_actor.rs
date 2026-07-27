@@ -7,6 +7,35 @@
  */
 
 //! The CastActor: a system actor that bootstraps and manages casting domains.
+//!
+//! ## Cast actor invariants (CA-*)
+//!
+//! - **CA-1 (direct-delivery equivalence):** The cast overlay is a transport
+//!   optimization. It preserves the logical behavior of sending directly to
+//!   every destination. It does not provide atomic fanout; each destination
+//!   can fail independently.
+//! - **CA-2 (domain coverage):** A domain's subtrees are nonempty, disjoint,
+//!   and together cover the complete domain region. In the absence of delivery
+//!   failures, each destination receives the message exactly once.
+//! - **CA-3 (setup ordering):** Domain materialization sends setup before any
+//!   cast from the returned handle. Correctness relies on Hyperactor preserving
+//!   message order between each sender and subtree root.
+//! - **CA-4 (destination ordering):** The originating sender allocates one
+//!   sequence number for each destination before fanout. Routing partitions
+//!   these sequences but does not replace or reorder them.
+//! - **CA-5 (route independence):** Route topology, including direct terminal
+//!   delivery, must not change message headers, port behavior, or the logical
+//!   result of a valid reducer.
+//! - **CA-6 (domain isolation):** A `CastActor` can serve many domains, including
+//!   domains with overlapping destination actors. Creating or destroying one
+//!   domain must not change another domain.
+//! - **CA-7 (domain lifecycle):** `CastDomainRef::destroy` is idempotent,
+//!   best-effort routing-state cleanup, not destination revocation. A domain
+//!   outlives its destination actors, callers do not cast after destruction,
+//!   and CastActors retain no tombstones for destroyed domains.
+//! - **CA-8 (failure containment):** Cast-message processing and delivery
+//!   failures must not fail the shared `CastActor`. Failures are returned to
+//!   the originating sender when the origin can be recovered.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -1046,6 +1075,21 @@ impl Handler<DestroyCastDomain> for CastActor {
 
 #[cfg(test)]
 mod tests {
+    // Cast actor invariant coverage:
+    //
+    // CA-1: Partial - exact delivery is covered; independent destination
+    //       failure is not covered.
+    // CA-2: Direct - materialization properties and delivery tests cover it.
+    // CA-3: Indirect - delivery tests cast immediately after materialization.
+    // CA-4: Direct - the projection ordering test covers it.
+    // CA-5: Mostly direct - headers, reducers, ports, and routed delivery are
+    //       covered; equivalent route topologies are not compared.
+    // CA-6: Partial - overlapping casts are covered; isolated destruction of
+    //       one live overlapping domain is not covered.
+    // CA-7: Partial - teardown is covered; repeated destruction is not covered.
+    // CA-8: Direct - unknown domains, routing errors, and report-only failures
+    //       are covered.
+
     use std::collections::BTreeMap;
     use std::collections::BTreeSet;
     use std::collections::HashMap;
@@ -1767,6 +1811,7 @@ mod tests {
             ..ProptestConfig::default()
         })]
 
+        // CA-2 (domain coverage).
         #[test]
         fn prop_materialized_subtrees_partition_the_domain(
             region in materialization_regions(),
@@ -1890,6 +1935,8 @@ mod tests {
         }
     }
 
+    // CA-1 (direct-delivery equivalence), CA-3 (setup ordering), and CA-5
+    // (route independence).
     #[async_timed_test(timeout_secs = 30)]
     async fn test_cast_message_delivery_8_procs() {
         let config = hyperactor_config::global::lock();
@@ -1999,6 +2046,7 @@ mod tests {
         );
     }
 
+    // CA-5 (route independence).
     #[async_timed_test(timeout_secs = 30)]
     async fn test_cast_preserves_supplied_operation_context_headers() {
         let n = 2;
@@ -2030,6 +2078,8 @@ mod tests {
         }
     }
 
+    // CA-6 (domain isolation), CA-7 (domain lifecycle), and CA-8 (failure
+    // containment).
     #[async_timed_test(timeout_secs = 30)]
     async fn test_cast_to_destroyed_domain_returns_undeliverable() {
         clear_captured_domains();
@@ -2085,6 +2135,7 @@ mod tests {
             .await;
     }
 
+    // CA-8 (failure containment).
     #[async_timed_test(timeout_secs = 30)]
     async fn test_cast_routing_error_returns_undeliverable() {
         // GIVEN: an installed hop receives a cast without its destination seq.
@@ -2161,6 +2212,7 @@ mod tests {
         );
     }
 
+    // CA-8 (failure containment).
     #[async_timed_test(timeout_secs = 30)]
     async fn test_delivery_failure_report_does_not_fail_cast_actor() {
         // GIVEN: a delivery failure report without the original message.
@@ -2193,6 +2245,7 @@ mod tests {
         result.expect("delivery failure reports must not fail the CastActor");
     }
 
+    // CA-7 (domain lifecycle).
     #[async_timed_test(timeout_secs = 30)]
     async fn test_destroy_domain_propagates_to_all_hops() {
         clear_captured_domains();
@@ -2261,6 +2314,7 @@ mod tests {
         }
     }
 
+    // CA-4 (destination ordering) and CA-6 (domain isolation).
     #[async_timed_test(timeout_secs = 30)]
     async fn test_sender_sequenced_casts_are_observed_in_projection_order() {
         let config = hyperactor_config::global::lock();
@@ -2592,9 +2646,8 @@ mod tests {
         }
     }
 
-    /// Verify that port splitting rewrites reply ports to mirror the
-    /// cast tree, and that replies flow back through the split ports
-    /// to the original sender.
+    /// CA-5 (route independence): verify that port splitting rewrites reply
+    /// ports to mirror the cast tree and returns replies to the original sender.
     #[async_timed_test(timeout_secs = 30)]
     async fn test_port_splitting_replies_and_tree() {
         let n = 8;
