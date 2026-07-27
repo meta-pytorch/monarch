@@ -18,6 +18,7 @@ use hyperactor::ActorAddr;
 use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
+use hyperactor::EndpointLocation;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Label;
@@ -28,11 +29,15 @@ use hyperactor::RemoteEndpoint as _;
 use hyperactor::Uid;
 use hyperactor::accum::ReducerMode;
 use hyperactor::context;
+use hyperactor::mailbox::DeliveryFailure;
+use hyperactor::mailbox::DeliveryFailureReport;
 use hyperactor::mailbox::MailboxSender;
 use hyperactor::mailbox::MessageEnvelope;
+use hyperactor::mailbox::TransportFailure;
+use hyperactor::mailbox::TransportFailureReason;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::mailbox::UndeliverableMailboxSender;
-use hyperactor::mailbox::UndeliverableMessageError;
+use hyperactor::mailbox::UndeliverableReason;
 use hyperactor::mailbox::monitored_return_handle;
 use hyperactor::ordering::SEQ_INFO;
 use hyperactor::ordering::SeqInfo;
@@ -338,14 +343,15 @@ impl CastDomainRef {
         Ok(())
     }
 
-    /// Tear down this cast domain.
+    /// Release this cast domain after all destination actors have shut down.
     ///
-    /// This is a best-effort, fire-and-forget operation: the request is posted
-    /// to the domain entry point and then forwarded through the installed cast
-    /// tree. Duplicate destroy requests are intentionally ignored by receivers.
-    /// If the mailbox layer bounces a downstream destroy message, the failure is
-    /// returned to the originating actor's handler port, but successful teardown
-    /// is not acknowledged.
+    /// Before calling this method, the caller must ensure that every destination
+    /// actor has reached a terminal state and cannot process further messages.
+    /// Do not use `destroy` to prevent message delivery; shut down the destination
+    /// actors first. Later casts may be rejected by the cast routing layer or by
+    /// the stopped destination actors.
+    ///
+    /// This operation is best-effort and does not acknowledge completion.
     pub fn destroy(&self, cx: &impl context::Actor) {
         let origin = cx.mailbox().actor_addr().clone();
         for subtree in &self.subtrees {
@@ -472,15 +478,25 @@ fn annotate_cast_failure(
     return_port: &hyperactor::PortAddr,
 ) {
     if let Some(failure) = envelope.root_delivery_failure_mut() {
-        failure.attrs.set(CAST_FAILURE_PHASE, phase.to_string());
-        failure
-            .attrs
-            .set(CAST_FAILURE_CAST_ACTOR, cast_actor.clone());
-        failure.attrs.set(CAST_FAILURE_ORIGIN, origin.clone());
-        failure
-            .attrs
-            .set(CAST_FAILURE_RETURN_PORT, return_port.to_string());
+        annotate_cast_delivery_failure(failure, cast_actor, phase, origin, return_port);
     }
+}
+
+fn annotate_cast_delivery_failure(
+    failure: &mut DeliveryFailure,
+    cast_actor: &ActorAddr,
+    phase: &str,
+    origin: &ActorAddr,
+    return_port: &hyperactor::PortAddr,
+) {
+    failure.attrs.set(CAST_FAILURE_PHASE, phase.to_string());
+    failure
+        .attrs
+        .set(CAST_FAILURE_CAST_ACTOR, cast_actor.clone());
+    failure.attrs.set(CAST_FAILURE_ORIGIN, origin.clone());
+    failure
+        .attrs
+        .set(CAST_FAILURE_RETURN_PORT, return_port.to_string());
 }
 
 #[async_trait]
@@ -512,6 +528,70 @@ impl Actor for CastActor {
 }
 
 impl CastActor {
+    fn return_cast_error_to_origin(
+        cx: &Context<Self>,
+        message: &CastMessage,
+        phase: &str,
+        reason: TransportFailureReason,
+    ) {
+        let destination = cx.self_addr().port_addr(Port::handler::<CastMessage>());
+        let mut failure = DeliveryFailure::new(UndeliverableReason::Transport(
+            TransportFailure::new(destination.clone(), reason),
+        ));
+        let return_port: PortRef<Undeliverable<MessageEnvelope>> =
+            PortRef::attest_handler_port(&message.sender);
+
+        match wirevalue::Any::serialize(message) {
+            Ok(data) => {
+                let mut message_envelope = MessageEnvelope::new(
+                    message.sender.clone(),
+                    destination,
+                    data,
+                    cx.headers().clone(),
+                );
+                message_envelope.push_delivery_failure(failure);
+                Self::return_cast_failure_to_origin(cx, message_envelope, message, phase);
+            }
+            Err(error) => {
+                tracing::error!(%error, "failed to serialize returned cast message");
+                annotate_cast_delivery_failure(
+                    &mut failure,
+                    cx.self_addr(),
+                    phase,
+                    &message.sender,
+                    return_port.port_addr(),
+                );
+                return_port.post(
+                    cx,
+                    Undeliverable::Report(DeliveryFailureReport::new(
+                        cx.self_addr().clone(),
+                        EndpointLocation::Port(destination),
+                        Some(CastMessage::typename().to_string()),
+                        failure,
+                    )),
+                );
+            }
+        }
+    }
+
+    fn return_cast_failure_to_origin(
+        cx: &Instance<Self>,
+        mut message_envelope: MessageEnvelope,
+        message: &CastMessage,
+        phase: &str,
+    ) {
+        let return_port = PortRef::attest_handler_port(&message.sender);
+        annotate_cast_failure(
+            &mut message_envelope,
+            cx.self_addr(),
+            phase,
+            &message.sender,
+            return_port.port_addr(),
+        );
+        message_envelope.set_header(CAST_ORIGINATING_SENDER, message.sender.clone());
+        return_port.post(cx, Undeliverable::Returned(message_envelope));
+    }
+
     async fn return_delivery_failure_to_origin(
         &mut self,
         cx: &Instance<Self>,
@@ -520,26 +600,14 @@ impl CastActor {
         let mut message_envelope = match undelivered {
             Undeliverable::Returned(message_envelope) => message_envelope,
             Undeliverable::Report(report) => {
-                anyhow::bail!(UndeliverableMessageError::Report { report });
+                tracing::error!(?report, "cast delivery failed without a returned message");
+                return Ok(());
             }
         };
 
         // 1. Case delivery failure at a "forwarding" step.
         if let Ok(message) = message_envelope.deserialized::<CastMessage>() {
-            let return_port = PortRef::attest_handler_port(&message.sender);
-            annotate_cast_failure(
-                &mut message_envelope,
-                cx.self_addr(),
-                "forward",
-                &message.sender,
-                return_port.port_addr(),
-            );
-
-            // Needed so that the receiver of the undeliverable message can easily find the
-            // original sender of the cast message.
-            message_envelope.set_header(CAST_ORIGINATING_SENDER, message.sender.clone());
-
-            return_port.post(cx, Undeliverable::Returned(message_envelope.clone()));
+            Self::return_cast_failure_to_origin(cx, message_envelope, &message, "forward");
             return Ok(());
         }
 
@@ -809,11 +877,41 @@ impl Handler<CastMessage> for CastActor {
         cx: &Context<Self>,
         message: CastMessage,
     ) -> Result<(), anyhow::Error> {
-        let lineage = ForwardLineage::from_message(&message);
-        let domain = self
-            .installed_hops
-            .get(&message.cast_domain_id)
-            .ok_or_else(|| anyhow::anyhow!("unknown domain {}", message.cast_domain_id))?;
+        let Some(domain) = self.installed_hops.get(&message.cast_domain_id) else {
+            Self::return_cast_error_to_origin(
+                cx,
+                &message,
+                "unknown_domain",
+                TransportFailureReason::NoRoute,
+            );
+            return Ok(());
+        };
+
+        if let Err(error) = Self::route_cast_message(cx, &message, domain) {
+            tracing::error!(
+                %error,
+                domain_id = %message.cast_domain_id,
+                "failed to route cast message",
+            );
+            Self::return_cast_error_to_origin(
+                cx,
+                &message,
+                "route",
+                TransportFailureReason::LinkUnavailable(error.to_string()),
+            );
+        }
+
+        Ok(())
+    }
+}
+
+impl CastActor {
+    fn route_cast_message(
+        cx: &Context<Self>,
+        message: &CastMessage,
+        domain: &CastHop,
+    ) -> Result<(), anyhow::Error> {
+        let lineage = ForwardLineage::from_message(message);
 
         // Split reply ports so that downstream next hops reply through this
         // CastActor's local proxy ports instead of directly to the original
@@ -1144,6 +1242,55 @@ mod tests {
     }
     wirevalue::register_type!(TestDelivery);
 
+    #[derive(Debug, Serialize, Deserialize, typeuri::Named)]
+    struct CastDestroyedDomain;
+    wirevalue::register_type!(CastDestroyedDomain);
+
+    #[hyperactor::export(handlers = [CastDestroyedDomain])]
+    struct CastFailureProbe {
+        members: HashMap<usize, ActorAddr>,
+        region: Region,
+        failures: PortRef<Undeliverable<MessageEnvelope>>,
+    }
+
+    #[async_trait]
+    impl Actor for CastFailureProbe {
+        async fn handle_delivery_failure_event(
+            &mut self,
+            cx: &Instance<Self>,
+            undeliverable: Undeliverable<MessageEnvelope>,
+        ) -> Result<(), anyhow::Error> {
+            self.failures.post(cx, undeliverable);
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl Handler<CastDestroyedDomain> for CastFailureProbe {
+        async fn handle(
+            &mut self,
+            cx: &Context<Self>,
+            _message: CastDestroyedDomain,
+        ) -> Result<(), anyhow::Error> {
+            let domain = CastDomainId::new().materialize(
+                cx,
+                self.members.clone(),
+                self.region.clone(),
+                TilingPolicy::BlockPartitioning,
+                Flattrs::new(),
+            )?;
+            domain.destroy(cx);
+            domain.destroy(cx);
+            domain.cast(
+                cx,
+                Flattrs::new(),
+                TestDelivery {
+                    payload: "stale".to_string(),
+                },
+            )
+        }
+    }
+
     /// Delivery record kept by test receivers in handler execution order.
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, typeuri::Named)]
     struct TestDeliveryRecord {
@@ -1436,6 +1583,18 @@ mod tests {
                     captured_domain_snapshots(domain_id).keys()
                 )
             })
+        }
+
+        async fn wait_for_any_domain_snapshot(&self, domain_id: &Uid) {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while captured_domain_snapshots(domain_id).is_empty() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| {
+                panic!("timed out waiting for an installed domain snapshot for {domain_id}")
+            });
         }
 
         async fn wait_for_destroyed_domain_snapshots(
@@ -1872,80 +2031,166 @@ mod tests {
     }
 
     #[async_timed_test(timeout_secs = 30)]
-    async fn test_destroy_domain_rejects_later_casts() {
-        let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client_proc".into()).unwrap();
-        let client = client_proc.client("client");
-        let cast_proc = Proc::direct(ChannelTransport::Unix.any(), "cast_proc".into()).unwrap();
-        let actor_instance = cast_proc.actor_instance::<CastActor>("cast").unwrap();
-        let mut cast_actor = CastActor::default();
-        let cx = Context::new(&actor_instance.instance, Flattrs::new());
+    async fn test_cast_to_destroyed_domain_returns_undeliverable() {
+        clear_captured_domains();
 
-        let receiver_id = ActorAddr::root(cast_proc.proc_addr().clone(), Label::strip("receiver"));
-        let cast_domain_id = CastDomainId::new();
-        let region = Region::from(Shape::unity());
-        let root_tile = MaterializedTile::from_value_mesh_with_tile(
-            Tile::from_view(&region),
-            Arc::new(ValueMesh::new(region.clone(), vec![receiver_id]).unwrap()),
+        // GIVEN: one actor creates and destroys a cast domain before using it.
+        let mut test_mesh = CastTestMesh::new(8);
+        test_mesh.spawn_delivery_receivers();
+        let region = Region::from(shape!(a = 2, b = 2, c = 2));
+        let (failure_handle, mut failure_receiver) =
+            context::Mailbox::mailbox(&test_mesh.client).open_port();
+        let probe_handle = test_mesh
+            ._client_proc
+            .spawn_with_uid(
+                Uid::singleton(Label::strip("cast_failure_probe")),
+                CastFailureProbe {
+                    members: test_mesh.domain_members(),
+                    region: region.clone(),
+                    failures: failure_handle.bind(),
+                },
+            )
+            .unwrap();
+        let probe_ref: ActorRef<CastFailureProbe> = probe_handle.bind::<CastFailureProbe>();
+
+        // WHEN: the probe casts after the routing state was removed.
+        probe_ref
+            .port::<CastDestroyedDomain>()
+            .post(&test_mesh.client, CastDestroyedDomain);
+
+        // THEN: the unavailable route returns the cast to the original sender.
+        let returned = tokio::time::timeout(Duration::from_secs(5), failure_receiver.recv())
+            .await
+            .expect("cast failure should return to the sender")
+            .expect("cast failure receiver should remain open");
+        let Undeliverable::Returned(envelope) = returned else {
+            panic!("cast failure should return the original message envelope");
+        };
+        assert_eq!(
+            envelope
+                .root_delivery_failure()
+                .and_then(|failure| failure.attrs.get(CAST_FAILURE_PHASE)),
+            Some("unknown_domain".to_string()),
+        );
+        assert_eq!(
+            envelope.headers().get(CAST_ORIGINATING_SENDER),
+            Some(probe_ref.actor_addr().clone()),
         );
 
-        Handler::<CreateCastDomain>::handle(
-            &mut cast_actor,
-            &cx,
-            CreateCastDomain {
-                cast_domain_id: cast_domain_id.clone(),
-                region,
-                tiling_policy: TilingPolicy::BlockPartitioning,
-                tile: root_tile,
-            },
-        )
-        .await
-        .unwrap();
+        // The failed domain must not prevent the shared CastActor from serving
+        // another domain.
+        let live_domain = test_mesh.root_domain(region);
+        test_mesh
+            .wait_for_any_domain_snapshot(live_domain.domain_id())
+            .await;
+    }
 
-        Handler::<DestroyCastDomain>::handle(
-            &mut cast_actor,
-            &cx,
-            DestroyCastDomain {
-                domain_id: cast_domain_id.clone(),
-                origin: client.self_addr().clone(),
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_cast_routing_error_returns_undeliverable() {
+        // GIVEN: an installed hop receives a cast without its destination seq.
+        let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client_proc".into()).unwrap();
+        let client = client_proc.client("client");
+        let (failure_handle, mut failure_receiver) = context::Mailbox::mailbox(&client).open_port();
+        let probe_handle = client_proc
+            .spawn_with_uid(
+                Uid::singleton(Label::strip("cast_failure_probe")),
+                CastFailureProbe {
+                    members: HashMap::new(),
+                    region: Region::from(Shape::unity()),
+                    failures: failure_handle.bind(),
+                },
+            )
+            .unwrap();
+        let probe_ref: ActorRef<CastFailureProbe> = probe_handle.bind::<CastFailureProbe>();
+        let cast_proc = Proc::direct(ChannelTransport::Unix.any(), "cast_proc".into()).unwrap();
+        let actor_instance = cast_proc.actor_instance::<CastActor>("cast").unwrap();
+        let cx = Context::new(&actor_instance.instance, Flattrs::new());
+        let mut cast_actor = CastActor::default();
+        let domain_id = CastDomainId::new();
+        let domain_region = Region::from(shape!(x = 2));
+        cast_actor.installed_hops.insert(
+            domain_id.clone(),
+            CastHop {
+                point_in_domain: domain_region.point_of_base_rank(1).unwrap(),
+                base_rank_in_domain: 1,
+                next_hops: Vec::new(),
+                local_actor: ActorAddr::root(
+                    cast_proc.proc_addr().clone(),
+                    Label::strip("receiver"),
+                ),
             },
-        )
-        .await
-        .unwrap();
+        );
+        let seq_region = domain_region
+            .range("x", ndslice::Range(0, Some(1), 1))
+            .unwrap();
 
-        // Destroy is idempotent: a repeated teardown is a benign no-op.
-        Handler::<DestroyCastDomain>::handle(
-            &mut cast_actor,
-            &cx,
-            DestroyCastDomain {
-                domain_id: cast_domain_id.clone(),
-                origin: client.self_addr().clone(),
-            },
-        )
-        .await
-        .unwrap();
-
-        let err = Handler::<CastMessage>::handle(
+        // WHEN: the malformed cast is handled.
+        Handler::<CastMessage>::handle(
             &mut cast_actor,
             &cx,
             CastMessage {
-                cast_domain_id,
-                sender: client.self_addr().clone(),
+                cast_domain_id: domain_id,
+                sender: probe_ref.actor_addr().clone(),
                 session_id: client.sequencer().session_id(),
-                seqs: ValueMesh::new(Region::from(Shape::unity()), vec![1]).unwrap(),
+                seqs: ValueMesh::new(seq_region, vec![1]).unwrap(),
                 lineage: Vec::new(),
                 headers: Flattrs::new(),
                 dest_port: TestDelivery::port(),
                 data: wirevalue::Any::<wirevalue::encoding::Multipart>::serialize(&TestDelivery {
-                    payload: "hello".to_string(),
+                    payload: "malformed".to_string(),
                 })
                 .unwrap(),
             },
         )
         .await
-        .unwrap_err();
+        .expect("routing errors must not escape the CastActor handler");
 
-        let err = err.to_string();
-        assert!(err.contains("unknown domain"), "unexpected error: {err}");
+        // THEN: the routing failure is returned to the original sender.
+        let returned = tokio::time::timeout(Duration::from_secs(5), failure_receiver.recv())
+            .await
+            .expect("routing failure should return to the sender")
+            .expect("routing failure receiver should remain open");
+        let Undeliverable::Returned(envelope) = returned else {
+            panic!("routing failure should return the original message envelope");
+        };
+        assert_eq!(
+            envelope
+                .root_delivery_failure()
+                .and_then(|failure| failure.attrs.get(CAST_FAILURE_PHASE)),
+            Some("route".to_string()),
+        );
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_delivery_failure_report_does_not_fail_cast_actor() {
+        // GIVEN: a delivery failure report without the original message.
+        let proc = Proc::direct(ChannelTransport::Unix.any(), "cast_proc".into()).unwrap();
+        let actor_instance = proc.actor_instance::<CastActor>("cast").unwrap();
+        let mut cast_actor = CastActor::default();
+        let destination = actor_instance
+            .instance
+            .self_addr()
+            .port_addr(Port::handler::<CastMessage>());
+        let report = DeliveryFailureReport::new(
+            actor_instance.instance.self_addr().clone(),
+            EndpointLocation::Port(destination.clone()),
+            Some(CastMessage::typename().to_string()),
+            DeliveryFailure::new(UndeliverableReason::Transport(TransportFailure::new(
+                destination,
+                TransportFailureReason::NoRoute,
+            ))),
+        );
+
+        // WHEN: the report is handled.
+        let result = cast_actor
+            .return_delivery_failure_to_origin(
+                &actor_instance.instance,
+                Undeliverable::Report(report),
+            )
+            .await;
+
+        // THEN: report-only failures do not fail the shared CastActor.
+        result.expect("delivery failure reports must not fail the CastActor");
     }
 
     #[async_timed_test(timeout_secs = 30)]
