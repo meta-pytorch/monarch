@@ -3033,6 +3033,7 @@ impl<A: Actor> Instance<A> {
                     (status, Some(event))
                 }
                 ActorErrorKind::SyntheticSupervision(synthetic) => {
+                    let local_fence = synthetic.local_fence.clone();
                     let error_kind = ActorErrorKind::SyntheticSupervision(synthetic);
                     let status = ActorStatus::Failed(error_kind);
                     let event = ActorSupervisionEvent::new(
@@ -3040,7 +3041,8 @@ impl<A: Actor> Instance<A> {
                         actor.display_name(),
                         status.clone(),
                         None,
-                    );
+                    )
+                    .with_local_fence(local_fence);
                     (status, Some(event))
                 }
                 _ => {
@@ -3381,6 +3383,10 @@ impl<A: Actor> Instance<A> {
         actor: &mut A,
         supervision_event: ActorSupervisionEvent,
     ) -> Result<(), ActorError> {
+        if supervision_event.is_locally_cancelled() {
+            return Ok(());
+        }
+
         // Handle the supervision event with the current actor.
         match self
             .inner
