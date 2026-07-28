@@ -19,8 +19,11 @@ use std::time::UNIX_EPOCH;
 use anyhow::Context;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::dataframe::DataFrame;
 use datafusion::datasource::MemTable;
 use datafusion::datasource::TableProvider;
+use datafusion::error::Result as DFResult;
+use datafusion::logical_expr::col;
 use datafusion::prelude::SessionContext;
 use hyperactor as reference;
 use hyperactor::Endpoint as _;
@@ -260,6 +263,45 @@ const RETENTION_TABLES: &[&str] = &["sent_messages", "messages", "message_status
 /// Interval between routine retention sweeps.
 const RETENTION_INTERVAL: Duration = Duration::from_secs(30);
 
+fn build_scan_dataframe(
+    ctx: &SessionContext,
+    table: Arc<dyn TableProvider>,
+    projection: Option<&[usize]>,
+    where_clause: Option<&str>,
+    limit: Option<usize>,
+) -> DFResult<DataFrame> {
+    let schema = table.schema();
+    let mut dataframe = ctx.read_table(table)?;
+    if let Some(where_clause) = where_clause {
+        let filter = dataframe.parse_sql_expr(where_clause)?;
+        dataframe = dataframe.filter(filter)?;
+    }
+
+    dataframe = match projection {
+        Some([]) => dataframe.select_exprs(&["NULL as fake_column"])?,
+        Some(projection) => {
+            let columns = projection
+                .iter()
+                .map(|&index| {
+                    schema
+                        .fields()
+                        .get(index)
+                        .map(|field| col(field.name()))
+                        .ok_or_else(|| {
+                            datafusion::error::DataFusionError::Plan(format!(
+                                "projection index {index} out of range"
+                            ))
+                        })
+                })
+                .collect::<DFResult<Vec<_>>>()?;
+            dataframe.select(columns)?
+        }
+        None => dataframe,
+    };
+
+    dataframe.limit(0, limit)
+}
+
 #[pyclass(
     name = "DatabaseScanner",
     module = "monarch._rust_bindings.monarch_distributed_telemetry.database_scanner"
@@ -267,6 +309,7 @@ const RETENTION_INTERVAL: Duration = Duration::from_secs(30);
 pub struct DatabaseScanner {
     /// Tables stored by name - each holds the schema and shared PartitionData
     table_data: Arc<StdMutex<HashMap<String, Arc<LiveTableData>>>>,
+    scan_session: SessionContext,
     rank: usize,
     /// Retention window in microseconds.
     retention_us: i64,
@@ -290,6 +333,7 @@ impl DatabaseScanner {
     fn new(rank: usize, retention_secs: u64) -> PyResult<Self> {
         let scanner = Self {
             table_data: Arc::new(StdMutex::new(HashMap::new())),
+            scan_session: SessionContext::new(),
             rank,
             retention_us: retention_secs as i64 * 1_000_000,
             socket_ingest_handles: StdMutex::new(Vec::new()),
@@ -833,7 +877,7 @@ impl DatabaseScanner {
         let rank = self.rank;
 
         // Get the LiveTableData's MemTable
-        let (schema, mem_table) = {
+        let mem_table = {
             let guard = self
                 .table_data
                 .lock()
@@ -841,51 +885,25 @@ impl DatabaseScanner {
             let table_data = guard
                 .get(table_name)
                 .ok_or_else(|| PyException::new_err(format!("table '{}' not found", table_name)))?;
-            (table_data.schema(), table_data.mem_table())
+            table_data.mem_table()
         };
 
         // Handle empty projection (e.g., for COUNT(*) queries)
         // DataFusion may request 0 columns but we still need row counts
         let is_empty_projection = matches!(&projection, Some(proj) if proj.is_empty());
 
-        // Build a query using DataFusion
-        let ctx = SessionContext::new();
-        ctx.register_table(table_name, mem_table)
-            .map_err(|e| PyException::new_err(e.to_string()))?;
-
-        // Build SELECT clause - for empty projection, use NULL as fake_column
-        let columns = match &projection {
-            Some(proj) if !proj.is_empty() => {
-                let selected: Vec<_> = proj
-                    .iter()
-                    .filter_map(|&i| schema.fields().get(i).map(|f| f.name().clone()))
-                    .collect();
-                if selected.is_empty() {
-                    "*".into()
-                } else {
-                    selected.join(", ")
-                }
-            }
-            Some(_) => "NULL as fake_column".into(),
-            _ => "*".into(),
-        };
-
-        let query = format!(
-            "SELECT {} FROM {}{}{}",
-            columns,
-            table_name,
-            where_clause
-                .map(|c| format!(" WHERE {}", c))
-                .unwrap_or_default(),
-            limit.map(|n| format!(" LIMIT {}", n)).unwrap_or_default()
-        );
-
         // Execute and stream batches directly to destination
         let batch_count = get_tokio_runtime()
             .block_on(async {
                 use futures::StreamExt;
 
-                let df = ctx.sql(&query).await?;
+                let df = build_scan_dataframe(
+                    &self.scan_session,
+                    mem_table,
+                    projection.as_deref(),
+                    where_clause.as_deref(),
+                    limit,
+                )?;
                 let mut stream = df.execute_stream().await?;
                 let mut count: usize = 0;
 
@@ -954,6 +972,7 @@ mod tests {
     use datafusion::arrow::array::Int64Array;
     use datafusion::arrow::array::StringArray;
     use datafusion::arrow::array::UInt64Array;
+    use datafusion::arrow::compute::concat_batches;
     use datafusion::arrow::datatypes::DataType;
     use datafusion::arrow::datatypes::Field;
     use datafusion::arrow::datatypes::Schema;
@@ -1008,6 +1027,7 @@ mod tests {
     fn test_scanner(retention_us: i64) -> DatabaseScanner {
         DatabaseScanner {
             table_data: Arc::new(StdMutex::new(HashMap::new())),
+            scan_session: SessionContext::new(),
             rank: 0,
             retention_us,
             socket_ingest_handles: StdMutex::new(Vec::new()),
@@ -1143,6 +1163,45 @@ mod tests {
         table.apply_retention("t", "1=1").await.unwrap();
 
         assert_eq!(row_count(&table).await, 3);
+    }
+
+    #[tokio::test]
+    async fn test_build_scan_dataframe_applies_filter_projection_and_limit() {
+        let table = LiveTableData::new(make_batch(&[]).schema());
+        table.push(make_batch(&[1, 2, 3, 4])).await;
+        let schema = table.schema();
+        let ctx = SessionContext::new();
+
+        let dataframe =
+            build_scan_dataframe(&ctx, table.mem_table(), Some(&[0]), Some("x >= 2"), Some(2))
+                .unwrap();
+        let batches = dataframe.collect().await.unwrap();
+        let batch = concat_batches(&schema, &batches).unwrap();
+        let values = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+
+        assert_eq!(values.values(), &[2, 3]);
+    }
+
+    #[test]
+    fn test_build_scan_dataframe_rejects_out_of_range_projection() {
+        let table = LiveTableData::new(make_batch(&[]).schema());
+        let ctx = SessionContext::new();
+
+        let error = build_scan_dataframe(&ctx, table.mem_table(), Some(&[1]), None, None)
+            .expect_err("out-of-range projection should fail");
+
+        assert!(
+            matches!(
+                &error,
+                datafusion::error::DataFusionError::Plan(message)
+                    if message == "projection index 1 out of range"
+            ),
+            "unexpected error: {error}"
+        );
     }
 
     #[tokio::test]
