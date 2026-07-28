@@ -11,21 +11,21 @@
 use std::io::Error;
 use std::result::Result;
 
-use super::IbvBuffer;
-use super::domain::IbvDomain;
-use super::domain::IbvDomainImpl;
-use super::primitives::GidScope;
-use super::primitives::GidType;
-use super::primitives::IbvConfig;
-use super::primitives::IbvCq;
-use super::primitives::IbvQp;
-use super::primitives::IbvQpInfo;
-use super::primitives::IbvWc;
-use super::queue_pair::IbvQueuePair;
-use super::queue_pair::PollCompletionError;
-use super::queue_pair::PollTarget;
-use super::queue_pair::RCQueuePair;
-use super::queue_pair::WorkRequestError;
+use super::IbvQueuePair;
+use super::PollCompletionError;
+use super::PollTarget;
+use super::WorkRequestError;
+use super::rc_queue_pair::RCQueuePair;
+use crate::backend::ibverbs::IbvBuffer;
+use crate::backend::ibverbs::domain::IbvDomain;
+use crate::backend::ibverbs::domain::IbvDomainImpl;
+use crate::backend::ibverbs::primitives::GidScope;
+use crate::backend::ibverbs::primitives::GidType;
+use crate::backend::ibverbs::primitives::IbvConfig;
+use crate::backend::ibverbs::primitives::IbvCq;
+use crate::backend::ibverbs::primitives::IbvQp;
+use crate::backend::ibverbs::primitives::IbvQpInfo;
+use crate::backend::ibverbs::primitives::IbvWc;
 
 /// An mlx5 RC queue pair created through `mlx5dv_create_qp`, so it carries the
 /// mlx5dv send-ops flags that arm a direct-WQE/doorbell data path.
@@ -46,7 +46,7 @@ impl MlxQueuePair {
     /// # Safety
     ///
     /// `domain`'s context and PD, if non-null, must be live.
-    pub(super) unsafe fn create_ibv_qp<I: IbvDomainImpl>(
+    pub(in crate::backend::ibverbs) unsafe fn create_ibv_qp<I: IbvDomainImpl>(
         domain: &IbvDomain<I>,
         config: &IbvConfig,
     ) -> Result<IbvQp, anyhow::Error> {
