@@ -382,8 +382,10 @@ pub(super) unsafe fn register_dmabuf_mr(
     let _ctx_guard = unsafe { crate::local_memory::set_ctx_for_ptr(addr)? };
 
     // Resolve the base and size of the allocation containing `addr`; the dmabuf
-    // handle and MR cover the whole allocation.
-    let mut base: rdmaxcel_sys::CUdeviceptr = 0;
+    // handle and MR cover the whole allocation. The `as rdmaxcel_sys::CUdeviceptr`
+    // is necessary because on CUDA, `CUdeviceptr` is a usize, while on ROCm, it's
+    // *mut c_void.
+    let mut base: rdmaxcel_sys::CUdeviceptr = 0 as rdmaxcel_sys::CUdeviceptr;
     let mut alloc_size: usize = 0;
     // SAFETY: `rdmaxcel_cuMemGetAddressRange` writes the allocation's base and
     // size into the out-params and touches no other Rust memory; it reports
