@@ -179,6 +179,23 @@ pub struct WorkerActor {
 }
 
 impl WorkerActor {
+    fn runtime_is_cuda_build() -> bool {
+        // Do not enumerate devices until `_initialize_env` applies the worker's
+        // visible-device mask. PyTorch memoizes the result of early enumeration.
+        monarch_with_gil_blocking(GilSite::WorkerInit, |py| {
+            py.import("torch")
+                .expect("torch must be importable in a worker")
+                .getattr("backends")
+                .expect("torch.backends must exist")
+                .getattr("cuda")
+                .expect("torch.backends.cuda must exist")
+                .call_method0("is_built")
+                .expect("torch.backends.cuda.is_built() must be callable")
+                .extract::<bool>()
+                .expect("torch.backends.cuda.is_built() must return bool")
+        })
+    }
+
     fn runtime_has_cuda() -> bool {
         // NOTE: use `torch.backends.cuda.is_built()`, NOT `torch.cuda.is_available()`.
         // `is_available()` calls `torch.cuda.device_count()`, which memoizes the
@@ -258,7 +275,7 @@ impl RemoteSpawn for WorkerActor {
         monarch_with_gil_blocking(GilSite::WorkerInit, |py| {
             py.import("monarch.safe_torch").unwrap();
         });
-        let device = if Self::runtime_has_cuda() {
+        let device = if Self::runtime_is_cuda_build() {
             device_index.map(|i| CudaDevice::new(DeviceIndex(i)))
         } else {
             None
@@ -300,6 +317,9 @@ impl Handler<AssignRankMessage> for WorkerActor {
                 .call_method1("_initialize_env", (p, cx.proc().proc_addr().to_string()))
                 .unwrap();
         });
+        if !Self::runtime_has_cuda() {
+            self.device = None;
+        }
         Ok(())
     }
 }
