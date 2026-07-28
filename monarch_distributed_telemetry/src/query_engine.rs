@@ -461,7 +461,11 @@ impl QueryEngine {
             .call_method0(py, "item")?
             .extract(py)?;
 
-        let config = SessionConfig::new().with_information_schema(true);
+        // Each distributed scan exposes one partition; extra local partitions
+        // add repartitioning overhead at representative telemetry sizes.
+        let config = SessionConfig::new()
+            .with_information_schema(true)
+            .with_target_partitions(1);
         let ctx = SessionContext::new_with_config(config);
 
         for table_name in &tables {
