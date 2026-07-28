@@ -39,14 +39,18 @@ use super::primitives::IbvConfig;
 use super::primitives::IbvContext;
 use super::primitives::IbvDeviceInfo;
 use super::primitives::query_device_info;
+use super::queue_pair::QueuePairManager;
 
 /// Per-backend driver for [`IbvDevice`]. Concrete impls register
 /// themselves via [`register_ibv_device_impl!`].
 pub trait IbvDeviceImpl: Named + std::fmt::Debug + Send + Sync + 'static {
     /// The per-domain strategy used by this backend (how memory regions
-    /// are registered and queue pairs built against a PD). [`IbvDomain`] is
-    /// generic over this.
+    /// are registered against a PD). [`IbvDomain`] is generic over this.
     type Domain: IbvDomainImpl;
+
+    /// The connection strategy this backend uses to establish and manage
+    /// queue pairs to peers.
+    type QueuePairManager: QueuePairManager<Device = Self>;
 
     /// Human-readable display name for the backend this impl
     /// drives (e.g., `"mellanox"`, `"efa"`). Surfaced in

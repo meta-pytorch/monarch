@@ -16,6 +16,8 @@ use super::device::IbvDeviceImpl;
 use super::mlx_domain::MlxDomain;
 use super::primitives::IbvConfig;
 use super::primitives::IbvContext;
+use super::queue_pair::mlx_queue_pair::MlxQueuePair;
+use super::queue_pair::rc_queue_pair::RCQueuePairManager;
 use crate::register_ibv_device_impl;
 
 /// PCI vendor ID for Mellanox Technologies.
@@ -27,6 +29,7 @@ pub struct MlxDevice;
 
 impl IbvDeviceImpl for MlxDevice {
     type Domain = MlxDomain;
+    type QueuePairManager = RCQueuePairManager<MlxDevice, MlxQueuePair>;
 
     fn backend_name() -> &'static str {
         "mellanox"

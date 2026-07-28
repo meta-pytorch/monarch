@@ -26,7 +26,6 @@ use super::primitives::IbvContext;
 use super::primitives::IbvDeviceInfo;
 use super::primitives::IbvMr;
 use super::primitives::IbvPd;
-use super::queue_pair::IbvQueuePair;
 use crate::local_memory::KeepaliveLocalMemory;
 use crate::local_memory::is_device_ptr;
 
@@ -183,16 +182,10 @@ impl<I: IbvDomainImpl> IbvDomain<I> {
         // memory alive for the registration.
         unsafe { I::register_mr(self, mem) }
     }
-
-    /// Create a queue pair against this domain, dispatching to the backend
-    /// [`IbvDomainImpl`] strategy.
-    pub fn create_queue_pair(&self, config: &IbvConfig) -> anyhow::Result<I::QueuePair> {
-        I::create_queue_pair(self, config)
-    }
 }
 
 /// Per-backend strategy for a protection domain: how memory regions are
-/// registered and how queue pairs are built against the PD.
+/// registered against the PD, and the access flags granted on it.
 ///
 /// One strategy is constructed per domain via [`Self::new`], which
 /// inspects the device behind the context to decide backend-specific behavior
@@ -200,9 +193,6 @@ impl<I: IbvDomainImpl> IbvDomain<I> {
 /// methods are associated functions taking `&IbvDomain<Self>` and reach the
 /// strategy itself through [`IbvDomain::domain_impl`].
 pub trait IbvDomainImpl: std::fmt::Debug + Send + Sync + 'static + Sized {
-    /// The concrete queue-pair type built against this domain's PD.
-    type QueuePair: IbvQueuePair;
-
     /// Build the strategy for the device behind `context` (whose queried
     /// metadata is `device_info`), using `config` for any setup it performs.
     ///
@@ -237,17 +227,6 @@ pub trait IbvDomainImpl: std::fmt::Debug + Send + Sync + 'static + Sized {
         // contract; `register_host_or_dmabuf_mr` errors on null), and the caller
         // keeps `mem`'s backing memory valid for the MR's lifetime.
         unsafe { register_host_or_dmabuf_mr(domain, mem) }
-    }
-
-    /// Create a queue pair against `domain`. The default builds [`Self::QueuePair`]
-    /// directly; backends override to construct their own queue-pair type.
-    fn create_queue_pair(
-        domain: &IbvDomain<Self>,
-        config: &IbvConfig,
-    ) -> anyhow::Result<Self::QueuePair> {
-        // SAFETY: a fully-constructed `IbvDomain` holds a null-or-live PD per
-        // its construction contract, which is what `IbvQueuePair::new` requires.
-        unsafe { Self::QueuePair::new(domain, config.clone()) }
     }
 }
 
