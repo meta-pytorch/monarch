@@ -900,7 +900,7 @@ impl DatabaseScanner {
                     };
 
                     if let Ok(data) = serialize_batch(&batch) {
-                        tracing::info!("Scanner {}: sending batch {}", rank, count);
+                        tracing::trace!("Scanner {}: sending batch {}", rank, count);
                         let msg = QueryResponse {
                             data: Part::from(data),
                         };
