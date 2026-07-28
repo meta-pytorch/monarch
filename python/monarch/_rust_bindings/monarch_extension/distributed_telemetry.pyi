@@ -8,6 +8,7 @@
 
 from typing import final, List, Optional
 
+import pyarrow as pa
 from monarch._rust_bindings.monarch_hyperactor.mailbox import PortId
 
 @final
@@ -97,7 +98,7 @@ class QueryEngine:
         """
         ...
 
-    def query(self, sql: str) -> bytes:
+    def query(self, sql: str) -> pa.RecordBatchReader:
         """
         Execute a SQL query.
 
@@ -105,6 +106,6 @@ class QueryEngine:
             sql: SQL query string
 
         Returns:
-            Arrow IPC serialized stream containing all record batches
+            Arrow record batch reader
         """
         ...

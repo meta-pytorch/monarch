@@ -9,6 +9,7 @@ license = "BSD-3-Clause"
 
 [dependencies]
 anyhow = "1.0.103"
+arrow = { version = "57.3.1", features = ["ffi", "json", "prettyprint", "pyarrow"] }
 async-trait = "0.1.86"
 datafusion = "52.5.0"
 futures = { version = "0.3.31", features = ["async-await", "compat"] }

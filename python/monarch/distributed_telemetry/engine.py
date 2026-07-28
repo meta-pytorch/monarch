@@ -63,18 +63,5 @@ class QueryEngine:
         Returns:
             PyArrow Table containing query results
         """
-        data: bytes = self._ensure_engine().query(sql)
-        reader = pa.ipc.open_stream(data)
+        reader: pa.RecordBatchReader = self._ensure_engine().query(sql)
         return reader.read_all()
-
-    def query_raw(self, sql: str) -> bytes:
-        """
-        Execute a SQL query and return raw Arrow IPC stream.
-
-        Args:
-            sql: SQL query string
-
-        Returns:
-            Arrow IPC serialized stream containing all record batches
-        """
-        return self._ensure_engine().query(sql)

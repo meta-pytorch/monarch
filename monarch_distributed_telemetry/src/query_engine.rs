@@ -10,10 +10,12 @@
 
 use std::sync::Arc;
 
+use arrow::pyarrow::PyArrowType;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::ipc::reader::StreamReader;
-use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::arrow::record_batch::RecordBatchIterator;
+use datafusion::arrow::record_batch::RecordBatchReader;
 use datafusion::catalog::Session;
 use datafusion::datasource::TableProvider;
 use datafusion::error::Result as DFResult;
@@ -45,7 +47,6 @@ use monarch_hyperactor::pytokio::PyPythonTask;
 use monarch_hyperactor::runtime::get_tokio_runtime;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
-use pyo3::types::PyBytes;
 use pyo3::types::PyModule;
 use tokio::sync::mpsc;
 
@@ -278,7 +279,7 @@ impl TableProvider for DistributedTableProvider {
             properties: PlanProperties::new(
                 EquivalenceProperties::new(output_schema),
                 Partitioning::UnknownPartitioning(1),
-                EmissionType::Final,
+                EmissionType::Incremental,
                 Boundedness::Bounded,
             ),
         }))
@@ -411,38 +412,26 @@ impl QueryEngine {
         "<QueryEngine>".into()
     }
 
-    /// Execute a SQL query and return results as Arrow IPC bytes.
-    fn query<'py>(&self, py: Python<'py>, sql: String) -> PyResult<Bound<'py, PyBytes>> {
+    /// Execute a SQL query and return an Arrow record batch reader.
+    fn query(
+        &self,
+        py: Python<'_>,
+        sql: String,
+    ) -> PyResult<PyArrowType<Box<dyn RecordBatchReader + Send>>> {
         let session_ctx = self.session.clone();
-
-        // Release the GIL and run the async query on the shared monarch runtime.
-        let results: Vec<RecordBatch> = py
-            .detach(|| {
+        let (schema, results) = py
+            .detach(|| -> DFResult<(SchemaRef, Vec<RecordBatch>)> {
                 get_tokio_runtime().block_on(async {
                     let df = session_ctx.sql(&sql).await?;
-                    df.collect().await
+                    let schema = Arc::clone(df.schema().inner());
+                    let results = df.collect().await?;
+                    Ok((schema, results))
                 })
             })
             .map_err(|e| PyException::new_err(e.to_string()))?;
 
-        // Serialize all results as a single Arrow IPC stream
-        let schema = results
-            .first()
-            .map(|b| b.schema())
-            .unwrap_or_else(|| Arc::new(datafusion::arrow::datatypes::Schema::empty()));
-        let mut buf = Vec::new();
-        let mut writer = StreamWriter::try_new(&mut buf, &schema)
-            .map_err(|e| PyException::new_err(e.to_string()))?;
-        for batch in &results {
-            writer
-                .write(batch)
-                .map_err(|e| PyException::new_err(e.to_string()))?;
-        }
-        writer
-            .finish()
-            .map_err(|e| PyException::new_err(e.to_string()))?;
-
-        Ok(PyBytes::new(py, &buf))
+        let reader = RecordBatchIterator::new(results.into_iter().map(Ok), schema);
+        Ok(PyArrowType(Box::new(reader)))
     }
 }
 
