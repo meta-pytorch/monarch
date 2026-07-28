@@ -18,6 +18,7 @@
 
 use std::collections::HashMap;
 use std::fmt::Debug;
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use hyperactor::channel::BindSpec;
@@ -235,6 +236,37 @@ pub fn reset_config_to_defaults() -> PyResult<()> {
     // Set all config values to defaults, ignoring even environment variables.
     hyperactor_config::global::reset_to_defaults();
     Ok(())
+}
+
+static PROPAGATABLE_ENV_NAME_BY_KEY: LazyLock<HashMap<&'static str, String>> =
+    LazyLock::new(|| {
+        inventory::iter::<AttrKeyInfo>()
+            .filter_map(|info| {
+                let cfg_meta = info.meta.get(CONFIG)?;
+                if cfg_meta.propagate {
+                    Some((info.name, cfg_meta.env_name.clone()?))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    });
+
+fn propagatable_config_env() -> HashMap<String, String> {
+    hyperactor_config::global::propagatable_attrs()
+        .iter()
+        .filter_map(|(name, value)| {
+            PROPAGATABLE_ENV_NAME_BY_KEY
+                .get(name)
+                .map(|env_name| (env_name.clone(), value.display()))
+        })
+        .collect()
+}
+
+/// Return env vars for the propagatable config snapshot.
+#[pyfunction]
+fn get_propagatable_config_env() -> PyResult<HashMap<String, String>> {
+    Ok(propagatable_config_env())
 }
 
 /// Map from the kwarg name passed to `monarch.configure(...)` to the
@@ -707,6 +739,13 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     )?;
     module.add_function(reset)?;
 
+    let get_propagatable_config_env_fn = wrap_pyfunction!(get_propagatable_config_env, module)?;
+    get_propagatable_config_env_fn.setattr(
+        "__module__",
+        "monarch._rust_bindings.monarch_hyperactor.config",
+    )?;
+    module.add_function(get_propagatable_config_env_fn)?;
+
     let configure = wrap_pyfunction!(configure, module)?;
     configure.setattr(
         "__module__",
@@ -762,6 +801,45 @@ mod tests {
         ))
         attr TEST_NONZERO_USIZE: hyperactor_config::NonZeroUsize =
             hyperactor_config::NonZeroUsize::MIN;
+
+        @meta(CONFIG = ConfigAttr::new(
+            Some("TEST_PROCESS_LOCAL_CONFIG".to_string()),
+            Some("test_process_local_config".to_string()),
+        ).process_local())
+        attr TEST_PROCESS_LOCAL_CONFIG: bool = false;
+    }
+
+    #[test]
+    fn test_propagatable_config_env_exports_config_values() {
+        let _lock = hyperactor_config::global::lock();
+        hyperactor_config::global::reset_to_defaults();
+
+        let mut runtime = Attrs::new();
+        runtime[TOKIO_WORKER_THREADS] = Some(
+            hyperactor_config::NonZeroUsize::try_from(4).expect("test value should be non-zero"),
+        );
+        runtime[TEST_PROCESS_LOCAL_CONFIG] = true;
+        hyperactor_config::global::set(Source::Runtime, runtime);
+
+        let execution_id = hyperactor_telemetry::env::execution_id();
+        let env = propagatable_config_env();
+        assert_eq!(
+            env.get("MONARCH_TOKIO_WORKER_THREADS").map(String::as_str),
+            Some("4")
+        );
+        assert_eq!(
+            env.get("MONARCH_ACTOR_QUEUE_DISPATCH").map(String::as_str),
+            Some("1")
+        );
+        assert!(
+            !env.contains_key("TEST_PROCESS_LOCAL_CONFIG"),
+            "process-local config values should not propagate"
+        );
+        assert_eq!(
+            env.get("HYPERACTOR_EXECUTION_ID").map(String::as_str),
+            Some(execution_id.as_str())
+        );
+        hyperactor_config::global::reset_to_defaults();
     }
 
     #[test]
