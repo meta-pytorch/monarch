@@ -57,6 +57,21 @@ interface for job lifecycle management.
    :exclude-members: __init__
 
 
+Observability
+=============
+
+See the :doc:`../observability` guide for the relationship between distributed
+telemetry, the Monarch Dashboard, and the Mesh Admin TUI.
+
+.. autoclass:: TelemetryConfig
+   :members:
+   :undoc-members:
+
+.. autoclass:: MeshAdminConfig
+   :members:
+   :undoc-members:
+
+
 Job Implementations
 ===================
 

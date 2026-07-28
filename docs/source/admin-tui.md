@@ -5,6 +5,10 @@ inspecting live Monarch meshes. It connects to the mesh admin HTTP API and
 renders the full topology — hosts, processes, and actors — as a navigable tree
 with a contextual detail pane.
 
+See the [observability overview](observability) for how the TUI complements
+[distributed telemetry](distributed-telemetry) and the
+[Monarch Dashboard](monarch-dashboard).
+
 The TUI is included in the `torchmonarch` PyPI package. After
 `pip install torchmonarch`, the `monarch-tui` command is available on PATH.
 
@@ -124,10 +128,29 @@ monarch-tui --addr 127.0.0.1:1729 --diagnose
 # Exits 0 if healthy, 1 if any check failed.
 ```
 
+## Telemetry Query Proxy
+
+When the admin server starts with distributed telemetry, it also exposes:
+
+| Endpoint | Purpose |
+|----------|---------|
+| `POST /v1/query` | Run DataFusion SQL and return `{"rows": [...]}` |
+| `POST /v1/pyspy_dump/{proc_reference}` | Capture and persist a py-spy dump in telemetry tables |
+
+For example, post `{"sql": "SELECT * FROM actors LIMIT 10"}` to
+`/v1/query`. Discover available tables with
+`SELECT table_name FROM information_schema.tables`.
+
+The TUI's `p` key and `GET /v1/pyspy/{proc_reference}` perform a one-shot
+capture. Use the `pyspy_dump` endpoint when the capture must remain queryable
+in `pyspy_dumps`, `pyspy_stack_traces`, `pyspy_frames`, and
+`pyspy_local_variables`.
+
 ## Source Code
 
 | Component | Location |
 |-----------|----------|
-| TUI binary | `hyperactor_mesh/bin/admin_tui/` |
+| TUI binary | `hyperactor_mesh_admin_tui/bin/admin_tui.rs` |
+| TUI library | `hyperactor_mesh_admin_tui/src/` |
 | Admin HTTP API | `hyperactor_mesh/src/mesh_admin.rs` |
 | Dining philosophers example | `python/examples/dining_philosophers.py` |

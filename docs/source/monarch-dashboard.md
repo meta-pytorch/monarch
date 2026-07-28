@@ -6,12 +6,17 @@ full mesh topology — hosts, processes, actor meshes, and individual actors —
 interactive views with live-updating metrics, message traffic analysis, and a
 full DAG visualization.
 
+See the [observability overview](observability) for how the dashboard uses
+[distributed telemetry](distributed-telemetry) and complements the
+[Mesh Admin TUI](admin-tui).
+
 > **Note** — The Monarch Dashboard is in early development and may change
 > significantly between releases.
 
-The dashboard is included in the `torchmonarch` PyPI package. When a job enables
-`TelemetryConfig(include_dashboard=True)`, Monarch starts a local web server that
-serves the dashboard UI.
+The dashboard is included in the `torchmonarch` PyPI package. The telemetry
+sidecar hosts its query service. Set
+`TelemetryConfig(include_dashboard=True)` to advertise the browser UI and print
+its URL.
 
 ## Quick Start
 
@@ -118,14 +123,15 @@ Host → Proc → Actor
 Here is an example of how to enable the dashboard on your job via the [Jobs API](api/monarch.job).
 
 ```python
-from monarch.job import LocalJob, ProcessJob, KubernetesJob, SlurmJob, TelemetryConfig
+from monarch.job import ProcessJob, TelemetryConfig
 
-# Provision job - LocalJob, ProcessJob, KubernetesJob, SlurmJob, etc.
-# job = ...
-dashboard_port = 8265
-
-# Enable telemetry, mesh admin, snapshots, and the dashboard together.
-job.enable_telemetry(
-    TelemetryConfig(include_dashboard=True, dashboard_port=dashboard_port)
+job = ProcessJob({"workers": 2}).enable_telemetry(
+    TelemetryConfig(include_dashboard=True, dashboard_port=8265)
 )
+state = job.state(cached_path=None)
+print(state.dashboard_url)
 ```
+
+`enable_telemetry()` also starts mesh admin and periodic introspection
+snapshots. Use `state.query_engine_client` to query the same data directly; see
+[Distributed Telemetry](distributed-telemetry).

@@ -25,7 +25,11 @@
 
 | Document | Location |
 |----------|----------|
+| **Observability Overview** | `docs/source/observability.md` |
+| **Distributed Telemetry** | `docs/source/distributed-telemetry.md` |
 | **Mesh Admin TUI** | `docs/source/admin-tui.md` |
+| **Monarch Dashboard** | `docs/source/monarch-dashboard.md` |
+| **OpenTelemetry and Grafana** | `docs/source/examples/otel_collector.py` |
 
 ## Examples
 
