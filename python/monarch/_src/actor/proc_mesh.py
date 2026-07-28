@@ -61,7 +61,11 @@ from monarch._src.actor.code_sync import (
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.future import Future
 from monarch._src.actor.logging import LoggingManager
-from monarch._src.actor.shape import MeshTrait
+from monarch._src.actor.shape import (
+    DimensionSources,
+    MeshTrait,
+    transform_dimension_set,
+)
 from monarch._src.actor.telemetry import log_with_tracing
 from monarch.tools.config.environment import CondaEnvironment
 from monarch.tools.config.workspace import Workspace
@@ -345,6 +349,7 @@ class ProcMesh(MeshTrait):
         region: Region,
         root_region: Region,
         _device_mesh: Optional["DeviceMesh"] = None,
+        _proc_dims: frozenset[str] | None = None,
     ) -> None:
         _proc_mesh_registry.add(self)
 
@@ -353,6 +358,11 @@ class ProcMesh(MeshTrait):
         self._region = region
         self._root_region = root_region
         self._maybe_device_mesh = _device_mesh
+        self._proc_dims = (
+            frozenset(root_region.labels[slice(len(host_mesh.region.labels), None)])
+            if _proc_dims is None and region == root_region
+            else _proc_dims
+        )
         self._stopped = False
         self._logging_manager = LoggingManager()
         self._controller_controller: Optional["_ControllerController"] = None
@@ -392,22 +402,30 @@ class ProcMesh(MeshTrait):
         return self._region.labels
 
     def _new_with_shape(self, shape: Shape) -> "ProcMesh":
+        return self._new_with_shape_from(
+            shape, {name: (name,) for name in shape.labels}
+        )
+
+    def _new_with_shape_from(
+        self, shape: Shape, sources: DimensionSources
+    ) -> "ProcMesh":
         if shape == self._region.as_shape():
             return self
 
-        device_mesh = (
+        proc_dims = transform_dimension_set(self._proc_dims, sources)
+        proc_dim_indices = (
             None
-            if self._maybe_device_mesh is None
-            else self._maybe_device_mesh._new_with_shape(shape)
+            if proc_dims is None
+            else [i for i, name in enumerate(shape.labels) if name in proc_dims]
         )
 
         sliced_hy_pm: Shared[HyProcMesh]
         if (pm := self._proc_mesh.poll()) is not None:
-            sliced_hy_pm = Shared.from_value(pm.sliced(shape.region))
+            sliced_hy_pm = Shared.from_value(pm.sliced(shape.region, proc_dim_indices))
         else:
 
             async def task() -> HyProcMesh:
-                return (await self._proc_mesh).sliced(shape.region)
+                return (await self._proc_mesh).sliced(shape.region, proc_dim_indices)
 
             sliced_hy_pm = PythonTask.from_coroutine(task()).spawn()
 
@@ -416,7 +434,12 @@ class ProcMesh(MeshTrait):
             self._host_mesh,
             shape.region,
             self._root_region,
-            _device_mesh=device_mesh,
+            _device_mesh=(
+                None
+                if self._maybe_device_mesh is None
+                else self._maybe_device_mesh._new_with_shape(shape)
+            ),
+            _proc_dims=proc_dims,
         )
 
     def spawn(
@@ -573,7 +596,14 @@ class ProcMesh(MeshTrait):
             supervision_display_name=supervision_display_name,
         )
 
-        mesh = ActorMesh(Class, name, actor_mesh, self._region.as_shape(), self)
+        mesh = ActorMesh(
+            Class,
+            name,
+            actor_mesh,
+            self._region.as_shape(),
+            self,
+            self._proc_dims,
+        )
         self._pending_actor_spawns.append(mesh)
 
         # We don't start the supervision polling loop until the first call to
@@ -708,12 +738,14 @@ class ProcMesh(MeshTrait):
         host_mesh: "HostMesh",
         region: Region,
         root_region: Region,
+        proc_dims: frozenset[str] | None = None,
     ) -> "ProcMesh":
         return ProcMesh(
             Shared.from_value(hy_proc_mesh),
             host_mesh,
             region,
             root_region,
+            _proc_dims=proc_dims,
         )
 
     # pyrefly: ignore [invalid-annotation]
@@ -734,12 +766,15 @@ class ProcMesh(MeshTrait):
                     self._host_mesh,
                     self._region,
                     self._root_region,
+                    self._proc_dims,
                 )
         return ProcMesh, (
             self._proc_mesh,
             self._host_mesh,
             self._region,
             self._root_region,
+            None,
+            self._proc_dims,
         )
 
     def _host(self, proc_rank: int) -> "HostMesh":

@@ -17,7 +17,6 @@ use hyperactor_mesh::shared_cell::SharedCell;
 use monarch_types::PickledPyObject;
 use monarch_types::py_module_add_function;
 use ndslice::View;
-use ndslice::view::RankedSliceable;
 use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
@@ -208,10 +207,12 @@ impl PyProcMesh {
         })
     }
 
-    fn sliced(&self, region: &PyRegion) -> PyResult<Self> {
-        Ok(Self::new_ref(
-            self.mesh_ref()?.sliced(region.as_inner().clone()),
-        ))
+    #[pyo3(signature = (region, proc_dims=None))]
+    fn sliced(&self, region: &PyRegion, proc_dims: Option<Vec<usize>>) -> PyResult<Self> {
+        Ok(Self::new_ref(self.mesh_ref()?.sliced_with_proc_dims(
+            region.as_inner().clone(),
+            proc_dims,
+        )))
     }
 }
 
