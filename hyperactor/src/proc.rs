@@ -380,6 +380,7 @@ fn account_cancel_enqueue(queue_depth: &AtomicU64, proc_stats: &ProcQueueStats, 
     );
 }
 
+use crate::monitor::EndpointAddr;
 use crate::ordering::DeliveryProgress;
 use crate::ordering::SEQ_INFO;
 use crate::ordering::SeqInfo;
@@ -525,13 +526,12 @@ pub enum StatusMessage {
         /// Reply port receiving `None` for an unknown actor and
         /// `Some(status)` for a known actor.
         reply: crate::OncePortRef<Option<ActorStatus>>,
-    },
-    /// Return receiver-side delivery progress for messages from `from`.
-    GetDeliveryProgress {
-        /// Sender whose delivery progress should be queried.
-        from: ActorAddr,
-        /// Reply port receiving the delivery progress query result.
-        reply: crate::OncePortRef<DeliveryProgressResponse>,
+        /// Optional sender session, destination, and reply port for delivery progress.
+        delivery: Option<(
+            Uuid,
+            EndpointAddr,
+            crate::OncePortRef<DeliveryProgressResponse>,
+        )>,
     },
 }
 wirevalue::register_type!(StatusMessage);
@@ -541,7 +541,8 @@ wirevalue::register_type!(StatusMessage);
 pub enum DeliveryProgressResponse {
     /// The destination actor was not found.
     ActorGone,
-    /// The receiver-side sequencing snapshot was incomplete.
+    /// Receiver-side delivery progress is unavailable because sequencing is
+    /// disabled or its snapshot was incomplete.
     Incomplete,
     /// Delivery progress from the requested sender.
     Progress(DeliveryProgress),
@@ -591,7 +592,7 @@ impl MailboxSender for StatusSender {
         let actor_id = envelope.dest().actor_id().clone();
 
         match message {
-            StatusMessage::GetStatus { reply } => {
+            StatusMessage::GetStatus { reply, delivery } => {
                 let status = proc.status_for_actor(&actor_id);
                 if let Err(err) = proc.serialize_and_send_once(
                     reply,
@@ -600,15 +601,16 @@ impl MailboxSender for StatusSender {
                 ) {
                     tracing::error!("status reply failed: {err}");
                 }
-            }
-            StatusMessage::GetDeliveryProgress { from, reply } => {
-                let progress = proc.delivery_progress_for_actor(&actor_id, &from);
-                if let Err(err) = proc.serialize_and_send_once(
-                    reply,
-                    progress,
-                    crate::mailbox::monitored_return_handle(),
-                ) {
-                    tracing::error!("delivery progress reply failed: {err}");
+                if let Some((session_id, destination, reply)) = delivery {
+                    let progress =
+                        proc.delivery_progress_for_actor(&actor_id, session_id, &destination);
+                    if let Err(err) = proc.serialize_and_send_once(
+                        reply,
+                        progress,
+                        crate::mailbox::monitored_return_handle(),
+                    ) {
+                        tracing::error!("delivery progress reply failed: {err}");
+                    }
                 }
             }
         }
@@ -858,8 +860,12 @@ impl Proc {
     fn delivery_progress_for_actor(
         &self,
         actor_id: &ActorId,
-        from: &ActorAddr,
+        session_id: Uuid,
+        destination: &EndpointAddr,
     ) -> DeliveryProgressResponse {
+        if destination.actor_addr().id() != actor_id {
+            return DeliveryProgressResponse::ActorGone;
+        }
         let Some(cell) = self
             .inner
             .instances
@@ -869,7 +875,7 @@ impl Proc {
             return DeliveryProgressResponse::ActorGone;
         };
 
-        match cell.delivery_progress_from(from) {
+        match cell.delivery_progress_for_session(destination, session_id) {
             Some(progress) => DeliveryProgressResponse::Progress(progress),
             None => DeliveryProgressResponse::Incomplete,
         }
@@ -2513,6 +2519,7 @@ impl<A: Actor> Instance<A> {
             actor_type,
             actor_environment,
             proc.clone(),
+            mailbox.clone(),
             actor_loop,
             status_tx,
             status_rx,
@@ -3968,6 +3975,9 @@ struct InstanceCellState {
     /// The proc in which the actor is running.
     proc: Proc,
 
+    /// The actor mailbox, including receiver-local port ordering snapshots.
+    mailbox: Mailbox,
+
     /// Control plane message senders to the actor loop, if one is running.
     actor_loop: Option<(
         mpsc::UnboundedSender<Signal>,
@@ -4185,6 +4195,7 @@ impl InstanceCell {
         actor_type: ActorType,
         actor_environment: ActorEnvironment,
         proc: Proc,
+        mailbox: Mailbox,
         actor_loop: Option<(
             mpsc::UnboundedSender<Signal>,
             mpsc::UnboundedSender<ActorSupervisionEvent>,
@@ -4207,6 +4218,7 @@ impl InstanceCell {
                 actor_type,
                 actor_environment,
                 proc: proc.clone(),
+                mailbox,
                 actor_loop,
                 status_tx,
                 status,
@@ -4592,10 +4604,17 @@ impl InstanceCell {
         self.inner.inbound_ordering_snapshot.as_ref().map(|f| f())
     }
 
-    /// Receiver-side delivery progress for messages sent by `from`.
-    pub fn delivery_progress_from(&self, from: &ActorAddr) -> Option<DeliveryProgress> {
-        self.inbound_ordering_snapshot()
-            .and_then(|snapshot| snapshot.delivery_progress_from(from))
+    /// Receiver-side delivery progress for a sender session and destination.
+    pub fn delivery_progress_for_session(
+        &self,
+        destination: &EndpointAddr,
+        session_id: Uuid,
+    ) -> Option<DeliveryProgress> {
+        let snapshot = match destination {
+            EndpointAddr::Handler(_) => self.inbound_ordering_snapshot(),
+            EndpointAddr::Port(port) => self.inner.mailbox.ordering_snapshot(port),
+        }?;
+        snapshot.delivery_progress_for_session(session_id)
     }
 
     /// Install the actor-supplied introspection-attrs snapshot callback.
@@ -5080,6 +5099,7 @@ mod tests {
             client,
             StatusMessage::GetStatus {
                 reply: reply_port.bind(),
+                delivery: None,
             },
         );
         tokio::time::timeout(Duration::from_secs(5), reply_rx.recv())
@@ -8150,15 +8170,27 @@ mod tests {
 
         let progress = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
-                let (reply, reply_rx) = client.open_once_port::<DeliveryProgressResponse>();
+                let (status_reply, status_reply_rx) =
+                    client.open_once_port::<Option<ActorStatus>>();
+                let (delivery_reply, delivery_reply_rx) =
+                    client.open_once_port::<DeliveryProgressResponse>();
                 actor_id.status_port().post(
                     &client,
-                    StatusMessage::GetDeliveryProgress {
-                        from: client.mailbox().actor_addr().clone(),
-                        reply: reply.bind(),
+                    StatusMessage::GetStatus {
+                        reply: status_reply.bind(),
+                        delivery: Some((
+                            client.sequencer().session_id(),
+                            EndpointAddr::Handler(actor_id.clone()),
+                            delivery_reply.bind(),
+                        )),
                     },
                 );
-                let progress = reply_rx
+                status_reply_rx
+                    .recv()
+                    .await
+                    .expect("status reply should arrive")
+                    .expect("actor should exist");
+                let progress = delivery_reply_rx
                     .recv()
                     .await
                     .expect("delivery progress reply should arrive");

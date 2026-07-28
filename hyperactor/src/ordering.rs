@@ -100,9 +100,9 @@ impl OrderingSnapshot {
         self.skipped_session_count == 0
     }
 
-    /// Delivery progress for messages sent by `sender`.
-    pub fn delivery_progress_from(&self, sender: &ActorAddr) -> Option<DeliveryProgress> {
-        if !self.is_complete() {
+    #[cfg(test)]
+    fn delivery_progress_from(&self, sender: &ActorAddr) -> Option<DeliveryProgress> {
+        if !self.enabled || !self.is_complete() {
             return None;
         }
 
@@ -112,6 +112,24 @@ impl OrderingSnapshot {
             .filter(|session| session.sender.as_ref() == Some(sender))
             .map(|session| session.last_released_seq)
             .max()
+            .unwrap_or_default();
+
+        Some(DeliveryProgress {
+            largest_dequeueable_sequence,
+        })
+    }
+
+    /// Delivery progress for one sender sequencing session.
+    pub fn delivery_progress_for_session(&self, session_id: Uuid) -> Option<DeliveryProgress> {
+        if !self.enabled || !self.is_complete() {
+            return None;
+        }
+
+        let largest_dequeueable_sequence = self
+            .sessions
+            .iter()
+            .find(|session| session.session_id == session_id)
+            .map(|session| session.last_released_seq)
             .unwrap_or_default();
 
         Some(DeliveryProgress {
@@ -263,6 +281,16 @@ impl Sequencer {
     pub fn last_sent(&self, port_id: &PortAddr) -> Option<u64> {
         let key = Self::seq_key(port_id)?;
         self.last_seqs.lock().unwrap().get(&key).copied()
+    }
+
+    /// Last sequence sent to any handler port on `actor`.
+    pub fn last_sent_to_actor(&self, actor: &ActorAddr) -> u64 {
+        self.last_seqs
+            .lock()
+            .unwrap()
+            .get(&SeqKey::Actor(actor.clone()))
+            .copied()
+            .unwrap_or_default()
     }
 
     fn seq_key(port_id: &PortAddr) -> Option<SeqKey> {
@@ -521,6 +549,13 @@ mod tests {
 
         assert_eq!(snapshot.delivery_progress_from(&sender), None,);
 
+        let disabled_snapshot = OrderingSnapshot {
+            enabled: false,
+            sessions: Vec::new(),
+            skipped_session_count: 0,
+        };
+        assert_eq!(disabled_snapshot.delivery_progress_from(&sender), None);
+
         let snapshot = OrderingSnapshot {
             skipped_session_count: 0,
             ..snapshot
@@ -533,6 +568,24 @@ mod tests {
         );
         assert_eq!(
             snapshot.delivery_progress_from(&test_actor_id("missing", "test")),
+            Some(DeliveryProgress {
+                largest_dequeueable_sequence: 0,
+            })
+        );
+        assert_eq!(
+            snapshot.delivery_progress_for_session(Uuid::from_u128(1)),
+            Some(DeliveryProgress {
+                largest_dequeueable_sequence: 3,
+            })
+        );
+        assert_eq!(
+            snapshot.delivery_progress_for_session(Uuid::from_u128(2)),
+            Some(DeliveryProgress {
+                largest_dequeueable_sequence: 5,
+            })
+        );
+        assert_eq!(
+            snapshot.delivery_progress_for_session(Uuid::from_u128(4)),
             Some(DeliveryProgress {
                 largest_dequeueable_sequence: 0,
             })

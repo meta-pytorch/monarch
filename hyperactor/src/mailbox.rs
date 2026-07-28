@@ -165,6 +165,7 @@ use crate::channel::TxStatus;
 use crate::context;
 use crate::id::ActorId;
 use crate::metrics;
+use crate::ordering::OrderingSnapshot;
 use crate::ordering::SEQ_INFO;
 use crate::ordering::SeqInfo;
 use crate::port::ControlPort;
@@ -1113,10 +1114,9 @@ pub trait PortSender: MailboxSender {
                 MailboxSenderErrorKind::Serialize(err.into()),
             )
         })?;
-        self.post(
-            MessageEnvelope::new_unknown(port.port_addr().clone(), serialized),
-            return_handle,
-        );
+        let mut envelope = MessageEnvelope::new_unknown(port.port_addr().clone(), serialized);
+        envelope.set_header(SEQ_INFO, SeqInfo::Direct);
+        self.post(envelope, return_handle);
         Ok(())
     }
 
@@ -1134,10 +1134,9 @@ pub trait PortSender: MailboxSender {
                 MailboxSenderErrorKind::Serialize(err.into()),
             )
         })?;
-        self.post(
-            MessageEnvelope::new_unknown(once_port.port_addr().clone(), serialized),
-            return_handle,
-        );
+        let mut envelope = MessageEnvelope::new_unknown(once_port.port_addr().clone(), serialized);
+        envelope.set_header(SEQ_INFO, SeqInfo::Direct);
+        self.post(envelope, return_handle);
         Ok(())
     }
 }
@@ -1768,6 +1767,7 @@ impl Mailbox {
         let port_index = self.inner.allocate_port();
         let (sender, receiver) = sequenced_unbounded::<SequencedEnvelope<M>>();
         let port_id = self.inner.actor_id.port_addr(Port::from(port_index));
+        self.register_ordering_snapshot(&port_id, &receiver);
         tracing::trace!(
             name = "open_port",
             "opening port for {} at {}",
@@ -1797,6 +1797,7 @@ impl Mailbox {
     pub(crate) fn bind_handler_port<M: RemoteMessage>(&self) -> (PortHandle<M>, PortReceiver<M>) {
         let (sender, receiver) = sequenced_unbounded::<SequencedEnvelope<M>>();
         let port_id = self.inner.actor_id.port_addr(Port::handler::<M>());
+        self.register_ordering_snapshot(&port_id, &receiver);
         let handle = PortHandle::new_full_with_target(
             self.clone(),
             UnboundedPortSender::Sequenced(sender),
@@ -1809,6 +1810,27 @@ impl Mailbox {
             handle,
             PortReceiver::new(receiver, port_id, /*coalesce=*/ false, self.clone()),
         )
+    }
+
+    fn register_ordering_snapshot<M: Message>(
+        &self,
+        port: &PortAddr,
+        receiver: &SequencedReceiver<SequencedEnvelope<M>>,
+    ) {
+        let snapshot = receiver.snapshot_handle();
+        self.inner
+            .ordering_snapshots
+            .insert(port.port(), Arc::new(move || snapshot.snapshot()));
+    }
+
+    pub(crate) fn ordering_snapshot(&self, port: &PortAddr) -> Option<OrderingSnapshot> {
+        if port.actor_id() != self.inner.actor_id.id() {
+            return None;
+        }
+        self.inner
+            .ordering_snapshots
+            .get(&port.port())
+            .map(|snapshot| snapshot.value()())
     }
 
     /// Open a new port with an accumulator with default reduce options.
@@ -2863,6 +2885,7 @@ impl<M> Drop for PortReceiver<M> {
         // error out if we have removed the receiver before serializing the port ref?
         // ("no longer live")?
         self.mailbox.inner.ports.remove(&self.port());
+        self.mailbox.inner.ordering_snapshots.remove(&self.port());
     }
 }
 
@@ -3343,6 +3366,9 @@ struct State {
     /// allocated ports are
     ports: DashMap<Port, Arc<dyn SerializedSender>>,
 
+    /// Receiver-local ordering snapshots for directly sequenced ports.
+    ordering_snapshots: DashMap<Port, Arc<dyn Fn() -> OrderingSnapshot + Send + Sync>>,
+
     /// The next ephemeral port ID to allocate.
     next_ephemeral_port: AtomicU64,
 
@@ -3360,6 +3386,7 @@ impl State {
         Self {
             actor_id,
             ports: DashMap::new(),
+            ordering_snapshots: DashMap::new(),
             next_ephemeral_port: AtomicU64::new(0),
             closed: RwLock::new(None),
             handler_ingress: Arc::new(HandlerIngressGate::new()),
