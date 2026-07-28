@@ -9,7 +9,7 @@
 import itertools
 import operator
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Generator, Sequence, Tuple, Union
+from typing import Any, Dict, Generator, Mapping, Sequence, Tuple, Union
 
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Shape, Slice
 from typing_extensions import Self
@@ -17,6 +17,26 @@ from typing_extensions import Self
 NDSlice = Slice
 
 Slices = Slice | list[Slice]
+DimensionSources = Mapping[str, Sequence[str]]
+
+
+# Translate a dimension set through a target-to-source mapping. A target is
+# included when all its sources are in the set, excluded when none are, and the
+# result is unknown when a target mixes sources from both sets.
+def transform_dimension_set(
+    dimensions: frozenset[str] | None, sources: DimensionSources
+) -> frozenset[str] | None:
+    if dimensions is None:
+        return None
+
+    transformed = set()
+    for name, source_names in sources.items():
+        source_membership = {source_name in dimensions for source_name in source_names}
+        if len(source_membership) > 1:
+            return None
+        if source_membership == {True}:
+            transformed.add(name)
+    return frozenset(transformed)
 
 
 def iter_ranks(ranks: Slices) -> Generator[int, None, None]:
@@ -78,6 +98,10 @@ class MeshTrait(ABC):
     def _new_with_shape(self, shape: Shape) -> Self: ...
 
     # pyrefly: ignore [not-a-type]
+    def _new_with_shape_from(self, shape: Shape, sources: DimensionSources) -> Self:
+        return self._new_with_shape(shape)
+
+    # pyrefly: ignore [not-a-type]
     def slice(self, **kwargs: Any) -> Self:
         """Select along named dimensions. Integer values remove
         dimensions, slice objects keep dimensions but restrict them.
@@ -85,7 +109,10 @@ class MeshTrait(ABC):
         Examples: mesh.slice(batch=3, gpu=slice(2, 6))
         """
         shape = Shape(list(self._labels), self._ndslice)
-        return self._new_with_shape(ShapeExt.slice(shape, **kwargs))
+        shape = ShapeExt.slice(shape, **kwargs)
+        return self._new_with_shape_from(
+            shape, {name: (name,) for name in shape.labels}
+        )
 
     # pyrefly: ignore [not-a-type]
     def split(self, **kwargs: Any) -> Self:
@@ -117,8 +144,10 @@ class MeshTrait(ABC):
         names = []
         sizes = []
         strides = []
+        sources: Dict[str, Sequence[str]] = {}
         ndslice = self._ndslice
         for name, size, stride in zip(self._labels, ndslice.sizes, ndslice.strides):
+            source_name = name
             to_names = splits.get(name, (name,))
             total_size = 1
             unknown_size_name = None
@@ -160,13 +189,15 @@ class MeshTrait(ABC):
             for name in to_names:
                 if name in names:
                     raise ValueError(f"Duplicate dimension name '{name}'")
+                sources[name] = (source_name,)
             names.extend(to_names)
         if size_constraints:
             raise ValueError(
                 f"unused size constraints: {tuple(size_constraints.keys())}"
             )
-        return self._new_with_shape(
-            Shape(names, NDSlice(offset=ndslice.offset, sizes=sizes, strides=strides))
+        return self._new_with_shape_from(
+            Shape(names, NDSlice(offset=ndslice.offset, sizes=sizes, strides=strides)),
+            sources,
         )
 
     # pyrefly: ignore [not-a-type]
@@ -191,10 +222,11 @@ class MeshTrait(ABC):
                 f"cannot flatten sparse mesh: {ndslice.strides=} != {dense_strides=}"
             )
 
-        return self._new_with_shape(
+        return self._new_with_shape_from(
             Shape(
                 [name], NDSlice(offset=ndslice.offset, sizes=[total_size], strides=[1])
-            )
+            ),
+            {name: tuple(self._labels)},
         )
 
     # pyrefly: ignore [not-a-type]
