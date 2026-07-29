@@ -6,6 +6,7 @@
 |----------|----------|
 | **Getting Started Tutorial** | `docs/source/examples/getting_started.py` |
 | **Actors Complete Guide** | `docs/source/actors.md` |
+| **Cookbook** (task-oriented recipes) | `docs/source/cookbook.md` (snippets from `python/tests/test_cookbook.py`) |
 | **Debugging Guide** | `docs/source/examples/debugging.py` |
 | **Installation** | `docs/source/installation.md` |
 
@@ -24,7 +25,11 @@
 
 | Document | Location |
 |----------|----------|
+| **Observability Overview** | `docs/source/observability.md` |
+| **Distributed Telemetry** | `docs/source/distributed-telemetry.md` |
 | **Mesh Admin TUI** | `docs/source/admin-tui.md` |
+| **Monarch Dashboard** | `docs/source/monarch-dashboard.md` |
+| **OpenTelemetry and Grafana** | `docs/source/examples/otel_collector.py` |
 
 ## Examples
 

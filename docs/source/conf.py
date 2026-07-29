@@ -328,9 +328,70 @@ def truncate_gallery_index_file(app):
         )
 
 
+# GITHUB_SHA is set in CI, pinning links to the exact embedded commit; local
+# builds fall back to main.
+_COOKBOOK_REF = os.getenv("GITHUB_SHA", "main")
+_COOKBOOK_BLOB = (
+    f"https://github.com/meta-pytorch/monarch/blob/{_COOKBOOK_REF}"
+    "/python/tests/test_cookbook.py"
+)
+
+
+def _cookbook_region_ranges(test_path):
+    """Map each ``# cookbook: <slug>`` region to its (start, end) line range.
+
+    The range excludes the marker lines themselves, matching the
+    ``literalinclude`` ``start-after``/``end-before`` bounds so the linked lines
+    are exactly the embedded snippet.
+    """
+    import re
+
+    ranges = {}
+    pending = None
+    with open(test_path, encoding="utf-8") as f:
+        for lineno, line in enumerate(f, start=1):
+            stripped = line.strip()
+            if stripped == "# cookbook: end":
+                if pending is not None:
+                    slug, start = pending
+                    ranges[slug] = (start + 1, lineno - 1)
+                    pending = None
+            elif re.fullmatch(r"# cookbook: [\w-]+", stripped):
+                pending = (stripped.removeprefix("# cookbook: "), lineno)
+    return ranges
+
+
+def expand_cookbook_source_links(app, docname, source):
+    """Replace ``%%SRC:<slug>%%`` tokens with a line-anchored GitHub URL.
+
+    Line numbers are computed from the marker positions at build time, so they
+    cannot go stale as the test file changes.
+    """
+    import re
+
+    if "%%SRC:" not in source[0]:
+        return
+    test_path = os.path.abspath(
+        os.path.join(app.srcdir, "..", "..", "python", "tests", "test_cookbook.py")
+    )
+    ranges = _cookbook_region_ranges(test_path)
+
+    def replace(match):
+        slug = match.group(1)
+        if slug not in ranges:
+            raise ValueError(f"unknown cookbook slug in {docname}: {slug}")
+        start, end = ranges[slug]
+        return f"{_COOKBOOK_BLOB}#L{start}-L{end}"
+
+    source[0] = re.sub(r"%%SRC:([\w-]+)%%", replace, source[0])
+
+
 def setup(app):
     # Connect to the builder-inited event, which runs at the beginning of the build process
     app.connect("builder-inited", truncate_gallery_index_file)
+
+    # Expand cookbook source-link tokens using live marker line numbers
+    app.connect("source-read", expand_cookbook_source_links)
 
     # Also connect to the build-finished event as a backup
     app.connect(
