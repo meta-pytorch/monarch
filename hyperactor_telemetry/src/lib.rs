@@ -57,6 +57,7 @@ mod config;
 pub mod in_memory_reader;
 #[cfg(all(fbcode_build, target_os = "linux"))]
 mod meta;
+mod metrics;
 mod otel;
 pub(crate) mod otlp;
 mod pool;
