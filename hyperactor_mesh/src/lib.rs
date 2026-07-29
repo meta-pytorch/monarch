@@ -18,6 +18,9 @@
 // enum itself doesn't propagate into derive-macro-generated code, so
 // the suppression must be at module scope.
 #![allow(unused_assignments)]
+// `Error` is a public enum with established structured variants. Changed-file
+// lint reports its size through functions returning `crate::Result`.
+#![allow(clippy::result_large_err)]
 
 pub mod actor_mesh;
 mod assign;
@@ -39,6 +42,7 @@ pub mod mesh_controller;
 pub mod mesh_id;
 pub mod mesh_selection;
 mod metrics;
+pub mod monitor;
 pub mod proc_agent;
 pub mod proc_launcher;
 pub mod proc_mesh;
@@ -63,6 +67,7 @@ use std::io;
 
 pub use actor_mesh::ActorMesh;
 pub use actor_mesh::ActorMeshRef;
+pub use actor_mesh::DataActorMesh;
 pub use bootstrap::Bootstrap;
 pub use bootstrap::HostBootstrapReady;
 pub use bootstrap::bootstrap;
@@ -82,6 +87,7 @@ use hyperactor::ProcAddr;
 use hyperactor::mailbox::MailboxSenderError;
 pub use hyperactor_mesh_macros::sel;
 pub use mesh::Mesh;
+pub use monitor::MeshMonitor;
 // Re-exported for internal test binaries that don't have ndslice as a direct dependency
 pub use ndslice::extent;
 use ndslice::view;

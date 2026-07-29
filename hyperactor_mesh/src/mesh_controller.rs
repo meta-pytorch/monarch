@@ -258,8 +258,9 @@ pub struct CheckState(pub SystemTime);
 wirevalue::register_type!(CheckState);
 
 declare_attrs! {
-    /// If present in a message header, the message is from an ActorMeshController
-    /// to a subscriber and can be safely dropped if it is returned as undeliverable.
+    /// If present in a message header, the message is from a mesh supervision
+    /// source to a subscriber and can be safely dropped if it is returned as
+    /// undeliverable.
     pub attr ACTOR_MESH_SUBSCRIBER_MESSAGE: bool;
 }
 

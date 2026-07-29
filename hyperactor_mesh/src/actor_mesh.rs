@@ -53,6 +53,9 @@ use ndslice::ViewExt as _;
 use ndslice::view;
 use ndslice::view::Region;
 use ndslice::view::View;
+use rankspace::Rank;
+use rankspace::RankSpace;
+use rankspace::view::CompactView;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
@@ -72,6 +75,7 @@ use crate::mesh_controller::Subscribe;
 use crate::mesh_controller::Unsubscribe;
 use crate::mesh_id::ActorMeshId;
 use crate::mesh_id::ProcMeshId;
+use crate::monitor::MeshMonitor;
 use crate::proc_mesh::GET_ACTOR_STATE_MAX_IDLE;
 use crate::proc_mesh::telemetry_actor_mesh_id;
 use crate::resource;
@@ -109,6 +113,30 @@ pub struct ActorMesh<A: Referable> {
     /// It may not be present for some types of actors, typically system actors
     /// such as ProcAgent or CastActor.
     controller: Option<ActorRef<ActorMeshController<A>>>,
+}
+
+/// A data-only actor mesh.
+///
+/// This mesh is detached from [`ActorMesh`] and [`ActorMeshRef`]. It is the
+/// baseline representation for the cheap mesh API: a [`RankSpace`] paired with
+/// its visible actor refs. The rank space can be sparse, so a mesh can represent
+/// failed or absent ranks as occlusions.
+///
+/// The mesh carries no identity beyond its members: two data meshes over the
+/// same rank space and refs are interchangeable. It holds no supervision state
+/// either; a caller monitors it on demand via [`Self::monitor`], which is the
+/// (one and only) supervision relationship, established by `hyperactor_remote`.
+pub struct DataActorMesh<A: Referable> {
+    members: CompactView<Vec<ActorRef<A>>>,
+}
+
+impl<A: Referable> fmt::Debug for DataActorMesh<A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DataActorMesh")
+            .field("space", self.members.space())
+            .field("members", self.members.data())
+            .finish_non_exhaustive()
+    }
 }
 
 // `A: Referable` for the same reason as the struct: the mesh holds `ActorRef<A>`.
@@ -285,6 +313,84 @@ impl<A: Referable> Drop for ActorMesh<A> {
             actor_name = %self.id,
             status = "Dropped",
         );
+    }
+}
+
+impl<A: Referable> DataActorMesh<A> {
+    fn new_unchecked(members: CompactView<Vec<ActorRef<A>>>) -> Self {
+        Self { members }
+    }
+
+    /// Create a data-only actor mesh from a rank space and its actor refs.
+    ///
+    /// `members` must hold one ref per visible rank, in rank order. The mesh
+    /// does not own, stop, or supervise the actors; it is a plain view over the
+    /// refs. Use [`Self::monitor`] to observe rank failures.
+    pub fn try_new(space: impl Into<RankSpace>, members: Vec<ActorRef<A>>) -> crate::Result<Self> {
+        let space = space.into();
+        let members = CompactView::new(space, members).map_err(|e| match &e {
+            rankspace::view::ViewError::InvalidCardinality { expected, actual } => {
+                Error::InvalidRankCardinality {
+                    expected: *expected,
+                    actual: *actual,
+                }
+            }
+            rankspace::view::ViewError::RankOutOfBounds { .. } => {
+                Error::Other(anyhow::anyhow!("{e}"))
+            }
+        })?;
+        Ok(Self::new_unchecked(members))
+    }
+
+    /// Return the mesh rank space.
+    pub fn space(&self) -> &RankSpace {
+        self.members.space()
+    }
+
+    /// Return the actor refs in visible rank order.
+    pub fn members(&self) -> &[ActorRef<A>] {
+        self.members.data().as_slice()
+    }
+
+    /// Return a sub-mesh over `space`, which must be a subspace of this mesh's
+    /// rank space. Each visible rank of `space` keeps the actor ref it holds in
+    /// this mesh.
+    ///
+    /// Returns [`Error::InvalidRankCardinality`] when `space` contains ranks
+    /// that are not visible in this mesh.
+    pub fn sliced(&self, space: impl Into<RankSpace>) -> crate::Result<Self> {
+        let space = space.into();
+        let members: Vec<ActorRef<A>> = space
+            .iter_ranks()
+            .filter_map(|rank| self.members.get_rank(rank).cloned())
+            .collect();
+        Self::try_new(space, members)
+    }
+
+    /// Return a [`MeshMonitor`] over this mesh's members, one monitor per rank.
+    ///
+    /// The caller drives the returned monitor (await it, or run a future under
+    /// [`MeshMonitor::guard`]) to observe rank failures, and drops it to stop
+    /// monitoring. The mesh holds no supervision state of its own.
+    pub fn monitor(&self, cx: &impl context::Actor) -> MeshMonitor {
+        let actors = self.members.map(|actor| actor.actor_addr().clone());
+        MeshMonitor::spawn(cx, actors)
+    }
+}
+
+impl<A: Referable> Clone for DataActorMesh<A> {
+    fn clone(&self) -> Self {
+        Self::new_unchecked(self.members.clone())
+    }
+}
+
+impl<A: Referable> rankspace::view::View<ActorRef<A>> for DataActorMesh<A> {
+    fn space(&self) -> &RankSpace {
+        self.members.space()
+    }
+
+    fn get_rank(&self, rank: Rank) -> Option<&ActorRef<A>> {
+        self.members.get_rank(rank)
     }
 }
 
@@ -1163,13 +1269,17 @@ mod tests {
 
     use std::collections::HashMap;
     use std::collections::HashSet;
+    use std::future::IntoFuture;
     use std::ops::Deref;
     use std::sync::Arc;
 
     use hyperactor::ActorRef;
     use hyperactor::Endpoint as _;
+    use hyperactor::Proc;
+    use hyperactor::ProcAddr;
     use hyperactor::actor::ActorErrorKind;
     use hyperactor::actor::ActorStatus;
+    use hyperactor::channel::ChannelAddr;
     use hyperactor::context::Mailbox as _;
     use hyperactor::id::Label;
     use hyperactor::mailbox;
@@ -1181,11 +1291,15 @@ mod tests {
     use ndslice::extent;
     use ndslice::view::Ranked;
     use ndslice::view::RankedSliceable;
+    use rankspace::Rank;
+    use rankspace::RankSpace;
+    use rankspace::view::View as _;
     use timed_test::assert_no_process_leak;
     use timed_test::async_timed_test;
     use tokio::time::Duration;
 
     use super::ActorMesh;
+    use super::DataActorMesh;
     use crate::ActorMeshRef;
     use crate::ProcMesh;
     use crate::host_mesh::GET_PROC_STATE_MAX_IDLE;
@@ -1209,6 +1323,92 @@ mod tests {
         assert_send_sync::<ActorMeshRef<()>>();
     }
 
+    #[test]
+    fn test_data_actor_mesh_is_detached_data_structure() {
+        let region: Region = extent!(replicas = 2).into();
+        let space = RankSpace::from(region);
+        let members = vec![
+            ActorRef::<testactor::TestActor>::attest(
+                ProcAddr::instance(ChannelAddr::Local(9000), "data").actor_addr("rank0"),
+            ),
+            ActorRef::<testactor::TestActor>::attest(
+                ProcAddr::instance(ChannelAddr::Local(9000), "data").actor_addr("rank1"),
+            ),
+        ];
+
+        let mesh = DataActorMesh::try_new(space.clone(), members.clone()).unwrap();
+
+        assert_eq!(mesh.members().len(), 2);
+        assert_eq!(mesh.space(), &space);
+        assert_eq!(
+            mesh.get_rank(Rank(1)).unwrap().actor_addr(),
+            members[1].actor_addr()
+        );
+
+        // Slice to the second replica; the rank space keeps base rank 1, so the
+        // sliced mesh addresses its single member by base rank rather than a
+        // renumbered ordinal.
+        let slice = mesh
+            .sliced(
+                mesh.space()
+                    .select("replicas", 1..2)
+                    .expect("rank 1 slice should exist"),
+            )
+            .expect("selected space should be a valid subspace");
+        assert_eq!(slice.members().len(), 1);
+        assert_eq!(
+            slice.get_rank(Rank(1)).unwrap().actor_addr(),
+            members[1].actor_addr()
+        );
+
+        let invalid_region = Region::new(
+            vec!["replicas".to_string()],
+            Slice::new(1, vec![2], vec![1]).expect("test region should be valid"),
+        );
+        assert!(matches!(
+            mesh.sliced(invalid_region),
+            Err(crate::Error::InvalidRankCardinality {
+                expected: 2,
+                actual: 1,
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_data_actor_mesh_monitors_rank_stop() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let target = client.spawn_with_label("rank0", testactor::TestActor);
+        let region: Region = extent!(replicas = 1).into();
+        let mesh: DataActorMesh<testactor::TestActor> =
+            DataActorMesh::try_new(region, vec![target.bind()]).unwrap();
+
+        let monitor = mesh.monitor(&client);
+        let mut wait = (&monitor).into_future();
+        tokio::select! {
+            biased;
+            failure = &mut wait => panic!("unexpected failure before stop: {failure:?}"),
+            _ = tokio::task::yield_now() => {}
+        }
+
+        target
+            .drain_and_stop("rank complete")
+            .expect("target should accept stop");
+
+        let observed = tokio::time::timeout(Duration::from_secs(10), wait)
+            .await
+            .expect("timed out waiting for mesh monitor stop");
+        assert_eq!(observed.crashed_ranks, vec![0]);
+        assert!(matches!(
+            observed.event.actor_status,
+            ActorStatus::Stopped(ref reason) if reason == "rank complete"
+        ));
+
+        tokio::time::timeout(Duration::from_secs(5), target)
+            .await
+            .expect("timed out waiting for target to stop");
+    }
+
     #[tokio::test]
     async fn test_actor_mesh_ref_lazy_materialization() {
         // 1) Bring up procs and spawn actors.
@@ -1227,7 +1427,7 @@ mod tests {
         // page 0: ranks [0,1], page 1: [2,3], page 2: [4,5]
         let page_size = 2;
         let amr: ActorMeshRef<testactor::TestActor> = ActorMeshRef::with_page_size(
-            am.id.clone(),
+            am.id().clone(),
             am.deref().proc_mesh_id.clone(),
             am.region().clone(),
             page_size,

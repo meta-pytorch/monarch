@@ -24,6 +24,7 @@ proc-macro2 = { version = "1.0.106", features = ["span-locations"] }
 proptest = "1.11.0"
 quote = "1.0.46"
 rand = "0.10.2"
+rankspace = { version = "0.0.0", path = "../rankspace" }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 thiserror = "2.0.18"
 typeuri = { version = "0.0.0", path = "../typeuri" }

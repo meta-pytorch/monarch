@@ -150,6 +150,22 @@ pub enum MonitorFailure {
 }
 wirevalue::register_type!(MonitorFailure);
 
+impl MonitorFailure {
+    /// The monitored actor this failure concerns. Every variant carries it.
+    pub fn actor_id(&self) -> &ActorAddr {
+        match self {
+            MonitorFailure::ActorGone { actor_id }
+            | MonitorFailure::ActorStopped { actor_id, .. }
+            | MonitorFailure::ActorFailed { actor_id, .. }
+            | MonitorFailure::StatusRequestTimedOut { actor_id, .. }
+            | MonitorFailure::StatusReplyClosed { actor_id }
+            | MonitorFailure::DeliveryProgressStalled { actor_id, .. }
+            | MonitorFailure::DeliveryProgressRequestTimedOut { actor_id, .. }
+            | MonitorFailure::MonitorStopped { actor_id } => actor_id,
+        }
+    }
+}
+
 /// Structured metadata for synthetic supervision events.
 #[derive(
     thiserror::Error,

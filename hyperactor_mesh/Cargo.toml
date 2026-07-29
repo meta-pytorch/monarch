@@ -45,6 +45,7 @@ opentelemetry = "0.31"
 pin-project = "1.1.13"
 preempt_rwlock = { version = "0.0.0", path = "../preempt_rwlock" }
 rand = "0.10.2"
+rankspace = { version = "0.0.0", path = "../rankspace" }
 reqwest = { version = "0.13.2", features = ["blocking", "charset", "cookies", "gzip", "http2", "json", "multipart", "rustls", "socks", "stream", "system-proxy"], default-features = false }
 rustls-pemfile = "2.2.0"
 schemars = { version = "1.2.1", features = ["indexmap2"] }

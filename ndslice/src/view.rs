@@ -32,6 +32,10 @@
 use std::str::FromStr;
 use std::sync::Arc;
 
+use rankspace::Dim;
+use rankspace::Rank;
+use rankspace::RankRect;
+use rankspace::RankSpace;
 use serde::Deserialize;
 use serde::Serialize;
 use thiserror::Error;
@@ -1082,6 +1086,22 @@ pub struct Region {
     slice: Slice,
 }
 
+impl From<Region> for RankSpace {
+    fn from(region: Region) -> Self {
+        let Region { labels, slice } = region;
+        let dims = labels
+            .into_iter()
+            .zip(slice.sizes())
+            .map(|(label, &size)| Dim::new(label, size))
+            .collect();
+        let extent =
+            rankspace::Extent::new(dims).expect("region labels and sizes must form a valid extent");
+        let rect = RankRect::affine(extent, Rank(slice.offset()), slice.strides().to_vec())
+            .expect("region slice must form a valid rank rect");
+        RankSpace::dense(rect)
+    }
+}
+
 impl Region {
     #[allow(dead_code)]
     fn empty() -> Region {
@@ -1906,6 +1926,36 @@ mod test {
     use crate::Shape;
     use crate::shape;
     use crate::slice::CartesianIterator;
+
+    #[test]
+    fn region_to_rankspace_maps_ranks_in_order() {
+        let region: Region = extent!(host = 2, gpu = 3).into();
+        let space = RankSpace::from(region.clone());
+
+        assert_eq!(space.cardinality(), region.num_ranks());
+        let space_ranks: Vec<usize> = space.iter_ranks().map(Rank::get).collect();
+        let region_ranks: Vec<usize> = region.slice().iter().collect();
+        assert_eq!(space_ranks, region_ranks);
+
+        for (index, base_rank) in region.slice().iter().enumerate() {
+            assert_eq!(space.local_index_of(Rank(base_rank)), Some(index));
+        }
+    }
+
+    #[test]
+    fn region_to_rankspace_preserves_base_ranks_when_sliced() {
+        let region: Region = extent!(replica = 4, gpu = 2).into();
+        let sub = region
+            .range("replica", 1..3)
+            .expect("slice should be valid");
+        let space = RankSpace::from(sub.clone());
+
+        assert_eq!(space.cardinality(), sub.num_ranks());
+        let space_ranks: Vec<usize> = space.iter_ranks().map(Rank::get).collect();
+        let region_ranks: Vec<usize> = sub.slice().iter().collect();
+        assert_eq!(space_ranks, region_ranks);
+        assert!(!space.contains_rank(Rank(0)));
+    }
 
     #[test]
     fn test_is_safe_ident() {
