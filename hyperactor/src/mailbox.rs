@@ -3848,7 +3848,7 @@ impl DialMailboxRouter {
     pub fn prefixes(&self) -> BTreeSet<Addr> {
         let addrs = self.address_book.read().unwrap();
         let mut prefixes: BTreeSet<Addr> = BTreeSet::new();
-        for (reference, _) in addrs.iter() {
+        for reference in addrs.keys() {
             match prefixes.lower_bound(Excluded(reference)).peek_prev() {
                 Some(candidate) if candidate.is_prefix_of(reference) => (),
                 _ => {

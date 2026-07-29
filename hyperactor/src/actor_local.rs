@@ -202,7 +202,7 @@ mod weak_map {
         fn drop(&mut self) {
             let entries = self.entries.lock().unwrap();
             let self_ptr = self as *const WeakMapInner<T> as *const dyn ErasedWeakMap;
-            for (_, (weak_key, _)) in entries.iter() {
+            for (weak_key, _) in entries.values() {
                 if let Some(key_inner) = weak_key.upgrade() {
                     key_inner.unregister_map(self_ptr);
                 }
