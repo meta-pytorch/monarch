@@ -67,7 +67,7 @@ impl Waker {
     /// Wake up any Python waiters. This sets the corresponding event, which
     /// remains set until it is cleared by the Python event loop.
     pub fn wake(&self) -> Result<bool, nix::Error> {
-        static DATA: [u8; 1] = [b'w'];
+        static DATA: [u8; 1] = *b"w";
 
         match write(&self.write_fd, &DATA) {
             Ok(_) => Ok(true),
