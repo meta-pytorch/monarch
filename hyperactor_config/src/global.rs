@@ -62,6 +62,7 @@ use crate::attrs::AttrKeyInfo;
 use crate::attrs::AttrValue;
 use crate::attrs::Attrs;
 use crate::attrs::Key;
+use crate::client_config_from_env;
 use crate::from_env;
 use crate::from_yaml;
 
@@ -524,9 +525,13 @@ struct GlobalConfig {
 /// which has the lowest precedence among explicit layers.
 static GLOBAL: LazyLock<GlobalConfig> = LazyLock::new(|| {
     let env = from_env();
-    let layers = Layers {
-        ordered: vec![Layer::Env(env)],
-    };
+    let mut ordered = vec![Layer::Env(env)];
+    if let Some(attrs) = client_config_from_env()
+        .unwrap_or_else(|error| panic!("invalid client config bootstrap environment: {error}"))
+    {
+        ordered.push(Layer::ClientOverride(attrs));
+    }
+    let layers = Layers { ordered };
     let materialized = ArcSwap::new(Arc::new(layers.materialize()));
     GlobalConfig {
         layers: RwLock::new(layers),
@@ -695,6 +700,15 @@ pub fn set(source: Source, attrs: Attrs) {
     let mut g = GLOBAL.layers.write().unwrap();
     g.set(source, attrs);
     rematerialize(&g);
+}
+
+/// Install a complete client configuration snapshot.
+///
+/// The snapshot replaces the existing [`Source::ClientOverride`] layer, making
+/// repeated installation idempotent while preserving higher-priority local
+/// configuration sources.
+pub fn install_client_config(attrs: Attrs) {
+    set(Source::ClientOverride, attrs);
 }
 
 /// Insert or update a configuration layer for the given [`Source`].
