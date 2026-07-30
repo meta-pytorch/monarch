@@ -67,8 +67,10 @@ install_node() {
 # Install and configure Rust nightly toolchain
 setup_rust_toolchain() {
     echo "Setting up Rust toolchain..."
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-    source "${HOME}"/.cargo/env
+    if ! command -v rustup &> /dev/null; then
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
+    fi
     rustup toolchain install nightly
     rustup default nightly
     # Explicitly install the pinned toolchain from rust-toolchain file.
@@ -81,6 +83,7 @@ setup_rust_toolchain() {
             rustup toolchain install "$PINNED_CHANNEL"
         fi
     fi
+    rustup show
     # We use cargo nextest to run tests in individual processes for similarity
     # to buck test.
     # Replace "cargo test" commands with "cargo nextest run".
