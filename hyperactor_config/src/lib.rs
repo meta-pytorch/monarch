@@ -300,7 +300,7 @@ pub fn from_env() -> Attrs {
         let Ok(val) = env::var(env_var) else {
             // Default value
             output.push_str("# ");
-            output.push_str(&export(env_var, key.default));
+            output.push_str(&export(env_var, key.default.map(|default| default())));
             continue;
         };
 
@@ -314,11 +314,11 @@ pub fn from_env() -> Attrs {
                     e
                 );
                 output.push_str("# ");
-                output.push_str(&export(env_var, key.default));
+                output.push_str(&export(env_var, key.default.map(|default| default())));
             }
             Ok(parsed) => {
                 output.push_str("# ");
-                output.push_str(&export(env_var, key.default));
+                output.push_str(&export(env_var, key.default.map(|default| default())));
                 output.push_str(&export(env_var, Some(parsed.as_ref())));
                 config.insert_value_by_name_unchecked(key.name, parsed);
             }
