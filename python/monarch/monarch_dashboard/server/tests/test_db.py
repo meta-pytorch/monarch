@@ -200,6 +200,13 @@ class ListActorStatusEventsTest(_DbTestBase):
         timestamps = [e["timestamp_us"] for e in events]
         self.assertEqual(timestamps, sorted(timestamps))
 
+    def test_limit_caps_and_orders(self):
+        # Returns at most `limit` events, re-sorted ascending for display.
+        capped = db.list_actor_status_events(limit=5)
+        self.assertLessEqual(len(capped), 5)
+        ts = [e["timestamp_us"] for e in capped]
+        self.assertEqual(ts, sorted(ts))
+
 
 # ---------------------------------------------------------------------------
 # Message queries
@@ -257,6 +264,14 @@ class GetActorMessagesTest(_DbTestBase):
             self.assertIn("latest_status", m)
             # Every message in fake data has status events, so status should be set.
             self.assertIsNotNone(m["latest_status"])
+
+    def test_limit_caps_and_orders(self):
+        all_msgs = db.list_messages()
+        actor_id = all_msgs[0]["from_actor_id"]
+        capped = db.get_actor_messages(actor_id, limit=2)
+        self.assertLessEqual(len(capped), 2)
+        ts = [m["timestamp_us"] for m in capped]
+        self.assertEqual(ts, sorted(ts))
 
 
 # ---------------------------------------------------------------------------
@@ -427,72 +442,73 @@ class GetSummaryTest(_DbTestBase):
         self.assertLess(summary["health_score"], 100)
 
 
-class RegionMappingTest(unittest.TestCase):
-    """Tests for ndslice Region → proc rank mapping helpers."""
+class GetMessageStatsTest(_DbTestBase):
+    def test_returns_expected_shape(self):
+        stats = db.get_message_stats()
+        self.assertIsInstance(stats, dict)
+        self.assertEqual(set(stats.keys()), {"lifecycle", "endpoints", "pairs"})
 
-    def test_parse_region_valid(self):
-        region_json = '{"labels": ["workers"], "slice": {"offset": 2, "sizes": [3], "strides": [1]}}'
-        result = db._parse_region(region_json)
-        self.assertEqual(result, (2, [3], [1]))
+    def test_lifecycle_states(self):
+        lifecycle = db.get_message_stats()["lifecycle"]
+        self.assertEqual(
+            set(lifecycle.keys()), {"queued", "active", "completed", "failed"}
+        )
+        for v in lifecycle.values():
+            self.assertIsInstance(v, int)
+            self.assertGreaterEqual(v, 0)
 
-    def test_parse_region_none(self):
-        self.assertIsNone(db._parse_region(None))
-        self.assertIsNone(db._parse_region(""))
+    def test_lifecycle_sum_matches_message_count(self):
+        # Lifecycle is grounded in the real `messages` table (one row per
+        # message), excluding the telemetry query-transport flood that appears
+        # only in message_status_events.
+        total = db.raw_query("SELECT COUNT(*) AS n FROM messages")[0]["n"]
+        lifecycle = db.get_message_stats()["lifecycle"]
+        self.assertEqual(sum(lifecycle.values()), total)
 
-    def test_parse_region_invalid_json(self):
-        self.assertIsNone(db._parse_region("not json"))
+    def test_lifecycle_counts_completed(self):
+        # Fake data has a nonzero delivery rate, so some handlers completed.
+        self.assertGreater(db.get_message_stats()["lifecycle"]["completed"], 0)
 
-    def test_parse_region_missing_slice(self):
-        self.assertIsNone(db._parse_region('{"labels": ["x"]}'))
+    def test_endpoints(self):
+        endpoints = db.get_message_stats()["endpoints"]
+        self.assertGreater(len(endpoints), 0)
+        for e in endpoints:
+            self.assertEqual(set(e.keys()), {"endpoint", "total", "completed"})
+            self.assertGreaterEqual(e["total"], e["completed"])
+        # Per-endpoint totals (deduped by message id) sum to the message count.
+        total = db.raw_query("SELECT COUNT(*) AS n FROM messages")[0]["n"]
+        self.assertEqual(sum(e["total"] for e in endpoints), total)
 
-    def test_1d_contiguous(self):
-        # offset=2, sizes=[3], strides=[1] → ranks 2, 3, 4
-        self.assertEqual(db._child_rank_to_parent_rank(0, 2, [3], [1]), 2)
-        self.assertEqual(db._child_rank_to_parent_rank(1, 2, [3], [1]), 3)
-        self.assertEqual(db._child_rank_to_parent_rank(2, 2, [3], [1]), 4)
-
-    def test_1d_strided(self):
-        # offset=1, sizes=[2], strides=[2] → ranks 1, 3
-        self.assertEqual(db._child_rank_to_parent_rank(0, 1, [2], [2]), 1)
-        self.assertEqual(db._child_rank_to_parent_rank(1, 1, [2], [2]), 3)
-
-    def test_2d(self):
-        # 2D: offset=0, sizes=[2, 3], strides=[3, 1]
-        # Row-major: (0,0)=0, (0,1)=1, (0,2)=2, (1,0)=3, (1,1)=4, (1,2)=5
-        self.assertEqual(db._child_rank_to_parent_rank(0, 0, [2, 3], [3, 1]), 0)
-        self.assertEqual(db._child_rank_to_parent_rank(1, 0, [2, 3], [3, 1]), 1)
-        self.assertEqual(db._child_rank_to_parent_rank(2, 0, [2, 3], [3, 1]), 2)
-        self.assertEqual(db._child_rank_to_parent_rank(3, 0, [2, 3], [3, 1]), 3)
-        self.assertEqual(db._child_rank_to_parent_rank(5, 0, [2, 3], [3, 1]), 5)
-
-    def test_2d_with_offset(self):
-        # offset=6, sizes=[2, 3], strides=[3, 1] → 6,7,8,9,10,11
-        self.assertEqual(db._child_rank_to_parent_rank(0, 6, [2, 3], [3, 1]), 6)
-        self.assertEqual(db._child_rank_to_parent_rank(5, 6, [2, 3], [3, 1]), 11)
-
-    def test_parent_ranks_for_region(self):
-        ranks = db._parent_ranks_for_region(2, [3], [1])
-        self.assertEqual(ranks, {2, 3, 4})
-
-    def test_parent_ranks_for_region_2d(self):
-        ranks = db._parent_ranks_for_region(0, [2, 3], [3, 1])
-        self.assertEqual(ranks, {0, 1, 2, 3, 4, 5})
+    def test_pairs_are_string_tuples(self):
+        pairs = db.get_message_stats()["pairs"]
+        self.assertGreater(len(pairs), 0)
+        for p in pairs:
+            self.assertEqual(len(p), 2)
+            self.assertIsInstance(p[0], str)
+            self.assertIsInstance(p[1], str)
 
 
-class DagRegionEdgesTest(_DbTestBase):
-    """Test that get_dag_data uses parent_view_json for proc→actor_mesh edges."""
+class GetMessageActivityTest(_DbTestBase):
+    def test_shape(self):
+        act = db.get_message_activity()
+        self.assertEqual(set(act.keys()), {"start_us", "end_us", "total", "buckets"})
+        self.assertEqual(len(act["buckets"]), 44)
 
-    def test_dag_has_proc_unit_to_actor_mesh_edges(self):
-        dag = db.get_dag_data()
-        hier_edges = [
-            e
-            for e in dag["edges"]
-            if e["type"] == "hierarchy"
-            and e["source_id"].startswith("proc_unit-")
-            and e["target_id"].startswith("actor_mesh-")
-        ]
-        # Fake data has 4 proc meshes × 1 actor mesh each = 4 edges
-        self.assertGreaterEqual(len(hier_edges), 4)
+    def test_custom_bucket_count(self):
+        self.assertEqual(len(db.get_message_activity(num_buckets=10)["buckets"]), 10)
+
+    def test_total_matches_messages(self):
+        total = db.raw_query("SELECT COUNT(*) AS n FROM messages")[0]["n"]
+        self.assertEqual(db.get_message_activity()["total"], total)
+
+    def test_buckets_sum_to_total(self):
+        # Every message falls in exactly one bucket.
+        act = db.get_message_activity()
+        self.assertEqual(sum(act["buckets"]), act["total"])
+
+    def test_span_ordered(self):
+        act = db.get_message_activity()
+        self.assertGreater(act["end_us"], act["start_us"])
 
 
 if __name__ == "__main__":

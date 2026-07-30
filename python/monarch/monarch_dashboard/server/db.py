@@ -15,7 +15,6 @@ Module-level functions (init, _query, etc.) provide backward compatibility
 by delegating to a module-level SQLiteAdapter instance.
 """
 
-import json
 import sqlite3
 from abc import ABC, abstractmethod
 from typing import Any
@@ -190,95 +189,56 @@ def _dedup_rows(rows: list[dict[str, Any]], key: str = "id") -> list[dict[str, A
     return result
 
 
-# ---------------------------------------------------------------------------
-# ndslice Region → proc rank mapping
-# ---------------------------------------------------------------------------
-
-
-def _parse_region(
-    parent_view_json: str | None,
-) -> tuple[int, list[int], list[int]] | None:
-    """Parse a serialized ndslice Region into (offset, sizes, strides).
-
-    Accepts the real DataFusion format::
-
-        {"labels": ["workers"], "slice": {"offset": 0, "sizes": [2], "strides": [1]}}
-
-    Returns None if *parent_view_json* is null or unparseable.
-    """
-    if not parent_view_json:
-        return None
-    try:
-        parsed = json.loads(parent_view_json)
-    except (json.JSONDecodeError, TypeError):
-        return None
-    sl = parsed.get("slice")
-    if not sl or "offset" not in sl or "sizes" not in sl or "strides" not in sl:
-        return None
-    return (sl["offset"], sl["sizes"], sl["strides"])
-
-
-def _child_rank_to_parent_rank(
-    child_rank: int,
-    offset: int,
-    sizes: list[int],
-    strides: list[int],
-) -> int:
-    """Map a child mesh rank to a parent mesh rank via the parent Region.
-
-    A child mesh is spawned on a view (Region) of the parent mesh.  Children
-    are enumerated in row-major order over the Region.  Given the Region
-    R = (offset, sizes, strides), child rank *r* maps to::
-
-        parent_rank = offset + Σ_{k} i_k · strides_k
-
-    where (i_0, ..., i_{d-1}) is the row-major decomposition of *r* over
-    *sizes*.  O(d) per call where d = len(sizes).
-    """
-    parent_rank = offset
-    remainder = child_rank
-    for k in range(len(sizes)):
-        suffix = 1
-        for j in range(k + 1, len(sizes)):
-            suffix *= sizes[j]
-        i_k = (remainder // suffix) % sizes[k]
-        parent_rank += i_k * strides[k]
-        remainder %= suffix
-    return parent_rank
-
-
-def _parent_ranks_for_region(
-    offset: int,
-    sizes: list[int],
-    strides: list[int],
-) -> set[int]:
-    """Return the set of all parent mesh ranks covered by a Region.  O(|R|)."""
-    total = 1
-    for s in sizes:
-        total *= s
-    return {_child_rank_to_parent_rank(r, offset, sizes, strides) for r in range(total)}
-
-
 # Reusable SQL fragments for latest-status subqueries.
 
+# Latest status per entity via a single-pass window function (ROW_NUMBER over
+# one ordered scan). A MAX(timestamp) self-join is RACY against a
+# concurrently-appended table: its two scans can observe different snapshots, so
+# for a fast-updating entity the `timestamp = max_ts` equality finds no row and
+# the entity drops out entirely — surfacing as a null status (→ spurious
+# "unknown", which dinged the health score). ROW_NUMBER reads the table once, so
+# it always returns exactly one row per entity. Column names (actor_id/message_id,
+# new_status/status, max_ts) are kept identical so callers are unaffected.
 _LATEST_ACTOR_STATUS_SQL = (
-    "SELECT ase.actor_id, ase.new_status, sub.max_ts"
-    " FROM actor_status_events ase"
-    " INNER JOIN ("
-    "   SELECT actor_id, MAX(timestamp_us) AS max_ts"
-    "   FROM actor_status_events GROUP BY actor_id"
-    " ) sub ON ase.actor_id = sub.actor_id"
-    "   AND ase.timestamp_us = sub.max_ts"
+    "SELECT actor_id, new_status, max_ts FROM ("
+    "   SELECT actor_id, new_status, timestamp_us AS max_ts,"
+    "     ROW_NUMBER() OVER ("
+    "       PARTITION BY actor_id ORDER BY timestamp_us DESC"
+    "     ) AS rn"
+    "   FROM actor_status_events"
+    " ) t WHERE rn = 1"
 )
 
 _LATEST_MSG_STATUS_SQL = (
-    "SELECT mse.message_id, mse.status"
-    " FROM message_status_events mse"
-    " INNER JOIN ("
-    "   SELECT message_id, MAX(timestamp_us) AS max_ts"
-    "   FROM message_status_events GROUP BY message_id"
-    " ) sub ON mse.message_id = sub.message_id"
-    "   AND mse.timestamp_us = sub.max_ts"
+    "SELECT message_id, status FROM ("
+    "   SELECT message_id, status,"
+    "     ROW_NUMBER() OVER ("
+    "       PARTITION BY message_id ORDER BY timestamp_us DESC"
+    "     ) AS rn"
+    "   FROM message_status_events"
+    " ) t WHERE rn = 1"
+)
+
+# Deduped handler lifecycle: reduce each message's events to one terminal/current
+# state with precedence complete > failed > active > queued (so
+# queued -> active -> failed counts as `failed`, not still-in-flight).
+#
+# Grounded in the `messages` table (real handler-dispatched messages), NOT the
+# raw `message_status_events` set. The telemetry query transport itself emits a
+# `queued` status event per once-port QueryResponse post but never a `messages`
+# row, so counting distinct message_ids in message_status_events would fold that
+# self-instrumentation flood into "queued" (hundreds of thousands of phantom
+# messages). The LEFT JOIN keeps only genuine application messages.
+_MSG_LIFECYCLE_SQL = (
+    "SELECT state, COUNT(*) AS n FROM ("
+    " SELECT m.id, CASE"
+    " WHEN MAX(CASE WHEN LOWER(e.status) = 'complete' THEN 1 ELSE 0 END) = 1 THEN 'complete'"
+    " WHEN MAX(CASE WHEN LOWER(e.status) = 'failed' THEN 1 ELSE 0 END) = 1 THEN 'failed'"
+    " WHEN MAX(CASE WHEN LOWER(e.status) = 'active' THEN 1 ELSE 0 END) = 1 THEN 'active'"
+    " ELSE 'queued' END AS state"
+    " FROM messages m LEFT JOIN message_status_events e ON e.message_id = m.id"
+    " GROUP BY m.id"
+    " ) t GROUP BY state"
 )
 
 
@@ -398,17 +358,35 @@ def get_actor_latest_status(actor_id: int) -> dict[str, Any] | None:
 # ---------------------------------------------------------------------------
 
 
+# Cap for the per-actor drill-in history (status events, messages). Unlike the
+# message tables, actor_status_events is unbounded (one event per
+# Idle<->Processing flip), so an actor accumulates thousands of events; the
+# detail drawer only needs recent history. This bounds the payload/scan for the
+# drill-in — bounding the underlying table is the core fix (paste P2440431201).
+_DRILL_LIMIT = 200
+
+
 def list_actor_status_events(
     actor_id: int | None = None,
+    limit: int = _DRILL_LIMIT,
 ) -> list[dict[str, Any]]:
-    """Return status events, optionally filtered by actor_id."""
+    """Return the *most recent* ``limit`` status events (re-sorted ascending for
+    display), optionally filtered by actor_id. Capped because
+    ``actor_status_events`` is unbounded — see ``_DRILL_LIMIT``."""
     if actor_id is not None:
         return _query(
-            "SELECT * FROM actor_status_events WHERE actor_id = ? "
-            "ORDER BY timestamp_us",
-            (actor_id,),
+            "SELECT * FROM ("
+            " SELECT * FROM actor_status_events WHERE actor_id = ?"
+            " ORDER BY timestamp_us DESC LIMIT ?"
+            " ) t ORDER BY timestamp_us",
+            (actor_id, limit),
         )
-    return _query("SELECT * FROM actor_status_events ORDER BY timestamp_us")
+    return _query(
+        "SELECT * FROM ("
+        " SELECT * FROM actor_status_events ORDER BY timestamp_us DESC LIMIT ?"
+        " ) t ORDER BY timestamp_us",
+        (limit,),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -433,16 +411,22 @@ def list_messages(
     return _query(f"SELECT * FROM messages{where} ORDER BY timestamp_us", tuple(params))
 
 
-def get_actor_messages(actor_id: int) -> list[dict[str, Any]]:
-    """Return all messages where the actor is sender or receiver, with latest status."""
+def get_actor_messages(
+    actor_id: int, limit: int = _DRILL_LIMIT
+) -> list[dict[str, Any]]:
+    """Return the actor's *most recent* ``limit`` messages (re-sorted ascending
+    for display), with latest status. Capped for the same reason as
+    ``list_actor_status_events`` — see ``_DRILL_LIMIT``."""
     rows = _query(
-        "SELECT m.*, latest.status AS latest_status"
+        "SELECT * FROM ("
+        " SELECT m.*, latest.status AS latest_status"
         " FROM messages m"
         f" LEFT JOIN ({_LATEST_MSG_STATUS_SQL}) latest"
         " ON m.id = latest.message_id"
         " WHERE m.from_actor_id = ? OR m.to_actor_id = ?"
-        " ORDER BY m.timestamp_us",
-        (actor_id, actor_id),
+        " ORDER BY m.timestamp_us DESC LIMIT ?"
+        " ) t ORDER BY timestamp_us",
+        (actor_id, actor_id, limit),
     )
     for r in rows:
         if r.get("latest_status"):
@@ -491,296 +475,6 @@ def list_sent_messages(
 # ---------------------------------------------------------------------------
 
 
-def get_dag_data(system_names: set[str] | None = None) -> dict[str, Any]:
-    """Return classified nodes and edges for the DAG visualization.
-
-    Fetches all meshes, actors (with latest status), and messages in a single
-    connection, then builds the 6-tier graph structure server-side:
-
-      host_mesh -> host_unit -> proc_mesh -> proc_unit -> actor_mesh -> actor
-
-    Args:
-        system_names: If provided, actors whose ``full_name`` is in this set
-            are excluded from the DAG.  Meshes that become empty after
-            filtering are also pruned.
-
-    Returns ``{"nodes": [...], "edges": [...]}``.
-    """
-    meshes = _query("SELECT * FROM meshes ORDER BY id")
-
-    # Actors with latest status via JOIN.
-    actors = _query(
-        "SELECT a.*, latest.new_status AS latest_status"
-        " FROM actors a"
-        f" LEFT JOIN ({_LATEST_ACTOR_STATUS_SQL}) latest"
-        " ON a.id = latest.actor_id"
-        " ORDER BY a.id"
-    )
-
-    messages = _query("SELECT from_actor_id, to_actor_id FROM messages ORDER BY id")
-
-    # -- Index meshes by id --
-    mesh_by_id: dict[int, dict] = {m["id"]: m for m in meshes}
-
-    # -- Classify meshes --
-    host_meshes = [m for m in meshes if m["class"] == "Host"]
-    proc_meshes = [m for m in meshes if m["class"] == "Proc"]
-    actor_meshes = [m for m in meshes if m["class"] not in ("Host", "Proc")]
-
-    # -- Classify actors by name pattern --
-    host_agents_by_mesh: dict[int, list[dict]] = {}
-    proc_agents_by_mesh: dict[int, list[dict]] = {}
-    regular_actors: list[dict] = []
-
-    for a in actors:
-        name_lower = a["full_name"].lower()
-        if "hostagent" in name_lower or "host_agent" in name_lower:
-            host_agents_by_mesh.setdefault(a["mesh_id"], []).append(a)
-        elif "procagent" in name_lower or "proc_agent" in name_lower:
-            proc_agents_by_mesh.setdefault(a["mesh_id"], []).append(a)
-        else:
-            regular_actors.append(a)
-
-    # -- Filter system actors if requested --
-    # Strategy: remove actors whose full_name matches a system name,
-    # then prune actor meshes with no remaining actors, then prune
-    # proc meshes with no remaining actor meshes, keeping the host
-    # layer intact as structural context.
-    if system_names:
-        _system_names = system_names  # local binding for Pyre narrowing
-
-        def _is_system(name: str) -> bool:
-            return any(sn in name for sn in _system_names)
-
-        regular_actors = [a for a in regular_actors if not _is_system(a["full_name"])]
-
-        # Find actor mesh IDs that still have at least one non-system actor.
-        live_actor_mesh_ids = {a["mesh_id"] for a in regular_actors}
-        actor_meshes = [m for m in actor_meshes if m["id"] in live_actor_mesh_ids]
-
-        # Find proc mesh IDs that still have at least one non-system actor mesh child.
-        live_proc_mesh_ids = {
-            m["parent_mesh_id"] for m in actor_meshes if m["parent_mesh_id"] is not None
-        }
-        proc_meshes = [m for m in proc_meshes if m["id"] in live_proc_mesh_ids]
-
-        # Rebuild proc agents to only include procs that survived.
-        surviving_proc_mesh_ids = {m["id"] for m in proc_meshes}
-        proc_agents_by_mesh = {
-            k: v for k, v in proc_agents_by_mesh.items() if k in surviving_proc_mesh_ids
-        }
-
-    # -- Actor statuses --
-    actor_statuses: dict[int, str] = {}
-    for a in actors:
-        actor_statuses[a["id"]] = (a.get("latest_status") or "unknown").lower()
-
-    def _leaf_name(name: str) -> str:
-        """Extract the last segment from a hierarchical name.
-
-        Handles both fake data (``/`` separators) and real data (``,`` separators).
-        """
-        return name.rsplit("/", 1)[-1].rsplit(",", 1)[-1]
-
-    # -- Build nodes --
-    nodes: list[dict[str, Any]] = []
-
-    for m in host_meshes:
-        nodes.append(
-            {
-                "id": f"host_mesh-{m['id']}",
-                "entity_id": m["id"],
-                "tier": "host_mesh",
-                "label": _leaf_name(m["given_name"]),
-                "subtitle": "Host Mesh",
-                "status": "n/a",
-            }
-        )
-
-    for hm in host_meshes:
-        for agent in host_agents_by_mesh.get(hm["id"], []):
-            nodes.append(
-                {
-                    "id": f"host_unit-{agent['id']}",
-                    "entity_id": agent["id"],
-                    "tier": "host_unit",
-                    "label": f"Host Unit {agent['rank']}",
-                    "subtitle": "Host",
-                    "status": actor_statuses.get(agent["id"], "unknown"),
-                    "rank": agent["rank"],
-                }
-            )
-
-    for m in proc_meshes:
-        nodes.append(
-            {
-                "id": f"proc_mesh-{m['id']}",
-                "entity_id": m["id"],
-                "tier": "proc_mesh",
-                "label": _leaf_name(m["given_name"]),
-                "subtitle": "Proc Mesh",
-                "status": "n/a",
-            }
-        )
-
-    for pm in proc_meshes:
-        for agent in proc_agents_by_mesh.get(pm["id"], []):
-            nodes.append(
-                {
-                    "id": f"proc_unit-{agent['id']}",
-                    "entity_id": agent["id"],
-                    "tier": "proc_unit",
-                    "label": f"Proc Unit {agent['rank']}",
-                    "subtitle": "Proc",
-                    "status": actor_statuses.get(agent["id"], "unknown"),
-                    "rank": agent["rank"],
-                }
-            )
-
-    for m in actor_meshes:
-        nodes.append(
-            {
-                "id": f"actor_mesh-{m['id']}",
-                "entity_id": m["id"],
-                "tier": "actor_mesh",
-                "label": _leaf_name(m["given_name"]),
-                "subtitle": "Actor Mesh",
-                "status": "n/a",
-            }
-        )
-
-    for a in regular_actors:
-        nodes.append(
-            {
-                "id": f"actor-{a['id']}",
-                "entity_id": a["id"],
-                "tier": "actor",
-                "label": _leaf_name(a["full_name"]),
-                "subtitle": f"rank {a['rank']}",
-                "status": actor_statuses.get(a["id"], "unknown"),
-                "rank": a["rank"],
-            }
-        )
-
-    # -- Build edges --
-    edges: list[dict[str, Any]] = []
-
-    # Host mesh -> host unit
-    for hm in host_meshes:
-        for agent in host_agents_by_mesh.get(hm["id"], []):
-            edges.append(
-                {
-                    "id": f"hier-host_mesh-{hm['id']}-host_unit-{agent['id']}",
-                    "source_id": f"host_mesh-{hm['id']}",
-                    "target_id": f"host_unit-{agent['id']}",
-                    "type": "hierarchy",
-                }
-            )
-
-    # Host unit -> proc mesh
-    # Use parent_view_json (ndslice Region) on the proc mesh to determine
-    # which host ranks it covers, then connect only matching host agents.
-    # Same pattern as proc_unit -> actor_mesh linking below.
-    for pm in proc_meshes:
-        if pm["parent_mesh_id"] is None:
-            continue
-        host_agents = host_agents_by_mesh.get(pm["parent_mesh_id"], [])
-        region = _parse_region(pm.get("parent_view_json"))
-        if region is not None and host_agents:
-            covered_ranks = _parent_ranks_for_region(*region)
-            matching = [a for a in host_agents if a.get("rank") in covered_ranks]
-            targets = matching if matching else host_agents
-        else:
-            targets = host_agents
-        for agent in targets:
-            edges.append(
-                {
-                    "id": f"hier-host_unit-{agent['id']}-proc_mesh-{pm['id']}",
-                    "source_id": f"host_unit-{agent['id']}",
-                    "target_id": f"proc_mesh-{pm['id']}",
-                    "type": "hierarchy",
-                }
-            )
-
-    # Proc mesh -> proc unit
-    for pm in proc_meshes:
-        for agent in proc_agents_by_mesh.get(pm["id"], []):
-            edges.append(
-                {
-                    "id": f"hier-proc_mesh-{pm['id']}-proc_unit-{agent['id']}",
-                    "source_id": f"proc_mesh-{pm['id']}",
-                    "target_id": f"proc_unit-{agent['id']}",
-                    "type": "hierarchy",
-                }
-            )
-
-    # Proc unit -> actor mesh
-    # Use parent_view_json (ndslice Region) to determine which proc ranks
-    # the actor mesh spans, then connect only the matching proc agents.
-    # Falls back to connecting all proc agents if parent_view_json is absent.
-    for am in actor_meshes:
-        if am["parent_mesh_id"] is None:
-            continue
-        proc_agents = proc_agents_by_mesh.get(am["parent_mesh_id"], [])
-        region = _parse_region(am.get("parent_view_json"))
-        if region is not None and proc_agents:
-            covered_ranks = _parent_ranks_for_region(*region)
-            matching = [a for a in proc_agents if a.get("rank") in covered_ranks]
-            # Fall back to all agents if no rank matches (e.g. rank data missing).
-            targets = matching if matching else proc_agents
-        else:
-            targets = proc_agents
-        for agent in targets:
-            edges.append(
-                {
-                    "id": f"hier-proc_unit-{agent['id']}-actor_mesh-{am['id']}",
-                    "source_id": f"proc_unit-{agent['id']}",
-                    "target_id": f"actor_mesh-{am['id']}",
-                    "type": "hierarchy",
-                }
-            )
-
-    # Actor mesh -> actor
-    for a in regular_actors:
-        edges.append(
-            {
-                "id": f"hier-actor_mesh-{a['mesh_id']}-actor-{a['id']}",
-                "source_id": f"actor_mesh-{a['mesh_id']}",
-                "target_id": f"actor-{a['id']}",
-                "type": "hierarchy",
-            }
-        )
-
-    # Message edges (deduplicated by actor pair).
-    # Map actor_id -> node_id so messages reference the correct node prefix
-    # (host_unit/proc_unit/actor rather than always "actor-").
-    actor_node_id: dict[int, str] = {}
-    for n in nodes:
-        if n["tier"] in ("host_unit", "proc_unit", "actor"):
-            actor_node_id[n["entity_id"]] = n["id"]
-
-    seen: set[str] = set()
-    for m in messages:
-        src = actor_node_id.get(m["from_actor_id"])
-        tgt = actor_node_id.get(m["to_actor_id"])
-        if not src or not tgt:
-            continue
-        key = f"{m['from_actor_id']}-{m['to_actor_id']}"
-        if key in seen:
-            continue
-        seen.add(key)
-        edges.append(
-            {
-                "id": f"msg-{m['from_actor_id']}-{m['to_actor_id']}",
-                "source_id": src,
-                "target_id": tgt,
-                "type": "message",
-            }
-        )
-
-    return {"nodes": nodes, "edges": edges}
-
-
 def get_summary() -> dict[str, Any]:
     """Return aggregate metrics for the summary dashboard."""
 
@@ -800,29 +494,39 @@ def get_summary() -> dict[str, Any]:
     # -- Actor counts --
     total_actors = _count("SELECT COUNT(*) AS n FROM actors")
 
-    # Latest status per actor — deduplicate in Python to handle cases where
-    # multiple events share the same max timestamp.
-    actor_latest_rows = _query(
-        f"SELECT actor_id, new_status FROM ({_LATEST_ACTOR_STATUS_SQL})"
+    # Count actors by latest status entirely in SQL — one (status, n) row per
+    # status, not one row per actor. The inner GROUP BY collapses same-timestamp
+    # ties to a single status per actor. Normalise to lowercase so both fake
+    # data ("idle") and real DataFusion telemetry ("Idle") match.
+    actor_status_rows = _query(
+        "SELECT new_status, COUNT(*) AS n FROM ("
+        "  SELECT actor_id, MIN(new_status) AS new_status"
+        f"  FROM ({_LATEST_ACTOR_STATUS_SQL}) GROUP BY actor_id"
+        " ) t GROUP BY new_status"
     )
-    # Keep first occurrence per actor_id.  Normalise to lowercase so both
-    # fake data ("idle") and real DataFusion telemetry ("Idle") match.
     actor_by_status: dict[str, int] = {}
-    for row in _dedup_rows(actor_latest_rows, key="actor_id"):
+    for row in actor_status_rows:
         s = (row["new_status"] or "unknown").lower()
-        actor_by_status[s] = actor_by_status.get(s, 0) + 1
+        actor_by_status[s] = actor_by_status.get(s, 0) + int(row["n"] or 0)
 
     # -- Message counts --
     total_messages = _count("SELECT COUNT(*) AS n FROM messages")
 
-    # Latest status per message — deduplicate in Python.
-    msg_latest_rows = _query(
-        f"SELECT message_id, status FROM ({_LATEST_MSG_STATUS_SQL})"
+    # Count messages by latest status entirely in SQL. Pulling one row per
+    # message here would stream the whole table back through the telemetry
+    # scanner and re-record each batch as a `queued` event (a self-amplifying
+    # loop); the aggregate returns only a handful of (status, n) rows. The inner
+    # GROUP BY collapses same-timestamp ties to a single status per message.
+    msg_status_rows = _query(
+        "SELECT status, COUNT(*) AS n FROM ("
+        "  SELECT message_id, MIN(status) AS status"
+        f"  FROM ({_LATEST_MSG_STATUS_SQL}) GROUP BY message_id"
+        " ) t GROUP BY status"
     )
     msg_by_status: dict[str, int] = {}
-    for row in _dedup_rows(msg_latest_rows, key="message_id"):
+    for row in msg_status_rows:
         s = (row["status"] or "unknown").lower()
-        msg_by_status[s] = msg_by_status.get(s, 0) + 1
+        msg_by_status[s] = msg_by_status.get(s, 0) + int(row["n"] or 0)
 
     msg_endpoint_rows = _query(
         "SELECT endpoint, COUNT(*) AS cnt FROM messages "
@@ -945,3 +649,89 @@ def get_summary() -> dict[str, Any]:
         },
         "health_score": health_score,
     }
+
+
+def get_message_stats() -> dict[str, Any]:
+    """Consolidated message metrics for the overview + topology overlay.
+
+    Computes the deduped handler lifecycle, per-endpoint volume, and the
+    distinct actor->actor pairs in ONE server-side aggregate so the browser can
+    read them from a single cached endpoint instead of issuing its own raw
+    per-poll SQL. A raw client scan of ``message_status_events`` is streamed
+    back through the telemetry scanner as one message per batch, and each of
+    those is itself recorded as a ``queued`` event — so a browser that polls raw
+    scans of that table inflates the very table it reads (a self-amplifying
+    loop). Keeping the scan server-side and behind the route cache bounds it.
+    """
+    # Deduped handler lifecycle: one terminal/current state per message.
+    lifecycle = {"queued": 0, "active": 0, "completed": 0, "failed": 0}
+    _state_key = {"complete": "completed", "failed": "failed", "active": "active"}
+    for row in _query(_MSG_LIFECYCLE_SQL):
+        key = _state_key.get(str(row.get("state") or ""), "queued")
+        lifecycle[key] = int(row.get("n") or 0)
+
+    # Per-endpoint volume + completed count, deduped by message id.
+    endpoint_rows = _query(
+        "SELECT m.endpoint AS endpoint,"
+        " COUNT(DISTINCT m.id) AS total,"
+        " COUNT(DISTINCT CASE WHEN LOWER(e.status) = 'complete' THEN m.id END) AS completed"
+        " FROM messages m"
+        " LEFT JOIN message_status_events e ON e.message_id = m.id"
+        " GROUP BY m.endpoint ORDER BY total DESC"
+    )
+    endpoints = [
+        {
+            "endpoint": row.get("endpoint") or "(none)",
+            "total": int(row.get("total") or 0),
+            "completed": int(row.get("completed") or 0),
+        }
+        for row in endpoint_rows
+    ]
+
+    # Distinct actor->actor pairs for the topology message overlay. CAST to
+    # string to survive JS bigint precision (ids exceed Number.MAX_SAFE_INTEGER).
+    pair_rows = _query(
+        "SELECT DISTINCT CAST(from_actor_id AS VARCHAR) AS f,"
+        " CAST(to_actor_id AS VARCHAR) AS t FROM messages"
+    )
+    pairs = [[str(row.get("f")), str(row.get("t"))] for row in pair_rows]
+
+    return {"lifecycle": lifecycle, "endpoints": endpoints, "pairs": pairs}
+
+
+def get_message_activity(num_buckets: int = 44) -> dict[str, Any]:
+    """Message-throughput histogram + window, computed server-side.
+
+    Returns the message time span, total count, and a fixed-size bucket
+    histogram — a small, bounded result — so the activity panel never polls the
+    full `messages` list. Streaming that list back through the telemetry scanner
+    would re-record each batch as a `queued` event, inflating the very tables
+    the dashboard reads (a self-amplifying loop).
+    """
+    span = _query_one(
+        "SELECT MIN(timestamp_us) AS start_us,"
+        " MAX(timestamp_us) AS end_us,"
+        " COUNT(*) AS total FROM messages"
+    )
+    start = span["start_us"] if span and span["start_us"] is not None else 0
+    end = span["end_us"] if span and span["end_us"] is not None else 0
+    total = int(span["total"]) if span and span["total"] is not None else 0
+
+    buckets = [0] * num_buckets
+    if end > start and total > 0:
+        width = end - start
+        # Bucket index = floor((ts - start) * num_buckets / span). CAST guards
+        # against engines that promote integer division to float. GROUP BY the
+        # index so only ~num_buckets rows come back, never the raw rows.
+        rows = _query(
+            "SELECT b, COUNT(*) AS n FROM ("
+            "  SELECT CAST((timestamp_us - ?) * ? / ? AS BIGINT) AS b FROM messages"
+            " ) t GROUP BY b ORDER BY b",
+            (start, num_buckets, width),
+        )
+        for row in rows:
+            b = int(row["b"] or 0)
+            b = min(num_buckets - 1, max(0, b))
+            buckets[b] += int(row["n"] or 0)
+
+    return {"start_us": start, "end_us": end, "total": total, "buckets": buckets}

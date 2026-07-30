@@ -21,6 +21,7 @@ from monarch._rust_bindings.monarch_extension.snapshot_integration import (
 from . import db
 from .admin_dag import build_admin_dag
 from .cache import cached
+from .pyspy_client import capture_pyspy_dump, mesh_admin_base_url
 from .system_actors import get_system_actor_names
 
 api = Blueprint("api", __name__, url_prefix="/api")
@@ -71,6 +72,33 @@ def summary():
     return jsonify(cached("summary", lambda: _sanitize_for_js(db.get_summary())))
 
 
+@api.route("/message-stats")
+def message_stats():
+    """Consolidated, cached message metrics: handler lifecycle, per-endpoint
+    volume, and the distinct actor pairs for the topology overlay.
+
+    The frontend reads all message-table aggregates from this one cached
+    endpoint rather than posting raw per-poll SQL. A raw client scan of
+    ``message_status_events`` is streamed back through the telemetry scanner as
+    one message per batch, each recorded as a ``queued`` event, so polling raw
+    scans of that table inflates the table being read (a self-amplifying loop).
+    One cached server-side aggregate keeps observer load bounded — the ids are
+    already JS-safe strings, so no sanitize pass is needed.
+    """
+    return jsonify(cached("message-stats", db.get_message_stats))
+
+
+@api.route("/message-activity")
+def message_activity():
+    """Cached message-throughput histogram + window for the activity panel.
+
+    Returns a small fixed-size histogram (buckets + span + total) instead of the
+    full message list, so the panel's poll never streams the whole `messages`
+    table back through the telemetry scanner (which would inflate
+    `message_status_events`)."""
+    return jsonify(cached("message-activity", db.get_message_activity))
+
+
 @api.route("/dag")
 def dag():
     """Classified nodes and edges for the DAG visualization.
@@ -80,8 +108,9 @@ def dag():
     Host → Proc → Actor.  System actors are filtered using the
     snapshot ``is_system`` flag and a name-based heuristic.
 
-    Falls back to the telemetry SQL 6-tier hierarchy if snapshot
-    tables are empty.
+    Until the first snapshot is captured (cold start), returns an empty
+    DAG with ``snapshot_pending: true`` so the frontend can show a
+    "waiting for first snapshot" state.
 
     Optional: ?hide_system=true (default) to filter system actors.
     """
@@ -99,9 +128,13 @@ def dag():
                     }
                 )
 
-            # Fallback: telemetry SQL layer.
-            system_names = get_system_actor_names() if hide_system else set()
-            return _sanitize_for_js(db.get_dag_data(system_names=system_names))
+            # No snapshot captured yet (cold start — up to the first snapshot
+            # interval). The frontend shows a "waiting for first snapshot"
+            # state. We no longer fall back to the telemetry-SQL DAG: it
+            # produced a divergent second node shape (explicit *_mesh container
+            # nodes) that mesh-view collapse mishandled, and snapshots are
+            # always configured whenever the dashboard is enabled.
+            return {"nodes": [], "edges": [], "snapshot_pending": True}
 
         return jsonify(cached(cache_key, _compute_dag))
     except Exception as exc:
@@ -276,6 +309,26 @@ def query():
 # ---------------------------------------------------------------------------
 # Py-spy dump storage
 # ---------------------------------------------------------------------------
+
+
+@api.route("/pyspy/capture", methods=["POST"])
+def pyspy_capture():
+    """Trigger an on-demand py-spy stack dump for a proc.
+
+    Body: ``{"proc_ref": "<proc entity_id from /api/dag>"}``. py-spy is
+    proc-level, so this profiles the whole process (all actors sharing it).
+    Proxies to the Mesh Admin ``GET /v1/pyspy/{proc_ref}`` and returns the
+    structured ``PySpyResult`` verbatim under ``result``.
+    """
+    data = request.get_json(silent=True) or {}
+    proc_ref = data.get("proc_ref")
+    if not proc_ref:
+        return jsonify({"error": "missing 'proc_ref' in request body"}), 400
+    try:
+        result = capture_pyspy_dump(proc_ref)
+        return jsonify({"proc_ref": proc_ref, "result": result})
+    except Exception as exc:
+        return jsonify({"error": str(exc), "admin_url": mesh_admin_base_url()}), 502
 
 
 @api.route("/pyspy_dump", methods=["POST"])

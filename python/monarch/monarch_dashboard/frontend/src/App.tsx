@@ -6,158 +6,125 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-import React, { useState, useCallback } from "react";
-import { Header } from "./components/Header";
-import { Breadcrumb } from "./components/Breadcrumb";
-import { MeshTable } from "./components/MeshTable";
-import { ActorDetail } from "./components/ActorDetail";
-import { DagView } from "./components/DagView";
-import { SummaryView } from "./components/SummaryView";
-import { NavItem } from "./types";
-import { leafName, agentDisplayName } from "./utils/status";
-import "./App.css";
+import React, { useState } from "react";
+import { useActorStats } from "./lib/actorStats";
+import { healthBand } from "./lib/status";
+import { relativeTime } from "./lib/format";
+import {
+  IconOverview,
+  IconTopology,
+  IconHierarchy,
+} from "./components/common/icons";
+import { OverviewView } from "./components/overview/OverviewView";
+import { TopologyView } from "./components/topology/TopologyView";
+import { HierarchyView } from "./components/hierarchy/HierarchyView";
 
-const TABS = [
-  { id: "summary", label: "Summary" },
-  { id: "hierarchy", label: "Hierarchy" },
-  { id: "dag", label: "DAG" },
+type ViewId = "overview" | "topology" | "hierarchy";
+
+const NAV: Array<{ id: ViewId; label: string; Icon: React.FC<{ className?: string; size?: number }> }> = [
+  { id: "overview", label: "Overview", Icon: IconOverview },
+  { id: "topology", label: "Topology", Icon: IconTopology },
+  { id: "hierarchy", label: "Explorer", Icon: IconHierarchy },
 ];
 
-const MESH_COLUMNS = [
-  { key: "given_name", label: "Name" },
-  { key: "class", label: "Type" },
-  { key: "shape_json", label: "Shape" },
-];
+function MonarchLogo() {
+  return (
+    <svg className="brand-logo" viewBox="0 0 171 170" width="26" height="26" fill="none" aria-hidden="true">
+      <g clipPath="url(#mlogo)">
+        <path
+          d="M87.7837 115.185L20.5159 119.007C14.6855 119.339 10.6965 114.477 10.9063 109.489C11.0701 107.885 11.583 106.326 12.3997 104.94C12.6864 104.512 13.0159 104.095 13.3912 103.696L15.1595 101.817C16.7859 100.574 18.8198 99.7661 21.1686 99.6374L95.9088 95.5456L87.7837 115.185ZM107.124 4.08886C116.809 -6.20282 133.528 4.623 128.123 17.6864L102.076 80.6412L31.4477 84.5075L107.124 4.08886Z"
+          fill="#FDBD97"
+        />
+        <path
+          d="M14.0932 118.284C7.37588 111.629 11.727 100.154 21.1636 99.6372L149.005 92.6394C159.639 92.0573 164.707 105.52 156.335 112.109L88.7152 165.328C80.0742 172.128 67.727 171.423 59.9146 163.683L14.0932 118.284Z"
+          fill="#EC6C46"
+        />
+      </g>
+      <defs>
+        <clipPath id="mlogo">
+          <rect width="170" height="170" fill="white" transform="translate(0.84375)" />
+        </clipPath>
+      </defs>
+    </svg>
+  );
+}
 
-const AGENT_COLUMNS = [
-  { key: "full_name", label: "Name" },
-  { key: "rank", label: "Rank" },
-  { key: "latest_status", label: "Status" },
-];
+function HealthChip() {
+  const { total, health, down, updatedAt, loading } = useActorStats();
+  const band = healthBand(health);
+  const stale = updatedAt != null && Date.now() - updatedAt > 8000;
 
-const ACTOR_COLUMNS = [
-  { key: "full_name", label: "Name" },
-  { key: "rank", label: "Rank" },
-  { key: "latest_status", label: "Status" },
-  { key: "status_timestamp_us", label: "Last Updated" },
-];
-
-/** True if actor name looks like a HostAgent (system agent for hosts). */
-const _isHostAgent = (name: string): boolean => {
-  const low = name.toLowerCase();
-  return low.includes("hostagent") || low.includes("host_agent");
-};
-
-/** True if actor name looks like a ProcAgent (system agent for procs). */
-const _isProcAgent = (name: string): boolean => {
-  const low = name.toLowerCase();
-  return low.includes("procagent") || low.includes("proc_agent");
-};
-
-/** Navigation graph: for each level, what comes next and how to label it. */
-const LEVELS: Partial<Record<NavItem["level"], {
-  next: NavItem["level"];
-  label: (row: any) => string;
-  idField: "meshId" | "actorId";
-  idKey: string;
-}>> = {
-  host_meshes:  { next: "host_units",   label: (r) => r.given_name,       idField: "meshId",  idKey: "id" },
-  host_units:   { next: "proc_meshes",  label: (r) => agentDisplayName(r.full_name, r.rank) ?? leafName(r.full_name), idField: "meshId",  idKey: "mesh_id" },
-  proc_meshes:  { next: "proc_units",   label: (r) => r.given_name,       idField: "meshId",  idKey: "id" },
-  proc_units:   { next: "actor_meshes", label: (r) => agentDisplayName(r.full_name, r.rank) ?? leafName(r.full_name), idField: "meshId",  idKey: "mesh_id" },
-  actor_meshes: { next: "actors",       label: (r) => r.given_name,       idField: "meshId",  idKey: "id" },
-  actors:       { next: "actor_detail", label: (r) => leafName(r.full_name), idField: "actorId", idKey: "id" },
-};
-
-/** MeshTable config per hierarchy level. */
-const LEVEL_CONFIG: Partial<Record<NavItem["level"], {
-  apiPath: (n: NavItem) => string;
-  columns: Array<{ key: string; label: string }>;
-  title: string;
-  clientFilter?: (rows: any[]) => any[];
-}>> = {
-  host_meshes:  { apiPath: ()  => "/meshes?class=Host",                                          columns: MESH_COLUMNS,  title: "Host Meshes" },
-  host_units:   { apiPath: (n) => `/actors?mesh_id=${n.meshId}`,                                 columns: AGENT_COLUMNS, title: "Host Units",    clientFilter: (rows) => rows.filter(r => _isHostAgent(r.full_name ?? "")) },
-  proc_meshes:  { apiPath: (n) => `/meshes/${n.meshId}/children?mesh_class=Proc`,                columns: MESH_COLUMNS,  title: "Proc Meshes" },
-  proc_units:   { apiPath: (n) => `/actors?mesh_id=${n.meshId}`,                                 columns: AGENT_COLUMNS, title: "Proc Units",    clientFilter: (rows) => rows.filter(r => _isProcAgent(r.full_name ?? "")) },
-  actor_meshes: { apiPath: (n) => `/meshes/${n.meshId}/children?exclude_classes=Host,Proc`,      columns: MESH_COLUMNS,  title: "Actor Meshes" },
-  actors:       { apiPath: (n) => `/actors?mesh_id=${n.meshId}`,                                 columns: ACTOR_COLUMNS, title: "Actors" },
-};
+  return (
+    <>
+      {down > 0 && (
+        <span className="live-dot stale" title={`${down} actors down`}>
+          <i />
+          {down} down
+        </span>
+      )}
+      <span className={`live-dot${stale ? " stale" : ""}`} title="Live polling every 2s">
+        <i />
+        {stale ? "reconnecting" : "live"}
+        <span style={{ color: "var(--text-3)", fontWeight: 500 }}>· {relativeTime(updatedAt)}</span>
+      </span>
+      {!loading && total > 0 && (
+        <span className="health-chip">
+          <span className="health-chip-label">Health</span>
+          <span className="health-chip-val" style={{ color: band.color }}>{health}</span>
+          <span className="health-chip-pill" style={{ background: band.color }}>{band.label}</span>
+        </span>
+      )}
+    </>
+  );
+}
 
 function App() {
-  const [activeTab, setActiveTab] = useState("summary");
-  const [navStack, setNavStack] = useState<NavItem[]>([
-    { label: "Host Meshes", level: "host_meshes" },
-  ]);
-
-  const currentNav = navStack[navStack.length - 1];
-
-  const pushNav = useCallback(
-    (item: NavItem) => setNavStack((prev) => [...prev, item]),
-    []
-  );
-
-  const navigateTo = useCallback(
-    (index: number) => setNavStack((prev) => prev.slice(0, index + 1)),
-    []
-  );
-
-  const handleRowClick = useCallback(
-    (entity: any) => {
-      const cfg = LEVELS[currentNav.level];
-      if (!cfg) return;
-      pushNav({
-        label: cfg.label(entity),
-        level: cfg.next,
-        [cfg.idField]: entity[cfg.idKey],
-      } as NavItem);
-    },
-    [currentNav.level, pushNav]
-  );
-
-  const handleTabChange = useCallback((id: string) => {
-    setActiveTab(id);
-    setNavStack([{ label: "Host Meshes", level: "host_meshes" }]);
-  }, []);
-
-  const renderHierarchyView = () => {
-    const cfg = LEVEL_CONFIG[currentNav.level];
-    if (cfg) {
-      return (
-        <MeshTable
-          apiPath={cfg.apiPath(currentNav)}
-          columns={cfg.columns}
-          onRowClick={handleRowClick}
-          title={cfg.title}
-          clientFilter={cfg.clientFilter}
-        />
-      );
-    }
-    if (currentNav.level === "actor_detail") {
-      return <ActorDetail actorId={currentNav.actorId!} />;
-    }
-    return null;
-  };
+  const [view, setView] = useState<ViewId>("overview");
 
   return (
     <div className="app">
-      <Header tabs={TABS} activeTab={activeTab} onTabChange={handleTabChange} />
-      <main className="main-content">
-        {activeTab === "summary" && (
-          <div className="view-container fade-in">
-            <SummaryView />
-          </div>
-        )}
-        {activeTab === "hierarchy" && (
-          <>
-            <Breadcrumb items={navStack} onNavigate={navigateTo} />
-            <div className="view-container fade-in">
-              {renderHierarchyView()}
-            </div>
-          </>
-        )}
-        {activeTab === "dag" && <DagView />}
-      </main>
+      <header className="topbar">
+        <div className="brand">
+          <MonarchLogo />
+          <span className="brand-name">Monarch</span>
+          <span className="brand-sub">Dashboard</span>
+          <span className="brand-badge">Beta</span>
+        </div>
+        <nav className="nav" role="tablist">
+          {NAV.map(({ id, label, Icon }) => (
+            <button
+              key={id}
+              role="tab"
+              aria-selected={view === id}
+              className={`nav-item${view === id ? " active" : ""}`}
+              onClick={() => setView(id)}
+            >
+              <Icon className="nav-ico" size={15} />
+              {label}
+            </button>
+          ))}
+        </nav>
+        <div className="topbar-spacer" />
+        <div className="topbar-right">
+          <HealthChip />
+        </div>
+      </header>
+
+      {view === "overview" && (
+        <main className="content">
+          <OverviewView />
+        </main>
+      )}
+      {view === "topology" && (
+        <main className="content full">
+          <TopologyView />
+        </main>
+      )}
+      {view === "hierarchy" && (
+        <main className="content">
+          <HierarchyView />
+        </main>
+      )}
     </div>
   );
 }

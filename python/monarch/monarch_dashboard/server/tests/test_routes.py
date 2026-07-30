@@ -362,6 +362,48 @@ class SummaryRoutesTest(_RouteTestBase):
 
 
 # ---------------------------------------------------------------------------
+# Message stats
+# ---------------------------------------------------------------------------
+
+
+class MessageStatsRoutesTest(_RouteTestBase):
+    def test_returns_200_and_shape(self):
+        resp = self.client.get("/api/message-stats")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertEqual(set(data.keys()), {"lifecycle", "endpoints", "pairs"})
+
+    def test_lifecycle_and_endpoints(self):
+        data = self.client.get("/api/message-stats").get_json()
+        self.assertEqual(
+            set(data["lifecycle"].keys()),
+            {"queued", "active", "completed", "failed"},
+        )
+        self.assertGreater(len(data["endpoints"]), 0)
+
+    def test_pairs_serialized_as_strings(self):
+        # ids are CAST to string server-side to survive JS bigint precision.
+        pairs = self.client.get("/api/message-stats").get_json()["pairs"]
+        self.assertGreater(len(pairs), 0)
+        for p in pairs:
+            self.assertIsInstance(p[0], str)
+            self.assertIsInstance(p[1], str)
+
+
+class MessageActivityRoutesTest(_RouteTestBase):
+    def test_returns_200_and_shape(self):
+        resp = self.client.get("/api/message-activity")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertEqual(set(data.keys()), {"start_us", "end_us", "total", "buckets"})
+        self.assertEqual(len(data["buckets"]), 44)
+
+    def test_buckets_sum_to_total(self):
+        data = self.client.get("/api/message-activity").get_json()
+        self.assertEqual(sum(data["buckets"]), data["total"])
+
+
+# ---------------------------------------------------------------------------
 # SQL query
 # ---------------------------------------------------------------------------
 
