@@ -28,6 +28,7 @@ use std::sync::OnceLock;
 
 use anyhow::Context;
 
+use super::device_selection::IbvDeviceTarget;
 use super::device_selection::get_cuda_device_to_ibv_device;
 use super::domain::IbvDomain;
 use super::domain::IbvDomainImpl;
@@ -738,12 +739,27 @@ impl MlxDomain {
             return Ok(RegisteredSegment::view(seg, addr, size));
         }
 
-        // Pull live segments and keep only the ones on ordinals we serve.
+        // Pull live segments and keep only the ones on ordinals we serve --
+        // unless this NIC is an explicit pin (`config.target`). A pin forces
+        // *every* registration onto this NIC in `resolve_local_mr`, overriding
+        // the GPU-optimal-NIC selection that `cuda_ordinals` is derived from
+        // (`assigned_cuda_devices` -> `select_optimal_ibv_devices`). In that
+        // case the topology filter is wrong: it would drop segments on GPUs
+        // whose optimal NIC differs from the pin, sending them to the
+        // whole-allocation dmabuf fallback -- which mis-registers
+        // `expandable_segments` CUDA memory (it trusts `cuMemGetAddressRange`,
+        // which returns a single VMM mapping granule, not the whole segment) and
+        // faults remote writes with `REM_ACCESS_ERR`. When pinned here, bind
+        // whatever segments land on this NIC instead.
+        let pinned_here = matches!(
+            &self.config.target,
+            Some(IbvDeviceTarget::Nic(name)) if *name == self.ops.device_name()
+        );
         let scanned: Vec<ScannedSegment> = self
             .ops
             .scan_segments()
             .into_iter()
-            .filter(|s| self.cuda_ordinals.contains(&s.cuda_ordinal))
+            .filter(|s| pinned_here || self.cuda_ordinals.contains(&s.cuda_ordinal))
             .collect();
 
         let qp = self.loopback_qp_ptr(domain)?;
@@ -1004,6 +1020,22 @@ mod tests {
         let mlx = MlxDomain::new_with_ops(mock, IbvConfig::default(), TEST_MKEY_MAX_ENTRIES);
         // SAFETY: `IbvPd::null()` holds a null PD (and, through it, a null
         // context) whose `Drop`s are no-ops.
+        unsafe {
+            Arc::new(IbvDomain::for_test(
+                Arc::new(IbvPd::null()),
+                IbvDeviceInfo::for_test_named("test"),
+                mlx,
+            ))
+        }
+    }
+
+    /// Like [`domain`] but with an explicit NIC pin (`config.target`), so
+    /// `register_cuda_mlx5dv_mr` treats this domain as the pinned target when
+    /// `nic` matches the mock's device name.
+    fn domain_pinned_to(mock: Arc<MockOps>, nic: &str) -> Arc<IbvDomain<MlxDomain>> {
+        let config = IbvConfig::targeting(IbvDeviceTarget::nic(nic));
+        let mlx = MlxDomain::new_with_ops(mock, config, TEST_MKEY_MAX_ENTRIES);
+        // SAFETY: as in [`domain`].
         unsafe {
             Arc::new(IbvDomain::for_test(
                 Arc::new(IbvPd::null()),
@@ -1425,6 +1457,48 @@ mod tests {
             mock.lock().bind_calls.is_empty(),
             "no bind attempted for an unserved ordinal"
         );
+    }
+
+    #[test]
+    fn test_pinned_nic_binds_unserved_ordinal() {
+        // When this NIC is the explicit pin (`config.target`), every
+        // registration is routed here regardless of the GPU's optimal NIC, so
+        // the mlx5dv path must bind a segment on an ordinal this NIC's topology
+        // filter would otherwise exclude -- rather than dropping it onto the
+        // expandable-segments-unsafe dmabuf fallback.
+        let base = 0x10_0000_0000;
+        let mock = MockOps::new(SERVED_NIC, true, &[0]);
+        // Segment is on ordinal 5, which the topology filter (served: [0])
+        // excludes.
+        mock.lock().scan = vec![seg(base, MIB2, 5)];
+        let domain = domain_pinned_to(mock.clone(), SERVED_NIC);
+
+        let view =
+            register_cuda(&domain, base, 4096).expect("a pinned NIC binds segments on any ordinal");
+        assert_eq!(view.rdma_addr, 0, "view is anchored at the segment base");
+        assert_eq!(view.device_name, SERVED_NIC);
+        assert_eq!(
+            mock.lock().bind_calls.len(),
+            1,
+            "the unserved-ordinal segment is bound under the pin"
+        );
+    }
+
+    #[test]
+    fn test_pin_to_other_nic_keeps_ordinal_filter() {
+        // A pin naming a *different* NIC must not relax this NIC's ordinal
+        // filter: this domain is not the pinned target, so an unserved ordinal
+        // stays excluded.
+        let base = 0x10_0000_0000;
+        let mock = MockOps::new(SERVED_NIC, true, &[0]);
+        mock.lock().scan = vec![seg(base, MIB2, 5)];
+        let domain = domain_pinned_to(mock.clone(), "mlx5_other");
+
+        assert!(
+            register_cuda(&domain, base, 4096).is_err(),
+            "a pin naming a different NIC does not bypass this NIC's ordinal filter"
+        );
+        assert!(mock.lock().bind_calls.is_empty());
     }
 
     #[test]
