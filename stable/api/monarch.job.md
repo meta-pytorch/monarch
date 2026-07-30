@@ -215,6 +215,59 @@ cached job can be used to run spec instead of creating a new reserveration.
 
 It is also used by the batch run infrastructure to indicate that the batch job can certainly run itself.
 
+# Observability
+
+See the [Observability](../observability.html) guide for the relationship between distributed
+telemetry, the Monarch Dashboard, and the Mesh Admin TUI.
+
+*class*monarch.job.TelemetryConfig(*retention_secs=600*, *include_dashboard=False*, *dashboard_port=8265*, *snapshot_interval_secs=0*)[[source]](../_modules/monarch/_src/job/telemetry_config.html#TelemetryConfig)
+
+Configuration for automatic telemetry startup.
+
+When configured via `JobTrait.enable_telemetry`, telemetry
+(and optionally a dashboard) is started when `state()` is called.
+
+Parameters:
+
+- **retention_secs** ([*int*](https://docs.python.org/3/library/functions.html#int)) - Retention window in seconds for message tables.
+0 disables retention.
+- **include_dashboard** ([*bool*](https://docs.python.org/3/library/functions.html#bool)) - Whether to start the monarch dashboard web server.
+- **dashboard_port** ([*int*](https://docs.python.org/3/library/functions.html#int)) - Preferred port for the dashboard.
+- **snapshot_interval_secs** ([*float*](https://docs.python.org/3/library/functions.html#float)) - Interval in seconds between periodic mesh
+introspection snapshots. Snapshots capture the mesh topology
+into the telemetry query surface. 0 disables periodic capture
+(default). When `include_dashboard` is True and this is 0,
+it is automatically set to 30s because the dashboard requires
+snapshot data for system actor filtering.
+
+retention_secs*: [int](https://docs.python.org/3/library/functions.html#int)**= 600*
+
+include_dashboard*: [bool](https://docs.python.org/3/library/functions.html#bool)**= False*
+
+dashboard_port*: [int](https://docs.python.org/3/library/functions.html#int)**= 8265*
+
+snapshot_interval_secs*: [float](https://docs.python.org/3/library/functions.html#float)**= 0*
+
+__init__(*retention_secs=600*, *include_dashboard=False*, *dashboard_port=8265*, *snapshot_interval_secs=0*)
+
+*class*monarch.job.MeshAdminConfig(*admin_addr=None*)[[source]](../_modules/monarch/_src/job/job_components.html#MeshAdminConfig)
+
+Configuration for automatic mesh admin agent startup.
+
+When configured via `JobTrait.enable_admin`, a MeshAdminAgent HTTP
+server is spawned when `state()` is called. The server aggregates
+topology across all host meshes and exposes it via a REST API that the
+admin TUI can attach to.
+
+Parameters:
+
+**admin_addr** ([*str*](https://docs.python.org/3/library/stdtypes.html#str)*|**None*) - Bind address for the admin HTTP server. When
+`None` the server picks an available address automatically.
+
+admin_addr*: [str](https://docs.python.org/3/library/stdtypes.html#str) | [None](https://docs.python.org/3/library/constants.html#None)**= None*
+
+__init__(*admin_addr=None*)
+
 # Job Implementations
 
 ## LocalJob
