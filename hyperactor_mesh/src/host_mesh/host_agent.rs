@@ -1822,13 +1822,7 @@ wirevalue::register_type!(SetClientConfig);
 impl Handler<SetClientConfig> for HostAgent {
     async fn handle(&mut self, cx: &Context<Self>, msg: SetClientConfig) -> anyhow::Result<()> {
         let rank = msg.rank.0.expect("rank should be stamped before delivery");
-        // Use `set` (not `create_or_merge`) because `push_config` always
-        // sends a complete `propagatable_attrs()` snapshot. Replacing the
-        // layer wholesale is intentional and idempotent.
-        hyperactor_config::global::set(
-            hyperactor_config::global::Source::ClientOverride,
-            msg.attrs,
-        );
+        hyperactor_config::global::install_client_config(msg.attrs);
         tracing::debug!("installed client config override on host agent");
         // Ack as a single-rank overlay at this host's ordinal. `StatusMesh` is
         // reused here purely as a per-rank presence/ack barrier, not as a

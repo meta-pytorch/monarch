@@ -20,7 +20,10 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
-from monarch._rust_bindings.monarch_hyperactor.config import configure
+from monarch._rust_bindings.monarch_hyperactor.config import (
+    configure,
+    get_client_config_bootstrap_env,
+)
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.actor.host_mesh import this_host
 from monarch._src.job.job import JobState, JobTrait
@@ -319,6 +322,7 @@ def serve(
 
     # Cache original entrypoints before modifying
     original_roles = []
+    config_env_name, config_env_value = get_client_config_bootstrap_env()
     scheme = "metatls" if scheduler.startswith("mast") else "tcp"
     for role in appdef.roles:
         original_roles.append(
@@ -328,6 +332,8 @@ def serve(
             }
         )
 
+        role.env = dict(role.env or {})
+        role.env[config_env_name] = config_env_value
         role.args = [
             "python",
             "-X",
