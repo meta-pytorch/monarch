@@ -21,6 +21,9 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Dict, List, Literal, NamedTuple, Optional, Sequence
 
+from monarch._rust_bindings.monarch_hyperactor.config import (
+    get_client_config_bootstrap_env,
+)
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.job._batch_env import in_batch_job, MONARCH_BATCH_JOB_ENV
 from monarch._src.job._telemetry_query_client import QueryEngineClient
@@ -1006,7 +1009,9 @@ class LocalJob(JobTrait):
         stderr_log = os.path.join(log_dir, "stderr.log")
 
         # Create environment with the batch-mode marker set.
+        config_env_name, config_env_value = get_client_config_bootstrap_env()
         env = os.environ.copy()
+        env[config_env_name] = config_env_value
         env[MONARCH_BATCH_JOB_ENV] = "1"
 
         # Open log files
@@ -1193,7 +1198,11 @@ class SSHJob(LoginJob):
         addr = f"{self._scheme}://{host}:{self._port}"
         startup = f'from monarch.actor import run_worker_loop_forever; run_worker_loop_forever(address={repr(addr)}, ca="trust_all_connections")'
 
-        command = f"{shlex.quote(self._python_exe)} -c {shlex.quote(startup)}"
+        config_env_name, config_env_value = get_client_config_bootstrap_env()
+        env_prefix = f"{config_env_name}={shlex.quote(config_env_value)}"
+        command = (
+            f"{env_prefix} {shlex.quote(self._python_exe)} -c {shlex.quote(startup)}"
+        )
         proc = subprocess.Popen(
             ["ssh", *self._ssh_args, host, "-n", command],
             start_new_session=True,

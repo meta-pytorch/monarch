@@ -288,8 +288,8 @@ pub async fn host(
     via: Option<ChannelAddr>,
 ) -> anyhow::Result<(ActorHandle<HostAgent>, HostShutdownHandle)> {
     if let Some(attrs) = config {
-        hyperactor_config::global::set(hyperactor_config::global::Source::Runtime, attrs);
-        tracing::debug!("bootstrap: installed Runtime config snapshot (Host)");
+        hyperactor_config::global::install_client_config(attrs);
+        tracing::debug!("bootstrap: installed ClientOverride config snapshot (Host)");
     } else {
         tracing::debug!("bootstrap: no config snapshot provided (Host)");
     }
@@ -435,6 +435,12 @@ impl HostBootstrapReady {
 }
 
 impl Bootstrap {
+    fn config(&self) -> Option<&Attrs> {
+        match self {
+            Self::Proc { config, .. } | Self::Host { config, .. } => config.as_ref(),
+        }
+    }
+
     /// Serialize the mode into a environment-variable-safe string by
     /// base64-encoding its JSON representation.
     #[allow(clippy::result_large_err)]
@@ -471,6 +477,11 @@ impl Bootstrap {
             "HYPERACTOR_MESH_BOOTSTRAP_MODE",
             self.to_env_safe_string().unwrap(),
         );
+        if let Some(config) = self.config() {
+            let (name, value) = hyperactor_config::client_config_bootstrap_env(config)
+                .expect("client config snapshot should serialize");
+            cmd.env(name, value);
+        }
     }
 
     /// Bootstrap this binary according to this configuration.
@@ -536,10 +547,7 @@ impl Bootstrap {
                 )
                 .entered();
                 if let Some(attrs) = config {
-                    hyperactor_config::global::set(
-                        hyperactor_config::global::Source::ClientOverride,
-                        attrs,
-                    );
+                    hyperactor_config::global::install_client_config(attrs);
                     tracing::debug!("bootstrap: installed ClientOverride config snapshot (Proc)");
                 } else {
                     tracing::debug!("bootstrap: no config snapshot provided (Proc)");
@@ -2036,14 +2044,21 @@ impl ProcManager for BootstrapProcManager {
             .to_env_safe_string()
             .map_err(|e| HostError::ProcessConfigurationFailure(proc_id.clone(), e.into()))?;
 
+        let mut command = config
+            .bootstrap_command
+            .as_ref()
+            .unwrap_or(&self.command)
+            .clone();
+        let (config_env_name, config_env_value) =
+            hyperactor_config::client_config_bootstrap_env(&config.client_config_override)
+                .map_err(|error| HostError::ProcessConfigurationFailure(proc_id.clone(), error))?;
+        command
+            .env
+            .insert(config_env_name.to_string(), config_env_value);
         let opts = LaunchOptions {
             bootstrap_payload,
             process_name: format_process_name(&proc_id.clone()),
-            command: config
-                .bootstrap_command
-                .as_ref()
-                .unwrap_or(&self.command)
-                .clone(),
+            command,
             want_stdio: need_stdio,
             tail_lines: tail_size,
             log_channel: if enable_forwarding {
