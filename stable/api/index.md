@@ -93,6 +93,10 @@ The [monarch.spmd](monarch.spmd.html) package provides primitives for running to
 - [Job Base Class](monarch.job.html#job-base-class)
 
 - [`JobTrait`](monarch.job.html#monarch.job.JobTrait)
+- [Observability](monarch.job.html#observability)
+
+- [`TelemetryConfig`](monarch.job.html#monarch.job.TelemetryConfig)
+- [`MeshAdminConfig`](monarch.job.html#monarch.job.MeshAdminConfig)
 - [Job Implementations](monarch.job.html#job-implementations)
 
 - [LocalJob](monarch.job.html#localjob)

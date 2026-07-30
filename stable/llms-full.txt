@@ -1464,6 +1464,10 @@ inspecting live Monarch meshes. It connects to the mesh admin HTTP API and
 renders the full topology -- hosts, processes, and actors -- as a navigable tree
 with a contextual detail pane.
 
+See the [observability overview](observability.html) for how the TUI complements
+[distributed telemetry](distributed-telemetry.html) and the
+[Monarch Dashboard](monarch-dashboard.html).
+
 The TUI is included in the `torchmonarch` PyPI package. After
 `pip install torchmonarch`, the `monarch-tui` command is available on PATH.
 
@@ -1571,11 +1575,30 @@ monarch-tui --addr 127.0.0.1:1729 --diagnose
 # Exits 0 if healthy, 1 if any check failed.
 ```
 
+## Telemetry Query Proxy
+
+When the admin server starts with distributed telemetry, it also exposes:
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /v1/query` | Run DataFusion SQL and return `{"rows": [...]}` |
+| `POST /v1/pyspy_dump/{proc_reference}` | Capture and persist a py-spy dump in telemetry tables |
+
+For example, post `{"sql": "SELECT * FROM actors LIMIT 10"}` to
+`/v1/query`. Discover available tables with
+`SELECT table_name FROM information_schema.tables`.
+
+The TUI's `p` key and `GET /v1/pyspy/{proc_reference}` perform a one-shot
+capture. Use the `pyspy_dump` endpoint when the capture must remain queryable
+in `pyspy_dumps`, `pyspy_stack_traces`, `pyspy_frames`, and
+`pyspy_local_variables`.
+
 ## Source Code
 
 | Component | Location |
 | --- | --- |
-| TUI binary | `hyperactor_mesh/bin/admin_tui/` |
+| TUI binary | `hyperactor_mesh_admin_tui/bin/admin_tui.rs` |
+| TUI library | `hyperactor_mesh_admin_tui/src/` |
 | Admin HTTP API | `hyperactor_mesh/src/mesh_admin.rs` |
 | Dining philosophers example | `python/examples/dining_philosophers.py` |
 
@@ -1676,6 +1699,10 @@ The [monarch.spmd](monarch.spmd.html) package provides primitives for running to
 - [Job Base Class](monarch.job.html#job-base-class)
 
 - [`JobTrait`](monarch.job.html#monarch.job.JobTrait)
+- [Observability](monarch.job.html#observability)
+
+- [`TelemetryConfig`](monarch.job.html#monarch.job.TelemetryConfig)
+- [`MeshAdminConfig`](monarch.job.html#monarch.job.MeshAdminConfig)
 - [Job Implementations](monarch.job.html#job-implementations)
 
 - [LocalJob](monarch.job.html#localjob)
@@ -4154,6 +4181,59 @@ Is this job capable of running the job spec? This is used to check if a
 cached job can be used to run spec instead of creating a new reserveration.
 
 It is also used by the batch run infrastructure to indicate that the batch job can certainly run itself.
+
+# Observability
+
+See the [Observability](../observability.html) guide for the relationship between distributed
+telemetry, the Monarch Dashboard, and the Mesh Admin TUI.
+
+*class*monarch.job.TelemetryConfig(*retention_secs=600*, *include_dashboard=False*, *dashboard_port=8265*, *snapshot_interval_secs=0*)[[source]](../_modules/monarch/_src/job/telemetry_config.html#TelemetryConfig)
+
+Configuration for automatic telemetry startup.
+
+When configured via `JobTrait.enable_telemetry`, telemetry
+(and optionally a dashboard) is started when `state()` is called.
+
+Parameters:
+
+- **retention_secs** ([*int*](https://docs.python.org/3/library/functions.html#int)) - Retention window in seconds for message tables.
+0 disables retention.
+- **include_dashboard** ([*bool*](https://docs.python.org/3/library/functions.html#bool)) - Whether to start the monarch dashboard web server.
+- **dashboard_port** ([*int*](https://docs.python.org/3/library/functions.html#int)) - Preferred port for the dashboard.
+- **snapshot_interval_secs** ([*float*](https://docs.python.org/3/library/functions.html#float)) - Interval in seconds between periodic mesh
+introspection snapshots. Snapshots capture the mesh topology
+into the telemetry query surface. 0 disables periodic capture
+(default). When `include_dashboard` is True and this is 0,
+it is automatically set to 30s because the dashboard requires
+snapshot data for system actor filtering.
+
+retention_secs*: [int](https://docs.python.org/3/library/functions.html#int)**= 600*
+
+include_dashboard*: [bool](https://docs.python.org/3/library/functions.html#bool)**= False*
+
+dashboard_port*: [int](https://docs.python.org/3/library/functions.html#int)**= 8265*
+
+snapshot_interval_secs*: [float](https://docs.python.org/3/library/functions.html#float)**= 0*
+
+__init__(*retention_secs=600*, *include_dashboard=False*, *dashboard_port=8265*, *snapshot_interval_secs=0*)
+
+*class*monarch.job.MeshAdminConfig(*admin_addr=None*)[[source]](../_modules/monarch/_src/job/job_components.html#MeshAdminConfig)
+
+Configuration for automatic mesh admin agent startup.
+
+When configured via `JobTrait.enable_admin`, a MeshAdminAgent HTTP
+server is spawned when `state()` is called. The server aggregates
+topology across all host meshes and exposes it via a REST API that the
+admin TUI can attach to.
+
+Parameters:
+
+**admin_addr** ([*str*](https://docs.python.org/3/library/stdtypes.html#str)*|**None*) - Bind address for the admin HTTP server. When
+`None` the server picks an available address automatically.
+
+admin_addr*: [str](https://docs.python.org/3/library/stdtypes.html#str) | [None](https://docs.python.org/3/library/constants.html#None)**= None*
+
+__init__(*admin_addr=None*)
 
 # Job Implementations
 
@@ -14345,6 +14425,255 @@ Then user code can decide to `await`, `.spawn()`, or `.block_on()`.
 
 ---
 
+# Monarch Cookbook
+
+Task-oriented recipes for common Monarch patterns. Each recipe is small,
+self-contained, and answers a single "how do I ...?" question.
+
+Every snippet below is embedded directly from a test in
+[`python/tests/test_cookbook.py`](https://github.com/meta-pytorch/monarch/blob/main/python/tests/test_cookbook.py)
+and runs in CI, so the code here stays in sync with the API. To add a recipe,
+write a test with a `# cookbook: <slug>` / `# cookbook: end` marker pair and
+embed the region here with `literalinclude`.
+
+## Meshes and Slicing
+
+### Get the rank-0 actor of a mesh
+
+You often need the rank-0 actor of a mesh, for example to use it as the coordinator
+of the SPMD job running on the mesh. Do:
+
+[View source](https://github.com/meta-pytorch/monarch/blob/a377264412f9d25035e18a5debf67bd744308010/python/tests/test_cookbook.py#L48-L49)
+
+```
+rank_0 = counters.flatten("rank").slice(rank=0)
+await rank_0.increment.call_one()
+```
+
+- `flatten` collapses every dimension into one named dimension, so this works
+regardless of the mesh's original shape. This is more robust than slicing by the
+original dimension names (e.g. `generator.slice(hosts=0, gpus=0)`), which breaks
+if those names change.
+- `slice` then selects a single rank. The result is a singleton mesh, so
+`call_one` applies.
+
+See [Slicing Operations](actors.html#slicing-operations) in the Actors guide for the full slicing API.
+
+## Intra-mesh Communication
+
+### Call a specific rank of your own mesh
+
+An actor often needs to reach another rank of its own mesh -- for example, a
+coordinator at rank 0. Give each actor a handle to its mesh after spawning, then
+slice that handle to the target rank inside an endpoint:
+
+[View source](https://github.com/meta-pytorch/monarch/blob/a377264412f9d25035e18a5debf67bd744308010/python/tests/test_cookbook.py#L77-L78)
+
+```
+coordinator = self.mesh.flatten("rank").slice(rank=0)
+return await coordinator.ping.call_one()
+```
+
+`self.mesh` is the actor's own `ActorMesh`. An actor cannot reference its own
+mesh at construction time, so we pass the handle to every member through a
+`set_mesh` endpoint once the mesh is spawned. Slicing that handle yields a
+reference to the chosen rank, so the call is a direct point-to-point message.
+
+### Return results asynchronously with a port
+
+The previous recipe returns synchronously because `call` (and `call_one`) hand
+back the endpoint's return value inline. A port is the asynchronous counterpart.
+The coordinator opens a `Channel` and `broadcast`s the sending half (a `Port`) to
+the other ranks, which send or stream results back to it whenever they are ready:
+
+[View source](https://github.com/meta-pytorch/monarch/blob/a377264412f9d25035e18a5debf67bd744308010/python/tests/test_cookbook.py#L109-L113)
+
+```
+port, receiver = Channel[int].open()
+others = self.mesh.flatten("rank").slice(rank=slice(1, None))
+others.produce.broadcast(port)
+expected = others.size() * STREAM_LEN
+return sorted([await receiver.recv() for _ in range(expected)])
+```
+
+Each rank's `produce` endpoint launches a background task and returns
+immediately; the task sends its values to the port over time:
+
+[View source](https://github.com/meta-pytorch/monarch/blob/a377264412f9d25035e18a5debf67bd744308010/python/tests/test_cookbook.py#L119-L125)
+
+```
+rank = context().actor_instance.rank["gpus"]
+
+async def stream() -> None:
+ for step in range(STREAM_LEN):
+ port.send(rank * 10 + step)
+
+self.task = asyncio.create_task(stream())
+```
+
+---
+
+# Distributed Telemetry
+
+Monarch distributed telemetry collects actor-system events on each host and
+makes them queryable as one logical database. It uses
+[Apache DataFusion](https://github.com/apache/datafusion), an extensible SQL
+query engine built on [Apache Arrow](https://arrow.apache.org/). Distributed
+telemetry is the query layer behind the [Monarch Dashboard](monarch-dashboard.html)
+and complements the live [Mesh Admin TUI](admin-tui.html).
+
+Start with the [observability overview](observability.html) if you are choosing a
+diagnostic surface or configuring a job for the first time.
+
+## Quick start
+
+Enable telemetry before obtaining job state:
+
+```
+from monarch.job import ProcessJob, TelemetryConfig
+
+job = ProcessJob({"workers": 2}).enable_telemetry(
+ TelemetryConfig(retention_secs=600)
+)
+state = job.state(cached_path=None)
+
+client = state.query_engine_client
+if client is None:
+ raise RuntimeError("telemetry did not start")
+
+result = client.query(
+ """
+ SELECT a.full_name, s.new_status, s.reason, s.timestamp_us
+ FROM actor_status_events AS s
+ JOIN actors AS a ON a.id = s.actor_id
+ ORDER BY s.timestamp_us DESC
+ LIMIT 50
+ """
+)
+for row in result["rows"]:
+ print(row)
+```
+
+`QueryEngineClient.query()` accepts DataFusion SQL and returns a dictionary
+whose `rows` value is a list of dictionaries. Timestamps ending in `_us` are
+microseconds since the Unix epoch. IDs are opaque join keys; do not infer
+meaning from their numeric values.
+
+## Core tables
+
+| Table | Contents |
+| --- | --- |
+| `actor_status_events` | Actor status transitions and reasons |
+| `actors` | Actor identity, rank, mesh, and creation time |
+| `events` | Structured tracing events and log fields |
+| `meshes` | Mesh creation, shape, class, name, and parent view |
+| `message_status_events` | Message delivery status transitions |
+| `messages` | Individual sender-to-receiver message deliveries |
+| `sent_messages` | One-to-many send operations and destination views |
+| `span_events` | Span enter, exit, and close events |
+| `spans` | Trace span metadata and parent relationships |
+
+Mesh-introspection snapshots add `actor_failures`, `actor_inbound_orderings`,
+`actor_nodes`, `children`, `host_nodes`, `nodes`, `ordering_sessions`,
+`proc_nodes`, `resolution_errors`, `root_nodes`, and `snapshots`. Persisted
+py-spy captures add `pyspy_dumps`, `pyspy_frames`, `pyspy_local_variables`, and
+`pyspy_stack_traces`.
+
+Discover the current table catalog with:
+
+```
+SELECT table_name
+FROM information_schema.tables
+ORDER BY table_name
+```
+
+## Query examples
+
+Count actor status transitions:
+
+```
+SELECT new_status, COUNT(*) AS count
+FROM actor_status_events
+GROUP BY new_status
+ORDER BY count DESC
+```
+
+Find recent actor failure events:
+
+```
+SELECT a.full_name, s.reason, s.timestamp_us
+FROM actor_status_events AS s
+JOIN actors AS a ON a.id = s.actor_id
+WHERE s.new_status = 'Failed'
+ORDER BY s.timestamp_us DESC
+LIMIT 100
+```
+
+Summarize message delivery transitions:
+
+```
+SELECT status, COUNT(*) AS count
+FROM message_status_events
+GROUP BY status
+ORDER BY count DESC
+```
+
+## Architecture
+
+Each producer writes framed Arrow IPC batches to a host-local Unix socket. A
+host-local `TelemetryActor` owns the socket, a Rust `DatabaseScanner`, and the
+in-memory tables. The root query engine plans SQL with DataFusion, pushes table
+scans to active collectors, and merges their Arrow results.
+
+The telemetry job sidecar owns the root collector and query service. Its
+in-memory state survives repeated `state()` calls and parent-process refreshes
+for the same job allocation. Calling `job.kill()` stops the sidecar and removes
+that state.
+
+Distributed scans are best-effort. If a worker collector fails or times out,
+the query can return reduced coverage while the job and healthy collectors
+continue operating.
+
+## Retention and snapshots
+
+`TelemetryConfig.retention_secs` applies to `sent_messages`, `messages`, and
+`message_status_events`. The default is 600 seconds. Set it to `0` to disable
+automatic retention. Retention runs every 30 seconds, so expired rows can
+remain visible until the next sweep. Other core tables have no automatic
+retention window.
+
+`TelemetryConfig.snapshot_interval_secs` controls periodic Mesh Admin topology
+snapshots. The default is `0` (disabled). When `include_dashboard=True`, a value
+of `0` is automatically changed to 30 seconds because the dashboard requires
+snapshot data. Snapshots and event telemetry describe different views of the
+same job:
+
+- Event tables record changes such as actor creation, status transitions, and
+message delivery.
+- Snapshot tables capture the administrative topology and actor diagnostics at
+a point in time.
+
+## Troubleshooting
+
+- If `state.query_engine_client` is `None`, telemetry bootstrap failed. Check
+the parent-process logs for `job sidecar telemetry bootstrap failed`.
+- If a query is empty immediately after work runs, retry briefly; ingestion and
+collector flushes are asynchronous.
+- If rows from one host are missing, inspect collector warnings and use the
+[Mesh Admin TUI diagnostics](admin-tui.html) to check that host.
+- If a SQL request fails, the raised HTTP error includes the DataFusion parse or
+planning detail returned by the query service.
+
+## Related documentation
+
+- [Observability overview](observability.html)
+- [Monarch Dashboard](monarch-dashboard.html)
+- [Mesh Admin TUI](admin-tui.html)
+- [OpenTelemetry and Grafana](generated/examples/otel_collector.html)
+- [Jobs API](api/monarch.job.html)
+
+---
+
 # Examples
 
 - [ping_pong.py](../generated/examples/ping_pong.html): Demonstrates the basics of Monarch's Actor/endpoint API with a ping-pong communication example
@@ -20222,13 +20551,14 @@ Here are some suggested steps to get started with Monarch:
 
 1. **Installation**: Check out the [Install guide](installation.html) for getting monarch installed.
 2. **Getting Started**: The [getting started](generated/examples/getting_started.html) provides an introduction to Monarch's core API
-3. **Explore Examples**: Review the [Examples](generated/examples/index.html) to see Monarch in action
-4. **Dive Deeper**: Explore the API Documentation for more detailed information:
+3. **Observe and Diagnose**: Start with the [Observability guide](observability.html), then query [Distributed Telemetry](distributed-telemetry.html), open the [Monarch Dashboard](monarch-dashboard.html), or diagnose a live mesh with the [Admin TUI](admin-tui.html).
+4. **Explore Examples**: Review the [Examples](generated/examples/index.html) to see Monarch in action
+5. **Cookbook**: Browse the [Cookbook](cookbook.html) for short, task-oriented recipes.
+6. **Dive Deeper**: Explore the API Documentation for more detailed information:
 
 - [Python API](api/index.html)
 - [Rust API](rust-api.html)
-5. **Deep Understanding of Actors**: Gain comprehensive knowledge of [Actors](actors.html), the foundational building blocks of Monarch.
-6. **Monitoring Tools**: Inspect running meshes with the [Admin TUI](admin-tui.html) (terminal) or the [Monarch Dashboard](monarch-dashboard.html) (web GUI).
+7. **Deep Understanding of Actors**: Gain comprehensive knowledge of [Actors](actors.html), the foundational building blocks of Monarch.
 
 ## License
 
@@ -20298,12 +20628,17 @@ full mesh topology -- hosts, processes, actor meshes, and individual actors -- a
 interactive views with live-updating metrics, message traffic analysis, and a
 full DAG visualization.
 
+See the [observability overview](observability.html) for how the dashboard uses
+[distributed telemetry](distributed-telemetry.html) and complements the
+[Mesh Admin TUI](admin-tui.html).
+
 > **Note** -- The Monarch Dashboard is in early development and may change
 > significantly between releases.
 
-The dashboard is included in the `torchmonarch` PyPI package. When a job enables
-`TelemetryConfig(include_dashboard=True)`, Monarch starts a local web server that
-serves the dashboard UI.
+The dashboard is included in the `torchmonarch` PyPI package. The telemetry
+sidecar hosts its query service. Set
+`TelemetryConfig(include_dashboard=True)` to advertise the browser UI and print
+its URL.
 
 ## Quick Start
 
@@ -20400,18 +20735,132 @@ gray = stopped).
 Here is an example of how to enable the dashboard on your job via the [Jobs API](api/monarch.job.html).
 
 ```
-from monarch.job import LocalJob, ProcessJob, KubernetesJob, SlurmJob, TelemetryConfig
+from monarch.job import ProcessJob, TelemetryConfig
 
-# Provision job - LocalJob, ProcessJob, KubernetesJob, SlurmJob, etc.
-# job = ...
-dashboard_port = 8265
-
-# Enable admin API and telemetry/dashboard as they work together.
-job.enable_admin()
-job.enable_telemetry(
- TelemetryConfig(include_dashboard=True, dashboard_port=dashboard_port)
+job = (
+ ProcessJob({"workers": 2})
+ .enable_admin()
+ .enable_telemetry(
+ TelemetryConfig(include_dashboard=True, dashboard_port=8265)
+ )
 )
+state = job.state(cached_path=None)
+print(state.dashboard_url)
 ```
+
+With both services enabled, the dashboard receives periodic mesh-admin
+snapshots. Use `state.query_engine_client` to query the same data directly; see
+[Distributed Telemetry](distributed-telemetry.html).
+
+---
+
+# Observability
+
+Monarch provides three complementary job-local observability surfaces:
+distributed telemetry for SQL analysis, the Monarch Dashboard for visual
+monitoring, and the Mesh Admin TUI for live diagnostics. Configure telemetry
+and mesh admin together to connect all three data paths. OpenTelemetry provides
+a separate export path for external backends.
+
+## Choose a surface
+
+| Use case | Surface | What it provides |
+| --- | --- | --- |
+| Query actor, mesh, message, and trace history | [Distributed telemetry](distributed-telemetry.html) | DataFusion SQL across host-local collectors |
+| Monitor topology, status, failures, and traffic in a browser | [Monarch Dashboard](monarch-dashboard.html) | Live summaries, hierarchy views, and a job DAG |
+| Diagnose a running mesh from a terminal | [Mesh Admin TUI](admin-tui.html) | Live topology, health checks, and py-spy stack traces |
+| Export metrics and logs to an external backend | [OpenTelemetry and Grafana](generated/examples/otel_collector.html) | OTLP export to systems such as Prometheus and Loki |
+
+The dashboard reads distributed telemetry. The TUI reads the Mesh Admin API.
+Periodic mesh-admin snapshots also flow into telemetry so the dashboard can
+show the live administrative topology.
+
+Distributed telemetry is a job-scoped, in-memory query system. OpenTelemetry
+export is the external aggregation path for metrics and logs. You can use both
+on the same job.
+
+## Enable observability
+
+Configure observability before calling `state()`:
+
+```
+from monarch.job import ProcessJob, TelemetryConfig
+
+job = (
+ ProcessJob({"workers": 2})
+ .enable_admin()
+ .enable_telemetry(
+ TelemetryConfig(
+ retention_secs=600,
+ include_dashboard=True,
+ dashboard_port=8265,
+ snapshot_interval_secs=30,
+ )
+ )
+)
+state = job.state(cached_path=None)
+```
+
+`enable_telemetry()` starts distributed telemetry and the optional dashboard;
+`enable_admin()` starts the API used by the TUI. Configuring both also enables
+periodic introspection snapshots when `snapshot_interval_secs` is positive.
+Adapt the example to your existing `LocalJob`, `ProcessJob`, `SlurmJob`, or
+`KubernetesJob` rather than creating a second job.
+
+The returned state exposes each surface:
+
+```
+print(state.dashboard_url)
+print(state.admin_url)
+
+client = state.query_engine_client
+if client is None:
+ raise RuntimeError("telemetry did not start")
+
+result = client.query(
+ "SELECT new_status, COUNT(*) AS count "
+ "FROM actor_status_events GROUP BY new_status"
+)
+print(result["rows"])
+```
+
+Use `state.dashboard_url` in a browser. Pass `state.admin_url` to
+`monarch-tui --addr`.
+
+## Data flow
+
+```
+actor and proc events ──> host-local collectors ──> distributed query engine
+ ├─> SQL query client
+ └─> Monarch Dashboard
+
+live mesh ──> Mesh Admin API ──────────────────────────────> Mesh Admin TUI
+ └──────> periodic snapshots ──> distributed telemetry ─> Dashboard DAG
+```
+
+Telemetry collection and distributed query fan-out are best-effort. A failed
+or slow worker collector can reduce query coverage without failing the job.
+Telemetry tables are in memory and belong to the current job allocation; they
+are not a durable event archive.
+
+## Configuration
+
+| `TelemetryConfig` field | Default | Effect |
+| --- | --- | --- |
+| `retention_secs` | `600` | Retention window for message tables; `0` disables retention |
+| `include_dashboard` | `False` | Advertise the browser dashboard |
+| `dashboard_port` | `8265` | Preferred dashboard port; use `0` for an ephemeral port |
+| `snapshot_interval_secs` | `0` | Mesh-introspection snapshot interval; `0` disables periodic snapshots. Enabling the dashboard changes `0` to `30` seconds. |
+
+For an admin server without distributed telemetry, call `job.enable_admin()`.
+That supports the TUI, but it does not provide the dashboard or SQL history.
+
+## Next steps
+
+- [Query distributed telemetry](distributed-telemetry.html)
+- [Use the Monarch Dashboard](monarch-dashboard.html)
+- [Diagnose a mesh with the Admin TUI](admin-tui.html)
+- [Export metrics and logs with OpenTelemetry](generated/examples/otel_collector.html)
 
 ---
 

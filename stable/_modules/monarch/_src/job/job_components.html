@@ -1,0 +1,1991 @@
+
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>monarch._src.job.job_components &#8212; Monarch v0.6.0 documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../../../_static/styles/theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../../../../_static/styles/bootstrap.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../../../../_static/styles/pydata-sphinx-theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+
+  
+  <link href="../../../../_static/vendor/fontawesome/6.5.2/css/all.min.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-solid-900.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
+
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.5ea377869091fd0449014c60fc090103.min.css" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css" />
+  
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
+<link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
+  <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+    <script data-url_root="../../../../" id="documentation_options" src="../../../../_static/documentation_options.js"></script>
+    <script src="../../../../_static/doctools.js"></script>
+    <script src="../../../../_static/sphinx_highlight.js"></script>
+    <script src="../../../../_static/design-tabs.js"></script>
+    <script src="https://unpkg.com/mermaid@10.2.0/dist/mermaid.min.js"></script>
+    <script>mermaid.initialize({startOnLoad:true});</script>
+    <script>DOCUMENTATION_OPTIONS.pagename = '_modules/monarch/_src/job/job_components';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.6.0';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
+        </script>
+    <link rel="canonical" href="https://meta-pytorch.org/monarch/_modules/monarch/_src/job/job_components.html" />
+    <link rel="icon" href="../../../../_static/torch-monarch-icons.svg"/>
+    <link rel="index" title="Index" href="../../../../genindex.html" />
+    <link rel="search" title="Search" href="../../../../search.html" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+
+<!-- LLM/AI Agent: See /llms.txt for comprehensive navigation guidance -->
+<!-- Machine-readable LLM metadata -->
+<meta name="llm:site-type" content="documentation">
+<meta name="llm:framework" content="PyTorch">
+
+<meta name="llm:description" content="monarch._src.job.job_components - Documentation for Monarch, part of the PyTorch ecosystem.">
+
+
+
+
+
+<meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
+<meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
+<meta name="llm:version" content="v0.6.0">
+<meta name="llm:project" content="Monarch">
+<meta name="llm:page-type" content="documentation">
+<link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
+
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/list.js/2.3.1/list.min.js"></script>
+<script>
+  if (window.location.hostname === 'docs.pytorch.org' || window.location.hostname === 'docs-preview.pytorch.org') {
+    const script = document.createElement('script');
+    script.src = 'https://cmp.osano.com/16A0DbT9yDNIaQkvZ/31b1b91a-e0b6-47ea-bde2-7f2bd13dbe5c/osano.js?variant=one';
+    document.head.appendChild(script);
+  }
+</script>
+<script>
+  // Cookie banner for non-LF projects
+  document.addEventListener('DOMContentLoaded', function () {
+    // Hide cookie banner on local environments and LF owned docs
+    if (window.location.hostname === 'localhost' ||
+      window.location.hostname === '0.0.0.0' ||
+      window.location.hostname === '127.0.0.1' ||
+      window.location.hostname === 'docs.pytorch.org' ||
+      window.location.hostname === 'docs-preview.pytorch.org' ||
+      window.location.hostname.startsWith('192.168.')) {
+      const banner = document.querySelector('.cookie-banner-wrapper');
+      if (banner) {
+        banner.style.display = 'none';
+      }
+    }
+  });
+</script>
+<!-- Conditional CSS for header and footer height adjustment -->
+
+<style>
+  :root {
+    --header-height: 0px !important;
+    --header-height-desktop: 0px !important;
+  }
+  /* Ensure proper mobile layout when LF header is hidden */
+  @media (max-width: 960px) {
+    .bd-header {
+      top: 0 !important;
+      position: sticky !important;
+      z-index: 1020 !important;
+    }
+    .bd-main {
+      padding-top: 0 !important;
+      margin-top: 0 !important;
+    }
+    .bd-article-container {
+      padding-top: 0 !important;
+    }
+    .header-article__inner {
+      padding-top: 1rem !important;
+    }
+
+  }
+</style>
+
+
+<style>
+  @media (min-width: 1100px) {
+    .site-footer {
+      height: 300px !important;
+    }
+  }
+</style>
+
+<link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" crossorigin="anonymous">
+<script type="text/javascript" src="../../../../_static/js/theme.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400&display=swap" rel="stylesheet">
+<meta property="og:image" content="https://docs.pytorch.org/docs/stable/_static/img/pytorch_seo.png" />
+<link rel="stylesheet" href="../../../../_static/webfonts/all.min.css" crossorigin="anonymous">
+<meta http-equiv="Content-Security-Policy"
+  content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; style-src * 'unsafe-inline'; script-src * 'unsafe-inline' 'unsafe-eval' blob:;">
+<meta name="pytorch_project" content="">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-NPLPKN5G" height="0" width="0"
+    style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<!-- Google Tag Manager -->
+<script>(function (w, d, s, l, i) {
+    w[l] = w[l] || []; w[l].push({
+      'gtm.start':
+        new Date().getTime(), event: 'gtm.js'
+    }); var f = d.getElementsByTagName(s)[0],
+      j = d.createElement(s), dl = l != 'dataLayer' ? '&l=' + l : ''; j.async = true; j.src =
+        'https://www.googletagmanager.com/gtm.js?id=' + i + dl; f.parentNode.insertBefore(j, f);
+    j.onload = function () {
+      window.dispatchEvent(new Event('gtm_loaded'));
+      console.log('GTM loaded successfully');
+    };
+  })(window, document, 'script', 'dataLayer', 'GTM-NPLPKN5G');
+</script>
+<!-- End Google Tag Manager -->
+<!-- Facebook Pixel Code -->
+<script>
+  !function (f, b, e, v, n, t, s) {
+    if (f.fbq) return; n = f.fbq = function () {
+      n.callMethod ?
+        n.callMethod.apply(n, arguments) : n.queue.push(arguments)
+    };
+    if (!f._fbq) f._fbq = n; n.push = n; n.loaded = !0; n.version = '2.0';
+    n.queue = []; t = b.createElement(e); t.async = !0;
+    t.src = v; s = b.getElementsByTagName(e)[0];
+    s.parentNode.insertBefore(t, s)
+  }(window, document, 'script',
+    'https://connect.facebook.net/en_US/fbevents.js');
+  fbq('init', '243028289693773');
+  fbq('track', 'PageView');
+</script>
+<script>
+  document.documentElement.setAttribute('data-version', 'v0.6.0');
+</script>
+<noscript>
+  <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
+</noscript>
+<script>
+  function gtag() {
+    window.dataLayer.push(arguments);
+  }
+</script>
+<!-- End Facebook Pixel Code -->
+<!-- Repository configuration for tutorials -->
+
+
+<!-- Script to Fix scrolling with fast fixed-duration animation -->
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    const SCROLL_DURATION = 150; // Fixed duration in ms regardless of distance
+    let lockedTargetId = null; // Lock the TOC to this target until user scrolls manually
+    let isUpdatingToc = false; // Guard against infinite loops
+
+    function smoothScrollTo(targetY, duration, onComplete) {
+      const startY = window.pageYOffset;
+      const difference = targetY - startY;
+      const startTime = performance.now();
+
+      function step(currentTime) {
+        const elapsed = currentTime - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        // Ease-out cubic for smooth deceleration
+        const easeOut = 1 - Math.pow(1 - progress, 3);
+        window.scrollTo(0, startY + difference * easeOut);
+        if (progress < 1) {
+          requestAnimationFrame(step);
+        } else if (onComplete) {
+          onComplete();
+        }
+      }
+      requestAnimationFrame(step);
+    }
+
+    function updateTocHighlight(targetId) {
+      if (isUpdatingToc) return; // Prevent infinite loop
+      isUpdatingToc = true;
+
+      // Find the TOC link that points to this target
+      const tocNav = document.querySelector('.bd-toc-nav');
+      if (!tocNav) {
+        isUpdatingToc = false;
+        return;
+      }
+
+      // Remove active class from all TOC items
+      tocNav.querySelectorAll('.nav-link').forEach(link => {
+        link.classList.remove('active');
+        link.parentElement.classList.remove('active');
+      });
+
+      // Add active class to the matching link and all its ancestor TOC items
+      const matchingLink = tocNav.querySelector(`a[href="#${CSS.escape(targetId)}"]`);
+      if (matchingLink) {
+        matchingLink.classList.add('active');
+        matchingLink.parentElement.classList.add('active');
+
+        // Walk up the DOM to activate parent TOC entries (e.g. h2 parent of h3)
+        let ancestor = matchingLink.parentElement.parentElement;
+        while (ancestor && ancestor !== tocNav) {
+          if (ancestor.classList.contains('toc-entry')) {
+            ancestor.classList.add('active');
+            const parentLink = ancestor.querySelector(':scope > a.nav-link');
+            if (parentLink) {
+              parentLink.classList.add('active');
+            }
+          }
+          ancestor = ancestor.parentElement;
+        }
+      }
+
+      // Use setTimeout to reset the guard after the current call stack
+      setTimeout(function() {
+        isUpdatingToc = false;
+      }, 0);
+    }
+
+    // Watch for ScrollSpy trying to change the active state and override it
+    const tocNav = document.querySelector('.bd-toc-nav');
+    if (tocNav) {
+      const observer = new MutationObserver(function(mutations) {
+        if (lockedTargetId && !isUpdatingToc) {
+          // Force our target to stay highlighted
+          updateTocHighlight(lockedTargetId);
+        }
+      });
+      observer.observe(tocNav, {
+        attributes: true,
+        attributeFilter: ['class'],
+        subtree: true
+      });
+    }
+
+    // Release the lock when user scrolls manually (not programmatically)
+    window.addEventListener('wheel', function() {
+      lockedTargetId = null;
+    });
+    window.addEventListener('touchmove', function() {
+      lockedTargetId = null;
+    });
+
+    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+      anchor.addEventListener('click', function (e) {
+        const targetId = this.getAttribute('href').substring(1);
+        if (!targetId) return; // Skip empty hash links
+        const targetElement = document.getElementById(targetId);
+
+        if (targetElement) {
+          e.preventDefault();
+
+          // Lock the TOC to this target
+          lockedTargetId = targetId;
+
+          const headerHeight =
+            (document.querySelector('.header-holder') ? document.querySelector('.header-holder').offsetHeight : 0) +
+            (document.querySelector('.bd-header') ? document.querySelector('.bd-header').offsetHeight : 0) + 20;
+
+          const targetPosition = targetElement.getBoundingClientRect().top + window.pageYOffset - headerHeight;
+
+          // Update TOC highlight immediately
+          updateTocHighlight(targetId);
+
+          smoothScrollTo(targetPosition, SCROLL_DURATION, function() {
+            // Keep it highlighted after scroll
+            updateTocHighlight(targetId);
+          });
+
+          // Update URL hash without scrolling
+          history.pushState(null, null, '#' + targetId);
+        }
+      });
+    });
+  });
+</script>
+
+<script async src="https://cse.google.com/cse.js?cx=e65585f8c3ea1440e"></script>
+<!-- RunLLM Widget Configuration -->
+
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+
+  </head>
+
+<body data-feedback-url="https://github.com/meta-pytorch/monarch" class="pytorch-body">
+  
+
+
+  
+  
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-primary-sidebar-checkbox"/>
+  <label class="overlay overlay-primary" for="pst-primary-sidebar-checkbox"></label>
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-secondary-sidebar-checkbox"/>
+  <label class="overlay overlay-secondary" for="pst-secondary-sidebar-checkbox"></label>
+  
+  <div class="search-button__wrapper">
+    <div class="search-button__overlay"></div>
+    <div class="search-button__search-container">
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form></div>
+  </div>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+
+  
+  <div class="navbar-header-items__mobile-logo">
+    
+
+
+
+
+
+
+
+  
+  
+  
+
+
+<a class="navbar-brand logo" href="../../../../index.html">
+  
+    
+    <img src="../../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch - Home"/>
+    
+    
+    <script>document.write(`<img src="../../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch - Home"/>`);</script>
+    
+  
+</a>
+  </div>
+
+  
+  
+  <div class=" navbar-header-items__start">
+    
+      
+      
+        <div class="navbar-item">
+          
+
+
+
+
+
+
+
+  
+  
+  
+
+
+<a class="navbar-brand logo" href="../../../../index.html">
+  
+    
+    <img src="../../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch - Home"/>
+    
+    
+    <script>document.write(`<img src="../../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch - Home"/>`);</script>
+    
+  
+</a>
+        </div>
+      
+    
+      
+      
+        
+        <div class="navbar-item desktop-only-version">
+          
+<script>
+document.write(`
+  <div class="version-switcher__container dropdown">
+    <button id="pst-version-switcher-button-2"
+      type="button"
+      class="version-switcher__button btn btn-sm dropdown-toggle"
+      data-bs-toggle="dropdown"
+      aria-haspopup="listbox"
+      aria-controls="pst-version-switcher-list-2"
+      aria-label="Version switcher list"
+    >
+      Choose version  <!-- this text may get changed later by javascript -->
+      <span class="caret"></span>
+    </button>
+    <div id="pst-version-switcher-list-2"
+      class="version-switcher__menu dropdown-menu list-group-flush py-0"
+      role="listbox" aria-labelledby="pst-version-switcher-button-2">
+      <!-- dropdown will be populated by javascript on page load -->
+    </div>
+  </div>
+`);
+</script>
+        </div>
+      
+    
+  </div>
+  
+  <div class=" navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../installation.html">
+            Installation
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
+            Getting Started
+          </a>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../observability.html">
+              Observability
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-3">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../distributed-telemetry.html">
+                  Distributed Telemetry
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../admin-tui.html">
+                  Mesh Admin TUI
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../monarch-dashboard.html">
+                  Monarch Dashboard
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
+              Examples
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-4">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ping_pong.html">
+                  Monarch Actor API: Ping Pong
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/crawler.html">
+                  Distributed Web Crawler
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_ddp.html">
+                  DDP using SPMDActor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_job.html">
+                  SPMD Job Example
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/kubernetes_ddp.html">
+                  DDP on Kubernetes
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_actor.html">
+                  Reinforcement Learning with Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_yield.html">
+                  GRPO with Direct Port Messaging
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
+                  GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
+                  Distributed Tensors in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/debugging.html">
+                  Debugging Python Actors with pdb in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/otel_collector.html">
+                  Exporting Metrics and Logs with OpenTelemetry
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../cookbook.html">
+            Monarch Cookbook
+          </a>
+        
+      </li>
+    
+
+    
+    
+      <li class="nav-item dropdown more-dropdown">
+        <div class="nav-item-with-toggle">
+          <span class="nav-link more-toggle" tabindex="0" role="button" aria-expanded="false" aria-controls="pst-nav-more-links">
+            More
+          </span>
+        </div>
+        <ul id="pst-nav-more-links" class="dropdown-menu">
+          
+            <li class="">
+              <a class="nav-link dropdown-item nav-internal" href="../../../../api/index.html">
+                Python API
+              </a>
+            </li>
+          
+            <li class="">
+              <a class="nav-link dropdown-item nav-internal" href="../../../../rust-api.html">
+                Internal APIs
+              </a>
+            </li>
+          
+            <li class="">
+              <a class="nav-link dropdown-item nav-internal" href="../../../../actors.html">
+                Monarch Actors: Complete Guide
+              </a>
+            </li>
+          
+        </ul>
+      </li>
+    
+  </ul>
+</nav>
+</div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+      
+      
+        <div class="navbar-item"><!-- PyTorch.org site link - desktop only, two-line layout -->
+<!-- Note: The show_pytorch_org_link check is handled in layout.html's navbar_end block -->
+<a href="https://pytorch.org" class="pytorch-site-link nav-link nav-external" data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-title="Go to PyTorch.org">
+  <span class="pytorch-site-link-text">
+    <span>Go to</span>
+    <span>pytorch.org <i class="fa-solid fa-arrow-up-right-from-square external-icon"></i></span>
+  </span>
+</a></div>
+      
+      
+        <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+      
+        <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/torchmonarch/" title="PyPi" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-python fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">PyPi</span></a>
+        </li>
+</ul></div>
+      
+    </div>
+    
+  </div>
+  
+  
+
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+        
+      
+      <div class="bd-sidebar-primary bd-sidebar hide-on-wide">
+        
+
+
+
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    <div class="sidebar-header-items__start">
+      <div class="navbar-item">
+        
+<script>
+document.write(`
+  <div class="version-switcher__container dropdown">
+    <button id="pst-version-switcher-button-3"
+      type="button"
+      class="version-switcher__button btn btn-sm dropdown-toggle"
+      data-bs-toggle="dropdown"
+      aria-haspopup="listbox"
+      aria-controls="pst-version-switcher-list-3"
+      aria-label="Version switcher list"
+    >
+      Choose version  <!-- this text may get changed later by javascript -->
+      <span class="caret"></span>
+    </button>
+    <div id="pst-version-switcher-list-3"
+      class="version-switcher__menu dropdown-menu list-group-flush py-0"
+      role="listbox" aria-labelledby="pst-version-switcher-button-3">
+      <!-- dropdown will be populated by javascript on page load -->
+    </div>
+  </div>
+`);
+</script>
+      </div>
+    </div>
+    
+
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../installation.html">
+            Installation
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
+            Getting Started
+          </a>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../observability.html">
+              Observability
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-3">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../distributed-telemetry.html">
+                  Distributed Telemetry
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../admin-tui.html">
+                  Mesh Admin TUI
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../monarch-dashboard.html">
+                  Monarch Dashboard
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
+              Examples
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-4">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ping_pong.html">
+                  Monarch Actor API: Ping Pong
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/crawler.html">
+                  Distributed Web Crawler
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_ddp.html">
+                  DDP using SPMDActor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_job.html">
+                  SPMD Job Example
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/kubernetes_ddp.html">
+                  DDP on Kubernetes
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_actor.html">
+                  Reinforcement Learning with Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_yield.html">
+                  GRPO with Direct Port Messaging
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
+                  GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
+                  Distributed Tensors in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/debugging.html">
+                  Debugging Python Actors with pdb in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/otel_collector.html">
+                  Exporting Metrics and Logs with OpenTelemetry
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../cookbook.html">
+            Monarch Cookbook
+          </a>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../api/index.html">
+              Python API
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-6">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.actor.html">
+                  monarch.actor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.config.html">
+                  monarch.config
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.job.html">
+                  monarch.job
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.html">
+                  monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.rdma.html">
+                  monarch.rdma
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.spmd.html">
+                  monarch.spmd
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../rust-api.html">
+            Internal APIs
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../actors.html">
+            Monarch Actors: Complete Guide
+          </a>
+        
+      </li>
+    
+
+    
+    
+  </ul>
+</nav>
+</div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+        
+          <div class="navbar-item"><!-- PyTorch.org site link - desktop only, two-line layout -->
+<!-- Note: The show_pytorch_org_link check is handled in layout.html's navbar_end block -->
+<a href="https://pytorch.org" class="pytorch-site-link nav-link nav-external" data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-title="Go to PyTorch.org">
+  <span class="pytorch-site-link-text">
+    <span>Go to</span>
+    <span>pytorch.org <i class="fa-solid fa-arrow-up-right-from-square external-icon"></i></span>
+  </span>
+</a></div>
+        
+        
+          <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+        
+          <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/torchmonarch/" title="PyPi" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-python fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">PyPi</span></a>
+        </li>
+</ul></div>
+        
+      </div>
+    
+  </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+  </div>
+
+
+
+<div id="rtd-footer-container"></div>
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="../../../index.html" class="nav-link">Module code</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page">monarch._src...</li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+</div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+
+<div id="searchbox"></div>
+<div id="pytorch-article">
+  <!-- Hidden breadcrumb schema for SEO only -->
+  <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
+    
+    <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+      <link itemprop="item" href="../../../index.html">
+      <meta itemprop="name" content="Module code">
+      <meta itemprop="position" content="1">
+    </div>
+    
+    <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+      <meta itemprop="name" content="monarch._src.job.job_components">
+      <meta itemprop="position" content="2">
+    </div>
+  </div>
+
+  
+  
+
+  
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <h1>Source code for monarch._src.job.job_components</h1><div class="highlight"><pre>
+<span></span><span class="c1"># Copyright (c) Meta Platforms, Inc. and affiliates.</span>
+<span class="c1"># All rights reserved.</span>
+<span class="c1">#</span>
+<span class="c1"># This source code is licensed under the BSD-style license found in the</span>
+<span class="c1"># LICENSE file in the root directory of this source tree.</span>
+
+<span class="c1"># pyre-strict</span>
+
+<span class="sd">&quot;&quot;&quot;Lifecycle components for ``JobTrait``.</span>
+
+<span class="sd">``JobTrait`` owns scheduler state and the current allocation. ``JobComponent``</span>
+<span class="sd">owns the configuration and live handles for one job-scoped capability: mounts,</span>
+<span class="sd">telemetry, admin, or snapshots.</span>
+
+<span class="sd">The hooks mirror the job lifecycle after an allocation is selected:</span>
+
+<span class="sd">- ``before_connect(job)``: before ``JobTrait._connect()`` materializes raw host</span>
+<span class="sd">  meshes.</span>
+<span class="sd">- ``connect(job, host_meshes)``: after raw host meshes exist; return the final</span>
+<span class="sd">  user-facing meshes.</span>
+<span class="sd">- ``state(job, job_state)``: after final meshes are wrapped in ``JobState``;</span>
+<span class="sd">  start services and attach fields to the object returned to the caller.</span>
+<span class="sd">- ``reset_runtime()``: drop local live handles.</span>
+
+<span class="sd">``JobComponents`` is a stable typed container. It owns optional component</span>
+<span class="sd">presence, dependency wiring, and phase ordering; ``JobTrait`` owns allocation</span>
+<span class="sd">identity.</span>
+<span class="sd">&quot;&quot;&quot;</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">__future__</span><span class="w"> </span><span class="kn">import</span> <span class="n">annotations</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span><span class="p">,</span> <span class="n">field</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Any</span><span class="p">,</span> <span class="n">Dict</span><span class="p">,</span> <span class="n">List</span><span class="p">,</span> <span class="n">Optional</span><span class="p">,</span> <span class="n">TYPE_CHECKING</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">monarch._rust_bindings.monarch_hyperactor.host_mesh</span><span class="w"> </span><span class="kn">import</span> <span class="n">PyMeshAdminRef</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.actor.host_mesh</span><span class="w"> </span><span class="kn">import</span> <span class="n">_spawn_admin</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.actor.sync_state</span><span class="w"> </span><span class="kn">import</span> <span class="n">fake_sync_state</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.job._telemetry_query_client</span><span class="w"> </span><span class="kn">import</span> <span class="n">QueryEngineClient</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.job.mount_config</span><span class="w"> </span><span class="kn">import</span> <span class="n">Mounts</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.job.telemetry_config</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">install_sidecar_socket_sink</span><span class="p">,</span>
+    <span class="n">Telemetry</span><span class="p">,</span>
+    <span class="n">TelemetryConfig</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">monarch.actor</span><span class="w"> </span><span class="kn">import</span> <span class="n">HostMesh</span>
+
+<span class="k">if</span> <span class="n">TYPE_CHECKING</span><span class="p">:</span>
+    <span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.job.job</span><span class="w"> </span><span class="kn">import</span> <span class="n">JobState</span><span class="p">,</span> <span class="n">JobTrait</span>
+
+<span class="n">logger</span><span class="p">:</span> <span class="n">logging</span><span class="o">.</span><span class="n">Logger</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+
+<div class="viewcode-block" id="MeshAdminConfig"><a class="viewcode-back" href="../../../../api/monarch.job.html#monarch.job.MeshAdminConfig">[docs]</a><span class="nd">@dataclass</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">MeshAdminConfig</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Configuration for automatic mesh admin agent startup.</span>
+
+<span class="sd">    When configured via ``JobTrait.enable_admin``, a MeshAdminAgent HTTP</span>
+<span class="sd">    server is spawned when ``state()`` is called. The server aggregates</span>
+<span class="sd">    topology across all host meshes and exposes it via a REST API that the</span>
+<span class="sd">    admin TUI can attach to.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        admin_addr: Bind address for the admin HTTP server.  When</span>
+<span class="sd">            ``None`` the server picks an available address automatically.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">admin_addr</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span></div>
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">JobComponent</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;A job-scoped component driven by ``JobTrait``.&quot;&quot;&quot;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">before_connect</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">job</span><span class="p">:</span> <span class="s2">&quot;JobTrait&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Run at the start of ``JobTrait._connect``, before raw host meshes exist.&quot;&quot;&quot;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">connect</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span> <span class="n">job</span><span class="p">:</span> <span class="s2">&quot;JobTrait&quot;</span><span class="p">,</span> <span class="n">host_meshes</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">HostMesh</span><span class="p">]</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">HostMesh</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Run during ``JobTrait._connect`` to produce final user-facing meshes.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="n">host_meshes</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">state</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">job</span><span class="p">:</span> <span class="s2">&quot;JobTrait&quot;</span><span class="p">,</span> <span class="n">job_state</span><span class="p">:</span> <span class="s2">&quot;JobState&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Run during ``JobTrait.state`` to bring services up on final meshes.&quot;&quot;&quot;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">reset_runtime</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Drop local live handles owned by this component.&quot;&quot;&quot;</span>
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">MountComponent</span><span class="p">(</span><span class="n">JobComponent</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Open configured mounts and apply per-mesh python executables.</span>
+
+<span class="sd">    Runs in ``connect`` -- after ``JobTrait._connect`` materializes the raw</span>
+<span class="sd">    host meshes and before any service comes up -- so it produces the final</span>
+<span class="sd">    meshes that both the caller and the downstream ``state`` services see.</span>
+<span class="sd">    Config drift is copied in place; the next ``connect`` lets</span>
+<span class="sd">    ``Mounts.ensure_open`` refresh, replace, or clear sidecar mount state.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_mounts</span><span class="p">:</span> <span class="n">Mounts</span> <span class="o">=</span> <span class="n">Mounts</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_python_executables</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_default_python_exe</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">connect</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span> <span class="n">job</span><span class="p">:</span> <span class="s2">&quot;JobTrait&quot;</span><span class="p">,</span> <span class="n">host_meshes</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">HostMesh</span><span class="p">]</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">HostMesh</span><span class="p">]:</span>
+        <span class="n">apply_id</span> <span class="o">=</span> <span class="n">job</span><span class="o">.</span><span class="n">apply_id</span>
+        <span class="k">if</span> <span class="n">apply_id</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_mounts</span><span class="o">.</span><span class="n">ensure_open</span><span class="p">(</span><span class="n">apply_id</span><span class="p">,</span> <span class="n">host_meshes</span><span class="p">)</span>
+        <span class="n">result</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">HostMesh</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="k">for</span> <span class="n">mesh_name</span><span class="p">,</span> <span class="n">mesh</span> <span class="ow">in</span> <span class="n">host_meshes</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+            <span class="n">exe</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">python_executable_for_mesh</span><span class="p">(</span><span class="n">mesh_name</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">exe</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="n">mesh</span> <span class="o">=</span> <span class="n">mesh</span><span class="o">.</span><span class="n">with_python_executable</span><span class="p">(</span><span class="n">exe</span><span class="p">)</span>
+            <span class="n">result</span><span class="p">[</span><span class="n">mesh_name</span><span class="p">]</span> <span class="o">=</span> <span class="n">mesh</span>
+        <span class="k">return</span> <span class="n">result</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">python_executable_for_mesh</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">mesh_name</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]:</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_python_executables</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">mesh_name</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_default_python_exe</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">remote_mount</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">source</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+        <span class="n">mntpoint</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">meshes</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">List</span><span class="p">[</span><span class="nb">str</span><span class="p">]]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">python_exe</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;.venv/bin/python&quot;</span><span class="p">,</span>
+        <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">default_exe_path</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="n">mesh_exe_path</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="k">if</span> <span class="n">python_exe</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">abs_source</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">abspath</span><span class="p">(</span><span class="n">source</span><span class="p">)</span>
+            <span class="n">local_exe</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">abs_source</span><span class="p">,</span> <span class="n">python_exe</span><span class="p">)</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">isfile</span><span class="p">(</span><span class="n">local_exe</span><span class="p">):</span>
+                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+                    <span class="sa">f</span><span class="s2">&quot;python_exe &#39;</span><span class="si">{</span><span class="n">python_exe</span><span class="si">}</span><span class="s2">&#39; not found locally at &#39;</span><span class="si">{</span><span class="n">local_exe</span><span class="si">}</span><span class="s2">&#39;. &quot;</span>
+                    <span class="sa">f</span><span class="s2">&quot;Ensure the virtual environment exists in &#39;</span><span class="si">{</span><span class="n">source</span><span class="si">}</span><span class="s2">&#39; before calling remote_mount.&quot;</span>
+                <span class="p">)</span>
+            <span class="n">abs_mntpoint</span> <span class="o">=</span> <span class="p">(</span>
+                <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">abspath</span><span class="p">(</span><span class="n">mntpoint</span><span class="p">)</span> <span class="k">if</span> <span class="n">mntpoint</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="n">abs_source</span>
+            <span class="p">)</span>
+            <span class="n">exe_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">abs_mntpoint</span><span class="p">,</span> <span class="n">python_exe</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">meshes</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="n">default_exe_path</span> <span class="o">=</span> <span class="n">exe_path</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">mesh_exe_path</span> <span class="o">=</span> <span class="n">exe_path</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_mounts</span><span class="o">.</span><span class="n">remote_mount</span><span class="p">(</span>
+            <span class="n">source</span><span class="o">=</span><span class="n">source</span><span class="p">,</span> <span class="n">mntpoint</span><span class="o">=</span><span class="n">mntpoint</span><span class="p">,</span> <span class="n">meshes</span><span class="o">=</span><span class="n">meshes</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span>
+        <span class="p">)</span>
+        <span class="k">if</span> <span class="n">default_exe_path</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_default_python_exe</span> <span class="o">=</span> <span class="n">default_exe_path</span>
+        <span class="k">elif</span> <span class="n">mesh_exe_path</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">meshes</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">for</span> <span class="n">mesh_name</span> <span class="ow">in</span> <span class="n">meshes</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_python_executables</span><span class="p">[</span><span class="n">mesh_name</span><span class="p">]</span> <span class="o">=</span> <span class="n">mesh_exe_path</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">gather_mount</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">remote_mount_point</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+        <span class="n">local_mount_point</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+        <span class="n">meshes</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">List</span><span class="p">[</span><span class="nb">str</span><span class="p">]]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_mounts</span><span class="o">.</span><span class="n">gather_mount</span><span class="p">(</span>
+            <span class="n">remote_mount_point</span><span class="o">=</span><span class="n">remote_mount_point</span><span class="p">,</span>
+            <span class="n">local_mount_point</span><span class="o">=</span><span class="n">local_mount_point</span><span class="p">,</span>
+            <span class="n">meshes</span><span class="o">=</span><span class="n">meshes</span><span class="p">,</span>
+        <span class="p">)</span>
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">TelemetryComponent</span><span class="p">(</span><span class="n">JobComponent</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Host telemetry for a job.</span>
+
+<span class="sd">    ``before_connect`` opens the sidecar&#39;s telemetry handle and installs the</span>
+<span class="sd">    client-process Unix socket sink *before* raw host meshes are materialized</span>
+<span class="sd">    so host-mesh creation events are captured. ``connect`` asks the sidecar to</span>
+<span class="sd">    fan worker collectors out across the materialized host meshes. Config drift</span>
+<span class="sd">    clears parent-side handles, but the sidecar keeps its in-memory telemetry</span>
+<span class="sd">    store for the same ``apply_id``.</span>
+<span class="sd">    Telemetry is best-effort: any failure is logged and leaves telemetry</span>
+<span class="sd">    disabled for this job rather than failing ``state()``.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">config</span><span class="p">:</span> <span class="n">TelemetryConfig</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_config</span> <span class="o">=</span> <span class="n">config</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_telemetry_url</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_dashboard_url</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_query_engine_client</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">QueryEngineClient</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">reset_runtime</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_query_engine_client</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_telemetry_url</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_dashboard_url</span> <span class="o">=</span> <span class="kc">None</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">__getstate__</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]:</span>
+        <span class="n">state</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="vm">__dict__</span><span class="o">.</span><span class="n">copy</span><span class="p">()</span>
+        <span class="n">state</span><span class="p">[</span><span class="s2">&quot;_query_engine_client&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="n">state</span><span class="p">[</span><span class="s2">&quot;_telemetry_url&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="n">state</span><span class="p">[</span><span class="s2">&quot;_dashboard_url&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="k">return</span> <span class="n">state</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">before_connect</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">job</span><span class="p">:</span> <span class="s2">&quot;JobTrait&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_query_engine_client</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">return</span>
+        <span class="n">apply_id</span> <span class="o">=</span> <span class="n">job</span><span class="o">.</span><span class="n">apply_id</span>
+        <span class="k">if</span> <span class="n">apply_id</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">return</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">response</span> <span class="o">=</span> <span class="n">Telemetry</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_config</span><span class="p">)</span><span class="o">.</span><span class="n">ensure_open</span><span class="p">(</span><span class="n">apply_id</span><span class="p">,</span> <span class="n">host_meshes</span><span class="o">=</span><span class="p">{})</span>
+            <span class="n">telemetry_url</span> <span class="o">=</span> <span class="n">response</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;telemetry_url&quot;</span><span class="p">)</span>
+            <span class="n">dashboard_url</span> <span class="o">=</span> <span class="n">response</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;dashboard_url&quot;</span><span class="p">)</span>
+            <span class="n">socket_path</span> <span class="o">=</span> <span class="n">response</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;socket_path&quot;</span><span class="p">)</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">telemetry_url</span><span class="p">,</span> <span class="nb">str</span><span class="p">)</span> <span class="ow">or</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">socket_path</span><span class="p">,</span> <span class="nb">str</span><span class="p">):</span>
+                <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span>
+                    <span class="sa">f</span><span class="s2">&quot;invalid job sidecar telemetry response: </span><span class="si">{</span><span class="n">response</span><span class="si">!r}</span><span class="s2">&quot;</span>
+                <span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_telemetry_url</span> <span class="o">=</span> <span class="n">telemetry_url</span>
+            <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">dashboard_url</span><span class="p">,</span> <span class="nb">str</span><span class="p">):</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_dashboard_url</span> <span class="o">=</span> <span class="n">dashboard_url</span>
+                <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_config</span><span class="o">.</span><span class="n">include_dashboard</span><span class="p">:</span>
+                    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Monarch Dashboard: </span><span class="si">{</span><span class="n">dashboard_url</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">flush</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_query_engine_client</span> <span class="o">=</span> <span class="n">QueryEngineClient</span><span class="p">(</span><span class="n">telemetry_url</span><span class="p">)</span>
+            <span class="n">install_sidecar_socket_sink</span><span class="p">(</span><span class="n">socket_path</span><span class="p">)</span>
+        <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+            <span class="c1"># Reset so a partial bootstrap leaves a clean &quot;disabled&quot; state:</span>
+            <span class="c1"># fan-out no-ops and `state` exposes no query client.</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_query_engine_client</span> <span class="o">=</span> <span class="kc">None</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_telemetry_url</span> <span class="o">=</span> <span class="kc">None</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_dashboard_url</span> <span class="o">=</span> <span class="kc">None</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
+                <span class="s2">&quot;job sidecar telemetry bootstrap failed; telemetry disabled for this job&quot;</span><span class="p">,</span>
+                <span class="n">exc_info</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+            <span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">connect</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span> <span class="n">job</span><span class="p">:</span> <span class="s2">&quot;JobTrait&quot;</span><span class="p">,</span> <span class="n">host_meshes</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">HostMesh</span><span class="p">]</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">HostMesh</span><span class="p">]:</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_query_engine_client</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">host_meshes</span>
+        <span class="n">apply_id</span> <span class="o">=</span> <span class="n">job</span><span class="o">.</span><span class="n">apply_id</span>
+        <span class="k">if</span> <span class="n">apply_id</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">host_meshes</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="c1"># `_telemetry_url`/`_dashboard_url` are already set by</span>
+            <span class="c1"># `before_connect`; this call only triggers worker fan-out, so its</span>
+            <span class="c1"># response is intentionally ignored.</span>
+            <span class="n">Telemetry</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_config</span><span class="p">)</span><span class="o">.</span><span class="n">ensure_open</span><span class="p">(</span>
+                <span class="n">apply_id</span><span class="p">,</span>
+                <span class="n">host_meshes</span><span class="o">=</span><span class="n">host_meshes</span><span class="p">,</span>
+                <span class="n">spawn_worker_collectors</span><span class="o">=</span><span class="n">job</span><span class="o">.</span><span class="n">_should_spawn_telemetry_worker_collector_actors</span><span class="p">(),</span>
+            <span class="p">)</span>
+        <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
+                <span class="s2">&quot;job sidecar telemetry worker fan-out failed&quot;</span><span class="p">,</span>
+                <span class="n">exc_info</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+            <span class="p">)</span>
+        <span class="k">return</span> <span class="n">host_meshes</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">state</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">job</span><span class="p">:</span> <span class="s2">&quot;JobTrait&quot;</span><span class="p">,</span> <span class="n">job_state</span><span class="p">:</span> <span class="s2">&quot;JobState&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_query_engine_client</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">job_state</span><span class="o">.</span><span class="n">query_engine_client</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_query_engine_client</span>
+            <span class="n">job_state</span><span class="o">.</span><span class="n">telemetry_url</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_telemetry_url</span>
+            <span class="n">job_state</span><span class="o">.</span><span class="n">dashboard_url</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_dashboard_url</span>
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">AdminComponent</span><span class="p">(</span><span class="n">JobComponent</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Start the mesh admin agent once per allocation.</span>
+
+<span class="sd">    Owns the admin URL and ref. If telemetry is configured, the admin agent</span>
+<span class="sd">    receives the telemetry URL from the active telemetry component.</span>
+<span class="sd">    ``JobComponents`` resets this runtime when admin config drifts or telemetry</span>
+<span class="sd">    config changes.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">config</span><span class="p">:</span> <span class="n">MeshAdminConfig</span><span class="p">,</span>
+        <span class="n">telemetry</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">TelemetryComponent</span><span class="p">],</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_config</span> <span class="o">=</span> <span class="n">config</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_telemetry</span> <span class="o">=</span> <span class="n">telemetry</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_admin_url</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_admin_ref</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">PyMeshAdminRef</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">reset_runtime</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_admin_url</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_admin_ref</span> <span class="o">=</span> <span class="kc">None</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">__getstate__</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]:</span>
+        <span class="n">state</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="vm">__dict__</span><span class="o">.</span><span class="n">copy</span><span class="p">()</span>
+        <span class="n">state</span><span class="p">[</span><span class="s2">&quot;_admin_url&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="n">state</span><span class="p">[</span><span class="s2">&quot;_admin_ref&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="k">return</span> <span class="n">state</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">state</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">job</span><span class="p">:</span> <span class="s2">&quot;JobTrait&quot;</span><span class="p">,</span> <span class="n">job_state</span><span class="p">:</span> <span class="s2">&quot;JobState&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_admin_url</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">telemetry_url</span> <span class="o">=</span> <span class="p">(</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_telemetry</span><span class="o">.</span><span class="n">_telemetry_url</span> <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_telemetry</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="kc">None</span>
+            <span class="p">)</span>
+            <span class="c1"># state() is a sync API but is commonly called from inside</span>
+            <span class="c1"># asyncio.run(...); mask the running loop so the inner .get() does not</span>
+            <span class="c1"># trip the Future.get-in-loop check.</span>
+            <span class="k">with</span> <span class="n">fake_sync_state</span><span class="p">():</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_admin_url</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_admin_ref</span> <span class="o">=</span> <span class="n">_spawn_admin</span><span class="p">(</span>
+                    <span class="nb">list</span><span class="p">(</span><span class="n">job_state</span><span class="o">.</span><span class="n">_hosts</span><span class="o">.</span><span class="n">values</span><span class="p">()),</span>
+                    <span class="n">admin_addr</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_config</span><span class="o">.</span><span class="n">admin_addr</span><span class="p">,</span>
+                    <span class="n">telemetry_url</span><span class="o">=</span><span class="n">telemetry_url</span><span class="p">,</span>
+                <span class="p">)</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
+        <span class="n">job_state</span><span class="o">.</span><span class="n">admin_url</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_admin_url</span>
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">SnapshotComponent</span><span class="p">(</span><span class="n">JobComponent</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Start periodic mesh-introspection snapshots once per allocation.</span>
+
+<span class="sd">    Requires both telemetry and admin to have come up, plus a positive</span>
+<span class="sd">    ``snapshot_interval_secs``. The snapshot actor is owned by proc lifecycle,</span>
+<span class="sd">    so this component has no fine-grained stop handle once started.</span>
+
+<span class="sd">    Because the actor cannot be stopped, ``_started`` stays sticky for the life</span>
+<span class="sd">    of the allocation: once running, the snapshot is not restarted even when its</span>
+<span class="sd">    telemetry or admin dependencies are reset by config drift. Restarting would</span>
+<span class="sd">    spawn a duplicate actor against the new runtime while the original keeps</span>
+<span class="sd">    capturing from the old one. ``JobComponents`` warns on such drift; picking up</span>
+<span class="sd">    new config requires killing and re-applying the job.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">telemetry</span><span class="p">:</span> <span class="n">TelemetryComponent</span><span class="p">,</span>
+        <span class="n">admin</span><span class="p">:</span> <span class="n">AdminComponent</span><span class="p">,</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_telemetry</span> <span class="o">=</span> <span class="n">telemetry</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_admin</span> <span class="o">=</span> <span class="n">admin</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_started</span> <span class="o">=</span> <span class="kc">False</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">reset_runtime</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_started</span> <span class="o">=</span> <span class="kc">False</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">__getstate__</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]:</span>
+        <span class="n">state</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="vm">__dict__</span><span class="o">.</span><span class="n">copy</span><span class="p">()</span>
+        <span class="n">state</span><span class="p">[</span><span class="s2">&quot;_started&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="kc">False</span>
+        <span class="k">return</span> <span class="n">state</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">state</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">job</span><span class="p">:</span> <span class="s2">&quot;JobTrait&quot;</span><span class="p">,</span> <span class="n">job_state</span><span class="p">:</span> <span class="s2">&quot;JobState&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_started</span><span class="p">:</span>
+            <span class="k">return</span>
+        <span class="n">admin_ref</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_admin</span><span class="o">.</span><span class="n">_admin_ref</span>
+        <span class="k">if</span> <span class="n">admin_ref</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">return</span>
+        <span class="n">snapshot_interval_secs</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_telemetry</span><span class="o">.</span><span class="n">_config</span><span class="o">.</span><span class="n">snapshot_interval_secs</span>
+        <span class="k">if</span> <span class="n">snapshot_interval_secs</span> <span class="o">&lt;=</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="k">return</span>
+
+        <span class="kn">from</span><span class="w"> </span><span class="nn">monarch.actor</span><span class="w"> </span><span class="kn">import</span> <span class="n">context</span>
+
+        <span class="n">instance</span> <span class="o">=</span> <span class="n">context</span><span class="p">()</span><span class="o">.</span><span class="n">actor_instance</span><span class="o">.</span><span class="n">_as_rust</span><span class="p">()</span>
+        <span class="n">telemetry_url</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_telemetry</span><span class="o">.</span><span class="n">_telemetry_url</span>
+        <span class="k">if</span> <span class="n">telemetry_url</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">return</span>
+        <span class="kn">from</span><span class="w"> </span><span class="nn">monarch._rust_bindings.monarch_extension.snapshot_integration</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+            <span class="n">_start_periodic_snapshots_http</span><span class="p">,</span>
+        <span class="p">)</span>
+
+        <span class="n">_start_periodic_snapshots_http</span><span class="p">(</span>
+            <span class="n">base_url</span><span class="o">=</span><span class="n">telemetry_url</span><span class="p">,</span>
+            <span class="n">admin_ref</span><span class="o">=</span><span class="n">admin_ref</span><span class="p">,</span>
+            <span class="n">instance</span><span class="o">=</span><span class="n">instance</span><span class="p">,</span>
+            <span class="n">interval_secs</span><span class="o">=</span><span class="n">snapshot_interval_secs</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_started</span> <span class="o">=</span> <span class="kc">True</span>
+
+
+<span class="nd">@dataclass</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">JobComponents</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Stable component set for one job.</span>
+
+<span class="sd">    Field order is dependency order. Mounts always run first, telemetry</span>
+<span class="sd">    feeds admin, and snapshots require both telemetry and admin.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">mounts</span><span class="p">:</span> <span class="n">MountComponent</span> <span class="o">=</span> <span class="n">field</span><span class="p">(</span><span class="n">default_factory</span><span class="o">=</span><span class="n">MountComponent</span><span class="p">)</span>
+    <span class="n">telemetry</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">TelemetryComponent</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">admin</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">AdminComponent</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">snapshot</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">SnapshotComponent</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_ordered</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">List</span><span class="p">[</span><span class="n">JobComponent</span><span class="p">]:</span>
+        <span class="n">components</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">JobComponent</span><span class="p">]</span> <span class="o">=</span> <span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">mounts</span><span class="p">]</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">telemetry</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">components</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">telemetry</span><span class="p">)</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">admin</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">components</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">admin</span><span class="p">)</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">snapshot</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">components</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">snapshot</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">components</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">before_connect</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">job</span><span class="p">:</span> <span class="s2">&quot;JobTrait&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">for</span> <span class="n">component</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_ordered</span><span class="p">():</span>
+            <span class="n">component</span><span class="o">.</span><span class="n">before_connect</span><span class="p">(</span><span class="n">job</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">connect</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span> <span class="n">job</span><span class="p">:</span> <span class="s2">&quot;JobTrait&quot;</span><span class="p">,</span> <span class="n">host_meshes</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">HostMesh</span><span class="p">]</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">HostMesh</span><span class="p">]:</span>
+        <span class="k">for</span> <span class="n">component</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_ordered</span><span class="p">():</span>
+            <span class="n">host_meshes</span> <span class="o">=</span> <span class="n">component</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="n">job</span><span class="p">,</span> <span class="n">host_meshes</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">host_meshes</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">state</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">job</span><span class="p">:</span> <span class="s2">&quot;JobTrait&quot;</span><span class="p">,</span> <span class="n">job_state</span><span class="p">:</span> <span class="s2">&quot;JobState&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">for</span> <span class="n">component</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_ordered</span><span class="p">():</span>
+            <span class="n">component</span><span class="o">.</span><span class="n">state</span><span class="p">(</span><span class="n">job</span><span class="p">,</span> <span class="n">job_state</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">reset_runtime</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">for</span> <span class="n">component</span> <span class="ow">in</span> <span class="nb">reversed</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_ordered</span><span class="p">()):</span>
+            <span class="n">component</span><span class="o">.</span><span class="n">reset_runtime</span><span class="p">()</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">configure_telemetry</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">config</span><span class="p">:</span> <span class="n">TelemetryConfig</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">telemetry</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">telemetry</span> <span class="o">=</span> <span class="n">TelemetryComponent</span><span class="p">(</span><span class="n">config</span><span class="p">)</span>
+            <span class="n">telemetry_changed</span> <span class="o">=</span> <span class="kc">True</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">telemetry_changed</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">telemetry</span><span class="o">.</span><span class="n">_config</span> <span class="o">!=</span> <span class="n">config</span>
+            <span class="k">if</span> <span class="n">telemetry_changed</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">telemetry</span><span class="o">.</span><span class="n">reset_runtime</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">telemetry</span><span class="o">.</span><span class="n">_config</span> <span class="o">=</span> <span class="n">config</span>
+        <span class="k">if</span> <span class="n">telemetry_changed</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_warn_if_snapshot_stale</span><span class="p">()</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">admin</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">telemetry_changed</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">admin</span><span class="o">.</span><span class="n">reset_runtime</span><span class="p">()</span>
+            <span class="c1"># Admin config is unchanged here; only rewire its telemetry handle.</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">admin</span><span class="o">.</span><span class="n">_telemetry</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">telemetry</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_configure_snapshot</span><span class="p">()</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">configure_admin</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">config</span><span class="p">:</span> <span class="n">MeshAdminConfig</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">admin</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">admin</span> <span class="o">=</span> <span class="n">AdminComponent</span><span class="p">(</span><span class="n">config</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">telemetry</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_set_admin_inputs</span><span class="p">(</span><span class="n">config</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_configure_snapshot</span><span class="p">()</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_set_admin_inputs</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">config</span><span class="p">:</span> <span class="n">MeshAdminConfig</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">admin</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">admin</span>
+        <span class="k">if</span> <span class="n">admin</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">return</span>
+        <span class="k">if</span> <span class="n">admin</span><span class="o">.</span><span class="n">_config</span> <span class="o">!=</span> <span class="n">config</span><span class="p">:</span>
+            <span class="n">admin</span><span class="o">.</span><span class="n">reset_runtime</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_warn_if_snapshot_stale</span><span class="p">()</span>
+        <span class="n">admin</span><span class="o">.</span><span class="n">_config</span> <span class="o">=</span> <span class="n">config</span>
+        <span class="n">admin</span><span class="o">.</span><span class="n">_telemetry</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">telemetry</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_warn_if_snapshot_stale</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Warn when a dependency restarts under an already-running snapshot.</span>
+
+<span class="sd">        The snapshot actor is fire-and-forget and cannot be stopped within an</span>
+<span class="sd">        allocation, so a restarted telemetry or admin runtime leaves it bound to</span>
+<span class="sd">        the old runtime. See :class:`SnapshotComponent`.</span>
+
+<span class="sd">        TODO: give periodic snapshot capture an abort handle so</span>
+<span class="sd">        ``SnapshotComponent.reset_runtime`` can stop the old actor; then reset</span>
+<span class="sd">        the snapshot in this drift cascade alongside telemetry and admin.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">snapshot</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">snapshot</span><span class="o">.</span><span class="n">_started</span><span class="p">:</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
+                <span class="s2">&quot;telemetry or admin config changed while periodic snapshots are running: &quot;</span>
+                <span class="s2">&quot;snapshots stay bound to the original runtime until the job is killed and re-applied&quot;</span>
+            <span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_configure_snapshot</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">telemetry</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">admin</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">snapshot</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">snapshot</span> <span class="o">=</span> <span class="n">SnapshotComponent</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">telemetry</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">admin</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">snapshot</span><span class="o">.</span><span class="n">_telemetry</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">telemetry</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">snapshot</span><span class="o">.</span><span class="n">_admin</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">admin</span>
+        <span class="k">elif</span> <span class="bp">self</span><span class="o">.</span><span class="n">snapshot</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">snapshot</span> <span class="o">=</span> <span class="kc">None</span>
+</pre></div>
+
+                </article>
+              
+</div>
+
+              
+              
+                <footer class="bd-footer-article">
+                  <div class="footer-article-items footer-article__inner">
+  
+    <div class="footer-article-item">
+<div class="feedback">
+  
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+
+  <div class="feedback-send">
+    <button class="feedback-btn"
+            onclick="openGitHubIssue()"
+            data-bs-title="Create a GitHub Issue"
+            data-bs-placement="bottom"
+            data-bs-toggle="tooltip"
+            data-gtm="feedback-btn-click">Send Feedback
+    </button>
+  </div>
+</div>
+
+<div class="prev-next-area">
+</div>
+
+<div class="footer-info">
+  <p class="copyright">
+    
+  </p>
+
+  <p class="theme-version">
+    Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+  </p>
+</div>
+</div>
+  
+</div>
+                </footer>
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script src="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b"></script>
+<script src="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+  
+
+
+<style>
+.site-footer {
+    padding: 20px 40px;
+    height: 60px !important;
+}
+
+@media screen and (min-width: 768px) {
+    .site-footer {
+        padding: 20px 40px;
+    }
+}
+
+.site-footer .privacy-policy {
+    border-top: none;
+    margin-top: 0px;
+}
+
+.site-footer .privacy-policy .copyright {
+    padding-top: 0;
+}
+</style>
+
+
+<footer class="site-footer">
+
+    <div class="privacy-policy">
+      <div class="copyright">
+      
+        <p>
+           Copyright © Meta Platforms, Inc
+        </p>
+        
+      </div>
+    </div>
+
+
+  </div>
+</footer>
+
+<div class="cookie-banner-wrapper" data-nosnippet>
+  <div class="container">
+    <p class="gdpr-notice">To analyze traffic and optimize your experience, we serve cookies on this site. By clicking or navigating, you agree to allow our usage of cookies. As the current maintainers of this site, Facebook’s Cookies Policy applies. Learn more, including about available controls: <a href="https://opensource.fb.com/legal/cookie-policy">Cookies Policy</a>.</p>
+    <button class="close-button" aria-label="Close cookie banner"></button>
+  </div>
+</div>
+  
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2025.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 6.2.1.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  <script type="application/ld+json">
+    {
+       "@context": "https://schema.org",
+       "@type": "Article",
+       "name": "monarch._src.job.job_components",
+       "headline": "monarch._src.job.job_components",
+       "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
+       "url": "/_modules/monarch/_src/job/job_components.html",
+       "articleBody": "Source code for monarch._src.job.job_components # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-strict \"\"\"Lifecycle components for ``JobTrait``. ``JobTrait`` owns scheduler state and the current allocation. ``JobComponent`` owns the configuration and live handles for one job-scoped capability: mounts, telemetry, admin, or snapshots. The hooks mirror the job lifecycle after an allocation is selected: - ``before_connect(job)``: before ``JobTrait._connect()`` materializes raw host meshes. - ``connect(job, host_meshes)``: after raw host meshes exist; return the final user-facing meshes. - ``state(job, job_state)``: after final meshes are wrapped in ``JobState``; start services and attach fields to the object returned to the caller. - ``reset_runtime()``: drop local live handles. ``JobComponents`` is a stable typed container. It owns optional component presence, dependency wiring, and phase ordering; ``JobTrait`` owns allocation identity. \"\"\" from __future__ import annotations import logging import os from dataclasses import dataclass, field from typing import Any, Dict, List, Optional, TYPE_CHECKING from monarch._rust_bindings.monarch_hyperactor.host_mesh import PyMeshAdminRef from monarch._src.actor.host_mesh import _spawn_admin from monarch._src.actor.sync_state import fake_sync_state from monarch._src.job._telemetry_query_client import QueryEngineClient from monarch._src.job.mount_config import Mounts from monarch._src.job.telemetry_config import ( install_sidecar_socket_sink, Telemetry, TelemetryConfig, ) from monarch.actor import HostMesh if TYPE_CHECKING: from monarch._src.job.job import JobState, JobTrait logger: logging.Logger = logging.getLogger(__name__) [docs]@dataclass class MeshAdminConfig: \"\"\"Configuration for automatic mesh admin agent startup. When configured via ``JobTrait.enable_admin``, a MeshAdminAgent HTTP server is spawned when ``state()`` is called. The server aggregates topology across all host meshes and exposes it via a REST API that the admin TUI can attach to. Args: admin_addr: Bind address for the admin HTTP server. When ``None`` the server picks an available address automatically. \"\"\" admin_addr: Optional[str] = None class JobComponent: \"\"\"A job-scoped component driven by ``JobTrait``.\"\"\" def before_connect(self, job: \"JobTrait\") -\u003e None: \"\"\"Run at the start of ``JobTrait._connect``, before raw host meshes exist.\"\"\" def connect( self, job: \"JobTrait\", host_meshes: Dict[str, HostMesh] ) -\u003e Dict[str, HostMesh]: \"\"\"Run during ``JobTrait._connect`` to produce final user-facing meshes.\"\"\" return host_meshes def state(self, job: \"JobTrait\", job_state: \"JobState\") -\u003e None: \"\"\"Run during ``JobTrait.state`` to bring services up on final meshes.\"\"\" def reset_runtime(self) -\u003e None: \"\"\"Drop local live handles owned by this component.\"\"\" class MountComponent(JobComponent): \"\"\"Open configured mounts and apply per-mesh python executables. Runs in ``connect`` -- after ``JobTrait._connect`` materializes the raw host meshes and before any service comes up -- so it produces the final meshes that both the caller and the downstream ``state`` services see. Config drift is copied in place; the next ``connect`` lets ``Mounts.ensure_open`` refresh, replace, or clear sidecar mount state. \"\"\" def __init__(self) -\u003e None: self._mounts: Mounts = Mounts() self._python_executables: Dict[str, str] = {} self._default_python_exe: Optional[str] = None def connect( self, job: \"JobTrait\", host_meshes: Dict[str, HostMesh] ) -\u003e Dict[str, HostMesh]: apply_id = job.apply_id if apply_id is not None: self._mounts.ensure_open(apply_id, host_meshes) result: Dict[str, HostMesh] = {} for mesh_name, mesh in host_meshes.items(): exe = self.python_executable_for_mesh(mesh_name) if exe is not None: mesh = mesh.with_python_executable(exe) result[mesh_name] = mesh return result def python_executable_for_mesh(self, mesh_name: str) -\u003e Optional[str]: return self._python_executables.get(mesh_name, self._default_python_exe) def remote_mount( self, source: str, mntpoint: Optional[str] = None, meshes: Optional[List[str]] = None, python_exe: Optional[str] = \".venv/bin/python\", **kwargs: Any, ) -\u003e None: default_exe_path = None mesh_exe_path = None if python_exe is not None: abs_source = os.path.abspath(source) local_exe = os.path.join(abs_source, python_exe) if not os.path.isfile(local_exe): raise ValueError( f\"python_exe \u0027{python_exe}\u0027 not found locally at \u0027{local_exe}\u0027. \" f\"Ensure the virtual environment exists in \u0027{source}\u0027 before calling remote_mount.\" ) abs_mntpoint = ( os.path.abspath(mntpoint) if mntpoint is not None else abs_source ) exe_path = os.path.join(abs_mntpoint, python_exe) if meshes is None: default_exe_path = exe_path else: mesh_exe_path = exe_path self._mounts.remote_mount( source=source, mntpoint=mntpoint, meshes=meshes, **kwargs ) if default_exe_path is not None: self._default_python_exe = default_exe_path elif mesh_exe_path is not None and meshes is not None: for mesh_name in meshes: self._python_executables[mesh_name] = mesh_exe_path def gather_mount( self, remote_mount_point: str, local_mount_point: str, meshes: Optional[List[str]] = None, ) -\u003e None: self._mounts.gather_mount( remote_mount_point=remote_mount_point, local_mount_point=local_mount_point, meshes=meshes, ) class TelemetryComponent(JobComponent): \"\"\"Host telemetry for a job. ``before_connect`` opens the sidecar\u0027s telemetry handle and installs the client-process Unix socket sink *before* raw host meshes are materialized so host-mesh creation events are captured. ``connect`` asks the sidecar to fan worker collectors out across the materialized host meshes. Config drift clears parent-side handles, but the sidecar keeps its in-memory telemetry store for the same ``apply_id``. Telemetry is best-effort: any failure is logged and leaves telemetry disabled for this job rather than failing ``state()``. \"\"\" def __init__(self, config: TelemetryConfig) -\u003e None: self._config = config self._telemetry_url: Optional[str] = None self._dashboard_url: Optional[str] = None self._query_engine_client: Optional[QueryEngineClient] = None def reset_runtime(self) -\u003e None: self._query_engine_client = None self._telemetry_url = None self._dashboard_url = None def __getstate__(self) -\u003e Dict[str, Any]: state = self.__dict__.copy() state[\"_query_engine_client\"] = None state[\"_telemetry_url\"] = None state[\"_dashboard_url\"] = None return state def before_connect(self, job: \"JobTrait\") -\u003e None: if self._query_engine_client is not None: return apply_id = job.apply_id if apply_id is None: return try: response = Telemetry(self._config).ensure_open(apply_id, host_meshes={}) telemetry_url = response.get(\"telemetry_url\") dashboard_url = response.get(\"dashboard_url\") socket_path = response.get(\"socket_path\") if not isinstance(telemetry_url, str) or not isinstance(socket_path, str): raise RuntimeError( f\"invalid job sidecar telemetry response: {response!r}\" ) self._telemetry_url = telemetry_url if isinstance(dashboard_url, str): self._dashboard_url = dashboard_url if self._config.include_dashboard: print(f\"Monarch Dashboard: {dashboard_url}\", flush=True) self._query_engine_client = QueryEngineClient(telemetry_url) install_sidecar_socket_sink(socket_path) except Exception: # Reset so a partial bootstrap leaves a clean \"disabled\" state: # fan-out no-ops and `state` exposes no query client. self._query_engine_client = None self._telemetry_url = None self._dashboard_url = None logger.warning( \"job sidecar telemetry bootstrap failed; telemetry disabled for this job\", exc_info=True, ) def connect( self, job: \"JobTrait\", host_meshes: Dict[str, HostMesh] ) -\u003e Dict[str, HostMesh]: if self._query_engine_client is None: return host_meshes apply_id = job.apply_id if apply_id is None: return host_meshes try: # `_telemetry_url`/`_dashboard_url` are already set by # `before_connect`; this call only triggers worker fan-out, so its # response is intentionally ignored. Telemetry(self._config).ensure_open( apply_id, host_meshes=host_meshes, spawn_worker_collectors=job._should_spawn_telemetry_worker_collector_actors(), ) except Exception: logger.warning( \"job sidecar telemetry worker fan-out failed\", exc_info=True, ) return host_meshes def state(self, job: \"JobTrait\", job_state: \"JobState\") -\u003e None: if self._query_engine_client is not None: job_state.query_engine_client = self._query_engine_client job_state.telemetry_url = self._telemetry_url job_state.dashboard_url = self._dashboard_url class AdminComponent(JobComponent): \"\"\"Start the mesh admin agent once per allocation. Owns the admin URL and ref. If telemetry is configured, the admin agent receives the telemetry URL from the active telemetry component. ``JobComponents`` resets this runtime when admin config drifts or telemetry config changes. \"\"\" def __init__( self, config: MeshAdminConfig, telemetry: Optional[TelemetryComponent], ) -\u003e None: self._config = config self._telemetry = telemetry self._admin_url: Optional[str] = None self._admin_ref: Optional[PyMeshAdminRef] = None def reset_runtime(self) -\u003e None: self._admin_url = None self._admin_ref = None def __getstate__(self) -\u003e Dict[str, Any]: state = self.__dict__.copy() state[\"_admin_url\"] = None state[\"_admin_ref\"] = None return state def state(self, job: \"JobTrait\", job_state: \"JobState\") -\u003e None: if self._admin_url is None: telemetry_url = ( self._telemetry._telemetry_url if self._telemetry is not None else None ) # state() is a sync API but is commonly called from inside # asyncio.run(...); mask the running loop so the inner .get() does not # trip the Future.get-in-loop check. with fake_sync_state(): self._admin_url, self._admin_ref = _spawn_admin( list(job_state._hosts.values()), admin_addr=self._config.admin_addr, telemetry_url=telemetry_url, ).get() job_state.admin_url = self._admin_url class SnapshotComponent(JobComponent): \"\"\"Start periodic mesh-introspection snapshots once per allocation. Requires both telemetry and admin to have come up, plus a positive ``snapshot_interval_secs``. The snapshot actor is owned by proc lifecycle, so this component has no fine-grained stop handle once started. Because the actor cannot be stopped, ``_started`` stays sticky for the life of the allocation: once running, the snapshot is not restarted even when its telemetry or admin dependencies are reset by config drift. Restarting would spawn a duplicate actor against the new runtime while the original keeps capturing from the old one. ``JobComponents`` warns on such drift; picking up new config requires killing and re-applying the job. \"\"\" def __init__( self, telemetry: TelemetryComponent, admin: AdminComponent, ) -\u003e None: self._telemetry = telemetry self._admin = admin self._started = False def reset_runtime(self) -\u003e None: self._started = False def __getstate__(self) -\u003e Dict[str, Any]: state = self.__dict__.copy() state[\"_started\"] = False return state def state(self, job: \"JobTrait\", job_state: \"JobState\") -\u003e None: if self._started: return admin_ref = self._admin._admin_ref if admin_ref is None: return snapshot_interval_secs = self._telemetry._config.snapshot_interval_secs if snapshot_interval_secs \u003c= 0: return from monarch.actor import context instance = context().actor_instance._as_rust() telemetry_url = self._telemetry._telemetry_url if telemetry_url is None: return from monarch._rust_bindings.monarch_extension.snapshot_integration import ( _start_periodic_snapshots_http, ) _start_periodic_snapshots_http( base_url=telemetry_url, admin_ref=admin_ref, instance=instance, interval_secs=snapshot_interval_secs, ) self._started = True @dataclass class JobComponents: \"\"\"Stable component set for one job. Field order is dependency order. Mounts always run first, telemetry feeds admin, and snapshots require both telemetry and admin. \"\"\" mounts: MountComponent = field(default_factory=MountComponent) telemetry: Optional[TelemetryComponent] = None admin: Optional[AdminComponent] = None snapshot: Optional[SnapshotComponent] = None def _ordered(self) -\u003e List[JobComponent]: components: List[JobComponent] = [self.mounts] if self.telemetry is not None: components.append(self.telemetry) if self.admin is not None: components.append(self.admin) if self.snapshot is not None: components.append(self.snapshot) return components def before_connect(self, job: \"JobTrait\") -\u003e None: for component in self._ordered(): component.before_connect(job) def connect( self, job: \"JobTrait\", host_meshes: Dict[str, HostMesh] ) -\u003e Dict[str, HostMesh]: for component in self._ordered(): host_meshes = component.connect(job, host_meshes) return host_meshes def state(self, job: \"JobTrait\", job_state: \"JobState\") -\u003e None: for component in self._ordered(): component.state(job, job_state) def reset_runtime(self) -\u003e None: for component in reversed(self._ordered()): component.reset_runtime() def configure_telemetry(self, config: TelemetryConfig) -\u003e None: if self.telemetry is None: self.telemetry = TelemetryComponent(config) telemetry_changed = True else: telemetry_changed = self.telemetry._config != config if telemetry_changed: self.telemetry.reset_runtime() self.telemetry._config = config if telemetry_changed: self._warn_if_snapshot_stale() if self.admin is not None: if telemetry_changed: self.admin.reset_runtime() # Admin config is unchanged here; only rewire its telemetry handle. self.admin._telemetry = self.telemetry self._configure_snapshot() def configure_admin(self, config: MeshAdminConfig) -\u003e None: if self.admin is None: self.admin = AdminComponent(config, self.telemetry) else: self._set_admin_inputs(config) self._configure_snapshot() def _set_admin_inputs(self, config: MeshAdminConfig) -\u003e None: admin = self.admin if admin is None: return if admin._config != config: admin.reset_runtime() self._warn_if_snapshot_stale() admin._config = config admin._telemetry = self.telemetry def _warn_if_snapshot_stale(self) -\u003e None: \"\"\"Warn when a dependency restarts under an already-running snapshot. The snapshot actor is fire-and-forget and cannot be stopped within an allocation, so a restarted telemetry or admin runtime leaves it bound to the old runtime. See :class:`SnapshotComponent`. TODO: give periodic snapshot capture an abort handle so ``SnapshotComponent.reset_runtime`` can stop the old actor; then reset the snapshot in this drift cascade alongside telemetry and admin. \"\"\" if self.snapshot is not None and self.snapshot._started: logger.warning( \"telemetry or admin config changed while periodic snapshots are running: \" \"snapshots stay bound to the original runtime until the job is killed and re-applied\" ) def _configure_snapshot(self) -\u003e None: if self.telemetry is not None and self.admin is not None: if self.snapshot is None: self.snapshot = SnapshotComponent(self.telemetry, self.admin) else: self.snapshot._telemetry = self.telemetry self.snapshot._admin = self.admin elif self.snapshot is not None: self.snapshot = None",
+       "author": {
+         "@type": "Organization",
+         "name": "PyTorch Contributors",
+         "url": "https://pytorch.org"
+       },
+       "image": "https://pytorch.org/docs/stable/_static/img/pytorch_seo.png",
+       "mainEntityOfPage": {
+         "@type": "WebPage",
+         "@id": "/_modules/monarch/_src/job/job_components.html"
+       },
+       "datePublished": "2023-01-01T00:00:00Z",
+       "dateModified": "2023-01-01T00:00:00Z"
+     }
+ </script>
+  <script>
+    // Tutorials Call to action event tracking
+    $("[data-behavior='call-to-action-event']").on('click', function () {
+      fbq('trackCustom', "Download", {
+        tutorialTitle: $('h1:first').text(),
+        downloadLink: this.href,
+        tutorialLink: window.location.href,
+        downloadTitle: $(this).attr("data-response")
+      });
+      if (typeof gtag === 'function') {
+        gtag('event', 'click', {
+          'event_category': $(this).attr("data-response"),
+          'event_label': $("h1").first().text(),
+          'tutorial_link': window.location.href
+        });
+      }
+    });
+  </script>
+  
+  </body>
+</html>
