@@ -379,7 +379,7 @@ impl Layers {
                 Some(b) => b,
                 None => {
                     if let Some(default) = info.default {
-                        default.cloned()
+                        default().cloned()
                     } else {
                         continue;
                     }
@@ -417,7 +417,7 @@ impl Layers {
                 Some(b) => b,
                 None => {
                     if let Some(default) = info.default {
-                        default.cloned()
+                        default().cloned()
                     } else {
                         continue;
                     }
@@ -838,7 +838,7 @@ pub fn config_entries() -> Vec<ConfigEntry> {
             Some(v) => ((info.display)(&*v), chosen_source.unwrap()),
             None => {
                 if let Some(default) = info.default {
-                    ((info.display)(default), Source::Default)
+                    ((info.display)(default()), Source::Default)
                 } else {
                     continue;
                 }
@@ -846,7 +846,7 @@ pub fn config_entries() -> Vec<ConfigEntry> {
         };
 
         // Compute default display string for changed_from_default comparison.
-        let default_str = info.default.map(|d| (info.display)(d));
+        let default_str = info.default.map(|default| (info.display)(default()));
         let changed_from_default = match &default_str {
             Some(ds) => value_str != *ds,
             None => true, // no declared default → always "changed"
@@ -1193,7 +1193,7 @@ mod tests {
         // other tests
         reset_to_defaults();
 
-        assert_eq!(get(CODEC_MAX_FRAME_LENGTH), CODEC_MAX_FRAME_LENGTH_DEFAULT);
+        assert_eq!(get(CODEC_MAX_FRAME_LENGTH), *CODEC_MAX_FRAME_LENGTH_DEFAULT);
         {
             let _guard = config.override_key(CODEC_MAX_FRAME_LENGTH, 1024);
             assert_eq!(get(CODEC_MAX_FRAME_LENGTH), 1024);
@@ -1201,7 +1201,7 @@ mod tests {
             // _guard goes out of scope
         }
 
-        assert_eq!(get(CODEC_MAX_FRAME_LENGTH), CODEC_MAX_FRAME_LENGTH_DEFAULT);
+        assert_eq!(get(CODEC_MAX_FRAME_LENGTH), *CODEC_MAX_FRAME_LENGTH_DEFAULT);
     }
 
     #[test]
@@ -1213,7 +1213,7 @@ mod tests {
         reset_to_defaults();
 
         // Test the new lock/override API for individual config values
-        assert_eq!(get(CODEC_MAX_FRAME_LENGTH), CODEC_MAX_FRAME_LENGTH_DEFAULT);
+        assert_eq!(get(CODEC_MAX_FRAME_LENGTH), *CODEC_MAX_FRAME_LENGTH_DEFAULT);
         assert_eq!(get(MESSAGE_DELIVERY_TIMEOUT), Duration::from_secs(30));
 
         // Test single value override
@@ -1224,7 +1224,7 @@ mod tests {
         }
 
         // Values should be restored after guard is dropped
-        assert_eq!(get(CODEC_MAX_FRAME_LENGTH), CODEC_MAX_FRAME_LENGTH_DEFAULT);
+        assert_eq!(get(CODEC_MAX_FRAME_LENGTH), *CODEC_MAX_FRAME_LENGTH_DEFAULT);
 
         // Test multiple overrides
         let orig_value = std::env::var("HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT").ok();
@@ -1246,7 +1246,7 @@ mod tests {
         );
 
         // All values should be restored
-        assert_eq!(get(CODEC_MAX_FRAME_LENGTH), CODEC_MAX_FRAME_LENGTH_DEFAULT);
+        assert_eq!(get(CODEC_MAX_FRAME_LENGTH), *CODEC_MAX_FRAME_LENGTH_DEFAULT);
         assert_eq!(get(MESSAGE_DELIVERY_TIMEOUT), Duration::from_secs(30));
     }
 
@@ -1862,7 +1862,7 @@ mod tests {
         drop(guard2); // Drop MESSAGE_TTL_DEFAULT first
 
         // MESSAGE_TTL_DEFAULT should restore, others should remain.
-        assert_eq!(get(MESSAGE_TTL_DEFAULT), MESSAGE_TTL_DEFAULT_DEFAULT);
+        assert_eq!(get(MESSAGE_TTL_DEFAULT), *MESSAGE_TTL_DEFAULT_DEFAULT);
         assert_eq!(get(CODEC_MAX_FRAME_LENGTH), 1111);
         assert!(!get(CHANNEL_MULTIPART));
 
@@ -1873,8 +1873,8 @@ mod tests {
         drop(guard3);
 
         // All should be restored.
-        assert_eq!(get(CODEC_MAX_FRAME_LENGTH), CODEC_MAX_FRAME_LENGTH_DEFAULT);
-        assert_eq!(get(CHANNEL_MULTIPART), CHANNEL_MULTIPART_DEFAULT);
+        assert_eq!(get(CODEC_MAX_FRAME_LENGTH), *CODEC_MAX_FRAME_LENGTH_DEFAULT);
+        assert_eq!(get(CHANNEL_MULTIPART), *CHANNEL_MULTIPART_DEFAULT);
     }
 
     #[test]
@@ -1961,7 +1961,7 @@ mod tests {
         reset_to_defaults();
 
         // Override to the same value as the declared default.
-        let _guard = lock.override_key(CODEC_MAX_FRAME_LENGTH, CODEC_MAX_FRAME_LENGTH_DEFAULT);
+        let _guard = lock.override_key(CODEC_MAX_FRAME_LENGTH, *CODEC_MAX_FRAME_LENGTH_DEFAULT);
         let entries = config_entries();
         let codec = entries
             .iter()
