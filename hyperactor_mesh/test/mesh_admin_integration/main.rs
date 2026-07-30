@@ -15,9 +15,11 @@
 //! ### Fixture lifecycle
 //!
 //! - **MIT-1 (fixture-readiness):** A fixture is not considered live
-//!   until the admin URL sentinel (`"Mesh admin server listening on
-//!   "`) is observed from workload stdout within a timeout.
-//!   `start_workload` fails if the sentinel does not appear.
+//!   until its admin URL is discovered from workload stdout and an
+//!   authenticated `GET /v1/root` returns a typed root node within a
+//!   timeout. The listening line is URL discovery, not proof that the
+//!   HTTP API or workload actors are ready. Scenarios establish their
+//!   own workload-specific readiness through mesh-admin discovery.
 //! - **MIT-2 (scoped-cleanup):** Scenarios own their fixture
 //!   lifetime. `WorkloadFixture::shutdown()` takes the `Child` from
 //!   its `Mutex`, calls `start_kill()`, and `wait().await`s for reap.

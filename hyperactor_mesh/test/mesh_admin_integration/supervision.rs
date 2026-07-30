@@ -21,14 +21,8 @@ use std::time::Duration;
 use crate::harness;
 use crate::harness::WorkloadFixture;
 
-/// How long to wait for the admin URL sentinel after starting the
-/// sieve binary.
+/// How long to wait for mesh-admin readiness after starting the sieve binary.
 const SIEVE_START_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// Settle time after admin-URL readiness for the sieve actor chain
-/// to build (the sieve starts 5s after the sentinel, then needs
-/// time to discover primes and spawn child actors).
-const SIEVE_CHAIN_READY_SLEEP: Duration = Duration::from_secs(10);
 
 /// Maximum number of discovery attempts before failing.
 const DISCOVERY_ATTEMPTS: usize = 30;
@@ -44,15 +38,11 @@ struct SieveScenario {
 impl SieveScenario {
     async fn start() -> Self {
         let bin = harness::sieve_rust_binary();
-        // The sieve prints "Starts in 5 seconds." then spawns actors.
-        // Give it enough time to find some primes and build the chain.
         // --num-primes 10: enough to build a chain of ~10 actors,
         // small enough to converge quickly.
         let fixture = harness::start_workload(&bin, &["--num-primes", "10"], SIEVE_START_TIMEOUT)
             .await
             .expect("failed to start sieve workload");
-        // Wait for sieve actors to spawn.
-        tokio::time::sleep(SIEVE_CHAIN_READY_SLEEP).await;
         SieveScenario { fixture }
     }
 

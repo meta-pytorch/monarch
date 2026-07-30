@@ -75,40 +75,10 @@ const DECREMENT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// snapshot must stay wedged and the release ACK must never arrive.
 const DEADLOCK_NEGATIVE_TIMEOUT: Duration = Duration::from_secs(5);
 const DEADLOCK_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const ACTOR_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn enc(s: &str) -> String {
     urlencoding::encode(s).into_owned()
-}
-
-/// Walk root -> hosts -> procs -> actors and return the ref of the first
-/// actor whose label equals `label`. ActorAddr.to_string() is
-/// `{actor_uid}.{proc_id}@{location}` where actor_uid is `label<base58>`;
-/// match the label exactly so we don't pick up the controller actor
-/// (`actor_mesh_controller_<label><...>`).
-async fn find_actor_by_label(fixture: &WorkloadFixture, label: &str) -> String {
-    let root: NodePayload = fixture
-        .get_node_payload("/v1/root")
-        .await
-        .expect("execution: GET /v1/root failed");
-    for host_ref in &root.children {
-        let host: NodePayload = fixture
-            .get_node_payload(&format!("/v1/{}", enc(&host_ref.to_string())))
-            .await
-            .unwrap_or_else(|e| panic!("execution: GET /v1/{host_ref} failed: {e:#}"));
-        for proc_ref in &host.children {
-            let proc: NodePayload = fixture
-                .get_node_payload(&format!("/v1/{}", enc(&proc_ref.to_string())))
-                .await
-                .unwrap_or_else(|e| panic!("execution: GET /v1/{proc_ref} failed: {e:#}"));
-            for actor_ref in &proc.children {
-                let s = actor_ref.to_string();
-                if s.split('<').next().unwrap_or("") == label {
-                    return s;
-                }
-            }
-        }
-    }
-    panic!("execution: actor with label {label:?} not found in topology");
 }
 
 /// Fetch the typed `Execution` for `actor_ref`. A live Python actor
@@ -216,11 +186,26 @@ fn assert_idle_shape(exec: &Execution, ctx: &str) {
 }
 
 async fn run_inner(fixture: &WorkloadFixture) {
-    let busy = find_actor_by_label(fixture, "busy_actor").await;
-    let idle = find_actor_by_label(fixture, "idle_actor").await;
-    let queue = find_actor_by_label(fixture, "queue_actor").await;
-    let concurrent = find_actor_by_label(fixture, "concurrent_actor").await;
-    let deadlock = find_actor_by_label(fixture, "deadlock_actor").await;
+    let busy = fixture
+        .wait_for_actor_by_label("busy_actor", ACTOR_DISCOVERY_TIMEOUT)
+        .await
+        .expect("execution: busy actor was not initialized");
+    let idle = fixture
+        .wait_for_actor_by_label("idle_actor", ACTOR_DISCOVERY_TIMEOUT)
+        .await
+        .expect("execution: idle actor was not initialized");
+    let queue = fixture
+        .wait_for_actor_by_label("queue_actor", ACTOR_DISCOVERY_TIMEOUT)
+        .await
+        .expect("execution: queue actor was not initialized");
+    let concurrent = fixture
+        .wait_for_actor_by_label("concurrent_actor", ACTOR_DISCOVERY_TIMEOUT)
+        .await
+        .expect("execution: concurrent actor was not initialized");
+    let deadlock = fixture
+        .wait_for_actor_by_label("deadlock_actor", ACTOR_DISCOVERY_TIMEOUT)
+        .await
+        .expect("execution: deadlock actor was not initialized");
 
     // --- Direct dispatch: one held invocation -> count 1. ---
     fixture

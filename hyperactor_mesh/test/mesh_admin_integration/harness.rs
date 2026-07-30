@@ -27,6 +27,8 @@ use anyhow::Result;
 use anyhow::anyhow;
 use anyhow::bail;
 use hyperactor_mesh::introspect::NodePayload;
+use hyperactor_mesh::introspect::NodeProperties;
+use hyperactor_mesh::introspect::NodeRef;
 use hyperactor_mesh::introspect::dto::NodePayloadDto;
 use hyperactor_mesh::mesh_id::ResourceId;
 use reqwest::Client;
@@ -45,6 +47,8 @@ use tokio::sync::mpsc;
 
 pub(crate) const QUERY_RETRY_ATTEMPTS: usize = 5;
 pub(crate) const QUERY_RETRY_DELAY: Duration = Duration::from_secs(10);
+const ADMIN_READY_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const ACTOR_DISCOVERY_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Classified service and worker proc references. See MIT-7
 /// (proc-classification).
@@ -191,6 +195,87 @@ impl WorkloadFixture {
     pub(crate) async fn get_node_payload(&self, path: &str) -> Result<NodePayload> {
         let dto: NodePayloadDto = self.get_json(path).await?;
         NodePayload::try_from(dto).context("DTO → NodePayload conversion")
+    }
+
+    /// Wait until the authenticated admin API serves a typed root node.
+    async fn wait_until_admin_ready(&self, timeout: Duration) -> Result<()> {
+        let mut last_observation = "no request attempted".to_string();
+        let ready = tokio::time::timeout(timeout, async {
+            loop {
+                match self.get_node_payload("/v1/root").await {
+                    Ok(root) if matches!(root.properties, NodeProperties::Root { .. }) => return,
+                    Ok(root) => {
+                        last_observation = format!(
+                            "GET /v1/root returned unexpected properties: {:?}",
+                            root.properties
+                        );
+                    }
+                    Err(error) => last_observation = format!("{error:#}"),
+                }
+                tokio::time::sleep(ADMIN_READY_POLL_INTERVAL).await;
+            }
+        })
+        .await;
+
+        if ready.is_err() {
+            bail!(
+                "MIT-1: authenticated GET /v1/root was not ready within {}s; last observation: {}",
+                timeout.as_secs(),
+                last_observation
+            );
+        }
+        Ok(())
+    }
+
+    async fn find_actor_by_label(&self, label: &str) -> Result<Option<String>> {
+        let root = self.get_node_payload("/v1/root").await?;
+        for host_ref in &root.children {
+            let host_ref = host_ref.to_string();
+            let host = self
+                .get_node_payload(&format!("/v1/{}", urlencoding::encode(&host_ref)))
+                .await?;
+            for proc_ref in &host.children {
+                let proc_ref = proc_ref.to_string();
+                let proc = self
+                    .get_node_payload(&format!("/v1/{}", urlencoding::encode(&proc_ref)))
+                    .await?;
+                for actor_ref in &proc.children {
+                    if let NodeRef::Actor(actor) = actor_ref
+                        && actor.label().map(|value| value.as_str()) == Some(label)
+                    {
+                        return Ok(Some(actor_ref.to_string()));
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Wait for a workload actor to become visible through mesh-admin.
+    pub(crate) async fn wait_for_actor_by_label(
+        &self,
+        label: &str,
+        timeout: Duration,
+    ) -> Result<String> {
+        let mut last_observation = "actor not present".to_string();
+        let actor_ref = tokio::time::timeout(timeout, async {
+            loop {
+                match self.find_actor_by_label(label).await {
+                    Ok(Some(actor_ref)) => return actor_ref,
+                    Ok(None) => last_observation = "actor not present".to_string(),
+                    Err(error) => last_observation = format!("{error:#}"),
+                }
+                tokio::time::sleep(ACTOR_DISCOVERY_POLL_INTERVAL).await;
+            }
+        })
+        .await;
+
+        actor_ref.with_context(|| {
+            format!(
+                "actor {label:?} was not visible through mesh-admin within {}s; last observation: {last_observation}",
+                timeout.as_secs()
+            )
+        })
     }
 
     /// POST a path with a JSON body relative to the admin URL.
@@ -448,7 +533,8 @@ pub(crate) async fn start_workload(
         .take()
         .ok_or_else(|| anyhow!("child stdin not captured"))?;
 
-    // MIT-1: Wait for the admin URL sentinel on stdout.
+    // The listening line discovers the ephemeral admin URL. MIT-1 is
+    // established below by querying the authenticated API.
     let stdout = child
         .stdout
         .take()
@@ -526,13 +612,10 @@ pub(crate) async fn start_workload(
             let _ = stdout_tx.send(line);
         }
     });
-    // Drop the stderr collector — we only need it on failure.
-    stderr_handle.abort();
-
     // MIT-5: Build reqwest client with test CA and client cert.
     let client = build_client(&pki.ca_pem, &pki.cert_pem, &pki.key_pem)?;
 
-    Ok(WorkloadFixture {
+    let fixture = WorkloadFixture {
         child: Mutex::new(Some(child)),
         admin_url,
         client,
@@ -540,7 +623,27 @@ pub(crate) async fn start_workload(
         _cert_dir: cert_dir,
         stdin: AsyncMutex::new(Some(stdin)),
         stdout_rx: AsyncMutex::new(stdout_rx),
-    })
+    };
+
+    if let Err(error) = fixture.wait_until_admin_ready(timeout).await {
+        fixture.shutdown().await;
+        let captured = stderr_handle.await.unwrap_or_default();
+        let tail = captured
+            .lines()
+            .rev()
+            .take(50)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(error.context(format!("stderr (last 50 lines):\n{tail}")));
+    }
+
+    // Detach the collector so stderr remains drained for the fixture's
+    // lifetime. The task exits when the child closes the pipe.
+    drop(stderr_handle);
+    Ok(fixture)
 }
 
 /// Py-spy install. Attempted exactly once per process via `Once`.

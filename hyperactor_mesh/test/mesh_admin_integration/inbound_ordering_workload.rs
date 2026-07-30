@@ -8,8 +8,8 @@
 
 //! Exercises MIT-78 (deterministic stalled inbound ordering over the
 //! mesh-admin API) by spawning the `inbound_ordering_workload` Python
-//! binary, waiting for it to print its admin URL, then polling
-//! `/v1/{stalled_receiver}` until the expected `InboundOrdering`
+//! binary, discovering its receiver through the authenticated admin
+//! API, then polling `/v1/{stalled_receiver}` until the expected `InboundOrdering`
 //! shape appears (bounded retry — fire-and-forget `.broadcast()`
 //! returning is not proof the receiver's snapshot has caught up).
 //!
@@ -44,41 +44,6 @@ const EXPECTED_TOTAL_BUFFERED: usize = 8;
 
 fn enc(s: &str) -> String {
     urlencoding::encode(s).into_owned()
-}
-
-/// Walk the topology (root -> hosts -> procs -> actors) and return
-/// the ref of the first actor whose label is `stalled_receiver`.
-async fn find_stalled_receiver(fixture: &WorkloadFixture) -> String {
-    let root: NodePayload = fixture
-        .get_node_payload("/v1/root")
-        .await
-        .expect("MIT-78: GET /v1/root failed");
-    for host_ref in &root.children {
-        let host: NodePayload = fixture
-            .get_node_payload(&format!("/v1/{}", enc(&host_ref.to_string())))
-            .await
-            .unwrap_or_else(|e| panic!("MIT-78: GET /v1/{host_ref} failed: {e:#}"));
-        for proc_ref in &host.children {
-            let proc: NodePayload = fixture
-                .get_node_payload(&format!("/v1/{}", enc(&proc_ref.to_string())))
-                .await
-                .unwrap_or_else(|e| panic!("MIT-78: GET /v1/{proc_ref} failed: {e:#}"));
-            for actor_ref in &proc.children {
-                let s = actor_ref.to_string();
-                // ActorAddr.to_string() is `{actor_uid}.{proc_id}@{location}`
-                // where actor_uid is `label<base58>`. Match the label
-                // exactly -- substring would also match the controller
-                // (`actor_mesh_controller_stalled_receiver<...>`),
-                // which is a different actor with a different session
-                // table.
-                let label = s.split('<').next().unwrap_or("");
-                if label == "stalled_receiver" {
-                    return s;
-                }
-            }
-        }
-    }
-    panic!("MIT-78: stalled_receiver actor not found in topology");
 }
 
 fn matches_expected(io: &InboundOrdering) -> bool {
@@ -121,7 +86,10 @@ async fn poll_until_stalled(
 }
 
 async fn run_inner(fixture: &WorkloadFixture) {
-    let receiver_ref = find_stalled_receiver(fixture).await;
+    let receiver_ref = fixture
+        .wait_for_actor_by_label("stalled_receiver", POLL_TIMEOUT)
+        .await
+        .expect("MIT-78: stalled receiver was not initialized");
     let (actor, last_io) = poll_until_stalled(fixture, &receiver_ref).await;
 
     let NodeProperties::Actor {
