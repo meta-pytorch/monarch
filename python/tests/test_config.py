@@ -16,6 +16,7 @@ from monarch._rust_bindings.monarch_hyperactor.config import (
     get_client_config_bootstrap_env,
 )
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
+from monarch._rust_bindings.monarch_hyperactor.telemetry import get_execution_id
 from monarch.actor import Actor, endpoint, this_host
 from monarch.config import configure, configured, get_global_config
 
@@ -117,12 +118,14 @@ def test_rdma_ibverbs_target_round_trip_and_propagation() -> None:
 
 @isolate_in_subprocess
 def test_configure_is_reflected_in_client_config_bootstrap() -> None:
+    execution_id = get_execution_id()
     configure(tail_log_lines=67)
     env_name, encoded = get_client_config_bootstrap_env()
     snapshot = json.loads(encoded)
 
     assert env_name == "HYPERACTOR_CLIENT_CONFIG"
     assert snapshot["hyperactor_mesh::bootstrap::mesh_tail_log_lines"] == 67
+    assert snapshot["hyperactor_telemetry::env::execution_id"] == execution_id
 
 
 @isolate_in_subprocess
