@@ -188,6 +188,7 @@ dependencies = [
  "arrow-ipc",
  "arrow-json",
  "arrow-ord",
+ "arrow-pyarrow",
  "arrow-row",
  "arrow-schema",
  "arrow-select",
@@ -343,6 +344,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "arrow-pyarrow"
+version = "57.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "699e04d51e2ac87efc52faa0a1bb9742b11b7f75c2abd2842de50c41cc630a47"
+dependencies = [
+ "arrow-array",
+ "arrow-data",
+ "arrow-schema",
+ "pyo3",
+]
+
+[[package]]
 name = "arrow-row"
 version = "57.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -361,6 +374,7 @@ version = "57.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e4cf0d4a6609679e03002167a61074a21d7b1ad9ea65e462b2c0a97f8a3b2bc6"
 dependencies = [
+ "bitflags 2.13.1",
  "serde_core",
  "serde_json",
 ]
@@ -4561,6 +4575,7 @@ name = "monarch_distributed_telemetry"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "arrow",
  "async-trait",
  "build_utils",
  "datafusion",
