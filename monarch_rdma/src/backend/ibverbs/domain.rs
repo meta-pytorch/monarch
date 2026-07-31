@@ -20,6 +20,8 @@ use std::os::fd::OwnedFd;
 use std::result::Result;
 use std::sync::Arc;
 
+use anyhow::Context;
+
 use super::memory_region::IbvMemoryRegionView;
 use super::primitives::IbvConfig;
 use super::primitives::IbvContext;
@@ -355,43 +357,23 @@ pub(super) unsafe fn register_dmabuf_range(
     Ok(unsafe { IbvMr::from_raw(mr, pd.clone()) })
 }
 
-/// Register the CUDA allocation containing `addr` as a dmabuf MR.
-/// The MR covers the *entire* allocation; the returned `usize` is
-/// the offset of `addr` within it.
+/// Base address and size of the CUDA allocation containing `addr`, as reported
+/// by `cuMemGetAddressRange`.
 ///
-/// The whole-allocation base and size come from `cuMemGetAddressRange`;
-/// [`register_dmabuf_range`] then enforces that both are host-page aligned.
-///
-/// # Safety
-///
-/// If `pd` is non-null it must be a live protection domain whose context
-/// outlives this call. `addr` must belong to a CUDA device allocation
-/// that stays valid for the lifetime of the returned MR.
-pub(super) unsafe fn register_dmabuf_mr(
-    pd: &Arc<IbvPd>,
-    addr: usize,
-    access_flags: i32,
-) -> anyhow::Result<(IbvMr, usize)> {
-    // `cuMemGetAddressRange` resolves the pointer in the *current* CUDA context,
-    // so make the pointer's own device context current first. Without this, in a
-    // multi-GPU process it fails with `CUDA_ERROR_NOT_FOUND` whenever the active
-    // context belongs to a different device than `addr`.
-    // SAFETY: this path is only taken for device memory (`is_device_ptr(addr)`
-    // in `register_host_or_dmabuf_mr`), so `addr` is a valid CUDA device pointer
-    // as `set_ctx_for_ptr` requires. The guard restores the prior context on drop.
-    let _ctx_guard = unsafe { crate::local_memory::set_ctx_for_ptr(addr)? };
-
-    // Resolve the base and size of the allocation containing `addr`; the dmabuf
-    // handle and MR cover the whole allocation.
+/// `cuMemGetAddressRange` resolves `addr` in the current CUDA context, so this
+/// returns an error unless `addr` is a device pointer whose owning context is
+/// current (see [`crate::local_memory::set_ctx_for_ptr`]).
+fn cuda_alloc_range(addr: usize) -> anyhow::Result<(usize, usize)> {
     let mut base: rdmaxcel_sys::CUdeviceptr = 0;
-    let mut alloc_size: usize = 0;
-    // SAFETY: `rdmaxcel_cuMemGetAddressRange` writes the allocation's base and
-    // size into the out-params and touches no other Rust memory; it reports
-    // failure via its return code, checked next.
+    let mut size: usize = 0;
+    // SAFETY: the out-params point to local variables and `addr` is passed by
+    // value as an opaque device address (never dereferenced); the call writes
+    // only through the out-params and reports a bad address or context via its
+    // return code, checked next.
     let cu_err = unsafe {
         rdmaxcel_sys::rdmaxcel_cuMemGetAddressRange(
             &mut base,
-            &mut alloc_size,
+            &mut size,
             addr as rdmaxcel_sys::CUdeviceptr,
         )
     };
@@ -402,11 +384,68 @@ pub(super) unsafe fn register_dmabuf_mr(
             cu_err
         );
     }
-    let base = base as usize;
+    Ok((base as usize, size))
+}
+
+/// Register the CUDA device memory backing `[addr, addr + size)` as a single
+/// dmabuf MR, mapped at iova 0. The returned `usize` is the offset of `addr`
+/// within that MR.
+///
+/// The MR covers, in full, every allocation the requested range touches: it
+/// spans from the base of the allocation containing `addr` to the end of the
+/// allocation containing the range's last byte. A range may extend past the
+/// allocation holding its first byte, so `cuMemGetAddressRange` — which reports
+/// the bounds of the allocation containing a given pointer — is queried at both
+/// ends, and the MR covers everything between them.
+///
+/// Allocation bounds are granularity-aligned, hence host-page aligned, so the
+/// base and size handed to [`register_dmabuf_range`] pass its alignment check.
+///
+/// # Safety
+///
+/// If `pd` is non-null it must be a live protection domain whose context
+/// outlives this call. `addr` must belong to CUDA device memory, and
+/// `[addr, addr + size)` must stay valid for the lifetime of the returned MR.
+pub(super) unsafe fn register_dmabuf_mr(
+    pd: &Arc<IbvPd>,
+    addr: usize,
+    size: usize,
+    access_flags: i32,
+) -> anyhow::Result<(IbvMr, usize)> {
+    anyhow::ensure!(
+        size > 0,
+        "register_dmabuf_mr called with a zero-size range (addr: 0x{addr:x})"
+    );
+
+    // `cuMemGetAddressRange` resolves the pointer in the *current* CUDA context,
+    // so make the pointer's own device context current first. Without this, in a
+    // multi-GPU process it fails with `CUDA_ERROR_NOT_FOUND` whenever the active
+    // context belongs to a different device than `addr`.
+    // SAFETY: this path is only taken for device memory (`is_device_ptr(addr)`
+    // in `register_host_or_dmabuf_mr`), so `addr` is a valid CUDA device pointer
+    // as `set_ctx_for_ptr` requires. The guard restores the prior context on drop.
+    let _ctx_guard = unsafe { crate::local_memory::set_ctx_for_ptr(addr)? };
+
+    let (base, base_size) = cuda_alloc_range(addr)?;
+    let last = addr.checked_add(size - 1).with_context(|| {
+        format!(
+            "final byte of range [{}, {} + {}) would overflow max usize",
+            addr, addr, size
+        )
+    })?;
+    // Extend to the end of the allocation holding the range's last byte. When
+    // the range lies within the first allocation, that allocation is the end;
+    // otherwise a second lookup resolves the allocation the last byte falls in.
+    let end = if last - base < base_size {
+        base + base_size
+    } else {
+        let (last_base, last_size) = cuda_alloc_range(last)?;
+        last_base + last_size
+    };
 
     // SAFETY: forwards this function's contract; `register_dmabuf_range` checks
-    // that `base`/`alloc_size` are host-page aligned.
-    let mr = unsafe { register_dmabuf_range(pd, base, alloc_size, access_flags)? };
+    // that `base` and `end - base` are host-page aligned.
+    let mr = unsafe { register_dmabuf_range(pd, base, end - base, access_flags)? };
     Ok((mr, addr - base))
 }
 
@@ -430,14 +469,15 @@ pub(super) unsafe fn register_host_or_dmabuf_mr<I: IbvDomainImpl>(
     let size = mem.size();
     let access_flags = domain.access_flags();
     // `mr_offset` is the offset of `addr` within the MR. For device memory the
-    // MR covers the whole allocation, so the requested range starts partway in;
-    // for host memory the MR is the requested range itself, so the offset is 0.
+    // MR covers every allocation the range spans, so the requested range may start
+    // partway in; for host memory the MR is the requested range itself, so the
+    // offset is 0.
     // SAFETY: per this function's contract `domain.as_ptr()` is null or a live
     // PD (the helpers error on null), and `[addr, addr + size)` stays valid for
     // the returned MR's lifetime.
     let (mr, mr_offset) = unsafe {
         if is_device_ptr(addr) {
-            register_dmabuf_mr(domain.pd(), addr, access_flags)?
+            register_dmabuf_mr(domain.pd(), addr, size, access_flags)?
         } else {
             (register_host_mr(domain.pd(), addr, size, access_flags)?, 0)
         }
@@ -531,29 +571,80 @@ mod tests {
         let alloc = committed_allocation();
         let alloc_size = alloc.size();
 
-        // At the allocation base: offset 0, MR spans the whole allocation at iova
-        // 0. `mr` deregisters on drop, after the assertions below.
+        // Requesting the whole allocation: offset 0, MR spans it at iova 0. `mr`
+        // deregisters on drop, after the assertions below.
         // SAFETY: `pd` is a live PD; `alloc.ptr()` is a live CUDA allocation kept
         // mapped by `alloc` for the MR's lifetime.
-        let (mr, offset) = unsafe { register_dmabuf_mr(pd, alloc.ptr(), access) }.unwrap();
+        let (mr, offset) =
+            unsafe { register_dmabuf_mr(pd, alloc.ptr(), alloc_size, access) }.unwrap();
         // SAFETY: `mr` owns a live MR and has not been dropped.
         let (iova, length) = unsafe { mr_extent(mr.as_ptr()) };
         assert_eq!(offset, 0, "base address sits at offset 0");
         assert_eq!(iova, 0, "dmabuf MR is mapped at iova 0");
         assert_eq!(length, alloc_size, "MR covers the whole allocation");
 
-        // At an unaligned interior address: the MR still spans the whole
-        // allocation and the offset locates the requested address.
+        // At an unaligned interior address, with a range that stays within the
+        // allocation: the MR still spans the whole allocation and the offset
+        // locates the requested address.
         let unaligned: usize = 257;
         assert!(!unaligned.is_multiple_of(host_page_size()));
         // SAFETY: as above; `alloc.ptr() + unaligned` is inside the allocation.
         let (mr, offset) =
-            unsafe { register_dmabuf_mr(pd, alloc.ptr() + unaligned, access) }.unwrap();
+            unsafe { register_dmabuf_mr(pd, alloc.ptr() + unaligned, host_page_size(), access) }
+                .unwrap();
         // SAFETY: `mr` owns a live MR and has not been dropped.
         let (iova, length) = unsafe { mr_extent(mr.as_ptr()) };
         assert_eq!(offset, unaligned, "offset locates the requested address");
         assert_eq!(iova, 0, "dmabuf MR is mapped at iova 0");
         assert_eq!(length, alloc_size, "MR covers the whole allocation");
+    }
+
+    // A range crossing the mapping boundaries of an expandable segment yields a
+    // single MR covering every mapping it spans, in full — and no further. This
+    // is the case whole-allocation registration cannot handle: `addr` and the
+    // range's last byte live in different mappings.
+    #[test]
+    fn register_dmabuf_mr_spans_multiple_mappings() {
+        let domain = open_domain_for_cuda_device(0);
+        let pd = domain.pd();
+        let access = domain.access_flags();
+
+        // Reserve generously, commit one chunk, then expand three times so the
+        // segment is backed by four separate mappings at offsets 0, g, 2g, 3g.
+        let alloc = CudaAllocator::get().allocate(0, 128 * 1024 * 1024, 1);
+        let g = alloc.granularity();
+        for _ in 0..3 {
+            alloc
+                .expand(g)
+                .expect("expand stays within the reserved range");
+        }
+        assert_eq!(alloc.size(), 4 * g, "four mappings of one granularity each");
+
+        // Start at an unaligned interior address in the first mapping and run
+        // into the third: the range straddles the 0->1 and 1->2 boundaries but
+        // stops short of the fourth mapping.
+        let start_offset: usize = 257;
+        assert!(!start_offset.is_multiple_of(host_page_size()));
+        let size = 2 * g + 100;
+        let last_offset = start_offset + size - 1;
+        assert!(
+            (2 * g..3 * g).contains(&last_offset),
+            "range must end inside the third mapping"
+        );
+
+        // SAFETY: `pd` is a live PD; `alloc` keeps all four mappings resident for
+        // the MR's lifetime (it outlives `mr`, which drops first).
+        let (mr, offset) =
+            unsafe { register_dmabuf_mr(pd, alloc.ptr() + start_offset, size, access) }.unwrap();
+        // SAFETY: `mr` owns a live MR and has not been dropped.
+        let (iova, length) = unsafe { mr_extent(mr.as_ptr()) };
+        assert_eq!(offset, start_offset, "offset locates the requested address");
+        assert_eq!(iova, 0, "dmabuf MR is mapped at iova 0");
+        assert_eq!(
+            length,
+            3 * g,
+            "MR covers the three spanned mappings in full, not the fourth"
+        );
     }
 
     // `register_dmabuf_range` registers exactly the requested range — a strict
