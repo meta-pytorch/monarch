@@ -13,7 +13,6 @@ async-trait = "0.1.86"
 derive_more = { version = "1.0.0", features = ["full"] }
 futures = { version = "0.3.31", features = ["async-await", "compat"] }
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
-hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
 hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }
 itertools = "0.15.0"
 monarch_gil = { version = "0.0.0", path = "../monarch_gil" }

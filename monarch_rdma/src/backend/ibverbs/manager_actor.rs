@@ -876,6 +876,7 @@ mod tests {
 
     use async_trait::async_trait;
     use hyperactor::Actor;
+    use hyperactor::ActorEnvironment;
     use hyperactor::ActorRef;
     use hyperactor::Context;
     use hyperactor::Handler;
@@ -889,7 +890,6 @@ mod tests {
     use hyperactor::actor::ActorError;
     use hyperactor::channel::ChannelAddr;
     use hyperactor::channel::ChannelTransport;
-    use hyperactor_config::Flattrs;
     use serde::Deserialize;
     use serde::Serialize;
     use typeuri::Named;
@@ -963,7 +963,7 @@ mod tests {
 
         async fn new(
             rdma_manager: ActorRef<RdmaManagerActor>,
-            _env: Flattrs,
+            _env: &ActorEnvironment,
         ) -> Result<Self, anyhow::Error> {
             Ok(Self {
                 rdma_manager,
@@ -1193,12 +1193,13 @@ mod tests {
             proc: &Proc,
             config: IbvConfig,
         ) -> Result<ActorRef<BufferHelperActor>, anyhow::Error> {
-            let rdma_actor = RdmaManagerActor::new(Some(config), Flattrs::default()).await?;
+            let rdma_actor =
+                RdmaManagerActor::new(Some(config), &ActorEnvironment::default()).await?;
             // Must match `RdmaManagerActor::local_handle`'s singleton lookup of "rdma_manager".
             let rdma_handle =
                 proc.spawn_with_uid(Uid::singleton(Label::strip("rdma_manager")), rdma_actor)?;
             let rdma: ActorRef<RdmaManagerActor> = rdma_handle.bind();
-            let helper_actor = BufferHelperActor::new(rdma, Flattrs::default()).await?;
+            let helper_actor = BufferHelperActor::new(rdma, &ActorEnvironment::default()).await?;
             let helper_handle = proc.spawn_with_label("helper", helper_actor);
             Ok(helper_handle.bind())
         }

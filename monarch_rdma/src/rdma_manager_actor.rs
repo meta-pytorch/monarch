@@ -40,6 +40,7 @@ use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use hyperactor::Actor;
+use hyperactor::ActorEnvironment;
 use hyperactor::ActorHandle;
 use hyperactor::ActorRef;
 use hyperactor::Context;
@@ -51,7 +52,6 @@ use hyperactor::OncePortRef;
 use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
 use hyperactor::context;
-use hyperactor_config::Flattrs;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -162,7 +162,10 @@ impl RdmaManagerActor {
 impl RemoteSpawn for RdmaManagerActor {
     type Params = Option<IbvConfig>;
 
-    async fn new(params: Self::Params, _environment: Flattrs) -> Result<Self, anyhow::Error> {
+    async fn new(
+        params: Self::Params,
+        _environment: &ActorEnvironment,
+    ) -> Result<Self, anyhow::Error> {
         Ok(Self {
             next_remote_buf_id: 0,
             buffers: HashMap::new(),

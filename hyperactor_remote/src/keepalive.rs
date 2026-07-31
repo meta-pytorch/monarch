@@ -38,6 +38,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use hyperactor::Actor;
+use hyperactor::ActorEnvironment;
 use hyperactor::ActorHandle;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
@@ -50,7 +51,6 @@ use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
 use hyperactor::Uid;
 use hyperactor::context;
-use hyperactor_config::Flattrs;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -279,7 +279,10 @@ impl Actor for KeepaliveWorker {
 impl RemoteSpawn for KeepaliveWorker {
     type Params = KeepaliveWorkerParams;
 
-    async fn new(params: KeepaliveWorkerParams, _environment: Flattrs) -> anyhow::Result<Self> {
+    async fn new(
+        params: KeepaliveWorkerParams,
+        _environment: &ActorEnvironment,
+    ) -> anyhow::Result<Self> {
         Ok(Self {
             supervisor: params.supervisor,
             interval: params.keepalive.interval,

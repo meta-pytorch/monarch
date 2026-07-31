@@ -43,6 +43,7 @@ use hyperactor::mailbox::UndeliverableReason;
 use hyperactor::proc::Proc;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_cast::cast_actor::CAST_ACTOR_NAME;
+use hyperactor_cast::cast_actor::CAST_POINT;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::Flattrs;
@@ -908,9 +909,8 @@ pub struct ActorSpec {
     pub actor_type: String,
     /// serialized parameters
     pub params_data: Data,
-    /// The persistent environment to store on the spawned actor's instance.
-    /// Copied from the spawning context's instance and serialized per spawn
-    /// (AENV-3).
+    /// The caller's environment for the spawned actor. Proc-mesh construction
+    /// replaces its `CAST_POINT` with the point assigned to the new actor.
     pub actor_environment: ActorEnvironment,
 }
 wirevalue::register_type!(ActorSpec);
@@ -931,23 +931,20 @@ wirevalue::register_type!(ActorState);
 
 impl ProcAgent {
     /// Create a root-tracked actor and record its state under `id`, returning
-    /// whether a spawn was attempted.
+    /// whether the new state should be published.
     ///
     /// On a poisoned proc (an actor with an error supervision event) it records a
-    /// failed state without spawning and returns `false`. Otherwise it attempts
-    /// the spawn — merging the spec's persistent environment with `headers` (the
-    /// transient constructor headers) only for `RemoteSpawn::new` — and returns
-    /// `true` whether or not `gspawn` itself succeeded; a spawn failure is cached
-    /// in `actor_states`, which remains the sole lifecycle authority. Callers that
-    /// need the actual spawn result read it back from `actor_states` (see
-    /// `service_result`). Shared by the mesh `CreateOrUpdate` path and the
-    /// client-root ensure path.
+    /// failed state without spawning and returns `false`. Otherwise it shapes
+    /// the caller's environment with the optional construction point and returns
+    /// `true` whether or not shaping or `gspawn` succeeds; failures are cached in
+    /// `actor_states`, which remains the sole lifecycle authority. Shared by the
+    /// mesh `CreateOrUpdate` path and the client-root ensure path.
     async fn create_actor(
         &mut self,
         id: ResourceId,
         create_rank: usize,
         spec: ActorSpec,
-        headers: Flattrs,
+        construction_point: Option<ndslice::Point>,
     ) -> bool {
         let poisoned = self.actor_states.values().any(|s| s.has_errors());
         let spawn = if poisoned {
@@ -958,18 +955,28 @@ impl ProcAgent {
             let ActorSpec {
                 actor_type,
                 params_data,
-                actor_environment,
+                mut actor_environment,
             } = spec;
-            self.remote
-                .gspawn(
-                    &self.proc,
-                    &actor_type,
-                    id.uid().clone(),
-                    params_data,
-                    actor_environment,
-                    headers,
-                )
-                .await
+            let shape_result = match construction_point {
+                Some(point) => actor_environment
+                    .set(CAST_POINT, point)
+                    .map_err(anyhow::Error::from),
+                None => Ok(()),
+            };
+            match shape_result {
+                Ok(()) => {
+                    self.remote
+                        .gspawn(
+                            &self.proc,
+                            &actor_type,
+                            id.uid().clone(),
+                            params_data,
+                            actor_environment,
+                        )
+                        .await
+                }
+                Err(error) => Err(error),
+            }
         };
         self.actor_states.insert(
             id,
@@ -1049,10 +1056,9 @@ impl ProcAgent {
             params_data: params.clone(),
             actor_environment: service_env,
         };
-        // Root-owned construction uses empty transient headers: the requester's
-        // message headers are request-scoped and must not leak into a long-lived,
-        // root-owned service that outlives the requester (AENV-4).
-        let spawn_attempted = self.create_actor(id.clone(), 0, spec, Flattrs::new()).await;
+        // Root-owned construction uses its fresh environment unchanged; the
+        // requester's message headers must not leak into the long-lived service.
+        let publish_state = self.create_actor(id.clone(), 0, spec, None).await;
 
         // Record the identity so later ensures reuse it; the spawn result
         // (including a cached failure) lives in `actor_states`.
@@ -1065,8 +1071,8 @@ impl ProcAgent {
             },
         );
         // Reflect the new service in the root's introspect view, matching the
-        // mesh create path (whenever a spawn was attempted).
-        if spawn_attempted {
+        // mesh create path whenever creation was processed.
+        if publish_state {
             let _ = self.publish_introspect_properties(cx);
         }
         Self::service_result(&self.actor_states, &id, &service_name)
@@ -1119,18 +1125,21 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcAgent {
             return Ok(());
         }
         let create_rank = create_or_update.rank.unwrap();
-        // Publish introspect whenever a spawn was attempted (non-poisoned proc),
-        // matching the prior behavior; on a poisoned proc the helper records a
-        // failed state without spawning and does not publish.
-        let spawn_attempted = self
+        // Only the cast point is construction context. Replace the inherited
+        // value with this actor's assigned point; other request headers remain
+        // scoped to this delivery and are not stored on the actor (AENV-4).
+        let construction_point = cx.headers().get(CAST_POINT);
+        // Publish introspect whenever creation was processed on a non-poisoned
+        // proc, including when environment shaping or spawning failed.
+        let publish_state = self
             .create_actor(
                 create_or_update.id.clone(),
                 create_rank,
                 create_or_update.spec,
-                cx.headers().clone(),
+                construction_point,
             )
             .await;
-        if spawn_attempted {
+        if publish_state {
             let _ = self.publish_introspect_properties(cx);
         }
         Ok(())
@@ -2232,7 +2241,7 @@ mod tests {
     #[async_trait::async_trait]
     impl hyperactor::RemoteSpawn for CountingActor {
         type Params = ();
-        async fn new(_params: (), _environment: Flattrs) -> anyhow::Result<Self> {
+        async fn new(_params: (), _environment: &ActorEnvironment) -> anyhow::Result<Self> {
             COUNTING_ACTOR_BUILDS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(Self)
         }

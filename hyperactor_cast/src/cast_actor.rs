@@ -87,8 +87,11 @@ use crate::tile::Tile;
 pub use crate::tile::TilingPolicy;
 
 hyperactor_config::declare_attrs! {
-    /// Header stamped on each locally delivered message with the
-    /// recipient's point within the casting domain.
+    /// Point associated with a cast delivery or actor construction.
+    ///
+    /// Message headers carry the recipient's point in the current casting
+    /// domain. An `ActorEnvironment` may carry an inherited construction point;
+    /// it does not establish actor-mesh membership.
     pub attr CAST_POINT: Point;
 
     /// Header stamped on each locally delivered message with the

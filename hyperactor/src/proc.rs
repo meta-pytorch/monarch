@@ -3644,8 +3644,7 @@ impl<A: Actor> Instance<A> {
     /// Spawn a registered actor as this instance's child using an explicit uid.
     ///
     /// The actor type is resolved through the remote spawn registry. The child
-    /// inherits this instance's environment (AENV-2). No transient constructor
-    /// headers are supplied on this local path.
+    /// inherits this instance's environment unchanged (AENV-2).
     pub async fn gspawn_uid(
         &self,
         actor_type: &str,
@@ -3659,7 +3658,6 @@ impl<A: Actor> Instance<A> {
                 actor_type,
                 uid,
                 params,
-                Flattrs::new(),
             )
             .await
     }
@@ -3685,7 +3683,6 @@ impl<A: Actor> Instance<A> {
                 uid,
                 params,
                 environment,
-                Flattrs::new(),
             )
             .await
     }
@@ -8530,7 +8527,7 @@ mod tests {
     impl crate::RemoteSpawn for EnvProbe {
         type Params = PortRef<u64>;
 
-        async fn new(reply: PortRef<u64>, _environment: Flattrs) -> anyhow::Result<Self> {
+        async fn new(reply: PortRef<u64>, _environment: &ActorEnvironment) -> anyhow::Result<Self> {
             Ok(Self { reply })
         }
     }

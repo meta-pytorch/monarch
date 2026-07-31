@@ -20,12 +20,12 @@ use async_trait::async_trait;
 use clap::Parser;
 use hyperactor as reference;
 use hyperactor::Actor;
+use hyperactor::ActorEnvironment;
 use hyperactor::ActorHandle;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::RemoteSpawn;
-use hyperactor_config::Flattrs;
 use hyperactor_mesh::context;
 use hyperactor_mesh::host_mesh::spawn_admin;
 use hyperactor_mesh::mesh_admin::MeshAdminMessageClient;
@@ -103,9 +103,15 @@ impl Handler<NextNumber> for SieveActor {
                 );
                 msg.prime_collector.post(cx, msg.number);
 
-                self.next = Some(cx.spawn(
-                    SieveActor::new(SieveParams { prime: msg.number }, Flattrs::default()).await?,
-                ));
+                self.next = Some(
+                    cx.spawn(
+                        SieveActor::new(
+                            SieveParams { prime: msg.number },
+                            &ActorEnvironment::default(),
+                        )
+                        .await?,
+                    ),
+                );
             }
         }
         Ok(())
@@ -119,7 +125,7 @@ impl RemoteSpawn for SieveActor {
     type Params = SieveParams;
 
     /// Creates a sieve actor for `prime`.
-    async fn new(params: Self::Params, _environment: Flattrs) -> Result<Self> {
+    async fn new(params: Self::Params, _environment: &ActorEnvironment) -> Result<Self> {
         Ok(Self {
             prime: params.prime,
             next: None,

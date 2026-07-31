@@ -58,6 +58,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use hyperactor::Actor;
+use hyperactor::ActorEnvironment;
 use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
@@ -70,7 +71,6 @@ use hyperactor::channel::ChannelTransport;
 use hyperactor::context::Mailbox as _;
 use hyperactor::id::Label;
 use hyperactor::supervision::ActorSupervisionEvent;
-use hyperactor_config::Flattrs;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::Bootstrap;
 use hyperactor_mesh::HostBootstrapReady;
@@ -162,7 +162,10 @@ impl Actor for ParameterServerActor {
 impl RemoteSpawn for ParameterServerActor {
     type Params = (ActorRef<RdmaManagerActor>, usize);
 
-    async fn new(_params: Self::Params, _environment: Flattrs) -> Result<Self, anyhow::Error> {
+    async fn new(
+        _params: Self::Params,
+        _environment: &ActorEnvironment,
+    ) -> Result<Self, anyhow::Error> {
         let (owner_ref, worker_world_size) = _params;
         tracing::info!("creating parameter server actor");
         let weights_data = vec![0u8; BUFFER_SIZE].into_boxed_slice();
@@ -316,7 +319,10 @@ impl Actor for WorkerActor {
 impl RemoteSpawn for WorkerActor {
     type Params = ();
 
-    async fn new(_params: Self::Params, _environment: Flattrs) -> Result<Self, anyhow::Error> {
+    async fn new(
+        _params: Self::Params,
+        _environment: &ActorEnvironment,
+    ) -> Result<Self, anyhow::Error> {
         let weights_data = vec![0u8; BUFFER_SIZE].into_boxed_slice();
         let local_gradients = vec![0u8; BUFFER_SIZE].into_boxed_slice();
         Ok(Self {

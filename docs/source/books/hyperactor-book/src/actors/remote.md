@@ -19,7 +19,7 @@ impl Actor for MyActor {}
 impl RemoteSpawn for MyActor {
     type Params = bool;
 
-    async fn new(params: bool) -> anyhow::Result<Self> {
+    async fn new(params: bool, _environment: &ActorEnvironment) -> anyhow::Result<Self> {
         if params {
             Ok(MyActor)
         } else {
@@ -224,7 +224,7 @@ remote.gspawn(&proc, &actor_type, &actor_name, params_data).await
 
 `Remote::gspawn` uses the global type name to locate the correct `SpawnableActor` and invokes its type-erased `gspawn` function, which:
 - deserializes `params_data`,
-- calls `A::new(params).await`, and
+- calls `A::new(params, &environment).await`, and
 - installs the actor into the provided `Proc`.
 
 The `Remote` registry is thus the bridge between:

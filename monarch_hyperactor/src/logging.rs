@@ -16,6 +16,7 @@ use std::sync::atomic::Ordering;
 use anyhow::Result;
 use async_trait::async_trait;
 use hyperactor::Actor;
+use hyperactor::ActorEnvironment;
 use hyperactor::ActorHandle;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
@@ -25,7 +26,6 @@ use hyperactor::Instance;
 use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
 use hyperactor::context;
-use hyperactor_config::Flattrs;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::actor_mesh::ActorMeshRef;
 use hyperactor_mesh::bootstrap::MESH_ENABLE_LOG_FORWARDING;
@@ -99,7 +99,7 @@ impl Actor for LoggerRuntimeActor {
 impl RemoteSpawn for LoggerRuntimeActor {
     type Params = ();
 
-    async fn new(_: (), _environment: Flattrs) -> Result<Self, anyhow::Error> {
+    async fn new(_: (), _environment: &ActorEnvironment) -> Result<Self, anyhow::Error> {
         let logger = monarch_with_gil(GilSite::Logging, |py| {
             Self::get_logger(py).map_err(SerializablePyErr::from_fn(py))
         })

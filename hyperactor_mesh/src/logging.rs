@@ -21,6 +21,7 @@ use chrono::DateTime;
 use chrono::Local;
 use hostname;
 use hyperactor::Actor;
+use hyperactor::ActorEnvironment;
 use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
@@ -40,7 +41,6 @@ use hyperactor::channel::Tx;
 use hyperactor::channel::TxStatus;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
-use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::declare_attrs;
 use hyperactor_telemetry::env;
 use hyperactor_telemetry::log_file_path;
@@ -1012,7 +1012,10 @@ impl Actor for LogForwardActor {
 impl hyperactor::RemoteSpawn for LogForwardActor {
     type Params = ActorRef<LogClientActor>;
 
-    async fn new(logging_client_ref: Self::Params, _environment: Flattrs) -> Result<Self> {
+    async fn new(
+        logging_client_ref: Self::Params,
+        _environment: &ActorEnvironment,
+    ) -> Result<Self> {
         let log_channel: ChannelAddr = match std::env::var(BOOTSTRAP_LOG_CHANNEL) {
             Ok(channel) => channel.parse()?,
             Err(err) => {
@@ -1597,11 +1600,14 @@ mod tests {
         unsafe {
             std::env::set_var(BOOTSTRAP_LOG_CHANNEL, log_channel.to_string());
         }
-        let log_client_actor = LogClientActor::new((), Flattrs::default()).await.unwrap();
-        let log_client: ActorRef<LogClientActor> = proc.spawn(log_client_actor).bind();
-        let log_forwarder_actor = LogForwardActor::new(log_client.clone(), Flattrs::default())
+        let log_client_actor = LogClientActor::new((), &ActorEnvironment::default())
             .await
             .unwrap();
+        let log_client: ActorRef<LogClientActor> = proc.spawn(log_client_actor).bind();
+        let log_forwarder_actor =
+            LogForwardActor::new(log_client.clone(), &ActorEnvironment::default())
+                .await
+                .unwrap();
         let log_forwarder: ActorRef<LogForwardActor> = proc.spawn(log_forwarder_actor).bind();
 
         // Write some logs that will not be streamed

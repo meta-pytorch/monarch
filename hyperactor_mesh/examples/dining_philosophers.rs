@@ -17,13 +17,13 @@ use async_trait::async_trait;
 use clap::Parser;
 use hyperactor as reference;
 use hyperactor::Actor;
+use hyperactor::ActorEnvironment;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::RemoteSpawn;
 use hyperactor::context;
-use hyperactor_config::Flattrs;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::ActorMeshRef;
 use hyperactor_mesh::casting::CastInfo;
@@ -103,7 +103,10 @@ impl Actor for PhilosopherActor {}
 impl RemoteSpawn for PhilosopherActor {
     type Params = PhilosopherActorParams;
 
-    async fn new(params: Self::Params, _environment: Flattrs) -> Result<Self, anyhow::Error> {
+    async fn new(
+        params: Self::Params,
+        _environment: &ActorEnvironment,
+    ) -> Result<Self, anyhow::Error> {
         Ok(Self {
             chopsticks: (ChopstickStatus::None, ChopstickStatus::None),
             rank: 0, // will be set upon dining start

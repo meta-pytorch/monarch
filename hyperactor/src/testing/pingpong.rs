@@ -9,12 +9,12 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use hyperactor_config::Flattrs;
 use serde::Deserialize;
 use serde::Serialize;
 
 use crate as hyperactor; // for macros
 use crate::Actor;
+use crate::ActorEnvironment;
 use crate::ActorRef;
 use crate::Context;
 use crate::Handler;
@@ -77,7 +77,7 @@ impl RemoteSpawn for PingPongActor {
 
     async fn new(
         (undeliverable_port_ref, error_ttl, delay): Self::Params,
-        _environment: Flattrs,
+        _environment: &ActorEnvironment,
     ) -> anyhow::Result<Self> {
         Ok(Self::new(undeliverable_port_ref, error_ttl, delay))
     }

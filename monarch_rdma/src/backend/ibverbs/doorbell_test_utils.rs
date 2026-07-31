@@ -13,6 +13,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use hyperactor::Actor;
+use hyperactor::ActorEnvironment;
 use hyperactor::ActorHandle;
 use hyperactor::ActorRef;
 use hyperactor::Context;
@@ -26,7 +27,6 @@ use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
 use hyperactor::Uid;
 use hyperactor::channel::ChannelAddr;
-use hyperactor_config::Flattrs;
 
 use super::IbvBuffer;
 use super::device_selection::IbvDeviceTarget;
@@ -93,7 +93,7 @@ impl Actor for CudaActor {}
 impl RemoteSpawn for CudaActor {
     type Params = i32;
 
-    async fn new(device_id: i32, _environment: Flattrs) -> Result<Self, anyhow::Error> {
+    async fn new(device_id: i32, _environment: &ActorEnvironment) -> Result<Self, anyhow::Error> {
         unsafe {
             // rdmaxcel only adopts an already-loaded driver, so load it first.
             if rdmaxcel_sys::ensure_cuda_driver_loaded() != 0 {
@@ -606,12 +606,14 @@ impl DoorbellTestEnv {
         let instance_2 = proc_2.client("client");
 
         // Must match `RdmaManagerActor::local_handle`'s singleton lookup of "rdma_manager".
-        let rdma_actor_1 = RdmaManagerActor::new(Some(config1), Flattrs::default()).await?;
+        let rdma_actor_1 =
+            RdmaManagerActor::new(Some(config1), &ActorEnvironment::default()).await?;
         let rdma_actor_handle_1 =
             proc_1.spawn_with_uid(Uid::singleton(Label::strip("rdma_manager")), rdma_actor_1)?;
         let actor_1: ActorRef<RdmaManagerActor> = rdma_actor_handle_1.bind();
 
-        let rdma_actor_2 = RdmaManagerActor::new(Some(config2), Flattrs::default()).await?;
+        let rdma_actor_2 =
+            RdmaManagerActor::new(Some(config2), &ActorEnvironment::default()).await?;
         let rdma_actor_handle_2 =
             proc_2.spawn_with_uid(Uid::singleton(Label::strip("rdma_manager")), rdma_actor_2)?;
         let actor_2: ActorRef<RdmaManagerActor> = rdma_actor_handle_2.bind();
@@ -646,7 +648,8 @@ impl DoorbellTestEnv {
                 .request_buffer(&instance_1, local_memory_1.clone())
                 .await?;
         } else {
-            let cuda_actor = CudaActor::new(parsed_accel1.1 as i32, Flattrs::default()).await?;
+            let cuda_actor =
+                CudaActor::new(parsed_accel1.1 as i32, &ActorEnvironment::default()).await?;
             let cuda_handle = proc_1.spawn(cuda_actor);
             let cuda_actor_ref_1: ActorRef<CudaActor> = cuda_handle.bind();
 
@@ -687,7 +690,8 @@ impl DoorbellTestEnv {
                 .request_buffer(&instance_2, local_memory_2.clone())
                 .await?;
         } else {
-            let cuda_actor = CudaActor::new(parsed_accel2.1 as i32, Flattrs::default()).await?;
+            let cuda_actor =
+                CudaActor::new(parsed_accel2.1 as i32, &ActorEnvironment::default()).await?;
             let cuda_handle = proc_2.spawn(cuda_actor);
             let cuda_actor_ref_2: ActorRef<CudaActor> = cuda_handle.bind();
 

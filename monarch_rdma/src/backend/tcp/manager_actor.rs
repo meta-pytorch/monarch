@@ -1014,11 +1014,11 @@ mod tests {
     use std::sync::atomic::Ordering;
     use std::time::Duration;
 
+    use hyperactor::ActorEnvironment;
     use hyperactor::ActorHandle;
     use hyperactor::Proc;
     use hyperactor::RemoteSpawn;
     use hyperactor::channel::ChannelAddr;
-    use hyperactor_config::Flattrs;
 
     use super::TcpBackend;
     use super::TcpManagerActor;
@@ -1068,7 +1068,7 @@ mod tests {
             )?;
             let instance = proc.client("client");
 
-            let rdma_actor = RdmaManagerActor::new(None, Flattrs::default()).await?;
+            let rdma_actor = RdmaManagerActor::new(None, &ActorEnvironment::default()).await?;
             let rdma_handle = proc.spawn(rdma_actor);
 
             let tcp_ref = rdma_handle.get_tcp_actor_ref(&instance).await?;
@@ -1638,7 +1638,7 @@ mod tests {
             )?;
             let instance = proc.client("client");
 
-            let rdma_actor = RdmaManagerActor::new(None, Flattrs::default()).await?;
+            let rdma_actor = RdmaManagerActor::new(None, &ActorEnvironment::default()).await?;
             let rdma_handle = proc.spawn(rdma_actor);
 
             let tcp_ref = rdma_handle.get_tcp_actor_ref(&instance).await?;

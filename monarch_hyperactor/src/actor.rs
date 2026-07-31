@@ -22,6 +22,7 @@ use std::time::SystemTime;
 
 use async_trait::async_trait;
 use hyperactor::Actor;
+use hyperactor::ActorEnvironment;
 use hyperactor::ActorHandle;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
@@ -1014,8 +1015,8 @@ pub struct PythonActor {
     instance: Option<Py<crate::context::PyInstance>>,
     /// Dispatch mode for this actor.
     dispatch_mode: PythonActorDispatchMode,
-    /// The location in the actor mesh at which this actor was spawned.
-    spawn_point: OnceLock<Option<Point>>,
+    /// Inherited or assigned construction context, not proof of mesh membership.
+    construction_point: OnceLock<Option<Point>>,
     /// Initial message to process during PythonActor::init.
     init_message: Option<PythonMessage>,
     /// User-provided mesh base-name string plumbed from
@@ -1039,7 +1040,7 @@ impl PythonActor {
     pub(crate) fn new(
         actor_type: PickledPyObject,
         init_message: Option<PythonMessage>,
-        spawn_point: Option<Point>,
+        construction_point: Option<Point>,
         mesh_base_name: Option<String>,
     ) -> Result<Self, anyhow::Error> {
         let use_queue_dispatch = hyperactor_config::global::get(ACTOR_QUEUE_DISPATCH);
@@ -1079,7 +1080,7 @@ impl PythonActor {
                     task_locals,
                     instance: None,
                     dispatch_mode,
-                    spawn_point: OnceLock::from(spawn_point),
+                    construction_point: OnceLock::from(construction_point),
                     init_message,
                     mesh_base_name,
                     execution_tracker: Arc::new(ExecutionTracker::new()),
@@ -1159,7 +1160,7 @@ impl PythonActor {
         Self::bootstrap_client_inner(
             py,
             client_proc,
-            hyperactor::ActorEnvironment::default(),
+            ActorEnvironment::default(),
             &ROOT_CLIENT_INSTANCE,
         )
     }
@@ -1175,7 +1176,7 @@ impl PythonActor {
     pub(crate) fn bootstrap_client_inner(
         py: Python<'_>,
         client_proc: Proc,
-        environment: hyperactor::ActorEnvironment,
+        environment: ActorEnvironment,
         root_client_instance: &'static OnceLock<Instance<PythonActor>>,
     ) -> (&'static Instance<Self>, ActorHandle<Self>) {
         let actor_mesh_mod = py
@@ -1458,9 +1459,9 @@ impl Actor for PythonActor {
         }
 
         if let Some(init_message) = self.init_message.take() {
-            let spawn_point = self.spawn_point.get().unwrap().as_ref().expect("PythonActor should never be spawned with init_message unless spawn_point also specified").clone();
+            let construction_point = self.construction_point.get().unwrap().as_ref().expect("PythonActor should never be spawned with init_message unless construction_point is also specified").clone();
             let mut headers = Flattrs::new();
-            headers.set(CAST_POINT, spawn_point);
+            headers.set(CAST_POINT, construction_point);
             let cx = Context::new(this, headers);
             <Self as Handler<PythonMessage>>::handle(self, &cx, init_message).await?;
         }
@@ -1690,10 +1691,10 @@ impl RemoteSpawn for PythonActor {
             init_message,
             mesh_base_name,
         }: PythonActorParams,
-        environment: Flattrs,
+        environment: &ActorEnvironment,
     ) -> Result<Self, anyhow::Error> {
-        let spawn_point = environment.get(CAST_POINT);
-        Self::new(actor_type, init_message, spawn_point, mesh_base_name)
+        let construction_point = environment.get(CAST_POINT);
+        Self::new(actor_type, init_message, construction_point, mesh_base_name)
     }
 }
 
@@ -2325,10 +2326,13 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use hyperactor as reference;
     use hyperactor::accum::ReducerSpec;
     use hyperactor::accum::StreamingReducerOpts;
     use hyperactor::id::Label;
+    use hyperactor::id::Uid;
     use hyperactor::testing::ids::test_port_id;
     use hyperactor_mesh::Error as MeshError;
     use hyperactor_mesh::host_mesh::host_agent::ProcState;
@@ -2514,5 +2518,94 @@ mod tests {
             // 3) Starts with the expected prefix
             assert!(py_msg.starts_with(&expected_prefix));
         });
+    }
+
+    #[tokio::test]
+    async fn gspawn_uid_python_actor_init_inherits_cast_point() {
+        crate::pytokio::ensure_python();
+
+        let (pickled_type, init_message) = monarch_with_gil_blocking(GilSite::Test, |py| {
+            py.run(
+                c"
+_gspawn_uid_init_rank = None
+
+class GspawnUidInitActor:
+    async def handle(
+        self, context, method, message, panic_flag, local_state, refs, response_port
+    ):
+        global _gspawn_uid_init_rank
+        _gspawn_uid_init_rank = context.message_rank.rank
+",
+                None,
+                None,
+            )
+            .unwrap();
+
+            let actor_type = py
+                .import("__main__")
+                .unwrap()
+                .getattr("GspawnUidInitActor")
+                .unwrap();
+            let init_message = PythonMessage::new_from_buf(
+                PythonMessageKind::CallMethod {
+                    name: MethodSpecifier::Init {},
+                    response_port: None,
+                },
+                Vec::<u8>::new(),
+            );
+            (PickledPyObject::pickle(&actor_type).unwrap(), init_message)
+        });
+
+        let expected_point = extent!(replicas = 4).point_of_rank(3).unwrap();
+        let mut environment = ActorEnvironment::default();
+        environment
+            .set(CAST_POINT, expected_point.clone())
+            .expect("seed parent cast point");
+        let proc = Proc::isolated();
+        let parent = proc
+            .actor_instance_in_environment::<PythonActor>("parent", environment)
+            .expect("create parent instance");
+        let params = PythonActorParams::new(pickled_type, Some(init_message), None);
+
+        let config = hyperactor_config::global::lock();
+        let queue_dispatch_guard = config.override_key(ACTOR_QUEUE_DISPATCH, false);
+        let child = parent
+            .instance
+            .gspawn_uid(
+                <PythonActor as Named>::typename(),
+                Uid::instance(Label::new("python_init_child").unwrap()),
+                bincode::serde::encode_to_vec(&params, bincode::config::legacy()).unwrap(),
+            )
+            .await
+            .expect("spawn PythonActor child");
+        drop(queue_dispatch_guard);
+        drop(config);
+
+        let observed_rank = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let rank = monarch_with_gil(GilSite::Test, |py| {
+                    py.import("__main__")?
+                        .getattr("_gspawn_uid_init_rank")?
+                        .extract::<Option<usize>>()
+                })
+                .await
+                .expect("read init rank");
+                if let Some(rank) = rank {
+                    break rank;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("timed out waiting for PythonActor init");
+
+        assert_eq!(
+            observed_rank,
+            expected_point.rank(),
+            "init should receive the parent's environmental cast point",
+        );
+
+        child.stop("test complete").unwrap();
+        child.await;
     }
 }

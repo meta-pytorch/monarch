@@ -1319,7 +1319,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 300)]
     #[cfg(fbcode_build)]
-    async fn actor_environment_survives_two_remote_hops_and_excludes_cast_point() {
+    async fn actor_environment_survives_two_remote_hops_and_shapes_cast_point() {
         const SENTINEL: u64 = 0xA0FE;
         let operation_timeout = Duration::from_secs(120);
 
@@ -1390,7 +1390,7 @@ mod tests {
         );
         assert!(
             persistent_point != first_point && persistent_point != second_point,
-            "persistent and transient cast points must be distinct",
+            "seeded and assigned cast points must be distinct",
         );
 
         let (reply, mut replies) = root
@@ -1446,8 +1446,8 @@ mod tests {
             );
             assert_eq!(
                 observed.stored_point,
-                Some(persistent_point.clone()),
-                "{} must store only the persistent point",
+                Some(expected_point.clone()),
+                "{} must store its caller-shaped construction point",
                 observed.label,
             );
             assert_eq!(

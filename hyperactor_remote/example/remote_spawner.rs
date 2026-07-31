@@ -24,6 +24,7 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorAddr;
+use hyperactor::ActorEnvironment;
 use hyperactor::ActorHandle;
 use hyperactor::ActorRef;
 use hyperactor::Context;
@@ -38,7 +39,6 @@ use hyperactor::actor::StopMode;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::supervision::ActorSupervisionEvent;
-use hyperactor_config::Flattrs;
 use hyperactor_remote::ActorSpawnerEndpoint;
 use hyperactor_remote::JoinResult;
 use hyperactor_remote::ProcSpawner;
@@ -135,7 +135,7 @@ impl Actor for Calculator {
 impl RemoteSpawn for Calculator {
     type Params = ();
 
-    async fn new(_params: (), _environment: Flattrs) -> anyhow::Result<Self> {
+    async fn new(_params: (), _environment: &ActorEnvironment) -> anyhow::Result<Self> {
         Ok(Self)
     }
 }

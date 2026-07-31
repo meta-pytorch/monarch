@@ -52,11 +52,11 @@ use device_mesh::DeviceMesh;
 use futures::future::try_join_all;
 use hyperactor as reference;
 use hyperactor::Actor;
+use hyperactor::ActorEnvironment;
 use hyperactor::Handler;
 use hyperactor::RemoteSpawn;
 use hyperactor::actor::ActorHandle;
 use hyperactor::context;
-use hyperactor_config::Flattrs;
 use hyperactor_mesh::casting::CastInfo;
 use itertools::Itertools;
 use monarch_gil::GilSite;
@@ -239,7 +239,7 @@ impl RemoteSpawn for WorkerActor {
             device_index,
             controller_actor,
         }: Self::Params,
-        _environment: Flattrs,
+        _environment: &ActorEnvironment,
     ) -> Result<Self> {
         monarch_with_gil_blocking(GilSite::WorkerInit, |py| {
             py.import("monarch.safe_torch").unwrap();
@@ -1137,7 +1137,7 @@ mod tests {
                     device_index: None,
                     controller_actor: controller_ref,
                 },
-                Flattrs::default(),
+                &ActorEnvironment::default(),
             )
             .await
             .unwrap(),
@@ -1243,7 +1243,7 @@ mod tests {
                     device_index: None,
                     controller_actor: controller_ref,
                 },
-                Flattrs::default(),
+                &ActorEnvironment::default(),
             )
             .await
             .unwrap(),
@@ -1303,7 +1303,7 @@ mod tests {
                     device_index: None,
                     controller_actor: controller_ref,
                 },
-                Flattrs::default(),
+                &ActorEnvironment::default(),
             )
             .await
             .unwrap(),
@@ -1374,7 +1374,7 @@ mod tests {
                     device_index: None,
                     controller_actor: controller_ref,
                 },
-                Flattrs::default(),
+                &ActorEnvironment::default(),
             )
             .await
             .unwrap(),
@@ -1450,7 +1450,7 @@ mod tests {
                     device_index: None,
                     controller_actor: controller_ref,
                 },
-                Flattrs::default(),
+                &ActorEnvironment::default(),
             )
             .await
             .unwrap(),
@@ -1749,7 +1749,7 @@ mod tests {
                     device_index: None,
                     controller_actor: controller_ref,
                 },
-                Flattrs::default(),
+                &ActorEnvironment::default(),
             )
             .await
             .unwrap(),
@@ -1824,7 +1824,7 @@ mod tests {
                     device_index: None,
                     controller_actor: controller_ref,
                 },
-                Flattrs::default(),
+                &ActorEnvironment::default(),
             )
             .await
             .unwrap(),
@@ -1911,7 +1911,7 @@ mod tests {
                     device_index: Some(0),
                     controller_actor: controller_ref.clone(),
                 },
-                Flattrs::default(),
+                &ActorEnvironment::default(),
             )
             .await
             .unwrap(),
@@ -1925,7 +1925,7 @@ mod tests {
                     device_index: Some(1),
                     controller_actor: controller_ref,
                 },
-                Flattrs::default(),
+                &ActorEnvironment::default(),
             )
             .await
             .unwrap(),

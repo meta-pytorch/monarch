@@ -31,13 +31,15 @@
 //!   fixed at construction and exposed read-only.
 //! - **AENV-2 (local inheritance):** ordinary local child/client construction
 //!   derives its parent's exact environment from that cell.
-//! - **AENV-3 (remote inheritance):** native remote-spawn adapters serialize the
-//!   spawning instance's exact environment; nested remote spawn repeats that
-//!   operation independently.
-//! - **AENV-4 (transient separation):** message/cast constructor headers may
-//!   override the merged view passed to [`RemoteSpawn::new`](crate::actor::RemoteSpawn)
-//!   but never enter the stored/inherited environment; persistent capability
-//!   consumers read only the stored instance environment.
+//! - **AENV-3 (remote inheritance):** native remote-spawn adapters transport
+//!   the caller-shaped environment; nested remote spawn derives and transports
+//!   its environment independently.
+//! - **AENV-4 (caller shaping):** spawn callers put all construction context in
+//!   one environment. When its create cast carries `CAST_POINT`, proc-mesh
+//!   construction replaces the environmental value with the point assigned to
+//!   the new actor; ordinary local child construction inherits the parent's
+//!   exact environment. [`RemoteSpawn::new`](crate::actor::RemoteSpawn) reads
+//!   that environment, and the runtime stores it unchanged.
 //! - **AENV-5 (runtime neutrality):** inheritance is implemented by native
 //!   `Instance`/spawn plumbing and does not depend on the actor implementation
 //!   language.
@@ -161,27 +163,6 @@ impl ActorEnvironment {
     /// The number of entries in the environment.
     pub fn len(&self) -> usize {
         self.0.len()
-    }
-
-    /// Build the constructor view handed to
-    /// [`RemoteSpawn::new`](crate::actor::RemoteSpawn). Persistent entries are
-    /// included only when the transient headers do not define the same key, so
-    /// transient values win on collision (AENV-4). The transient buffer's
-    /// ordering and duplicate-key behavior are preserved, and the stored
-    /// environment is unchanged.
-    pub(crate) fn constructor_view(
-        &self,
-        mut transient: Flattrs,
-    ) -> Result<Flattrs, ActorEnvironmentError> {
-        transient.validate_wire()?;
-        let transient_keys: HashSet<_> = transient.iter().map(|(key_hash, _)| key_hash).collect();
-        for (key_hash, value) in self.0.iter() {
-            if !transient_keys.contains(&key_hash) {
-                transient.set_serialized(key_hash, value);
-            }
-        }
-        transient.validate_wire()?;
-        Ok(transient)
     }
 }
 
@@ -459,53 +440,5 @@ mod tests {
                 .map(|(value, _)| value)
                 .expect("deserialize boundary environment");
         assert_eq!(restored, boundary);
-    }
-
-    #[test]
-    fn constructor_view_overlays_transient() {
-        let mut env = ActorEnvironment::default();
-        env.set(TEST_TAG, 100u64).expect("insert tag");
-        env.set(TEST_LABEL, "persistent".to_string())
-            .expect("insert label");
-
-        let mut transient = Flattrs::new();
-        transient.set(TEST_TAG, 999u64);
-
-        let view = env
-            .constructor_view(transient)
-            .expect("merge valid constructor headers");
-        assert_eq!(view.get(TEST_TAG), Some(999u64));
-        assert_eq!(view.get(TEST_LABEL), Some("persistent".to_string()));
-        assert_eq!(env.get(TEST_TAG), Some(100u64));
-    }
-
-    #[test]
-    fn constructor_view_preserves_transient_duplicates_and_rejects_overflow() {
-        let first = bincode::serde::encode_to_vec(1u64, bincode::config::legacy())
-            .expect("serialize first value");
-        let second = bincode::serde::encode_to_vec(2u64, bincode::config::legacy())
-            .expect("serialize second value");
-        let mut raw = 2u16.to_le_bytes().to_vec();
-        append_entry(&mut raw, TEST_TAG.key_hash(), &first);
-        append_entry(&mut raw, TEST_TAG.key_hash(), &second);
-        let transient = Flattrs::from_part(Part::from(raw));
-
-        let mut env = ActorEnvironment::default();
-        env.set(TEST_TAG, 100u64).expect("insert persistent tag");
-        let view = env
-            .constructor_view(transient)
-            .expect("merge duplicate transient headers");
-        assert_eq!(view.get(TEST_TAG), Some(1u64));
-        assert_eq!(view.len(), 2, "transient duplicates must remain intact");
-
-        let mut raw = u16::MAX.to_le_bytes().to_vec();
-        for _ in 0..u16::MAX {
-            append_entry(&mut raw, TEST_TAG.key_hash().wrapping_add(1), &[]);
-        }
-        let full = Flattrs::from_part(Part::from(raw));
-        assert!(
-            env.constructor_view(full).is_err(),
-            "adding a persistent key must not wrap the Flattrs entry count"
-        );
     }
 }

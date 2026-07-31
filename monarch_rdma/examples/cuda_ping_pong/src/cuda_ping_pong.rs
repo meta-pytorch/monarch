@@ -60,6 +60,7 @@ use async_trait::async_trait;
 use clap::Arg;
 use clap::Command as ClapCommand;
 use hyperactor::Actor;
+use hyperactor::ActorEnvironment;
 use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
@@ -71,7 +72,6 @@ use hyperactor::channel::ChannelAddr;
 use hyperactor::context::Mailbox;
 use hyperactor::id::Label;
 use hyperactor::supervision::ActorSupervisionEvent;
-use hyperactor_config::Flattrs;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::Bootstrap;
 use hyperactor_mesh::HostBootstrapReady;
@@ -323,7 +323,10 @@ impl Actor for CudaRdmaActor {
 impl RemoteSpawn for CudaRdmaActor {
     type Params = (ActorRef<RdmaManagerActor>, usize, usize);
 
-    async fn new(params: Self::Params, _environment: Flattrs) -> Result<Self, anyhow::Error> {
+    async fn new(
+        params: Self::Params,
+        _environment: &ActorEnvironment,
+    ) -> Result<Self, anyhow::Error> {
         let (rdma_manager, device_id, buffer_size) = params;
         let cpu_buffer = vec![0u8; buffer_size].into_boxed_slice();
 

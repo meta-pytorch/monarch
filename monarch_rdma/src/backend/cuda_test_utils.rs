@@ -17,13 +17,13 @@ use std::sync::Weak;
 
 use async_trait::async_trait;
 use hyperactor::Actor;
+use hyperactor::ActorEnvironment;
 use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::OncePortRef;
 use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
-use hyperactor_config::Flattrs;
 
 use crate::RdmaManagerActor;
 use crate::RdmaManagerMessageClient;
@@ -503,7 +503,7 @@ impl Actor for SenderActor {}
 impl RemoteSpawn for SenderActor {
     type Params = i32;
 
-    async fn new(device_id: i32, _env: Flattrs) -> Result<Self, anyhow::Error> {
+    async fn new(device_id: i32, _env: &ActorEnvironment) -> Result<Self, anyhow::Error> {
         register_cuda_segment_scanner(Arc::new(cuda_allocator_segments));
         Ok(Self {
             device: device_id,
@@ -657,7 +657,7 @@ impl Actor for ReceiverActor {}
 impl RemoteSpawn for ReceiverActor {
     type Params = ();
 
-    async fn new((): (), _env: Flattrs) -> Result<Self, anyhow::Error> {
+    async fn new((): (), _env: &ActorEnvironment) -> Result<Self, anyhow::Error> {
         Ok(Self)
     }
 }
