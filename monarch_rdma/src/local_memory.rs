@@ -24,6 +24,18 @@ use crate::backend::ibverbs::memory_region::IbvMemoryRegionView;
 /// Probes the CUDA driver via `cuPointerGetAttribute`; returns `false`
 /// when CUDA is unavailable or the pointer is not device memory.
 pub fn is_device_ptr(addr: usize) -> bool {
+    // On ROCm, a primary HIP context is created even if the pointer is in host memory.
+    // We only want to init primary HIP context if the pointer is actually on the device
+    static RUNTIME_READY: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+    if !RUNTIME_READY.load(std::sync::atomic::Ordering::Relaxed) {
+        // SAFETY: queries runtime/context state only; creates no context and
+        // does not access `addr`.
+        if unsafe { rdmaxcel_sys::rdmaxcel_cuPrimaryCtxActive() } == 0 {
+            return false;
+        }
+        RUNTIME_READY.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     // SAFETY: FFI call that queries pointer metadata without accessing
     // the pointed-to memory.
     unsafe {
