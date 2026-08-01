@@ -55,6 +55,15 @@ pub enum ShapeError {
     #[error("failed to parse shape: {reason}")]
     ParseError { reason: String },
 
+    #[error(
+        "cannot flatten sparse mesh {labels:?}: strides {strides:?} != dense strides {dense_strides:?}"
+    )]
+    NotDense {
+        labels: Vec<String>,
+        strides: Vec<usize>,
+        dense_strides: Vec<usize>,
+    },
+
     #[error(transparent)]
     SliceError(#[from] SliceError),
 }
@@ -211,6 +220,44 @@ impl Shape {
     /// The region corresponding to this shape.
     pub fn region(&self) -> Region {
         self.into()
+    }
+
+    /// Flatten all dimensions into a single dimension with the given name.
+    ///
+    /// This operation is only valid for dense (contiguous) shapes where the
+    /// strides match the expected row-major layout. Returns an error if the
+    /// shape is sparse.
+    ///
+    /// # Example
+    /// ```
+    /// use ndslice::shape;
+    /// let s = shape!(host = 2, gpu = 8);
+    /// let flat = s.flatten("rank").unwrap();
+    /// assert_eq!(flat.labels(), &["rank"]);
+    /// assert_eq!(flat.slice().sizes(), &[16]);
+    /// ```
+    pub fn flatten(&self, name: &str) -> Result<Self, ShapeError> {
+        let sizes = self.slice.sizes();
+
+        let mut dense_strides: Vec<usize> = Vec::with_capacity(sizes.len());
+        let mut acc = 1usize;
+        for &size in sizes.iter().rev() {
+            dense_strides.push(acc);
+            acc *= size;
+        }
+        dense_strides.reverse();
+        let total_size = acc;
+
+        if dense_strides != self.slice.strides() {
+            return Err(ShapeError::NotDense {
+                labels: self.labels.clone(),
+                strides: self.slice.strides().to_vec(),
+                dense_strides,
+            });
+        }
+
+        let new_slice = Slice::new(self.slice.offset(), vec![total_size], vec![1])?;
+        Self::new(vec![name.to_string()], new_slice)
     }
 }
 
@@ -813,5 +860,53 @@ mod tests {
             let result: Result<Shape, ShapeError> = input.parse();
             assert!(result.is_err(), "expected error for input: {}", input);
         }
+    }
+
+    #[test]
+    fn test_flatten_dense_shape() {
+        let s = shape!(host = 2, gpu = 8);
+        let flat = s.flatten("rank").unwrap();
+        assert_eq!(flat.labels(), &["rank"]);
+        assert_eq!(flat.slice().sizes(), &[16]);
+        assert_eq!(flat.slice().strides(), &[1]);
+        assert_eq!(flat.slice().offset(), 0);
+
+        let original_ranks: Vec<_> = s.slice().iter().collect();
+        let flat_ranks: Vec<_> = flat.slice().iter().collect();
+        assert_eq!(original_ranks, flat_ranks);
+    }
+
+    #[test]
+    fn test_flatten_with_offset() {
+        let s = shape!(host = 2, gpu = 8);
+        let selected = s.at("host", 1).unwrap();
+        let flat = selected.flatten("rank").unwrap();
+        assert_eq!(flat.labels(), &["rank"]);
+        assert_eq!(flat.slice().sizes(), &[8]);
+        assert_eq!(flat.slice().offset(), 8);
+    }
+
+    #[test]
+    fn test_flatten_sparse_fails() {
+        let s = shape!(x = 10);
+        let sparse = s.select("x", Range(0, Some(10), 2)).unwrap();
+        let result = sparse.flatten("rank");
+        assert!(matches!(result, Err(ShapeError::NotDense { .. })));
+    }
+
+    #[test]
+    fn test_flatten_single_dim() {
+        let s = shape!(gpu = 8);
+        let flat = s.flatten("devices").unwrap();
+        assert_eq!(flat.labels(), &["devices"]);
+        assert_eq!(flat.slice().sizes(), &[8]);
+    }
+
+    #[test]
+    fn test_flatten_unity() {
+        let s = Shape::unity();
+        let flat = s.flatten("scalar").unwrap();
+        assert_eq!(flat.labels(), &["scalar"]);
+        assert_eq!(flat.slice().sizes(), &[1]);
     }
 }
