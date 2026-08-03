@@ -26,10 +26,12 @@ use hyperactor::actor::Referable;
 use hyperactor::actor::handle_undeliverable_message;
 use hyperactor::context;
 use hyperactor::kv_pairs;
+use hyperactor::mailbox::ExpiredDelivery;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::RemoteMessage;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::mailbox::UndeliverableReason;
+use hyperactor::mailbox::headers::RUST_MESSAGE_TYPE;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
@@ -660,6 +662,37 @@ impl<T: Controlled> ResourceController<T> {
             .unwrap_or_else(|| self.mesh.id().to_string())
     }
 
+    /// Remove the destination of a returned supervision message from the
+    /// subscriber set. Some transport failures, including TTL expiry, can
+    /// return the original `Option<MeshFailure>` without its marker header.
+    /// In that case the message type still identifies a subscription message,
+    /// even if an unsubscribe raced with the delivery failure.
+    fn remove_undeliverable_subscriber(
+        &mut self,
+        returned: &MessageEnvelope,
+    ) -> Option<hyperactor::PortRef<Option<MeshFailure>>> {
+        let marked = returned
+            .headers()
+            .get(ACTOR_MESH_SUBSCRIBER_MESSAGE)
+            .unwrap_or(false);
+        let message_type = returned
+            .data()
+            .typename()
+            .map(str::to_owned)
+            .or_else(|| returned.headers().get(RUST_MESSAGE_TYPE));
+        let has_subscriber_type =
+            message_type.as_deref() == Some(std::any::type_name::<Option<MeshFailure>>());
+        if !marked && !has_subscriber_type {
+            return None;
+        }
+
+        // PortRef equality uses the port address, so attesting the type here is
+        // sufficient for looking up the destination in the subscriber set.
+        let port = hyperactor::PortRef::<Option<MeshFailure>>::attest(returned.dest().clone());
+        self.health_state.subscribers.remove(&port);
+        Some(port)
+    }
+
     /// Schedule the next `CheckState` self-message if the monitor is active.
     ///
     /// `send_fn` bridges the type gap: the caller passes a closure that
@@ -854,22 +887,13 @@ where
         let Some(returned) = envelope.as_message() else {
             return handle_undeliverable_message(cx, reason, envelope);
         };
-        if let Some(true) = returned.headers().get(ACTOR_MESH_SUBSCRIBER_MESSAGE) {
-            // Remove from the subscriber list (if it existed) so we don't
-            // send to this subscriber again.
-            // NOTE: The only part of the port that is used for equality checks is
-            // the port id, so create a new one just for the comparison.
-            let dest_port_id = returned.dest().clone();
-            let port = hyperactor::PortRef::<Option<MeshFailure>>::attest(dest_port_id);
-            let did_exist = self.health_state.subscribers.remove(&port);
-            if did_exist {
-                tracing::debug!(
-                    actor_id = %cx.self_addr(),
-                    num_subscribers = self.health_state.subscribers.len(),
-                    "ResourceController: removed subscriber {} from mesh controller",
-                    port.port_addr()
-                );
-            }
+        if let Some(port) = self.remove_undeliverable_subscriber(returned) {
+            tracing::debug!(
+                actor_id = %cx.self_addr(),
+                num_subscribers = self.health_state.subscribers.len(),
+                "ResourceController: removed subscriber {} from mesh controller",
+                port.port_addr()
+            );
             Ok(())
         } else if returned.headers().get(CAST_ACTOR_MESH_ID).is_some() {
             // A cast message we sent (e.g. StreamState or KeepaliveGetState)
@@ -897,18 +921,13 @@ where
         let Some(returned) = envelope.as_message() else {
             return hyperactor::actor::handle_invalid_reference(cx, invalid, envelope);
         };
-        if let Some(true) = returned.headers().get(ACTOR_MESH_SUBSCRIBER_MESSAGE) {
-            let dest_port_id = returned.dest().clone();
-            let port = hyperactor::PortRef::<Option<MeshFailure>>::attest(dest_port_id);
-            let did_exist = self.health_state.subscribers.remove(&port);
-            if did_exist {
-                tracing::debug!(
-                    actor_id = %cx.self_addr(),
-                    num_subscribers = self.health_state.subscribers.len(),
-                    "ResourceController: removed subscriber {} from mesh controller",
-                    port.port_addr()
-                );
-            }
+        if let Some(port) = self.remove_undeliverable_subscriber(returned) {
+            tracing::debug!(
+                actor_id = %cx.self_addr(),
+                num_subscribers = self.health_state.subscribers.len(),
+                "ResourceController: removed subscriber {} from mesh controller",
+                port.port_addr()
+            );
             Ok(())
         } else if returned.headers().get(CAST_ACTOR_MESH_ID).is_some() {
             tracing::warn!(
@@ -919,6 +938,36 @@ where
             Ok(())
         } else {
             hyperactor::actor::handle_invalid_reference(cx, invalid, envelope)
+        }
+    }
+
+    async fn handle_expired_delivery(
+        &mut self,
+        cx: &Instance<Self>,
+        expired: ExpiredDelivery,
+        envelope: Undeliverable<MessageEnvelope>,
+    ) -> Result<(), anyhow::Error> {
+        let envelope = update_undeliverable_envelope_for_casting(envelope);
+        let Some(returned) = envelope.as_message() else {
+            return hyperactor::actor::handle_expired_delivery(cx, expired, envelope);
+        };
+        if let Some(port) = self.remove_undeliverable_subscriber(returned) {
+            tracing::debug!(
+                actor_id = %cx.self_addr(),
+                num_subscribers = self.health_state.subscribers.len(),
+                "ResourceController: removed subscriber {} from mesh controller",
+                port.port_addr()
+            );
+            Ok(())
+        } else if returned.headers().get(CAST_ACTOR_MESH_ID).is_some() {
+            tracing::warn!(
+                actor_id = %cx.self_addr(),
+                dest = %returned.dest(),
+                "ResourceController: ignoring expired cast message",
+            );
+            Ok(())
+        } else {
+            hyperactor::actor::handle_expired_delivery(cx, expired, envelope)
         }
     }
 }
