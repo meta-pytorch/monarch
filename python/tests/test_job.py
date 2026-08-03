@@ -1114,7 +1114,11 @@ def test_batch_job_shares_component_runtime_with_wrapped_job():
 
 
 @contextlib.contextmanager
-def _patched_sidecar(ensure_open_side_effect=None, ensure_open_return=None):
+def _patched_sidecar(
+    ensure_open_side_effect=None,
+    ensure_open_return=None,
+    set_admin_url_side_effect=None,
+):
     with (
         patch("monarch._src.job.job_components.Telemetry") as telemetry_cls,
         patch(
@@ -1128,6 +1132,7 @@ def _patched_sidecar(ensure_open_side_effect=None, ensure_open_return=None):
         ) as start_snapshots,
     ):
         ensure_open = telemetry_cls.return_value.ensure_open
+        set_admin_url = telemetry_cls.return_value.set_admin_url
         if ensure_open_side_effect is not None:
             ensure_open.side_effect = ensure_open_side_effect
         else:
@@ -1136,6 +1141,8 @@ def _patched_sidecar(ensure_open_side_effect=None, ensure_open_return=None):
                 "dashboard_url": "http://dashboard",
                 "socket_path": "/tmp/telemetry.sock",
             }
+        if set_admin_url_side_effect is not None:
+            set_admin_url.side_effect = set_admin_url_side_effect
         admin_ref = MagicMock()
         admin_future = MagicMock()
         admin_future.get.return_value = ("http://localhost:1729", admin_ref)
@@ -1146,6 +1153,7 @@ def _patched_sidecar(ensure_open_side_effect=None, ensure_open_return=None):
         )
         yield types.SimpleNamespace(
             ensure_open=ensure_open,
+            set_admin_url=set_admin_url,
             install_sink=install_sink,
             query_engine_client_cls=qec_cls,
             telemetry_cls=telemetry_cls,
@@ -1154,6 +1162,13 @@ def _patched_sidecar(ensure_open_side_effect=None, ensure_open_return=None):
             start_snapshots=start_snapshots,
             snapshot_instance=snapshot_instance,
         )
+
+
+def _assert_admin_url_update(set_admin_url):
+    set_admin_url.assert_called_once()
+    apply_id, admin_url = set_admin_url.call_args.args
+    assert isinstance(apply_id, str)
+    assert admin_url == "http://localhost:1729"
 
 
 def test_mesh_admin_receives_sidecar_telemetry_url():
@@ -1196,6 +1211,7 @@ def test_sidecar_bootstrap_then_fanout_carry_host_meshes():
     assert "spawn_worker_collectors" not in bootstrap_kwargs
     assert set(fanout_kwargs["host_meshes"].keys()) == {"hosts"}
     assert fanout_kwargs["spawn_worker_collectors"] is True
+    _assert_admin_url_update(m.set_admin_url)
 
 
 def test_local_job_sidecar_skips_worker_collector_actors():
@@ -1211,6 +1227,7 @@ def test_local_job_sidecar_skips_worker_collector_actors():
     assert "spawn_worker_collectors" not in bootstrap_kwargs
     assert set(fanout_kwargs["host_meshes"].keys()) == {"hosts"}
     assert fanout_kwargs["spawn_worker_collectors"] is False
+    _assert_admin_url_update(m.set_admin_url)
     assert state.query_engine_client is m.query_engine_client_cls.return_value
 
 
@@ -1236,6 +1253,7 @@ def test_process_job_sidecar_skips_worker_collector_actors():
     assert "spawn_worker_collectors" not in bootstrap_kwargs
     assert set(fanout_kwargs["host_meshes"].keys()) == {"hosts"}
     assert fanout_kwargs["spawn_worker_collectors"] is False
+    _assert_admin_url_update(m.set_admin_url)
     assert state.query_engine_client is m.query_engine_client_cls.return_value
 
 
@@ -1279,6 +1297,7 @@ def test_sidecar_worker_fanout_failure_is_isolated():
         state = job.state(cached_path=None)  # must not raise
 
     assert m.ensure_open.call_count == 2
+    _assert_admin_url_update(m.set_admin_url)
     assert state.query_engine_client is m.query_engine_client_cls.return_value
 
 
@@ -1289,6 +1308,7 @@ def test_telemetry_bootstraps_sidecar_by_default():
         state = job.state(cached_path=None)
 
     assert m.ensure_open.call_count == 2
+    _assert_admin_url_update(m.set_admin_url)
     assert state.query_engine is None
     assert state.query_engine_client is m.query_engine_client_cls.return_value
 

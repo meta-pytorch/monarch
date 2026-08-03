@@ -170,6 +170,35 @@ def test_run_job_sidecar_survives_broken_connection(tmp_path) -> None:
     assert fake.shutdown_called
 
 
+def test_handle_telemetry_refreshes_telemetry_handle() -> None:
+    fake = _FakeTelemetryHandle()
+    state = js._JobSidecarState()
+    with patch.object(tc, "_TelemetryHandle", return_value=fake):
+        state.handle_telemetry(
+            js.TelemetryRequest(
+                apply_id="apply",
+                config={},
+                host_meshes={},
+            )
+        )
+    assert fake.calls == [({}, {}, True)]
+
+
+def test_handle_admin_url_sets_sidecar_env(monkeypatch) -> None:
+    state = js._JobSidecarState()
+
+    monkeypatch.delenv("MONARCH_ADMIN_URL", raising=False)
+    response = state.handle_admin_url(
+        js.AdminUrlRequest(
+            apply_id="apply",
+            admin_url="https://host.example:1731",
+        )
+    )
+
+    assert response == "ok"
+    assert os.environ["MONARCH_ADMIN_URL"] == "https://host.example:1731"
+
+
 # ── _TelemetryHandle.open_or_refresh (bootstrap-once + drift) ─────────────────
 
 
@@ -422,6 +451,36 @@ def test_ensure_open_reraises_sidecar_error() -> None:
             }
             with pytest.raises(RuntimeError, match="boom"):
                 tel.ensure_open(apply_id)
+    finally:
+        _remove_socket_dir(apply_id)
+
+
+def test_set_admin_url_sends_admin_url_request() -> None:
+    apply_id = _new_apply_id()
+    tel = tc.Telemetry(TelemetryConfig())
+    try:
+        with patch.object(tc, "create_job_sidecar") as create_sidecar:
+            send = create_sidecar.return_value.send
+            send.return_value.get.return_value = "ok"
+            tel.set_admin_url(apply_id, "https://host.example:1731")
+        sent_request = send.call_args[0][0]
+        assert isinstance(sent_request, js.AdminUrlRequest)
+        assert sent_request.apply_id == apply_id
+        assert sent_request.admin_url == "https://host.example:1731"
+    finally:
+        _remove_socket_dir(apply_id)
+
+
+def test_set_admin_url_reraises_sidecar_error() -> None:
+    apply_id = _new_apply_id()
+    tel = tc.Telemetry(TelemetryConfig())
+    try:
+        with patch.object(tc, "create_job_sidecar") as create_sidecar:
+            create_sidecar.return_value.send.return_value.get.return_value = {
+                "error": "boom"
+            }
+            with pytest.raises(RuntimeError, match="boom"):
+                tel.set_admin_url(apply_id, "https://host.example:1731")
     finally:
         _remove_socket_dir(apply_id)
 

@@ -306,6 +306,24 @@ class AdminComponent(JobComponent):
                     admin_addr=self._config.admin_addr,
                     telemetry_url=telemetry_url,
                 ).get()
+        # Push the resolved admin URL into the telemetry sidecar (a separate
+        # process) so the dashboard's pyspy client targets the real admin
+        # endpoint rather than the default https://<fqdn>:1729. Best-effort and
+        # only when telemetry is live; never fatal to job startup.
+        if (
+            self._telemetry is not None
+            and self._telemetry._telemetry_url is not None
+            and self._admin_url is not None
+            and job.apply_id is not None
+        ):
+            try:
+                Telemetry(self._telemetry._config).set_admin_url(
+                    job.apply_id, self._admin_url
+                )
+            except Exception:
+                logger.warning(
+                    "failed to push admin URL to telemetry sidecar", exc_info=True
+                )
         job_state.admin_url = self._admin_url
 
 
