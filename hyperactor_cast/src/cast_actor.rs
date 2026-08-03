@@ -76,6 +76,7 @@ use hyperactor_config::Flattrs;
 use ndslice::Point;
 use ndslice::Region;
 use ndslice::view::MapIntoExt;
+use ndslice::view::RankedSliceable;
 use ndslice::view::View;
 use serde::Deserialize;
 use serde::Serialize;
@@ -349,8 +350,8 @@ impl CastDomainRef {
         let subtree_seqs = self
             .subtrees
             .iter()
-            .map(|subtree| seqs.subset(subtree.served_region.clone()))
-            .collect::<Result<Vec<_>, _>>()?;
+            .map(|subtree| seqs.sliced(subtree.served_region.clone()))
+            .collect::<Vec<_>>();
         // Split even for one subtree: a direct route bypasses the leaf
         // CastActor that would otherwise create the one-peer reducer proxy.
         split_ports(cx, &mut data, self.subtrees.len(), false)?;
