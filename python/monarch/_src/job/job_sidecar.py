@@ -123,6 +123,14 @@ class TelemetryRequest:
     spawn_worker_collectors: bool = True
 
 
+@dataclass
+class AdminUrlRequest:
+    """Set the mesh-admin URL in the job sidecar process."""
+
+    apply_id: str
+    admin_url: str
+
+
 class _JobSidecarState:
     """State owned by the background job sidecar process."""
 
@@ -131,6 +139,12 @@ class _JobSidecarState:
         self._mounts_key: bytes | None = None
         self._telemetry_handle: Any | None = None
         self._apply_id: str | None = None
+
+    def _ensure_apply_id(self, apply_id: str) -> None:
+        if self._apply_id is None:
+            self._apply_id = apply_id
+        elif self._apply_id != apply_id:
+            raise RuntimeError(f"job sidecar already owns apply id {self._apply_id}")
 
     def handle_mounts(self, request: MountsRequest) -> str:
         # The request carries declarative mount config. Compare that serialized
@@ -170,11 +184,9 @@ class _JobSidecarState:
     def handle_telemetry(self, request: TelemetryRequest) -> object:
         from monarch._src.job.telemetry_config import _TelemetryHandle
 
+        self._ensure_apply_id(request.apply_id)
         if self._telemetry_handle is None:
             self._telemetry_handle = _TelemetryHandle(request.apply_id)
-            self._apply_id = request.apply_id
-        elif self._apply_id != request.apply_id:
-            raise RuntimeError(f"job sidecar already owns apply id {self._apply_id}")
 
         return self._telemetry_handle.open_or_refresh(
             request.host_meshes,
@@ -182,12 +194,17 @@ class _JobSidecarState:
             spawn_worker_collectors=request.spawn_worker_collectors,
         )
 
+    def handle_admin_url(self, request: AdminUrlRequest) -> str:
+        self._ensure_apply_id(request.apply_id)
+        os.environ["MONARCH_ADMIN_URL"] = request.admin_url
+        return "ok"
+
     def shutdown(self) -> None:
         self.clear_mounts()
         if self._telemetry_handle is not None:
             self._telemetry_handle.shutdown()
             self._telemetry_handle = None
-            self._apply_id = None
+        self._apply_id = None
 
 
 def _dbg(msg: str) -> None:
@@ -246,6 +263,12 @@ def _run_job_sidecar(socket_path: str, runtime_transport: str | None = None) -> 
                     elif isinstance(msg, TelemetryRequest):
                         try:
                             response = state.handle_telemetry(msg)
+                        except Exception:
+                            # TODO: Centralize sidecar error.
+                            response = {"error": traceback.format_exc()}
+                    elif isinstance(msg, AdminUrlRequest):
+                        try:
+                            response = state.handle_admin_url(msg)
                         except Exception:
                             # TODO: Centralize sidecar error.
                             response = {"error": traceback.format_exc()}

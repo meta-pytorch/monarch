@@ -29,15 +29,16 @@ The parent talks to telemetry via two channels:
   framed Arrow IPC from producers, decoded by Rust socket ingest into the
   collector's scanner.
 
-Lifecycle: `Telemetry.ensure_open(apply_id, host_meshes, spawn_worker_collectors)`
-is called during `JobTrait._connect`. The first call (`host_meshes={}`) opens
-the job sidecar's telemetry handle and activates the client process's
-`UnixSocketSink` before raw host meshes are materialized, so host-mesh creation
-events are captured. Jobs call it again with materialised `host_meshes`; that
-second call creates telemetry host proc meshes for proc discovery. Remote jobs
-also activate one live `TelemetryActor` collector per host-local socket
-namespace and hand only those live worker refs to the client collector for
-query fan-out.
+Lifecycle: `Telemetry.ensure_open(...)` is called during `JobTrait._connect`.
+The first call (`host_meshes={}`) opens the job sidecar's telemetry handle and
+activates the client process's `UnixSocketSink` before raw host meshes are
+materialized, so host-mesh creation events are captured. Jobs call it again with
+materialised `host_meshes`; that second call creates telemetry host proc meshes
+for proc discovery. Remote jobs also activate one live `TelemetryActor`
+collector per host-local socket namespace and hand only those live worker refs
+to the client collector for query fan-out. Once mesh admin has spawned,
+`AdminComponent` calls `Telemetry.set_admin_url(...)`, which updates the sidecar
+process environment for dashboard requests such as pyspy dumps.
 """
 
 from __future__ import annotations
@@ -51,7 +52,11 @@ from typing import Any, Callable, cast, Mapping, TypedDict
 from monarch._rust_bindings.monarch_distributed_telemetry import (
     _set_unix_socket_sink_path,
 )
-from monarch._src.job.job_sidecar import create_job_sidecar, TelemetryRequest
+from monarch._src.job.job_sidecar import (
+    AdminUrlRequest,
+    create_job_sidecar,
+    TelemetryRequest,
+)
 from monarch._src.job.telemetry_actor import (
     telemetry_socket_dir,
     telemetry_socket_path,
@@ -153,9 +158,8 @@ class Telemetry:
 
     Uses `create_job_sidecar` so the job sidecar gets launched on first call
     and reused on subsequent calls (keyed on `apply_id`, not on config —
-    config edits do not restart the sidecar). `ensure_open` is the single
-    interaction point: it opens or refreshes the telemetry handle and forwards
-    the host meshes for worker fan-out.
+    config edits do not restart the sidecar). `ensure_open` opens or refreshes
+    the telemetry handle and forwards the host meshes for worker fan-out.
     """
 
     def __init__(self, config: TelemetryConfig) -> None:
@@ -200,6 +204,24 @@ class Telemetry:
         if isinstance(error, str):
             raise RuntimeError(error)
         return cast(_TelemetryResponse, response)
+
+    def set_admin_url(self, apply_id: str, admin_url: str) -> None:
+        """Set the mesh-admin URL in the job sidecar process."""
+        if not isinstance(apply_id, str):
+            raise RuntimeError("telemetry requires an active apply_id")
+
+        response = (
+            create_job_sidecar(apply_id)
+            .send(AdminUrlRequest(apply_id=apply_id, admin_url=admin_url))
+            .get()
+        )
+        if isinstance(response, dict):
+            error = response.get("error")
+            if isinstance(error, str):
+                raise RuntimeError(error)
+            raise RuntimeError(f"unexpected admin URL response: {response!r}")
+        if response != "ok":
+            raise RuntimeError(f"unexpected admin URL response: {response!r}")
 
 
 class _TelemetryHandle:
