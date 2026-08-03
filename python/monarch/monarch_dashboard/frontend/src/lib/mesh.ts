@@ -52,7 +52,7 @@ export function nodeMesh(
   label: string,
   meshName: string | null | undefined
 ): { key: string; label: string; kind: "host" | "proc" | "actor" } | null {
-  if (tier === "host" || tier === "host_unit") {
+  if (tier === "host") {
     const l = meshLabel(meshName);
     return l ? { key: `h:${l}`, label: l, kind: "host" } : null;
   }
@@ -60,7 +60,7 @@ export function nodeMesh(
     const l = meshLabel(meshName);
     return l ? { key: `a:${l}`, label: l, kind: "actor" } : null;
   }
-  if (tier === "proc" || tier === "proc_unit") {
+  if (tier === "proc") {
     const l = procMeshLabel(label);
     return l ? { key: `p:${l}`, label: l, kind: "proc" } : null;
   }

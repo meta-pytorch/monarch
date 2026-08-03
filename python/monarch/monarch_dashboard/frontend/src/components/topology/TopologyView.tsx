@@ -65,9 +65,7 @@ const FIT_OPTS = { padding: 0.34, maxZoom: 1.1, duration: 300 } as const;
 
 const TIER_LABEL: Partial<Record<DagTier, string>> = {
   host_mesh: "Host Mesh",
-  host_unit: "Host Unit",
   proc_mesh: "Proc Mesh",
-  proc_unit: "Proc Unit",
   actor_mesh: "Actor Mesh",
   actor: "Actor",
   host: "Host",

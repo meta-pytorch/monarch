@@ -121,14 +121,11 @@ export interface ErrorActor {
 /**
  * Node tiers. host / proc / actor come from the admin snapshot DAG;
  * host_mesh / proc_mesh / actor_mesh are synthetic nodes produced by the
- * mesh-view collapse (collapseToMeshes). host_unit / proc_unit are legacy
- * tiers from the removed telemetry-SQL fallback and are no longer emitted.
+ * mesh-view collapse (collapseToMeshes).
  */
 export type DagTier =
   | "host_mesh"
-  | "host_unit"
   | "proc_mesh"
-  | "proc_unit"
   | "actor_mesh"
   | "actor"
   | "host"

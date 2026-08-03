@@ -20,8 +20,6 @@ export const NODE_SIZE: Record<string, { w: number; h: number }> = {
   host_mesh: { w: 196, h: 58 },
   proc_mesh: { w: 196, h: 58 },
   actor_mesh: { w: 196, h: 58 },
-  host_unit: { w: 184, h: 72 },
-  proc_unit: { w: 184, h: 72 },
   actor: { w: 190, h: 72 },
   host: { w: 190, h: 72 },
   proc: { w: 184, h: 72 },

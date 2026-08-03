@@ -27,9 +27,7 @@ import {
 
 const TIER_LABEL: Record<string, string> = {
   host_mesh: "Host Mesh",
-  host_unit: "Host Unit",
   proc_mesh: "Proc Mesh",
-  proc_unit: "Proc Unit",
   actor_mesh: "Actor Mesh",
   actor: "Actor",
   host: "Host",
