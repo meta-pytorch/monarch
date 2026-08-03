@@ -380,7 +380,7 @@ fn account_cancel_enqueue(queue_depth: &AtomicU64, proc_stats: &ProcQueueStats, 
     );
 }
 
-use crate::monitor::EndpointAddr;
+use crate::monitor::EndpointId;
 use crate::ordering::DeliveryProgress;
 use crate::ordering::SEQ_INFO;
 use crate::ordering::SeqInfo;
@@ -529,7 +529,7 @@ pub enum StatusMessage {
         /// Optional sender session, destination, and reply port for delivery progress.
         delivery: Option<(
             Uuid,
-            EndpointAddr,
+            EndpointId,
             crate::OncePortRef<DeliveryProgressResponse>,
         )>,
     },
@@ -861,11 +861,8 @@ impl Proc {
         &self,
         actor_id: &ActorId,
         session_id: Uuid,
-        destination: &EndpointAddr,
+        destination: &EndpointId,
     ) -> DeliveryProgressResponse {
-        if destination.actor_addr().id() != actor_id {
-            return DeliveryProgressResponse::ActorGone;
-        }
         let Some(cell) = self
             .inner
             .instances
@@ -4607,12 +4604,12 @@ impl InstanceCell {
     /// Receiver-side delivery progress for a sender session and destination.
     pub fn delivery_progress_for_session(
         &self,
-        destination: &EndpointAddr,
+        destination: &EndpointId,
         session_id: Uuid,
     ) -> Option<DeliveryProgress> {
         let snapshot = match destination {
-            EndpointAddr::Handler(_) => self.inbound_ordering_snapshot(),
-            EndpointAddr::Port(port) => self.inner.mailbox.ordering_snapshot(port),
+            EndpointId::Handler => self.inbound_ordering_snapshot(),
+            EndpointId::Port(port) => self.inner.mailbox.ordering_snapshot(port),
         }?;
         snapshot.delivery_progress_for_session(session_id)
     }
@@ -8180,7 +8177,7 @@ mod tests {
                         reply: status_reply.bind(),
                         delivery: Some((
                             client.sequencer().session_id(),
-                            EndpointAddr::Handler(actor_id.clone()),
+                            EndpointId::Handler,
                             delivery_reply.bind(),
                         )),
                     },
