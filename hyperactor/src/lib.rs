@@ -188,7 +188,7 @@ pub use mailbox::PortReceiver;
 pub use mailbox::RemoteMessage;
 pub use monitor::ActorMonitor;
 pub use monitor::ActorSupervisor;
-pub use monitor::EndpointAddr;
+pub use monitor::EndpointId;
 pub use monitor::MonitorFailure;
 pub use monitor::MonitorStatus;
 pub use monitor::MonitorableEndpoint;

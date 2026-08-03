@@ -28,11 +28,12 @@ use crate::ActorHandle;
 use crate::ActorRef;
 use crate::Context;
 use crate::Endpoint;
+use crate::EndpointLocation;
 use crate::Handler;
 use crate::Instance;
 use crate::Message;
 use crate::OncePortRef;
-use crate::PortAddr;
+use crate::Port;
 use crate::PortRef;
 use crate::RemoteMessage;
 use crate::StatusMessage;
@@ -42,7 +43,6 @@ use crate::context;
 use crate::mailbox::MailboxError;
 use crate::mailbox::OncePortHandle;
 use crate::mailbox::PortHandle;
-use crate::mailbox::PortLocation;
 use crate::mailbox::PortReceiver;
 use crate::ordering::Sequencer;
 use crate::proc::DeliveryProgressResponse;
@@ -209,29 +209,30 @@ struct MonitorInner {
     cancelled: Arc<AtomicBool>,
 }
 
-/// Address monitored for liveness and delivery progress.
+/// Actor-local endpoint identifier used for delivery progress.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Named)]
-pub enum EndpointAddr {
+pub enum EndpointId {
     /// Monitor all handler ports owned by an actor.
-    Handler(ActorAddr),
-    /// Monitor one concrete destination port.
-    Port(PortAddr),
+    Handler,
+    /// Monitor one concrete port.
+    Port(Port),
 }
-wirevalue::register_type!(EndpointAddr);
+wirevalue::register_type!(EndpointId);
 
-impl EndpointAddr {
-    /// The actor whose liveness determines this endpoint's liveness.
-    pub fn actor_addr(&self) -> ActorAddr {
-        match self {
-            Self::Handler(actor) => actor.clone(),
-            Self::Port(port) => port.actor_addr(),
+impl EndpointId {
+    fn for_location(location: &EndpointLocation) -> Self {
+        match location {
+            EndpointLocation::Actor(_) | EndpointLocation::Local { .. } => Self::Handler,
+            EndpointLocation::Port(port) => Self::Port(port.port()),
         }
     }
 
-    fn largest_sent(&self, sequencer: &Sequencer) -> u64 {
+    fn largest_sent(&self, sequencer: &Sequencer, actor: &ActorAddr) -> u64 {
         match self {
-            Self::Handler(actor) => sequencer.last_sent_to_actor(actor),
-            Self::Port(port) => sequencer.last_sent(port).unwrap_or_default(),
+            Self::Handler => sequencer.last_sent_to_actor(actor),
+            Self::Port(port) => sequencer
+                .last_sent(&actor.port_addr(port.clone()))
+                .unwrap_or_default(),
         }
     }
 }
@@ -240,23 +241,18 @@ impl EndpointAddr {
 struct DeliveryMonitor {
     from: ActorAddr,
     sequencer: Sequencer,
-    destination: EndpointAddr,
+    endpoint: EndpointId,
     timeout: Duration,
     last_largest_dequeueable: u64,
     last_progress_at: Option<time::Instant>,
 }
 
 impl DeliveryMonitor {
-    fn new(
-        from: ActorAddr,
-        sequencer: Sequencer,
-        destination: EndpointAddr,
-        timeout: Duration,
-    ) -> Self {
+    fn new(from: ActorAddr, sequencer: Sequencer, endpoint: EndpointId, timeout: Duration) -> Self {
         Self {
             from,
             sequencer,
-            destination,
+            endpoint,
             timeout,
             last_largest_dequeueable: 0,
             last_progress_at: None,
@@ -271,22 +267,22 @@ pub trait MonitorableEndpoint {
     where
         C: context::Actor,
     {
-        let destination = self.monitored_addr();
-        let target = destination.actor_addr();
+        let location = self.monitored_location();
+        let target = location.actor_addr();
         ActorMonitor::spawn_with_delivery(
             cx,
             target,
             DeliveryMonitor::new(
                 context::Mailbox::mailbox(cx).actor_addr().clone(),
                 cx.instance().sequencer().clone(),
-                destination,
+                EndpointId::for_location(&location),
                 DEFAULT_DELIVERY_TIMEOUT,
             ),
         )
     }
 
-    /// The address monitored for liveness and delivery progress.
-    fn monitored_addr(&self) -> EndpointAddr;
+    /// The endpoint location monitored for liveness and delivery progress.
+    fn monitored_location(&self) -> EndpointLocation;
 }
 
 impl<T> MonitorableEndpoint for &T
@@ -300,8 +296,8 @@ where
         (*self).monitor(cx)
     }
 
-    fn monitored_addr(&self) -> EndpointAddr {
-        (*self).monitored_addr()
+    fn monitored_location(&self) -> EndpointLocation {
+        (*self).monitored_location()
     }
 }
 
@@ -309,8 +305,8 @@ impl<A> MonitorableEndpoint for ActorHandle<A>
 where
     A: Actor,
 {
-    fn monitored_addr(&self) -> EndpointAddr {
-        EndpointAddr::Handler(self.actor_addr().clone())
+    fn monitored_location(&self) -> EndpointLocation {
+        EndpointLocation::Actor(self.actor_addr().clone())
     }
 }
 
@@ -318,8 +314,8 @@ impl<A> MonitorableEndpoint for ActorRef<A>
 where
     A: Referable,
 {
-    fn monitored_addr(&self) -> EndpointAddr {
-        EndpointAddr::Handler(self.actor_addr().clone())
+    fn monitored_location(&self) -> EndpointLocation {
+        EndpointLocation::Actor(self.actor_addr().clone())
     }
 }
 
@@ -327,11 +323,8 @@ impl<M> MonitorableEndpoint for PortHandle<M>
 where
     M: Message,
 {
-    fn monitored_addr(&self) -> EndpointAddr {
-        match self.location() {
-            PortLocation::Bound(port_addr) => EndpointAddr::Port(port_addr),
-            PortLocation::Unbound(actor_addr, _) => EndpointAddr::Handler(actor_addr),
-        }
+    fn monitored_location(&self) -> EndpointLocation {
+        self.location().into()
     }
 }
 
@@ -339,8 +332,8 @@ impl<M> MonitorableEndpoint for OncePortHandle<M>
 where
     M: Message,
 {
-    fn monitored_addr(&self) -> EndpointAddr {
-        EndpointAddr::Port(self.port_addr().clone())
+    fn monitored_location(&self) -> EndpointLocation {
+        EndpointLocation::Port(self.port_addr().clone())
     }
 }
 
@@ -348,8 +341,8 @@ impl<M> MonitorableEndpoint for PortRef<M>
 where
     M: RemoteMessage,
 {
-    fn monitored_addr(&self) -> EndpointAddr {
-        EndpointAddr::Port(self.port_addr().clone())
+    fn monitored_location(&self) -> EndpointLocation {
+        EndpointLocation::Port(self.port_addr().clone())
     }
 }
 
@@ -357,8 +350,8 @@ impl<M> MonitorableEndpoint for OncePortRef<M>
 where
     M: RemoteMessage,
 {
-    fn monitored_addr(&self) -> EndpointAddr {
-        EndpointAddr::Port(self.port_addr().clone())
+    fn monitored_location(&self) -> EndpointLocation {
+        EndpointLocation::Port(self.port_addr().clone())
     }
 }
 
@@ -563,7 +556,7 @@ struct PendingDeliveryPoll {
 struct DeliveryPollRequest {
     from: ActorAddr,
     sequencer: Sequencer,
-    destination: EndpointAddr,
+    endpoint: EndpointId,
 }
 
 #[cfg(test)]
@@ -668,7 +661,9 @@ impl Handler<MonitorDeliveryReply> for MonitorPollActor {
             panic!("monitor poll actor received delivery progress while not waiting for it");
         };
         let delivery = DeliveryPollResult {
-            largest_sent: delivery.destination.largest_sent(&delivery.sequencer),
+            largest_sent: delivery
+                .endpoint
+                .largest_sent(&delivery.sequencer, &self.target),
             from: delivery.from,
             response,
         };
@@ -726,7 +721,7 @@ impl MonitorPollActor {
                 (
                     Some((
                         delivery.sequencer.session_id(),
-                        delivery.destination.clone(),
+                        delivery.endpoint.clone(),
                         delivery_reply_ref,
                     )),
                     Some(PendingDeliveryPoll {
@@ -888,7 +883,7 @@ impl MonitorActor {
                     delivery: self.delivery.as_ref().map(|delivery| DeliveryPollRequest {
                         from: delivery.from.clone(),
                         sequencer: delivery.sequencer.clone(),
-                        destination: delivery.destination.clone(),
+                        endpoint: delivery.endpoint.clone(),
                     }),
                 },
             },
@@ -1225,7 +1220,7 @@ mod tests {
             Some(DeliveryMonitor::new(
                 context::Mailbox::mailbox(client).actor_addr().clone(),
                 client.sequencer().clone(),
-                EndpointAddr::Handler(target),
+                EndpointId::Handler,
                 Duration::from_millis(50),
             )),
         )
@@ -1468,7 +1463,7 @@ mod tests {
         let delivery = DeliveryMonitor::new(
             from.clone(),
             Sequencer::new(uuid::Uuid::now_v7()),
-            EndpointAddr::Handler(target.clone()),
+            EndpointId::Handler,
             Duration::from_millis(50),
         );
         let mut monitor = monitor_actor_for_delivery(target, delivery);
@@ -1500,7 +1495,7 @@ mod tests {
         let delivery = DeliveryMonitor::new(
             from.clone(),
             Sequencer::new(uuid::Uuid::now_v7()),
-            EndpointAddr::Handler(target.clone()),
+            EndpointId::Handler,
             Duration::from_millis(50),
         );
         let mut monitor = monitor_actor_for_delivery(target.clone(), delivery);
@@ -1549,7 +1544,7 @@ mod tests {
             Some(DeliveryMonitor::new(
                 context::Mailbox::mailbox(&client).actor_addr().clone(),
                 client.sequencer().clone(),
-                EndpointAddr::Port(port_ref.port_addr().clone()),
+                EndpointId::Port(port_ref.port_addr().port()),
                 delivery_timeout,
             )),
         );

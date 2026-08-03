@@ -1823,13 +1823,10 @@ impl Mailbox {
             .insert(port.port(), Arc::new(move || snapshot.snapshot()));
     }
 
-    pub(crate) fn ordering_snapshot(&self, port: &PortAddr) -> Option<OrderingSnapshot> {
-        if port.actor_id() != self.inner.actor_id.id() {
-            return None;
-        }
+    pub(crate) fn ordering_snapshot(&self, port: &Port) -> Option<OrderingSnapshot> {
         self.inner
             .ordering_snapshots
-            .get(&port.port())
+            .get(port)
             .map(|snapshot| snapshot.value()())
     }
 
