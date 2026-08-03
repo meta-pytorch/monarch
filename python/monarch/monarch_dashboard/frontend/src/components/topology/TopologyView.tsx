@@ -183,11 +183,18 @@ function Flow() {
     );
   }, [msgStats]);
 
+  // Open the whole hierarchy on first load, so actors (or actor meshes in mesh
+  // view) are visible without a click. Collapsing afterwards is up to the user;
+  // Expand All re-opens whatever they closed. Skipped until the DAG actually has
+  // nodes — the snapshot is empty for the first interval after startup, and
+  // initializing off that empty tree would consume this one-shot and leave
+  // everything collapsed once the real topology arrived.
   useEffect(() => {
-    if (tree && !initExpanded.current) {
-      initExpanded.current = true;
-      setExpanded(new Set(tree.roots));
-    }
+    if (!tree || tree.roots.length === 0 || initExpanded.current) return;
+    initExpanded.current = true;
+    setExpanded(
+      new Set(Object.keys(tree.children).filter((id) => tree.children[id].length > 0))
+    );
   }, [tree]);
 
   useEffect(() => {
