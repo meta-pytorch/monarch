@@ -2,9 +2,10 @@
 
 The **Monarch Dashboard** is a web-based GUI for monitoring Monarch actor systems
 in real time. It connects to the distributed telemetry system and renders the
-full mesh topology — hosts, processes, actor meshes, and individual actors — as
-interactive views with live-updating metrics, message traffic analysis, and a
-full DAG visualization.
+full mesh topology — hosts, processes, actor meshes, and individual actors —
+across three tabs: **Overview** for live metrics and message traffic,
+**Topology** for an interactive job graph, and **Explorer** for drilling into a
+single entity.
 
 See the [observability overview](observability) for how the dashboard uses
 [distributed telemetry](distributed-telemetry) and complements the
@@ -20,9 +21,14 @@ its URL.
 
 ## Quick Start
 
-Start any Monarch application that enables telemetry. The **Dining Philosophers**
+Start any Monarch application that enables telemetry. The
+[**Dining Philosophers**](https://github.com/meta-pytorch/monarch/blob/main/python/examples/dining_philosophers.py)
 example is the easiest way to try it — five philosopher actors share chopsticks
-around a table, mediated by a waiter actor that prevents deadlock.
+around a table, mediated by a waiter actor that prevents deadlock. The
+[**Airport Turnaround**](https://github.com/meta-pytorch/monarch/blob/main/python/examples/airport_turnaround_demo.py)
+example is a busier alternative — a fleet of flights cycles through turnaround
+phases while contending for a small pool of gates, runways, fuel trucks, and
+baggage crews. Both accept `--dashboard`.
 
 **Terminal 1** — start the example with the dashboard enabled:
 
@@ -38,87 +44,131 @@ Monarch Dashboard: http://localhost:8265
 
 Open [http://localhost:8265](http://localhost:8265) in your browser.
 
-## Summary View
+## Overview
 
-The default view provides at-a-glance metrics for the entire mesh.
+The default tab summarizes the whole job. The header persists across tabs,
+carrying the tab switcher, a freshness indicator for the live poll, and an
+overall health chip.
 
 ```{image} _static/dashboard-summary.png
-:alt: Dashboard summary view showing overview cards, session timeline, status breakdown, error panel, and message traffic
+:alt: Overview tab showing metric cards, a health gauge, message activity, actor status, message traffic by endpoint, the actor fleet, and a topology breakdown
 :width: 100%
 ```
 
-The summary is organized into sections:
+The tab is organized into panels:
 
-- **Overview cards** — host mesh count, proc mesh count, total actors (with
-  status count), and total messages (with delivery rate percentage).
-- **Session timeline** — a horizontal bar spanning the session lifetime with
-  error notches marking when actors failed or stopped.
-- **Actor status breakdown** — a segmented bar and legend showing how many
-  actors are in each state (Running, Idle, Failed, Stopped, etc.).
-- **Errors & failures** — failed actors, stopped actors, and undelivered
-  messages, each with the actor name, failure reason, and timestamp.
-- **Message traffic** — delivery rate bar segmented by message status, plus
-  a ranked bar chart of messages by endpoint name.
-- **Hierarchy breakdown** — chip counts of host meshes, proc meshes, and
-  actor meshes.
+- **Metric cards** — host meshes, proc meshes, actors (split into workload and
+  system), messages over the retention window, handler success rate, and the
+  health score.
+- **System Health** — a gauge scoring the workload actors. System actors are
+  excluded, and the caption reports how many.
+- **Message Activity** — throughput across the retention window, annotated with
+  the sampled time range. Viewing the dashboard itself adds a little `scan`
+  traffic, which the panel notes.
+- **Actor Status** — a donut of the current state of every actor, with a legend
+  per status.
+- **Errors & Failures** — failed and stopped actors with their reasons, or a
+  clean bill of health.
+- **Message Traffic** — the handler lifecycle (queued → active →
+  completed / failed) and a ranked list of message volume by endpoint. These
+  are handler states, not delivery kinds.
+- **Actor Fleet** — one chip per workload actor showing its role, proc, and
+  live status; click a chip to inspect it. Toggle **Show System** to include
+  system actors.
+- **Topology Breakdown** — counts and proportions of host, proc, and actor
+  meshes.
 
-## Hierarchy View
+## Topology
 
-The hierarchy view lets you drill down through the full Monarch mesh tree one
-level at a time. Click any row to navigate deeper; use the breadcrumb bar at
-the top to jump back to a parent level.
+The Topology tab renders the job as an interactive directed graph. Solid edges
+are the mesh hierarchy; dashed edges are message flow between actors, rolled up
+to whichever nodes are currently visible.
 
-```{image} _static/dashboard-hierarchy.png
-:alt: Dashboard hierarchy view showing a breadcrumb bar and a table of actors with name, rank, and status columns
-:width: 100%
-```
+Two view modes trade detail against legibility. Switch between them with the
+leftmost toolbar button.
 
-The navigation levels are:
+### Actors view
 
-```text
-Host Meshes
-  └─ Host Units (individual hosts)
-       └─ Proc Meshes
-            └─ Proc Units (individual processes)
-                 └─ Actor Meshes
-                      └─ Actors
-                           └─ Actor Detail
-```
-
-### Actor Detail
-
-Selecting an individual actor opens its detail page with three sections:
-
-- **Actor info** — full name, ID, rank, mesh ID, current status, and
-  creation timestamp.
-- **Status timeline** — chronological list of every status transition with
-  timestamp and reason.
-- **Messages** — incoming and outgoing message tables showing sender/receiver,
-  endpoint name, delivery status, and timestamp. Click any message to expand
-  its full status event history (e.g. Sent → Delivered).
-
-
-## DAG View
-
-The DAG view renders the entire job as an interactive directed graph, helping you to understand your job better.  It also shows message flows between your user actors.
+One node per entity — host, proc, and actor — each tagged with its mesh. Use
+this to follow individual actors and see which of them talk to each other.
 
 ```text
 Host → Proc → Actor
 ```
 
 ```{image} _static/dashboard-dag.png
-:alt: DAG view showing the full mesh topology as an interactive directed graph with color-coded nodes
+:alt: Topology tab in Actors view, fully expanded, showing a host and a controller above six procs and their philosopher and waiter actors, with dashed message edges
 :width: 100%
 ```
 
-- **Nodes** are color-coded by status (green = healthy, red = failed,
-  gray = stopped).
-- **Edges** show parent-child relationships in the mesh hierarchy.
-- **Pan** by dragging the canvas; **zoom** with the scroll wheel.
-- **Hover** any node for a tooltip with its name, type, and status, and mesh.
-- **Click** a node to open its detail panel on the right.
+### Meshes view
 
-### Programmatic Usage
+Each host, proc, and actor mesh collapses to a single node carrying its member
+count. This keeps larger and more complex jobs clear: rather than hundreds of
+individual actors, the graph shows only the meshes and the relationships
+between them.
+
+```{image} _static/dashboard-dag-meshes.png
+:alt: Topology tab in Meshes view, fully expanded, showing two host meshes above two proc meshes and two actor meshes, each labeled with its member count
+:width: 100%
+```
+
+Both modes share the same controls:
+
+- **Expand All** and **Collapse** open or close every level. A collapsed node
+  reports how many descendants it hides.
+- **Show System** brings in the system actors, which are hidden by default.
+- **Top-Down** and **Left-Right** flip the layout direction; **Fit** frames the
+  graph. **Auto-fit** re-frames on a structural change but never on a live
+  refresh, so it leaves a manual zoom alone.
+- **Pan** by dragging the canvas, and **zoom** with the scroll wheel, the zoom
+  buttons, or the minimap.
+- **Hover** a node for its name, type, status, mesh, and reference. **Click** an
+  actor to open its detail drawer; clicking a node that has children expands or
+  collapses it instead.
+- Nodes are colored by status. The legend keys those colors, the mesh colors,
+  and the two kinds of edge.
+
+## Explorer
+
+The Explorer pairs a hierarchy tree with a detail pane. Filter the tree by
+name, expand or collapse every level, and toggle **Show System** to include
+system actors.
+
+```{image} _static/dashboard-hierarchy.png
+:alt: Explorer tab showing the hierarchy tree on the left and an actor detail pane on the right with a breadcrumb, actor info, and a status timeline
+:width: 100%
+```
+
+```text
+Controller (the client host)
+Host
+  └─ Proc
+       └─ Actor
+```
+
+Every row is tagged with its mesh and carries a status dot. Hosts and procs
+also report how many actors sit below them.
+
+### Entity detail
+
+Selecting a host or proc reports its name, mesh, status, direct child count,
+the number of actors below it, and its reference, followed by a rollup of the
+statuses below it and a list of its children.
+
+### Actor detail
+
+Selecting an actor shows a breadcrumb of its ancestors and four sections:
+
+- **Py-spy** — capture a live stack trace. Sampling is proc-level, so a dump
+  covers every actor sharing that Python process.
+- **Actor info** — full name, ID, rank, mesh, current status, and creation
+  timestamp.
+- **Status timeline** — the most recent status transitions, with timestamps.
+- **Messages** — incoming and outgoing messages with peer, endpoint, and
+  status. Click a row to expand its status event history.
+
+## Programmatic Usage
 
 Here is an example of how to enable the dashboard on your job via the [Jobs API](api/monarch.job).
 
