@@ -116,10 +116,12 @@ class _FakeTelemetryHandle:
 
 
 @pytest.mark.timeout(30)
-def test_run_job_sidecar_survives_broken_connection(tmp_path) -> None:
+def test_run_job_sidecar_survives_broken_connection() -> None:
     """A connection that sends garbage (or breaks mid-request) must drop only
     that connection, not tear down the job sidecar."""
-    socket_path = str(tmp_path / "cmd.sock")
+    # Darwin limits AF_UNIX paths to 104 bytes. pytest's per-test temporary
+    # directory exceeds that on GitHub's macOS runners, so use a short path.
+    socket_path = f"/tmp/monarch_{uuid.uuid4().hex[:8]}.sock"
     fake = _FakeTelemetryHandle()
 
     with patch.object(tc, "_TelemetryHandle", return_value=fake):
