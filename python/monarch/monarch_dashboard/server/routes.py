@@ -22,7 +22,6 @@ from . import db
 from .admin_dag import build_admin_dag
 from .cache import cached
 from .pyspy_client import capture_pyspy_dump, mesh_admin_base_url
-from .system_actors import get_system_actor_names
 
 api = Blueprint("api", __name__, url_prefix="/api")
 
@@ -139,13 +138,6 @@ def dag():
         return jsonify(cached(cache_key, _compute_dag))
     except Exception as exc:
         return jsonify({"error": str(exc), "nodes": [], "edges": []}), 500
-
-
-@api.route("/system-actors")
-def list_system_actors():
-    """Return the set of system actor names from the Mesh Admin API."""
-    names = get_system_actor_names()
-    return jsonify({"system_actors": sorted(names), "count": len(names)})
 
 
 # ---------------------------------------------------------------------------
