@@ -97,10 +97,13 @@ impl From<std::ops::Range<u16>> for PyPortRange {
     }
 }
 
-impl<'py> FromPyObject<'py> for PyPortRange {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl FromPyObject<'_, '_> for PyPortRange {
+    type Error = PyErr;
+
+    fn extract(obj: pyo3::Borrowed<'_, '_, PyAny>) -> PyResult<Self> {
+        let obj = &*obj;
         // Extract slice(start, stop, step)
-        let slice = ob.downcast::<pyo3::types::PySlice>().map_err(|_| {
+        let slice = obj.cast::<pyo3::types::PySlice>().map_err(|_| {
             PyTypeError::new_err("Port range must be a slice object: slice(start, stop)")
         })?;
 
@@ -182,9 +185,12 @@ impl From<Duration> for PyDuration {
     }
 }
 
-impl<'py> FromPyObject<'py> for PyDuration {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
-        let s: String = ob.extract()?;
+impl FromPyObject<'_, '_> for PyDuration {
+    type Error = PyErr;
+
+    fn extract(obj: pyo3::Borrowed<'_, '_, PyAny>) -> PyResult<Self> {
+        let obj = &*obj;
+        let s: String = obj.extract()?;
         let duration = humantime::parse_duration(&s).map_err(|e| {
             PyValueError::new_err(format!("Invalid duration format '{}': {}", s, e))
         })?;
@@ -834,7 +840,7 @@ mod tests {
         monarch_with_gil_blocking(GilSite::Test, |_py| {
             // Strings ought not to work
             let s = PyString::new(_py, "bincode");
-            let result: PyResult<PyEncoding> = s.extract();
+            let result = s.extract::<PyEncoding>();
             assert!(result.is_err());
         });
     }
@@ -1010,7 +1016,7 @@ mod tests {
             let py_obj = py_range.into_pyobject(py).unwrap();
 
             // Should be a slice object
-            assert!(py_obj.downcast::<pyo3::types::PySlice>().is_ok());
+            assert!(py_obj.cast::<pyo3::types::PySlice>().is_ok());
 
             // Parse back
             let back: PyPortRange = py_obj.extract().unwrap();

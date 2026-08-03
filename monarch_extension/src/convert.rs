@@ -131,8 +131,8 @@ impl<'a> MessageParser<'a> {
         }
     }
 
-    fn parse<T: pyo3::conversion::FromPyObject<'a>>(&self, name: &str) -> PyResult<T> {
-        self.attr(name)?.extract()
+    fn parse<T: for<'b> pyo3::conversion::FromPyObject<'b, 'a>>(&self, name: &str) -> PyResult<T> {
+        self.attr(name)?.extract().map_err(Into::into)
     }
 
     #[allow(non_snake_case)]

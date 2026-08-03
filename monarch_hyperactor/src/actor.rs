@@ -320,15 +320,15 @@ impl<'py> IntoPyObject<'py> for MeshRef {
 /// Extract the serializable [`MeshRef`] from a resolved mesh wrapper (the
 /// inverse of [`MeshRef::reconstruct`]), for the sender-side pending fill.
 pub(crate) fn mesh_ref_from_pyobject(value: &Bound<'_, PyAny>) -> PyResult<MeshRef> {
-    if let Ok(m) = value.downcast::<crate::proc_mesh::PyProcMesh>() {
+    if let Ok(m) = value.cast::<crate::proc_mesh::PyProcMesh>() {
         return Ok(MeshRef::Proc(Box::new(m.borrow().mesh_ref()?)));
     }
-    if let Ok(m) = value.downcast::<crate::host_mesh::PyHostMesh>() {
+    if let Ok(m) = value.cast::<crate::host_mesh::PyHostMesh>() {
         return Ok(MeshRef::Host(Box::new(m.borrow().mesh_ref().map_err(
             |e| pyo3::exceptions::PyValueError::new_err(e.to_string()),
         )?)));
     }
-    if let Ok(m) = value.downcast::<crate::actor_mesh::PythonActorMesh>() {
+    if let Ok(m) = value.cast::<crate::actor_mesh::PythonActorMesh>() {
         return Ok(MeshRef::Actor(Box::new(m.borrow().get_inner().mesh_ref()?)));
     }
     Err(pyo3::exceptions::PyRuntimeError::new_err(
@@ -649,7 +649,7 @@ impl PythonMessage {
     ) -> PyResult<Self> {
         let mesh_refs: Vec<MeshRef> = refs
             .iter()
-            .map(|item| Ok(item.downcast::<PyMeshRef>()?.borrow().inner.clone()))
+            .map(|item| Ok(item.cast::<PyMeshRef>()?.borrow().inner.clone()))
             .collect::<PyResult<_>>()?;
         Ok(PythonMessage::new_from_buf_with_refs(
             kind,
@@ -1056,7 +1056,7 @@ impl PythonActor {
             GilSite::ActorConstruct,
             |py| -> Result<Self, SerializablePyErr> {
                 let unpickled = actor_type.unpickle(py)?;
-                let class_type: &Bound<'_, PyType> = unpickled.downcast()?;
+                let class_type: &Bound<'_, PyType> = unpickled.cast()?;
                 let actor: Py<PyAny> = class_type.call0()?.into_py_any(py)?;
 
                 let task_locals = Python::detach(py, create_task_locals);
@@ -1490,7 +1490,7 @@ impl Actor for PythonActor {
                         &cx,
                         py_instance
                             .into_py_any(py)?
-                            .downcast_bound(py)
+                            .cast_bound(py)
                             .map_err(PyErr::from)?
                             .clone()
                             .unbind(),
@@ -1581,7 +1581,7 @@ impl Actor for PythonActor {
                         &cx,
                         py_instance
                             .into_py_any(py)?
-                            .downcast_bound(py)
+                            .cast_bound(py)
                             .map_err(PyErr::from)?
                             .clone()
                             .unbind(),
@@ -1605,7 +1605,7 @@ impl Actor for PythonActor {
                 .extract::<bool>(py)?;
             Ok::<_, anyhow::Error>((
                 py_envelope
-                    .downcast::<PythonUndeliverableMessageEnvelope>()
+                    .cast::<PythonUndeliverableMessageEnvelope>()
                     .map_err(PyErr::from)?
                     .try_borrow_mut()
                     .map_err(PyErr::from)?
@@ -2076,7 +2076,7 @@ async fn handle_async_endpoint_panic(
             Ok(value) => {
                 monarch_with_gil(GilSite::AwaitDrive, |py| -> Option<SerializablePyErr> {
                     let err: PyErr = value
-                        .downcast_bound::<PyBaseException>(py)
+                        .cast_bound::<PyBaseException>(py)
                         .unwrap()
                         .clone()
                         .into();

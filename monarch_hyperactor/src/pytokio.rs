@@ -606,6 +606,7 @@ impl PyPythonTask {
                     match result {
                         Ok(task) => Ok(Action::Wait(
                             task.extract::<Py<PyPythonTask>>()
+                                .map_err(Into::<PyErr>::into)
                                 .and_then(|t| t.borrow_mut(py).take_task())
                                 .unwrap_or_else(|pyerr| Box::pin(async move { Err(pyerr) })),
                         )),

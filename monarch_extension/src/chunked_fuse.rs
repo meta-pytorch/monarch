@@ -284,13 +284,14 @@ fn f64_to_system_time(ts: f64) -> SystemTime {
     }
 }
 
-fn required_key<'py, T: pyo3::FromPyObject<'py>>(
+fn required_key<'py, T: for<'a> pyo3::FromPyObject<'a, 'py>>(
     dict: &Bound<'py, PyDict>,
     key: &str,
 ) -> PyResult<T> {
     dict.get_item(key)?
         .ok_or_else(|| PyRuntimeError::new_err(format!("missing required attr key: {key}")))?
         .extract()
+        .map_err(Into::into)
 }
 
 fn extract_attr(dict: &Bound<'_, PyDict>, kind: FileType) -> PyResult<FileAttr> {
@@ -319,11 +320,11 @@ fn extract_metadata(dict: &Bound<'_, PyDict>) -> PyResult<HashMap<OsString, FsEn
     let mut entries = HashMap::with_capacity(dict.len());
     for (key, value) in dict.iter() {
         let path: String = key.extract()?;
-        let entry_dict: &Bound<'_, PyDict> = value.downcast()?;
+        let entry_dict: &Bound<'_, PyDict> = value.cast()?;
         let attr_obj = entry_dict.get_item("attr")?.ok_or_else(|| {
             PyRuntimeError::new_err(format!("missing 'attr' key for path: {path}"))
         })?;
-        let attr_dict: &Bound<'_, PyDict> = attr_obj.downcast()?;
+        let attr_dict: &Bound<'_, PyDict> = attr_obj.cast()?;
 
         let fs_entry = if let Some(link_target) = entry_dict.get_item("link_target")? {
             let target: String = link_target.extract()?;

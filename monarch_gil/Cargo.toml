@@ -9,7 +9,7 @@ license = "BSD-3-Clause"
 
 [dependencies]
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
-pyo3 = { version = "0.26", features = ["anyhow", "multiple-pymethods", "py-clone"] }
+pyo3 = { version = "0.27", features = ["anyhow", "multiple-pymethods", "py-clone"] }
 tokio = { version = "1.52.4", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 

@@ -301,6 +301,13 @@ impl pyo3_async_runtimes::generic::Runtime for SimpleRuntime {
             fut.await;
         })
     }
+
+    fn spawn_blocking<F>(f: F) -> Self::JoinHandle
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        get_tokio_runtime().spawn_blocking(f)
+    }
 }
 
 tokio::task_local! {
@@ -320,11 +327,7 @@ impl pyo3_async_runtimes::generic::ContextExt for SimpleRuntime {
 
     fn get_task_locals() -> Option<TaskLocals> {
         TASK_LOCALS
-            .try_with(|c| {
-                c.get().map(|locals| {
-                    monarch_with_gil_blocking(GilSite::TaskLocals, |py| locals.clone_ref(py))
-                })
-            })
+            .try_with(|c| c.get().cloned())
             .unwrap_or_default()
     }
 }
@@ -332,7 +335,7 @@ impl pyo3_async_runtimes::generic::ContextExt for SimpleRuntime {
 pub fn future_into_py<F, T>(py: Python, fut: F) -> PyResult<Bound<PyAny>>
 where
     F: Future<Output = PyResult<T>> + Send + 'static,
-    T: for<'py> IntoPyObject<'py>,
+    T: for<'py> IntoPyObject<'py> + Send + 'static,
 {
     pyo3_async_runtimes::generic::future_into_py::<SimpleRuntime, F, T>(py, fut)
 }

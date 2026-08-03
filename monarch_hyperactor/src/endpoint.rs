@@ -1072,6 +1072,7 @@ impl ActorEndpoint {
         do_propagate
             .call1((&propagator, args, kwargs, fake_args, fake_kwargs, cache))?
             .extract()
+            .map_err(Into::into)
     }
 
     /// Propagation for fetch operations.

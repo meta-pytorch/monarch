@@ -658,7 +658,7 @@ impl CommReducer for PythonReducer {
             GilSite::Reducer,
             |py: Python<'_>| -> PyResult<PythonMessage> {
                 let result = self.0.call(py, (left, right), None)?;
-                result.extract::<PythonMessage>(py)
+                result.extract::<PythonMessage>(py).map_err(Into::into)
             },
         )
         .map_err(Into::into)

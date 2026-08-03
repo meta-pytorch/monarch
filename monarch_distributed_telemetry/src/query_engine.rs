@@ -369,7 +369,8 @@ impl ExecutionPlan for DistributedExec {
                 // Surrender the underlying PythonTask via Future._take_inner(),
                 // then consume it to get the raw completion future.
                 let python_task_obj = future_obj.call_method0(py, "_take_inner")?;
-                let mut python_task: PyRefMut<'_, PyPythonTask> = python_task_obj.extract(py)?;
+                let mut python_task: PyRefMut<'_, PyPythonTask> =
+                    python_task_obj.extract(py).map_err(Into::<PyErr>::into)?;
                 let completion_future = python_task.take_task()?;
 
                 Ok(completion_future)

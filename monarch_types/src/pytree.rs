@@ -6,6 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use pyo3::Borrowed;
 use pyo3::Bound;
 use pyo3::FromPyObject;
 use pyo3::IntoPyObject;
@@ -215,8 +216,8 @@ where
     }
 }
 
-impl<'a, T: FromPyObject<'a>> PyTree<T> {
-    pub fn flatten(tree: &Bound<'a, PyAny>) -> PyResult<Self> {
+impl<'py, T: for<'a> FromPyObject<'a, 'py>> PyTree<T> {
+    pub fn flatten(tree: &Bound<'py, PyAny>) -> PyResult<Self> {
         let py = tree.py();
 
         // Call into pytorch's flatten.
@@ -225,11 +226,11 @@ impl<'a, T: FromPyObject<'a>> PyTree<T> {
         let res = tree_flatten.call1((tree,))?;
 
         // Convert leaves to Rust objects.
-        let (leaves, treespec) = match res.downcast::<PyTuple>()?.as_slice() {
+        let (leaves, treespec) = match res.cast::<PyTuple>()?.as_slice() {
             [leaves, treespec] => {
                 let mut out = vec![];
                 for leaf in leaves.try_iter()? {
-                    out.push(T::extract_bound(&leaf?)?);
+                    out.push(leaf?.extract::<T>().map_err(Into::into)?);
                 }
                 (out, treespec)
             }
@@ -238,7 +239,7 @@ impl<'a, T: FromPyObject<'a>> PyTree<T> {
 
         if treespec
             .call_method0("is_leaf")?
-            .downcast::<PyBool>()?
+            .cast::<PyBool>()?
             .is_true()
         {
             Ok(Self {
@@ -255,9 +256,11 @@ impl<'a, T: FromPyObject<'a>> PyTree<T> {
 }
 
 /// Deserialize from a `PyObject`.
-impl<'a, T: FromPyObject<'a>> FromPyObject<'a> for PyTree<T> {
-    fn extract_bound(ob: &Bound<'a, PyAny>) -> PyResult<Self> {
-        Self::flatten(ob)
+impl<'a, 'py, T: for<'b> FromPyObject<'b, 'py>> FromPyObject<'a, 'py> for PyTree<T> {
+    type Error = PyErr;
+
+    fn extract(obj: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
+        Self::flatten(&obj)
     }
 }
 

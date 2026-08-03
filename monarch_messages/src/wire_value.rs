@@ -51,9 +51,11 @@ pub enum WireValue {
 }
 wirevalue::register_type!(WireValue);
 
-impl FromPyObject<'_> for WireValue {
-    fn extract_bound(obj: &Bound<'_, PyAny>) -> PyResult<Self> {
-        Ok(WireValue::PyObject(PickledPyObject::pickle(obj)?))
+impl FromPyObject<'_, '_> for WireValue {
+    type Error = PyErr;
+
+    fn extract(obj: pyo3::Borrowed<'_, '_, PyAny>) -> PyResult<Self> {
+        Ok(WireValue::PyObject(PickledPyObject::pickle(&obj)?))
     }
 }
 
