@@ -135,9 +135,9 @@ fn shutdown_ack_timeout() -> Duration {
 /// very many connections all mid-large-transfer — so it is env-tunable
 /// (`MM_QUIC_STREAM_RECV_WINDOW_BYTES`). Only the data stream ever fills it; the
 /// companion heartbeat stream carries tiny frames. The connection-level
-/// `receive_window` is left at quinn's default (`VarInt::MAX`); with just two
-/// streams per connection the per-stream window already bounds what one connection
-/// can buffer.
+/// `receive_window` is raised in lockstep (to `window * 8`, matching the send
+/// window) in [`load_tls`] so the connection does not re-throttle its streams below
+/// this per-stream window.
 const DEFAULT_STREAM_RECV_WINDOW_BYTES: u64 = 16 * 1024 * 1024;
 
 fn stream_recv_window_bytes() -> u64 {
@@ -219,6 +219,19 @@ fn load_tls() -> anyhow::Result<TlsConfig> {
     let window = stream_recv_window_bytes();
     transport.stream_receive_window(VarInt::from_u64(window).unwrap_or(VarInt::MAX));
     transport.send_window(window.saturating_mul(8));
+    // Raise the connection-level receive window in lockstep with the send window so
+    // the aggregate of a connection's streams can fill the bandwidth-delay product
+    // on a high-RTT cross-region path, rather than being re-throttled below the
+    // per-stream window. Sized to match `send_window` (window * 8).
+    let conn_window = window.saturating_mul(8);
+    transport.receive_window(VarInt::from_u64(conn_window).unwrap_or(VarInt::MAX));
+    // Congestion control: quinn defaults to CUBIC, which on a high-RTT cross-region
+    // path with sporadic loss ramps slowly and backs off hard (quinn#2262: CUBIC
+    // stalls at ~1 MiB cwnd where iperf/BBR reach the BDP). Pin BBR unconditionally
+    // — it is delay-model-based and holds a higher steady rate across light loss,
+    // and on loopback / the lossless intra-cluster fabric it is ~neutral. quinn
+    // re-exports BbrConfig at quinn::congestion.
+    transport.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
     let transport = Arc::new(transport);
 
     let mut server = ServerConfig::with_single_cert(load_certs(&cert_path)?, load_key(&key_path)?)?;
