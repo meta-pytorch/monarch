@@ -6,10 +6,12 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::marker::PhantomData;
 use std::os::fd::OwnedFd;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
@@ -53,6 +55,56 @@ use crate::shm::ShmMapper;
 use crate::shm::ShmServer;
 use crate::transport::Transport;
 use crate::unix_transport::UnixTransport;
+
+/// Whether verbose per-connection debug logging is enabled (`MM_QUIC_DEBUG` set).
+/// Gates the command-loop `MM_CTX`/`MM_UDP` lines and scheduler-lag probe here, and
+/// the per-connection reader diagnostics and heartbeat-send (`MM_HB`) logging in the
+/// quic transport — all off by default so they cost nothing in normal operation.
+pub(crate) fn connection_debug() -> bool {
+    std::env::var_os("MM_QUIC_DEBUG").is_some_and(|v| !v.is_empty())
+}
+
+/// Cumulative UDP-over-IPv6 datagram counters from `/proc/net/snmp6`, as
+/// `(InDatagrams, InErrors, RcvbufErrors)`. `RcvbufErrors` counts datagrams the
+/// kernel dropped because a receiving socket's buffer was full — the direct signal
+/// for root-side ingress overflow (packets arriving faster than the single-threaded
+/// driver can drain them). System-wide, but on the root host our traffic dominates.
+/// Reading this proc pseudo-file is an instant, non-blocking memory read, so
+/// `std::fs` is fine here (debug instrumentation on the once-per-second log path).
+fn read_udp6_stats() -> Option<(u64, u64, u64)> {
+    let text = std::fs::read_to_string("/proc/net/snmp6").ok()?;
+    let (mut indg, mut inerr, mut rcv) = (None, None, None);
+    for line in text.lines() {
+        let mut it = line.split_whitespace();
+        let (Some(name), Some(val)) = (it.next(), it.next()) else {
+            continue;
+        };
+        match name {
+            "Udp6InDatagrams" => indg = val.parse().ok(),
+            "Udp6InErrors" => inerr = val.parse().ok(),
+            "Udp6RcvbufErrors" => rcv = val.parse().ok(),
+            _ => {}
+        }
+    }
+    Some((indg?, inerr?, rcv?))
+}
+
+/// Current wall-clock time as `HH:MM:SS.mmm` (UTC), for debug log lines. Kept
+/// dependency-free (no chrono): derived straight from the UNIX epoch, so it lines
+/// up with the smoke test's Python `log()` timestamps when hosts run in UTC.
+pub(crate) fn wall_clock_hms() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = now.as_secs();
+    format!(
+        "{:02}:{:02}:{:02}.{:03}",
+        (secs / 3600) % 24,
+        (secs / 60) % 60,
+        secs % 60,
+        now.subsec_millis(),
+    )
+}
 
 /// Whether `url`'s scheme is one we have a transport for. Kept separate from
 /// [`Ctx::transport_for`] so the scheme can be validated — before the connection
@@ -2029,6 +2081,32 @@ impl CtxHandle {
                     let mut handled_at_last_log: u64 = 0;
                     let mut last_log = std::time::Instant::now();
                     let log_every = std::time::Duration::from_secs(1);
+                    // Verbose loop instrumentation is opt-in (MM_QUIC_DEBUG): when off
+                    // we skip the counters, the UDP-stat reads, and the scheduler-lag
+                    // probe entirely so normal runs pay nothing.
+                    let debug = connection_debug();
+                    let mut prev_udp = if debug { read_udp6_stats() } else { None };
+                    // Scheduler-lag probe: sleep a fixed interval and record how much
+                    // *longer* than that it took to be polled again — "how late an
+                    // arbitrary future gets polled", the same starvation a reader's
+                    // heartbeat timeout races against. Reported as the max per window.
+                    let sched_lag_us: Option<Rc<Cell<u64>>> = debug.then(|| {
+                        let cell = Rc::new(Cell::new(0u64));
+                        let probe = Rc::clone(&cell);
+                        tokio::task::spawn_local(async move {
+                            let interval = std::time::Duration::from_millis(100);
+                            loop {
+                                let before = std::time::Instant::now();
+                                tokio::time::sleep(interval).await;
+                                let overrun = before.elapsed().saturating_sub(interval);
+                                let us = overrun.as_micros() as u64;
+                                if us > probe.get() {
+                                    probe.set(us);
+                                }
+                            }
+                        });
+                        cell
+                    });
                     while let Some(command) = rx.recv().await {
                         if let Command::Shutdown { done } = command {
                             // Wait for the socket transports to flush every pending
@@ -2046,18 +2124,46 @@ impl CtxHandle {
                         ctx.run_command(command);
                         handled_total += 1;
 
-                        let elapsed = last_log.elapsed();
-                        if elapsed >= log_every {
-                            let handled = handled_total - handled_at_last_log;
-                            let backlog = rx.len();
-                            eprintln!(
-                                "MM_CTX loop: {:.0} cmds/s, backlog {}, total {}",
-                                handled as f64 / elapsed.as_secs_f64(),
-                                backlog,
-                                handled_total
-                            );
-                            handled_at_last_log = handled_total;
-                            last_log = std::time::Instant::now();
+                        if debug {
+                            let elapsed = last_log.elapsed();
+                            if elapsed >= log_every {
+                                let handled = handled_total - handled_at_last_log;
+                                let backlog = rx.len();
+                                let sched_lag_ms = sched_lag_us
+                                    .as_ref()
+                                    .map_or(0.0, |c| c.replace(0) as f64 / 1000.0);
+                                // One atomic write (timestamped, newline-terminated) so
+                                // the line isn't spliced with other interleaved output.
+                                eprint!(
+                                    "{} MM_CTX loop: {:.0} cmds/s, backlog {}, \
+                                     sched-lag(max) {:.0}ms, total {}\n",
+                                    wall_clock_hms(),
+                                    handled as f64 / elapsed.as_secs_f64(),
+                                    backlog,
+                                    sched_lag_ms,
+                                    handled_total,
+                                );
+                                // UDP ingress health: delta of received datagrams and
+                                // of drops (InErrors / RcvbufErrors) since the last log.
+                                let now_udp = read_udp6_stats();
+                                if let (Some((i0, e0, r0)), Some((i1, e1, r1))) =
+                                    (prev_udp, now_udp)
+                                {
+                                    eprintln!(
+                                        "{} MM_UDP in +{}/s, in_err +{}, rcvbuf_err +{} \
+                                         (cum in_err {}, rcvbuf_err {})",
+                                        wall_clock_hms(),
+                                        i1.saturating_sub(i0),
+                                        e1.saturating_sub(e0),
+                                        r1.saturating_sub(r0),
+                                        e1,
+                                        r1,
+                                    );
+                                }
+                                prev_udp = now_udp;
+                                handled_at_last_log = handled_total;
+                                last_log = std::time::Instant::now();
+                            }
                         }
                     }
                 });
