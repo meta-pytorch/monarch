@@ -57,6 +57,10 @@ use crate::connection::ConnectionTransport;
 use crate::connection::SideChannelMessage;
 use crate::connection::sever;
 use crate::ctx::Command;
+use crate::dataio::MessageReader;
+use crate::dataio::PartReader;
+use crate::dataio::PartWriter;
+use crate::dataio::ReadStop;
 use crate::framing;
 use crate::framing::Preamble;
 use crate::framing::SideChannelHeartbeat;
@@ -69,7 +73,6 @@ use crate::matcher::Matcher;
 use crate::net::Net;
 use crate::net::NetConn;
 use crate::shm::MapperHandle;
-use crate::shm::ShmClient;
 use crate::shm::ShmClientSlot;
 use crate::transport::Transport;
 
@@ -141,10 +144,14 @@ fn max_concurrent_connects<N: Net>() -> Option<usize> {
 
 /// Build the optional multi-threaded runtime that the per-connection data
 /// coroutines (the message writer/reader) run on, off the single-threaded command
-/// loop. `MM_NET_DATA_THREADS` selects it: unset or `0` keeps every coroutine on the
-/// command-loop thread (today's behaviour, no data parallelism); a positive `N`
-/// stands up an `N`-worker runtime so the data-stream framing/crypto/copy for many
-/// connections runs across cores while accounting stays serialized on one core.
+/// loop. `MM_NET_DATA_THREADS` selects it: unset defaults to the striping width
+/// ([`crate::dataio::n_data_streams`]), `0` explicitly keeps every coroutine on the
+/// command-loop thread (no data parallelism); otherwise an `N`-worker runtime runs the
+/// data-stream framing/crypto/copy for many connections across cores while accounting
+/// stays serialized on one core. The worker count is floored at the stream width —
+/// striping is inert without at least one core per parallel stream to spread the
+/// per-stream crypto/copy across, so a bare `MM_NET_N_DATA_STREAMS` gets a runtime wide
+/// enough to actually parallelize it.
 ///
 /// Only the two *data* coroutines move; the connection handle, heartbeat stream,
 /// side channels, and pairing all stay on the command-loop thread. The data stream
@@ -153,10 +160,15 @@ fn max_concurrent_connects<N: Net>() -> Option<usize> {
 /// in-task syscalls/copy), not the epoll wakeups. Fully decoupling the reactor would
 /// require materializing the streams on this runtime, a later step.
 fn data_runtime() -> Option<tokio::runtime::Runtime> {
-    let n = std::env::var("MM_NET_DATA_THREADS")
+    let requested = std::env::var("MM_NET_DATA_THREADS")
         .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(0);
+        .and_then(|v| v.parse::<usize>().ok());
+    let streams = crate::dataio::n_data_streams();
+    let n = match requested {
+        None => streams,           // unset ⇒ default to the stream width
+        Some(0) => 0,              // explicit 0 ⇒ force single-threaded (off)
+        Some(r) => r.max(streams), // explicit ⇒ honor it, but never below the width
+    };
     if n == 0 {
         return None;
     }
@@ -201,10 +213,12 @@ struct ShmCtx {
 }
 
 impl ShmCtx {
-    /// Snapshot the owning actor's gateway client (`None` until it is learned; a
-    /// gateway seeds its own at creation, before any frame can arrive).
-    fn client(&self) -> Option<ShmClient> {
-        *self.client.lock().expect("shm client slot mutex poisoned")
+    /// The owning actor's gateway-client slot, shared with a striping reader/decoder so
+    /// it can snapshot the client (`None` until learned; a gateway seeds its own at
+    /// creation, before any frame can arrive) and land striped/inline parts in the slab
+    /// as soon as the gateway is known.
+    fn client_slot(&self) -> ShmClientSlot {
+        self.client.clone()
     }
 }
 
@@ -641,9 +655,11 @@ async fn listener_task<N: Net>(
                         // Messages and delegated beats arrive on separate streams, so
                         // read each in its own task. The message recv keeps the
                         // connection alive; the heartbeat reader materializes its own
-                        // stream, which may open late (on the first beat) or never.
+                        // stream, which may open late (on the first beat) or never. The
+                        // message reader gets a connection clone too, so it can open the
+                        // striped data streams a large message arrives on.
                         tokio::task::spawn_local(side_channel_reader_task::<N>(
-                            msg_recv, loop_tx.clone(), side_channel_shm.clone(),
+                            conn.clone(), msg_recv, loop_tx.clone(), side_channel_shm.clone(),
                         ));
                         tokio::task::spawn_local(side_channel_heartbeat_reader_task::<N>(
                             conn, heartbeat.clone(),
@@ -744,23 +760,50 @@ async fn acceptor_task<N: Net>(
 /// Read routable messages off a gateway side-channel's message stream and forward
 /// each to the command loop (which resolves the owning gateway). There is no
 /// establishment: an EOF or error just ends the reader (the sending gateway
-/// reconnects when it next has something to send). `recv` keeps the connection alive.
+/// reconnects when it next has something to send). `recv` keeps the connection alive;
+/// `conn` lets the striping reader open the data streams a large message arrives on.
 /// Delegated beats travel on the companion heartbeat stream (see
-/// [`side_channel_heartbeat_reader_task`]).
+/// [`side_channel_heartbeat_reader_task`]). Large messages are striped and assembled
+/// in `seq` order exactly like the connection reader ([`reader_task`]); a dead data
+/// stream just ends this reader (the sending gateway reconnects).
 async fn side_channel_reader_task<N: Net>(
-    mut recv: ConnRecv<N>,
+    conn: N::Conn,
+    recv: ConnRecv<N>,
     loop_tx: mpsc::UnboundedSender<Command>,
     shm: ShmCtx,
 ) {
-    loop {
-        match framing::read_side_channel(&mut recv, &shm.mapper, shm.client()).await {
-            Ok(message) => {
-                if loop_tx.send(Command::SideChannelDeliver(message)).is_err() {
-                    return;
-                }
-            }
-            Err(_) => return,
-        }
+    // The accepting end of a side channel — it never dialed, so `dialed = false`.
+    let part_reader = PartReader::<N>::new(conn, false, shm.mapper.clone(), shm.client_slot());
+
+    // A side channel has no establishment or failure signalling of its own: whatever
+    // ends the loop (control-stream EOF/error, a dead data stream, or a lost command
+    // loop) just ends the reader — the sending gateway reconnects when it next has
+    // something to send.
+    let _ = SideChannelReader { loop_tx }
+        .read_messages(recv, part_reader)
+        .await;
+}
+
+/// Delivers side-channel messages to the command loop — the [`MessageReader`] for the
+/// one-directional gateway side-channel pathway.
+struct SideChannelReader {
+    loop_tx: mpsc::UnboundedSender<Command>,
+}
+
+impl<N: Net> MessageReader<N> for SideChannelReader {
+    type Item = SideChannelMessage;
+
+    fn read_frame(
+        control: &mut ConnRecv<N>,
+        parts: &mut PartReader<N>,
+    ) -> impl std::future::Future<Output = std::io::Result<SideChannelMessage>> + Send {
+        framing::read_side_channel(control, parts)
+    }
+
+    fn on_message(&mut self, message: SideChannelMessage) -> bool {
+        self.loop_tx
+            .send(Command::SideChannelDeliver(message))
+            .is_ok()
     }
 }
 
@@ -898,6 +941,11 @@ async fn side_channel_writer_task<N: Net>(
     // heartbeat send stream once a beat has been sent. `None` means we must
     // (re)connect before the next write.
     let mut live: Option<LiveSideChannel<N>> = None;
+    // The part writer for the current connection's data streams, rebuilt on each
+    // (re)connect. A side channel is one-directional, so it only ever writes; large
+    // messages are striped, small ones stay inline (a disabled writer writes all parts
+    // inline).
+    let mut part_writer: Option<PartWriter<N>> = None;
     loop {
         let item = tokio::select! {
             item = rx.recv() => match item {
@@ -916,12 +964,17 @@ async fn side_channel_writer_task<N: Net>(
             else {
                 break; // shutting down before the gateway came up
             };
+            // The dialing end of a side channel — `dialed = true`.
+            part_writer = Some(PartWriter::<N>::new(conn.clone(), true));
             live = Some((conn, msg_send, None));
         }
         let (conn, msg_send, hb_send) = live.as_mut().expect("connected");
+        let active_writer = part_writer
+            .as_mut()
+            .expect("part writer set with live connection");
         let wrote = match item {
             SideChannelOut::Message(message) => {
-                framing::write_side_channel(msg_send, message).await
+                framing::write_side_channel(msg_send, message, active_writer).await
             }
             SideChannelOut::Heartbeat {
                 recipient,
@@ -947,6 +1000,7 @@ async fn side_channel_writer_task<N: Net>(
         };
         if wrote.is_err() {
             live = None; // dropped; reconnect on the next item
+            part_writer = None; // its data streams belong to the dropped connection
         }
     }
     if let Some((_conn, mut msg_send, hb_send)) = live {
@@ -1056,6 +1110,9 @@ fn spawn_connection<N: Net>(
     // command-loop thread — their captured state is `Send` (the `Send`-bounded stream
     // halves, channel handles, `Copy` connection ref, and `Arc`-backed shm); the
     // heartbeat/side-channel machinery below stays local.
+    // The writer and reader each own a part writer/reader over this side's data streams
+    // (outbound for the writer, inbound for the reader); `dialed` lets each pick its
+    // stream indices. Both hold a clone of the connection handle to open those streams.
     let writer = writer_task::<N>(
         data_send,
         writer_rx,
@@ -1063,15 +1120,19 @@ fn spawn_connection<N: Net>(
         alive,
         peer_responded_rx,
         hb_event_tx.clone(),
+        PartWriter::new(conn.clone(), dialed),
     );
     let reader = reader_task::<N>(
         data_recv,
         connection,
         loop_tx,
         peer_responded_tx,
-        shm,
         hb_event_tx.clone(),
+        PartReader::new(conn.clone(), dialed, shm.mapper.clone(), shm.client_slot()),
     );
+    // The data coroutines move to the data runtime for cross-connection parallelism; the
+    // per-stream shard tasks they spawn are `tokio::spawn`ed there too (the halves are
+    // `Send`), so striping composes with the data runtime.
     match &data_rt {
         Some(handle) => {
             handle.spawn(writer);
@@ -1149,6 +1210,9 @@ async fn writer_task<N: Net>(
     mut peer_responded: mpsc::UnboundedReceiver<()>,
     // To forward our own outgoing Establish's ident to the heartbeat task.
     hb_events: mpsc::UnboundedSender<HeartbeatEvent>,
+    // Writes each command's parts inline or striped across this side's data streams
+    // (framing routes actor messages through it).
+    mut part_writer: PartWriter<N>,
 ) {
     let mut graceful = false;
     loop {
@@ -1165,7 +1229,7 @@ async fn writer_task<N: Net>(
                         local_ident: ident.clone(),
                     });
                 }
-                if framing::write_command(&mut send, command).await.is_err() {
+                if framing::write_command(&mut send, command, &mut part_writer).await.is_err() {
                     return;
                 }
             }
@@ -1175,7 +1239,7 @@ async fn writer_task<N: Net>(
                 // transport retransmits until delivered, so the peer learns of
                 // teardown directly rather than by inferring a dropped socket.
                 while let Ok(command) = rx.try_recv() {
-                    if framing::write_command(&mut send, command).await.is_err() {
+                    if framing::write_command(&mut send, command, &mut part_writer).await.is_err() {
                         return;
                     }
                 }
@@ -1184,6 +1248,7 @@ async fn writer_task<N: Net>(
                     ConnectionCommand::Severed {
                         reason: b"context shutdown".to_vec(),
                     },
+                    &mut part_writer,
                 )
                 .await;
                 graceful = true;
@@ -1284,95 +1349,113 @@ async fn heartbeat_reader_task<N: Net>(
 /// that detects an unclean peer loss even for a link whose beats are silent (a
 /// delegated child, or a live-but-idle connection).
 async fn reader_task<N: Net>(
-    mut recv: ConnRecv<N>,
+    recv: ConnRecv<N>,
     connection: ConnectionRef,
     loop_tx: mpsc::UnboundedSender<Command>,
     // Signals this connection's writer that the peer has responded to our shutdown
-    // (it sent its own Severed, or the connection ended) so the writer can close.
+    // (it sent its own Severed, or the connection ending) so the writer can close.
     peer_responded: mpsc::UnboundedSender<()>,
-    shm: ShmCtx,
     // Forwards inbound heartbeats and liveness/close signals to the heartbeat task.
     hb_events: mpsc::UnboundedSender<HeartbeatEvent>,
+    // Reads/assembles each message's parts off this side's inbound data streams.
+    part_reader: PartReader<N>,
 ) {
     // Per-connection diagnostics, folded into the failure reason under MM_QUIC_DEBUG:
-    // did we ever read the peer's Establish? how many commands arrived, and how long
-    // since the last read? Tracked cheaply either way; only formatted when debug is on.
+    // did we ever read the peer's Establish, and how many commands arrived? The reader
+    // tracks them per delivered message; only formatted when debug is on.
     let debug = crate::ctx::connection_debug();
     let start = std::time::Instant::now();
-    let mut established = false;
-    let mut commands: u64 = 0;
-    let mut last_read: Option<std::time::Duration> = None;
-    let stats = |established: bool, commands, last_read: Option<_>| {
-        let last = match last_read {
-            Some(d) => format!(
-                "{:.1}s ago",
-                start.elapsed().saturating_sub(d).as_secs_f64()
-            ),
-            None => "never".to_owned(),
-        };
-        format!(
-            "established={established}, commands={commands}, age={:.1}s, last_read={last}",
-            start.elapsed().as_secs_f64(),
-        )
+
+    // Deliver each in-order message to the command loop (see [`ConnectionReader`]).
+    let mut reader = ConnectionReader {
+        connection,
+        loop_tx: loop_tx.clone(),
+        peer_responded: peer_responded.clone(),
+        hb_events: hb_events.clone(),
+        established: false,
+        commands: 0,
     };
-    loop {
-        // The owning actor's gateway client is snapshot per frame so a large part is
-        // read straight into the slab once the client is known (a gateway seeds its
-        // own at creation, before any frame arrives).
-        let read = framing::read_frame(&mut recv, &shm.mapper, shm.client());
-        match read.await {
-            Ok(action) => {
-                last_read = Some(start.elapsed());
-                commands += 1;
-                // The peer's Establish is how we learn its identity: reading it is the
-                // moment this side considers the connection established. Forward the
-                // peer ident to the heartbeat task (one-shot, at setup).
-                if let ConnectionCommand::Establish { ident, .. } = &action {
-                    established = true;
-                    if let Some(ident) = ident {
-                        let _ = hb_events.send(HeartbeatEvent::EstablishPeer {
-                            peer_ident: ident.clone(),
-                        });
-                    }
-                }
-                // A Severed from the peer is its response to our shutdown (or the peer
-                // initiating its own) — wake any writer waiting to close.
-                if matches!(action, ConnectionCommand::Severed { .. }) {
-                    let _ = peer_responded.send(());
-                }
-                if loop_tx
-                    .send(Command::ConnectionAction { connection, action })
-                    .is_err()
-                {
-                    return;
-                }
+    let stop = reader.read_messages(recv, part_reader).await;
+
+    // The reader is done: tell the writer (so a graceful-shutdown wait can end) and the
+    // heartbeat task (its backstop for an unclean loss), then sever with a reason —
+    // except when the command loop itself is already gone.
+    let _ = peer_responded.send(());
+    let _ = hb_events.send(HeartbeatEvent::ReaderClosed);
+    let reason = match stop {
+        ReadStop::Delivered => return, // command loop gone; nothing to sever to
+        ReadStop::DataStreamDied => b"quic data stream closed".to_vec(),
+        ReadStop::Ended(_) if !debug => b"quic connection closed".to_vec(),
+        ReadStop::Ended(err) => {
+            // Walk the io::Error source chain to recover the concrete underlying error —
+            // the top-level Display is often just a bare "connection lost", dropping the
+            // real cause ("timed out" vs "reset by peer" vs "closed by peer").
+            let mut detail = err.to_string();
+            let mut src = std::error::Error::source(&err);
+            while let Some(e) = src {
+                detail.push_str(": ");
+                detail.push_str(&e.to_string());
+                src = e.source();
             }
-            Err(err) => {
-                let _ = peer_responded.send(());
-                let _ = hb_events.send(HeartbeatEvent::ReaderClosed);
-                let reason = if debug {
-                    // Walk the io::Error source chain to recover the concrete
-                    // underlying error — the top-level Display is often just a bare
-                    // "connection lost", dropping the real cause ("timed out" vs
-                    // "reset by peer" vs "closed by peer").
-                    let mut detail = err.to_string();
-                    let mut src = std::error::Error::source(&err);
-                    while let Some(e) = src {
-                        detail.push_str(": ");
-                        detail.push_str(&e.to_string());
-                        src = e.source();
-                    }
-                    format!(
-                        "quic connection closed: {detail} ({})",
-                        stats(established, commands, last_read)
-                    )
-                    .into_bytes()
-                } else {
-                    b"quic connection closed".to_vec()
-                };
-                sever(&loop_tx, connection, reason);
-                return;
-            }
+            format!(
+                "quic connection closed: {detail} (established={}, commands={}, age={:.1}s)",
+                reader.established,
+                reader.commands,
+                start.elapsed().as_secs_f64(),
+            )
+            .into_bytes()
         }
+    };
+    sever(&loop_tx, connection, reason);
+}
+
+/// Delivers connection messages to the command loop — the [`MessageReader`] for the
+/// join/serve pathway. Snoops the peer's `Establish` (forwarding its ident to the
+/// heartbeat task) and `Severed` (waking the writer to close), and counts what it
+/// delivered for the failure diagnostics.
+struct ConnectionReader {
+    connection: ConnectionRef,
+    loop_tx: mpsc::UnboundedSender<Command>,
+    peer_responded: mpsc::UnboundedSender<()>,
+    hb_events: mpsc::UnboundedSender<HeartbeatEvent>,
+    established: bool,
+    commands: u64,
+}
+
+impl<N: Net> MessageReader<N> for ConnectionReader {
+    type Item = ConnectionCommand;
+
+    fn read_frame(
+        control: &mut ConnRecv<N>,
+        parts: &mut PartReader<N>,
+    ) -> impl std::future::Future<Output = std::io::Result<ConnectionCommand>> + Send {
+        framing::read_frame(control, parts)
+    }
+
+    fn on_message(&mut self, action: ConnectionCommand) -> bool {
+        self.commands += 1;
+        match &action {
+            // The peer's Establish is how we learn its identity — forward it to the
+            // heartbeat task (one-shot, at setup).
+            ConnectionCommand::Establish { ident, .. } => {
+                self.established = true;
+                if let Some(ident) = ident {
+                    let _ = self.hb_events.send(HeartbeatEvent::EstablishPeer {
+                        peer_ident: ident.clone(),
+                    });
+                }
+            }
+            // A Severed is the peer's response to our shutdown — wake the writer.
+            ConnectionCommand::Severed { .. } => {
+                let _ = self.peer_responded.send(());
+            }
+            _ => {}
+        }
+        self.loop_tx
+            .send(Command::ConnectionAction {
+                connection: self.connection,
+                action,
+            })
+            .is_ok()
     }
 }

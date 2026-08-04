@@ -739,6 +739,11 @@ async fn quic_acceptor_demux(
 /// `accept_bi` work to a per-connection [`quic_acceptor_demux`] coroutine; its `stream`
 /// just sends a request down `requests` and awaits the paired stream. The demux holds the
 /// `Connection` alive; the acceptor keeps `remote` only for [`fmt::Debug`].
+///
+/// Cloneable so the reader, writer, heartbeat task, and striping coordinator can
+/// each hold a handle: a dialer clone shares the `Connection` (internally
+/// reference-counted); an acceptor clone shares the request-sender to the one demux.
+#[derive(Clone)]
 pub(crate) enum QuicConn {
     Dialer {
         conn: Connection,
@@ -787,7 +792,7 @@ fn quic_halves(conn: Connection, send: SendStream, recv: RecvStream) -> (QuicSen
 impl NetConn for QuicConn {
     type Send = QuicSend;
     type Recv = QuicRecv;
-    type Stream = Pin<Box<dyn Future<Output = io::Result<(QuicSend, QuicRecv)>>>>;
+    type Stream = Pin<Box<dyn Future<Output = io::Result<(QuicSend, QuicRecv)>> + Send>>;
 
     fn stream(&self, index: usize, priority: i32) -> Self::Stream {
         match self {

@@ -10,21 +10,17 @@
 //! its own framing (see [`crate::unix_framing`]) so machine-local shared-memory
 //! and fd-passing concerns never leak into the cross-machine wire format.
 //!
-//! Each frame is `[u64 header_len][header][raw part bytes...]`. The header is a
-//! bincode-encoded [`WireFrame`] holding only small metadata; for a message it
-//! carries the *lengths* of the parts, never their bytes. Message-part bytes are
-//! written straight from the owning `MsgPart`.
+//! A frame is a length-prefixed bincode header ([`WireFrame`]) holding only small
+//! routing/control metadata — never part bytes. An actor message's routing header is
+//! followed by a per-part plan ([`WirePart`], each part inline or striped) and then the
+//! inline parts' bytes: a small part streams inline right after the plan (from the owning
+//! `MsgPart`), a large part is **striped** across the connection's data streams and named
+//! only by its per-shard lengths (see [`crate::dataio`]).
 //!
-//! On the read side a small part is read into a freshly allocated owned buffer.
-//! A *large* part, when the receiving actor has learned its gateway's
-//! [`ShmClient`] (every actor on a quic link is a gateway, so it has one), is read
-//! **straight into a freshly allocated shared-memory slab block** instead: the
-//! reader allocates the block, maps it, and reads the stream bytes directly into
-//! the mapping, yielding a [`MsgPart::Shm`]. The payload then never touches an
-//! owned heap buffer — and if the message is later forwarded across a machine-local
-//! unix hop, that hop relays the slab descriptor by reference rather than copying
-//! the bytes into shared memory a second time. Either way the only copy is the
-//! unavoidable kernel-to-userspace one.
+//! This module owns the header/plan wire format and streams *inline* part bytes; the
+//! parts themselves go through the [`PartReader`]/[`PartWriter`] the read/write functions
+//! are handed (per part), so the shared-memory and striping concerns — a large part read
+//! straight into a slab block, or striped across data streams — never involve framing.
 //!
 //! The reader/writer are generic over tokio's [`AsyncRead`]/[`AsyncWrite`], so the
 //! same code drives a QUIC stream's `RecvStream`/`SendStream`. Liveness policy
@@ -46,19 +42,20 @@ use crate::connection::MonitorOp;
 use crate::connection::SendPayload;
 use crate::connection::SideChannelAction;
 use crate::connection::SideChannelMessage;
+use crate::dataio::PartReader;
+use crate::dataio::PartWriter;
 use crate::heartbeat::BeatKind;
 use crate::heartbeat::ConnectionId;
 use crate::heartbeat::Heartbeat;
-use crate::msg::MsgPart;
-use crate::shm::MapperHandle;
-use crate::shm::SHM_THRESHOLD;
-use crate::shm::ShmClient;
+use crate::net::Net;
 
-/// One frame on the data stream. There is a variant per [`ConnectionCommand`] that
-/// crosses the pipe (including `Establish`, which is how the two ends exchange
-/// identity). Message-part *bytes* are never carried here — only their lengths.
-/// Heartbeats are *not* here: they ride a dedicated stream and are serialized as a
-/// bare [`Heartbeat`] (see [`write_heartbeat`]/[`read_heartbeat`]).
+/// One frame header on the data stream. There is a variant per [`ConnectionCommand`]
+/// that crosses the pipe (including `Establish`, which is how the two ends exchange
+/// identity). A header is routing/control only — it carries no message-part bytes; an
+/// [`ActorMessage`](WireFrame::ActorMessage)'s parts follow it via
+/// [`PartWriter::write_message_parts`]/[`PartReader::read_message_parts`]. Heartbeats are *not* here: they ride
+/// a dedicated stream, serialized as a bare [`Heartbeat`] (see
+/// [`write_heartbeat`]/[`read_heartbeat`]).
 #[derive(Serialize, Deserialize)]
 enum WireFrame {
     Establish {
@@ -67,9 +64,17 @@ enum WireFrame {
         name_for_other: Option<Vec<u8>>,
         alive: bool,
     },
-    Message {
+    /// An actor message: this header carries only the destination; the parts follow.
+    ActorMessage {
         destination_ident: Vec<u8>,
-        payload: WirePayload,
+    },
+    /// A monitor fire — the only other [`SendMessage`](ConnectionCommand::SendMessage);
+    /// it has no parts, so it is a plain header (kept separate from `ActorMessage` so
+    /// only the message path deals with parts).
+    FireMonitorMessage {
+        destination_ident: Vec<u8>,
+        to_monitor: Vec<u8>,
+        is_timeout: bool,
     },
     PublishRoutes {
         live: Vec<Vec<u8>>,
@@ -91,31 +96,35 @@ enum WireFrame {
     },
 }
 
-/// Wire form of a [`SendMessage`](ConnectionCommand::SendMessage)'s payload. An
-/// actor message carries only its parts' *lengths* in the header (the bytes are
-/// streamed raw afterwards, zero-copy); a monitor fire carries the small dead
-/// target ident inline.
-#[derive(Serialize, Deserialize)]
-enum WirePayload {
-    ActorMessage {
-        part_lens: Vec<u64>,
-    },
-    FireMonitor {
-        to_monitor: Vec<u8>,
-        is_timeout: bool,
-    },
+/// How one message part is carried on the wire. A small part is streamed **inline**
+/// on the control stream right after the header (zero-copy, as always). A large part
+/// is **striped**: its bytes travel out-of-band on the connection's data streams (see
+/// [`crate::dataio`]), and the header carries only the per-shard byte lengths — one
+/// per data stream — which fully describe the split so the data streams themselves
+/// stay unframed. The sender alone decides inline-vs-striped (from its size heuristic
+/// and stream count), so the receiver never has to agree on a threshold: it just
+/// reads whichever form the descriptor names.
+#[derive(Clone, Serialize, Deserialize)]
+pub(crate) enum WirePart {
+    Inline { len: u64 },
+    Striped { shard_lens: Vec<u64> },
 }
 
-/// One frame on a gateway side-channel's *message* stream — the wire form of a
-/// [`SideChannelMessage`]. `Send` of an actor message reuses [`WirePayload`]'s
-/// zero-copy part-length header + streamed bytes (+ shm); every other case is
-/// header-only. Delegated heartbeats are not here — they ride the companion
-/// heartbeat stream as a bare [`SideChannelHeartbeat`].
+/// One frame header on a gateway side-channel's *message* stream — the wire form of a
+/// [`SideChannelMessage`], mirroring [`WireFrame`]. A `Send` of an actor message
+/// (`SendActorMessage`) is a routing-only header whose parts follow via
+/// [`PartWriter::write_message_parts`]/[`PartReader::read_message_parts`], exactly like a connection message;
+/// every other case is header-only. Delegated heartbeats are not here — they ride the
+/// companion heartbeat stream as a bare [`SideChannelHeartbeat`].
 #[derive(Serialize, Deserialize)]
 enum SideChannelFrame {
-    Send {
+    /// A `Send` of an actor message: this header carries only the gateway; parts follow.
+    SendActorMessage { gateway_for_actor: Vec<u8> },
+    /// A `Send` of a monitor fire — no parts, so a plain header.
+    SendFireMonitor {
         gateway_for_actor: Vec<u8>,
-        payload: WirePayload,
+        to_monitor: Vec<u8>,
+        is_timeout: bool,
     },
     UpdateRemoteMonitorState {
         gateway_for_actor: Vec<u8>,
@@ -133,12 +142,12 @@ fn bincode_config() -> bincode::config::Configuration {
 }
 
 /// Encode `value` as bincode and write it length-prefixed as `[u64 header_len]
-/// [header]`. This is the single place every framed write goes through for its
-/// header — callers layer their own concerns on top: trailing message-part bytes
-/// (see [`write_frame`]) and the flush (every caller decides when to flush, and
-/// this helper never does). The length prefix is little-endian, matching
-/// [`read_header`].
-async fn write_header<W: AsyncWrite + Unpin, T: Serialize>(
+/// [header]`. Every framed write goes through this for its header — the frame header,
+/// and (for a message) the per-part plan written by [`PartWriter::write_message_parts`]. Callers
+/// layer their own concerns on top: trailing inline part bytes and the flush (every
+/// caller decides when to flush; this helper never does). The length prefix is
+/// little-endian, matching [`read_header`].
+pub(crate) async fn write_header<W: AsyncWrite + Unpin, T: Serialize>(
     writer: &mut W,
     value: &T,
 ) -> std::io::Result<()> {
@@ -154,7 +163,7 @@ async fn write_header<W: AsyncWrite + Unpin, T: Serialize>(
 /// [`write_header`] and decode it as `T`. The single place every framed read goes
 /// through for its header; callers that carry trailing message-part bytes read them
 /// after this (see [`read_frame`]).
-async fn read_header<R: AsyncRead + Unpin, T: DeserializeOwned>(
+pub(crate) async fn read_header<R: AsyncRead + Unpin, T: DeserializeOwned>(
     reader: &mut R,
 ) -> std::io::Result<T> {
     let mut len_buf = [0u8; 8];
@@ -178,7 +187,7 @@ async fn read_header<R: AsyncRead + Unpin, T: DeserializeOwned>(
 /// - `Join` — an ordinary parent/child connection; the command loop takes over
 ///   (identity exchange, hello, routing) over the data stream.
 /// - `SideChannel` — a gateway-to-gateway channel: the accepting gateway reads
-///   [`WireFrame::Message`] frames and routes them locally. Never paired with a
+///   [`SideChannelFrame`] frames and routes them locally. Never paired with a
 ///   serve, never establishes a parent/child link.
 ///
 /// Only the joiner writes the preamble (one direction); the server never does, so
@@ -222,43 +231,40 @@ pub(crate) struct SideChannelHeartbeat {
     pub(crate) kind: BeatKind,
 }
 
-/// Serialize and write one command: a length-prefixed bincode header, then — for
-/// a message — each part's bytes streamed straight from its buffer. Flushes so the
-/// peer (and, for quic, its heartbeat deadline) sees it promptly.
-pub(crate) async fn write_command<W: AsyncWrite + Unpin>(
+/// Serialize and write one command. An actor message writes a routing-only header then
+/// its parts via [`PartWriter::write_message_parts`] (planned and, if large, striped by
+/// `part_writer`); every other command is a header-only frame. Flushes so the peer (and,
+/// for quic, its heartbeat deadline) sees it promptly.
+pub(crate) async fn write_command<W, N>(
     writer: &mut W,
     command: ConnectionCommand,
-) -> std::io::Result<()> {
-    // A message additionally keeps a list of part bytes to stream raw after the
-    // header; every other command is header-only.
-    let mut parts: Vec<MsgPart> = Vec::new();
+    part_writer: &mut PartWriter<N>,
+) -> std::io::Result<()>
+where
+    W: AsyncWrite + Unpin,
+    N: Net,
+{
     let frame = match command {
         ConnectionCommand::SendMessage {
             destination_ident,
-            payload,
+            payload: SendPayload::ActorMessage(parts),
         } => {
-            let payload = match payload {
-                SendPayload::ActorMessage(message_parts) => {
-                    let part_lens = message_parts
-                        .iter()
-                        .map(|part| part.as_bytes().len() as u64)
-                        .collect();
-                    parts = message_parts;
-                    WirePayload::ActorMessage { part_lens }
-                }
+            // Routing-only header, then the parts (plan + bytes) via the part writer.
+            write_header(writer, &WireFrame::ActorMessage { destination_ident }).await?;
+            return part_writer.write_message_parts(writer, parts).await;
+        }
+        ConnectionCommand::SendMessage {
+            destination_ident,
+            payload:
                 SendPayload::FireMonitor {
                     to_monitor,
                     is_timeout,
-                } => WirePayload::FireMonitor {
-                    to_monitor,
-                    is_timeout,
                 },
-            };
-            WireFrame::Message {
-                destination_ident,
-                payload,
-            }
-        }
+        } => WireFrame::FireMonitorMessage {
+            destination_ident,
+            to_monitor,
+            is_timeout,
+        },
         ConnectionCommand::Establish {
             role,
             ident,
@@ -289,7 +295,7 @@ pub(crate) async fn write_command<W: AsyncWrite + Unpin>(
         // forwarding it: skip without writing anything to the wire.
         ConnectionCommand::GatewayState { .. } => return Ok(()),
     };
-    write_frame(writer, &frame, &parts).await
+    write_frame(writer, &frame).await
 }
 
 /// Write a transport heartbeat probe carrying `heartbeat`. The dedicated heartbeat
@@ -299,7 +305,7 @@ pub(crate) async fn write_heartbeat<W: AsyncWrite + Unpin>(
     writer: &mut W,
     heartbeat: Heartbeat,
 ) -> std::io::Result<()> {
-    write_frame(writer, &heartbeat, &[]).await
+    write_frame(writer, &heartbeat).await
 }
 
 /// Read one heartbeat probe off a connection's dedicated heartbeat stream, written
@@ -311,59 +317,47 @@ pub(crate) async fn read_heartbeat<R: AsyncRead + Unpin>(
     read_header(reader).await
 }
 
+/// Write a header-only frame: the length-prefixed bincode header, then flush. An actor
+/// message instead writes its routing header and then its parts via
+/// [`PartWriter::write_message_parts`]; every command/action that reaches here is header-only.
 async fn write_frame<W: AsyncWrite + Unpin>(
     writer: &mut W,
     frame: &impl Serialize,
-    parts: &[MsgPart],
 ) -> std::io::Result<()> {
     write_header(writer, frame).await?;
-    // Write each part's bytes straight from its owning buffer — no copy.
-    for part in parts {
-        writer.write_all(part.as_bytes()).await?;
-    }
     writer.flush().await
 }
 
-/// Read one data-stream frame and map it back to its [`ConnectionCommand`]. For a
-/// message each part is read directly into its destination buffer — an owned heap
-/// buffer for a small part, or (when `client` is present and the part is large) a
-/// freshly allocated shared-memory slab block, so the only copy is the unavoidable
-/// kernel-to-userspace one. `mapper`/`client` are the receiving actor's
-/// shared-memory context (see [`read_part`]). Heartbeats never arrive here — they
-/// ride their own stream (see [`read_heartbeat`]).
-pub(crate) async fn read_frame<R: AsyncRead + Unpin>(
+/// Read and decode one control-stream frame into its [`ConnectionCommand`]. An actor
+/// message's routing header comes back here; its parts are read through `part_reader`
+/// (which owns the shared memory and striping), so those concerns stay out of framing. A
+/// striped part's [`MsgPart`] is returned before its bytes have all landed; the caller
+/// gates delivery on the part reader's batch (see [`crate::dataio`]). Heartbeats never
+/// arrive here — they ride their own stream (see [`read_heartbeat`]).
+pub(crate) async fn read_frame<R, N>(
     reader: &mut R,
-    mapper: &MapperHandle,
-    client: Option<ShmClient>,
-) -> std::io::Result<ConnectionCommand> {
-    let frame = read_header::<_, WireFrame>(reader).await?;
-
-    Ok(match frame {
-        WireFrame::Message {
+    part_reader: &mut PartReader<N>,
+) -> std::io::Result<ConnectionCommand>
+where
+    R: AsyncRead + Unpin,
+    N: Net,
+{
+    Ok(match read_header::<_, WireFrame>(reader).await? {
+        WireFrame::ActorMessage { destination_ident } => ConnectionCommand::SendMessage {
             destination_ident,
-            payload,
-        } => {
-            let payload = match payload {
-                WirePayload::ActorMessage { part_lens } => {
-                    let mut parts = Vec::with_capacity(part_lens.len());
-                    for len in part_lens {
-                        parts.push(read_part(reader, len, mapper, client).await?);
-                    }
-                    SendPayload::ActorMessage(parts)
-                }
-                WirePayload::FireMonitor {
-                    to_monitor,
-                    is_timeout,
-                } => SendPayload::FireMonitor {
-                    to_monitor,
-                    is_timeout,
-                },
-            };
-            ConnectionCommand::SendMessage {
-                destination_ident,
-                payload,
-            }
-        }
+            payload: SendPayload::ActorMessage(part_reader.read_message_parts(reader).await?),
+        },
+        WireFrame::FireMonitorMessage {
+            destination_ident,
+            to_monitor,
+            is_timeout,
+        } => ConnectionCommand::SendMessage {
+            destination_ident,
+            payload: SendPayload::FireMonitor {
+                to_monitor,
+                is_timeout,
+            },
+        },
         WireFrame::Establish {
             role,
             ident,
@@ -393,43 +387,39 @@ pub(crate) async fn read_frame<R: AsyncRead + Unpin>(
     })
 }
 
-/// Serialize and write one [`SideChannelMessage`]: a length-prefixed bincode
-/// header, then — for a `Send` of an actor message — each part's bytes streamed
-/// raw after it (zero-copy, same scheme as [`write_command`]). Every other action
-/// is header-only.
-pub(crate) async fn write_side_channel<W: AsyncWrite + Unpin>(
+/// Serialize and write one [`SideChannelMessage`]. A `Send` of an actor message writes a
+/// routing-only header then its parts via [`PartWriter::write_message_parts`] (planned and, if
+/// large, striped by `part_writer`); every other action is a header-only frame.
+pub(crate) async fn write_side_channel<W, N>(
     writer: &mut W,
     message: SideChannelMessage,
-) -> std::io::Result<()> {
+    part_writer: &mut PartWriter<N>,
+) -> std::io::Result<()>
+where
+    W: AsyncWrite + Unpin,
+    N: Net,
+{
     let SideChannelMessage {
         gateway_for_actor,
         action,
     } = message;
-    let mut parts: Vec<MsgPart> = Vec::new();
     let frame = match action {
-        SideChannelAction::Send(payload) => {
-            let payload = match payload {
-                SendPayload::ActorMessage(message_parts) => {
-                    let part_lens = message_parts
-                        .iter()
-                        .map(|part| part.as_bytes().len() as u64)
-                        .collect();
-                    parts = message_parts;
-                    WirePayload::ActorMessage { part_lens }
-                }
-                SendPayload::FireMonitor {
-                    to_monitor,
-                    is_timeout,
-                } => WirePayload::FireMonitor {
-                    to_monitor,
-                    is_timeout,
-                },
-            };
-            SideChannelFrame::Send {
-                gateway_for_actor,
-                payload,
-            }
+        SideChannelAction::Send(SendPayload::ActorMessage(parts)) => {
+            write_header(
+                writer,
+                &SideChannelFrame::SendActorMessage { gateway_for_actor },
+            )
+            .await?;
+            return part_writer.write_message_parts(writer, parts).await;
         }
+        SideChannelAction::Send(SendPayload::FireMonitor {
+            to_monitor,
+            is_timeout,
+        }) => SideChannelFrame::SendFireMonitor {
+            gateway_for_actor,
+            to_monitor,
+            is_timeout,
+        },
         SideChannelAction::UpdateRemoteMonitorState { listener, op } => {
             SideChannelFrame::UpdateRemoteMonitorState {
                 gateway_for_actor,
@@ -442,7 +432,7 @@ pub(crate) async fn write_side_channel<W: AsyncWrite + Unpin>(
             monitoring,
         },
     };
-    write_frame(writer, &frame, &parts).await
+    write_frame(writer, &frame).await
 }
 
 /// Write a sibling side-channel heartbeat onto the heartbeat stream as a bare
@@ -461,47 +451,39 @@ pub(crate) async fn write_side_channel_heartbeat<W: AsyncWrite + Unpin>(
         conn_id,
         kind,
     };
-    write_frame(writer, &heartbeat, &[]).await
+    write_frame(writer, &heartbeat).await
 }
 
-/// Read one [`SideChannelMessage`] off a gateway side-channel's message stream. A
-/// `Send` of an actor message reads each part exactly like [`read_frame`] (small
-/// parts into owned buffers, large ones into the slab via `mapper`/`client`); other
-/// actions are header-only. Heartbeats travel on the companion heartbeat stream
-/// (see [`read_side_channel_heartbeat`]) and never appear here.
-pub(crate) async fn read_side_channel<R: AsyncRead + Unpin>(
+/// Read and decode one side-channel frame into its [`SideChannelMessage`]. A `Send` of an
+/// actor message reads its parts through `parts` (exactly like [`read_frame`]); every
+/// other action is header-only. Heartbeats travel on the companion heartbeat stream (see
+/// [`read_side_channel_heartbeat`]) and never appear here.
+pub(crate) async fn read_side_channel<R, N>(
     reader: &mut R,
-    mapper: &MapperHandle,
-    client: Option<ShmClient>,
-) -> std::io::Result<SideChannelMessage> {
-    let frame = read_header::<_, SideChannelFrame>(reader).await?;
-
-    let message = match frame {
-        SideChannelFrame::Send {
+    part_reader: &mut PartReader<N>,
+) -> std::io::Result<SideChannelMessage>
+where
+    R: AsyncRead + Unpin,
+    N: Net,
+{
+    Ok(match read_header::<_, SideChannelFrame>(reader).await? {
+        SideChannelFrame::SendActorMessage { gateway_for_actor } => SideChannelMessage {
             gateway_for_actor,
-            payload,
-        } => {
-            let payload = match payload {
-                WirePayload::ActorMessage { part_lens } => {
-                    let mut parts = Vec::with_capacity(part_lens.len());
-                    for len in part_lens {
-                        parts.push(read_part(reader, len, mapper, client).await?);
-                    }
-                    SendPayload::ActorMessage(parts)
-                }
-                WirePayload::FireMonitor {
-                    to_monitor,
-                    is_timeout,
-                } => SendPayload::FireMonitor {
-                    to_monitor,
-                    is_timeout,
-                },
-            };
-            SideChannelMessage {
-                gateway_for_actor,
-                action: SideChannelAction::Send(payload),
-            }
-        }
+            action: SideChannelAction::Send(SendPayload::ActorMessage(
+                part_reader.read_message_parts(reader).await?,
+            )),
+        },
+        SideChannelFrame::SendFireMonitor {
+            gateway_for_actor,
+            to_monitor,
+            is_timeout,
+        } => SideChannelMessage {
+            gateway_for_actor,
+            action: SideChannelAction::Send(SendPayload::FireMonitor {
+                to_monitor,
+                is_timeout,
+            }),
+        },
         SideChannelFrame::UpdateRemoteMonitorState {
             gateway_for_actor,
             listener,
@@ -517,8 +499,7 @@ pub(crate) async fn read_side_channel<R: AsyncRead + Unpin>(
             gateway_for_actor,
             action: SideChannelAction::AckRemoteMonitor { monitoring },
         },
-    };
-    Ok(message)
+    })
 }
 
 /// Read one delegated-heartbeat beat/ack/release off a gateway side-channel's
@@ -528,47 +509,4 @@ pub(crate) async fn read_side_channel_heartbeat<R: AsyncRead + Unpin>(
     reader: &mut R,
 ) -> std::io::Result<SideChannelHeartbeat> {
     read_header(reader).await
-}
-
-/// Read one message part of `len` bytes off the stream.
-///
-/// A part `>= SHM_THRESHOLD` on a connection whose actor has learned its gateway
-/// [`ShmClient`] is read straight into a freshly allocated slab block: allocate the
-/// block, map it through the context `mapper`, and read the stream bytes directly
-/// into the mapping — yielding a [`MsgPart::Shm`] that a later unix hop forwards by
-/// descriptor without copying into shared memory again. Everything else (no client,
-/// or a small part) is read into an owned heap buffer as before.
-async fn read_part<R: AsyncRead + Unpin>(
-    reader: &mut R,
-    len: u64,
-    mapper: &MapperHandle,
-    client: Option<ShmClient>,
-) -> std::io::Result<MsgPart> {
-    let Some(client) = client.filter(|_| len >= SHM_THRESHOLD) else {
-        let mut buf = vec![0u8; len as usize];
-        reader.read_exact(&mut buf).await?;
-        return Ok(MsgPart::from_bytes(buf));
-    };
-
-    let (offset, token) = client.allocate(len).await?;
-    let dst = {
-        let mut mapper = mapper.lock().expect("shm mapper mutex poisoned");
-        // SAFETY: `offset` was just granted for `len` bytes against `client`'s slab,
-        // so the file is grown to cover it and the mapper can map the range.
-        unsafe { mapper.map(client.slab_fd(), offset, len as usize)? }
-    };
-    // SAFETY: `dst` points at a writable mapping of exactly `len` bytes that stays
-    // valid for the mapper's (context's) lifetime — well past this read — so the
-    // slice is sound to fill across the await. The mapper lock was released above,
-    // so it is not held across IO. `len >= SHM_THRESHOLD > 0`, so this is non-empty.
-    let buf = unsafe { std::slice::from_raw_parts_mut(dst, len as usize) };
-    reader.read_exact(buf).await?;
-
-    Ok(MsgPart::new_shm(
-        mapper.clone(),
-        client.slab_fd(),
-        token,
-        offset,
-        len,
-    ))
 }
