@@ -18,6 +18,7 @@ use futures::future;
 use futures::future::FutureExt;
 use futures::future::Shared;
 use hyperactor::Instance;
+use hyperactor::RemoteEndpoint as _;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_mesh::actor_mesh::ActorMesh;
 use hyperactor_mesh::actor_mesh::ActorMeshRef;
@@ -32,6 +33,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use pyo3::types::PyTuple;
+use rand::RngExt as _;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::mpsc::unbounded_channel;
 use tracing::Instrument;
@@ -662,7 +664,12 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
     }
 
     fn name(&self) -> PyResult<PyPythonTask> {
-        let name = self.mesh_ref().id().to_string();
+        let name = self
+            .mesh_ref()
+            .as_managed()
+            .expect("Python actor mesh names require a managed mesh")
+            .id()
+            .to_string();
         PyPythonTask::new(async move { Ok(name) })
     }
 }
@@ -717,13 +724,19 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
                 message,
             )
             .map_err(cast_error_to_py_error),
-            AllOrChoose::Choose => ActorMeshRef::<PythonActor>::cast_choose_with_headers(
-                self,
-                instance,
-                &caller_headers,
-                message,
-            )
-            .map_err(cast_error_to_py_error),
+            AllOrChoose::Choose => match self {
+                ActorMeshRef::Managed(mesh) => mesh
+                    .cast_choose_with_headers(instance, &caller_headers, message)
+                    .map_err(cast_error_to_py_error),
+                ActorMeshRef::Data(mesh) => {
+                    let members = mesh.members();
+                    if !members.is_empty() {
+                        let actor = &members[rand::rng().random_range(0..members.len())];
+                        actor.post_with_headers(instance, caller_headers, message);
+                    }
+                    Ok(())
+                }
+            },
         }
     }
 
@@ -758,7 +771,11 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
     }
 
     fn name(&self) -> PyResult<PyPythonTask> {
-        let name = self.id().to_string();
+        let name = self
+            .as_managed()
+            .expect("Python actor mesh names require a managed mesh")
+            .id()
+            .to_string();
         PyPythonTask::new(async move { Ok(name) })
     }
 }
@@ -1020,7 +1037,13 @@ mod tests {
         drop(_queue_dispatch_guard);
         drop(config_lock);
 
-        let controller = actor_mesh.controller().as_ref().unwrap().clone();
+        let controller = actor_mesh
+            .as_managed()
+            .expect("spawned Python actor mesh should be managed")
+            .controller()
+            .as_ref()
+            .unwrap()
+            .clone();
 
         // Wrap using the production code path from PyProcMesh::spawn_async.
         let mesh_impl =

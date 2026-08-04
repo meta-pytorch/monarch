@@ -940,7 +940,7 @@ impl HostMeshRef {
                 .map_err(|error| crate::Error::ConfigurationError(error.into()))?,
         );
 
-        Ok(ActorMeshRef::new(
+        Ok(ActorMeshRef::new_managed(
             ActorMeshId::singleton(Label::strip(host_agent::HOST_MESH_AGENT_ACTOR_NAME)),
             // The host-agent mesh is not backed by a user proc mesh.
             None,

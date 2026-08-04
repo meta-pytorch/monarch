@@ -440,7 +440,7 @@ impl ProcMeshRef {
                 .map_err(|error| crate::Error::ConfigurationError(error.into()))?,
         );
 
-        Ok(ActorMeshRef::new(
+        Ok(ActorMeshRef::new_managed(
             id,
             Some(proc_mesh_id.clone()),
             region.clone(),
@@ -2098,7 +2098,11 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            controllerless.controller().is_none(),
+            controllerless
+                .as_managed()
+                .expect("controllerless service mesh should be managed")
+                .controller()
+                .is_none(),
             "spawn_controllerless_service must not create a controller",
         );
 
@@ -2108,7 +2112,11 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            with_controller.controller().is_some(),
+            with_controller
+                .as_managed()
+                .expect("service mesh should be managed")
+                .controller()
+                .is_some(),
             "spawn_service must create a controller",
         );
 
