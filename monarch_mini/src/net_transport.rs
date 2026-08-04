@@ -44,6 +44,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use tokio::io::AsyncWriteExt;
+use tokio::runtime::Handle;
 use tokio::sync::Semaphore;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
@@ -134,6 +135,44 @@ fn max_concurrent_connects<N: Net>() -> Option<usize> {
     }
 }
 
+/// Build the optional multi-threaded runtime that the per-connection data
+/// coroutines (the message writer/reader) run on, off the single-threaded command
+/// loop. `MM_NET_DATA_THREADS` selects it: unset or `0` keeps every coroutine on the
+/// command-loop thread (today's behaviour, no data parallelism); a positive `N`
+/// stands up an `N`-worker runtime so the data-stream framing/crypto/copy for many
+/// connections runs across cores while accounting stays serialized on one core.
+///
+/// Only the two *data* coroutines move; the connection handle, heartbeat stream,
+/// side channels, and pairing all stay on the command-loop thread. The data stream
+/// halves were materialized on the command-loop runtime's I/O driver, so readiness is
+/// still driven there — this offloads the per-frame CPU work (notably kTLS-over-TCP's
+/// in-task syscalls/copy), not the epoll wakeups. Fully decoupling the reactor would
+/// require materializing the streams on this runtime, a later step.
+fn data_runtime() -> Option<tokio::runtime::Runtime> {
+    let n = std::env::var("MM_NET_DATA_THREADS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(0);
+    if n == 0 {
+        return None;
+    }
+    match tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(n)
+        .thread_name("mm-net-data")
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => {
+            eprintln!("MM_NET_DATA_THREADS: net data coroutines on a {n}-worker runtime");
+            Some(rt)
+        }
+        Err(err) => {
+            tracing::warn!("MM_NET_DATA_THREADS set but runtime build failed: {err:#}");
+            None
+        }
+    }
+}
+
 /// The gateway dial tag of `ident` (the substring after the last `@`), as a
 /// `String`, or `None` if it has none or is non-utf8. This is the address a beat is
 /// dialed at — the recipient's own gateway.
@@ -198,6 +237,9 @@ struct SideChannels<N: Net> {
     /// for its lifetime. Teardown drops this issuing copy so `alive_rx` closes once
     /// every writer has flushed and exited.
     alive_tx: Option<mpsc::UnboundedSender<()>>,
+    /// The data runtime handle, handed to [`Net::create`] so a protocol whose work is
+    /// in a background driver (quic) builds its endpoints there. `None` ⇒ single core.
+    data_rt: Option<Handle>,
 }
 
 /// Owns all transport state and coroutines. The command loop holds one and forwards
@@ -225,6 +267,10 @@ pub(crate) struct NetTransport<N: Net> {
     // Client dialing + side-channel writers, shared with the heartbeat coroutines so
     // the transport drives every side-channel path without ctx involvement.
     side_channels: Rc<RefCell<SideChannels<N>>>,
+    // Optional multi-threaded runtime the per-connection data coroutines run on (see
+    // `data_runtime`). `None` ⇒ they run on the command-loop thread like everything
+    // else. Owned here for its lifetime; torn down (non-blocking) in `shutdown`.
+    data_rt: Option<tokio::runtime::Runtime>,
 }
 
 impl<N: Net> NetTransport<N> {
@@ -238,6 +284,11 @@ impl<N: Net> NetTransport<N> {
         if let Some(n) = max_concurrent_connects::<N>() {
             eprintln!("MM_QUIC connect concurrency capped at {n} simultaneous attempts");
         }
+        // The data runtime is owned here for its lifetime; its handle is shared with
+        // the side channels (→ `Net::create`, for quic's endpoint drivers) and with
+        // `spawn_connection` via `data_handle` (for the tcp data coroutines).
+        let data_rt = data_runtime();
+        let data_rt_handle = data_rt.as_ref().map(|rt| rt.handle().clone());
         Self {
             loop_tx,
             mapper,
@@ -251,8 +302,16 @@ impl<N: Net> NetTransport<N> {
                 net: None,
                 channels: HashMap::new(),
                 alive_tx: Some(alive_tx),
+                data_rt: data_rt_handle,
             })),
+            data_rt,
         }
+    }
+
+    /// A handle to the data-coroutine runtime, or `None` to run them on the
+    /// command-loop thread. Cloned per connection and passed to [`spawn_connection`].
+    fn data_handle(&self) -> Option<Handle> {
+        self.data_rt.as_ref().map(|rt| rt.handle().clone())
     }
 
     /// A connection's shared-memory context: the context mapper paired with the given
@@ -282,6 +341,13 @@ impl<N: Net> NetTransport<N> {
     pub(crate) async fn shutdown(&mut self) {
         self.side_channels.borrow_mut().begin_shutdown();
         let _ = self.alive_rx.recv().await;
+        // Tear the data runtime down without blocking: we are inside the command
+        // loop's async context, where dropping a `Runtime` (which blocks on its worker
+        // threads) would panic. The writers above have already flushed and the peers
+        // acknowledged, so its tasks have nothing left to do.
+        if let Some(rt) = self.data_rt.take() {
+            rt.shutdown_background();
+        }
     }
 }
 
@@ -289,7 +355,7 @@ impl<N: Net> SideChannels<N> {
     /// The shared networking state, built on first use.
     fn net(&mut self) -> anyhow::Result<&mut N> {
         if self.net.is_none() {
-            self.net = Some(N::create()?);
+            self.net = Some(N::create(self.data_rt.clone())?);
         }
         Ok(self.net.as_mut().expect("net just created"))
     }
@@ -405,6 +471,7 @@ impl<N: Net> Transport for NetTransport<N> {
             let context_shm = self.shm_ctx(self.context_shm.clone());
             let shutdown = self.side_channels.borrow().subscribe_shutdown();
             let alive = self.side_channels.borrow().alive_token();
+            let data_rt = self.data_handle();
             // Bind synchronously so a port-in-use failure is known now; a failed bind
             // spawns a task that severs every serve on this url until teardown rather
             // than respawn-retrying.
@@ -419,6 +486,7 @@ impl<N: Net> Transport for NetTransport<N> {
                         context_shm,
                         self.heartbeat.clone(),
                         self.side_channels.clone(),
+                        data_rt,
                     ));
                 }
                 Err(err) => {
@@ -462,6 +530,7 @@ impl<N: Net> Transport for NetTransport<N> {
         };
         let shutdown = self.side_channels.borrow().subscribe_shutdown();
         let alive = self.side_channels.borrow().alive_token();
+        let data_rt = self.data_handle();
         tokio::task::spawn_local(connector_task::<N>(
             dialer,
             addr,
@@ -473,6 +542,7 @@ impl<N: Net> Transport for NetTransport<N> {
             self.connect_sem.clone(),
             self.heartbeat.clone(),
             self.side_channels.clone(),
+            data_rt,
         ));
     }
 }
@@ -536,6 +606,7 @@ async fn listener_task<N: Net>(
     side_channel_shm: ShmCtx,
     heartbeat: Heartbeats,
     side_channels: Rc<RefCell<SideChannels<N>>>,
+    data_rt: Option<Handle>,
 ) {
     // Accepting a connection, its data stream, and its preamble is a multi-step
     // handshake; run it off the pairing loop so a slow handshake doesn't stall
@@ -549,7 +620,7 @@ async fn listener_task<N: Net>(
             serve = serves.recv() => {
                 let Some((connection, shm)) = serve else { return; };
                 if let Some((left, right)) = matcher.push_left((connection, shm), |l, r| (l, r)) {
-                    spawn_join(left, right, &loop_tx, &shutdown, &alive, &heartbeat, &side_channels);
+                    spawn_join(left, right, &loop_tx, &shutdown, &alive, &heartbeat, &side_channels, &data_rt);
                 }
             }
             accepted = accepted_rx.recv() => {
@@ -557,7 +628,7 @@ async fn listener_task<N: Net>(
                     None => return,
                     Some(Accepted::Join(streams)) => {
                         if let Some((left, right)) = matcher.push_right(streams, |l, r| (l, r)) {
-                            spawn_join(left, right, &loop_tx, &shutdown, &alive, &heartbeat, &side_channels);
+                            spawn_join(left, right, &loop_tx, &shutdown, &alive, &heartbeat, &side_channels, &data_rt);
                         }
                     }
                     Some(Accepted::SideChannel { conn, msg_recv }) => {
@@ -585,6 +656,10 @@ async fn listener_task<N: Net>(
 /// true` and `dialed = false` (the peer dialed us). The data-stream halves were
 /// already split (with `first_messenger = false`) and the preamble read by the
 /// acceptor.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct piece of per-connection state forwarded to spawn_connection; bundling adds indirection without clarifying anything"
+)]
 fn spawn_join<N: Net>(
     serve: (ConnectionRef, ShmCtx),
     streams: JoinStreams<N>,
@@ -593,6 +668,7 @@ fn spawn_join<N: Net>(
     alive: &mpsc::UnboundedSender<()>,
     heartbeat: &Heartbeats,
     side_channels: &Rc<RefCell<SideChannels<N>>>,
+    data_rt: &Option<Handle>,
 ) {
     let (connection, shm) = serve;
     let JoinStreams {
@@ -613,6 +689,7 @@ fn spawn_join<N: Net>(
         false,
         heartbeat.clone(),
         side_channels.clone(),
+        data_rt.clone(),
     );
 }
 
@@ -732,6 +809,7 @@ async fn connector_task<N: Net>(
     connect_sem: Option<Arc<Semaphore>>,
     heartbeat: Heartbeats,
     side_channels: Rc<RefCell<SideChannels<N>>>,
+    data_rt: Option<Handle>,
 ) {
     let mut retry = CONNECT_RETRY_MIN;
     loop {
@@ -780,6 +858,7 @@ async fn connector_task<N: Net>(
                         true,
                         heartbeat,
                         side_channels,
+                        data_rt,
                     );
                     return;
                 }
@@ -937,6 +1016,10 @@ fn spawn_connection<N: Net>(
     dialed: bool,
     heartbeat: Heartbeats,
     side_channels: Rc<RefCell<SideChannels<N>>>,
+    // When `Some`, the data writer/reader run on this multi-threaded runtime instead
+    // of the command-loop thread (see `data_runtime`). The heartbeat stream, side
+    // channels, and pairing always stay on the command-loop thread.
+    data_rt: Option<Handle>,
 ) {
     let (writer_tx, writer_rx) = mpsc::unbounded_channel();
     // Reader → writer signal: the peer responded to our shutdown, so the writer may
@@ -962,23 +1045,38 @@ fn spawn_connection<N: Net>(
     // Spawn the coroutine; the returned sender is how the readers/writer feed it
     // inbound beats, Establish snoops, and reader-closed.
     let hb_event_tx = heartbeat.spawn(connection, dialed, beats_tx, send_beat, loop_tx.clone());
-    // Data stream: command writer and frame reader.
-    tokio::task::spawn_local(writer_task::<N>(
+    // Data stream: command writer and frame reader. Built here (moving in their state)
+    // then spawned either on the data runtime (parallel across connections) or, by
+    // default, on the command-loop thread. Only these two coroutines may move off the
+    // command-loop thread — their captured state is `Send` (the `Send`-bounded stream
+    // halves, channel handles, `Copy` connection ref, and `Arc`-backed shm); the
+    // heartbeat/side-channel machinery below stays local.
+    let writer = writer_task::<N>(
         data_send,
         writer_rx,
         shutdown.clone(),
         alive,
         peer_responded_rx,
         hb_event_tx.clone(),
-    ));
-    tokio::task::spawn_local(reader_task::<N>(
+    );
+    let reader = reader_task::<N>(
         data_recv,
         connection,
         loop_tx,
         peer_responded_tx,
         shm,
         hb_event_tx.clone(),
-    ));
+    );
+    match &data_rt {
+        Some(handle) => {
+            handle.spawn(writer);
+            handle.spawn(reader);
+        }
+        None => {
+            tokio::task::spawn_local(writer);
+            tokio::task::spawn_local(reader);
+        }
+    }
     // Heartbeat stream: materialized off the establishment path, then a beat writer
     // and reader run on it. `first_messenger` is whether this side is the heartbeat
     // **Child** — which always beats first — so the Child opens the stream and the

@@ -139,6 +139,7 @@ use tokio::io::WriteHalf;
 use tokio::net::TcpListener;
 use tokio::net::TcpSocket;
 use tokio::net::TcpStream;
+use tokio::runtime::Handle;
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::TlsConnector;
 use tokio_rustls::client::TlsStream as ClientTlsStream;
@@ -613,7 +614,10 @@ impl Net for Tcp {
     type Listener = TcpListenerHandle;
     type Conn = TcpConn;
 
-    fn create() -> anyhow::Result<Self> {
+    fn create(_runtime: Option<Handle>) -> anyhow::Result<Self> {
+        // Ignored: kTLS/rustls crypto runs in the stream poll (the read/write syscall),
+        // not a background driver, so it follows whichever task polls the stream. The
+        // generic transport places those data coroutines on the runtime instead.
         Ok(Self { tls: None })
     }
 
