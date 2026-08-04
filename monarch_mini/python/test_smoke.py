@@ -365,10 +365,84 @@ async def test_unix_subprocess_kill_propagates_failure_and_cascades() -> None:
             await _kill_worker(proc)
 
 
-async def test_unimplemented_monitor_raises() -> None:
-    a = Actor(b"srv-actor")
-    with pytest.raises(RuntimeError, match="implement"):
-        a.monitor(b"other@root")
+async def test_monitor_fires_when_target_dies() -> None:
+    # watcher and target are siblings under root. watcher monitors target; when
+    # target dies, the failure climbs to their common ancestor (root) and fires
+    # back down to watcher as [failure_prefix..., target_ident, "actor died"].
+    root = Actor(b"root")
+    watcher = Actor(b"watcher")
+    target = Actor(b"target")
+    await _connect(root, b"root", watcher, b"watcher", "inproc://mon-watcher")
+    await _connect(root, b"root", target, b"target", "inproc://mon-target")
+
+    handle = watcher.monitor(b"target", failure=[ba(b"DOWN")])
+    assert isinstance(handle, minimonarch.MonitorHandle)
+
+    target.die(b"boom")
+    assert await watcher.next() == [b"DOWN", b"target", b"actor died"]
+
+
+async def test_monitor_fires_when_parent_of_target_dies() -> None:
+    # target dies indirectly: its parent `mid` dies, so target is unreachable.
+    # The death is reported up by root (mid's link carried both mid and target),
+    # so the monitor still fires even though target never reported its own death.
+    root = Actor(b"root")
+    watcher = Actor(b"watcher")
+    mid = Actor(b"mid")
+    target = Actor(b"target")
+    await _connect(root, b"root", watcher, b"watcher", "inproc://mon-pw")
+    await _connect(root, b"root", mid, b"mid", "inproc://mon-pm")
+    await _connect(mid, b"mid", target, b"target", "inproc://mon-mt")
+
+    watcher.monitor(b"target", failure=[ba(b"DOWN")])
+    mid.die(b"crash")
+    assert await watcher.next() == [b"DOWN", b"target", b"actor died"]
+
+
+async def test_cancelled_monitor_does_not_fire() -> None:
+    # A cancelled monitor must not deliver, even after the target dies.
+    root = Actor(b"root")
+    watcher = Actor(b"watcher")
+    target = Actor(b"target")
+    await _connect(root, b"root", watcher, b"watcher", "inproc://mon-cw")
+    await _connect(root, b"root", target, b"target", "inproc://mon-ct")
+
+    handle = watcher.monitor(b"target", failure=[ba(b"DOWN")])
+    handle.cancel()
+    target.die(b"boom")
+
+    # Prove nothing fired by sending watcher a sentinel: it must be the only,
+    # and first, message watcher receives.
+    watcher.send(b"watcher", [ba(b"sentinel")])
+    assert await watcher.next() == [b"sentinel"]
+
+
+async def test_monitor_on_already_dead_actor_fires_immediately() -> None:
+    # Monitoring an actor that is already known dead fires right away rather than
+    # waiting forever.
+    root = Actor(b"root")
+    watcher = Actor(b"watcher")
+    target = Actor(b"target")
+    await _connect(root, b"root", watcher, b"watcher", "inproc://mon-aw")
+    await _connect(root, b"root", target, b"target", "inproc://mon-at")
+
+    target.die(b"boom")
+    # root is target's parent, so it receives the connection-failure notification.
+    # Consuming it confirms root has processed (and recorded as dead) target's
+    # death before we subscribe.
+    assert await root.next() == [b"target", b"boom"]
+
+    watcher.monitor(b"target", failure=[ba(b"DOWN")])
+    assert await watcher.next() == [b"DOWN", b"target", b"actor died"]
+
+
+async def test_monitor_returns_cancellable_handle() -> None:
+    # cancel() is idempotent and returns None.
+    a = Actor(b"mon-handle")
+    handle = a.monitor(b"nonexistent@root", failure=[ba(b"DOWN")])
+    assert isinstance(handle, minimonarch.MonitorHandle)
+    assert handle.cancel() is None
+    assert handle.cancel() is None
 
 
 async def test_die_is_void() -> None:

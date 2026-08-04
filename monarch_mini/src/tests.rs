@@ -14,6 +14,7 @@ use tokio::sync::oneshot;
 
 use crate::Role;
 use crate::actor::ActorEntry;
+use crate::actor::ActorName;
 use crate::actor::Delivery;
 use crate::actor::Route;
 use crate::connection::ConnectRequest;
@@ -217,7 +218,7 @@ fn message_to_unrouted_actor_buffers_at_gateway_then_flushes() {
     drain_commands(&mut ctx, &mut rx);
     assert!(matches!(
         ctx.actors[root].routes.get(b"grandchild".as_slice()),
-        Some(Route::Unknown(_))
+        Some(Route::Unknown { .. })
     ));
 
     // The grandchild now appears under the child; publishing its route up to the
@@ -251,7 +252,7 @@ fn buffered_messages_flush_upward_when_actor_gains_a_parent() {
     });
     assert!(matches!(
         ctx.actors[mover].routes.get(b"target".as_slice()),
-        Some(Route::Unknown(_))
+        Some(Route::Unknown { .. })
     ));
 
     // `mover` now joins `root`. Gaining a parent drops the buffer and re-routes the
@@ -259,10 +260,252 @@ fn buffered_messages_flush_upward_when_actor_gains_a_parent() {
     connect(&mut ctx, root, mover, "inproc://mover");
     drain_commands(&mut ctx, &mut rx);
 
-    assert!(ctx.actors[mover].routes.get(b"target".as_slice()).is_none());
+    assert!(!ctx.actors[mover].routes.contains_key(b"target".as_slice()));
     assert_eq!(
         buffered_strings(&ctx, target),
         vec!["target", "root", "hello-target"]
+    );
+}
+
+#[test]
+fn monitor_fires_when_sibling_dies() {
+    let (mut ctx, mut rx) = test_ctx();
+    let root = actor(&mut ctx, "root");
+    let watcher = actor(&mut ctx, "watcher");
+    let target = actor(&mut ctx, "target");
+    connect(&mut ctx, root, watcher, "inproc://watcher");
+    connect(&mut ctx, root, target, "inproc://target");
+    drain_commands(&mut ctx, &mut rx);
+
+    // `watcher` monitors its sibling `target`. The subscription has no route to
+    // `target` locally, so it climbs to their common ancestor `root`, which holds
+    // `target` in its routing table.
+    monitor(&mut ctx, watcher, 0, "target", "DOWN");
+    drain_commands(&mut ctx, &mut rx);
+    // The subscription is held on target's route at the common ancestor.
+    assert_eq!(route_monitor_count(&ctx, root, "target"), 1);
+
+    ctx.die_actor(target, b"boom".to_vec());
+    drain_commands(&mut ctx, &mut rx);
+
+    // root sees target's connection drop, marks it dead, and fires the monitor
+    // back down to watcher, which reconstructs [failure_prefix, target, reason].
+    assert_eq!(
+        buffered_strings(&ctx, watcher),
+        vec!["watcher", "root", "DOWN", "target", "actor died"]
+    );
+}
+
+#[test]
+fn monitor_fires_when_parent_of_target_dies() {
+    let (mut ctx, mut rx) = test_ctx();
+    let root = actor(&mut ctx, "root");
+    let watcher = actor(&mut ctx, "watcher");
+    let mid = actor(&mut ctx, "mid");
+    let target = actor(&mut ctx, "target");
+    connect(&mut ctx, root, watcher, "inproc://watcher");
+    connect(&mut ctx, root, mid, "inproc://mid");
+    connect(&mut ctx, mid, target, "inproc://target");
+    drain_commands(&mut ctx, &mut rx);
+
+    monitor(&mut ctx, watcher, 0, "target", "DOWN");
+    drain_commands(&mut ctx, &mut rx);
+
+    // `mid` dies, not `target` directly. `target` is unreachable, but the death is
+    // reported by root (mid's connection carried both "mid" and "target"), so the
+    // monitor still fires. `target` itself cascades dead but never reports it.
+    ctx.die_actor(mid, b"crash".to_vec());
+    drain_commands(&mut ctx, &mut rx);
+
+    assert_eq!(
+        buffered_strings(&ctx, watcher),
+        vec!["watcher", "root", "DOWN", "target", "actor died"]
+    );
+}
+
+#[test]
+fn cancelled_monitor_does_not_fire() {
+    let (mut ctx, mut rx) = test_ctx();
+    let root = actor(&mut ctx, "root");
+    let watcher = actor(&mut ctx, "watcher");
+    let target = actor(&mut ctx, "target");
+    connect(&mut ctx, root, watcher, "inproc://watcher");
+    connect(&mut ctx, root, target, "inproc://target");
+    drain_commands(&mut ctx, &mut rx);
+
+    monitor(&mut ctx, watcher, 0, "target", "DOWN");
+    drain_commands(&mut ctx, &mut rx);
+    ctx.run_command(Command::CancelMonitor {
+        actor: watcher,
+        id: 0,
+    });
+    drain_commands(&mut ctx, &mut rx);
+    // The subscription was walked back off target's route on cancel.
+    assert_eq!(route_monitor_count(&ctx, root, "target"), 0);
+
+    ctx.die_actor(target, b"boom".to_vec());
+    drain_commands(&mut ctx, &mut rx);
+
+    // Only the establishment hello — no monitor failure was delivered.
+    assert_eq!(buffered_strings(&ctx, watcher), vec!["watcher", "root"]);
+}
+
+#[test]
+fn monitor_on_already_dead_actor_fires_immediately() {
+    let (mut ctx, mut rx) = test_ctx();
+    let root = actor(&mut ctx, "root");
+    let watcher = actor(&mut ctx, "watcher");
+    let target = actor(&mut ctx, "target");
+    connect(&mut ctx, root, watcher, "inproc://watcher");
+    connect(&mut ctx, root, target, "inproc://target");
+    drain_commands(&mut ctx, &mut rx);
+
+    // Target dies first; root now records it as a dead route.
+    ctx.die_actor(target, b"boom".to_vec());
+    drain_commands(&mut ctx, &mut rx);
+    assert!(matches!(
+        ctx.actors[root].routes.get(b"target".as_slice()),
+        Some(Route::Dead)
+    ));
+
+    // Monitoring it now must fire right away rather than waiting forever.
+    monitor(&mut ctx, watcher, 0, "target", "DOWN");
+    drain_commands(&mut ctx, &mut rx);
+
+    assert_eq!(
+        buffered_strings(&ctx, watcher),
+        vec!["watcher", "root", "DOWN", "target", "actor died"]
+    );
+}
+
+#[test]
+fn buffered_subscription_forwards_up_when_actor_gains_a_parent() {
+    let (mut ctx, mut rx) = test_ctx();
+    let root = actor(&mut ctx, "root");
+    let mid = actor(&mut ctx, "mid");
+    let watcher = actor(&mut ctx, "watcher");
+    let target = actor(&mut ctx, "target");
+
+    // `watcher` joins `mid` while `mid` is still parentless (its own gateway).
+    connect(&mut ctx, mid, watcher, "inproc://buf-w");
+    drain_commands(&mut ctx, &mut rx);
+
+    // `watcher` monitors `target`, unknown anywhere yet. The subscription climbs to
+    // `mid` (parentless) and is buffered there on an Unknown route — exactly like a
+    // message to an unknown destination.
+    monitor(&mut ctx, watcher, 0, "target", "DOWN");
+    drain_commands(&mut ctx, &mut rx);
+    assert!(matches!(
+        ctx.actors[mid].routes.get(b"target".as_slice()),
+        Some(Route::Unknown { .. })
+    ));
+    assert_eq!(route_monitor_count(&ctx, mid, "target"), 1);
+
+    // `mid` now joins `root`. The buffered subscription must forward up to `root`
+    // (the bug: previously it was stranded at `mid`).
+    connect(&mut ctx, root, mid, "inproc://buf-m");
+    drain_commands(&mut ctx, &mut rx);
+    assert_eq!(route_monitor_count(&ctx, mid, "target"), 0);
+    assert_eq!(route_monitor_count(&ctx, root, "target"), 1);
+
+    // `target` finally appears under `root`; its route flips Unknown -> Connection,
+    // carrying the subscription. When it dies, the monitor fires down to `watcher`.
+    connect(&mut ctx, root, target, "inproc://buf-t");
+    drain_commands(&mut ctx, &mut rx);
+    assert!(matches!(
+        ctx.actors[root].routes.get(b"target".as_slice()),
+        Some(Route::Connection { .. })
+    ));
+
+    ctx.die_actor(target, b"boom".to_vec());
+    drain_commands(&mut ctx, &mut rx);
+    assert_eq!(
+        buffered_strings(&ctx, watcher),
+        vec!["watcher", "mid", "DOWN", "target", "actor died"]
+    );
+}
+
+#[test]
+fn monitor_on_unnamed_actor_waits_for_its_name() {
+    let (mut ctx, mut rx) = test_ctx();
+    let root = actor(&mut ctx, "root");
+    let target = actor(&mut ctx, "target");
+    // `watcher` is created without a name; root will name it when it joins.
+    let watcher = ctx.actors.insert(ActorEntry::new(None));
+    connect(&mut ctx, root, target, "inproc://un-target");
+    drain_commands(&mut ctx, &mut rx);
+
+    // Monitoring while unnamed can't address a fire-back yet, so it is deferred:
+    // nothing is registered upstream at root.
+    monitor(&mut ctx, watcher, 0, "target", "DOWN");
+    drain_commands(&mut ctx, &mut rx);
+    assert!(matches!(
+        ctx.actors[watcher].name,
+        ActorName::Unknown { .. }
+    ));
+    assert_eq!(route_monitor_count(&ctx, root, "target"), 0);
+
+    // root adopts and names `watcher` on join; that releases the deferred monitor,
+    // which now subscribes up to root.
+    ctx.serve(
+        root,
+        "inproc://un-watcher".to_owned(),
+        request_named(Role::Parent, "watcher"),
+    );
+    ctx.join(
+        watcher,
+        "inproc://un-watcher".to_owned(),
+        request(Role::Child),
+    );
+    drain_commands(&mut ctx, &mut rx);
+    assert_eq!(route_monitor_count(&ctx, root, "target"), 1);
+
+    ctx.die_actor(target, b"boom".to_vec());
+    drain_commands(&mut ctx, &mut rx);
+    assert_eq!(
+        buffered_strings(&ctx, watcher),
+        vec!["watcher", "root", "DOWN", "target", "actor died"]
+    );
+}
+
+#[test]
+fn dead_route_is_carried_up_as_dead_when_gaining_a_parent() {
+    let (mut ctx, mut rx) = test_ctx();
+    let root = actor(&mut ctx, "root");
+    let mid = actor(&mut ctx, "mid");
+    let target = actor(&mut ctx, "target");
+
+    // `mid` adopts `target` while still parentless (a gateway of its own subtree).
+    connect(&mut ctx, mid, target, "inproc://target");
+    drain_commands(&mut ctx, &mut rx);
+
+    // `target` dies; `mid` records the dead route but has no parent to publish to.
+    ctx.die_actor(target, b"boom".to_vec());
+    drain_commands(&mut ctx, &mut rx);
+    assert!(matches!(
+        ctx.actors[mid].routes.get(b"target".as_slice()),
+        Some(Route::Dead)
+    ));
+
+    // `mid` now joins `root`. Republishing its table on gaining a parent must carry
+    // the dead route up *as dead* — not as a live route, and not dropped (which
+    // would make `target` look like it never existed).
+    connect(&mut ctx, root, mid, "inproc://mid");
+    drain_commands(&mut ctx, &mut rx);
+    assert!(matches!(
+        ctx.actors[root].routes.get(b"target".as_slice()),
+        Some(Route::Dead)
+    ));
+
+    // And a monitor reaching root therefore fires rather than waiting forever.
+    let watcher = actor(&mut ctx, "watcher");
+    connect(&mut ctx, root, watcher, "inproc://watcher");
+    drain_commands(&mut ctx, &mut rx);
+    monitor(&mut ctx, watcher, 0, "target", "DOWN");
+    drain_commands(&mut ctx, &mut rx);
+    assert_eq!(
+        buffered_strings(&ctx, watcher),
+        vec!["watcher", "root", "DOWN", "target", "actor died"]
     );
 }
 
@@ -353,6 +596,98 @@ fn unix_writer_flushes_pending_sends_before_teardown() {
     shutdown(server_ctx);
 }
 
+#[test]
+fn unix_monitor_fires_across_processes() {
+    // Two processes joined by a socket. `target` lives with the server `srv`;
+    // `watcher` is in the client process, joined to `srv` as a child. Monitoring
+    // `target` makes a Subscribe climb the socket to `srv` (their common
+    // ancestor), and `target`'s death sends a FireMonitor back down the socket —
+    // exercising both control frames on the wire.
+    let server_ctx = CtxHandle::new().expect("server context should start");
+    let client_ctx = CtxHandle::new().expect("client context should start");
+    let srv = runtime_actor(&server_ctx, "srv");
+    let target = runtime_actor(&server_ctx, "target");
+    let watcher = runtime_actor(&client_ctx, "watcher");
+    let (srv_poller, mut srv_rx) = runtime_poller(&server_ctx);
+    let (target_poller, mut target_rx) = runtime_poller(&server_ctx);
+    let (watcher_poller, mut watcher_rx) = runtime_poller(&client_ctx);
+    runtime_subscribe(&server_ctx, srv_poller, 0, srv);
+    runtime_subscribe(&server_ctx, target_poller, 1, target);
+    runtime_subscribe(&client_ctx, watcher_poller, 0, watcher);
+
+    // srv adopts target locally (inproc) and serves the socket for the client.
+    server_ctx
+        .send_command(Command::Serve {
+            actor: srv,
+            url: "inproc://target".to_owned(),
+            request: request(Role::Parent),
+        })
+        .expect("serve should enqueue");
+    server_ctx
+        .send_command(Command::Join {
+            actor: target,
+            url: "inproc://target".to_owned(),
+            request: request(Role::Child),
+        })
+        .expect("join should enqueue");
+    let url = unix_test_url("monitor");
+    server_ctx
+        .send_command(Command::Serve {
+            actor: srv,
+            url: url.clone(),
+            request: request(Role::Parent),
+        })
+        .expect("serve should enqueue");
+    client_ctx
+        .send_command(Command::Join {
+            actor: watcher,
+            url,
+            request: request(Role::Child),
+        })
+        .expect("join should enqueue");
+
+    // Drain both hellos at srv so we know it holds routes to target and watcher
+    // before the subscription arrives.
+    let first = recv_strings(&mut srv_rx);
+    let second = recv_strings(&mut srv_rx);
+    let mut srv_peers = vec![first[1].clone(), second[1].clone()];
+    srv_peers.sort();
+    assert_eq!(srv_peers, vec!["target", "watcher"]);
+    // The hello also carries target's route up to srv (inproc), so target is a
+    // live route there before we monitor.
+    assert_eq!(recv_strings(&mut target_rx), vec!["target", "srv"]);
+    assert_eq!(recv_strings(&mut watcher_rx), vec!["watcher", "srv"]);
+
+    runtime_monitor(&client_ctx, watcher, 0, "target", "DOWN");
+
+    // The Subscribe and this probe both travel watcher→srv on the same socket in
+    // order. Seeing the probe arrive at target proves srv already registered the
+    // subscription, so the kill below races nothing.
+    client_ctx
+        .send_command(Command::Send {
+            sender: watcher,
+            destination_ident: MsgPart::from_bytes(b"target".to_vec()),
+            parts: vec![MsgPart::from_bytes(b"probe".to_vec())],
+        })
+        .expect("send should enqueue");
+    assert_eq!(recv_strings(&mut target_rx), vec!["probe"]);
+
+    server_ctx
+        .send_command(Command::Die {
+            actor: target,
+            reason: MsgPart::from_bytes(b"boom".to_vec()),
+        })
+        .expect("die should enqueue");
+
+    assert_eq!(
+        recv_strings(&mut watcher_rx),
+        vec!["DOWN", "target", "actor died"]
+    );
+
+    shutdown(client_ctx);
+    shutdown(server_ctx);
+}
+
 fn unix_test_url(name: &str) -> String {
     // The listener unlinks any stale socket before binding, so reusing a stable
     // per-process path across runs is safe.
@@ -383,6 +718,26 @@ fn actor(ctx: &mut Ctx, ident: &str) -> Key {
 fn connect(ctx: &mut Ctx, parent: Key, child: Key, url: &str) {
     ctx.serve(parent, url.to_owned(), request(Role::Parent));
     ctx.join(child, url.to_owned(), request(Role::Child));
+}
+
+/// Number of monitor subscriptions held on `ident`'s route at `actor` (0 if the
+/// route is absent or dead).
+fn route_monitor_count(ctx: &Ctx, actor: Key, ident: &str) -> usize {
+    match ctx.actors[actor].routes.get(ident.as_bytes()) {
+        Some(Route::Connection { monitors, .. }) | Some(Route::Unknown { monitors, .. }) => {
+            monitors.len()
+        }
+        _ => 0,
+    }
+}
+
+fn monitor(ctx: &mut Ctx, actor: Key, id: u64, to_monitor: &str, failure: &str) {
+    ctx.run_command(Command::Monitor {
+        actor,
+        id,
+        to_monitor: MsgPart::from_bytes(to_monitor.as_bytes().to_vec()),
+        failure_prefix: vec![MsgPart::from_bytes(failure.as_bytes().to_vec())],
+    });
 }
 
 fn runtime_connect(ctx: &CtxHandle, parent: Key, child: Key, url: &str) {
@@ -424,6 +779,16 @@ fn runtime_poller(ctx: &CtxHandle) -> (PollerKey, mpsc::UnboundedReceiver<Delive
         done_rx.blocking_recv().expect("poller should be created"),
         rx,
     )
+}
+
+fn runtime_monitor(ctx: &CtxHandle, actor: Key, id: u64, to_monitor: &str, failure: &str) {
+    ctx.send_command(Command::Monitor {
+        actor,
+        id,
+        to_monitor: MsgPart::from_bytes(to_monitor.as_bytes().to_vec()),
+        failure_prefix: vec![MsgPart::from_bytes(failure.as_bytes().to_vec())],
+    })
+    .expect("monitor should enqueue");
 }
 
 fn runtime_subscribe(ctx: &CtxHandle, poller: PollerKey, index: usize, actor: Key) {
@@ -476,6 +841,15 @@ fn request_with_failure(role: Role, failure: &str) -> ConnectRequest {
         name_for_other: None,
         hello_prefix: Vec::new(),
         failure_prefix: vec![MsgPart::from_bytes(failure.as_bytes().to_vec())],
+    }
+}
+
+fn request_named(role: Role, name_for_other: &str) -> ConnectRequest {
+    ConnectRequest {
+        role,
+        name_for_other: Some(MsgPart::from_bytes(name_for_other.as_bytes().to_vec())),
+        hello_prefix: Vec::new(),
+        failure_prefix: Vec::new(),
     }
 }
 

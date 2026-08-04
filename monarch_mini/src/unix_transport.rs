@@ -12,7 +12,7 @@
 //! This is pure plumbing. A connection's coroutines bring up the socket, produce
 //! a [`ConnectionTransport`] for it, and hand it to the command loop via
 //! `Command::TransportConnected`; the reader forwards every frame it decodes back
-//! as a `ConnectionSentCommand`. All establishment policy (announcing our
+//! as a `ConnectionAction`. All establishment policy (announcing our
 //! identity, learning the peer's, hello, liveness) lives in the command loop and
 //! is identical to inproc — this file never reads actor state or builds an
 //! `Establish`. An `Establish` is just another frame on the wire.
@@ -78,7 +78,22 @@ enum WireFrame {
         part_lens: Vec<u64>,
     },
     PublishRoutes {
-        actor_idents: Vec<Vec<u8>>,
+        live: Vec<Vec<u8>>,
+        dead: Vec<Vec<u8>>,
+    },
+    Subscribe {
+        dest: Vec<u8>,
+        id: u64,
+        to_monitor: Vec<u8>,
+    },
+    Unsubscribe {
+        dest: Vec<u8>,
+        id: u64,
+        to_monitor: Vec<u8>,
+    },
+    FireMonitor {
+        dest_ident: Vec<u8>,
+        monitor_id: u64,
     },
     Severed {
         reason: Vec<u8>,
@@ -278,7 +293,7 @@ async fn connector_task(
 
 /// Wire up a connected socket: build its [`UnixConnectionTransport`], announce it
 /// to the command loop, and spawn the writer (drains commands → frames) and
-/// reader (frames → `ConnectionSentCommand`). `TransportConnected` is enqueued
+/// reader (frames → `ConnectionAction`). `TransportConnected` is enqueued
 /// before the reader can forward anything, so the command loop installs the
 /// transport before any frame (including the peer's `Establish`) arrives.
 fn spawn_connection(
@@ -363,7 +378,7 @@ async fn reader_task(
         match read_command(&mut read_half).await {
             Ok(action) => {
                 if loop_tx
-                    .send(Command::ConnectionSentCommand { connection, action })
+                    .send(Command::ConnectionAction { connection, action })
                     .is_err()
                 {
                     return;
@@ -378,7 +393,7 @@ async fn reader_task(
 }
 
 fn sever(loop_tx: &mpsc::UnboundedSender<Command>, connection: ConnectionRef, reason: Vec<u8>) {
-    let _ = loop_tx.send(Command::ConnectionSentCommand {
+    let _ = loop_tx.send(Command::ConnectionAction {
         connection,
         action: ConnectionCommand::Severed { reason },
     });
@@ -420,9 +435,32 @@ async fn write_command(
             name_for_other,
             alive,
         },
-        ConnectionCommand::PublishRoutes { actor_idents } => {
-            WireFrame::PublishRoutes { actor_idents }
-        }
+        ConnectionCommand::PublishRoutes { live, dead } => WireFrame::PublishRoutes { live, dead },
+        ConnectionCommand::Subscribe {
+            dest,
+            id,
+            to_monitor,
+        } => WireFrame::Subscribe {
+            dest,
+            id,
+            to_monitor,
+        },
+        ConnectionCommand::Unsubscribe {
+            dest,
+            id,
+            to_monitor,
+        } => WireFrame::Unsubscribe {
+            dest,
+            id,
+            to_monitor,
+        },
+        ConnectionCommand::FireMonitor {
+            dest_ident,
+            monitor_id,
+        } => WireFrame::FireMonitor {
+            dest_ident,
+            monitor_id,
+        },
         ConnectionCommand::Severed { reason } => WireFrame::Severed { reason },
     };
 
@@ -480,9 +518,32 @@ async fn read_command(read_half: &mut OwnedReadHalf) -> std::io::Result<Connecti
             name_for_other,
             alive,
         },
-        WireFrame::PublishRoutes { actor_idents } => {
-            ConnectionCommand::PublishRoutes { actor_idents }
-        }
+        WireFrame::PublishRoutes { live, dead } => ConnectionCommand::PublishRoutes { live, dead },
+        WireFrame::Subscribe {
+            dest,
+            id,
+            to_monitor,
+        } => ConnectionCommand::Subscribe {
+            dest,
+            id,
+            to_monitor,
+        },
+        WireFrame::Unsubscribe {
+            dest,
+            id,
+            to_monitor,
+        } => ConnectionCommand::Unsubscribe {
+            dest,
+            id,
+            to_monitor,
+        },
+        WireFrame::FireMonitor {
+            dest_ident,
+            monitor_id,
+        } => ConnectionCommand::FireMonitor {
+            dest_ident,
+            monitor_id,
+        },
         WireFrame::Severed { reason } => ConnectionCommand::Severed { reason },
     })
 }
