@@ -1302,12 +1302,14 @@ async fn writer_task(
 /// [`HeartbeatEvent`]s (never to ctx). An error/EOF is a hard transport close: it
 /// emits `Severed` to the loop and `ReaderClosed` to the heartbeat_task.
 ///
-/// A message flood must not flood the heartbeat_task, so ordinary data frames
-/// notify it only as a *throttled backstop*: the reader tracks `last_notify` and
-/// sends an empty beat (matching the peer's direction) only when a full
+/// A message flood must not flood the heartbeat_task, so ordinary data frames notify
+/// it only as a *throttled backstop*: the reader tracks `last_notify` and sends a
+/// [`Heartbeat::TransportActivity`] ("still here") only when a full
 /// `2 × HEARTBEAT_INTERVAL` has passed with no real beat — so real beats cost one
-/// event each while data frames cost nothing, yet a peer that stops beating but
-/// keeps sending data still proves the pipe live at ≤ one event per two intervals.
+/// event each while data frames cost nothing, yet a peer that stops beating but keeps
+/// sending data still proves the pipe live at ≤ one event per two intervals. The
+/// activity beat only refreshes the reader's heartbeat deadline; it is not a real
+/// beat, so it never participates in the delegation request/response.
 async fn reader_task(
     mut recv: RecvStream,
     connection: ConnectionRef,
@@ -1319,9 +1321,6 @@ async fn reader_task(
     // Forwards inbound heartbeats and liveness/close signals to the heartbeat_task.
     hb_events: mpsc::UnboundedSender<HeartbeatEvent>,
 ) {
-    // The peer's heartbeat direction: the peer of a Parent-side connection is a
-    // Child (sends FromChild) and vice versa. Used for the empty backstop beat.
-    let peer_role = connection.role();
     let backstop_gap = crate::quic_heartbeat::heartbeat_interval() * 2;
     // Per-connection diagnostics, folded into the failure reason under MM_QUIC_DEBUG:
     // did we ever read the peer's Establish (identity exchange)? how many heartbeats
@@ -1378,12 +1377,12 @@ async fn reader_task(
                     let _ = peer_responded.send(());
                 }
                 // Throttled liveness backstop: an ordinary frame proves the pipe is
-                // live even if the peer's beats stopped. An empty beat refreshes the
-                // heartbeat_task's Direct deadline and is a no-op for delegation.
+                // live even if the peer's beats stopped. `TransportActivity` refreshes
+                // the heartbeat_task's deadline and is a no-op for delegation.
                 if last_notify.elapsed() >= backstop_gap {
                     last_notify = std::time::Instant::now();
                     let _ = hb_events.send(HeartbeatEvent::ReceivedHeartbeat(
-                        Heartbeat::empty_for_peer(peer_role),
+                        Heartbeat::TransportActivity,
                     ));
                 }
                 if loop_tx
