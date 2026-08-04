@@ -305,7 +305,7 @@ pub(crate) enum HeartbeatEvent {
 /// point of view. [`ParentPool`] derives its accounting from this (whether we beat the
 /// child directly, and the coverage it consumes from a sibling), so no caller pokes
 /// that accounting directly.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ChildStatus {
     /// Attached; its `Establish` (ident) has not arrived yet.
     NotEstablished,
@@ -475,6 +475,14 @@ impl ParentPool {
         }
         if !self.over_budget(config.max_direct_children) {
             return None;
+        }
+        if crate::ctx::connection_debug() {
+            eprintln!(
+                "MM_DELEG over budget: active_direct={} max_direct={} candidates={}",
+                self.active_direct,
+                config.max_direct_children,
+                self.candidates.ids.len(),
+            );
         }
         let (sibling_conn, sibling_ident) = self.pick_delegate(conn_id)?;
         // Point the child at its delegate, then transition: `set_status` charges
@@ -655,6 +663,10 @@ impl HeartbeatShared {
     ) {
         for x in cover_add {
             if covered.insert(x) {
+                let found = self.parents_by_conn_id.contains_key(&x);
+                if crate::ctx::connection_debug() {
+                    eprintln!("MM_COVER root pause conn_id={x} found_parent_loop={found}");
+                }
                 if let Some(h) = self.parents_by_conn_id.get(&x) {
                     let _ = h.send(HeartbeatEvent::PauseHeartbeat);
                 }
@@ -662,6 +674,9 @@ impl HeartbeatShared {
         }
         for x in cover_del {
             if covered.remove(&x) {
+                if crate::ctx::connection_debug() {
+                    eprintln!("MM_COVER root RESUME conn_id={x} (coverage dropped)");
+                }
                 if let Some(h) = self.parents_by_conn_id.get(&x) {
                     let _ = h.send(HeartbeatEvent::ResumeHeartbeat);
                 }
@@ -673,6 +688,9 @@ impl HeartbeatShared {
     /// down, so its covered children reclaim themselves as direct).
     fn resume_covered(&self, covered: &HashSet<ConnectionId>) {
         for x in covered {
+            if crate::ctx::connection_debug() {
+                eprintln!("MM_COVER root RESUME(host teardown) conn_id={x}");
+            }
             if let Some(h) = self.parents_by_conn_id.get(x) {
                 let _ = h.send(HeartbeatEvent::ResumeHeartbeat);
             }
@@ -849,6 +867,9 @@ async fn parent_direct_loop(
             _ = deadline_or_park(deadline) => {
                 // The child has gone silent (no beat within the timeout). While paused
                 // the deadline is `None`, so this never fires for a covered child.
+                if crate::ctx::connection_debug() {
+                    eprintln!("MM_SEVER direct-loop conn_id={conn_id}");
+                }
                 sever(loop_tx, connection, b"quic heartbeat timeout".to_vec());
                 return DirectExit::Closed;
             }
@@ -893,6 +914,12 @@ async fn parent_direct_loop(
                         // direct (a genuine fallback beat beat us to it), keep watching.
                         let mut s = shared.borrow_mut();
                         let pool = s.pool_mut(key);
+                        if crate::ctx::connection_debug() {
+                            eprintln!(
+                                "MM_PAUSE recv conn_id={conn_id} status={:?}",
+                                pool.status(conn_id)
+                            );
+                        }
                         if pool.status(conn_id) == Some(ChildStatus::Delegating) {
                             pool.set_status(conn_id, Some(ChildStatus::Paused));
                             deadline = None;
@@ -958,6 +985,9 @@ async fn parent_cover_loop(
     loop {
         tokio::select! {
             _ = tokio::time::sleep_until(deadline) => {
+                if crate::ctx::connection_debug() {
+                    eprintln!("MM_SEVER cover-loop (a cover host itself timed out)");
+                }
                 sever(loop_tx, connection, b"quic heartbeat timeout".to_vec());
                 break;
             }
@@ -1056,6 +1086,13 @@ async fn child_task<S: SendBeat>(ctx: HeartbeatCtx<S>) {
             _ = deadline_or_park(next_beat) => {
                 match &state {
                     ChildState::Direct => {
+                        if crate::ctx::connection_debug() && !cover_add.is_empty() {
+                            eprintln!(
+                                "MM_COVER pid={} report cover_add={:?}",
+                                std::process::id(),
+                                cover_add
+                            );
+                        }
                         let _ = beats.send(Heartbeat::FromChild {
                             cover_add: std::mem::take(&mut cover_add),
                             cover_del: std::mem::take(&mut cover_del),
@@ -1066,7 +1103,17 @@ async fn child_task<S: SendBeat>(ctx: HeartbeatCtx<S>) {
                     ChildState::Delegated { x, c } => {
                         if let Some(own) = &own_ident {
                             // Beat our delegate C over the side channel.
+                            if crate::ctx::connection_debug() {
+                                eprintln!(
+                                    "MM_CHILD pid={} beat delegate x={} c={}",
+                                    std::process::id(),
+                                    x,
+                                    String::from_utf8_lossy(c)
+                                );
+                            }
                             send_beat(c.clone(), own.clone(), *x, BeatKind::Beat);
+                        } else if crate::ctx::connection_debug() {
+                            eprintln!("MM_CHILD pid={} delegated but own_ident=None", std::process::id());
                         }
                         // Await C's ack; `primary` was armed on entry / last ack.
                     }
@@ -1097,6 +1144,13 @@ async fn child_task<S: SendBeat>(ctx: HeartbeatCtx<S>) {
                 for x in expired {
                     coverage.remove(&x);
                     cover_del.push(x);
+                    if crate::ctx::connection_debug() {
+                        eprintln!(
+                            "MM_COVER pid={} EXPIRE conn_id={} (no beat within timeout)",
+                            std::process::id(),
+                            x
+                        );
+                    }
                 }
             }
             ev = events.recv() => {
@@ -1104,6 +1158,18 @@ async fn child_task<S: SendBeat>(ctx: HeartbeatCtx<S>) {
                 match ev {
                     HeartbeatEvent::ReceivedHeartbeat(Heartbeat::FromParent { delegate }) => {
                         // Our parent's answer to our last direct beat.
+                        if crate::ctx::connection_debug() {
+                            if let Some(Delegate { connection_id, sibling_ident }) = &delegate {
+                                eprintln!(
+                                    "MM_CHILD pid={} got delegate x={} c={} own_addressable={} direct={}",
+                                    std::process::id(),
+                                    connection_id,
+                                    String::from_utf8_lossy(sibling_ident),
+                                    own_ident.as_deref().is_some_and(is_addressable),
+                                    matches!(state, ChildState::Direct),
+                                );
+                            }
+                        }
                         match delegate {
                             Some(Delegate { connection_id, sibling_ident })
                                 if own_ident.as_deref().is_some_and(is_addressable)
@@ -1139,10 +1205,26 @@ async fn child_task<S: SendBeat>(ctx: HeartbeatCtx<S>) {
                     }
                     HeartbeatEvent::Side(from, conn_id, BeatKind::Beat) => {
                         // Delegate-host duty: (re)arm coverage for `conn_id` and ack.
+                        if crate::ctx::connection_debug() {
+                            eprintln!(
+                                "MM_COVER pid={} beat-in conn_id={} from={}",
+                                std::process::id(),
+                                conn_id,
+                                String::from_utf8_lossy(&from)
+                            );
+                        }
                         let is_new = !coverage.contains_key(&conn_id);
                         coverage.insert(conn_id, (from.clone(), Instant::now() + timeout));
                         if is_new {
                             cover_add.push(conn_id);
+                            if crate::ctx::connection_debug() {
+                                eprintln!(
+                                    "MM_COVER pid={} add conn_id={} from={}",
+                                    std::process::id(),
+                                    conn_id,
+                                    String::from_utf8_lossy(&from)
+                                );
+                            }
                         }
                         if let Some(own) = &own_ident {
                             // Ack the delegated child that beat us.

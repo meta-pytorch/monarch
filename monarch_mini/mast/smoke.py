@@ -109,9 +109,18 @@ def ensure_quic_certs(certs_dir: str | None) -> None:
     )
 
 
-def worker_ident(port: int) -> bytes:
-    """A unique, human-readable identity for this worker process."""
-    return f"worker-{socket.gethostname()}-{port}".encode()
+def worker_ident(port: int, advertise_host: str | None = None) -> bytes:
+    """A unique, human-readable identity for this worker process.
+
+    If ``advertise_host`` is given, the ident carries a dialable gateway ``@tag``
+    (``...@[<host>]:<port>``) so a *sibling* worker can open a side channel to us.
+    Without it a peer can only reach us over a connection it already holds — which
+    is why the root can delegate our heartbeat to a sibling only when we advertise.
+    """
+    base = f"worker-{socket.gethostname()}-{port}"
+    if advertise_host:
+        base = f"{base}@[{advertise_host}]:{port}"
+    return base.encode()
 
 
 def _failure_notice(parts: list) -> tuple[str, str]:
@@ -136,7 +145,7 @@ def _report_progress(label: str, done: int, total: int, step: int) -> None:
         log(f"[root]   {label} {done}/{total} ({pct}%)")
 
 
-async def run_worker(port: int, bind: str) -> None:
+async def run_worker(port: int, bind: str, advertise_host: str | None = None) -> None:
     """Serve a quic listener, answer round-trips, and exit when the root dies.
 
     The worker is the *child* of the root: it serves (listens) and the root
@@ -150,7 +159,7 @@ async def run_worker(port: int, bind: str) -> None:
     to tear its own context down gracefully — which sends its shutdown notice back
     to the root, the response the root waits for before it closes that connection.
     """
-    ident = worker_ident(port)
+    ident = worker_ident(port, advertise_host)
     tag = f"[worker :{port}]"
     url = f"quic://[{bind}]:{port}"
     me = Actor(ident)
@@ -179,11 +188,46 @@ async def run_worker(port: int, bind: str) -> None:
         me.send(root_ident, [ba(b"hello from " + ident)])
 
 
-async def run_root(hosts: list[str], timeout: float, connect_timeout: float) -> int:
+async def _ping_round(root: Actor, workers: list[bytes], timeout: float) -> int:
+    """Send one ping to every worker, await each reply, return the failure count.
+
+    Each connected worker yields exactly one terminal message per round: a reply
+    (``[b"hello from ..."]``) or a failure notice (``[worker_ident, reason]``) if
+    its connection dropped (e.g. a heartbeat timeout severed it). Raises
+    ``asyncio.TimeoutError`` if a worker neither replies nor fails within
+    ``timeout`` — the signal that a connection silently stalled.
+    """
+    for wid in workers:
+        root.send(wid, [ba(b"ping")])
+    failures = 0
+    for _ in range(len(workers)):
+        msg = await asyncio.wait_for(root.next(), timeout)
+        if msg and bytes(msg[0]).startswith(b"hello from "):
+            continue
+        who, reason = _failure_notice(msg)
+        failures += 1
+        log(f"[root] FAILURE (reply) {who}: {reason}")
+    return failures
+
+
+async def run_root(
+    hosts: list[str],
+    timeout: float,
+    connect_timeout: float,
+    duration: float = 0.0,
+    send_interval: float = 1.0,
+) -> int:
     """Dial every worker, time connection + round-trip, and report.
 
     ``connect_timeout`` bounds the connect phase (longer, since with hundreds of
     hosts an occasional one is slow to boot); ``timeout`` bounds each reply.
+
+    If ``duration`` > 0 the ping/reply phase repeats for that many wall-clock
+    seconds, one round every ``send_interval`` seconds, instead of a single round.
+    A ``send_interval`` larger than the heartbeat timeout leaves gaps with *no*
+    data traffic, so the connections stay up only if heartbeats (direct and
+    delegated) keep them alive — which is exactly what this exercises.
+
     Returns a process exit code (0 on full success).
     """
     root = Actor(b"root")
@@ -226,44 +270,35 @@ async def run_root(hosts: list[str], timeout: float, connect_timeout: float) -> 
         connect_ms = (time.monotonic() - t_join) * 1e3
         log(f"[root] all {len(workers)} workers connected in {connect_ms:.1f} ms")
 
-        # --- Phase 2: one message to each worker, await each reply -----------
+        # --- Phase 2: ping/reply, once or repeatedly for `duration` seconds --
         t_send = time.monotonic()
-        for wid in workers:
-            root.send(wid, [ba(b"ping")])
-        log(f"[root] sent ping to {len(workers)} workers")
-
-        # Each connected worker yields exactly one terminal message: a reply
-        # ([b"hello from ..."]) or a failure notice ([worker_ident, reason]) if
-        # its connection dropped after connecting. Consume that many messages,
-        # counting replies (progress at decile boundaries) and printing every
-        # failure as it arrives.
-        replies = 0
-        reply_failures = 0
-        for _ in range(len(workers)):
-            try:
-                msg = await asyncio.wait_for(root.next(), timeout)
-            except asyncio.TimeoutError:
-                log(
-                    f"[root] ERROR: only {replies}/{len(workers)} replies within "
-                    f"{timeout:.0f}s ({failures + reply_failures} failures)"
-                )
-                return 1
-            if msg and bytes(msg[0]).startswith(b"hello from "):
-                replies += 1
-                _report_progress("replies", replies, len(workers), step)
-            else:
-                who, reason = _failure_notice(msg)
-                reply_failures += 1
-                log(f"[root] FAILURE (reply) {who}: {reason}")
-        failures += reply_failures
+        deadline = t_send + max(duration, 0.0)
+        rounds = 0
+        try:
+            while True:
+                rounds += 1
+                failures += await _ping_round(root, workers, timeout)
+                if failures:
+                    break
+                log(f"[root]   round {rounds} ok ({len(workers)} replies)")
+                if time.monotonic() >= deadline:
+                    break
+                # Idle gap: no data flows, so only heartbeats keep the links up.
+                await asyncio.sleep(send_interval)
+        except asyncio.TimeoutError:
+            log(
+                f"[root] ERROR: a worker stalled (no reply within {timeout:.0f}s) "
+                f"in round {rounds} ({failures} failures so far)"
+            )
+            return 1
         roundtrip_ms = (time.monotonic() - t_send) * 1e3
 
         log("[root] --- summary ---")
         log(f"[root] connect:    {connect_ms:.1f} ms ({len(workers)} workers)")
-        log(f"[root] round-trip: {roundtrip_ms:.1f} ms ({replies} replies)")
+        log(f"[root] round-trip: {roundtrip_ms:.1f} ms ({rounds} round(s))")
         log(f"[root] failures:   {failures}")
-        # Success only if every worker replied and nothing severed along the way.
-        return 0 if replies == len(workers) and failures == 0 else 1
+        # Success only if nothing severed across every round.
+        return 0 if failures == 0 else 1
     finally:
         # Gracefully tear down the context *inside the event loop*: this flushes
         # an "actor destroyed" death notice to every worker before the loop
@@ -301,6 +336,12 @@ def main() -> None:
         help="worker bind address (default: '::' = all IPv6 interfaces)",
     )
     parser.add_argument(
+        "--advertise-host",
+        default=None,
+        help="worker: IPv6 host siblings can dial us at; adds a gateway @tag to our "
+        "ident so the root can delegate our heartbeat to a sibling (e.g. '::1' locally)",
+    )
+    parser.add_argument(
         "--certs-dir", default=None, help="directory holding cert.pem/key.pem/ca.pem"
     )
     parser.add_argument(
@@ -316,19 +357,45 @@ def main() -> None:
         help="root: seconds to wait for all workers to connect (default: 180); "
         "larger than --timeout because with many hosts one can be slow to boot",
     )
+    parser.add_argument(
+        "--duration",
+        type=float,
+        default=0.0,
+        help="root: repeat the ping/reply phase for this many seconds (default: 0 "
+        "= a single round). Use a value well over the heartbeat timeout to keep the "
+        "run alive across many heartbeat cycles.",
+    )
+    parser.add_argument(
+        "--send-interval",
+        type=float,
+        default=1.0,
+        help="root: seconds between ping rounds when --duration > 0 (default: 1). "
+        "Set larger than the heartbeat timeout so heartbeats, not data, hold the "
+        "links open between rounds.",
+    )
     args = parser.parse_args()
 
     ensure_quic_certs(args.certs_dir)
 
     if args.worker:
-        asyncio.run(run_worker(args.port, args.bind))
+        asyncio.run(run_worker(args.port, args.bind, args.advertise_host))
     else:
         if args.root_file:
             with open(args.root_file) as f:
                 hosts = [line.strip() for line in f if line.strip()]
         else:
             hosts = args.root
-        sys.exit(asyncio.run(run_root(hosts, args.timeout, args.connect_timeout)))
+        sys.exit(
+            asyncio.run(
+                run_root(
+                    hosts,
+                    args.timeout,
+                    args.connect_timeout,
+                    args.duration,
+                    args.send_interval,
+                )
+            )
+        )
 
 
 if __name__ == "__main__":
