@@ -120,7 +120,6 @@ _MACOS_ARM64_SKIP_NODEIDS = frozenset(
         "python/tests/test_cuda.py::TestEnvBeforeCuda::test_proc_mesh_with_dictionary_env",
         "python/tests/test_cuda.py::TestEnvBeforeCuda::test_proc_mesh_with_lambda_env",
         "python/tests/test_debugger.py::test_debug_with_pickle_by_value",
-        "python/tests/test_distributed_telemetry.py::test_query_after_stopping_actor_mesh",
         "python/tests/test_host_mesh.py::test_host_mesh_context_manager",
         "python/tests/test_host_mesh.py::test_spawn_procs_with_taskset_bind",
         "python/tests/test_host_mesh.py::test_stop_and_reconnect",
