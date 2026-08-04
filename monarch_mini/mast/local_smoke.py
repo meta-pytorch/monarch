@@ -13,8 +13,7 @@ It is meant for exercising the *delegated* heartbeat path without a cluster:
 
   * ``--max-direct`` (``MM_QUIC_MAX_DIRECT_CHILDREN``) is set well below the worker
     count, so the root cannot heartbeat every worker directly and must delegate the
-    excess to sibling workers (cover hosts). ``--coverage`` caps how many one
-    sibling may cover.
+    excess onto that many sibling workers (cover hosts), balanced across them.
   * ``--hb-interval-ms`` / ``--hb-timeout-ms`` speed the heartbeat cadence and
     timeout way down (defaults 300 / 1200) so a run of a few seconds spans many
     heartbeat cycles.
@@ -44,7 +43,6 @@ def child_env(args: argparse.Namespace) -> dict[str, str]:
     """Environment for the worker/root children: heartbeat + delegation tunables."""
     env = dict(os.environ)
     env["MM_QUIC_MAX_DIRECT_CHILDREN"] = str(args.max_direct)
-    env["MM_QUIC_MAX_COVERAGE_PER_SIBLING"] = str(args.coverage)
     env["MM_QUIC_HEARTBEAT_INTERVAL_MS"] = str(args.hb_interval_ms)
     env["MM_QUIC_HEARTBEAT_TIMEOUT_MS"] = str(args.hb_timeout_ms)
     if args.debug:
@@ -64,15 +62,9 @@ def main() -> None:
         "--max-direct",
         type=int,
         default=2,
-        help="MM_QUIC_MAX_DIRECT_CHILDREN: children the root keeps direct before "
-        "delegating the rest (default: 2). Keep < --workers to force delegation.",
-    )
-    parser.add_argument(
-        "--coverage",
-        type=int,
-        default=4,
-        help="MM_QUIC_MAX_COVERAGE_PER_SIBLING: max children one cover host may take "
-        "(default: 4)",
+        help="MM_QUIC_MAX_DIRECT_CHILDREN: children the root keeps direct; the rest "
+        "are delegated onto them, balanced (default: 2). Keep < --workers to force "
+        "delegation.",
     )
     parser.add_argument("--hb-interval-ms", type=int, default=300)
     parser.add_argument("--hb-timeout-ms", type=int, default=1200)
@@ -87,6 +79,13 @@ def main() -> None:
         type=float,
         default=2.0,
         help="seconds between ping rounds (default: 2, > heartbeat timeout)",
+    )
+    parser.add_argument(
+        "--chain-length",
+        type=int,
+        default=0,
+        help="cap the ring into chains of at most this many workers (default: 0 = "
+        "one chain of all workers)",
     )
     parser.add_argument("--startup-grace", type=float, default=2.0)
     parser.add_argument(
@@ -112,7 +111,7 @@ def main() -> None:
 
     print(
         f"[local] {args.workers} workers on ::1 ports {ports[0]}..{ports[-1]}; "
-        f"max_direct={args.max_direct} coverage={args.coverage} "
+        f"max_direct={args.max_direct} "
         f"hb={args.hb_interval_ms}/{args.hb_timeout_ms}ms "
         f"duration={args.duration}s send_interval={args.send_interval}s",
         flush=True,
@@ -121,18 +120,15 @@ def main() -> None:
     worker_outs = [out_for(f"worker-{p}") for p in ports]
     workers = [
         subprocess.Popen(
-            # --advertise-host ::1 gives each worker a dialable @tag so the root can
-            # delegate its heartbeat to a sibling (siblings dial each other locally).
+            # Each worker binds all interfaces (default) and auto-advertises its own
+            # routable IPv6 as a dialable @tag, so the root can delegate its heartbeat
+            # to a sibling (siblings dial each other at that advertised address).
             [
                 sys.executable,
                 SMOKE,
                 "--worker",
                 "--port",
                 str(p),
-                "--bind",
-                "::1",
-                "--advertise-host",
-                "::1",
             ],
             env=env,
             stdout=out,
@@ -154,6 +150,8 @@ def main() -> None:
                 str(args.duration),
                 "--send-interval",
                 str(args.send_interval),
+                "--chain-length",
+                str(args.chain_length),
                 "--timeout",
                 "5",
                 "--connect-timeout",
