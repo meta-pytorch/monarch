@@ -140,6 +140,9 @@ pub(crate) async fn write_command<W: AsyncWrite + Unpin>(
             payload,
         },
         ConnectionCommand::Severed { reason } => WireFrame::Severed { reason },
+        // Shared memory is machine-local, so quic drops gateway state rather than
+        // forwarding it: skip without writing anything to the wire.
+        ConnectionCommand::GatewayState { .. } => return Ok(()),
     };
     write_frame(writer, &frame, &parts).await
 }
