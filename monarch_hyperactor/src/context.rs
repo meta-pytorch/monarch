@@ -120,16 +120,9 @@ impl PyInstance {
     #[pyo3(signature = (reason = None))]
     fn stop_and_wait(&self, reason: Option<&str>) -> PyResult<crate::pytokio::PyPythonTask> {
         let reason = reason.unwrap_or("shutdown").to_string();
-        let actor_id = self.inner.self_addr().clone();
-        let proc = self.inner.proc().clone();
+        let instance = self.inner.clone_for_py();
         crate::pytokio::PyPythonTask::new(async move {
-            let status_rx = proc.stop_actor(actor_id.id(), reason);
-            if let Some(mut rx) = status_rx {
-                let _ = rx.wait_for(|s| s.is_terminal()).await;
-            }
-            if let Err(e) = proc.flush().await {
-                tracing::warn!(%actor_id, "stop_and_wait: flush failed: {}", e);
-            }
+            stop_instance_and_wait(&instance, reason).await;
             Ok(())
         })
     }
@@ -179,6 +172,28 @@ impl PyInstance {
         if let Some(tracker) = &self.execution_tracker {
             tracker.finish(token);
         }
+    }
+}
+
+/// Stop an actor, wait for terminal status, and flush its proc's gateway.
+pub(crate) async fn stop_instance_and_wait(instance: &Instance<PythonActor>, reason: String) {
+    let actor_id = instance.self_addr().clone();
+    let proc = instance.proc().clone();
+    let mut status = instance.status();
+    if let Err(error) = instance.stop(&reason) {
+        tracing::warn!(%actor_id, %error, "stop_and_wait: stop failed");
+    } else {
+        let _ = status.wait_for(|s| s.is_terminal()).await;
+    }
+    let flush_timeout = hyperactor_config::global::get(hyperactor::config::FORWARDER_FLUSH_TIMEOUT);
+    match tokio::time::timeout(flush_timeout, proc.flush()).await {
+        Ok(Err(error)) => {
+            tracing::warn!(%actor_id, %error, "stop_and_wait: flush failed");
+        }
+        Err(_elapsed) => {
+            tracing::warn!(%actor_id, "stop_and_wait: flush timed out");
+        }
+        Ok(Ok(())) => {}
     }
 }
 

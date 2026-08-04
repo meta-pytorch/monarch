@@ -111,7 +111,7 @@ pub fn run_worker_loop_forever(_py: Python<'_>, address: &str) -> PyResult<PyPyt
             host(addr, command, None, true, listener, Gateway::new(), None)
                 .await
                 .map_pyerr()?;
-        shutdown.join().await;
+        shutdown.stop_and_join().await;
         halt::<()>().await;
         Ok(())
     })

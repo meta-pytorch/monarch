@@ -52,6 +52,7 @@ use pyo3::types::PyBytes;
 use crate::actor::PythonActor;
 use crate::actor::to_py_error;
 use crate::context::PyInstance;
+use crate::context::stop_instance_and_wait;
 use crate::proc_mesh::PyProcMesh;
 use crate::pytokio::PyPythonTask;
 use crate::runtime::GilSite;
@@ -662,7 +663,7 @@ fn py_host_mesh_from_bytes(bytes: &Bound<'_, PyBytes>) -> PyResult<PyHostMesh> {
 fn shutdown_local_host_mesh() -> PyResult<PyPythonTask> {
     let agent = HOST_MESH_AGENT_FOR_HOST
         .get()
-        .ok_or_else(|| PyException::new_err("No local host mesh to shutdown"))?
+        .ok_or_else(|| PyRuntimeError::new_err("No local host mesh to shutdown"))?
         .clone();
 
     PyPythonTask::new(async move {
@@ -693,12 +694,22 @@ fn shutdown_local_host_mesh() -> PyResult<PyPythonTask> {
             },
         );
 
-        // Join the host's mailbox server to flush receive-side acks
-        // before the process exits.
-        if let Some(lock) = HOST_SHUTDOWN_HANDLE.get()
-            && let Some(handle) = lock.lock().await.take()
-        {
-            handle.join().await;
+        let shutdown = if let Some(lock) = HOST_SHUTDOWN_HANDLE.get() {
+            lock.lock().await.take()
+        } else {
+            None
+        };
+        if let Some(shutdown) = shutdown {
+            if let Some(root) = ROOT_CLIENT_INSTANCE_FOR_HOST.get() {
+                shutdown
+                    .stop_and_join_after_drain(stop_instance_and_wait(root, "shutdown".to_string()))
+                    .await;
+            } else {
+                tracing::warn!("shutting down partially bootstrapped host without root client");
+                shutdown.stop_and_join().await;
+            }
+        } else if let Some(root) = ROOT_CLIENT_INSTANCE_FOR_HOST.get() {
+            stop_instance_and_wait(root, "shutdown".to_string()).await;
         }
 
         Ok(())

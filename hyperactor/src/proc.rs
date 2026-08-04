@@ -2844,7 +2844,8 @@ impl<A: Actor> Instance<A> {
         self.inner.mailbox.drain();
     }
 
-    pub(crate) fn status(&self) -> watch::Receiver<ActorStatus> {
+    /// Subscribe to this actor's status changes.
+    pub fn status(&self) -> watch::Receiver<ActorStatus> {
         self.inner.cell.status().clone()
     }
 

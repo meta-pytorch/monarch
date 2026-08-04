@@ -150,6 +150,51 @@ pub enum HostError {
     ViaAttachFailure(#[source] anyhow::Error),
 }
 
+/// Client transport handles transferred to the bootstrap shutdown task.
+///
+/// Dropping this value stops any handles that have not already been joined,
+/// so cancellation cannot detach a live frontend or via transport.
+#[derive(Debug)]
+pub(crate) struct HostShutdownHandles {
+    frontend: Option<GatewayServeHandle>,
+    via: Option<GatewayServeHandle>,
+}
+
+impl HostShutdownHandles {
+    pub(crate) fn new(frontend: GatewayServeHandle, via: Option<GatewayServeHandle>) -> Self {
+        Self {
+            frontend: Some(frontend),
+            via,
+        }
+    }
+
+    pub(crate) async fn stop_and_join(mut self, reason: &str) {
+        if let Some(mut frontend) = self.frontend.take() {
+            frontend.stop(reason);
+            if let Err(error) = frontend.join().await {
+                tracing::warn!(%error, "failed to join host shutdown frontend");
+            }
+        }
+        if let Some(mut via) = self.via.take() {
+            via.stop(reason);
+            if let Err(error) = via.join().await {
+                tracing::warn!(%error, "failed to join host shutdown via transport");
+            }
+        }
+    }
+}
+
+impl Drop for HostShutdownHandles {
+    fn drop(&mut self) {
+        if let Some(frontend) = &mut self.frontend {
+            frontend.stop("host shutdown handles dropped");
+        }
+        if let Some(via) = &mut self.via {
+            via.stop("host shutdown handles dropped");
+        }
+    }
+}
+
 /// Lifecycle manager for the procs on one machine.
 ///
 /// The host delegates all connectivity to its [`Gateway`]. It creates
@@ -426,6 +471,14 @@ impl<M: ProcManager> Host<M> {
     /// frontend server explicitly.
     pub(crate) fn take_frontend_handle(&mut self) -> Option<GatewayServeHandle> {
         self.frontend_handle.take()
+    }
+
+    /// Take the transport handles that must remain live through final client flushes.
+    pub(crate) fn take_shutdown_handles(&mut self) -> HostShutdownHandles {
+        let frontend = self
+            .take_frontend_handle()
+            .expect("host shutdown must own its frontend handle");
+        HostShutdownHandles::new(frontend, self.via_handle.take())
     }
 
     /// Stop and join every gateway server owned by this host.
@@ -2301,11 +2354,13 @@ mod tests {
             Ok(proc.spawn_with_label::<()>("host_agent", ()))
         });
 
-        let host = Host::new_with_gateway(
+        let gateway = Gateway::new();
+        let fallback_location = gateway.default_location();
+        let mut host = Host::new_with_gateway(
             proc_manager,
             ChannelAddr::any(ChannelTransport::Unix),
             None,
-            Gateway::new(),
+            gateway.clone(),
             Some(remote_addr.clone()),
         )
         .await
@@ -2330,6 +2385,17 @@ mod tests {
             .expect("service proc must carry the via prefix");
         assert_eq!(svc_inner.addr(), &remote_addr);
 
+        let shutdown_handles = host.take_shutdown_handles();
+        drop(host);
+        assert_eq!(
+            gateway.default_location(),
+            default_location,
+            "shutdown handles must retain the via location after the host drops"
+        );
+        shutdown_handles.stop_and_join("test cleanup").await;
+        assert_eq!(gateway.default_location(), fallback_location);
+
         remote_accept.stop("test cleanup");
+        remote_accept.join().await.unwrap();
     }
 }

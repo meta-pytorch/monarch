@@ -56,6 +56,7 @@ use pyo3::types::PyTuple;
 fn python_bootstrap_seeds_client_root_on_local_proc_agent() -> Result<()> {
     pyo3::Python::initialize();
 
+    assert_shutdown_without_host_is_runtime_error()?;
     let test_result = exercise_python_bootstrap_contract();
     let shutdown_result = shutdown_python_host();
 
@@ -67,6 +68,23 @@ fn python_bootstrap_seeds_client_root_on_local_proc_agent() -> Result<()> {
             "client-root contract failed: {test_error:#}; host shutdown also failed: {shutdown_error:#}"
         ),
     }
+}
+
+fn assert_shutdown_without_host_is_runtime_error() -> Result<()> {
+    monarch_with_gil_blocking(GilSite::Test, |py| -> PyResult<()> {
+        py.run(c_str!("import monarch._rust_bindings"), None, None)?;
+        let host_mesh_mod = py.import("monarch._rust_bindings.monarch_hyperactor.host_mesh")?;
+        let error = host_mesh_mod
+            .getattr("shutdown_local_host_mesh")?
+            .call0()
+            .expect_err("shutdown without a host must fail");
+        assert!(
+            error.is_instance_of::<PyRuntimeError>(py),
+            "shutdown without a host must raise RuntimeError, got {error}"
+        );
+        Ok(())
+    })?;
+    Ok(())
 }
 
 fn exercise_python_bootstrap_contract() -> Result<()> {
