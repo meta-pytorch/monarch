@@ -8,8 +8,6 @@
 
 use std::collections::VecDeque;
 
-use crate::connection::ConnectionRef;
-
 pub(crate) struct Matcher<Left, Right> {
     left: VecDeque<Left>,
     right: VecDeque<Right>,
@@ -47,5 +45,3 @@ impl<Left, Right> Matcher<Left, Right> {
         Some(on_match(left, right))
     }
 }
-
-pub(crate) type InprocMatcher = Matcher<ConnectionRef, ConnectionRef>;

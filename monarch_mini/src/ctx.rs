@@ -6,7 +6,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::os::fd::OwnedFd;
 use std::thread;
@@ -28,12 +27,20 @@ use crate::connection::ConnectionCommand;
 use crate::connection::ConnectionRef;
 use crate::connection::ConnectionTransport;
 use crate::connection::EstablishFailure;
-use crate::connection::InprocConnectionTransport;
-use crate::matcher::InprocMatcher;
-use crate::matcher::Matcher;
+use crate::inproc_transport::InprocTransport;
 use crate::msg::MsgPart;
 use crate::poller::Delivered;
 use crate::poller::PollerEntry;
+use crate::transport::Transport;
+use crate::unix_transport::UnixTransport;
+
+/// Whether `url`'s scheme is one we have a transport for. Kept separate from
+/// [`Ctx::transport_for`] so the scheme can be validated — before the connection
+/// is attached, while the request can still report failure — without a `&mut self`
+/// borrow.
+fn valid_scheme(url: &str) -> bool {
+    url.starts_with("inproc://") || url.starts_with("unix://")
+}
 
 new_key_type! {
     pub(crate) struct Key;
@@ -93,6 +100,13 @@ pub(crate) enum Command {
         connection: ConnectionRef,
         action: ConnectionCommand,
     },
+    // A transport's pipe is up; install it on the connection. Transport-agnostic:
+    // both inproc and unix emit it, and the command loop drives establishment
+    // from here (sends our Establish along the transport).
+    TransportConnected {
+        connection: ConnectionRef,
+        transport: Box<dyn ConnectionTransport>,
+    },
     Die {
         actor: Key,
         reason: MsgPart,
@@ -105,8 +119,12 @@ pub(crate) enum Command {
 struct Ctx {
     actors: SlotMap<Key, ActorEntry>,
     pollers: SlotMap<PollerKey, PollerEntry>,
-    tx: mpsc::UnboundedSender<Command>,
-    inproc: HashMap<String, InprocMatcher>,
+    // The transports. Each owns its own pairing/socket state and coroutines plus
+    // a clone of the loop sender; the command loop only forwards serves/joins to
+    // them and handles the generic TransportConnected/ConnectionSentCommand they
+    // emit.
+    inproc: InprocTransport,
+    unix: UnixTransport,
     thread: Option<JoinHandle<()>>,
     _not_send: PhantomData<*const ()>,
 }
@@ -116,14 +134,14 @@ impl Ctx {
         Self {
             actors: SlotMap::with_key(),
             pollers: SlotMap::with_key(),
-            tx,
-            inproc: HashMap::new(),
+            inproc: InprocTransport::new(tx.clone()),
+            unix: UnixTransport::new(tx),
             thread: None,
             _not_send: PhantomData,
         }
     }
 
-    fn run_command(&mut self, command: Command) -> bool {
+    fn run_command(&mut self, command: Command) {
         match command {
             Command::Init { thread } => {
                 self.thread = Some(thread);
@@ -220,20 +238,22 @@ impl Ctx {
                     self.run_connection_command(connection, action);
                 }
             }
+            Command::TransportConnected {
+                connection,
+                transport,
+            } => {
+                self.transport_connected(connection, transport);
+            }
             Command::Die { actor, reason } => {
                 let reason = reason.as_bytes().to_vec();
                 self.die_actor(actor, reason);
             }
-            Command::Shutdown { done } => {
-                let thread = self
-                    .thread
-                    .take()
-                    .expect("context should have thread handle");
-                let _ = done.send(thread);
-                return true;
+            Command::Shutdown { .. } => {
+                // Handled directly by the event loop (see CtxHandle::new) so it
+                // can await the UNIX writer flush before tearing the loop down.
+                unreachable!("Shutdown is intercepted by the event loop");
             }
         }
-        false
     }
 
     fn actor(&self, actor: Key) -> &ActorEntry {
@@ -316,45 +336,48 @@ impl Ctx {
         }
     }
 
+    /// Select the transport for a url's scheme. Only called once the scheme is
+    /// known valid (see [`valid_scheme`]), so a missing transport is a bug.
+    fn transport_for(&mut self, url: &str) -> &mut dyn Transport {
+        if url.starts_with("inproc://") {
+            &mut self.inproc
+        } else if url.starts_with("unix://") {
+            &mut self.unix
+        } else {
+            unreachable!("scheme already validated by valid_scheme");
+        }
+    }
+
     fn serve(&mut self, actor: Key, url: String, request: ConnectRequest) {
-        if !url.starts_with("inproc://") {
+        // Shared setup runs first regardless of transport: validate the scheme,
+        // then attach the unestablished connection. Only then do we hand the
+        // connection to the transport, which brings up its pipe and announces it
+        // back via TransportConnected. (The scheme is validated before attach so a
+        // bad scheme can still report failure with the as-yet-unconsumed request.)
+        if !valid_scheme(&url) {
             self.deliver_connect_failure(actor, request, b"unsupported url scheme".to_vec());
             return;
         }
-
-        let Some(pending) = self.attach_inproc_connection(actor, request) else {
+        let Some(connection) = self.attach_connection(actor, request) else {
             return;
         };
-        let mut matcher = self.inproc.remove(&url).unwrap_or_else(Matcher::new);
-        let _ = matcher.push_left(pending, |serve, join| {
-            self.establish_inproc(serve, join);
-        });
-        self.inproc.insert(url, matcher);
+        self.transport_for(&url).serve(url, connection);
     }
 
     fn join(&mut self, actor: Key, url: String, request: ConnectRequest) {
-        if !url.starts_with("inproc://") {
+        if !valid_scheme(&url) {
             self.deliver_connect_failure(actor, request, b"unsupported url scheme".to_vec());
             return;
         }
-
-        let Some(pending) = self.attach_inproc_connection(actor, request) else {
+        let Some(connection) = self.attach_connection(actor, request) else {
             return;
         };
-        let mut matcher = self.inproc.remove(&url).unwrap_or_else(Matcher::new);
-        let _ = matcher.push_right(pending, |serve, join| {
-            self.establish_inproc(serve, join);
-        });
-        self.inproc.insert(url, matcher);
+        self.transport_for(&url).join(url, connection);
     }
 
-    fn attach_inproc_connection(
-        &mut self,
-        actor: Key,
-        request: ConnectRequest,
-    ) -> Option<ConnectionRef> {
+    fn attach_connection(&mut self, actor: Key, request: ConnectRequest) -> Option<ConnectionRef> {
         let role = request.role;
-        let connection = Connection::new_inproc(request);
+        let connection = Connection::new_unestablished(request);
 
         let connection = match role {
             Role::Parent => {
@@ -407,38 +430,57 @@ impl Ctx {
         Some(connection)
     }
 
-    fn establish_inproc(&mut self, serve: ConnectionRef, join: ConnectionRef) {
-        self.send_inproc_established(serve, join);
-        self.send_inproc_established(join, serve);
-    }
-
-    fn send_inproc_established(&mut self, connection: ConnectionRef, peer: ConnectionRef) {
-        let tx = self.tx.clone();
-
-        // Peer liveness is not something the receiver can observe locally (a real
-        // transport's peer may be remote), so report it in the Establish message and
-        // let establish treat a dead peer as a sever reason. The peer's own name and
-        // the name it wants to give us are only known while its connection is still
-        // pending, so a torn-down peer is reported as nameless.
-        let peer_alive = self.actor(peer.owning_actor()).alive;
-        let (peer_name, requested_name) = match self.connection(peer) {
-            Connection::Unestablished { name_for_other, .. } => (
-                self.actor(peer.owning_actor()).ident.clone(),
-                name_for_other.clone(),
-            ),
-            _ => (None, None),
-        };
-
-        self.send_connection_command(
-            connection,
-            ConnectionCommand::Establish {
-                peer_alive,
-                peer_role: peer.role(),
-                peer_name,
-                requested_name,
-                transport: Box::new(InprocConnectionTransport { tx, peer }),
-            },
+    /// A transport's pipe is up. Announce ourselves to the peer along it via an
+    /// `Establish`, then hold the transport on the connection until the peer's
+    /// `Establish` lands (`Unestablished` → `Connecting`).
+    ///
+    /// If the owning actor already died, the connection is `Failed`: we still send
+    /// an `Establish`, carrying our (dead) ident but `alive: false`, so the peer
+    /// severs *and names us* in its failure. We then drop the transport without
+    /// transitioning (its drop-severance is the generic fallback, skipped once the
+    /// peer is already failing).
+    fn transport_connected(
+        &mut self,
+        connection: ConnectionRef,
+        transport: Box<dyn ConnectionTransport>,
+    ) {
+        let role = connection.role();
+        let ident = self.actor(connection.owning_actor()).ident.clone();
+        let alive = matches!(
+            self.connection(connection),
+            Connection::Unestablished { .. }
         );
+        let name_for_other = match self.connection(connection) {
+            Connection::Unestablished { name_for_other, .. } => name_for_other.clone(),
+            _ => None,
+        };
+        transport.send(ConnectionCommand::Establish {
+            role,
+            ident,
+            name_for_other: name_for_other.clone(),
+            alive,
+        });
+        if !alive {
+            return;
+        }
+
+        let conn = self.connection_mut(connection);
+        let Connection::Unestablished {
+            hello_prefix,
+            failure_prefix,
+            queued_commands,
+            ..
+        } = std::mem::replace(conn, Connection::Failed)
+        else {
+            unreachable!("alive implies Unestablished");
+        };
+        *conn = Connection::Connecting {
+            transport,
+            name_for_other,
+            hello_prefix,
+            failure_prefix,
+            queued_commands,
+        };
     }
 
     fn connection_topology_is_valid(&self, connection: ConnectionRef) -> bool {
@@ -518,12 +560,6 @@ impl Ctx {
         }
     }
 
-    fn send_connection_command(&mut self, connection: ConnectionRef, action: ConnectionCommand) {
-        let _ = self
-            .tx
-            .send(Command::ConnectionSentCommand { connection, action });
-    }
-
     fn run_connection_command(&mut self, connection: ConnectionRef, action: ConnectionCommand) {
         match action {
             ConnectionCommand::SendMessage {
@@ -531,26 +567,21 @@ impl Ctx {
                 parts,
             } => self.route_message(connection.owning_actor(), destination_ident, parts),
             ConnectionCommand::Establish {
-                peer_alive,
-                peer_role,
-                peer_name,
-                requested_name,
-                transport,
+                role,
+                ident,
+                name_for_other,
+                alive,
             } => {
+                // The peer announced itself; finalize our side using the transport
+                // we stashed when our pipe connected.
                 if let Err(EstablishFailure {
                     failure_prefix,
                     peer_ident,
                     reason,
-                }) = self.establish_connection(
-                    connection,
-                    peer_alive,
-                    peer_role,
-                    peer_name,
-                    requested_name,
-                    transport,
-                ) {
-                    // Establishment failed (roles disagree, name conflict, dead peer,
-                    // ...): sever the connection and notify the actor.
+                }) = self.establish_connection(connection, role, ident, name_for_other, alive)
+                {
+                    // Establishment failed (peer announced dead, roles disagree,
+                    // name conflict, ...): sever the connection and notify the actor.
                     let _ = self.connection_set(connection, Connection::Failed);
                     self.fail_connection(connection, failure_prefix, peer_ident, reason);
                 }
@@ -605,25 +636,26 @@ impl Ctx {
     fn establish_connection(
         &mut self,
         connection: ConnectionRef,
-        peer_alive: bool,
         peer_role: Role,
         peer_name: Option<Vec<u8>>,
         requested_name: Option<Vec<u8>>,
-        transport: Box<dyn ConnectionTransport>,
+        peer_alive: bool,
     ) -> Result<(), EstablishFailure> {
-        // Take the unestablished connection apart; establishing it consumes the
-        // hello/failure prefixes and any commands queued before it was ready.
+        // Take the connecting connection apart; establishing it consumes the
+        // hello/failure prefixes, any commands queued before it was ready, and the
+        // transport stashed when the pipe connected.
         let local_connection = self.connection_mut(connection);
         let local_status = std::mem::replace(local_connection, Connection::Failed);
 
-        let Connection::Unestablished {
+        let Connection::Connecting {
+            transport,
             name_for_other,
             hello_prefix,
             failure_prefix,
             queued_commands,
         } = local_status
         else {
-            unreachable!("local status should be unestablished");
+            unreachable!("peer Establish should arrive only on a connecting connection");
         };
 
         let failure_peer_ident = peer_name
@@ -633,6 +665,9 @@ impl Ctx {
 
         let mut failure_prefix = Some(failure_prefix);
         let result = (|| -> Result<(), Vec<u8>> {
+            // The peer announced it had already died; sever instead of finalizing.
+            // `failure_peer_ident` (above) still carries the peer ident it sent, so
+            // the failure names which connection died.
             if !peer_alive {
                 return Err(b"peer actor died".to_vec());
             }
@@ -773,16 +808,30 @@ impl CtxHandle {
             .name("monarch-mini".to_owned())
             .spawn(move || {
                 let rt = runtime::Builder::new_current_thread()
+                    .enable_io()
+                    .enable_time()
                     .build()
                     .expect("tokio runtime should build");
                 let local = tokio::task::LocalSet::new();
-                // Event loop: dispatch commands until a Shutdown command is handled.
+                // Event loop: dispatch commands until Shutdown. Shutdown is handled
+                // here (not in run_command) so it can await the UNIX writer flush
+                // before the runtime — and with it the writer tasks — is dropped.
                 local.block_on(&rt, async move {
                     let mut ctx = Ctx::new(runtime_tx);
                     while let Some(command) = rx.recv().await {
-                        if ctx.run_command(command) {
+                        if let Command::Shutdown { done } = command {
+                            // Wait for the UNIX transport to flush every pending
+                            // write to the OS and stop its coroutines before the
+                            // runtime (and the coroutines) is torn down.
+                            ctx.unix.shutdown().await;
+                            let thread = ctx
+                                .thread
+                                .take()
+                                .expect("context should have thread handle");
+                            let _ = done.send(thread);
                             break;
                         }
+                        ctx.run_command(command);
                     }
                 });
             })?;

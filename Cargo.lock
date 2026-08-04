@@ -4732,8 +4732,11 @@ name = "monarch_mini"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bincode 2.0.1",
+ "serde",
  "slotmap",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
