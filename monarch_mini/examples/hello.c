@@ -114,14 +114,14 @@ int main(void) {
   /* The send is asynchronous, so the message may already be buffered or may
    * arrive after the poller is subscribed. */
   size_t index = 0;
-  mm_msg_part_t parts[1];
+  mm_msg_part_t parts[3];
   size_t n = 0;
-  sleep_next(poller, &index, parts, 1, &n);
+  sleep_next(poller, &index, parts, 3, &n);
   printf("received: %.*s\n", (int)parts[0].len, (const char*)parts[0].data);
   fflush(stdout);
 
   /* Arm the wakeup fd by draining to MM_ENOMSG, then wait for a later send. */
-  mm_err_t empty = mm_poller_next(poller, &index, parts, 1, &n);
+  mm_err_t empty = mm_poller_next(poller, &index, parts, 3, &n);
   if (empty != MM_ENOMSG) {
     fprintf(stderr, "expected MM_ENOMSG from drained poller\n");
     exit(1);
@@ -131,7 +131,7 @@ int main(void) {
   printf("sent message to self again\n");
   fflush(stdout);
 
-  poll_next(poller, fd, &index, parts, 1, &n);
+  poll_next(poller, fd, &index, parts, 3, &n);
   printf("received: %.*s\n", (int)parts[0].len, (const char*)parts[0].data);
 
   const char* child_ident_bytes = "child-actor";
@@ -164,6 +164,20 @@ int main(void) {
   };
   CHECK(mm_actor_serve(actor, url, &parent_args));
   CHECK(mm_actor_join(child, url, &child_args));
+  poll_next(poller, fd, &index, parts, 3, &n);
+  printf(
+      "parent joined: %.*s -> %.*s\n",
+      (int)parts[0].len,
+      (const char*)parts[0].data,
+      (int)parts[1].len,
+      (const char*)parts[1].data);
+  poll_next(child_poller, child_fd, &index, parts, 3, &n);
+  printf(
+      "child joined: %.*s -> %.*s\n",
+      (int)parts[0].len,
+      (const char*)parts[0].data,
+      (int)parts[1].len,
+      (const char*)parts[1].data);
 
   const char* parent_to_child = "hello, child";
   mm_msg_part_t parent_to_child_part = {
@@ -180,7 +194,7 @@ int main(void) {
       .deleter_ctx = NULL,
   };
   CHECK(mm_actor_send(actor, child_receiver, &parent_to_child_msg));
-  poll_next(child_poller, child_fd, &index, parts, 1, &n);
+  poll_next(child_poller, child_fd, &index, parts, 3, &n);
   printf(
       "child received: %.*s\n", (int)parts[0].len, (const char*)parts[0].data);
 
@@ -199,7 +213,7 @@ int main(void) {
       .deleter_ctx = NULL,
   };
   CHECK(mm_actor_send(child, parent_receiver, &child_to_parent_msg));
-  poll_next(poller, fd, &index, parts, 1, &n);
+  poll_next(poller, fd, &index, parts, 3, &n);
   printf(
       "parent received: %.*s\n", (int)parts[0].len, (const char*)parts[0].data);
 
@@ -243,7 +257,7 @@ int main(void) {
       .n_parts = 1,
   };
   CHECK(mm_actor_send(grandchild2, child_receiver, &grandchild2_to_child_msg));
-  poll_next(child_poller, child_fd, &index, parts, 1, &n);
+  poll_next(child_poller, child_fd, &index, parts, 3, &n);
   printf(
       "child received from grandchild2: %.*s\n",
       (int)parts[0].len,
