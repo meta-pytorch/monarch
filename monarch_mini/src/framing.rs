@@ -29,7 +29,9 @@ use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt;
 
 use crate::Role;
+use crate::connection::AncestorPayload;
 use crate::connection::ConnectionCommand;
+use crate::connection::SendPayload;
 use crate::msg::MsgPart;
 
 /// One frame on the wire. There is a variant per [`ConnectionCommand`] that
@@ -46,23 +48,15 @@ enum WireFrame {
     },
     Message {
         destination_ident: Vec<u8>,
-        part_lens: Vec<u64>,
+        payload: WirePayload,
     },
     PublishRoutes {
         live: Vec<Vec<u8>>,
         dead: Vec<Vec<u8>>,
     },
-    Subscribe {
-        dest: Vec<u8>,
+    ToAncestor {
         to_monitor: Vec<u8>,
-    },
-    Unsubscribe {
-        dest: Vec<u8>,
-        to_monitor: Vec<u8>,
-    },
-    FireMonitor {
-        dest_ident: Vec<u8>,
-        to_monitor: Vec<u8>,
+        payload: AncestorPayload,
     },
     Severed {
         reason: Vec<u8>,
@@ -70,6 +64,16 @@ enum WireFrame {
     /// Transport-internal liveness probe; consumed by the reader to refresh its
     /// deadline and never surfaced as a [`ConnectionCommand`].
     Heartbeat,
+}
+
+/// Wire form of a [`SendMessage`](ConnectionCommand::SendMessage)'s payload. An
+/// actor message carries only its parts' *lengths* in the header (the bytes are
+/// streamed raw afterwards, zero-copy); a monitor fire carries the small dead
+/// target ident inline.
+#[derive(Serialize, Deserialize)]
+enum WirePayload {
+    ActorMessage { part_lens: Vec<u64> },
+    FireMonitor { to_monitor: Vec<u8> },
 }
 
 fn bincode_config() -> bincode::config::Configuration {
@@ -96,16 +100,22 @@ pub(crate) async fn write_command<W: AsyncWrite + Unpin>(
     let frame = match command {
         ConnectionCommand::SendMessage {
             destination_ident,
-            parts: message_parts,
+            payload,
         } => {
-            let part_lens = message_parts
-                .iter()
-                .map(|part| part.as_bytes().len() as u64)
-                .collect();
-            parts = message_parts;
+            let payload = match payload {
+                SendPayload::ActorMessage(message_parts) => {
+                    let part_lens = message_parts
+                        .iter()
+                        .map(|part| part.as_bytes().len() as u64)
+                        .collect();
+                    parts = message_parts;
+                    WirePayload::ActorMessage { part_lens }
+                }
+                SendPayload::FireMonitor(to_monitor) => WirePayload::FireMonitor { to_monitor },
+            };
             WireFrame::Message {
                 destination_ident,
-                part_lens,
+                payload,
             }
         }
         ConnectionCommand::Establish {
@@ -120,18 +130,12 @@ pub(crate) async fn write_command<W: AsyncWrite + Unpin>(
             alive,
         },
         ConnectionCommand::PublishRoutes { live, dead } => WireFrame::PublishRoutes { live, dead },
-        ConnectionCommand::Subscribe { dest, to_monitor } => {
-            WireFrame::Subscribe { dest, to_monitor }
-        }
-        ConnectionCommand::Unsubscribe { dest, to_monitor } => {
-            WireFrame::Unsubscribe { dest, to_monitor }
-        }
-        ConnectionCommand::FireMonitor {
-            dest_ident,
+        ConnectionCommand::ToAncestor {
             to_monitor,
-        } => WireFrame::FireMonitor {
-            dest_ident,
+            payload,
+        } => WireFrame::ToAncestor {
             to_monitor,
+            payload,
         },
         ConnectionCommand::Severed { reason } => WireFrame::Severed { reason },
     };
@@ -179,17 +183,23 @@ pub(crate) async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> std::io:
         WireFrame::Heartbeat => Incoming::Heartbeat,
         WireFrame::Message {
             destination_ident,
-            part_lens,
+            payload,
         } => {
-            let mut parts = Vec::with_capacity(part_lens.len());
-            for len in part_lens {
-                let mut buf = vec![0u8; len as usize];
-                reader.read_exact(&mut buf).await?;
-                parts.push(MsgPart::from_bytes(buf));
-            }
+            let payload = match payload {
+                WirePayload::ActorMessage { part_lens } => {
+                    let mut parts = Vec::with_capacity(part_lens.len());
+                    for len in part_lens {
+                        let mut buf = vec![0u8; len as usize];
+                        reader.read_exact(&mut buf).await?;
+                        parts.push(MsgPart::from_bytes(buf));
+                    }
+                    SendPayload::ActorMessage(parts)
+                }
+                WirePayload::FireMonitor { to_monitor } => SendPayload::FireMonitor(to_monitor),
+            };
             Incoming::Command(ConnectionCommand::SendMessage {
                 destination_ident,
-                parts,
+                payload,
             })
         }
         WireFrame::Establish {
@@ -206,18 +216,12 @@ pub(crate) async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> std::io:
         WireFrame::PublishRoutes { live, dead } => {
             Incoming::Command(ConnectionCommand::PublishRoutes { live, dead })
         }
-        WireFrame::Subscribe { dest, to_monitor } => {
-            Incoming::Command(ConnectionCommand::Subscribe { dest, to_monitor })
-        }
-        WireFrame::Unsubscribe { dest, to_monitor } => {
-            Incoming::Command(ConnectionCommand::Unsubscribe { dest, to_monitor })
-        }
-        WireFrame::FireMonitor {
-            dest_ident,
+        WireFrame::ToAncestor {
             to_monitor,
-        } => Incoming::Command(ConnectionCommand::FireMonitor {
-            dest_ident,
+            payload,
+        } => Incoming::Command(ConnectionCommand::ToAncestor {
             to_monitor,
+            payload,
         }),
         WireFrame::Severed { reason } => Incoming::Command(ConnectionCommand::Severed { reason }),
     })

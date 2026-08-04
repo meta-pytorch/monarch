@@ -27,11 +27,13 @@ use crate::actor::Delivery;
 use crate::actor::MonitorSub;
 use crate::actor::Route;
 use crate::actor::TargetMonitors;
+use crate::connection::AncestorPayload;
 use crate::connection::ConnectRequest;
 use crate::connection::Connection;
 use crate::connection::ConnectionCommand;
 use crate::connection::ConnectionRef;
 use crate::connection::ConnectionTransport;
+use crate::connection::SendPayload;
 use crate::inproc_transport::InprocTransport;
 use crate::msg::MsgPart;
 use crate::poller::Delivered;
@@ -253,7 +255,11 @@ impl Ctx {
                 destination_ident,
                 parts,
             } => {
-                self.route_message(sender, destination_ident.as_bytes().to_vec(), parts);
+                self.route_message(
+                    sender,
+                    destination_ident.as_bytes().to_vec(),
+                    SendPayload::ActorMessage(parts),
+                );
             }
             Command::Serve {
                 actor,
@@ -347,18 +353,24 @@ impl Ctx {
         std::mem::replace(self.connection_mut(connection), value)
     }
 
-    fn route_message(&mut self, sender: Key, destination_ident: Vec<u8>, parts: Vec<MsgPart>) {
+    /// The single destination-driven routing pathway. Both an ordinary actor
+    /// message and a monitor firing travel through here, differing only in what
+    /// `deliver_payload` does once the destination is reached. A monitor fire is
+    /// armed only at an ancestor that already routes to its destination, so it
+    /// always finds a concrete route down (or a dead one) and never reaches the
+    /// gateway-buffer branch.
+    fn route_message(&mut self, sender: Key, destination_ident: Vec<u8>, payload: SendPayload) {
         let entry = self.actor(sender);
         if !entry.alive {
             return;
         }
         if entry.name() == Some(destination_ident.as_slice()) {
-            self.deliver_to_actor(sender, parts);
+            self.deliver_payload(sender, payload);
             return;
         }
 
         match entry.routes.get(destination_ident.as_slice()) {
-            // A known child route: hand the message down toward the destination.
+            // A known child route: hand the payload down toward the destination.
             Some(Route::Connection { child, .. }) => {
                 let child_key = *child;
                 let connection = self
@@ -368,28 +380,38 @@ impl Ctx {
                     .expect("route child connection should exist");
                 let _ = connection.send(ConnectionCommand::SendMessage {
                     destination_ident,
-                    parts,
+                    payload,
                 });
                 return;
             }
-            // The destination is known to be dead: drop the message rather than
+            // The destination is known to be dead: drop the payload rather than
             // forwarding it up (where it would buffer forever at the gateway).
             Some(Route::Dead) => return,
             Some(Route::Unknown { .. }) | None => {}
         }
 
-        // No known route here. Forward toward the gateway; the gateway itself (no
-        // parent) buffers the message until the destination's route is published —
-        // the destination may not even have been created yet. A `Route::Unknown`
-        // entry only exists at a gateway, so it also lands in the buffer branch.
+        // No known route here. Forward the payload — intact — toward the gateway;
+        // the gateway itself (no parent) buffers it until the destination's route
+        // is published, since the destination may not even have been created yet. A
+        // `Route::Unknown` entry only exists at a gateway, so it also lands here.
         if let Some(parent_connection) = self.actor_mut(sender).parent.as_mut() {
             let _ = parent_connection.send(ConnectionCommand::SendMessage {
                 destination_ident,
-                parts,
+                payload,
             });
         } else {
             self.actor_mut(sender)
-                .buffer_unrouted(destination_ident, parts);
+                .buffer_unrouted(destination_ident, payload);
+        }
+    }
+
+    /// Hand a routed payload to the actor it is addressed to: an actor message
+    /// goes to the poller, a monitor fire fans out to every local monitor on the
+    /// dead target.
+    fn deliver_payload(&mut self, actor: Key, payload: SendPayload) {
+        match payload {
+            SendPayload::ActorMessage(parts) => self.deliver_to_actor(actor, parts),
+            SendPayload::FireMonitor(to_monitor) => self.deliver_monitor_failure(actor, to_monitor),
         }
     }
 
@@ -586,10 +608,10 @@ impl Ctx {
             self.actor_mut(parent)
                 .record_routed_via_child(child_connection, ident);
 
-            // Re-route any messages buffered while the route was unknown; route_message
+            // Re-route any payloads buffered while the route was unknown; route_message
             // sends them down the child connection we just recorded.
-            for parts in buffered {
-                self.route_message(parent, ident.clone(), parts);
+            for payload in buffered {
+                self.route_message(parent, ident.clone(), payload);
             }
         }
 
@@ -616,7 +638,7 @@ impl Ctx {
             newly_dead.push(ident);
         }
         for (dest, to_monitor) in to_fire {
-            self.route_fire_monitor(parent, dest, to_monitor);
+            self.route_message(parent, dest, SendPayload::FireMonitor(to_monitor));
         }
 
         // Forward both the live and the newly-dead idents up to the parent.
@@ -650,7 +672,7 @@ impl Ctx {
                 // must travel up *as dead*, else the parent treats a known-dead actor
                 // as alive), while buffered Unknown routes — which we could not place
                 // while parentless — are dropped and their held messages and monitor
-                // subscriptions re-routed up (route_message / route_subscribe now
+                // subscriptions re-routed up (route_message / route_ancestor now
                 // forward, since there is a parent and no local route).
                 let mut live = vec![local_ident];
                 let mut dead = Vec::new();
@@ -666,11 +688,15 @@ impl Ctx {
                             kept.insert(ident, route);
                         }
                         Route::Unknown { messages, monitors } => {
-                            for parts in messages {
-                                self.route_message(ofactor, ident.clone(), parts);
+                            for payload in messages {
+                                self.route_message(ofactor, ident.clone(), payload);
                             }
                             for sub in monitors {
-                                self.route_subscribe(ofactor, sub.dest, ident.clone());
+                                self.route_ancestor(
+                                    ofactor,
+                                    ident.clone(),
+                                    AncestorPayload::Subscribe { dest: sub.dest },
+                                );
                             }
                         }
                     }
@@ -685,8 +711,8 @@ impl Ctx {
         match action {
             ConnectionCommand::SendMessage {
                 destination_ident,
-                parts,
-            } => self.route_message(connection.owning_actor(), destination_ident, parts),
+                payload,
+            } => self.route_message(connection.owning_actor(), destination_ident, payload),
             ConnectionCommand::Establish {
                 role,
                 ident,
@@ -719,17 +745,11 @@ impl Ctx {
                 };
                 self.populate_routes(ofactor, slot, live, dead);
             }
-            ConnectionCommand::Subscribe { dest, to_monitor } => {
-                self.route_subscribe(connection.owning_actor(), dest, to_monitor);
-            }
-            ConnectionCommand::Unsubscribe { dest, to_monitor } => {
-                self.route_unsubscribe(connection.owning_actor(), dest, to_monitor);
-            }
-            ConnectionCommand::FireMonitor {
-                dest_ident,
+            ConnectionCommand::ToAncestor {
                 to_monitor,
+                payload,
             } => {
-                self.route_fire_monitor(connection.owning_actor(), dest_ident, to_monitor);
+                self.route_ancestor(connection.owning_actor(), to_monitor, payload);
             }
         }
     }
@@ -940,7 +960,11 @@ impl Ctx {
         // one needs exactly one upstream `Subscribe`.
         let deferred: Vec<Vec<u8>> = entry.monitored.keys().cloned().collect();
         for to_monitor in deferred {
-            self.route_subscribe(actor, name.clone(), to_monitor);
+            self.route_ancestor(
+                actor,
+                to_monitor,
+                AncestorPayload::Subscribe { dest: name.clone() },
+            );
         }
     }
 
@@ -989,7 +1013,7 @@ impl Ctx {
             ActorName::Named(name) => name.clone(),
             ActorName::Unknown { .. } => return,
         };
-        self.route_subscribe(actor, dest, to_monitor);
+        self.route_ancestor(actor, to_monitor, AncestorPayload::Subscribe { dest });
     }
 
     /// Remove local monitor `id` (found by scanning its target). Dropping the last
@@ -1077,62 +1101,54 @@ impl Ctx {
             ActorName::Named(name) => name.clone(),
             ActorName::Unknown { .. } => return,
         };
-        self.route_unsubscribe(actor, dest, to_monitor);
+        self.route_ancestor(actor, to_monitor, AncestorPayload::Unsubscribe { dest });
     }
 
-    /// Walk a subscription up from `at` until the actor that has `to_monitor` in
-    /// its routing table (the common ancestor) or the root. Fire immediately if
-    /// the monitored actor is already known dead.
-    fn route_subscribe(&mut self, at: Key, dest: Vec<u8>, to_monitor: Vec<u8>) {
-        enum Step {
-            FireDead,
-            Register,
-            Forward,
+    /// Route a monitor operation up to the *common ancestor* of `to_monitor`: the
+    /// first actor from `at` upward that holds `to_monitor` in its routing table
+    /// (or the root). That ancestor is where a normal message to the target turns
+    /// downward, so it is where a subscription is held and where a fire originates.
+    /// Both subscribe and cancel travel this one path, differing only in the
+    /// [`AncestorPayload`] handler that runs once the ancestor is reached.
+    fn route_ancestor(&mut self, at: Key, to_monitor: Vec<u8>, payload: AncestorPayload) {
+        // Forward up while this actor is not yet the common ancestor (it has no
+        // route to the target) and a parent exists. Otherwise we are the ancestor —
+        // or the root, where the target may not exist yet and the subscription is
+        // held until it does — so the payload acts here.
+        if !self.actor(at).routes.contains_key(to_monitor.as_slice()) {
+            if let Some(parent) = self.actor_mut(at).parent.as_mut() {
+                let _ = parent.send(ConnectionCommand::ToAncestor {
+                    to_monitor,
+                    payload,
+                });
+                return;
+            }
         }
-        let entry = self.actor(at);
-        let step = match entry.routes.get(to_monitor.as_slice()) {
-            Some(Route::Dead) => Step::FireDead,
-            // A live (or buffered-unknown) route means this is the common ancestor.
-            Some(_) => Step::Register,
-            // Not an ancestor of the target: forward up, or hold here if we are the
-            // root (the target may not exist yet — it will end up watched here).
-            None if entry.parent.is_some() => Step::Forward,
-            None => Step::Register,
-        };
-        match step {
-            Step::FireDead => {
-                self.route_fire_monitor(at, dest, to_monitor);
-            }
-            Step::Register => {
-                self.actor_mut(at)
-                    .buffer_monitor(to_monitor, MonitorSub { dest });
-            }
-            Step::Forward => {
-                let _ = self
-                    .actor_mut(at)
-                    .parent
-                    .as_mut()
-                    .expect("forward implies a parent")
-                    .send(ConnectionCommand::Subscribe { dest, to_monitor });
-            }
+        match payload {
+            AncestorPayload::Subscribe { dest } => self.subscribe(at, dest, to_monitor),
+            AncestorPayload::Unsubscribe { dest } => self.unsubscribe(at, dest, to_monitor),
         }
     }
 
-    /// Walk the same path as [`route_subscribe`] and remove the matching
-    /// subscription. Idempotent: a sub that already fired (and was removed) or was
+    /// Register a subscription at the common ancestor `at`: fire immediately if the
+    /// target is already known dead, otherwise hold the subscription on its route
+    /// (creating an `Unknown` buffer if the target is not yet known here).
+    fn subscribe(&mut self, at: Key, dest: Vec<u8>, to_monitor: Vec<u8>) {
+        if matches!(
+            self.actor(at).routes.get(to_monitor.as_slice()),
+            Some(Route::Dead)
+        ) {
+            self.route_message(at, dest, SendPayload::FireMonitor(to_monitor));
+        } else {
+            self.actor_mut(at)
+                .buffer_monitor(to_monitor, MonitorSub { dest });
+        }
+    }
+
+    /// Remove the matching subscription at the common ancestor `at`. Idempotent: a
+    /// sub that already fired (and was removed), targets a now-dead route, or was
     /// never registered is a no-op.
-    fn route_unsubscribe(&mut self, at: Key, dest: Vec<u8>, to_monitor: Vec<u8>) {
-        let entry = self.actor(at);
-        let forward = !entry.routes.contains_key(to_monitor.as_slice()) && entry.parent.is_some();
-        if forward {
-            let _ = self
-                .actor_mut(at)
-                .parent
-                .as_mut()
-                .expect("forward implies a parent")
-                .send(ConnectionCommand::Unsubscribe { dest, to_monitor });
-            return;
-        }
+    fn unsubscribe(&mut self, at: Key, dest: Vec<u8>, to_monitor: Vec<u8>) {
         if let Some(monitors) = self
             .actor_mut(at)
             .routes
@@ -1140,41 +1156,6 @@ impl Ctx {
             .and_then(Route::monitors_mut)
         {
             monitors.retain(|sub| sub.dest != dest);
-        }
-    }
-
-    /// Route a monitor fire for the dead `to_monitor` toward `dest`. The
-    /// subscription is held at the common ancestor of the monitoring actor
-    /// (`dest`) and the monitored actor, so `dest` is always this actor or one of
-    /// its descendants: the fire only ever travels *down*. It is delivered locally
-    /// if we own `dest`, forwarded down its child route otherwise, or dropped if
-    /// that route has since died. The route is never unknown here.
-    fn route_fire_monitor(&mut self, from: Key, dest: Vec<u8>, to_monitor: Vec<u8>) {
-        let entry = self.actor(from);
-        if entry.name() == Some(dest.as_slice()) {
-            self.deliver_monitor_failure(from, to_monitor);
-            return;
-        }
-        match entry.routes.get(dest.as_slice()) {
-            Some(Route::Connection { child, .. }) => {
-                let child = *child;
-                let _ = self
-                    .actor_mut(from)
-                    .children
-                    .get_mut(child)
-                    .expect("a live child route must have its connection")
-                    .send(ConnectionCommand::FireMonitor {
-                        dest_ident: dest,
-                        to_monitor,
-                    });
-            }
-            // The monitoring actor's branch died before the fire reached it.
-            Some(Route::Dead) => {}
-            Some(Route::Unknown { .. }) | None => {
-                unreachable!(
-                    "monitor fire target must be a known descendant of the subscription holder"
-                )
-            }
         }
     }
 
