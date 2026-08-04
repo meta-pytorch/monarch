@@ -99,9 +99,17 @@ class Actor:
         self,
         ident: bytes,
         failure: Sequence[bytearray] | None = ...,
+        timeout_for_nonexistence: int = ...,
     ) -> MonitorHandle:
         """Monitor ``ident``. If it dies (or is already dead), this actor is sent
-        ``[*failure, ident, reason]``."""
+        ``[*failure, ident, b"actor died"]``.
+
+        If ``timeout_for_nonexistence`` is non-zero and ``ident`` is still not
+        known anywhere in the system after that many milliseconds, the monitor
+        fires once with reason ``b"actor does not exist"`` and is consumed (a
+        later appearance-then-death delivers nothing more). ``0`` (the default)
+        disables the timeout. Only the first monitor on a given target arms a
+        timeout; later monitors of the same target ignore it."""
         ...
 
 class MonitorHandle:

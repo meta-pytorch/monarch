@@ -614,6 +614,29 @@ async def test_monitor_on_already_dead_actor_fires_immediately() -> None:
     assert await watcher.next() == [b"DOWN", b"target", b"actor died"]
 
 
+async def test_monitor_timeout_fires_when_target_never_exists() -> None:
+    # With a non-existence timeout, monitoring a target that never appears fires
+    # once with reason "actor does not exist" after the timeout elapses.
+    root = Actor(b"root")
+    watcher = Actor(b"watcher")
+    await _connect(root, b"root", watcher, b"watcher", "inproc://mon-to")
+
+    watcher.monitor(b"target", failure=[ba(b"DOWN")], timeout_for_nonexistence=30)
+    assert await watcher.next() == [b"DOWN", b"target", b"actor does not exist"]
+
+
+async def test_monitor_timeout_disabled_by_default() -> None:
+    # The default timeout of 0 disables non-existence firing: an absent target
+    # produces nothing on its own.
+    root = Actor(b"root")
+    watcher = Actor(b"watcher")
+    await _connect(root, b"root", watcher, b"watcher", "inproc://mon-to-off")
+
+    watcher.monitor(b"target", failure=[ba(b"DOWN")])
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(watcher.next(), timeout=0.2)
+
+
 async def test_monitor_returns_cancellable_handle() -> None:
     # cancel() is idempotent and returns None.
     a = Actor(b"mon-handle")

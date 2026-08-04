@@ -64,7 +64,13 @@ pub(crate) enum TargetMonitors {
     /// never travels; the full message is reconstructed here when the target
     /// dies. (For an unnamed actor these are recorded but the upstream `Subscribe`
     /// is held until naming.)
-    Active(HashMap<u64, Vec<MsgPart>>),
+    Active {
+        entries: HashMap<u64, Vec<MsgPart>>,
+        /// Effective non-existence timeout (ms; 0 = none) for this target, set by
+        /// the *first* monitor on it. Kept here so a `Subscribe` deferred while
+        /// the actor is unnamed can still carry the timeout once it is named.
+        timeout_ms: u64,
+    },
     /// Every monitor on this target was cancelled; the upstream subscription is
     /// still live, but a debounced unsubscribe task is scheduled. Holds that
     /// task's abort handle so re-monitoring (or a fire) cancels it.
@@ -216,6 +222,10 @@ impl Route {
 /// no per-monitor id is carried.
 pub(crate) struct MonitorSub {
     pub(crate) dest: Vec<u8>,
+    /// Non-existence timeout in ms; 0 = none. Travels with the subscription as it
+    /// is forwarded up the tree, so each ancestor that (re)installs it can arm a
+    /// fresh timer wherever the subscription currently lives.
+    pub(crate) timeout_ms: u64,
 }
 
 /// An actor's ident, which may not be known at creation (a child can be named by

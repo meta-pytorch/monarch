@@ -84,8 +84,13 @@ enum UnixFrame {
 /// target ident inline.
 #[derive(Serialize, Deserialize)]
 enum UnixPayload {
-    ActorMessage { parts: Vec<PartDesc> },
-    FireMonitor { to_monitor: Vec<u8> },
+    ActorMessage {
+        parts: Vec<PartDesc>,
+    },
+    FireMonitor {
+        to_monitor: Vec<u8>,
+        is_timeout: bool,
+    },
 }
 
 /// How one message part is represented on the wire. `Inline` parts have their
@@ -120,11 +125,18 @@ pub(crate) async fn write_command(
         } => write_actor_message(stream, destination_ident, parts, mapper, client).await,
         ConnectionCommand::SendMessage {
             destination_ident,
-            payload: SendPayload::FireMonitor(to_monitor),
+            payload:
+                SendPayload::FireMonitor {
+                    to_monitor,
+                    is_timeout,
+                },
         } => {
             let frame = UnixFrame::Message {
                 destination_ident,
-                payload: UnixPayload::FireMonitor { to_monitor },
+                payload: UnixPayload::FireMonitor {
+                    to_monitor,
+                    is_timeout,
+                },
             };
             write_header(stream, &frame).await
         }
@@ -323,7 +335,15 @@ async fn read_message_payload(
 ) -> std::io::Result<SendPayload> {
     let descs = match payload {
         UnixPayload::ActorMessage { parts } => parts,
-        UnixPayload::FireMonitor { to_monitor } => return Ok(SendPayload::FireMonitor(to_monitor)),
+        UnixPayload::FireMonitor {
+            to_monitor,
+            is_timeout,
+        } => {
+            return Ok(SendPayload::FireMonitor {
+                to_monitor,
+                is_timeout,
+            });
+        }
     };
 
     let n_fds = descs

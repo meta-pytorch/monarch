@@ -679,6 +679,239 @@ fn deferred_monitor_cancelled_before_naming_never_subscribes() {
     assert_eq!(buffered_strings(&ctx, watcher), vec!["watcher", "root"]);
 }
 
+// --- Non-existence timeout (timeout_for_nonexistence) ----------------------
+
+// A timeout monitor on a target that never appears fires "actor does not exist"
+// when its timer (here driven directly) checks the still-`Unknown` route at the
+// common ancestor.
+#[test]
+fn timeout_fires_when_target_never_appears() {
+    let (mut ctx, mut rx) = test_ctx();
+    let root = actor(&mut ctx, "root");
+    let watcher = actor(&mut ctx, "watcher");
+    connect(&mut ctx, root, watcher, "inproc://to-watcher");
+    drain_commands(&mut ctx, &mut rx);
+
+    // `target` is never created. The subscription climbs to `root` and buffers on
+    // an `Unknown` route there.
+    monitor_with_timeout(&mut ctx, watcher, 0, "target", "DOWN", 50);
+    drain_commands(&mut ctx, &mut rx);
+    assert!(matches!(
+        ctx.actors[root].routes.get(b"target".as_slice()),
+        Some(Route::Unknown { .. })
+    ));
+
+    // Drive the timer: the route is still `Unknown`, so the timeout fires.
+    check_monitor_timeout(&mut ctx, root, "watcher", "target");
+    drain_commands(&mut ctx, &mut rx);
+    assert_eq!(
+        buffered_strings(&ctx, watcher),
+        vec!["watcher", "root", "DOWN", "target", "actor does not exist"]
+    );
+}
+
+// After a timeout fires, the local monitor is consumed: a later real death of the
+// (now-existing) target delivers nothing more for this monitor.
+#[test]
+fn timeout_fires_once_then_target_death_is_silent() {
+    let (mut ctx, mut rx) = test_ctx();
+    let root = actor(&mut ctx, "root");
+    let watcher = actor(&mut ctx, "watcher");
+    connect(&mut ctx, root, watcher, "inproc://once-watcher");
+    drain_commands(&mut ctx, &mut rx);
+
+    monitor_with_timeout(&mut ctx, watcher, 0, "target", "DOWN", 50);
+    drain_commands(&mut ctx, &mut rx);
+    check_monitor_timeout(&mut ctx, root, "watcher", "target");
+    drain_commands(&mut ctx, &mut rx);
+    assert_eq!(
+        buffered_strings(&ctx, watcher),
+        vec!["watcher", "root", "DOWN", "target", "actor does not exist"]
+    );
+
+    // The target now appears and later dies. The subscription still lingers at
+    // root, so a death fire is routed down — but `watcher`'s local entry is gone,
+    // so nothing new is delivered.
+    let target = actor(&mut ctx, "target");
+    connect(&mut ctx, root, target, "inproc://once-target");
+    drain_commands(&mut ctx, &mut rx);
+    ctx.die_actor(target, b"boom".to_vec());
+    drain_commands(&mut ctx, &mut rx);
+    assert_eq!(
+        buffered_strings(&ctx, watcher),
+        vec!["watcher", "root", "DOWN", "target", "actor does not exist"]
+    );
+}
+
+// When the target already exists (a `Connection` route at the ancestor), driving
+// the timeout is a no-op; a subsequent real death still fires "actor died".
+#[test]
+fn timeout_noop_when_target_exists() {
+    let (mut ctx, mut rx) = test_ctx();
+    let root = actor(&mut ctx, "root");
+    let watcher = actor(&mut ctx, "watcher");
+    let target = actor(&mut ctx, "target");
+    connect(&mut ctx, root, watcher, "inproc://ex-watcher");
+    connect(&mut ctx, root, target, "inproc://ex-target");
+    drain_commands(&mut ctx, &mut rx);
+
+    monitor_with_timeout(&mut ctx, watcher, 0, "target", "DOWN", 50);
+    drain_commands(&mut ctx, &mut rx);
+    assert!(matches!(
+        ctx.actors[root].routes.get(b"target".as_slice()),
+        Some(Route::Connection { .. })
+    ));
+
+    // The route is `Connection`, so the timer fire delivers nothing.
+    check_monitor_timeout(&mut ctx, root, "watcher", "target");
+    drain_commands(&mut ctx, &mut rx);
+    assert_eq!(buffered_strings(&ctx, watcher), vec!["watcher", "root"]);
+
+    // A real death still fires the ordinary death reason.
+    ctx.die_actor(target, b"boom".to_vec());
+    drain_commands(&mut ctx, &mut rx);
+    assert_eq!(
+        buffered_strings(&ctx, watcher),
+        vec!["watcher", "root", "DOWN", "target", "actor died"]
+    );
+}
+
+// A timeout monitor created while the actor is unnamed retains its timeout on the
+// local record; once named, the deferred `Subscribe` carries the timeout and a
+// later timer fire reports "actor does not exist".
+#[test]
+fn timeout_deferred_until_named() {
+    let (mut ctx, mut rx) = test_ctx();
+    let root = actor(&mut ctx, "root");
+    let watcher = ctx.actors.insert(ActorEntry::new(None, false));
+    drain_commands(&mut ctx, &mut rx);
+
+    monitor_with_timeout(&mut ctx, watcher, 0, "target", "DOWN", 50);
+    drain_commands(&mut ctx, &mut rx);
+    // Deferred: nothing upstream yet.
+    assert_eq!(route_monitor_count(&ctx, root, "target"), 0);
+
+    // Naming releases the deferred subscription (carrying the timeout) up to root.
+    ctx.serve(
+        root,
+        "inproc://def-watcher".to_owned(),
+        request_named(Role::Parent, "watcher"),
+    );
+    ctx.join(
+        watcher,
+        "inproc://def-watcher".to_owned(),
+        request(Role::Child),
+    );
+    drain_commands(&mut ctx, &mut rx);
+    assert_eq!(route_monitor_count(&ctx, root, "target"), 1);
+
+    check_monitor_timeout(&mut ctx, root, "watcher", "target");
+    drain_commands(&mut ctx, &mut rx);
+    assert_eq!(
+        buffered_strings(&ctx, watcher),
+        vec!["watcher", "root", "DOWN", "target", "actor does not exist"]
+    );
+}
+
+// The regression that killed the previous attempt: a subscription armed at `mid`
+// migrates to `root` when `mid` gains a parent. The stale timer at `mid` must
+// no-op (its route is gone), and the migrated monitor must still fire on a real
+// death.
+#[test]
+fn timeout_migration_does_not_false_fire() {
+    let (mut ctx, mut rx) = test_ctx();
+    let root = actor(&mut ctx, "root");
+    let mid = actor(&mut ctx, "mid");
+    let watcher = actor(&mut ctx, "watcher");
+    let target = actor(&mut ctx, "target");
+
+    // `watcher` joins parentless `mid` and monitors `target` with a timeout: the
+    // subscription buffers on an `Unknown` route at `mid` (the timer is armed here).
+    connect(&mut ctx, mid, watcher, "inproc://mig-w");
+    drain_commands(&mut ctx, &mut rx);
+    monitor_with_timeout(&mut ctx, watcher, 0, "target", "DOWN", 50);
+    drain_commands(&mut ctx, &mut rx);
+    assert_eq!(route_monitor_count(&ctx, mid, "target"), 1);
+
+    // `mid` joins `root`: the subscription migrates up; `mid`'s route is dropped.
+    connect(&mut ctx, root, mid, "inproc://mig-m");
+    drain_commands(&mut ctx, &mut rx);
+    assert!(!ctx.actors[mid].routes.contains_key(b"target".as_slice()));
+    assert_eq!(route_monitor_count(&ctx, root, "target"), 1);
+
+    // `target` appears under `root`.
+    connect(&mut ctx, root, target, "inproc://mig-t");
+    drain_commands(&mut ctx, &mut rx);
+
+    // Driving the *old* timer at `mid` finds no route there: it must no-op.
+    check_monitor_timeout(&mut ctx, mid, "watcher", "target");
+    drain_commands(&mut ctx, &mut rx);
+    assert_eq!(buffered_strings(&ctx, watcher), vec!["watcher", "mid"]);
+
+    // A real death still fires "actor died" through the migrated subscription.
+    ctx.die_actor(target, b"boom".to_vec());
+    drain_commands(&mut ctx, &mut rx);
+    assert_eq!(
+        buffered_strings(&ctx, watcher),
+        vec!["watcher", "mid", "DOWN", "target", "actor died"]
+    );
+}
+
+// As above, but the target never appears: the timer re-armed at `root` after
+// migration still fires "actor does not exist".
+#[test]
+fn timeout_migration_still_fires_when_target_absent() {
+    let (mut ctx, mut rx) = test_ctx();
+    let root = actor(&mut ctx, "root");
+    let mid = actor(&mut ctx, "mid");
+    let watcher = actor(&mut ctx, "watcher");
+
+    connect(&mut ctx, mid, watcher, "inproc://mab-w");
+    drain_commands(&mut ctx, &mut rx);
+    monitor_with_timeout(&mut ctx, watcher, 0, "target", "DOWN", 50);
+    drain_commands(&mut ctx, &mut rx);
+
+    connect(&mut ctx, root, mid, "inproc://mab-m");
+    drain_commands(&mut ctx, &mut rx);
+    assert!(matches!(
+        ctx.actors[root].routes.get(b"target".as_slice()),
+        Some(Route::Unknown { .. })
+    ));
+
+    // The re-armed timer at `root` checks the still-`Unknown` route and fires.
+    check_monitor_timeout(&mut ctx, root, "watcher", "target");
+    drain_commands(&mut ctx, &mut rx);
+    assert_eq!(
+        buffered_strings(&ctx, watcher),
+        vec!["watcher", "mid", "DOWN", "target", "actor does not exist"]
+    );
+}
+
+// Cancelling a timeout monitor removes the local entry, so even if a stale timer
+// later fires on a still-`Unknown` route nothing is delivered.
+#[test]
+fn timeout_cancelled_monitor_does_not_fire() {
+    let (mut ctx, mut rx) = test_ctx();
+    let root = actor(&mut ctx, "root");
+    let watcher = actor(&mut ctx, "watcher");
+    connect(&mut ctx, root, watcher, "inproc://can-watcher");
+    drain_commands(&mut ctx, &mut rx);
+
+    monitor_with_timeout(&mut ctx, watcher, 0, "target", "DOWN", 50);
+    drain_commands(&mut ctx, &mut rx);
+    ctx.run_command(Command::CancelMonitor {
+        actor: watcher,
+        id: 0,
+    });
+    drain_commands(&mut ctx, &mut rx);
+
+    // Force the route back to `Unknown` (cancel emptied its monitors) and drive the
+    // stale timer: the monitoring actor's local entry is gone, so no delivery.
+    check_monitor_timeout(&mut ctx, root, "watcher", "target");
+    drain_commands(&mut ctx, &mut rx);
+    assert_eq!(buffered_strings(&ctx, watcher), vec!["watcher", "root"]);
+}
+
 #[test]
 fn dead_route_is_carried_up_as_dead_when_gaining_a_parent() {
     let (mut ctx, mut rx) = test_ctx();
@@ -1492,11 +1725,33 @@ fn route_monitor_count(ctx: &Ctx, actor: Key, ident: &str) -> usize {
 }
 
 fn monitor(ctx: &mut Ctx, actor: Key, id: u64, to_monitor: &str, failure: &str) {
+    monitor_with_timeout(ctx, actor, id, to_monitor, failure, 0);
+}
+
+fn monitor_with_timeout(
+    ctx: &mut Ctx,
+    actor: Key,
+    id: u64,
+    to_monitor: &str,
+    failure: &str,
+    timeout_ms: u64,
+) {
     ctx.run_command(Command::Monitor {
         actor,
         id,
         to_monitor: MsgPart::from_bytes(to_monitor.as_bytes().to_vec()),
         failure_prefix: vec![MsgPart::from_bytes(failure.as_bytes().to_vec())],
+        timeout_ms,
+    });
+}
+
+/// Drive a non-existence timeout timer fire at common ancestor `at` (the
+/// in-process command a real timer would have sent on expiry).
+fn check_monitor_timeout(ctx: &mut Ctx, at: Key, dest: &str, to_monitor: &str) {
+    ctx.run_command(Command::CheckMonitorTimeout {
+        at,
+        dest: dest.as_bytes().to_vec(),
+        to_monitor: to_monitor.as_bytes().to_vec(),
     });
 }
 
@@ -1594,6 +1849,7 @@ fn runtime_monitor(ctx: &CtxHandle, actor: Key, id: u64, to_monitor: &str, failu
         id,
         to_monitor: MsgPart::from_bytes(to_monitor.as_bytes().to_vec()),
         failure_prefix: vec![MsgPart::from_bytes(failure.as_bytes().to_vec())],
+        timeout_ms: 0,
     })
     .expect("monitor should enqueue");
 }

@@ -389,6 +389,7 @@ pub unsafe extern "C" fn mm_actor_monitor(
     actor: *mut CActor,
     to_monitor_ident: CMsgPart,
     failure_prefix: *const CMsg,
+    timeout_for_nonexistence: u64,
     out: *mut *mut CMonitorHandle,
 ) -> Error {
     let a = &*actor;
@@ -400,6 +401,7 @@ pub unsafe extern "C" fn mm_actor_monitor(
         id,
         to_monitor: MsgPart::from_c(to_monitor_ident),
         failure_prefix: parts_from_cmsg(failure_prefix),
+        timeout_ms: timeout_for_nonexistence,
     }) {
         Ok(()) => {
             *out = Box::into_raw(Box::new(CMonitorHandle {
