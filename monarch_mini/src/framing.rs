@@ -54,17 +54,15 @@ enum WireFrame {
     },
     Subscribe {
         dest: Vec<u8>,
-        id: u64,
         to_monitor: Vec<u8>,
     },
     Unsubscribe {
         dest: Vec<u8>,
-        id: u64,
         to_monitor: Vec<u8>,
     },
     FireMonitor {
         dest_ident: Vec<u8>,
-        monitor_id: u64,
+        to_monitor: Vec<u8>,
     },
     Severed {
         reason: Vec<u8>,
@@ -122,30 +120,18 @@ pub(crate) async fn write_command<W: AsyncWrite + Unpin>(
             alive,
         },
         ConnectionCommand::PublishRoutes { live, dead } => WireFrame::PublishRoutes { live, dead },
-        ConnectionCommand::Subscribe {
-            dest,
-            id,
-            to_monitor,
-        } => WireFrame::Subscribe {
-            dest,
-            id,
-            to_monitor,
-        },
-        ConnectionCommand::Unsubscribe {
-            dest,
-            id,
-            to_monitor,
-        } => WireFrame::Unsubscribe {
-            dest,
-            id,
-            to_monitor,
-        },
+        ConnectionCommand::Subscribe { dest, to_monitor } => {
+            WireFrame::Subscribe { dest, to_monitor }
+        }
+        ConnectionCommand::Unsubscribe { dest, to_monitor } => {
+            WireFrame::Unsubscribe { dest, to_monitor }
+        }
         ConnectionCommand::FireMonitor {
             dest_ident,
-            monitor_id,
+            to_monitor,
         } => WireFrame::FireMonitor {
             dest_ident,
-            monitor_id,
+            to_monitor,
         },
         ConnectionCommand::Severed { reason } => WireFrame::Severed { reason },
     };
@@ -220,30 +206,18 @@ pub(crate) async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> std::io:
         WireFrame::PublishRoutes { live, dead } => {
             Incoming::Command(ConnectionCommand::PublishRoutes { live, dead })
         }
-        WireFrame::Subscribe {
-            dest,
-            id,
-            to_monitor,
-        } => Incoming::Command(ConnectionCommand::Subscribe {
-            dest,
-            id,
-            to_monitor,
-        }),
-        WireFrame::Unsubscribe {
-            dest,
-            id,
-            to_monitor,
-        } => Incoming::Command(ConnectionCommand::Unsubscribe {
-            dest,
-            id,
-            to_monitor,
-        }),
+        WireFrame::Subscribe { dest, to_monitor } => {
+            Incoming::Command(ConnectionCommand::Subscribe { dest, to_monitor })
+        }
+        WireFrame::Unsubscribe { dest, to_monitor } => {
+            Incoming::Command(ConnectionCommand::Unsubscribe { dest, to_monitor })
+        }
         WireFrame::FireMonitor {
             dest_ident,
-            monitor_id,
+            to_monitor,
         } => Incoming::Command(ConnectionCommand::FireMonitor {
             dest_ident,
-            monitor_id,
+            to_monitor,
         }),
         WireFrame::Severed { reason } => Incoming::Command(ConnectionCommand::Severed { reason }),
     })

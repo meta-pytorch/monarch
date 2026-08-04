@@ -12,6 +12,7 @@ use std::marker::PhantomData;
 use std::os::fd::OwnedFd;
 use std::thread;
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use slotmap::SlotMap;
 use slotmap::new_key_type;
@@ -23,10 +24,9 @@ use crate::Role;
 use crate::actor::ActorEntry;
 use crate::actor::ActorName;
 use crate::actor::Delivery;
-use crate::actor::LocalMonitor;
 use crate::actor::MonitorSub;
-use crate::actor::PendingMonitor;
 use crate::actor::Route;
+use crate::actor::TargetMonitors;
 use crate::connection::ConnectRequest;
 use crate::connection::Connection;
 use crate::connection::ConnectionCommand;
@@ -53,6 +53,12 @@ new_key_type! {
     pub(crate) struct PollerKey;
     pub(crate) struct ChildConnectionKey;
 }
+
+/// Grace period before a target's debounced `Unsubscribe` actually goes out. A
+/// monitor recreated on the same target within this window reuses the still-live
+/// upstream subscription, so churn (e.g. per-message monitor/cancel) sends no
+/// subscribe/unsubscribe traffic.
+const MONITOR_DEBOUNCE: Duration = Duration::from_millis(25);
 
 pub(crate) enum Command {
     Init {
@@ -127,6 +133,14 @@ pub(crate) enum Command {
         actor: Key,
         id: u64,
     },
+    // Fired by a debounce timer: if `to_monitor` is still `PendingUnsubscribe`
+    // (i.e. it was not re-monitored in the grace window), send the upstream
+    // `Unsubscribe` now and drop the entry. Otherwise it is `Active` again (or
+    // gone) and we keep the subscription.
+    UnsubscribeMonitor {
+        actor: Key,
+        to_monitor: Vec<u8>,
+    },
     Shutdown {
         done: oneshot::Sender<JoinHandle<()>>,
     },
@@ -142,6 +156,9 @@ struct Ctx {
     inproc: InprocTransport,
     unix: UnixTransport,
     quic: QuicTransport,
+    // A clone of the loop sender, used to schedule debounced monitor unsubscribes
+    // back onto the event loop after a grace period.
+    loop_tx: mpsc::UnboundedSender<Command>,
     thread: Option<JoinHandle<()>>,
     _not_send: PhantomData<*const ()>,
 }
@@ -153,7 +170,8 @@ impl Ctx {
             pollers: SlotMap::with_key(),
             inproc: InprocTransport::new(tx.clone()),
             unix: UnixTransport::new(tx.clone()),
-            quic: QuicTransport::new(tx),
+            quic: QuicTransport::new(tx.clone()),
+            loop_tx: tx,
             thread: None,
             _not_send: PhantomData,
         }
@@ -273,40 +291,13 @@ impl Ctx {
                 failure_prefix,
             } => {
                 let to_monitor = to_monitor.as_bytes().to_vec();
-                self.actor_mut(actor).monitors.insert(
-                    id,
-                    LocalMonitor {
-                        to_monitor: to_monitor.clone(),
-                        failure_prefix,
-                    },
-                );
-                // The fire is addressed by our own ident. If we are not named yet,
-                // defer the subscription until a name is assigned (a join will); the
-                // local record above still lets us cancel it meanwhile.
-                let dest = match &mut self.actor_mut(actor).name {
-                    ActorName::Named(name) => name.clone(),
-                    ActorName::Unknown { pending_monitors } => {
-                        pending_monitors.push(PendingMonitor { id, to_monitor });
-                        return;
-                    }
-                };
-                self.route_subscribe(actor, dest, id, to_monitor);
+                self.monitor_add(actor, id, to_monitor, failure_prefix);
             }
             Command::CancelMonitor { actor, id } => {
-                // Drop the local record (so an in-flight fire is dropped on arrival).
-                let Some(local) = self.actor_mut(actor).monitors.remove(&id) else {
-                    return;
-                };
-                // If we are named the subscription was propagated upstream, so walk an
-                // unsubscribe up; otherwise it is still in our deferred list, drop it.
-                let dest = match &mut self.actor_mut(actor).name {
-                    ActorName::Named(name) => name.clone(),
-                    ActorName::Unknown { pending_monitors } => {
-                        pending_monitors.retain(|pending| pending.id != id);
-                        return;
-                    }
-                };
-                self.route_unsubscribe(actor, dest, id, local.to_monitor);
+                self.monitor_remove(actor, id);
+            }
+            Command::UnsubscribeMonitor { actor, to_monitor } => {
+                self.unsubscribe_monitor(actor, to_monitor);
             }
             Command::Shutdown { .. } => {
                 // Handled directly by the event loop (see CtxHandle::new) so it
@@ -607,13 +598,15 @@ impl Ctx {
         // re-kill there). Keep only those that newly transitioned so propagation
         // can't loop, firing the monitors that were waiting on each.
         let mut newly_dead = Vec::new();
-        let mut to_fire: Vec<MonitorSub> = Vec::new();
+        // Each fire is the dead ident paired with a subscriber's `dest`.
+        let mut to_fire: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
         for ident in dead {
             let routes = &mut self.actor_mut(parent).routes;
             match routes.get_mut(&ident) {
                 Some(Route::Dead) => continue, // already dead
                 Some(route) => {
-                    to_fire.extend(route.monitors_mut().map(std::mem::take).unwrap_or_default());
+                    let subs = route.monitors_mut().map(std::mem::take).unwrap_or_default();
+                    to_fire.extend(subs.into_iter().map(|sub| (sub.dest, ident.clone())));
                     *route = Route::Dead;
                 }
                 None => {
@@ -622,8 +615,8 @@ impl Ctx {
             }
             newly_dead.push(ident);
         }
-        for sub in to_fire {
-            self.route_fire_monitor(parent, sub.dest, sub.id);
+        for (dest, to_monitor) in to_fire {
+            self.route_fire_monitor(parent, dest, to_monitor);
         }
 
         // Forward both the live and the newly-dead idents up to the parent.
@@ -677,7 +670,7 @@ impl Ctx {
                                 self.route_message(ofactor, ident.clone(), parts);
                             }
                             for sub in monitors {
-                                self.route_subscribe(ofactor, sub.dest, sub.id, ident.clone());
+                                self.route_subscribe(ofactor, sub.dest, ident.clone());
                             }
                         }
                     }
@@ -726,25 +719,17 @@ impl Ctx {
                 };
                 self.populate_routes(ofactor, slot, live, dead);
             }
-            ConnectionCommand::Subscribe {
-                dest,
-                id,
-                to_monitor,
-            } => {
-                self.route_subscribe(connection.owning_actor(), dest, id, to_monitor);
+            ConnectionCommand::Subscribe { dest, to_monitor } => {
+                self.route_subscribe(connection.owning_actor(), dest, to_monitor);
             }
-            ConnectionCommand::Unsubscribe {
-                dest,
-                id,
-                to_monitor,
-            } => {
-                self.route_unsubscribe(connection.owning_actor(), dest, id, to_monitor);
+            ConnectionCommand::Unsubscribe { dest, to_monitor } => {
+                self.route_unsubscribe(connection.owning_actor(), dest, to_monitor);
             }
             ConnectionCommand::FireMonitor {
                 dest_ident,
-                monitor_id,
+                to_monitor,
             } => {
-                self.route_fire_monitor(connection.owning_actor(), dest_ident, monitor_id);
+                self.route_fire_monitor(connection.owning_actor(), dest_ident, to_monitor);
             }
         }
     }
@@ -939,26 +924,166 @@ impl Ctx {
 
     // -- Monitors ---------------------------------------------------------------
 
-    /// Assign `name` to `actor` (a no-op if already named) and replay any monitor
+    /// Assign `name` to `actor` (a no-op if already named) and send any target
     /// subscriptions that were deferred while it was unnamed — now they have a
     /// fire-back address. The connection that carried the name must already be
-    /// established so the replayed subscriptions can route up.
+    /// established so the deferred subscriptions can route up.
     fn assign_name(&mut self, actor: Key, name: Vec<u8>) {
         let entry = self.actor_mut(actor);
-        let pending = match &mut entry.name {
-            ActorName::Named(_) => return, // already named; nothing was deferred
-            ActorName::Unknown { pending_monitors } => std::mem::take(pending_monitors),
-        };
-        entry.name = ActorName::Named(name.clone());
-        for monitor in pending {
-            self.route_subscribe(actor, name.clone(), monitor.id, monitor.to_monitor);
+        if matches!(entry.name, ActorName::Named(_)) {
+            return; // already named; nothing was deferred
         }
+        entry.name = ActorName::Named(name.clone());
+        // Everything watched while unnamed has its subscription held back; send
+        // them all now. An unnamed actor only ever holds `Active` entries (an
+        // emptied target is removed, never left `PendingUnsubscribe`), so every
+        // one needs exactly one upstream `Subscribe`.
+        let deferred: Vec<Vec<u8>> = entry.monitored.keys().cloned().collect();
+        for to_monitor in deferred {
+            self.route_subscribe(actor, name.clone(), to_monitor);
+        }
+    }
+
+    /// Add a local monitor (`id`, `failure_prefix`) on `to_monitor`. The first
+    /// monitor for a target sends one upstream `Subscribe` (deferred until named).
+    /// Joining an `Active` target, or re-monitoring a `PendingUnsubscribe` one
+    /// (whose subscription is still live — we abort its pending unsubscribe),
+    /// reuses the existing subscription, so churn sends no extra traffic.
+    fn monitor_add(
+        &mut self,
+        actor: Key,
+        id: u64,
+        to_monitor: Vec<u8>,
+        failure_prefix: Vec<MsgPart>,
+    ) {
+        let entry = self.actor_mut(actor);
+        match entry.monitored.get_mut(&to_monitor) {
+            Some(TargetMonitors::Active(entries)) => {
+                entries.insert(id, failure_prefix);
+                return; // subscription already live (or deferred); nothing to send
+            }
+            Some(TargetMonitors::PendingUnsubscribe(_)) => {
+                // Re-monitor within the grace window: cancel the pending unsubscribe
+                // and reactivate. The upstream subscription was never torn down, so
+                // we do not re-subscribe.
+                if let Some(TargetMonitors::PendingUnsubscribe(timer)) =
+                    entry.monitored.remove(&to_monitor)
+                {
+                    timer.abort();
+                }
+                entry.monitored.insert(
+                    to_monitor,
+                    TargetMonitors::Active(HashMap::from([(id, failure_prefix)])),
+                );
+                return;
+            }
+            None => {}
+        }
+        // Brand-new target: record it, then subscribe now if named, else defer to
+        // `assign_name` (the local record still allows cancel meanwhile).
+        entry.monitored.insert(
+            to_monitor.clone(),
+            TargetMonitors::Active(HashMap::from([(id, failure_prefix)])),
+        );
+        let dest = match &entry.name {
+            ActorName::Named(name) => name.clone(),
+            ActorName::Unknown { .. } => return,
+        };
+        self.route_subscribe(actor, dest, to_monitor);
+    }
+
+    /// Remove local monitor `id` (found by scanning its target). Dropping the last
+    /// monitor on a target does *not* unsubscribe immediately: it flips the target
+    /// to `PendingUnsubscribe` and schedules a debounced unsubscribe, so churn does
+    /// not hammer the hierarchy. An in-flight fire is dropped because no local
+    /// monitors remain.
+    fn monitor_remove(&mut self, actor: Key, id: u64) {
+        // Cloned up front so the spawned timer can own it without conflicting with
+        // the `entry` borrow below.
+        let loop_tx = self.loop_tx.clone();
+        let entry = self.actor_mut(actor);
+        let Some(to_monitor) = entry
+            .monitored
+            .iter()
+            .find(|(_, tm)| match tm {
+                TargetMonitors::Active(entries) => entries.contains_key(&id),
+                TargetMonitors::PendingUnsubscribe(_) => false,
+            })
+            .map(|(target, _)| target.clone())
+        else {
+            return;
+        };
+        let now_empty = match entry.monitored.get_mut(&to_monitor) {
+            Some(TargetMonitors::Active(entries)) => {
+                entries.remove(&id);
+                entries.is_empty()
+            }
+            _ => return,
+        };
+        if !now_empty {
+            return; // other monitors still watch this target
+        }
+        if !matches!(entry.name, ActorName::Named(_)) {
+            // Never sent upstream (deferred while unnamed); just drop it locally.
+            entry.monitored.remove(&to_monitor);
+            return;
+        }
+        match tokio::runtime::Handle::try_current() {
+            Ok(_) => {
+                // Schedule the debounced unsubscribe and park its abort handle in
+                // the entry, which now becomes `PendingUnsubscribe`.
+                let target = to_monitor.clone();
+                let timer = tokio::task::spawn_local(async move {
+                    tokio::time::sleep(MONITOR_DEBOUNCE).await;
+                    let _ = loop_tx.send(Command::UnsubscribeMonitor {
+                        actor,
+                        to_monitor: target,
+                    });
+                });
+                entry.monitored.insert(
+                    to_monitor,
+                    TargetMonitors::PendingUnsubscribe(timer.abort_handle()),
+                );
+            }
+            Err(_) => {
+                // No runtime (unit-test harness): unsubscribe synchronously.
+                entry.monitored.remove(&to_monitor);
+                self.unsubscribe_now(actor, to_monitor);
+            }
+        }
+    }
+
+    /// Debounce timer fired. Act only if the target is still `PendingUnsubscribe`
+    /// — i.e. it was not re-monitored (which would have flipped it back to
+    /// `Active` and aborted this task) nor torn down by a fire. The variant itself
+    /// is the truth, so there is no generation to check.
+    fn unsubscribe_monitor(&mut self, actor: Key, to_monitor: Vec<u8>) {
+        let Some(entry) = self.actors.get_mut(actor) else {
+            return;
+        };
+        if !matches!(
+            entry.monitored.get(&to_monitor),
+            Some(TargetMonitors::PendingUnsubscribe(_))
+        ) {
+            return; // re-monitored (Active) or already gone
+        }
+        entry.monitored.remove(&to_monitor);
+        self.unsubscribe_now(actor, to_monitor);
+    }
+
+    /// Send the upstream `Unsubscribe` for `to_monitor` from `actor` (named).
+    fn unsubscribe_now(&mut self, actor: Key, to_monitor: Vec<u8>) {
+        let dest = match &self.actor(actor).name {
+            ActorName::Named(name) => name.clone(),
+            ActorName::Unknown { .. } => return,
+        };
+        self.route_unsubscribe(actor, dest, to_monitor);
     }
 
     /// Walk a subscription up from `at` until the actor that has `to_monitor` in
     /// its routing table (the common ancestor) or the root. Fire immediately if
     /// the monitored actor is already known dead.
-    fn route_subscribe(&mut self, at: Key, dest: Vec<u8>, id: u64, to_monitor: Vec<u8>) {
+    fn route_subscribe(&mut self, at: Key, dest: Vec<u8>, to_monitor: Vec<u8>) {
         enum Step {
             FireDead,
             Register,
@@ -976,11 +1101,11 @@ impl Ctx {
         };
         match step {
             Step::FireDead => {
-                self.route_fire_monitor(at, dest, id);
+                self.route_fire_monitor(at, dest, to_monitor);
             }
             Step::Register => {
                 self.actor_mut(at)
-                    .buffer_monitor(to_monitor, MonitorSub { dest, id });
+                    .buffer_monitor(to_monitor, MonitorSub { dest });
             }
             Step::Forward => {
                 let _ = self
@@ -988,11 +1113,7 @@ impl Ctx {
                     .parent
                     .as_mut()
                     .expect("forward implies a parent")
-                    .send(ConnectionCommand::Subscribe {
-                        dest,
-                        id,
-                        to_monitor,
-                    });
+                    .send(ConnectionCommand::Subscribe { dest, to_monitor });
             }
         }
     }
@@ -1000,7 +1121,7 @@ impl Ctx {
     /// Walk the same path as [`route_subscribe`] and remove the matching
     /// subscription. Idempotent: a sub that already fired (and was removed) or was
     /// never registered is a no-op.
-    fn route_unsubscribe(&mut self, at: Key, dest: Vec<u8>, id: u64, to_monitor: Vec<u8>) {
+    fn route_unsubscribe(&mut self, at: Key, dest: Vec<u8>, to_monitor: Vec<u8>) {
         let entry = self.actor(at);
         let forward = !entry.routes.contains_key(to_monitor.as_slice()) && entry.parent.is_some();
         if forward {
@@ -1009,11 +1130,7 @@ impl Ctx {
                 .parent
                 .as_mut()
                 .expect("forward implies a parent")
-                .send(ConnectionCommand::Unsubscribe {
-                    dest,
-                    id,
-                    to_monitor,
-                });
+                .send(ConnectionCommand::Unsubscribe { dest, to_monitor });
             return;
         }
         if let Some(monitors) = self
@@ -1022,20 +1139,20 @@ impl Ctx {
             .get_mut(to_monitor.as_slice())
             .and_then(Route::monitors_mut)
         {
-            monitors.retain(|sub| !(sub.id == id && sub.dest == dest));
+            monitors.retain(|sub| sub.dest != dest);
         }
     }
 
-    /// Route a monitor fire toward `dest`. The subscription is held at the common
-    /// ancestor of the monitoring actor (`dest`) and the monitored actor, so `dest`
-    /// is always this actor or one of its descendants: the fire only ever travels
-    /// *down*. It is delivered locally if we own `dest`, forwarded down its child
-    /// route otherwise, or dropped if that route has since died (the monitoring
-    /// actor is gone). The route is never unknown here and the fire never routes up.
-    fn route_fire_monitor(&mut self, from: Key, dest: Vec<u8>, id: u64) {
+    /// Route a monitor fire for the dead `to_monitor` toward `dest`. The
+    /// subscription is held at the common ancestor of the monitoring actor
+    /// (`dest`) and the monitored actor, so `dest` is always this actor or one of
+    /// its descendants: the fire only ever travels *down*. It is delivered locally
+    /// if we own `dest`, forwarded down its child route otherwise, or dropped if
+    /// that route has since died. The route is never unknown here.
+    fn route_fire_monitor(&mut self, from: Key, dest: Vec<u8>, to_monitor: Vec<u8>) {
         let entry = self.actor(from);
         if entry.name() == Some(dest.as_slice()) {
-            self.deliver_monitor_failure(from, id);
+            self.deliver_monitor_failure(from, to_monitor);
             return;
         }
         match entry.routes.get(dest.as_slice()) {
@@ -1048,7 +1165,7 @@ impl Ctx {
                     .expect("a live child route must have its connection")
                     .send(ConnectionCommand::FireMonitor {
                         dest_ident: dest,
-                        monitor_id: id,
+                        to_monitor,
                     });
             }
             // The monitoring actor's branch died before the fire reached it.
@@ -1061,17 +1178,28 @@ impl Ctx {
         }
     }
 
-    /// A monitor fired and reached the monitoring actor. Reconstruct the failure
-    /// message from the local failure_prefix and deliver it with a fixed reason. A
-    /// cancelled monitor (no local record) drops the fire.
-    fn deliver_monitor_failure(&mut self, actor: Key, id: u64) {
-        let Some(local) = self.actor_mut(actor).monitors.remove(&id) else {
-            return;
+    /// A subscription fired and reached the monitoring actor. The target died, so
+    /// fan the fire out to *every* local monitor on that target, reconstructing
+    /// each one's failure message from its own prefix, then drop the whole entry
+    /// (the target is gone). A fire for a target with no entries — already
+    /// cancelled-and-debounced-away, or already fired — is dropped.
+    fn deliver_monitor_failure(&mut self, actor: Key, to_monitor: Vec<u8>) {
+        let entries = match self.actor_mut(actor).monitored.remove(&to_monitor) {
+            Some(TargetMonitors::Active(entries)) => entries,
+            // All monitors were cancelled (sub still live during the grace); the
+            // pending unsubscribe task is now moot — drop it and fire nothing.
+            Some(TargetMonitors::PendingUnsubscribe(timer)) => {
+                timer.abort();
+                return;
+            }
+            None => return,
         };
-        let mut msg = local.failure_prefix;
-        msg.push(MsgPart::from_bytes(local.to_monitor));
-        msg.push(MsgPart::from_bytes(b"actor died".to_vec()));
-        self.deliver_to_actor(actor, msg);
+        for failure_prefix in entries.into_values() {
+            let mut msg = failure_prefix;
+            msg.push(MsgPart::from_bytes(to_monitor.clone()));
+            msg.push(MsgPart::from_bytes(b"actor died".to_vec()));
+            self.deliver_to_actor(actor, msg);
+        }
     }
 
     fn deliver_to_actor(&mut self, actor: Key, msg: Vec<MsgPart>) {
