@@ -44,7 +44,6 @@ use hyperactor::Uid;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::ActorStoppingReason;
 use hyperactor::context;
-use hyperactor::gateway::GatewayServeHandle;
 use hyperactor::id::Label;
 use hyperactor::mailbox::MailboxSender as _;
 use hyperactor::value_mesh::ValueOverlay;
@@ -66,6 +65,7 @@ use crate::config_dump::ConfigDump;
 use crate::config_dump::ConfigDumpResult;
 use crate::host::Host;
 use crate::host::HostError;
+use crate::host::HostShutdownHandles;
 use crate::host::LOCAL_PROC_NAME;
 use crate::host::LocalProcManager;
 use crate::host::SERVICE_PROC_NAME;
@@ -97,13 +97,13 @@ pub(crate) type ProcManagerSpawnFn = Box<dyn Fn(Proc) -> ProcManagerSpawnFuture 
 /// This abstraction lets the same `HostAgent` work across both
 /// out-of-process and in-process execution modes.
 #[derive(EnumAsInner)]
-pub enum HostAgentMode {
+pub(crate) enum HostAgentMode {
     Process {
         host: Host<BootstrapProcManager>,
-        /// If set, the ShutdownHost handler sends the frontend mailbox server
-        /// handle back to the bootstrap loop via this channel once shutdown is
-        /// complete, so the caller can drain it and exit.
-        shutdown_tx: Option<tokio::sync::oneshot::Sender<GatewayServeHandle>>,
+        /// If set, the ShutdownHost handler sends the active transport handles
+        /// back to the bootstrap loop once shutdown is complete, so the caller
+        /// can drain them and exit.
+        shutdown_tx: Option<tokio::sync::oneshot::Sender<HostShutdownHandles>>,
     },
     Local(Host<LocalProcManager<ProcManagerSpawnFn>>),
 }
@@ -382,9 +382,9 @@ pub struct HostAgent {
 
 impl HostAgent {
     /// Create a host mesh agent for a process-backed host.
-    pub fn new_process(
+    pub(crate) fn new_process(
         host: Host<BootstrapProcManager>,
-        shutdown_tx: Option<tokio::sync::oneshot::Sender<GatewayServeHandle>>,
+        shutdown_tx: Option<tokio::sync::oneshot::Sender<HostShutdownHandles>>,
     ) -> Self {
         Self::new(HostAgentMode::Process { host, shutdown_tx })
     }
@@ -1430,12 +1430,11 @@ impl Handler<ShutdownHost> for HostAgent {
                 tracing::info!(
                     proc_id = %cx.self_addr().proc_addr(),
                     actor_id = %cx.self_addr(),
-                    "host is shut down, sending mailbox handle to bootstrap for draining"
+                    "host is shut down, sending transport handles to bootstrap for draining"
                 );
-                if let Some(handle) = host.take_frontend_handle()
-                    && let Err(mut handle) = tx.send(handle)
-                {
-                    handle.stop("bootstrap shutdown receiver dropped");
+                let handles = host.take_shutdown_handles();
+                if let Err(handles) = tx.send(handles) {
+                    drop(handles);
                 }
             }
             HostAgentState::Detached(HostAgentMode::Local(mut host))

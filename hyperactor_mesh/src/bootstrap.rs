@@ -53,7 +53,6 @@ use hyperactor::context;
 use hyperactor::id::Uid;
 use hyperactor::mailbox::IntoBoxedMailboxSender;
 use hyperactor::mailbox::MailboxClient;
-use hyperactor::mailbox::MailboxServer;
 use hyperactor::proc::Proc;
 use hyperactor_cast::cast_actor::CAST_ACTOR_NAME;
 use hyperactor_config::CONFIG;
@@ -74,6 +73,7 @@ use crate::config::MESH_PROC_LAUNCHER_KIND;
 use crate::host::BulkTerminate;
 use crate::host::Host;
 use crate::host::HostError;
+use crate::host::HostShutdownHandles;
 use crate::host::ProcHandle;
 use crate::host::ProcManager;
 use crate::host::ReadyError as HostReadyError;
@@ -215,31 +215,63 @@ pub async fn halt<R>() -> R {
 
 /// A handle that waits for a host to finish shutting down.
 ///
-/// Obtained from [`host`]. Awaiting [`HostShutdownHandle::join`] blocks until
-/// the [`ShutdownHost`] handler sends back the mailbox server handle, drains
-/// it, and (if `exit_on_shutdown`) calls `process::exit`.
+/// Obtained from [`host`]. Awaiting [`HostShutdownHandle::stop_and_join`]
+/// blocks until the [`ShutdownHost`] handler sends back the client transport
+/// handles, stops and joins them, and (if `exit_on_shutdown`) calls
+/// `process::exit`.
 ///
 /// Note: [`DrainHost`] does **not** trigger this handle — a drained host
 /// keeps its mailbox server (and Unix socket) alive so new clients can
 /// reconnect to the same address.
 pub struct HostShutdownHandle {
-    rx: tokio::sync::oneshot::Receiver<hyperactor::gateway::GatewayServeHandle>,
+    rx: tokio::sync::oneshot::Receiver<HostShutdownHandles>,
+    exit_on_shutdown: bool,
+}
+
+/// A host whose children have drained but whose client transports are still serving.
+///
+/// Call [`stop_and_join`](Self::stop_and_join) after any final client-side
+/// flushes to stop and join the transport servers.
+pub struct DrainedHostShutdown {
+    handles: Option<HostShutdownHandles>,
     exit_on_shutdown: bool,
 }
 
 impl HostShutdownHandle {
-    /// Wait for the host to finish shutting down, drain its mailbox server,
-    /// and optionally exit the process.
-    pub async fn join(self) {
-        match self.rx.await {
-            Ok(mut serve_handle) => {
-                // Stop signals the frontend server and unwinds its
-                // bookkeeping; join then awaits teardown so pending
-                // messages drain before we return.
-                serve_handle.stop("host shutdown: draining frontend mailbox server");
-                let _ = serve_handle.join().await;
-            }
-            Err(_) => {} // sender dropped without sending — nothing to drain
+    /// Wait for the host to drain its children and release its client transports.
+    ///
+    /// The returned transports remain live until
+    /// [`DrainedHostShutdown::stop_and_join`], so callers can perform final
+    /// client-side flushes before teardown.
+    pub async fn wait_for_drain(self) -> DrainedHostShutdown {
+        DrainedHostShutdown {
+            handles: self.rx.await.ok(),
+            exit_on_shutdown: self.exit_on_shutdown,
+        }
+    }
+
+    /// Wait for the host to drain, run `before_join` while its transports are
+    /// still serving, and then stop and join the transport servers.
+    pub async fn stop_and_join_after_drain(self, before_join: impl future::Future<Output = ()>) {
+        let drained = self.wait_for_drain().await;
+        before_join.await;
+        drained.stop_and_join().await;
+    }
+
+    /// Wait for the host to finish shutting down, stop and join its transport
+    /// servers, and optionally exit the process.
+    pub async fn stop_and_join(self) {
+        self.stop_and_join_after_drain(future::ready(())).await;
+    }
+}
+
+impl DrainedHostShutdown {
+    /// Stop and join the transport servers, then optionally exit the process.
+    pub async fn stop_and_join(mut self) {
+        if let Some(handles) = self.handles.take() {
+            handles
+                .stop_and_join("host shutdown: draining transport servers")
+                .await;
         }
         if self.exit_on_shutdown {
             std::process::exit(0);
@@ -303,11 +335,10 @@ pub async fn host(
     let host = Host::new_with_gateway(manager, addr, listener, gateway, via).await?;
     let addr = host.addr().clone();
 
-    // The ShutdownHost handler will send the gateway serve handle back here
+    // The ShutdownHost handler sends the active client transports back here
     // for draining. The frontend starts before HostAgent is spawned, and the
     // host address is published only after HostAgent binds its handler.
-    let (shutdown_tx, shutdown_rx) =
-        tokio::sync::oneshot::channel::<hyperactor::gateway::GatewayServeHandle>();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<HostShutdownHandles>();
 
     let system_proc = host.system_proc().clone();
     let host_mesh_agent = system_proc.spawn_with_uid(
@@ -579,7 +610,8 @@ impl Bootstrap {
                 // Finally serve the proc on the same transport as the backend address,
                 // and call back.
                 let (proc_addr, proc_rx) = channel::serve(serve_addr)?;
-                let mailbox_handle = proc.clone().serve(proc_rx);
+                let mailbox_handle =
+                    hyperactor::mailbox::MailboxServer::serve(proc.clone(), proc_rx);
                 channel::dial(callback_addr)?
                     .send((proc_addr, agent_handle.bind::<ProcAgent>()))
                     .instrument(span)
@@ -617,7 +649,7 @@ impl Bootstrap {
                     .send(())
                     .await
                     .map_err(ChannelError::from)?;
-                shutdown.join().await;
+                shutdown.stop_and_join().await;
                 halt().await
             }
         }
@@ -2417,16 +2449,180 @@ fn runtime_dir() -> io::Result<TempDir> {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
 
+    use async_trait::async_trait;
+    use hyperactor::Location;
+    use hyperactor::PortHandle;
+    use hyperactor::ProcId;
     use hyperactor::RemoteSpawn;
     use hyperactor::channel::ChannelAddr;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::channel::TcpMode;
+    use hyperactor::mailbox::MailboxSender;
+    use hyperactor::mailbox::MessageEnvelope;
+    use hyperactor::mailbox::Undeliverable;
     use hyperactor::testing::ids::test_proc_id;
     use hyperactor::testing::ids::test_proc_id_with_addr;
     use hyperactor_config::Flattrs;
 
     use super::*;
+
+    struct ShutdownFlushProbe {
+        gateway: Gateway,
+        expected_location: Location,
+        flushed: Arc<AtomicBool>,
+    }
+
+    #[async_trait]
+    impl MailboxSender for ShutdownFlushProbe {
+        fn post_unchecked(
+            &self,
+            _envelope: MessageEnvelope,
+            _return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+        ) {
+        }
+
+        async fn flush(&self) -> Result<(), anyhow::Error> {
+            assert_eq!(
+                self.gateway.default_location(),
+                self.expected_location,
+                "shutdown transports must remain live while the root proc flushes"
+            );
+            self.flushed.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_host_shutdown_flushes_before_joining_frontend() {
+        let relay_gateway = Gateway::new();
+        let mut relay = relay_gateway
+            .serve_duplex(ChannelAddr::any(ChannelTransport::Unix))
+            .unwrap();
+        let relay_addr = relay_gateway.default_location().addr().clone();
+
+        let gateway = Gateway::isolated();
+        let mut first = gateway
+            .serve(ChannelAddr::any(ChannelTransport::Local))
+            .unwrap();
+        let first_location = gateway.default_location();
+        let frontend = gateway
+            .serve(ChannelAddr::any(ChannelTransport::Local))
+            .unwrap();
+        let frontend_location = gateway.default_location();
+        assert_ne!(first_location, frontend_location);
+        let via = gateway.serve_via(relay_addr).await.unwrap();
+        let via_location = gateway.default_location();
+        assert!(via_location.as_via().is_some());
+
+        let proc = Proc::builder()
+            .proc_id(ProcId::instance(Label::strip("shutdown_flush_probe")))
+            .shared_gateway(gateway.clone())
+            .build()
+            .unwrap();
+        let flushed = Arc::new(AtomicBool::new(false));
+        let probe_id = proc
+            .proc_addr()
+            .actor_addr("shutdown_flush_probe")
+            .id()
+            .clone();
+        assert!(proc.muxer().bind(
+            probe_id,
+            ShutdownFlushProbe {
+                gateway: gateway.clone(),
+                expected_location: via_location,
+                flushed: flushed.clone(),
+            }
+        ));
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tx.send(HostShutdownHandles::new(frontend, Some(via)))
+            .unwrap();
+        let shutdown = HostShutdownHandle {
+            rx,
+            exit_on_shutdown: false,
+        };
+
+        shutdown
+            .stop_and_join_after_drain(async {
+                proc.flush().await.expect("flush probe should succeed");
+            })
+            .await;
+
+        assert!(flushed.load(Ordering::SeqCst));
+        assert_eq!(gateway.default_location(), first_location);
+
+        first.stop("test complete");
+        first.join().await.unwrap();
+        relay.stop("test complete");
+        relay.join().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_cancelled_pre_join_stops_frontend() {
+        let gateway = Gateway::isolated();
+        let mut first = gateway
+            .serve(ChannelAddr::any(ChannelTransport::Local))
+            .unwrap();
+        let first_location = gateway.default_location();
+        let frontend = gateway
+            .serve(ChannelAddr::any(ChannelTransport::Local))
+            .unwrap();
+        assert_ne!(gateway.default_location(), first_location);
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tx.send(HostShutdownHandles::new(frontend, None)).unwrap();
+        let shutdown = HostShutdownHandle {
+            rx,
+            exit_on_shutdown: false,
+        };
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let shutdown_task = tokio::spawn(shutdown.stop_and_join_after_drain(async move {
+            entered_tx
+                .send(())
+                .expect("pre-join notification receiver must remain live");
+            future::pending::<()>().await;
+        }));
+
+        entered_rx
+            .await
+            .expect("pre-join future must signal before cancellation");
+        shutdown_task.abort();
+        assert!(
+            shutdown_task
+                .await
+                .expect_err("aborted join task must report cancellation")
+                .is_cancelled()
+        );
+        assert_eq!(gateway.default_location(), first_location);
+
+        first.stop("test complete");
+        first.join().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_dropped_shutdown_receiver_stops_frontend() {
+        let gateway = Gateway::isolated();
+        let mut first = gateway
+            .serve(ChannelAddr::any(ChannelTransport::Local))
+            .unwrap();
+        let first_location = gateway.default_location();
+        let frontend = gateway
+            .serve(ChannelAddr::any(ChannelTransport::Local))
+            .unwrap();
+        assert_ne!(gateway.default_location(), first_location);
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tx.send(HostShutdownHandles::new(frontend, None)).unwrap();
+        drop(rx);
+        assert_eq!(gateway.default_location(), first_location);
+
+        first.stop("test complete");
+        first.join().await.unwrap();
+    }
 
     #[tokio::test]
     async fn test_host_bootstrap_ready_callback() {
@@ -3121,7 +3317,7 @@ mod tests {
         // Route messages arriving on backend_addr into this test
         // proc's mailbox so the bootstrap child can reach the host
         // router.
-        instance.proc().clone().serve(rx);
+        hyperactor::mailbox::MailboxServer::serve(instance.proc().clone(), rx);
 
         // We return an arbitrary (but unbound!) unix direct proc id here;
         // it is okay, as we're not testing connectivity.

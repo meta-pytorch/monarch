@@ -570,19 +570,16 @@ def shutdown_context() -> "Future[None]":
                 shutdown_local_host_mesh,
             )
 
-            # Shutdown the host mesh first, while the client actor is still
-            # alive to route messages. This drains children and joins the
-            # mailbox server, flushing receive-side acks.
+            # With a local host, Rust stops and flushes the root client after
+            # child drain but before transport teardown. Repeating that here
+            # would flush after teardown; Python owns only the no-host fallback.
             await shutdown_local_host_mesh()
         except RuntimeError:
-            # No local host mesh to shutdown
-            pass
-        # Stop the client actor and wait for it to reach terminal status.
-        # This ensures pending messages are drained and send-side acks
-        # are flushed before the tokio runtime is torn down.
+            # A client created without a local host still needs to be stopped.
+            if c is not None:
+                instance = c.actor_instance._as_rust()
+                await instance.stop_and_wait("shutdown")
         if c is not None:
-            instance = c.actor_instance._as_rust()
-            await instance.stop_and_wait("shutdown")
             _context.set(None)
 
     return Future._from_coro(_shutdown_sequence())
