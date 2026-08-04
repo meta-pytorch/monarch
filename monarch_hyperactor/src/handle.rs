@@ -1146,7 +1146,7 @@ def run_two(h):
                 let h = Py::new(py, handle).unwrap();
                 let helper = loop_helper(py);
                 let res = helper.getattr("run_cancel").unwrap().call1((h,)).unwrap();
-                let tup = res.downcast::<PyTuple>().unwrap();
+                let tup = res.cast::<PyTuple>().unwrap();
                 let cancelled = tup.get_item(0).unwrap().extract::<bool>().unwrap();
                 let poll_val = tup.get_item(1).unwrap();
                 (cancelled, !poll_val.is_none())
@@ -1183,7 +1183,7 @@ def run_two(h):
                     .unwrap()
                     .call1((h,))
                     .unwrap();
-                let tup = res.downcast::<PyTuple>().unwrap();
+                let tup = res.cast::<PyTuple>().unwrap();
                 (
                     tup.get_item(0).unwrap().extract::<bool>().unwrap(),
                     tup.get_item(1).unwrap().extract::<i64>().unwrap(),
@@ -1212,7 +1212,7 @@ def run_two(h):
             let h = Py::new(py, handle).unwrap();
             let helper = loop_helper(py);
             let res = helper.getattr("run_two").unwrap().call1((h,)).unwrap();
-            let tup = res.downcast::<PyTuple>().unwrap();
+            let tup = res.cast::<PyTuple>().unwrap();
             (
                 tup.get_item(0).unwrap().extract::<i64>().unwrap(),
                 tup.get_item(1).unwrap().extract::<i64>().unwrap(),
@@ -1276,7 +1276,7 @@ def run_two(h):
                 .unwrap()
                 .call1((h,))
                 .unwrap();
-            let tup = res.downcast::<PyTuple>().unwrap();
+            let tup = res.cast::<PyTuple>().unwrap();
             (
                 tup.get_item(0).unwrap().extract::<i64>().unwrap(),
                 tup.get_item(1).unwrap().extract::<bool>().unwrap(),

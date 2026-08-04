@@ -879,7 +879,8 @@ impl StreamActor {
                 device_meshes,
                 remote_process_groups,
             )?;
-            Ok(PyTree::<Py<PyAny>>::extract_bound(&result)
+            Ok(result
+                .extract::<PyTree<Py<PyAny>>>()
                 .map_err(SerializablePyErr::from_fn(py))?)
         })
     }
@@ -1601,7 +1602,9 @@ impl StreamMessageHandler for StreamActor {
         self.try_define(cx, seq, params.results, &mutates, async |self| {
             let result = self.call_actor(cx, params.call).await?;
             let result = monarch_with_gil_blocking(GilSite::StreamCompute, |py| {
-                PyTree::<Py<PyAny>>::extract_bound(&result.into_bound(py))
+                result
+                    .into_bound(py)
+                    .extract::<PyTree<Py<PyAny>>>()
                     .map_err(SerializablePyErr::from_fn(py))
             })?;
             Ok(result.into_leaves())

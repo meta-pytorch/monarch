@@ -107,7 +107,7 @@ type ActorFuture = Pin<Box<dyn Future<Output = PyResult<Py<PyAny>>> + Send + 'st
 /// `Future._take_inner()` surrenders the underlying `PythonTask`, whose
 /// `take_task()` then consumes it and returns the raw future.
 fn take_actor_future(py_future: Bound<'_, PyAny>) -> PyResult<ActorFuture> {
-    let task: Bound<'_, PyPythonTask> = py_future.call_method0("_take_inner")?.downcast_into()?;
+    let task: Bound<'_, PyPythonTask> = py_future.call_method0("_take_inner")?.cast_into()?;
     task.borrow_mut().take_task()
 }
 
@@ -147,10 +147,14 @@ fn file_type_from_mode(mode: u32) -> FileType {
 }
 
 fn extract_stat_attr(dict: &Bound<'_, PyDict>) -> PyResult<FileAttr> {
-    fn get<'py, T: FromPyObject<'py>>(dict: &Bound<'py, PyDict>, key: &str) -> PyResult<T> {
+    fn get<'py, T: for<'a> FromPyObject<'a, 'py>>(
+        dict: &Bound<'py, PyDict>,
+        key: &str,
+    ) -> PyResult<T> {
         dict.get_item(key)?
             .ok_or_else(|| PyRuntimeError::new_err(format!("missing stat key: {key}")))?
             .extract()
+            .map_err(Into::into)
     }
     let mode: u32 = get(dict, "st_mode")?;
     let size: u64 = get(dict, "st_size")?;
@@ -180,7 +184,7 @@ fn decode_getattr(result: Bound<'_, PyAny>) -> PyResult<FuseResult<FileAttr>> {
     if let Ok(errno) = result.extract::<libc::c_int>() {
         return Ok(Err(Errno::from(errno)));
     }
-    Ok(Ok(extract_stat_attr(result.downcast::<PyDict>()?)?))
+    Ok(Ok(extract_stat_attr(result.cast::<PyDict>()?)?))
 }
 
 fn decode_readdir(result: Bound<'_, PyAny>) -> PyResult<FuseResult<Vec<String>>> {

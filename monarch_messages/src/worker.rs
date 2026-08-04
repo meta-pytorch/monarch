@@ -261,7 +261,7 @@ impl FunctionPath {
             if function.hasattr("_remote_impl")? {
                 function = function.getattr("_remote_impl")?;
             }
-            Ok(function.downcast_into()?)
+            Ok(function.cast_into()?)
         }
     }
 }
@@ -311,7 +311,7 @@ impl Cloudpickle {
         let py = obj.py();
         let dumps = cloudpickle_dumps(py);
         let bytes_obj = dumps.call1((obj,))?;
-        let bytes = bytes_obj.downcast::<PyBytes>()?.as_bytes().to_vec();
+        let bytes = bytes_obj.cast::<PyBytes>()?.as_bytes().to_vec();
         Ok(Self { bytes })
     }
 }
@@ -375,15 +375,15 @@ impl ArgsKwargs {
         py: Python<'py>,
     ) -> PyResult<(Bound<'py, PyTuple>, Bound<'py, PyDict>)> {
         let tuple = self.payload.resolve(py)?;
-        let tuple = tuple.downcast::<PyTuple>()?;
+        let tuple = tuple.cast::<PyTuple>()?;
 
         // Extract args (first element)
         let args = tuple.get_item(0)?;
-        let args_tuple = args.downcast::<PyTuple>()?;
+        let args_tuple = args.cast::<PyTuple>()?;
 
         // Extract kwargs (second element)
         let kwargs = tuple.get_item(1)?;
-        let kwargs_dict = kwargs.downcast::<PyDict>()?;
+        let kwargs_dict = kwargs.cast::<PyDict>()?;
 
         Ok((args_tuple.clone(), kwargs_dict.clone()))
     }

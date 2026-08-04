@@ -20,11 +20,11 @@ pub struct PickledPyObject {
 }
 
 impl PickledPyObject {
-    pub fn pickle<'py>(obj: &Bound<'py, PyAny>) -> PyResult<Self> {
+    pub fn pickle(obj: &Bound<'_, PyAny>) -> PyResult<Self> {
         Self::pickle_impl(obj, false)
     }
 
-    pub fn cloudpickle<'py>(obj: &Bound<'py, PyAny>) -> PyResult<Self> {
+    pub fn cloudpickle(obj: &Bound<'_, PyAny>) -> PyResult<Self> {
         Self::pickle_impl(obj, true)
     }
 
@@ -32,13 +32,13 @@ impl PickledPyObject {
         if cloudpickle { "cloudpickle" } else { "pickle" }
     }
 
-    fn pickle_impl<'py>(obj: &Bound<'py, PyAny>, cloudpickle: bool) -> PyResult<Self> {
+    fn pickle_impl(obj: &Bound<'_, PyAny>, cloudpickle: bool) -> PyResult<Self> {
         let module = Self::module(cloudpickle);
         let bytes = obj
             .py()
             .import(module)?
             .call_method1("dumps", (obj,))?
-            .downcast_into::<PyBytes>()?
+            .cast_into::<PyBytes>()?
             .as_bytes()
             .to_vec();
         Ok(Self { bytes, cloudpickle })
@@ -64,9 +64,11 @@ impl TryFrom<Bound<'_, PyAny>> for PickledPyObject {
     }
 }
 
-impl FromPyObject<'_> for PickledPyObject {
-    fn extract_bound(obj: &Bound<'_, PyAny>) -> PyResult<Self> {
-        PickledPyObject::pickle(obj)
+impl FromPyObject<'_, '_> for PickledPyObject {
+    type Error = PyErr;
+
+    fn extract(obj: pyo3::Borrowed<'_, '_, PyAny>) -> PyResult<Self> {
+        PickledPyObject::pickle(&obj)
     }
 }
 

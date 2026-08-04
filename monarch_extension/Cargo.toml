@@ -34,8 +34,8 @@ monarch_rdma_extension = { version = "0.0.0", path = "../monarch_rdma/extension"
 monarch_tensor_worker = { version = "0.0.0", path = "../monarch_tensor_worker", optional = true, default-features = false }
 nccl-sys = { path = "../nccl-sys", optional = true }
 ndslice = { version = "0.0.0", path = "../ndslice" }
-pyo3 = { version = "0.26", features = ["anyhow", "multiple-pymethods", "py-clone"] }
-pyo3-async-runtimes = { version = "0.26", features = ["attributes", "tokio-runtime"] }
+pyo3 = { version = "0.27", features = ["anyhow", "multiple-pymethods", "py-clone"] }
+pyo3-async-runtimes = { version = "0.27", features = ["attributes", "tokio-runtime"] }
 rdmaxcel-sys = { path = "../rdmaxcel-sys", optional = true }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 tokio = { version = "1.52.4", features = ["full", "test-util", "tracing"] }

@@ -89,8 +89,11 @@ impl Device {
     }
 }
 
-impl FromPyObject<'_> for Device {
-    fn extract_bound(obj: &Bound<'_, PyAny>) -> PyResult<Self> {
+impl FromPyObject<'_, '_> for Device {
+    type Error = PyErr;
+
+    fn extract(obj: pyo3::Borrowed<'_, '_, PyAny>) -> PyResult<Self> {
+        let obj = &*obj;
         let device_str: String = obj.str()?.extract()?;
         // Parse the device string
         device_str.parse().map_err(|e: DeviceParseError| {
@@ -205,8 +208,11 @@ pub enum LayoutDef {
     Mkldnn,
 }
 
-impl FromPyObject<'_> for Layout {
-    fn extract_bound(obj: &Bound<'_, PyAny>) -> PyResult<Self> {
+impl FromPyObject<'_, '_> for Layout {
+    type Error = PyErr;
+
+    fn extract(obj: pyo3::Borrowed<'_, '_, PyAny>) -> PyResult<Self> {
+        let obj = &*obj;
         Python::attach(|py| {
             let strided = torch_strided(py);
             let sparse_coo = torch_sparse_coo(py);
@@ -349,8 +355,11 @@ pub enum ScalarTypeDef {
     Float8_e4m3fnuz,
 }
 
-impl FromPyObject<'_> for ScalarType {
-    fn extract_bound(obj: &Bound<'_, PyAny>) -> PyResult<Self> {
+impl FromPyObject<'_, '_> for ScalarType {
+    type Error = PyErr;
+
+    fn extract(obj: pyo3::Borrowed<'_, '_, PyAny>) -> PyResult<Self> {
+        let obj = &*obj;
         Python::attach(|py| {
             // Map of PyTorch dtype getters to ScalarType
             let dtype_map = [
@@ -464,7 +473,7 @@ impl Tensor {
         Python::attach(|py| {
             let tensor = self.inner.bind(py);
             let dtype = tensor.getattr("dtype").unwrap();
-            ScalarType::extract_bound(&dtype).unwrap()
+            dtype.extract::<ScalarType>().unwrap()
         })
     }
 
@@ -472,7 +481,7 @@ impl Tensor {
         Python::attach(|py| {
             let tensor = self.inner.bind(py);
             let device = tensor.getattr("device").unwrap();
-            Device::extract_bound(&device).unwrap()
+            device.extract::<Device>().unwrap()
         })
     }
 
@@ -547,10 +556,12 @@ impl Tensor {
     }
 }
 
-impl pyo3::FromPyObject<'_> for Tensor {
-    fn extract_bound(ob: &pyo3::Bound<'_, pyo3::PyAny>) -> pyo3::PyResult<Self> {
+impl pyo3::FromPyObject<'_, '_> for Tensor {
+    type Error = pyo3::PyErr;
+
+    fn extract(obj: pyo3::Borrowed<'_, '_, pyo3::PyAny>) -> pyo3::PyResult<Self> {
         Ok(Tensor {
-            inner: ob.clone().unbind(),
+            inner: pyo3::Bound::clone(&obj).unbind(),
         })
     }
 }

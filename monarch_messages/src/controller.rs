@@ -14,7 +14,6 @@ use hyperactor::RefClient;
 use pyo3::FromPyObject;
 use pyo3::IntoPyObject;
 use pyo3::IntoPyObjectExt;
-use pyo3::types::PyAnyMethods;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -31,7 +30,7 @@ pub enum Ranks {
 }
 
 impl Ranks {
-    pub fn iter_slices<'a>(&'a self) -> std::slice::Iter<'a, ndslice::Slice> {
+    pub fn iter_slices(&self) -> std::slice::Iter<'_, ndslice::Slice> {
         match self {
             Self::Slice(slice) => std::slice::from_ref(slice).iter(),
             Self::SliceList(slices) => slices.iter(),
@@ -102,9 +101,11 @@ impl From<&Seq> for u64 {
     }
 }
 
-impl FromPyObject<'_> for Seq {
-    fn extract_bound(ob: &pyo3::Bound<'_, pyo3::PyAny>) -> pyo3::PyResult<Self> {
-        Ok(Self(ob.extract::<u64>()?))
+impl FromPyObject<'_, '_> for Seq {
+    type Error = pyo3::PyErr;
+
+    fn extract(obj: pyo3::Borrowed<'_, '_, pyo3::PyAny>) -> pyo3::PyResult<Self> {
+        Ok(Self(obj.extract::<u64>()?))
     }
 }
 
