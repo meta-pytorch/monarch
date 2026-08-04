@@ -203,6 +203,49 @@ fn dead_pending_connect_fails_when_matched() {
 }
 
 #[test]
+fn gateway_rejected_joining_local_parent() {
+    let (mut ctx, mut rx) = test_ctx();
+    let gw = gateway_actor(&mut ctx, "gw");
+
+    // A gateway must be the entry point for its process group, so it may not
+    // gain a unix/inproc parent. The join is rejected up front with a failure
+    // message and no parent connection is ever attached.
+    ctx.join(
+        gw,
+        "inproc://nope".to_owned(),
+        request_with_failure(Role::Child, "gw-failed"),
+    );
+    drain_commands(&mut ctx, &mut rx);
+
+    assert!(ctx.actors[gw].parent.is_none());
+    assert_eq!(
+        buffered_strings(&ctx, gw),
+        vec![
+            "gw-failed",
+            "",
+            "gateway must have no parent or a network parent"
+        ]
+    );
+}
+
+#[test]
+fn gateway_serves_local_children() {
+    let (mut ctx, mut rx) = test_ctx();
+    let gw = gateway_actor(&mut ctx, "gw");
+    let child = actor(&mut ctx, "child");
+
+    // Serving children (Role::Parent) is unaffected by the gateway rule — only
+    // *gaining a parent* over a local link is rejected. A gateway adopts local
+    // children normally.
+    connect(&mut ctx, gw, child, "inproc://gw-child");
+    drain_commands(&mut ctx, &mut rx);
+
+    assert!(ctx.actors[child].parent.is_some());
+    assert_eq!(buffered_strings(&ctx, gw), vec!["gw", "child"]);
+    assert_eq!(buffered_strings(&ctx, child), vec!["child", "gw"]);
+}
+
+#[test]
 fn message_to_unrouted_actor_buffers_at_gateway_then_flushes() {
     let (mut ctx, mut rx) = test_ctx();
     let root = actor(&mut ctx, "root");
@@ -433,7 +476,7 @@ fn monitor_on_unnamed_actor_waits_for_its_name() {
     let root = actor(&mut ctx, "root");
     let target = actor(&mut ctx, "target");
     // `watcher` is created without a name; root will name it when it joins.
-    let watcher = ctx.actors.insert(ActorEntry::new(None));
+    let watcher = ctx.actors.insert(ActorEntry::new(None, false));
     connect(&mut ctx, root, target, "inproc://un-target");
     drain_commands(&mut ctx, &mut rx);
 
@@ -478,7 +521,7 @@ fn deferred_monitor_cancelled_after_naming_unsubscribes() {
     let (mut ctx, mut rx) = test_ctx();
     let root = actor(&mut ctx, "root");
     let target = actor(&mut ctx, "target");
-    let watcher = ctx.actors.insert(ActorEntry::new(None));
+    let watcher = ctx.actors.insert(ActorEntry::new(None, false));
     connect(&mut ctx, root, target, "inproc://an-target");
     drain_commands(&mut ctx, &mut rx);
 
@@ -522,7 +565,7 @@ fn deferred_monitor_cancelled_before_naming_never_subscribes() {
     let (mut ctx, mut rx) = test_ctx();
     let root = actor(&mut ctx, "root");
     let target = actor(&mut ctx, "target");
-    let watcher = ctx.actors.insert(ActorEntry::new(None));
+    let watcher = ctx.actors.insert(ActorEntry::new(None, false));
     connect(&mut ctx, root, target, "inproc://bn-target");
     drain_commands(&mut ctx, &mut rx);
 
@@ -990,8 +1033,16 @@ fn drain_commands(ctx: &mut Ctx, rx: &mut mpsc::UnboundedReceiver<Command>) {
 }
 
 fn actor(ctx: &mut Ctx, ident: &str) -> Key {
+    // Test actors default to non-gateways: most join a local parent, which a
+    // gateway is forbidden from doing. Tests that need a gateway construct it
+    // explicitly with `gateway_actor`.
     ctx.actors
-        .insert(ActorEntry::new(Some(ident.as_bytes().to_vec())))
+        .insert(ActorEntry::new(Some(ident.as_bytes().to_vec()), false))
+}
+
+fn gateway_actor(ctx: &mut Ctx, ident: &str) -> Key {
+    ctx.actors
+        .insert(ActorEntry::new(Some(ident.as_bytes().to_vec()), true))
 }
 
 fn connect(ctx: &mut Ctx, parent: Key, child: Key, url: &str) {
@@ -1038,6 +1089,7 @@ fn runtime_actor(ctx: &CtxHandle, ident: &str) -> Key {
     let (done_tx, done_rx) = oneshot::channel();
     ctx.send_command(Command::CreateActor {
         ident: Some(MsgPart::from_bytes(ident.as_bytes().to_vec())),
+        gateway: false,
         done: done_tx,
     })
     .expect("create actor should enqueue");

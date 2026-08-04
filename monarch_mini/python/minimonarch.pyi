@@ -49,9 +49,13 @@ class Actor:
     minimonarch runtime; see ``close()``.
     """
 
-    def __init__(self, ident: bytes | None = ...) -> None:
+    def __init__(self, ident: bytes | None = ..., gateway: bool = ...) -> None:
         """Create an actor. ``ident`` must be unique across the run; if ``None``,
-        a name must be assigned by the peer in a later ``serve``/``join``."""
+        a name must be assigned by the peer in a later ``serve``/``join``.
+
+        ``gateway`` declares this actor as the entry point for its process group:
+        it must have no parent or a network (tcp/quic) parent, and joining it to a
+        ``unix://``/``inproc://`` parent is rejected. Fixed at creation."""
         ...
 
     def send(self, receiver: bytes, parts: Sequence[bytearray]) -> None:
