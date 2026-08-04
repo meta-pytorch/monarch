@@ -1,0 +1,9 @@
+# Build intermediates and local environments for the minimonarch extension.
+build/
+*.so
+*.o
+*.egg-info/
+__pycache__/
+.pytest_cache/
+.venv/
+uv.lock
