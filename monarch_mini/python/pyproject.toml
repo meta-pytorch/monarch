@@ -1,0 +1,39 @@
+# Standalone uv project for the minimonarch Python extension, so that
+# `uv run ...` inside this directory builds only minimonarch (and its Rust
+# staticlib) — independent of the parent torchmonarch project.
+#
+#   uv run pytest
+#
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "minimonarch"
+version = "0.1.0"
+description = "asyncio bindings for the minimonarch C API"
+requires-python = ">=3.10"
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+
+# Pure-Python module discovery is disabled; the package is a single C extension
+# declared in setup.py (ext_modules). Without this, setuptools' flat-layout
+# auto-discovery trips over test_smoke.py / setup.py.
+[tool.setuptools]
+py-modules = []
+
+# Rebuild the wheel when the extension or build inputs change. The Rust sources
+# and Cargo manifest are inputs too (setup.py builds the staticlib), so changes
+# there must also invalidate the cached wheel.
+[tool.uv]
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "setup.py" },
+    { file = "minimonarch.c" },
+    { file = "../Cargo.toml" },
+    { file = "../src/**/*.rs" },
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
