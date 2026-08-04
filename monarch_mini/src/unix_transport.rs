@@ -35,9 +35,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use serde::Deserialize;
-use serde::Serialize;
-use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::net::UnixListener;
 use tokio::net::UnixStream;
@@ -47,13 +44,13 @@ use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::time::Duration;
 
-use crate::Role;
 use crate::connection::ConnectionCommand;
 use crate::connection::ConnectionRef;
 use crate::connection::ConnectionTransport;
 use crate::ctx::Command;
+use crate::framing;
+use crate::framing::Incoming;
 use crate::matcher::Matcher;
-use crate::msg::MsgPart;
 use crate::transport::Transport;
 
 /// Connect-retry backoff bounds. A join may be posted before its serve, so the
@@ -61,48 +58,6 @@ use crate::transport::Transport;
 /// serve that is slow — or never comes — doesn't spam the OS with connect()s.
 const CONNECT_RETRY_MIN: Duration = Duration::from_millis(5);
 const CONNECT_RETRY_MAX: Duration = Duration::from_millis(1000);
-
-/// One frame on the wire. There is a variant per [`ConnectionCommand`] that
-/// crosses the pipe (including `Establish`, which is how the two ends exchange
-/// identity). Message-part *bytes* are never carried here — only their lengths.
-#[derive(Serialize, Deserialize)]
-enum WireFrame {
-    Establish {
-        role: Role,
-        ident: Option<Vec<u8>>,
-        name_for_other: Option<Vec<u8>>,
-        alive: bool,
-    },
-    Message {
-        destination_ident: Vec<u8>,
-        part_lens: Vec<u64>,
-    },
-    PublishRoutes {
-        live: Vec<Vec<u8>>,
-        dead: Vec<Vec<u8>>,
-    },
-    Subscribe {
-        dest: Vec<u8>,
-        id: u64,
-        to_monitor: Vec<u8>,
-    },
-    Unsubscribe {
-        dest: Vec<u8>,
-        id: u64,
-        to_monitor: Vec<u8>,
-    },
-    FireMonitor {
-        dest_ident: Vec<u8>,
-        monitor_id: u64,
-    },
-    Severed {
-        reason: Vec<u8>,
-    },
-}
-
-fn bincode_config() -> bincode::config::Configuration {
-    bincode::config::standard()
-}
 
 /// Owns all UNIX transport state and coroutines. The command loop holds one of
 /// these and forwards serves/joins to it; it never sees sockets, urls, or pairing
@@ -345,7 +300,7 @@ async fn writer_task(
                 let Some(command) = command else {
                     break; // transport dropped
                 };
-                if write_command(&mut write_half, command).await.is_err() {
+                if framing::write_command(&mut write_half, command).await.is_err() {
                     return;
                 }
             }
@@ -353,7 +308,7 @@ async fn writer_task(
                 // Teardown: the command loop has stopped, so no further commands
                 // will be enqueued. Flush whatever is already queued, then stop.
                 while let Ok(command) = rx.try_recv() {
-                    if write_command(&mut write_half, command).await.is_err() {
+                    if framing::write_command(&mut write_half, command).await.is_err() {
                         return;
                     }
                 }
@@ -368,15 +323,16 @@ async fn writer_task(
 
 /// Decode each frame off the socket and forward it to the command loop. Any read
 /// error or EOF turns into a `Severed` so the command loop tears the connection
-/// down. The command loop's command handling is shared with inproc and unchanged.
+/// down. UNIX never sends heartbeats, so a `Heartbeat` frame is not expected here;
+/// it is harmlessly ignored if one ever arrives.
 async fn reader_task(
     mut read_half: OwnedReadHalf,
     connection: ConnectionRef,
     loop_tx: mpsc::UnboundedSender<Command>,
 ) {
     loop {
-        match read_command(&mut read_half).await {
-            Ok(action) => {
+        match framing::read_frame(&mut read_half).await {
+            Ok(Incoming::Command(action)) => {
                 if loop_tx
                     .send(Command::ConnectionAction { connection, action })
                     .is_err()
@@ -384,6 +340,7 @@ async fn reader_task(
                     return;
                 }
             }
+            Ok(Incoming::Heartbeat) => continue,
             Err(_) => {
                 sever(&loop_tx, connection, b"unix connection closed".to_vec());
                 return;
@@ -397,153 +354,4 @@ fn sever(loop_tx: &mpsc::UnboundedSender<Command>, connection: ConnectionRef, re
         connection,
         action: ConnectionCommand::Severed { reason },
     });
-}
-
-/// Serialize one command and write it: a length-prefixed bincode header, then —
-/// for a message — each part's bytes streamed straight from its buffer. Every
-/// command crosses the wire, `Establish` included.
-async fn write_command(
-    write_half: &mut OwnedWriteHalf,
-    command: ConnectionCommand,
-) -> std::io::Result<()> {
-    // Figure out the header frame to write; a message additionally keeps a list of
-    // part bytes to stream raw after the header.
-    let mut parts: Vec<MsgPart> = Vec::new();
-    let frame = match command {
-        ConnectionCommand::SendMessage {
-            destination_ident,
-            parts: message_parts,
-        } => {
-            let part_lens = message_parts
-                .iter()
-                .map(|part| part.as_bytes().len() as u64)
-                .collect();
-            parts = message_parts;
-            WireFrame::Message {
-                destination_ident,
-                part_lens,
-            }
-        }
-        ConnectionCommand::Establish {
-            role,
-            ident,
-            name_for_other,
-            alive,
-        } => WireFrame::Establish {
-            role,
-            ident,
-            name_for_other,
-            alive,
-        },
-        ConnectionCommand::PublishRoutes { live, dead } => WireFrame::PublishRoutes { live, dead },
-        ConnectionCommand::Subscribe {
-            dest,
-            id,
-            to_monitor,
-        } => WireFrame::Subscribe {
-            dest,
-            id,
-            to_monitor,
-        },
-        ConnectionCommand::Unsubscribe {
-            dest,
-            id,
-            to_monitor,
-        } => WireFrame::Unsubscribe {
-            dest,
-            id,
-            to_monitor,
-        },
-        ConnectionCommand::FireMonitor {
-            dest_ident,
-            monitor_id,
-        } => WireFrame::FireMonitor {
-            dest_ident,
-            monitor_id,
-        },
-        ConnectionCommand::Severed { reason } => WireFrame::Severed { reason },
-    };
-
-    let header = bincode::serde::encode_to_vec(&frame, bincode_config())
-        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
-    write_half
-        .write_all(&(header.len() as u64).to_le_bytes())
-        .await?;
-    write_half.write_all(&header).await?;
-    // Write each part's bytes straight from its owning buffer — no copy.
-    for part in parts {
-        write_half.write_all(part.as_bytes()).await?;
-    }
-    Ok(())
-}
-
-/// Read one frame and decode it straight into a [`ConnectionCommand`]. For a
-/// message the part bytes are read directly into the command's own buffers — the
-/// only copy is the unavoidable kernel-to-userspace one, and there is no
-/// intermediate `WireFrame`-plus-parts to re-match.
-async fn read_command(read_half: &mut OwnedReadHalf) -> std::io::Result<ConnectionCommand> {
-    let mut len_buf = [0u8; 8];
-    read_half.read_exact(&mut len_buf).await?;
-    let header_len = u64::from_le_bytes(len_buf) as usize;
-
-    let mut header = vec![0u8; header_len];
-    read_half.read_exact(&mut header).await?;
-    let (frame, _) = bincode::serde::decode_from_slice::<WireFrame, _>(&header, bincode_config())
-        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
-
-    Ok(match frame {
-        WireFrame::Message {
-            destination_ident,
-            part_lens,
-        } => {
-            let mut parts = Vec::with_capacity(part_lens.len());
-            for len in part_lens {
-                let mut buf = vec![0u8; len as usize];
-                read_half.read_exact(&mut buf).await?;
-                parts.push(MsgPart::from_bytes(buf));
-            }
-            ConnectionCommand::SendMessage {
-                destination_ident,
-                parts,
-            }
-        }
-        WireFrame::Establish {
-            role,
-            ident,
-            name_for_other,
-            alive,
-        } => ConnectionCommand::Establish {
-            role,
-            ident,
-            name_for_other,
-            alive,
-        },
-        WireFrame::PublishRoutes { live, dead } => ConnectionCommand::PublishRoutes { live, dead },
-        WireFrame::Subscribe {
-            dest,
-            id,
-            to_monitor,
-        } => ConnectionCommand::Subscribe {
-            dest,
-            id,
-            to_monitor,
-        },
-        WireFrame::Unsubscribe {
-            dest,
-            id,
-            to_monitor,
-        } => ConnectionCommand::Unsubscribe {
-            dest,
-            id,
-            to_monitor,
-        },
-        WireFrame::FireMonitor {
-            dest_ident,
-            monitor_id,
-        } => ConnectionCommand::FireMonitor {
-            dest_ident,
-            monitor_id,
-        },
-        WireFrame::Severed { reason } => ConnectionCommand::Severed { reason },
-    })
 }
