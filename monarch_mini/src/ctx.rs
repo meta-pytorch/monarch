@@ -2020,6 +2020,15 @@ impl CtxHandle {
                 // before the runtime — and with it the writer tasks — is dropped.
                 local.block_on(&rt, async move {
                     let mut ctx = Ctx::new(runtime_tx);
+                    // DEBUG instrumentation: track command throughput and channel
+                    // backlog so we can tell whether the single-threaded event loop
+                    // is falling behind (incoming faster than handled). We log at
+                    // most once per second and only while commands are flowing; a
+                    // backlog that grows means the loop is saturated.
+                    let mut handled_total: u64 = 0;
+                    let mut handled_at_last_log: u64 = 0;
+                    let mut last_log = std::time::Instant::now();
+                    let log_every = std::time::Duration::from_secs(1);
                     while let Some(command) = rx.recv().await {
                         if let Command::Shutdown { done } = command {
                             // Wait for the socket transports to flush every pending
@@ -2035,6 +2044,21 @@ impl CtxHandle {
                             break;
                         }
                         ctx.run_command(command);
+                        handled_total += 1;
+
+                        let elapsed = last_log.elapsed();
+                        if elapsed >= log_every {
+                            let handled = handled_total - handled_at_last_log;
+                            let backlog = rx.len();
+                            eprintln!(
+                                "MM_CTX loop: {:.0} cmds/s, backlog {}, total {}",
+                                handled as f64 / elapsed.as_secs_f64(),
+                                backlog,
+                                handled_total
+                            );
+                            handled_at_last_log = handled_total;
+                            last_log = std::time::Instant::now();
+                        }
                     }
                 });
             })?;
