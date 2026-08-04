@@ -86,6 +86,18 @@ pub(crate) trait Net: Sized + 'static {
     /// join may precede its serve). `streams` is as in [`Net::bind`].
     async fn connect(dialer: &Self::Dialer, addr: SocketAddr, streams: usize)
     -> Option<Self::Conn>;
+
+    /// The default cap on simultaneous client connect *attempts* when
+    /// `MM_QUIC_MAX_CONCURRENT_CONNECTS` is unset (see [`crate::net_transport`]'s
+    /// connect throttle). `None` ⇒ unlimited; each protocol overrides with a concrete
+    /// bound. tcp needs a much smaller cap than quic: it opens `streams` OS sockets
+    /// *and* a TLS handshake per connection and pairs them on the acceptor, so a large
+    /// concurrent connect storm on the single-threaded runtime starves stragglers
+    /// (connections that never finish pairing), whereas quic multiplexes its streams on
+    /// one endpoint-paced connection.
+    fn default_connect_concurrency() -> Option<usize> {
+        None
+    }
 }
 
 /// An established connection. It knows nothing about heartbeats, roles, or
