@@ -56,6 +56,60 @@ Total workers = `hosts * workers-per-host`. `4096 * 32 = 131072`.
 | `MM_QUIC_HEARTBEAT_TIMEOUT_MS` | Sever a connection after this long with no frame (default 20000). Keep ≈ 4× the interval. |
 | `SMOKE_WORKERS_PER_HOST` | Set automatically from `--workers-per-host`. |
 
+## Running across multiple regions (`multi_region.py`)
+
+A single MAST job **cannot span regions** — MAST's allocators are per-region and all
+task groups of a job must land in one region (multi-region single-job is experimental,
+gated behind the `enable_multi_region_jobs` entitlement, which we don't have). So a run
+larger than one region's free capacity can't be placed as one job. On CPUTrainingWorkloads
+the T1 fleet lives in only 6 regions (pnb, atn, vll, ftw, nha, ncg); pnb/atn/vll each have
+the most headroom. Single-region tops out around ~2048 whole hosts for our best-effort
+tenant, so ~4096 hosts (131072 workers) will not schedule in one region.
+
+`multi_region.py` works around this by stitching several single-region jobs into one
+logical run, orchestrated from the devserver:
+
+1. It schedules N MAST jobs (one per region) in **coordinated mode** (`SMOKE_COORD_PORT`
+   set). Each job's rank-0 task serves a minimonarch *coordination* listener
+   (`smoke.py --wait-for-addresses PORT`) and waits — it does **not** read the worker
+   list from its own env. Every job serves such a root; all but one go unused.
+2. It polls `mast get-status` until every job is RUNNING with all task hostnames published.
+3. It gathers the union of every job's worker addresses.
+4. It locally joins the chosen job's coordination root over minimonarch and sends the full
+   address list (split into `<=4MB` pickled chunks). The root acks, spins up the real
+   `b"root"` actor, and runs the normal sweep against every worker across all jobs —
+   genuinely cross-region.
+5. On completion (the root reports back) it kills every job.
+
+Run it under the built minimonarch (it imports the extension); it shells out to `python3`
+for `build_mast.py` and to `mast` for status/kill. From the `python/` dir:
+
+```bash
+# Small validation run (2 jobs, auto-region):
+.venv/bin/python ../mast/multi_region.py --hosts-per-job 2 --workers-per-host 1 --jobs 2
+
+# Full cross-region run: 2 jobs x 2048 hosts x 32 workers = 131072 workers, pnb + atn:
+.venv/bin/python ../mast/multi_region.py \
+  --hosts-per-job 2048 --workers-per-host 32 --regions pnb,atn \
+  --cluster CPUTrainingWorkloads \
+  --env MM_QUIC_UDP_BUF_BYTES=134217728 \
+  --env MM_QUIC_MAX_CONCURRENT_CONNECTS=1024 \
+  --env MM_QUIC_MAX_DIRECT_CHILDREN=362
+```
+
+Key options: `--regions r1,r2,...` (one job per region; number of jobs = number of regions;
+omit for `--jobs N` auto-region), `--hosts-per-job`, `--workers-per-host`, `--coord-port`
+(default 26599, distinct from the worker ports), `--env KEY=VALUE` (forwarded to every job),
+`--keep-jobs` (skip cleanup for debugging). Because the run is long, launch it with `nohup
+... &` and tail its log; the per-size sweep numbers are in the **chosen root's** MAST logs
+(task 0 of the first job), fetchable exactly like any single-job run below.
+
+Notes:
+- `MM_QUIC_MAX_DIRECT_CHILDREN` can't be auto-sized per job (no job knows the cross-job
+  total), so pass it explicitly via `--env` (e.g. round(sqrt(total workers))).
+- Pick regions with capacity (see the capacity note above); a region without ~`hosts-per-job`
+  free whole hosts will sit PENDING or hard-reject at enqueue.
+
 ## Checking job status
 
 ```bash

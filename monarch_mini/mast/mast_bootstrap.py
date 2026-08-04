@@ -35,6 +35,7 @@ automatically.
 
 from __future__ import annotations
 
+import math
 import os
 import socket
 import subprocess
@@ -49,12 +50,19 @@ PORT = int(os.environ.get("SMOKE_PORT", "26600"))
 WORKERS_PER_HOST = int(os.environ.get("SMOKE_WORKERS_PER_HOST", "1"))
 # Seconds rank 0 waits before dialing, giving every worker time to bind.
 STARTUP_GRACE = float(os.environ.get("SMOKE_STARTUP_GRACE", "15"))
-# Heartbeat timeout in effect (env override, else minimonarch's 20s default). The
-# root's inter-round gap and end-of-run settle window are sized off this so that
-# between rounds no data flows and only heartbeats hold the links up.
-HB_TIMEOUT_MS = int(os.environ.get("MM_QUIC_HEARTBEAT_TIMEOUT_MS", "20000"))
-# Number of ping/ring rounds the root runs, each separated by a heartbeat-only gap.
-SMOKE_ROUNDS = int(os.environ.get("SMOKE_ROUNDS", "5"))
+# Direct+ring rounds the root runs at each sweep size (passed as --min-rounds).
+SMOKE_ROUNDS = int(os.environ.get("SMOKE_ROUNDS", "10"))
+# Cap the ring into independent chains of at most this many workers, each returning
+# to the root on its own. Bounds ring latency and blast radius at scale (0 = one
+# chain of every worker).
+SMOKE_CHAIN_LENGTH = int(os.environ.get("SMOKE_CHAIN_LENGTH", "512"))
+# Coordination port (0 = disabled). When set, rank 0 does NOT read the worker list
+# from this job's env; instead it serves a coordination listener on this port and
+# waits for an external controller to send the worker addresses. This is how one
+# logical run spans multiple MAST jobs (e.g. across regions): the controller unions
+# every job's hosts and injects them into the one root it picks. See smoke.py's
+# --wait-for-addresses / run_root_coordinated.
+SMOKE_COORD_PORT = int(os.environ.get("SMOKE_COORD_PORT", "0"))
 
 
 def task_hosts() -> list[str]:
@@ -124,53 +132,77 @@ def main() -> None:
         codes = [w.wait() for w in workers]
         sys.exit(max(codes) if codes else 0)
 
-    # Rank 0 also runs the root. Give every worker a moment to bind first. The
-    # root dials every (host, port) pair across the whole job.
-    time.sleep(STARTUP_GRACE)
-    addrs = [
-        f"[{resolve_ipv6(h, PORT)}]:{PORT + i}"
-        for h in hosts
-        for i in range(WORKERS_PER_HOST)
-    ]
-    print(f"[bootstrap] root dialing {len(addrs)} workers", flush=True)
+    # Rank 0 also runs the root, in one of two modes.
+    if SMOKE_COORD_PORT:
+        # Coordinated multi-job mode: don't read this job's env host list at all.
+        # Serve a coordination listener and let an external controller supply the
+        # full (possibly multi-job / multi-region) worker list. MM_QUIC_MAX_DIRECT_
+        # CHILDREN, if it matters, is set globally by the controller via --env, since
+        # a single job cannot know the cross-job total.
+        print(
+            f"[bootstrap] root: coordinated mode, serving coord port "
+            f"{SMOKE_COORD_PORT}, {SMOKE_ROUNDS} rounds/size, "
+            f"chain-length {SMOKE_CHAIN_LENGTH}",
+            flush=True,
+        )
+        root_cmd = [
+            python,
+            smoke,
+            "--wait-for-addresses",
+            str(SMOKE_COORD_PORT),
+            "--min-rounds",
+            str(SMOKE_ROUNDS),
+            "--chain-length",
+            str(SMOKE_CHAIN_LENGTH),
+        ]
+        root_env = env
+    else:
+        # Env-based single-job mode. Give every worker a moment to bind, then sweep
+        # the addresses derived from this job's task-group hostnames.
+        time.sleep(STARTUP_GRACE)
 
-    # Pass addresses via a file, not argv: at tens of thousands of workers the
-    # combined command line exceeds the OS ARG_MAX limit (E2BIG). Write it to a
-    # writable temp dir — the fbpkg install dir (HERE) is a read-only mount.
-    addr_file = os.path.join(tempfile.gettempdir(), "mm_root_hosts.txt")
-    with open(addr_file, "w") as f:
-        f.write("\n".join(addrs))
-
-    # Run several rounds back-to-back (a short send-interval, well under the
-    # heartbeat timeout, so data keeps flowing between them), then idle for a single
-    # heartbeat-only gap before teardown: the end-sleep, sized above the heartbeat
-    # timeout, is the one window where links must survive on heartbeats alone.
-    hb_timeout_s = HB_TIMEOUT_MS / 1000.0
-    send_interval = float(os.environ.get("SMOKE_SEND_INTERVAL", "1"))
-    duration = send_interval * max(SMOKE_ROUNDS - 1, 0)
-    end_sleep = hb_timeout_s * 1.5
-    print(
-        f"[bootstrap] root: {SMOKE_ROUNDS} rounds, send-interval {send_interval:.1f}s, "
-        f"duration {duration:.1f}s, single heartbeat gap (end-sleep) {end_sleep:.1f}s "
-        f"(heartbeat timeout {hb_timeout_s:.1f}s)",
-        flush=True,
-    )
-    rc = subprocess.call(
-        [
+        # The root is the one actor that heartbeats the whole fleet, so it is the
+        # only place MM_QUIC_MAX_DIRECT_CHILDREN matters (leaf workers have no
+        # children). Size the keeper set to sqrt(total workers): the root keeps
+        # ~sqrt(N) children direct and delegates the rest, balanced, onto them, so
+        # both the keeper count and each keeper's delegated load grow as sqrt(N).
+        total_workers = len(hosts) * WORKERS_PER_HOST
+        max_direct = max(1, round(math.sqrt(total_workers)))
+        root_env = dict(env)
+        root_env["MM_QUIC_MAX_DIRECT_CHILDREN"] = str(max_direct)
+        print(
+            f"[bootstrap] root MM_QUIC_MAX_DIRECT_CHILDREN={max_direct} "
+            f"(sqrt of {total_workers} workers)",
+            flush=True,
+        )
+        addrs = [
+            f"[{resolve_ipv6(h, PORT)}]:{PORT + i}"
+            for h in hosts
+            for i in range(WORKERS_PER_HOST)
+        ]
+        # Pass addresses via a file, not argv: at tens of thousands of workers the
+        # combined command line exceeds the OS ARG_MAX limit (E2BIG). Write it to a
+        # writable temp dir — the fbpkg install dir (HERE) is a read-only mount.
+        addr_file = os.path.join(tempfile.gettempdir(), "mm_root_hosts.txt")
+        with open(addr_file, "w") as f:
+            f.write("\n".join(addrs))
+        print(
+            f"[bootstrap] root: perf sweep 2,4,8,..,{len(addrs)}, {SMOKE_ROUNDS} "
+            f"rounds/size, chain-length {SMOKE_CHAIN_LENGTH}",
+            flush=True,
+        )
+        root_cmd = [
             python,
             smoke,
             "--root-file",
             addr_file,
-            "--duration",
-            str(duration),
-            "--send-interval",
-            str(send_interval),
-            "--end-sleep",
-            str(end_sleep),
-        ],
-        cwd=HERE,
-        env=env,
-    )
+            "--min-rounds",
+            str(SMOKE_ROUNDS),
+            "--chain-length",
+            str(SMOKE_CHAIN_LENGTH),
+        ]
+
+    rc = subprocess.call(root_cmd, cwd=HERE, env=root_env)
     print(f"[bootstrap] root finished with code {rc}", flush=True)
 
     # The smoke test is done; tear down our local workers and exit with its status.

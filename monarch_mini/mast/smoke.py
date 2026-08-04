@@ -48,6 +48,7 @@ import argparse
 import asyncio
 import datetime
 import os
+import pickle
 import socket
 import sys
 import time
@@ -73,6 +74,13 @@ H_REPLY = b"h:reply"  # [H_REPLY, worker_ident]       worker -> root, direct rep
 H_NEXT = b"h:next"  # [H_NEXT, next_hop_ident]         root -> worker, ring wiring
 H_RING = b"h:ring"  # [H_RING, count]                 circulating ring token (count
 #                                                      is a decimal-ascii integer)
+# Coordination headers (multi-job orchestration): an external controller joins the
+# root's coordination listener and hands it the worker list, so the root need not
+# read it from the environment. See ``run_root_coordinated``.
+H_ADDRS = b"h:addrs"  # controller -> root: [H_ADDRS, pickled list[str]] one chunk
+H_ADDRS_END = b"h:addrs-end"  # controller -> root: [H_ADDRS_END]  all chunks sent
+H_ACK = b"h:ack"  # root -> controller: [H_ACK]         addresses received
+H_DONE = b"h:done"  # root -> controller: [H_DONE, code]  sweep finished (ascii code)
 
 # Short hostname, included in every log line so multi-host logs are easy to read.
 _HOST = socket.gethostname()
@@ -303,162 +311,169 @@ async def run_root(
     hosts: list[str],
     timeout: float,
     connect_timeout: float,
-    duration: float = 0.0,
-    send_interval: float = 1.0,
+    min_rounds: int = 1,
     chain_length: int = 0,
-    end_sleep: float = 0.0,
+    close_ctx: bool = True,
 ) -> int:
-    """Dial every worker, time connection + round-trip, and report.
+    """Performance sweep: grow the connected set 2, 4, 8, ..., N and time each size.
 
-    ``connect_timeout`` bounds the connect phase (longer, since with hundreds of
-    hosts an occasional one is slow to boot); ``timeout`` bounds each reply.
+    Instead of one connect to every worker, the root connects in *doubling batches*:
+    it joins two workers, then two more, then four more, ... so the connected total
+    climbs 2, 4, 8, 16, ... up to the whole fleet. After each batch it re-wires the
+    ring over all currently-connected workers and runs ``min_rounds`` direct+ring
+    rounds back-to-back — with **no inter-round pause** and **no heartbeat-only
+    settle window** (every phase except the heartbeat pause) — reporting the connect
+    time for the batch and the direct/ring round-trip at that size.
 
-    If ``duration`` > 0 the ping/reply phase repeats for that many wall-clock
-    seconds, one round every ``send_interval`` seconds, instead of a single round.
-    A ``send_interval`` larger than the heartbeat timeout leaves gaps with *no*
-    data traffic, so the connections stay up only if heartbeats (direct and
-    delegated) keep them alive — which is exactly what this exercises.
-
-    ``chain_length`` caps the ring into independent chains of at most that many
-    workers (``<= 0`` = a single chain of all workers). Each chain returns to the
-    root on its own, so at scale ring latency is bounded by the chain length rather
-    than the whole worker count, and one broken link fails only its own chain.
-
-    ``end_sleep`` > 0 adds a final heartbeat-only settling window after the last
-    round: the root stops sending data and simply watches for that long, so links
-    survive purely on heartbeats. Sizing it above the heartbeat timeout confirms
-    steady-state heartbeating holds and keeps a teardown-race severance from being
-    misread as a real failure. Any message arriving in the window is a failure.
-
-    Returns a process exit code (0 on full success).
+    This measures small-scale message performance across a whole range of sizes from
+    within a single large job, so a scaling curve (2..N) comes out of one allocation
+    rather than one job per size. Returns a process exit code (0 on full success).
     """
     root = Actor(b"root")
+    rounds = max(min_rounds, 1)
     try:
-        # --- Phase 1: connect to all workers ---------------------------------
         total = len(hosts)
-        step = max(1, total // 10)
-        log(f"[root] joining {total} worker(s)...")
-        t_join = time.monotonic()
-        for host in hosts:
-            # Register H_FAIL as the failure prefix so a severed worker link is
-            # delivered as [H_FAIL, worker_ident, reason] — a header we dispatch on
-            # instead of sniffing the payload.
-            root.join(f"quic://{host}", "parent", failure=[ba(H_FAIL)])
+        # Doubling milestones 2, 4, 8, ... below the total, with the total itself as
+        # the final size (so the full fleet is always measured, power of two or not).
+        sizes: list[int] = []
+        n = 2
+        while n < total:
+            sizes.append(n)
+            n *= 2
+        if total >= 1 and (not sizes or sizes[-1] != total):
+            sizes.append(total)
+        log(f"[sweep] sizes {sizes} of {total} workers, {rounds} round(s) each")
 
-        # Every failure notice the root receives (a severed connection to a
-        # worker) is printed as it arrives so we can see exactly which workers
-        # dropped and why. `failures` keeps a running total across both phases.
         workers: list[bytes] = []
-        failures = 0
-        # Loop until every worker has connected. A message is either an
-        # establishment hello ([b"root", worker_ident]) or a failure notice
-        # ([H_FAIL, worker_ident, reason]); only hellos count toward `total`,
-        # failures are printed and tallied.
-        while len(workers) < total:
-            try:
-                msg = await asyncio.wait_for(root.next(), connect_timeout)
-            except asyncio.TimeoutError:
-                log(
-                    f"[root] ERROR: only {len(workers)}/{total} workers "
-                    f"connected within {connect_timeout:.0f}s ({failures} failures)"
-                )
-                return 1
-            if bytes(msg[0]) == b"root":
-                # Establishment hello ([b"root", worker_ident]): record who
-                # connected. Progress is printed only at decile boundaries
-                # (bounded prints) so it stays cheap.
-                workers.append(bytes(msg[1]))
-                _report_progress("connected", len(workers), total, step)
-            else:
-                who, reason = _failure_notice(msg)
-                failures += 1
-                log(f"[root] FAILURE (connect) {who}: {reason}")
-        connect_ms = (time.monotonic() - t_join) * 1e3
-        log(f"[root] all {len(workers)} workers connected in {connect_ms:.1f} ms")
-
-        # Wire the ring once, capped into chains of at most `cap` workers: a
-        # worker's next hop is the root (not its normal successor) at each chain
-        # boundary and at the very end. `heads` are the chain-start indices where
-        # the root injects a token. Done before any token is injected so every
-        # worker knows its next hop before a token can reach it.
-        cap = chain_length if chain_length > 0 else len(workers)
-        heads = list(range(0, len(workers), cap))
-        for i, wid in enumerate(workers):
-            boundary = (i + 1) % cap == 0 or i + 1 == len(workers)
-            nxt = b"root" if boundary else workers[i + 1]
-            root.send(wid, [ba(H_NEXT), ba(nxt)])
-        log(
-            f"[root] wired {len(heads)} chain(s) of <= {cap} over {len(workers)} workers"
-        )
-
-        # --- Phase 2: each round runs a direct pass then a ring pass, once or
-        # repeatedly for `duration` seconds --
-        t_send = time.monotonic()
-        deadline = t_send + max(duration, 0.0)
-        rounds = 0
-        try:
-            while True:
-                rounds += 1
-                t_direct = time.monotonic()
-                failures += await _direct_round(root, workers, timeout)
-                if failures:
-                    break
-                direct_ms = (time.monotonic() - t_direct) * 1e3
-                t_ring = time.monotonic()
-                failures += await _ring_round(root, workers, timeout, heads)
-                if failures:
-                    break
-                ring_ms = (time.monotonic() - t_ring) * 1e3
-                log(
-                    f"[root]   round {rounds} ok ({len(workers)} workers): "
-                    f"direct {direct_ms:.1f} ms, ring {ring_ms:.1f} ms "
-                    f"({len(heads)} chain(s))"
-                )
-                if time.monotonic() >= deadline:
-                    break
-                # Idle gap: no data flows, so only heartbeats keep the links up.
-                await asyncio.sleep(send_interval)
-        except asyncio.TimeoutError:
-            log(
-                f"[root] ERROR: a worker stalled (no reply within {timeout:.0f}s) "
-                f"in round {rounds} ({failures} failures so far)"
-            )
-            return 1
-        roundtrip_ms = (time.monotonic() - t_send) * 1e3
-
-        # Final heartbeat-only settling window: with the root no longer sending
-        # data, links survive purely on heartbeats. Idling here (>= the heartbeat
-        # timeout) before teardown confirms steady-state heartbeating holds and
-        # avoids attributing a teardown-race severance to a real failure. Any
-        # message that arrives in this window is a failure notice.
-        if end_sleep > 0 and failures == 0:
-            log(f"[root] idle {end_sleep:.1f}s (heartbeat-only) before teardown...")
-            idle_deadline = time.monotonic() + end_sleep
-            while True:
-                remaining = idle_deadline - time.monotonic()
-                if remaining <= 0:
-                    break
+        joined = 0
+        for size in sizes:
+            # Join only the next batch to grow the connected set to `size`.
+            batch = hosts[joined:size]
+            t_join = time.monotonic()
+            for host in batch:
+                root.join(f"quic://{host}", "parent", failure=[ba(H_FAIL)])
+            joined = size
+            while len(workers) < size:
                 try:
-                    msg = await asyncio.wait_for(root.next(), remaining)
+                    msg = await asyncio.wait_for(root.next(), connect_timeout)
                 except asyncio.TimeoutError:
-                    break
-                who, reason = _failure_notice(msg)
-                failures += 1
-                log(f"[root] FAILURE (idle) {who}: {reason}")
-            log(f"[root] idle window done ({failures} failures)")
+                    log(f"[sweep] ERROR: only {len(workers)}/{size} workers connected")
+                    return 1
+                if bytes(msg[0]) == b"root":
+                    workers.append(bytes(msg[1]))
+                else:
+                    who, reason = _failure_notice(msg)
+                    log(f"[sweep] FAILURE (connect) {who}: {reason}")
+                    return 1
+            connect_ms = (time.monotonic() - t_join) * 1e3
 
-        log("[root] --- summary ---")
-        log(f"[root] connect:    {connect_ms:.1f} ms ({len(workers)} workers)")
-        log(f"[root] round-trip: {roundtrip_ms:.1f} ms ({rounds} round(s))")
-        log(f"[root] failures:   {failures}")
-        # Success only if nothing severed across every round.
-        return 0 if failures == 0 else 1
+            # Re-wire the ring over the whole current set (new workers included), so
+            # every worker knows its next hop before a token can reach it.
+            cap = chain_length if chain_length > 0 else len(workers)
+            heads = list(range(0, len(workers), cap))
+            for i, wid in enumerate(workers):
+                boundary = (i + 1) % cap == 0 or i + 1 == len(workers)
+                nxt = b"root" if boundary else workers[i + 1]
+                root.send(wid, [ba(H_NEXT), ba(nxt)])
+
+            # Rounds back-to-back: no inter-round sleep, no end-sleep. Track the best
+            # (min) and mean of each phase across the rounds.
+            direct_best = ring_best = float("inf")
+            direct_sum = ring_sum = 0.0
+            try:
+                for _ in range(rounds):
+                    t_d = time.monotonic()
+                    if await _direct_round(root, workers, timeout):
+                        log(f"[sweep] FAILURE in direct at size {size}")
+                        return 1
+                    d = (time.monotonic() - t_d) * 1e3
+                    t_r = time.monotonic()
+                    if await _ring_round(root, workers, timeout, heads):
+                        log(f"[sweep] FAILURE in ring at size {size}")
+                        return 1
+                    r = (time.monotonic() - t_r) * 1e3
+                    direct_best, direct_sum = min(direct_best, d), direct_sum + d
+                    ring_best, ring_sum = min(ring_best, r), ring_sum + r
+            except asyncio.TimeoutError:
+                log(f"[sweep] ERROR: a worker stalled at size {size}")
+                return 1
+            log(
+                f"[sweep] size={size:>6}  connect(+{len(batch)})={connect_ms:9.1f} ms  "
+                f"direct min={direct_best:8.2f} avg={direct_sum / rounds:8.2f} ms  "
+                f"ring min={ring_best:8.2f} avg={ring_sum / rounds:8.2f} ms  "
+                f"({len(heads)} chain(s))"
+            )
+        log("[sweep] done (0 failures)")
+        return 0
     finally:
-        # Gracefully tear down the context *inside the event loop*: this flushes
-        # an "actor destroyed" death notice to every worker before the loop
-        # thread stops, so workers shut down promptly instead of waiting out the
-        # quic heartbeat timeout. Runs on success, timeout, and error paths.
-        minimonarch.close()
+        # In coordinated mode the caller keeps the context alive to report back to
+        # its controller, so it closes the context itself.
+        if close_ctx:
+            minimonarch.close()
+
+
+async def run_root_coordinated(
+    coord_port: int,
+    bind: str,
+    timeout: float,
+    connect_timeout: float,
+    min_rounds: int = 1,
+    chain_length: int = 0,
+) -> int:
+    """Root variant that waits for a controller to hand it the worker addresses.
+
+    Rather than reading the worker list from ``--root``/``--root-file`` (i.e. from
+    a single MAST job's task-group env), the root serves a coordination listener on
+    ``coord_port`` and waits for a controller to join and send an ``H_ADDRS`` message
+    carrying every worker address. This lets one logical run span *multiple* MAST
+    jobs that the scheduler cannot place as one job (e.g. across regions): an
+    external controller (a devserver running minimonarch) gathers the union of all
+    jobs' hosts and injects it here. The root acks, runs the normal sweep against
+    those addresses as a fresh ``b"root"`` actor, then reports the exit code back to
+    the controller before tearing the context down.
+    """
+    coord = Actor(b"coord")
+    coord.serve(f"quic://[{bind}]:{coord_port}", "child", failure=[ba(H_FAIL)])
+    log(f"[coord] serving quic://[{bind}]:{coord_port}; waiting for controller...")
+
+    # Establishment hello: [self_ident, controller_ident].
+    hello = await coord.next()
+    controller = bytes(hello[1])
+    log(f"[coord] controller joined: {controller.decode(errors='replace')}")
+
+    # Accumulate the address list, delivered as one or more pickled chunks (kept
+    # under a few MB each) terminated by H_ADDRS_END, or abort on controller failure.
+    hosts: list[str] = []
+    while True:
+        msg = await coord.next()
+        header = bytes(msg[0])
+        if header == H_ADDRS:
+            # This private MAST smoke channel exchanges only trusted controller data.
+            # @lint-ignore PYTHONPICKLEISBAD
+            hosts.extend(pickle.loads(bytes(msg[1])))
+            continue
+        if header == H_ADDRS_END:
+            break
+        if header == H_FAIL:
+            who, reason = _failure_notice(msg)
+            log(f"[coord] controller {who} gone before addresses ({reason}); aborting")
+            minimonarch.close()
+            return 1
+        log(f"[coord] unexpected header {header!r} before addresses; ignoring")
+    log(f"[coord] received {len(hosts)} worker addresses; acking")
+    coord.send(controller, [ba(H_ACK)])
+
+    # Run the normal sweep as a fresh root actor, but keep the context alive so we
+    # can report completion to the controller afterward.
+    rc = await run_root(
+        hosts, timeout, connect_timeout, min_rounds, chain_length, close_ctx=False
+    )
+
+    log(f"[coord] sweep finished rc={rc}; notifying controller and closing")
+    coord.send(controller, [ba(H_DONE), ba(str(rc).encode())])
+    # close() flushes already-posted messages (the H_DONE) before tearing down.
+    minimonarch.close()
+    return rc
 
 
 def main() -> None:
@@ -477,6 +492,16 @@ def main() -> None:
         help="run as the root, reading worker addresses (one per line) from PATH. "
         "Use this instead of --root at high host counts: tens of thousands of "
         "addresses on argv exceed the OS ARG_MAX limit.",
+    )
+    mode.add_argument(
+        "--wait-for-addresses",
+        type=int,
+        metavar="PORT",
+        help="run as the root but WAIT for an external controller to supply the "
+        "worker addresses over a coordination actor served on PORT, instead of "
+        "reading them from --root/--root-file (i.e. from a single job's env). Used "
+        "to span multiple MAST jobs: a controller gathers every job's hosts and "
+        "sends them here. See run_root_coordinated.",
     )
     mode.add_argument(
         "--worker", action="store_true", help="run as a worker (serve a listener)"
@@ -506,22 +531,6 @@ def main() -> None:
         "larger than --timeout because with many hosts one can be slow to boot",
     )
     parser.add_argument(
-        "--duration",
-        type=float,
-        default=0.0,
-        help="root: repeat the ping/reply phase for this many seconds (default: 0 "
-        "= a single round). Use a value well over the heartbeat timeout to keep the "
-        "run alive across many heartbeat cycles.",
-    )
-    parser.add_argument(
-        "--send-interval",
-        type=float,
-        default=1.0,
-        help="root: seconds between ping rounds when --duration > 0 (default: 1). "
-        "Set larger than the heartbeat timeout so heartbeats, not data, hold the "
-        "links open between rounds.",
-    )
-    parser.add_argument(
         "--chain-length",
         type=int,
         default=0,
@@ -530,13 +539,11 @@ def main() -> None:
         "all workers). Bounds ring latency and blast radius at large worker counts.",
     )
     parser.add_argument(
-        "--end-sleep",
-        type=float,
-        default=0.0,
-        help="root: after the last round, idle for this many seconds in a "
-        "heartbeat-only window before tearing down (default: 0 = none). Set above "
-        "the heartbeat timeout to confirm heartbeats hold with no data flowing and "
-        "avoid teardown-race false failures.",
+        "--min-rounds",
+        type=int,
+        default=1,
+        help="root: run this many direct+ring rounds at each sweep size "
+        "(default: 1). More rounds give a min/avg per size.",
     )
     args = parser.parse_args()
 
@@ -544,6 +551,19 @@ def main() -> None:
 
     if args.worker:
         asyncio.run(run_worker(args.port, args.bind))
+    elif args.wait_for_addresses is not None:
+        sys.exit(
+            asyncio.run(
+                run_root_coordinated(
+                    args.wait_for_addresses,
+                    args.bind,
+                    args.timeout,
+                    args.connect_timeout,
+                    args.min_rounds,
+                    args.chain_length,
+                )
+            )
+        )
     else:
         if args.root_file:
             with open(args.root_file) as f:
@@ -556,10 +576,8 @@ def main() -> None:
                     hosts,
                     args.timeout,
                     args.connect_timeout,
-                    args.duration,
-                    args.send_interval,
+                    args.min_rounds,
                     args.chain_length,
-                    args.end_sleep,
                 )
             )
         )
