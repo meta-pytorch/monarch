@@ -2213,7 +2213,7 @@ fn quic_remote_monitor_fires_when_owning_gateway_dies() {
 }
 
 #[test]
-fn quic_heartbeat_timeout_severs_connection() {
+fn heartbeat_timeout_severs_connection() {
     // A peer that holds the QUIC connection open but never sends anything (no
     // Establish, no heartbeats) can't be detected by EOF — only the heartbeat
     // timeout catches it. A raw silent quinn server stands in for such a peer; the

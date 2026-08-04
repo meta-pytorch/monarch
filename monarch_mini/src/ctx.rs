@@ -45,9 +45,10 @@ use crate::connection::SideChannelAction;
 use crate::connection::SideChannelMessage;
 use crate::inproc_transport::InprocTransport;
 use crate::msg::MsgPart;
+use crate::net_transport::NetTransport;
 use crate::poller::Delivered;
 use crate::poller::PollerEntry;
-use crate::quic_transport::QuicTransport;
+use crate::quic_net::Quic;
 use crate::shm::MapperHandle;
 use crate::shm::ShmClient;
 use crate::shm::ShmClientSlot;
@@ -55,6 +56,11 @@ use crate::shm::ShmMapper;
 use crate::shm::ShmServer;
 use crate::transport::Transport;
 use crate::unix_transport::UnixTransport;
+
+/// The command-loop-facing QUIC transport: the generic [`NetTransport`] pinned to the
+/// [`Quic`] protocol. All transport logic is protocol-independent; only the [`Quic`]
+/// `Net` impl is quic-specific.
+type QuicTransport = NetTransport<Quic>;
 
 /// Whether verbose per-connection debug logging is enabled (`MM_QUIC_DEBUG` set).
 /// Gates the command-loop `MM_CTX`/`MM_UDP` lines and scheduler-lag probe here, and
