@@ -26,6 +26,7 @@ use crate::Role;
 use crate::actor::ActorEntry;
 use crate::actor::ActorName;
 use crate::actor::Delivery;
+use crate::actor::GatewayState;
 use crate::actor::MonitorSub;
 use crate::actor::Route;
 use crate::actor::TargetMonitors;
@@ -534,7 +535,7 @@ impl Ctx {
         // (no specifier) still climb the parent chain; destinations in our own
         // domain that we simply do not know yet are buffered locally — never sent
         // up, which would only bounce them back to us.
-        if self.actor(sender).gateway {
+        if self.actor(sender).is_gateway() {
             let own_tag = gateway_tag(self.actor(sender).name().unwrap_or_default()).to_vec();
             let dest_tag = gateway_tag(&destination_ident).to_vec();
             if !dest_tag.is_empty() && dest_tag != own_tag {
@@ -658,7 +659,7 @@ impl Ctx {
     /// (quic/tcp) parent; a unix/inproc parent would demote it. Only a `Child`
     /// role gains a parent, so a `Parent` role never trips this.
     fn gateway_parent_rejected(&self, actor: Key, role: Role, url: &str) -> bool {
-        role == Role::Child && self.actor(actor).gateway && !is_network_scheme(url)
+        role == Role::Child && self.actor(actor).is_gateway() && !is_network_scheme(url)
     }
 
     fn attach_connection(&mut self, actor: Key, request: ConnectRequest) -> Option<ConnectionRef> {
@@ -871,7 +872,7 @@ impl Ctx {
         // on one gateway out of another gateway's routing tables — cross-gateway
         // delivery uses direct side-channels (see route_message) instead. (Message
         // forwarding up the parent chain is unaffected; only route publication is.)
-        if self.actor(actor).gateway {
+        if self.actor(actor).is_gateway() {
             return;
         }
         let actor = self.actor_mut(actor);
@@ -936,6 +937,30 @@ impl Ctx {
                 }
                 self.actor_mut(ofactor).routes = kept;
                 self.publish_routes_to_parent(ofactor, live, dead);
+
+                // Gaining a parent is also where gateway routes climb the next hop.
+                // Re-publish every gateway tag reachable below us — and, if we are a
+                // gateway, our own tag — up the new link, so the ancestry up to the
+                // root can route a gateway-death broadcast back down to us. Unlike
+                // actor routes, this does not stop at gateway boundaries.
+                let mut tags: Vec<Vec<u8>> = self
+                    .actor(ofactor)
+                    .gateway_routes
+                    .values()
+                    .flatten()
+                    .cloned()
+                    .collect();
+                if self.actor(ofactor).is_gateway() {
+                    if let Some(own) = self
+                        .actor(ofactor)
+                        .name()
+                        .map(|name| gateway_tag(name).to_vec())
+                        .filter(|own| !own.is_empty())
+                    {
+                        tags.push(own);
+                    }
+                }
+                self.publish_gateway_routes_to_parent(ofactor, tags);
             }
         }
     }
@@ -989,6 +1014,53 @@ impl Ctx {
                 // on to our own machine-local children.
                 self.receive_gateway_state(connection.owning_actor(), client);
             }
+            ConnectionCommand::PublishGatewayRoutes { live } => {
+                // Gateway routes always arrive over a child connection (they climb
+                // toward the root). Record each against that child, then forward the
+                // ones we had not already recorded further up — never stopping at a
+                // gateway boundary, so they accumulate all the way to the root.
+                let ConnectionRef::ChildConnection { ofactor, slot } = connection else {
+                    panic!("published gateway routes should arrive on a child connection");
+                };
+                let entry = self.actor_mut(ofactor);
+                let mut forward = Vec::new();
+                for tag in live {
+                    // A gateway that died never returns under the same tag (a
+                    // recovered host reuses its address with a fresh pseudo-port), so
+                    // a tag already known dead is stale — drop it rather than
+                    // resurrect a route to it. (Only a gateway holds a dead-set; a
+                    // non-gateway relay never filters here.)
+                    let known_dead = match &entry.gateway {
+                        GatewayState::Gateway { dead_gateways } => dead_gateways.contains(&tag),
+                        GatewayState::NotAGateway => false,
+                    };
+                    if known_dead {
+                        continue;
+                    }
+                    if entry
+                        .gateway_routes
+                        .entry(slot)
+                        .or_default()
+                        .insert(tag.clone())
+                    {
+                        forward.push(tag);
+                    }
+                }
+                self.publish_gateway_routes_to_parent(ofactor, forward);
+            }
+            ConnectionCommand::GatewayDied { dead } => {
+                // The direction is the connection's role: a death arriving over a
+                // child connection is still climbing toward the root; one arriving
+                // over the parent connection is fanning back down.
+                match connection {
+                    ConnectionRef::ChildConnection { ofactor, .. } => {
+                        self.gateway_died(ofactor, dead, false)
+                    }
+                    ConnectionRef::ParentConnection { ofactor } => {
+                        self.gateway_died(ofactor, dead, true)
+                    }
+                }
+            }
         }
     }
 
@@ -1022,6 +1094,18 @@ impl Ctx {
                     unreachable!("a Role::Parent connection is a child connection");
                 };
                 self.populate_routes(actor, slot, Vec::new(), routed_idents.into_iter().collect());
+                // Any gateways reachable only through this now-failed connection are
+                // implicitly dead — including ones nested below us under a
+                // non-gateway child. Begin the gateway-death propagation for them
+                // (climbing toward the root, hence `only_downward: false`). A
+                // gateway-route entry is always non-empty, so there is nothing to
+                // guard against. (This also covers a parent actor's own death: its
+                // death severs its parent link, and *that* actor's parent detects the
+                // failure here, holding the aggregated gateway routes for the whole
+                // lost subtree.)
+                if let Some(tags) = self.actor_mut(actor).gateway_routes.remove(&slot) {
+                    self.gateway_died(actor, tags.into_iter().collect(), false);
+                }
             }
         }
     }
@@ -1177,6 +1261,74 @@ impl Ctx {
         if let Some(connection) = entry.parent.as_mut() {
             connection.send(ConnectionCommand::Severed { reason });
             *connection = Connection::Failed;
+        }
+    }
+
+    // -- Gateway death management -----------------------------------------------
+
+    /// Forward live gateway tags up to the parent. Unlike
+    /// [`publish_routes_to_parent`](Self::publish_routes_to_parent), this does *not*
+    /// stop at gateway boundaries: every gateway tag must reach the root so a death
+    /// broadcast can fan back down to every gateway. At the root (no parent) there
+    /// is nothing above to inform.
+    fn publish_gateway_routes_to_parent(&mut self, at: Key, live: Vec<Vec<u8>>) {
+        if live.is_empty() {
+            return;
+        }
+        if let Some(parent) = self.actor_mut(at).parent.as_mut() {
+            let _ = parent.send(ConnectionCommand::PublishGatewayRoutes { live });
+        }
+    }
+
+    /// Propagate a gateway death through `at`. First forget any routes to the dead
+    /// gateways here. Then, unless `only_downward`, forward the announcement up the
+    /// parent toward the root (which is what carries it there); `only_downward`
+    /// masks off that link, as does simply having no parent (the root). Once the
+    /// announcement is heading down — at the root turn-around, or because it arrived
+    /// from above — record the deaths (gateways only, deduplicating so repeated
+    /// waves die out; non-gateways merely relay) and fan it out down every
+    /// gateway-route child, so every gateway below is reached. Recording on the way
+    /// down (never up) is what lets the broadcast returning from the root still
+    /// reach the detector's other gateway children.
+    fn gateway_died(&mut self, at: Key, dead: Vec<Vec<u8>>, only_downward: bool) {
+        // Forget routes to the dead gateways: they no longer route anywhere, and a
+        // child entry left empty is dropped. Idempotent — an absent tag is a no-op.
+        let entry = self.actor_mut(at);
+        for tags in entry.gateway_routes.values_mut() {
+            for tag in &dead {
+                tags.remove(tag);
+            }
+        }
+        entry.gateway_routes.retain(|_, tags| !tags.is_empty());
+
+        // Still climbing toward the root: forward up and stop here.
+        if !only_downward {
+            if let Some(parent) = self.actor_mut(at).parent.as_mut() {
+                let _ = parent.send(ConnectionCommand::GatewayDied { dead });
+                return;
+            }
+        }
+
+        // Heading down: record the deaths, then fan out to every gateway-route child.
+        let newly: Vec<Vec<u8>> = match &mut self.actor_mut(at).gateway {
+            GatewayState::Gateway { dead_gateways } => dead
+                .into_iter()
+                .filter(|tag| dead_gateways.insert(tag.clone()))
+                .collect(),
+            GatewayState::NotAGateway => dead,
+        };
+        if newly.is_empty() {
+            return;
+        }
+        // (Remote-monitor firing on these deaths is wired up in the next change.)
+        let slots: Vec<ChildConnectionKey> =
+            self.actor(at).gateway_routes.keys().copied().collect();
+        for slot in slots {
+            if let Some(connection) = self.actor_mut(at).children.get_mut(slot) {
+                let _ = connection.send(ConnectionCommand::GatewayDied {
+                    dead: newly.clone(),
+                });
+            }
         }
     }
 

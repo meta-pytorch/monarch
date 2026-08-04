@@ -7,6 +7,7 @@
  */
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -40,11 +41,22 @@ pub(crate) struct ActorEntry {
     /// `Unsubscribe` is debounced via [`TargetMonitors::unsub_timer`], so rapid
     /// monitor/cancel churn on one target sends no per-cycle traffic.
     pub(crate) monitored: HashMap<Vec<u8>, TargetMonitors>,
-    /// Whether this actor is a gateway: the entry point for its process group,
-    /// with no parent or a network (quic/tcp) parent. Set once at creation and
-    /// never flipped — a gateway owns the shared-memory slab for the actors that
-    /// route through it. Joining a gateway to a non-network parent is rejected.
-    pub(crate) gateway: bool,
+    /// Whether this actor is a gateway, and if so the state only a gateway holds.
+    /// A gateway is the entry point for its process group, with no parent or a
+    /// network (quic/tcp) parent; it owns the shared-memory slab for the actors that
+    /// route through it. Set once at creation and never flipped, so gateway-only
+    /// state is unrepresentable on a non-gateway. Joining a gateway to a non-network
+    /// parent is rejected.
+    pub(crate) gateway: GatewayState,
+    /// Per child connection, the set of *gateway* tags reachable through it. Unlike
+    /// [`Self::routes`] (which stops at gateway boundaries), gateway routes are
+    /// carried all the way up to the root and exist solely to publish gateway
+    /// deaths: when a child connection fails, every gateway tag it carried is
+    /// implicitly dead, and a death broadcast fans back out down exactly these
+    /// connections. Held even at non-gateway actors, so a nested gateway under a
+    /// non-gateway parent is still announced when that parent (and thus the
+    /// connection to the gateway) dies.
+    pub(crate) gateway_routes: HashMap<ChildConnectionKey, HashSet<Vec<u8>>>,
     pub(crate) alive: bool,
     /// This actor's gateway shared-memory client, once it learns its gateway (the
     /// context's shared slab for a gateway, or a parent's slab received via
@@ -77,6 +89,20 @@ pub(crate) enum TargetMonitors {
     PendingUnsubscribe(tokio::task::AbortHandle),
 }
 
+/// Whether an actor is a gateway, carrying the gateway-only state inline in the
+/// `Gateway` variant so it cannot exist on a non-gateway. Set once at creation and
+/// never flipped; callers `match` on it directly to reach the fields.
+pub(crate) enum GatewayState {
+    NotAGateway,
+    Gateway {
+        /// Known-dead gateway tags. The set is replicated to every gateway as
+        /// deaths are broadcast, and a gateway consults it to deduplicate repeated
+        /// broadcasts (and, later, to fire monitors on actors that lived on a
+        /// now-dead gateway).
+        dead_gateways: HashSet<Vec<u8>>,
+    },
+}
+
 impl ActorEntry {
     pub(crate) fn new(ident: Option<Vec<u8>>, gateway: bool) -> Self {
         Self {
@@ -88,10 +114,22 @@ impl ActorEntry {
             children: SlotMap::with_key(),
             routes: HashMap::new(),
             monitored: HashMap::new(),
-            gateway,
+            gateway: if gateway {
+                GatewayState::Gateway {
+                    dead_gateways: HashSet::new(),
+                }
+            } else {
+                GatewayState::NotAGateway
+            },
+            gateway_routes: HashMap::new(),
             alive: true,
             shm_client: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Whether this actor is a gateway.
+    pub(crate) fn is_gateway(&self) -> bool {
+        matches!(self.gateway, GatewayState::Gateway { .. })
     }
 
     /// Record that `ident` is live through child connection `child`, so that if that

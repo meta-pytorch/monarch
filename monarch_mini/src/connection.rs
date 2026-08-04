@@ -189,6 +189,24 @@ pub(crate) enum ConnectionCommand {
     GatewayState {
         client: ShmClient,
     },
+    /// Carry newly-reachable gateway tags up the ancestry. Each hop records them
+    /// against the child connection they arrived on (in
+    /// [`gateway_routes`](crate::actor::ActorEntry::gateway_routes)) and forwards
+    /// them up — *without* stopping at gateway boundaries, so the whole ancestry up
+    /// to the root learns where each gateway lives. This builds the tree a gateway
+    /// death is later broadcast over. Crosses every transport (gateway routing is
+    /// inherently cross-machine).
+    PublishGatewayRoutes {
+        live: Vec<Vec<u8>>,
+    },
+    /// Announce that one or more gateways have died. The direction is inferred from
+    /// the connection it arrives on: arriving from a child it travels *up* toward
+    /// the root; the root turns it around and it travels *down* every gateway-route
+    /// child connection, reaching every gateway so each records the death in its
+    /// [`dead_gateways`](crate::actor::ActorEntry::dead_gateways) set.
+    GatewayDied {
+        dead: Vec<Vec<u8>>,
+    },
 }
 
 impl Connection {
