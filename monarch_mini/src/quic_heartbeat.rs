@@ -1,0 +1,1855 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+//! Delegated heartbeating for the QUIC transport.
+//!
+//! At high fan-out a parent `B` cannot afford to actively heartbeat tens of
+//! thousands of children. This module offloads that cost: `B` heartbeats at most
+//! [`max_direct_children`] children directly; the rest are *delegated* to sibling
+//! children, who prove the delegated child's liveness on `B`'s behalf and report a
+//! running `+/-` diff of the connections they cover. A delegated link is silent on
+//! the physical QUIC connection (no app heartbeat, QUIC keep-alive / idle-timeout
+//! disabled) — liveness rides the sibling side channel instead.
+//!
+//! All of this lives in the transport. From the command loop's point of view an
+//! actor still has N child connections and still receives the same `Establish` /
+//! `PublishRoutes` / `Severed` notices; only *how liveness is proven* changes.
+//!
+//! ## Coroutine roles
+//!
+//! Every QUIC connection runs one `heartbeat_task`, whose role is fixed by the
+//! [`ConnectionRef`]: a [`ConnectionRef::ChildConnection`] (role
+//! [`Role::Parent`]) runs the [`parent_task`] (detect the peer child's death; may
+//! delegate it); a [`ConnectionRef::ParentConnection`] (role [`Role::Child`]) runs
+//! the [`child_task`] (prove liveness to the parent; may host coverage for
+//! siblings). Each owns exactly one primary timeout — "did the thing I watch arrive
+//! in time?" — and delegation just moves *which* task owns the timeout for a link.
+//!
+//! See `HEARTBEAT_DELEGATION_DESIGN.md` for the full model.
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::rc::Rc;
+
+use serde::Deserialize;
+use serde::Serialize;
+use tokio::sync::mpsc;
+use tokio::time::Duration;
+use tokio::time::Instant;
+
+use crate::Role;
+use crate::connection::ConnectionRef;
+use crate::connection::sever;
+use crate::ctx::Command;
+use crate::ctx::Key;
+
+/// The identity of one parent→child connection, assigned ctx-globally by the
+/// Parent side at spawn. Names *which delegated link* a message concerns,
+/// independent of whether actor names are known yet.
+pub(crate) type ConnectionId = u64;
+
+/// Control channel to one `heartbeat_task`.
+type Handle = mpsc::UnboundedSender<HeartbeatEvent>;
+
+// ---------------------------------------------------------------------------
+// Tunables (env). See `HEARTBEAT_DELEGATION_DESIGN.md` §11.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_MAX_DIRECT_CHILDREN: usize = 256;
+const DEFAULT_MAX_COVERAGE_PER_SIBLING: usize = 32;
+
+/// How often each side emits a heartbeat, and how long a side waits for any beat
+/// before declaring the connection broken. The timeout is several intervals so a
+/// stray scheduling delay doesn't trip it. Both are reused for physical and
+/// side-channel beats, and tunable via `MM_QUIC_HEARTBEAT_INTERVAL_MS` /
+/// `MM_QUIC_HEARTBEAT_TIMEOUT_MS`: at very high fan-out the single-threaded root
+/// cannot service tens of thousands of beats on a 5s cadence, so a longer interval
+/// (with a proportionally longer timeout) cuts steady-state load without weakening
+/// liveness. (Delegation exists to reduce that load further.)
+const DEFAULT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
+const DEFAULT_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(20);
+
+fn env_usize(var: &str, default: usize) -> usize {
+    std::env::var(var)
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(default)
+}
+
+/// How often each side emits a heartbeat beat.
+pub(crate) fn heartbeat_interval() -> Duration {
+    std::env::var("MM_QUIC_HEARTBEAT_INTERVAL_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(DEFAULT_HEARTBEAT_INTERVAL)
+}
+
+/// How long a side waits for any beat before declaring the connection broken.
+pub(crate) fn heartbeat_timeout() -> Duration {
+    std::env::var("MM_QUIC_HEARTBEAT_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(DEFAULT_HEARTBEAT_TIMEOUT)
+}
+
+/// Threshold above which a parent's new children are delegated rather than
+/// monitored directly.
+fn max_direct_children() -> usize {
+    env_usize("MM_QUIC_MAX_DIRECT_CHILDREN", DEFAULT_MAX_DIRECT_CHILDREN)
+}
+
+/// Cap on how many delegated connections one sibling may cover.
+fn max_coverage_per_sibling() -> usize {
+    env_usize(
+        "MM_QUIC_MAX_COVERAGE_PER_SIBLING",
+        DEFAULT_MAX_COVERAGE_PER_SIBLING,
+    )
+}
+
+/// The heartbeat tunables, resolved once and carried by [`Heartbeats`] into every
+/// coroutine it spawns. Injecting them (rather than reading env per call) keeps the
+/// policy in one place and lets tests drive the *real* coroutines with short
+/// intervals / a low delegation threshold without touching process-global env.
+#[derive(Clone, Copy)]
+pub(crate) struct HeartbeatConfig {
+    pub(crate) interval: Duration,
+    pub(crate) timeout: Duration,
+    pub(crate) max_direct_children: usize,
+    pub(crate) max_coverage_per_sibling: usize,
+}
+
+impl HeartbeatConfig {
+    /// Resolve from the environment (the production path).
+    fn from_env() -> Self {
+        Self {
+            interval: heartbeat_interval(),
+            timeout: heartbeat_timeout(),
+            max_direct_children: max_direct_children(),
+            max_coverage_per_sibling: max_coverage_per_sibling(),
+        }
+    }
+}
+
+/// Whether `ident` is side-channel addressable — i.e. it carries a non-empty
+/// gateway `@tag` a sibling can dial. A served (`quic serve`) child has one; a
+/// specifier-less root ident does not.
+fn is_addressable(ident: &[u8]) -> bool {
+    matches!(ident.iter().rposition(|&b| b == b'@'), Some(pos) if pos + 1 < ident.len())
+}
+
+/// A cheap, cloneable handle to the per-context delegated-heartbeat state. Owns the
+/// shared table behind an `Rc<RefCell<>>` (single-threaded — LocalSet). The quic
+/// transport holds one and hands clones to the heartbeat coroutines; it is also the
+/// entry point for routing an inbound side-channel beat/ack (see [`Self::deliver`]).
+#[derive(Clone)]
+pub(crate) struct Heartbeats {
+    shared: Rc<RefCell<HeartbeatShared>>,
+    config: HeartbeatConfig,
+}
+
+impl Heartbeats {
+    pub(crate) fn new() -> Self {
+        Self::with_config(HeartbeatConfig::from_env())
+    }
+
+    /// Construct with explicit tunables (used by tests to drive the real coroutines
+    /// with short intervals / a low delegation threshold).
+    pub(crate) fn with_config(config: HeartbeatConfig) -> Self {
+        Self {
+            shared: Rc::new(RefCell::new(HeartbeatShared::new(
+                config.max_coverage_per_sibling,
+            ))),
+            config,
+        }
+    }
+
+    /// Spawn the heartbeat coroutine for one freshly-established connection, and
+    /// return the event sender its reader and writer feed (inbound beats, `Establish`
+    /// snoops, reader-closed). `beats` is where the coroutine's own outbound beats go
+    /// (to the writer); `send_beat` sends side-channel beats to siblings; `loop_tx`
+    /// is used only to emit `Severed` on a hard failure.
+    pub(crate) fn spawn<S: SendBeat>(
+        &self,
+        connection: ConnectionRef,
+        dialed: bool,
+        beats: mpsc::UnboundedSender<Heartbeat>,
+        send_beat: S,
+        loop_tx: mpsc::UnboundedSender<Command>,
+    ) -> mpsc::UnboundedSender<HeartbeatEvent> {
+        let (events_tx, events_rx) = mpsc::unbounded_channel();
+        tokio::task::spawn_local(heartbeat_task(HeartbeatCtx {
+            connection,
+            dialed,
+            beats,
+            events: events_rx,
+            handle: events_tx.clone(),
+            shared: self.shared.clone(),
+            config: self.config,
+            send_beat,
+            loop_tx,
+        }));
+        events_tx
+    }
+
+    /// Deliver an inbound sibling side-channel message to the Child-side coroutine of
+    /// the connection where `recipient` is the child. Called directly by the quic
+    /// side-channel reader — heartbeats never pass through ctx. Dropped if no such
+    /// connection is registered yet (the next beat retries).
+    pub(crate) fn deliver(
+        &self,
+        recipient: &[u8],
+        from: Vec<u8>,
+        conn_id: ConnectionId,
+        kind: BeatKind,
+    ) {
+        let shared = self.shared.borrow();
+        if let Some(handle) = shared.child_handle(recipient) {
+            let _ = handle.send(HeartbeatEvent::Side(from, conn_id, kind));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Wire types (serialized by `framing.rs`)
+// ---------------------------------------------------------------------------
+
+/// The body of a [`WireFrame::Heartbeat`](crate::framing) probe. `FromChild` /
+/// `FromParent` are the *real*, request/response liveness beats — a Child sends
+/// `FromChild`, its Parent answers with `FromParent` — and they drive delegation.
+/// `TransportActivity` is what a reader synthesizes when ordinary data flows over the
+/// link: it proves the pipe is alive without being a beat, so it refreshes the
+/// liveness deadline on whichever side reads it but is *not* a request/response — it
+/// never advances delegation state or the echo pacing.
+#[derive(Serialize, Deserialize, Clone)]
+pub(crate) enum Heartbeat {
+    /// Child → parent: the running diff of connections this child covers for the
+    /// parent.
+    FromChild {
+        cover_add: Vec<ConnectionId>,
+        cover_del: Vec<ConnectionId>,
+    },
+    /// Parent → child: a delegation instruction, or `None` for a plain beat.
+    /// `None` never revokes — a child reverts on its own ack-timeout, a parent on
+    /// `ResumeHeartbeat`.
+    FromParent { delegate: Option<Delegate> },
+    /// Reader → its own heartbeat_task: ordinary data arrived on the link, so it is
+    /// alive. "I am still here" — refresh the deadline, nothing more.
+    TransportActivity,
+}
+
+/// A delegation instruction carried on a `FromParent` beat: "you are connection
+/// `connection_id`; beat `gateway_tag(sibling_ident)` to prove your liveness."
+#[derive(Serialize, Deserialize, Clone)]
+pub(crate) struct Delegate {
+    pub(crate) connection_id: ConnectionId,
+    pub(crate) sibling_ident: Vec<u8>,
+}
+
+/// What a sibling side-channel heartbeat message is.
+#[derive(Serialize, Deserialize, Clone, Copy)]
+pub(crate) enum BeatKind {
+    /// Delegated child → delegate: prove liveness.
+    Beat,
+    /// Delegate → delegated child: acknowledge a beat.
+    Ack,
+    /// Delegate → delegated child: I am tearing down — stop delegating to me and
+    /// heartbeat your parent directly again.
+    Release,
+}
+
+// ---------------------------------------------------------------------------
+// Control channels
+// ---------------------------------------------------------------------------
+
+/// Events into a `heartbeat_task`. A task is either a Parent or a Child, so it only
+/// ever sees the events for its role.
+pub(crate) enum HeartbeatEvent {
+    /// An inbound physical heartbeat from the peer (a Parent-side task receives the
+    /// [`Heartbeat::FromChild`] variant, a Child-side task the
+    /// [`Heartbeat::FromParent`] variant; each ignores the other).
+    ReceivedHeartbeat(Heartbeat),
+    /// Our outgoing `Establish` (from the writer): our own ident.
+    EstablishLocal { local_ident: Vec<u8> },
+    /// The peer's `Establish` (from the reader): the peer's ident.
+    EstablishPeer { peer_ident: Vec<u8> },
+    /// The reader hit error/EOF (hard transport close).
+    ReaderClosed,
+
+    /// To a Parent-side task: a sibling now covers this connection, so pause
+    /// watching it directly (its delegate proves it live).
+    PauseHeartbeat,
+    /// To a Parent-side task: no sibling covers this connection any more, so resume
+    /// watching it directly.
+    ResumeHeartbeat,
+
+    /// To a Child-side task: an inbound sibling side-channel message `(from, conn_id,
+    /// kind)`. [`BeatKind::Beat`] is a delegated child beating us (we host its
+    /// coverage); [`BeatKind::Ack`] is our delegate acking our beat;
+    /// [`BeatKind::Release`] is our delegate tearing down (revert to direct).
+    Side(Vec<u8>, ConnectionId, BeatKind),
+}
+
+// ---------------------------------------------------------------------------
+// Shared state (one per QuicTransport / context)
+// ---------------------------------------------------------------------------
+
+/// Where one child connection sits in the delegation lifecycle, from the parent's
+/// point of view. [`ParentPool`] derives its accounting from this (whether we beat the
+/// child directly, and the coverage it consumes from a sibling), so no caller pokes
+/// that accounting directly.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ChildStatus {
+    /// Attached; its `Establish` (ident) has not arrived yet.
+    NotEstablished,
+    /// Established and beating us directly. Watched directly, and a valid delegate for
+    /// its siblings (it may itself cover some — see `SiblingInfo::requested_covers`).
+    Direct,
+    /// We asked it to delegate its liveness to its `sibling`; still watched directly at
+    /// the loop level (it is about to go silent), but already treated as offloaded for
+    /// the budget, and not itself offered as a delegate.
+    Delegating,
+    /// Its `sibling` now covers it; it is silent to us (paused).
+    Paused,
+}
+
+/// A parent's record of one child connection. Owned by [`ParentPool`], the single
+/// source of truth for it: the direct-heartbeat count and each sibling's coverage are
+/// *derived* from these fields as statuses transition, never poked by callers.
+struct SiblingInfo {
+    /// The child's ident, once its `Establish` is snooped. `Some` implies the child
+    /// has established; whether it is *addressable* (has a dialable gateway tag) is
+    /// derived from it.
+    ident: Option<Vec<u8>>,
+    /// Whether the parent dialed this child (join); only a dialed+served link may
+    /// serve as a delegate.
+    dialed: bool,
+    status: ChildStatus,
+    /// The sibling we delegated this child to; meaningful only while `Delegating` /
+    /// `Paused`.
+    sibling: Option<ConnectionId>,
+    /// How many other children we have *requested* this one cover for us (charged at
+    /// delegation-decision time, which may run ahead of the coverage the sibling has
+    /// actually reported); nonzero only while `Direct`.
+    requested_covers: usize,
+}
+
+impl SiblingInfo {
+    /// Whether this child may be handed another child to cover right now: it must be a
+    /// direct child under its coverage cap, dialed by us, and addressable.
+    fn is_delegate_candidate(&self, cap: usize) -> bool {
+        self.status == ChildStatus::Direct
+            && self.requested_covers < cap
+            && self.dialed
+            && self.ident.as_deref().is_some_and(is_addressable)
+    }
+}
+
+/// The set of connections currently eligible to be handed a sibling to cover, kept in
+/// sync by [`ParentPool::set_status`]. A `Vec` gives the round-robin cursor something to
+/// index; the position map makes add/remove O(1) (remove is `swap_remove` + an index
+/// fixup for the element that moved into the hole).
+#[derive(Default)]
+struct CandidateRing {
+    ids: Vec<ConnectionId>,
+    pos: HashMap<ConnectionId, usize>,
+}
+
+impl CandidateRing {
+    fn insert(&mut self, id: ConnectionId) {
+        if self.pos.contains_key(&id) {
+            return;
+        }
+        self.pos.insert(id, self.ids.len());
+        self.ids.push(id);
+    }
+
+    fn remove(&mut self, id: ConnectionId) {
+        let Some(i) = self.pos.remove(&id) else {
+            return;
+        };
+        let last = self.ids.len() - 1;
+        self.ids.swap(i, last);
+        self.ids.pop();
+        if i != last {
+            *self
+                .pos
+                .get_mut(&self.ids[i])
+                .expect("swapped id is tracked") = i;
+        }
+    }
+
+    /// The next candidate other than `exclude` (the child being delegated is itself a
+    /// candidate), advancing the cursor. `None` if there is no other candidate.
+    fn next(&self, rr: &mut usize, exclude: ConnectionId) -> Option<ConnectionId> {
+        let n = self.ids.len();
+        for _ in 0..n {
+            let id = self.ids[*rr % n];
+            *rr = rr.wrapping_add(1);
+            if id != exclude {
+                return Some(id);
+            }
+        }
+        None
+    }
+}
+
+/// A parent's pool of child connections and the delegation state derived from them.
+/// It owns the per-child [`SiblingInfo`] records and is the *only* place eligibility
+/// and the direct-heartbeat count are computed: callers narrate connection events
+/// (the lifecycle methods below) and never touch the derived state.
+struct ParentPool {
+    siblings: HashMap<ConnectionId, SiblingInfo>,
+    /// Count of children currently heartbeated directly. Derived — maintained as
+    /// statuses transition — and drives the delegation budget.
+    active_direct: i64,
+    /// Round-robin cursor over `candidates`, so consecutive delegations spread across
+    /// siblings and a just-failed one is unlikely to be re-picked immediately.
+    rr: usize,
+    /// Connections eligible to cover a sibling right now, maintained incrementally by
+    /// `set_status` so `pick_delegate` is O(1).
+    candidates: CandidateRing,
+    /// Max children any one sibling may be asked to cover; feeds `is_delegate_candidate`.
+    cap: usize,
+}
+
+impl ParentPool {
+    fn new(cap: usize) -> Self {
+        Self {
+            siblings: HashMap::new(),
+            active_direct: 0,
+            rr: 0,
+            candidates: CandidateRing::default(),
+            cap,
+        }
+    }
+
+    // --- connection lifecycle (the only way callers change pool state) ---
+
+    /// A child connection was added (not yet established). We beat it directly from now
+    /// on, so it immediately counts toward the budget.
+    fn add_child(&mut self, conn_id: ConnectionId, dialed: bool) {
+        self.siblings.insert(
+            conn_id,
+            SiblingInfo {
+                ident: None,
+                dialed,
+                status: ChildStatus::NotEstablished,
+                sibling: None,
+                requested_covers: 0,
+            },
+        );
+        self.active_direct += 1;
+    }
+
+    /// The child's `Establish` arrived: record its ident and treat it as a live
+    /// direct child.
+    fn established(&mut self, conn_id: ConnectionId, ident: Vec<u8>) {
+        if let Some(info) = self.siblings.get_mut(&conn_id) {
+            info.ident = Some(ident);
+        }
+        self.set_status(conn_id, Some(ChildStatus::Direct));
+    }
+
+    /// If we are over the direct-heartbeat budget and `conn_id` is a plain live direct
+    /// child, delegate it to an eligible sibling: record the delegation, charge that
+    /// sibling's coverage, and return the [`Delegate`] instruction to send. `None` if
+    /// not over budget, the child isn't delegable, or no sibling is free.
+    fn delegate(&mut self, conn_id: ConnectionId, config: HeartbeatConfig) -> Option<Delegate> {
+        let info = self.siblings.get(&conn_id)?;
+        // Only a plain, established, dialed direct child is delegated — never a cover
+        // host, an already-delegating/paused one, or one we can't dial or address.
+        if info.status != ChildStatus::Direct
+            || info.requested_covers != 0
+            || !info.dialed
+            || info.ident.is_none()
+        {
+            return None;
+        }
+        if !self.over_budget(config.max_direct_children) {
+            return None;
+        }
+        if crate::ctx::connection_debug() {
+            eprintln!(
+                "MM_DELEG over budget: active_direct={} max_direct={} candidates={}",
+                self.active_direct,
+                config.max_direct_children,
+                self.candidates.ids.len(),
+            );
+        }
+        let (sibling_conn, sibling_ident) = self.pick_delegate(conn_id)?;
+        // Point the child at its delegate, then transition: `set_status` charges
+        // `sibling_conn`'s coverage as the child enters `Delegating`.
+        self.siblings.get_mut(&conn_id)?.sibling = Some(sibling_conn);
+        self.set_status(conn_id, Some(ChildStatus::Delegating));
+        Some(Delegate {
+            connection_id: conn_id,
+            sibling_ident,
+        })
+    }
+
+    /// Whether we are over the direct-heartbeat budget.
+    fn over_budget(&self, max_direct_children: usize) -> bool {
+        self.active_direct > max_direct_children as i64
+    }
+
+    /// This child's current status, if we still track it.
+    fn status(&self, conn_id: ConnectionId) -> Option<ChildStatus> {
+        self.siblings.get(&conn_id).map(|i| i.status)
+    }
+
+    // --- derived-state maintenance (internal) ---
+
+    /// Move a child to `status` (or, if `None`, remove it entirely — a connection is
+    /// gone). All accounting is done here by reversing what the child contributed before
+    /// the change, then applying what it contributes after; the candidate list follows
+    /// the child's own candidacy across the transition (the coverage change to any
+    /// *sibling* is reflected in `account`, where that sibling's count moves).
+    fn set_status(&mut self, conn_id: ConnectionId, status: Option<ChildStatus>) {
+        let was_candidate = self.is_candidate(conn_id);
+        self.account(conn_id, -1);
+        match status {
+            Some(status) => {
+                let Some(info) = self.siblings.get_mut(&conn_id) else {
+                    return;
+                };
+                info.status = status;
+                // Only a delegated child points at a sibling.
+                if !matches!(status, ChildStatus::Delegating | ChildStatus::Paused) {
+                    info.sibling = None;
+                }
+                self.account(conn_id, 1);
+            }
+            None => {
+                self.siblings.remove(&conn_id);
+            }
+        }
+        self.refresh_candidate(conn_id, was_candidate);
+    }
+
+    /// Apply (`sign` = 1) or reverse (`sign` = -1) the bookkeeping the child at `conn_id`
+    /// implies given its current status: whether we heartbeat it directly (the budget),
+    /// and the unit of coverage it consumes from the sibling it is delegated to.
+    fn account(&mut self, conn_id: ConnectionId, sign: i64) {
+        let Some(info) = self.siblings.get(&conn_id) else {
+            return;
+        };
+        let (status, sibling) = (info.status, info.sibling);
+        match status {
+            // We heartbeat it directly — it counts toward the budget.
+            ChildStatus::NotEstablished | ChildStatus::Direct => self.active_direct += sign,
+            // Delegated to a sibling: once we *request* delegation we treat it as
+            // offloaded (so we don't keep delegating others while the pause is in
+            // flight), and we charge the sibling one requested cover. `Delegating` still
+            // watches directly at the loop level, but for the budget it no longer counts;
+            // if the delegation falls back it reverts to `Direct` and counts again. The
+            // sibling may already be gone if it died before the child it was covering.
+            ChildStatus::Delegating | ChildStatus::Paused => {
+                let sibling = sibling.expect("a delegated child has a sibling");
+                let was_candidate = self.is_candidate(sibling);
+                if let Some(info) = self.siblings.get_mut(&sibling) {
+                    info.requested_covers =
+                        info.requested_covers.saturating_add_signed(sign as isize);
+                }
+                // Changing the sibling's `requested_covers` can move it across the cap.
+                self.refresh_candidate(sibling, was_candidate);
+            }
+        }
+    }
+
+    /// Whether `conn_id` is currently a delegate candidate.
+    fn is_candidate(&self, conn_id: ConnectionId) -> bool {
+        self.siblings
+            .get(&conn_id)
+            .is_some_and(|i| i.is_delegate_candidate(self.cap))
+    }
+
+    /// Sync `conn_id`'s membership in the candidate ring after a change, given whether it
+    /// was a candidate beforehand.
+    fn refresh_candidate(&mut self, conn_id: ConnectionId, was_candidate: bool) {
+        match (was_candidate, self.is_candidate(conn_id)) {
+            (false, true) => self.candidates.insert(conn_id),
+            (true, false) => self.candidates.remove(conn_id),
+            _ => {}
+        }
+    }
+
+    /// Round-robin pick of a delegate candidate other than `exclude`.
+    fn pick_delegate(&mut self, exclude: ConnectionId) -> Option<(ConnectionId, Vec<u8>)> {
+        let chosen = self.candidates.next(&mut self.rr, exclude)?;
+        let ident = self.siblings.get(&chosen)?.ident.clone()?;
+        Some((chosen, ident))
+    }
+
+    /// Rebuild the candidate ring from scratch (tests that stuff `siblings` directly,
+    /// bypassing the incremental `set_status` maintenance).
+    #[cfg(test)]
+    fn rebuild_candidates(&mut self) {
+        self.candidates = CandidateRing::default();
+        let ids: Vec<ConnectionId> = self
+            .siblings
+            .iter()
+            .filter(|(_, i)| i.is_delegate_candidate(self.cap))
+            .map(|(&id, _)| id)
+            .collect();
+        for id in ids {
+            self.candidates.insert(id);
+        }
+    }
+}
+
+/// One per [`QuicTransport`](crate::quic_transport::QuicTransport) (per context).
+/// Single-threaded → held behind `Rc<RefCell<>>`.
+pub(crate) struct HeartbeatShared {
+    next_conn_id: ConnectionId,
+    /// For each local actor, the control handle of the Child-side task on that
+    /// actor's parent connection. Keyed by the actor's own ident (an actor has one
+    /// parent, so at most one entry).
+    children_by_ident: HashMap<Vec<u8>, Handle>,
+    /// For each local parent→child connection, the control handle of its
+    /// Parent-side task. Keyed by that connection's [`ConnectionId`].
+    parents_by_conn_id: HashMap<ConnectionId, Handle>,
+    /// For each local actor that parents quic children, its delegate pool.
+    parents: HashMap<Key, ParentPool>,
+    /// Max children any one sibling may cover; seeded into each [`ParentPool`].
+    max_coverage_per_sibling: usize,
+}
+
+impl HeartbeatShared {
+    pub(crate) fn new(max_coverage_per_sibling: usize) -> Self {
+        Self {
+            next_conn_id: 0,
+            children_by_ident: HashMap::new(),
+            parents_by_conn_id: HashMap::new(),
+            parents: HashMap::new(),
+            max_coverage_per_sibling,
+        }
+    }
+
+    /// The Child-side task handle for the connection where `ident` is the child, if
+    /// registered. Used to deliver inbound side-channel beats/acks.
+    pub(crate) fn child_handle(&self, ident: &[u8]) -> Option<&Handle> {
+        self.children_by_ident.get(ident)
+    }
+
+    fn alloc_conn_id(&mut self) -> ConnectionId {
+        let id = self.next_conn_id;
+        self.next_conn_id += 1;
+        id
+    }
+
+    fn pool_mut(&mut self, key: Key) -> &mut ParentPool {
+        let cap = self.max_coverage_per_sibling;
+        self.parents
+            .entry(key)
+            .or_insert_with(|| ParentPool::new(cap))
+    }
+
+    /// Route a delegate host's coverage diff to the covered connections' Parent-side
+    /// loops: a first `cover_add(X)` pauses `X`'s loop, a `cover_del(X)` resumes it.
+    /// `covered` tracks this host's contributions so its teardown can resume them.
+    fn signal_coverage(
+        &self,
+        covered: &mut HashSet<ConnectionId>,
+        cover_add: Vec<ConnectionId>,
+        cover_del: Vec<ConnectionId>,
+    ) {
+        for x in cover_add {
+            if covered.insert(x) {
+                let found = self.parents_by_conn_id.contains_key(&x);
+                if crate::ctx::connection_debug() {
+                    eprintln!("MM_COVER root pause conn_id={x} found_parent_loop={found}");
+                }
+                if let Some(h) = self.parents_by_conn_id.get(&x) {
+                    let _ = h.send(HeartbeatEvent::PauseHeartbeat);
+                }
+            }
+        }
+        for x in cover_del {
+            if covered.remove(&x) {
+                if crate::ctx::connection_debug() {
+                    eprintln!("MM_COVER root RESUME conn_id={x} (coverage dropped)");
+                }
+                if let Some(h) = self.parents_by_conn_id.get(&x) {
+                    let _ = h.send(HeartbeatEvent::ResumeHeartbeat);
+                }
+            }
+        }
+    }
+
+    /// Resume every connection a delegate host was covering (called as the host tears
+    /// down, so its covered children reclaim themselves as direct).
+    fn resume_covered(&self, covered: &HashSet<ConnectionId>) {
+        for x in covered {
+            if crate::ctx::connection_debug() {
+                eprintln!("MM_COVER root RESUME(host teardown) conn_id={x}");
+            }
+            if let Some(h) = self.parents_by_conn_id.get(x) {
+                let _ = h.send(HeartbeatEvent::ResumeHeartbeat);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Task entry point
+// ---------------------------------------------------------------------------
+
+/// Sends one sibling side-channel message out: `(recipient, from, conn_id, kind)`.
+/// The caller supplies this so the heartbeat module needs no knowledge of *how*
+/// beats travel — the quic transport wires in a closure over its gateway side
+/// channels, and tests can substitute their own.
+pub(crate) trait SendBeat: Fn(Vec<u8>, Vec<u8>, ConnectionId, BeatKind) + 'static {}
+impl<F: Fn(Vec<u8>, Vec<u8>, ConnectionId, BeatKind) + 'static> SendBeat for F {}
+
+/// Everything a `heartbeat_task` needs, bundled to keep the spawn site readable.
+/// Private — a task is only ever created through [`Heartbeats::spawn`].
+struct HeartbeatCtx<S: SendBeat> {
+    connection: ConnectionRef,
+    dialed: bool,
+    /// Physical heartbeat frames this task wants its connection's writer to send.
+    beats: mpsc::UnboundedSender<Heartbeat>,
+    events: mpsc::UnboundedReceiver<HeartbeatEvent>,
+    /// This task's own control handle, for registration in [`HeartbeatShared`].
+    handle: Handle,
+    shared: Rc<RefCell<HeartbeatShared>>,
+    config: HeartbeatConfig,
+    /// Sends a Child-side beat/ack out over a side channel (see [`SendBeat`]). The
+    /// module stays ignorant of the transport that carries it.
+    send_beat: S,
+    /// Only used to emit `Severed` on a hard failure — the same connection-failure
+    /// signal the reader uses, not a heartbeat routing path.
+    loop_tx: mpsc::UnboundedSender<Command>,
+}
+
+/// Run the heartbeat coroutine for one connection, dispatching on its role.
+async fn heartbeat_task<S: SendBeat>(ctx: HeartbeatCtx<S>) {
+    match ctx.connection.role() {
+        Role::Parent => parent_task(ctx).await,
+        Role::Child => child_task(ctx).await,
+    }
+}
+
+/// Await `deadline` if set, else never resolve (a parked timeout).
+async fn deadline_or_park(deadline: Option<Instant>) {
+    match deadline {
+        Some(d) => tokio::time::sleep_until(d).await,
+        None => std::future::pending::<()>().await,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Parent side (B watching child D)
+// ---------------------------------------------------------------------------
+
+/// How the direct (normal-connection) loop ended.
+enum DirectExit {
+    /// The connection closed / severed; the task is done.
+    Closed,
+    /// The child reported covering a sibling, so it is now a delegate host: hand off
+    /// to the cover loop (which always heartbeats and is never itself delegated),
+    /// carrying that first coverage diff.
+    BecameCover {
+        cover_add: Vec<ConnectionId>,
+        cover_del: Vec<ConnectionId>,
+    },
+}
+
+/// A Parent-side connection is one of two kinds, and the switch between them is
+/// one-way:
+///
+/// - **normal** — watched directly, and possibly *delegated to* a sibling
+///   (`PauseHeartbeat` parks us, `ResumeHeartbeat` un-parks us); we may also ask the
+///   child to delegate. This is [`parent_direct_loop`].
+/// - **delegate host** — once the child reports covering a sibling it is load-bearing
+///   for that sibling's liveness, so we commit to heartbeating it directly forever
+///   and never delegate it (no Pause/Resume). This is [`parent_cover_loop`].
+async fn parent_task<S: SendBeat>(ctx: HeartbeatCtx<S>) {
+    let HeartbeatCtx {
+        connection,
+        dialed,
+        beats,
+        mut events,
+        handle,
+        shared,
+        config,
+        // A Parent-side task never originates side-channel beats (it delegates over
+        // its own writer and watches physical beats), so it does not use this.
+        send_beat: _,
+        loop_tx,
+    } = ctx;
+    let key = connection.owning_actor();
+
+    // Assign this connection's id and register it so sibling loops can send
+    // `PauseHeartbeat`/`ResumeHeartbeat` here, and seed our record in the pool.
+    let conn_id = {
+        let mut s = shared.borrow_mut();
+        let conn_id = s.alloc_conn_id();
+        s.parents_by_conn_id.insert(conn_id, handle.clone());
+        s.pool_mut(key).add_child(conn_id, dialed);
+        conn_id
+    };
+
+    // Start as a normal connection; the first coverage report switches us — for good
+    // — to being a delegate host.
+    if let DirectExit::BecameCover {
+        cover_add,
+        cover_del,
+    } = parent_direct_loop(
+        connection,
+        conn_id,
+        key,
+        config,
+        &beats,
+        &mut events,
+        &shared,
+        &loop_tx,
+    )
+    .await
+    {
+        parent_cover_loop(
+            connection,
+            config,
+            cover_add,
+            cover_del,
+            &beats,
+            &mut events,
+            &shared,
+            &loop_tx,
+        )
+        .await;
+    }
+
+    // Teardown: drop our record (undoing our budget/coverage contributions) and
+    // deregister. (A delegate host's covered children are resumed by
+    // `parent_cover_loop` itself as it exits.)
+    let mut s = shared.borrow_mut();
+    s.pool_mut(key).set_status(conn_id, None);
+    s.parents_by_conn_id.remove(&conn_id);
+}
+
+/// The **normal-connection** loop: watch the child's beats and *answer* each one. The
+/// parent never beats on its own timer — it echoes every `FromChild` with a
+/// `FromParent` (carrying a `Delegate` when it decides to offload the child). Because
+/// the child never sends a second beat before it hears our answer (see [`child_task`]),
+/// a delegate answer is always the child's *last* direct beat: no stale beat can arrive
+/// after a later `PauseHeartbeat` and un-pause us. `PauseHeartbeat` parks the connection
+/// (a sibling proves it live), `ResumeHeartbeat` un-parks it. Returns when the
+/// connection closes, or [`DirectExit::BecameCover`] the first time the child reports
+/// covering a sibling.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each is a distinct per-connection channel/handle; bundling adds indirection"
+)]
+async fn parent_direct_loop(
+    connection: ConnectionRef,
+    conn_id: ConnectionId,
+    key: Key,
+    config: HeartbeatConfig,
+    beats: &mpsc::UnboundedSender<Heartbeat>,
+    events: &mut mpsc::UnboundedReceiver<HeartbeatEvent>,
+    shared: &Rc<RefCell<HeartbeatShared>>,
+    loop_tx: &mpsc::UnboundedSender<Command>,
+) -> DirectExit {
+    // `Some` while watching directly (a lapse severs); `None` while paused (a sibling
+    // is proving the child live).
+    let mut deadline = Some(Instant::now() + config.timeout);
+
+    loop {
+        tokio::select! {
+            _ = deadline_or_park(deadline) => {
+                // The child has gone silent (no beat within the timeout). While paused
+                // the deadline is `None`, so this never fires for a covered child.
+                if crate::ctx::connection_debug() {
+                    eprintln!("MM_SEVER direct-loop conn_id={conn_id}");
+                }
+                sever(loop_tx, connection, b"quic heartbeat timeout".to_vec());
+                return DirectExit::Closed;
+            }
+            ev = events.recv() => {
+                let Some(ev) = ev else { return DirectExit::Closed };
+                match ev {
+                    HeartbeatEvent::ReceivedHeartbeat(Heartbeat::FromChild { cover_add, cover_del }) => {
+                        // The child is beating us directly (if it had been delegated it
+                        // has fallen back): refresh the deadline and reset it to direct.
+                        deadline = Some(Instant::now() + config.timeout);
+                        shared
+                            .borrow_mut()
+                            .pool_mut(key)
+                            .set_status(conn_id, Some(ChildStatus::Direct));
+
+                        if !cover_add.is_empty() {
+                            // First coverage report: it is now a delegate host. Answer this
+                            // beat (so the cover host paces its next one), then hand off to
+                            // the cover loop, never to return here.
+                            let _ = beats.send(Heartbeat::FromParent { delegate: None });
+                            return DirectExit::BecameCover { cover_add, cover_del };
+                        }
+
+                        // Answer the beat, carrying a delegate instruction if we are over
+                        // budget. The child sends no further direct beat until it processes
+                        // this answer, so a delegate here is its last one.
+                        let delegate = shared.borrow_mut().pool_mut(key).delegate(conn_id, config);
+                        let _ = beats.send(Heartbeat::FromParent { delegate });
+                    }
+                    HeartbeatEvent::ReceivedHeartbeat(Heartbeat::TransportActivity) => {
+                        // Data flowed over the link: it is alive. Refresh our watch, but
+                        // only while watching directly — a paused (delegated) connection
+                        // stays paused (its sibling proves it live). Not a real beat, so
+                        // no answer, no delegation, no un-pause.
+                        if deadline.is_some() {
+                            deadline = Some(Instant::now() + config.timeout);
+                        }
+                    }
+                    HeartbeatEvent::PauseHeartbeat => {
+                        // A sibling now covers this child: stop watching it directly — but
+                        // only while we are still delegating it. If it already fell back to
+                        // direct (a genuine fallback beat beat us to it), keep watching.
+                        let mut s = shared.borrow_mut();
+                        let pool = s.pool_mut(key);
+                        if crate::ctx::connection_debug() {
+                            eprintln!(
+                                "MM_PAUSE recv conn_id={conn_id} status={:?}",
+                                pool.status(conn_id)
+                            );
+                        }
+                        if pool.status(conn_id) == Some(ChildStatus::Delegating) {
+                            pool.set_status(conn_id, Some(ChildStatus::Paused));
+                            deadline = None;
+                        }
+                    }
+                    HeartbeatEvent::ResumeHeartbeat => {
+                        // No sibling covers it any more: watch it directly again.
+                        shared
+                            .borrow_mut()
+                            .pool_mut(key)
+                            .set_status(conn_id, Some(ChildStatus::Direct));
+                        deadline = Some(Instant::now() + config.timeout);
+                    }
+                    HeartbeatEvent::EstablishPeer { peer_ident } => {
+                        shared
+                            .borrow_mut()
+                            .pool_mut(key)
+                            .established(conn_id, peer_ident);
+                    }
+                    HeartbeatEvent::EstablishLocal { .. } => {}
+                    HeartbeatEvent::ReaderClosed => return DirectExit::Closed,
+                    // These cannot reach a Parent-side loop: our child peer only ever
+                    // sends `FromChild`, and `Side` messages route via
+                    // `children_by_ident` to Child-side loops only.
+                    HeartbeatEvent::ReceivedHeartbeat(Heartbeat::FromParent { .. }) => {
+                        unreachable!("Parent-side loop received a FromParent beat")
+                    }
+                    HeartbeatEvent::Side(..) => {
+                        unreachable!("Parent-side loop received a side-channel message")
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The **delegate-host** loop: this child covers one or more siblings, so we
+/// heartbeat it directly for good and never delegate it (no Pause/Resume). Its
+/// `FromChild` beats carry coverage diffs, which we forward as `PauseHeartbeat` /
+/// `ResumeHeartbeat` to the covered siblings' loops. On exit every covered sibling
+/// is resumed.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each is a distinct per-connection channel/handle; bundling adds indirection"
+)]
+async fn parent_cover_loop(
+    connection: ConnectionRef,
+    config: HeartbeatConfig,
+    cover_add: Vec<ConnectionId>,
+    cover_del: Vec<ConnectionId>,
+    beats: &mpsc::UnboundedSender<Heartbeat>,
+    events: &mut mpsc::UnboundedReceiver<HeartbeatEvent>,
+    shared: &Rc<RefCell<HeartbeatShared>>,
+    loop_tx: &mpsc::UnboundedSender<Command>,
+) {
+    let mut deadline = Instant::now() + config.timeout;
+    // The connections we cover; resumed if this link fails.
+    let mut covered: HashSet<ConnectionId> = HashSet::new();
+    shared
+        .borrow()
+        .signal_coverage(&mut covered, cover_add, cover_del);
+
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep_until(deadline) => {
+                if crate::ctx::connection_debug() {
+                    eprintln!("MM_SEVER cover-loop (a cover host itself timed out)");
+                }
+                sever(loop_tx, connection, b"quic heartbeat timeout".to_vec());
+                break;
+            }
+            ev = events.recv() => {
+                let Some(ev) = ev else { break };
+                match ev {
+                    HeartbeatEvent::ReceivedHeartbeat(Heartbeat::FromChild { cover_add, cover_del }) => {
+                        deadline = Instant::now() + config.timeout;
+                        shared.borrow().signal_coverage(&mut covered, cover_add, cover_del);
+                        // Answer so the delegate host paces its next beat.
+                        let _ = beats.send(Heartbeat::FromParent { delegate: None });
+                    }
+                    HeartbeatEvent::ReceivedHeartbeat(Heartbeat::TransportActivity) => {
+                        // Data over the cover host's link proves it alive; refresh, but
+                        // do not answer (not a real beat).
+                        deadline = Instant::now() + config.timeout;
+                    }
+                    // Establishment is a one-shot exchange that completed back in the
+                    // direct loop; a stray duplicate here is harmless.
+                    HeartbeatEvent::EstablishPeer { .. } | HeartbeatEvent::EstablishLocal { .. } => {}
+                    HeartbeatEvent::ReaderClosed => break,
+                    // A delegate host is never itself delegated, so no sibling ever
+                    // covers it → no Pause/Resume. Our child peer only sends
+                    // `FromChild`. `Side` routes to Child-side loops only. None reach.
+                    HeartbeatEvent::PauseHeartbeat | HeartbeatEvent::ResumeHeartbeat => {
+                        unreachable!("delegate host received Pause/Resume (it is never delegated)")
+                    }
+                    HeartbeatEvent::ReceivedHeartbeat(Heartbeat::FromParent { .. }) => {
+                        unreachable!("Parent-side loop received a FromParent beat")
+                    }
+                    HeartbeatEvent::Side(..) => {
+                        unreachable!("Parent-side loop received a side-channel message")
+                    }
+                }
+            }
+        }
+    }
+
+    // Stop covering everyone: each covered child's loop reclaims itself as direct.
+    shared.borrow().resume_covered(&covered);
+}
+
+// ---------------------------------------------------------------------------
+// Child side (D proving liveness to parent B; also hosts coverage as delegate C)
+// ---------------------------------------------------------------------------
+
+enum ChildState {
+    /// Prove liveness to B directly; time out on B's physical `FromParent` beats.
+    Direct,
+    /// Prove liveness via the side channel to sibling `c`; time out on its acks.
+    Delegated { x: ConnectionId, c: Vec<u8> },
+}
+
+async fn child_task<S: SendBeat>(ctx: HeartbeatCtx<S>) {
+    let HeartbeatCtx {
+        connection,
+        dialed: _,
+        beats,
+        mut events,
+        handle,
+        shared,
+        config,
+        send_beat,
+        loop_tx,
+    } = ctx;
+    let interval = config.interval;
+    let timeout = config.timeout;
+    // How long to wait for the *first* ack from a fresh delegate before giving up on
+    // it. Half a normal timeout, so that if the delegate never answers we fall back
+    // to beating our parent directly with time to spare — before the parent's own
+    // (full) timeout would declare us dead. Steady-state acks use the full timeout.
+    let settle = timeout / 2;
+
+    let mut own_ident: Option<Vec<u8>> = None;
+    let mut state = ChildState::Direct;
+    // Coverage-diff report to the parent, drained onto the next `FromChild` beat.
+    let mut cover_add: Vec<ConnectionId> = Vec::new();
+    let mut cover_del: Vec<ConnectionId> = Vec::new();
+    // Connections this child hosts coverage for (delegate-host duty): conn_id →
+    // (beating child's ident, deadline).
+    let mut coverage: HashMap<ConnectionId, (Vec<u8>, Instant)> = HashMap::new();
+
+    // Echo model: we send one beat, then stay silent until the peer answers before
+    // sending the next. `next_beat` is `Some(t)` when it is time to send again, `None`
+    // while awaiting an answer. Starting at `now` sends an initial beat immediately.
+    // Because we never have two un-answered beats outstanding, once our parent answers
+    // with a `Delegate` we never send it another direct beat — so nothing we send can
+    // race behind the sibling's coverage report and un-pause the parent.
+    let mut next_beat = Some(Instant::now());
+    // The single primary timeout: the parent's answer (Direct) or C's acks (Delegated).
+    let mut primary = Instant::now() + timeout;
+
+    loop {
+        let cov_deadline = coverage.values().map(|(_, d)| *d).min();
+        tokio::select! {
+            _ = deadline_or_park(next_beat) => {
+                match &state {
+                    ChildState::Direct => {
+                        if crate::ctx::connection_debug() && !cover_add.is_empty() {
+                            eprintln!(
+                                "MM_COVER pid={} report cover_add={:?}",
+                                std::process::id(),
+                                cover_add
+                            );
+                        }
+                        let _ = beats.send(Heartbeat::FromChild {
+                            cover_add: std::mem::take(&mut cover_add),
+                            cover_del: std::mem::take(&mut cover_del),
+                        });
+                        // Await the parent's answer before beating again.
+                        primary = Instant::now() + timeout;
+                    }
+                    ChildState::Delegated { x, c } => {
+                        if let Some(own) = &own_ident {
+                            // Beat our delegate C over the side channel.
+                            if crate::ctx::connection_debug() {
+                                eprintln!(
+                                    "MM_CHILD pid={} beat delegate x={} c={}",
+                                    std::process::id(),
+                                    x,
+                                    String::from_utf8_lossy(c)
+                                );
+                            }
+                            send_beat(c.clone(), own.clone(), *x, BeatKind::Beat);
+                        } else if crate::ctx::connection_debug() {
+                            eprintln!("MM_CHILD pid={} delegated but own_ident=None", std::process::id());
+                        }
+                        // Await C's ack; `primary` was armed on entry / last ack.
+                    }
+                }
+                next_beat = None;
+            }
+            _ = tokio::time::sleep_until(primary) => {
+                match &state {
+                    ChildState::Direct => {
+                        sever(&loop_tx, connection, b"quic heartbeat timeout".to_vec());
+                        break;
+                    }
+                    ChildState::Delegated { .. } => {
+                        // Lost our delegate; beat B directly again (B re-decides).
+                        state = ChildState::Direct;
+                        primary = Instant::now() + timeout;
+                        next_beat = Some(Instant::now());
+                    }
+                }
+            }
+            _ = deadline_or_park(cov_deadline), if cov_deadline.is_some() => {
+                let now = Instant::now();
+                let expired: Vec<ConnectionId> = coverage
+                    .iter()
+                    .filter(|(_, (_, d))| *d <= now)
+                    .map(|(&x, _)| x)
+                    .collect();
+                for x in expired {
+                    coverage.remove(&x);
+                    cover_del.push(x);
+                    if crate::ctx::connection_debug() {
+                        eprintln!(
+                            "MM_COVER pid={} EXPIRE conn_id={} (no beat within timeout)",
+                            std::process::id(),
+                            x
+                        );
+                    }
+                }
+            }
+            ev = events.recv() => {
+                let Some(ev) = ev else { break };
+                match ev {
+                    HeartbeatEvent::ReceivedHeartbeat(Heartbeat::FromParent { delegate }) => {
+                        // Our parent's answer to our last direct beat.
+                        if crate::ctx::connection_debug() {
+                            if let Some(Delegate { connection_id, sibling_ident }) = &delegate {
+                                eprintln!(
+                                    "MM_CHILD pid={} got delegate x={} c={} own_addressable={} direct={}",
+                                    std::process::id(),
+                                    connection_id,
+                                    String::from_utf8_lossy(sibling_ident),
+                                    own_ident.as_deref().is_some_and(is_addressable),
+                                    matches!(state, ChildState::Direct),
+                                );
+                            }
+                        }
+                        match delegate {
+                            Some(Delegate { connection_id, sibling_ident })
+                                if own_ident.as_deref().is_some_and(is_addressable)
+                                    && matches!(state, ChildState::Direct) =>
+                            {
+                                state = ChildState::Delegated {
+                                    x: connection_id,
+                                    c: sibling_ident,
+                                };
+                                // Give the fresh delegate only the shorter settle window
+                                // to answer; a full ack later extends it. Beat it now.
+                                primary = Instant::now() + settle;
+                                next_beat = Some(Instant::now());
+                            }
+                            _ if matches!(state, ChildState::Direct) => {
+                                // A plain answer (or an un-actionable delegate): stay
+                                // direct, refresh the deadline, and pace the next beat.
+                                primary = Instant::now() + timeout;
+                                next_beat = Some(Instant::now() + interval);
+                            }
+                            _ => {}
+                        }
+                    }
+                    HeartbeatEvent::ReceivedHeartbeat(Heartbeat::TransportActivity) => {
+                        // Data from the parent proves the pipe alive; refresh our direct
+                        // deadline. It is not an answer, so it does not pace the next beat.
+                        // Ignored while delegated — our liveness clock then tracks our
+                        // delegate's acks, not the parent, and the parent's death would
+                        // arrive as a reader close instead.
+                        if matches!(state, ChildState::Direct) {
+                            primary = Instant::now() + timeout;
+                        }
+                    }
+                    HeartbeatEvent::Side(from, conn_id, BeatKind::Beat) => {
+                        // Delegate-host duty: (re)arm coverage for `conn_id` and ack.
+                        if crate::ctx::connection_debug() {
+                            eprintln!(
+                                "MM_COVER pid={} beat-in conn_id={} from={}",
+                                std::process::id(),
+                                conn_id,
+                                String::from_utf8_lossy(&from)
+                            );
+                        }
+                        let is_new = !coverage.contains_key(&conn_id);
+                        coverage.insert(conn_id, (from.clone(), Instant::now() + timeout));
+                        if is_new {
+                            cover_add.push(conn_id);
+                            if crate::ctx::connection_debug() {
+                                eprintln!(
+                                    "MM_COVER pid={} add conn_id={} from={}",
+                                    std::process::id(),
+                                    conn_id,
+                                    String::from_utf8_lossy(&from)
+                                );
+                            }
+                        }
+                        if let Some(own) = &own_ident {
+                            // Ack the delegated child that beat us.
+                            send_beat(from, own.clone(), conn_id, BeatKind::Ack);
+                        }
+                    }
+                    HeartbeatEvent::Side(_, conn_id, BeatKind::Ack) => {
+                        if let ChildState::Delegated { x, .. } = &state {
+                            if *x == conn_id {
+                                // C is alive: extend the deadline and pace the next beat.
+                                primary = Instant::now() + timeout;
+                                next_beat = Some(Instant::now() + interval);
+                            }
+                        }
+                    }
+                    HeartbeatEvent::Side(_, conn_id, BeatKind::Release) => {
+                        // Our delegate is tearing down: revert to beating our parent
+                        // directly again (no need to wait for the ack to lapse).
+                        if let ChildState::Delegated { x, .. } = &state {
+                            if *x == conn_id {
+                                state = ChildState::Direct;
+                                primary = Instant::now() + timeout;
+                                next_beat = Some(Instant::now());
+                            }
+                        }
+                    }
+                    HeartbeatEvent::EstablishLocal { local_ident } => {
+                        own_ident = Some(local_ident.clone());
+                        shared
+                            .borrow_mut()
+                            .children_by_ident
+                            .insert(local_ident, handle.clone());
+                    }
+                    HeartbeatEvent::EstablishPeer { .. } => {}
+                    HeartbeatEvent::ReaderClosed => {
+                        // The reader already severed with the detailed close reason;
+                        // this just stops the coroutine (its own `handle` clones keep
+                        // the event channel open, so it can't rely on that closing) so
+                        // the teardown below runs. Do *not* sever again here.
+                        break;
+                    }
+                    // These cannot reach a Child-side loop: our parent peer only ever
+                    // sends `FromParent`, and Pause/Resume route via
+                    // `parents_by_conn_id` to Parent-side loops only.
+                    HeartbeatEvent::ReceivedHeartbeat(Heartbeat::FromChild { .. }) => {
+                        unreachable!("Child-side loop received a FromChild beat")
+                    }
+                    HeartbeatEvent::PauseHeartbeat | HeartbeatEvent::ResumeHeartbeat => {
+                        unreachable!("Child-side loop received Pause/Resume")
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(own) = &own_ident {
+        // We are tearing down: tell every delegated child we were covering to stop
+        // delegating to us and heartbeat its parent directly again, so it re-homes
+        // immediately rather than waiting for our acks to lapse.
+        for (&conn_id, (child_ident, _)) in &coverage {
+            send_beat(child_ident.clone(), own.clone(), conn_id, BeatKind::Release);
+        }
+        shared.borrow_mut().children_by_ident.remove(own);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+//
+// These drive the *real* heartbeat coroutines ([`Heartbeats::spawn`]) but replace
+// the QUIC transport with a manual pump, so the order of messages into the
+// `Heartbeats` object is fully controlled:
+//
+//   * A connection's outgoing physical beats land in its `beats` receiver; a test
+//     forwards a peer's beats into this connection's `events` as `ReceivedHeartbeat`
+//     (this is what the reader would do). Withholding that forward simulates a
+//     silent / dead peer.
+//   * Sibling side-channel beats/acks/releases go through the real
+//     [`Heartbeats::deliver`] (the same call the side-channel reader makes), routed
+//     by `children_by_ident` — so one shared `Heartbeats` models the B/C/D fabric.
+//   * A `Severed` shows up on the connection's `loop_tx` receiver.
+//
+// Time is real but short (see [`test_config`]) so the tests run in well under a
+// second while exercising the genuine timers.
+#[cfg(test)]
+mod tests {
+    use slotmap::SlotMap;
+    use tokio::sync::mpsc;
+
+    use super::*;
+    use crate::connection::ConnectionCommand;
+    use crate::ctx::ChildConnectionKey;
+
+    const INTERVAL_MS: u64 = 20;
+    const TIMEOUT_MS: u64 = 200;
+
+    fn test_config() -> HeartbeatConfig {
+        HeartbeatConfig {
+            interval: Duration::from_millis(INTERVAL_MS),
+            timeout: Duration::from_millis(TIMEOUT_MS),
+            // A parent may keep one child direct; a second established child is over
+            // budget and gets delegated.
+            max_direct_children: 1,
+            max_coverage_per_sibling: 8,
+        }
+    }
+
+    /// One spawned coroutine's test-side handles.
+    struct Conn {
+        events: mpsc::UnboundedSender<HeartbeatEvent>,
+        beats: mpsc::UnboundedReceiver<Heartbeat>,
+        severs: mpsc::UnboundedReceiver<Command>,
+    }
+
+    /// Spawn a Parent-side coroutine (watches a child `slot` of actor `parent`).
+    /// `dialed` = we dialed the child (required for delegation).
+    fn spawn_parent(hb: &Heartbeats, parent: Key, slot: ChildConnectionKey, dialed: bool) -> Conn {
+        let (beats_tx, beats) = mpsc::unbounded_channel();
+        let (sever_tx, severs) = mpsc::unbounded_channel();
+        let connection = ConnectionRef::ChildConnection {
+            ofactor: parent,
+            slot,
+        };
+        // A parent never originates side-channel beats.
+        let events = hb.spawn(connection, dialed, beats_tx, |_, _, _, _| {}, sever_tx);
+        Conn {
+            events,
+            beats,
+            severs,
+        }
+    }
+
+    /// Spawn a Child-side coroutine for actor `actor`. Its side-channel beats/acks
+    /// are delivered through the same `Heartbeats` (the shared fabric).
+    fn spawn_child(hb: &Heartbeats, actor: Key) -> Conn {
+        let (beats_tx, beats) = mpsc::unbounded_channel();
+        let (sever_tx, severs) = mpsc::unbounded_channel();
+        let connection = ConnectionRef::ParentConnection { ofactor: actor };
+        let fabric = hb.clone();
+        let send_beat = move |recipient: Vec<u8>, from: Vec<u8>, conn_id: ConnectionId, kind| {
+            fabric.deliver(&recipient, from, conn_id, kind);
+        };
+        // `dialed` is irrelevant on the child side.
+        let events = hb.spawn(connection, false, beats_tx, send_beat, sever_tx);
+        Conn {
+            events,
+            beats,
+            severs,
+        }
+    }
+
+    fn send(c: &Conn, ev: HeartbeatEvent) {
+        let _ = c.events.send(ev);
+    }
+
+    fn establish_child(c: &Conn, own: &[u8], parent: &[u8]) {
+        send(
+            c,
+            HeartbeatEvent::EstablishLocal {
+                local_ident: own.to_vec(),
+            },
+        );
+        send(
+            c,
+            HeartbeatEvent::EstablishPeer {
+                peer_ident: parent.to_vec(),
+            },
+        );
+    }
+
+    fn establish_parent(c: &Conn, peer: &[u8]) {
+        send(
+            c,
+            HeartbeatEvent::EstablishPeer {
+                peer_ident: peer.to_vec(),
+            },
+        );
+    }
+
+    /// Forward every physical beat `from` has emitted into `to` (what a live reader
+    /// would do). Withholding this is how a test simulates a silent peer.
+    fn pump(from: &mut Conn, to: &Conn) {
+        while let Ok(hb) = from.beats.try_recv() {
+            let _ = to.events.send(HeartbeatEvent::ReceivedHeartbeat(hb));
+        }
+    }
+
+    fn drain_beats(c: &mut Conn) {
+        while c.beats.try_recv().is_ok() {}
+    }
+
+    fn sever_reason(c: &mut Conn) -> Option<Vec<u8>> {
+        match c.severs.try_recv() {
+            Ok(Command::ConnectionAction {
+                action: ConnectionCommand::Severed { reason },
+                ..
+            }) => Some(reason),
+            _ => None,
+        }
+    }
+
+    async fn nap(ms: u64) {
+        tokio::time::sleep(Duration::from_millis(ms)).await;
+    }
+
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+    }
+
+    /// Delegate selection skips any sibling that is not a *live* candidate (status
+    /// isn't `Direct`, or it isn't dialed / addressable / under capacity) and
+    /// round-robins over the ones that are — so a dead-but-not-yet-reaped sibling is
+    /// never handed a child.
+    #[test]
+    fn pick_delegate_skips_non_candidates_and_round_robins() {
+        let cap = 8;
+        let mut pool = ParentPool::new(cap);
+        let sib = |ident: &[u8], dialed, status, requested_covers| SiblingInfo {
+            ident: Some(ident.to_vec()),
+            dialed,
+            status,
+            sibling: None,
+            requested_covers,
+        };
+        pool.siblings
+            .insert(1, sib(b"c1@x", true, ChildStatus::Direct, 0)); // candidate
+        pool.siblings
+            .insert(2, sib(b"c2@x", true, ChildStatus::Direct, 1)); // candidate (already covers one)
+        pool.siblings
+            .insert(3, sib(b"paused@x", true, ChildStatus::Paused, 0)); // delegated away
+        pool.siblings.insert(
+            4,
+            sib(b"unestablished@x", true, ChildStatus::NotEstablished, 0),
+        ); // not established
+        pool.siblings
+            .insert(5, sib(b"nodial@x", false, ChildStatus::Direct, 0)); // we didn't dial it
+        pool.siblings
+            .insert(6, sib(b"noaddr", true, ChildStatus::Direct, 0)); // no gateway tag
+        pool.siblings
+            .insert(7, sib(b"full@x", true, ChildStatus::Direct, cap)); // at capacity
+        pool.rebuild_candidates();
+
+        // The child being delegated (excluded) is conn 99.
+        let picks: Vec<ConnectionId> = (0..6)
+            .map(|_| {
+                pool.pick_delegate(99)
+                    .expect("an eligible sibling exists")
+                    .0
+            })
+            .collect();
+        assert!(
+            picks.iter().all(|&id| id == 1 || id == 2),
+            "only live, dialed, addressable, under-capacity candidates picked: {picks:?}",
+        );
+        assert!(
+            picks.contains(&1) && picks.contains(&2),
+            "round-robin uses both candidates: {picks:?}",
+        );
+    }
+
+    /// B watching D directly: stable while both are pumped; B severs once D goes
+    /// silent.
+    #[test]
+    fn direct_liveness_and_parent_timeout() {
+        let rt = runtime();
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async {
+            let hb = Heartbeats::with_config(test_config());
+            let mut keys: SlotMap<Key, ()> = SlotMap::with_key();
+            let mut slots: SlotMap<ChildConnectionKey, ()> = SlotMap::with_key();
+            let b = keys.insert(());
+            let d = keys.insert(());
+            let d_slot = slots.insert(());
+
+            let mut bd = spawn_parent(&hb, b, d_slot, true);
+            let mut d = spawn_child(&hb, d);
+            establish_parent(&bd, b"D@d");
+            establish_child(&d, b"D@d", b"B@b");
+
+            // Steady state: both beat each other for several intervals — no sever.
+            for _ in 0..8 {
+                nap(INTERVAL_MS).await;
+                pump(&mut bd, &d);
+                pump(&mut d, &bd);
+            }
+            assert!(
+                sever_reason(&mut bd).is_none(),
+                "B should not sever while D beats"
+            );
+            assert!(
+                sever_reason(&mut d).is_none(),
+                "D should not sever while B beats"
+            );
+
+            // D goes silent (its beats no longer reach B). In the echo model B answers
+            // only beats it hears, so with D silent B never answers either — B's watch
+            // of D lapses and it severs. (Symmetrically D, hearing no answer, would also
+            // time out; here we only assert B's side.)
+            let mut reason = None;
+            for _ in 0..((TIMEOUT_MS / INTERVAL_MS) + 4) {
+                nap(INTERVAL_MS).await;
+                drain_beats(&mut d);
+                if let Some(r) = sever_reason(&mut bd) {
+                    reason = Some(r);
+                    break;
+                }
+            }
+            assert_eq!(
+                reason.as_deref(),
+                Some(b"quic heartbeat timeout".as_slice()),
+                "B severs D once D stops beating"
+            );
+        });
+    }
+
+    /// A child severs when its parent goes silent.
+    #[test]
+    fn child_times_out_when_parent_silent() {
+        let rt = runtime();
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async {
+            let hb = Heartbeats::with_config(test_config());
+            let mut keys: SlotMap<Key, ()> = SlotMap::with_key();
+            let mut slots: SlotMap<ChildConnectionKey, ()> = SlotMap::with_key();
+            let b = keys.insert(());
+            let d = keys.insert(());
+            let d_slot = slots.insert(());
+
+            let mut bd = spawn_parent(&hb, b, d_slot, true);
+            let mut d = spawn_child(&hb, d);
+            establish_parent(&bd, b"D@d");
+            establish_child(&d, b"D@d", b"B@b");
+
+            for _ in 0..6 {
+                nap(INTERVAL_MS).await;
+                pump(&mut bd, &d);
+                pump(&mut d, &bd);
+            }
+            assert!(sever_reason(&mut d).is_none());
+
+            // B goes silent; keep forwarding D's beats to B so only D's watch lapses.
+            let mut reason = None;
+            for _ in 0..((TIMEOUT_MS / INTERVAL_MS) + 4) {
+                nap(INTERVAL_MS).await;
+                pump(&mut d, &bd);
+                drain_beats(&mut bd);
+                if let Some(r) = sever_reason(&mut d) {
+                    reason = Some(r);
+                    break;
+                }
+            }
+            assert_eq!(
+                reason.as_deref(),
+                Some(b"quic heartbeat timeout".as_slice()),
+                "D severs once its parent stops beating"
+            );
+        });
+    }
+
+    /// A delegated child whose delegate never acks reverts to beating its parent
+    /// directly (ack-timeout fallback), rather than severing.
+    #[test]
+    fn delegated_child_reverts_when_delegate_never_acks() {
+        let rt = runtime();
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async {
+            let hb = Heartbeats::with_config(test_config());
+            let mut keys: SlotMap<Key, ()> = SlotMap::with_key();
+            let d = keys.insert(());
+            let mut d = spawn_child(&hb, d);
+            establish_child(&d, b"D@d", b"B@b");
+            nap(INTERVAL_MS).await;
+
+            // Pretend B delegated us to sibling C@c (which does not exist here, so no
+            // acks ever come back).
+            send(
+                &d,
+                HeartbeatEvent::ReceivedHeartbeat(Heartbeat::FromParent {
+                    delegate: Some(Delegate {
+                        connection_id: 777,
+                        sibling_ident: b"C@c".to_vec(),
+                    }),
+                }),
+            );
+
+            // While delegated it beats the (absent) delegate over the side channel,
+            // not its parent — so no FromChild beats come out for a bit.
+            nap(INTERVAL_MS).await;
+            drain_beats(&mut d);
+
+            // After the ack timeout it must revert to Direct and beat its parent again
+            // (a FromChild beat), and must NOT sever.
+            let mut saw_from_child = false;
+            for _ in 0..((TIMEOUT_MS / INTERVAL_MS) + 6) {
+                nap(INTERVAL_MS).await;
+                while let Ok(hb) = d.beats.try_recv() {
+                    if matches!(hb, Heartbeat::FromChild { .. }) {
+                        saw_from_child = true;
+                    }
+                }
+                if saw_from_child {
+                    break;
+                }
+            }
+            assert!(
+                saw_from_child,
+                "delegated child reverts to beating its parent"
+            );
+            assert!(
+                sever_reason(&mut d).is_none(),
+                "reverting child does not sever"
+            );
+        });
+    }
+
+    /// B delegates D to a sibling C that is *about to* die: C is still eligible (has
+    /// not yet failed its own heartbeat with B) but never acks D. D must revert
+    /// within the settle window — before B's full timeout — so D is never severed
+    /// during that gap. Then C fails its timeout with B: B severs it and drops it
+    /// from the pool, so it is no longer an eligible delegate and D settles as a
+    /// direct child. (A dead C never recovers — idents are not reused.)
+    #[test]
+    fn delegate_to_dying_c_never_severs_d() {
+        let rt = runtime();
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async {
+            let hb = Heartbeats::with_config(test_config());
+            let mut keys: SlotMap<Key, ()> = SlotMap::with_key();
+            let mut slots: SlotMap<ChildConnectionKey, ()> = SlotMap::with_key();
+            let b = keys.insert(());
+            let d = keys.insert(());
+            let c_slot = slots.insert(());
+            let d_slot = slots.insert(());
+
+            // B's watch of C exists so C is an eligible delegate, but there is no live
+            // C coroutine: it never acks D's side-channel beats, and (since we never
+            // forward beats to `bc`) it will fail its own heartbeat with B.
+            let mut bc = spawn_parent(&hb, b, c_slot, true);
+            let mut bd = spawn_parent(&hb, b, d_slot, true);
+            let mut d = spawn_child(&hb, d);
+            establish_child(&d, b"D@d", b"B@b");
+            establish_parent(&bc, b"C@c");
+            establish_parent(&bd, b"D@d"); // active_direct = 2 > max_direct = 1
+            nap(INTERVAL_MS).await;
+
+            // Trigger B–D to delegate D to the doomed C.
+            send(
+                &bd,
+                HeartbeatEvent::ReceivedHeartbeat(Heartbeat::FromChild {
+                    cover_add: vec![],
+                    cover_del: vec![],
+                }),
+            );
+
+            // Until C is reaped, B may (re-)hand D to it; D reverts within the settle
+            // window each time and beats B — so B never severs D. Once C fails its own
+            // timeout, B severs it and it leaves the eligible pool.
+            let mut d_severed = false;
+            let mut bd_severed = false;
+            let mut c_severed = false;
+            for _ in 0..(TIMEOUT_MS * 4 / INTERVAL_MS) {
+                nap(INTERVAL_MS).await;
+                drain_beats(&mut bc); // C never hears B and never answers
+                pump(&mut bd, &d); // carries B's Delegate instructions and beats
+                pump(&mut d, &bd); // D's direct beats after each revert
+                if sever_reason(&mut d).is_some() {
+                    d_severed = true;
+                }
+                if sever_reason(&mut bd).is_some() {
+                    bd_severed = true;
+                }
+                if sever_reason(&mut bc).is_some() {
+                    c_severed = true;
+                }
+            }
+            assert!(!d_severed, "D is never severed while its delegate is dying");
+            assert!(!bd_severed, "B never severs D");
+            assert!(
+                c_severed,
+                "B severs the dead delegate C (it failed its timeout)"
+            );
+
+            // C is gone from the pool, so B can no longer delegate D to it; D is a
+            // plain direct child now — B keeps beating it and it survives.
+            drain_beats(&mut bd);
+            for _ in 0..8 {
+                nap(INTERVAL_MS).await;
+                pump(&mut bd, &d);
+                pump(&mut d, &bd);
+            }
+            assert!(
+                sever_reason(&mut d).is_none(),
+                "D remains a live direct child of B"
+            );
+            assert!(sever_reason(&mut bd).is_none());
+        });
+    }
+
+    /// Full B/C/D: D is delegated to sibling C, C covers D (so B pauses its watch of
+    /// D), then C tears down — D must survive by re-homing to B.
+    #[test]
+    fn delegation_then_c_dies_d_survives() {
+        let rt = runtime();
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async {
+            let hb = Heartbeats::with_config(test_config());
+            let mut keys: SlotMap<Key, ()> = SlotMap::with_key();
+            let mut slots: SlotMap<ChildConnectionKey, ()> = SlotMap::with_key();
+            let b = keys.insert(());
+            let c = keys.insert(());
+            let d = keys.insert(());
+            let c_slot = slots.insert(());
+            let d_slot = slots.insert(());
+
+            // B's two parent loops, and C's and D's child loops.
+            let mut bc = spawn_parent(&hb, b, c_slot, true);
+            let mut bd = spawn_parent(&hb, b, d_slot, true);
+            let mut c = spawn_child(&hb, c);
+            let mut d = spawn_child(&hb, d);
+
+            establish_child(&c, b"C@c", b"B@b");
+            establish_child(&d, b"D@d", b"B@b");
+            establish_parent(&bc, b"C@c");
+            establish_parent(&bd, b"D@d"); // now active_direct = 2 > max_direct = 1
+            nap(INTERVAL_MS).await;
+
+            // Trigger B–D to delegate D to C (a FromChild beat while over budget).
+            send(
+                &bd,
+                HeartbeatEvent::ReceivedHeartbeat(Heartbeat::FromChild {
+                    cover_add: vec![],
+                    cover_del: vec![],
+                }),
+            );
+            nap(INTERVAL_MS).await;
+            // Deliver B–D's Delegate answer to D (and any prior liveness beats).
+            pump(&mut bd, &d);
+
+            // D now beats C over the side channel (via deliver); C acks and queues
+            // coverage, reporting it to B on C's next beat. Pump B–C both ways so C keeps
+            // beating (echo model) and its report reaches B, flipping B–C to a delegate
+            // host that pauses B–D. C already covers D (requested_covers=1), so B answers
+            // C plainly and never delegates C itself. Detect the pause via B's pool.
+            let mut b_c_became_cover = false;
+            for _ in 0..16 {
+                nap(INTERVAL_MS).await;
+                drain_beats(&mut d); // D's side-channel beats go via deliver, not here
+                pump(&mut c, &bc); // C's beats (incl. its coverage report) → B
+                pump(&mut bc, &c); // B's answers → C, so C keeps beating
+                let paused =
+                    hb.shared.borrow().parents.get(&b).is_some_and(|p| {
+                        p.siblings.values().any(|s| s.status == ChildStatus::Paused)
+                    });
+                if paused {
+                    b_c_became_cover = true;
+                    break;
+                }
+            }
+            assert!(b_c_became_cover, "C reported covering D to B (B paused D)");
+
+            // While paused, B does not sever the delegated D even past a full timeout.
+            // Keep pumping B–C both ways so the cover host C stays alive and keeps
+            // covering D (D beats C via deliver, so that link needs no pump).
+            for _ in 0..((TIMEOUT_MS / INTERVAL_MS) + 2) {
+                nap(INTERVAL_MS).await;
+                drain_beats(&mut d);
+                pump(&mut c, &bc);
+                pump(&mut bc, &c);
+            }
+            assert!(sever_reason(&mut bd).is_none(), "delegated D not severed");
+            assert!(
+                sever_reason(&mut d).is_none(),
+                "D not severed while delegated"
+            );
+
+            // --- C dies ---
+            // First, B's watch of C sees the transport close: B–C's cover loop tears
+            // down, resuming its coverage of D (so B reclaims D) and dropping C from
+            // the eligible-delegate set — before D re-homes, so D is never
+            // re-delegated to the dying C.
+            send(&bc, HeartbeatEvent::ReaderClosed);
+            nap(INTERVAL_MS).await;
+            // Then C's own coroutine tears down, releasing D over the side channel so
+            // it reverts to beating its parent directly.
+            send(&c, HeartbeatEvent::ReaderClosed);
+            nap(INTERVAL_MS).await;
+
+            // C is gone: side-channel beats addressed to it are now dropped.
+            assert!(
+                hb.shared.borrow().child_handle(b"C@c").is_none(),
+                "C is deregistered once it tears down"
+            );
+
+            // D re-homed to B; pump the B–D link and confirm both survive and B answers
+            // D's direct beats again (un-paused). In the echo model B emits a beat only
+            // in reply to D, so seeing any B beat proves it is heartbeating D again.
+            let mut b_answers_d = false;
+            for _ in 0..8 {
+                nap(INTERVAL_MS).await;
+                // D's revert beats → B.
+                while let Ok(hb) = d.beats.try_recv() {
+                    let _ = bd.events.send(HeartbeatEvent::ReceivedHeartbeat(hb));
+                }
+                // B's answers → D (so D keeps beating), noting that B answered.
+                while let Ok(hb) = bd.beats.try_recv() {
+                    b_answers_d = true;
+                    let _ = d.events.send(HeartbeatEvent::ReceivedHeartbeat(hb));
+                }
+            }
+            assert!(
+                sever_reason(&mut d).is_none(),
+                "D survives C's death by re-homing to B"
+            );
+            assert!(
+                sever_reason(&mut bd).is_none(),
+                "B keeps D alive after reclaiming it"
+            );
+            assert!(
+                b_answers_d,
+                "B resumes directly heartbeating D after reclaiming it"
+            );
+        });
+    }
+}
