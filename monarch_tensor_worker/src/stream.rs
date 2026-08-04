@@ -1832,7 +1832,7 @@ impl StreamMessageHandler for StreamActor {
                             cx,
                             seq,
                             WorkerError {
-                                backtrace: format!("recording failed: {}", &seq_err),
+                                backtrace: format!("recording failed: {}", seq_err),
                                 worker_actor_id: cx.self_addr().clone(),
                             },
                         )

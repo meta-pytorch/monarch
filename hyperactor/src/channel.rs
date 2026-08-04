@@ -1926,7 +1926,7 @@ mod tests {
 
         for (raw, error) in cases_err {
             let Err(err) = raw.parse::<ChannelAddr>() else {
-                panic!("expected error parsing: {}", &raw)
+                panic!("expected error parsing: {}", raw)
             };
             assert_eq!(format!("{}", err), error);
         }
