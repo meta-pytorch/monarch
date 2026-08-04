@@ -57,3 +57,9 @@ rustflags = [
     "-Aunused_braces",
     "-Astable_features"
 ]
+
+# Enables artifact dependencies (`artifact = "staticlib"`), used by
+# monarch_mini/rust to link minimonarch as an opaque native library over its C
+# ABI while cargo builds and orders the staticlib for us.
+[unstable]
+bindeps = true
