@@ -14,6 +14,7 @@ mod inproc_transport;
 mod matcher;
 mod msg;
 mod poller;
+mod quic_heartbeat;
 mod quic_transport;
 mod shm;
 mod transport;

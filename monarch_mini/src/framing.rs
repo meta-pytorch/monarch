@@ -47,6 +47,9 @@ use crate::connection::SendPayload;
 use crate::connection::SideChannelAction;
 use crate::connection::SideChannelMessage;
 use crate::msg::MsgPart;
+use crate::quic_heartbeat::BeatKind;
+use crate::quic_heartbeat::ConnectionId;
+use crate::quic_heartbeat::Heartbeat;
 use crate::shm::MapperHandle;
 use crate::shm::SHM_THRESHOLD;
 use crate::shm::ShmClient;
@@ -85,9 +88,10 @@ enum WireFrame {
     GatewayDied {
         dead: Vec<Vec<u8>>,
     },
-    /// Transport-internal liveness probe; consumed by the reader to refresh its
-    /// deadline and never surfaced as a [`ConnectionCommand`].
-    Heartbeat,
+    /// Transport-internal liveness probe carrying a directional [`Heartbeat`] body
+    /// (a Child sends `FromChild`, a Parent sends `FromParent`). Consumed by the
+    /// reader/heartbeat coroutine and never surfaced as a [`ConnectionCommand`].
+    Heartbeat(Heartbeat),
 }
 
 /// Wire form of a [`SendMessage`](ConnectionCommand::SendMessage)'s payload. An
@@ -122,6 +126,16 @@ enum SideChannelFrame {
     AckRemoteMonitor {
         gateway_for_actor: Vec<u8>,
         monitoring: Vec<u8>,
+    },
+    /// A sibling side-channel heartbeat message (see [`crate::quic_heartbeat`]).
+    /// `gateway_for_actor` is the recipient (whose gateway tag the message is dialed
+    /// at); `from` is the sender's ident; `conn_id` is the delegated connection's id;
+    /// `kind` is the [`BeatKind`] (beat / ack / release).
+    Heartbeat {
+        gateway_for_actor: Vec<u8>,
+        from: Vec<u8>,
+        conn_id: ConnectionId,
+        kind: BeatKind,
     },
 }
 
@@ -182,7 +196,24 @@ pub(crate) async fn read_preamble<R: AsyncRead + Unpin>(
 /// heartbeat (consumed internally to refresh the liveness deadline).
 pub(crate) enum Incoming {
     Command(ConnectionCommand),
-    Heartbeat,
+    Heartbeat(Heartbeat),
+}
+
+/// A frame decoded off a gateway side-channel: either a routable
+/// [`SideChannelMessage`] for the command loop, or a transport-internal
+/// delegated-heartbeat beat/ack. The heartbeat variant is *never* surfaced to ctx
+/// — the receiving quic reader hands it straight to the heartbeat subsystem — so it
+/// stays out of ctx's [`SideChannelMessage`]/`SideChannelAction` routing types.
+pub(crate) enum SideChannelIncoming {
+    Message(SideChannelMessage),
+    Heartbeat {
+        /// The actor whose gateway received the beat — i.e. the one the addressed
+        /// heartbeat coroutine belongs to as a child.
+        recipient: Vec<u8>,
+        from: Vec<u8>,
+        conn_id: ConnectionId,
+        kind: BeatKind,
+    },
 }
 
 /// Serialize and write one command: a length-prefixed bincode header, then — for
@@ -255,9 +286,12 @@ pub(crate) async fn write_command<W: AsyncWrite + Unpin>(
     write_frame(writer, &frame, &parts).await
 }
 
-/// Write a transport heartbeat probe.
-pub(crate) async fn write_heartbeat<W: AsyncWrite + Unpin>(writer: &mut W) -> std::io::Result<()> {
-    write_frame(writer, &WireFrame::Heartbeat, &[]).await
+/// Write a transport heartbeat probe carrying `heartbeat`.
+pub(crate) async fn write_heartbeat<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    heartbeat: Heartbeat,
+) -> std::io::Result<()> {
+    write_frame(writer, &WireFrame::Heartbeat(heartbeat), &[]).await
 }
 
 async fn write_frame<W: AsyncWrite + Unpin>(
@@ -300,7 +334,7 @@ pub(crate) async fn read_frame<R: AsyncRead + Unpin>(
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
 
     Ok(match frame {
-        WireFrame::Heartbeat => Incoming::Heartbeat,
+        WireFrame::Heartbeat(heartbeat) => Incoming::Heartbeat(heartbeat),
         WireFrame::Message {
             destination_ident,
             payload,
@@ -411,6 +445,25 @@ pub(crate) async fn write_side_channel<W: AsyncWrite + Unpin>(
     write_frame(writer, &frame, &parts).await
 }
 
+/// Write a sibling side-channel heartbeat message as a frame. Header-only; the
+/// transport builds the wire frame directly, so heartbeats never pass through
+/// ctx's [`SideChannelMessage`] routing types.
+pub(crate) async fn write_side_channel_heartbeat<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    recipient: Vec<u8>,
+    from: Vec<u8>,
+    conn_id: ConnectionId,
+    kind: BeatKind,
+) -> std::io::Result<()> {
+    let frame = SideChannelFrame::Heartbeat {
+        gateway_for_actor: recipient,
+        from,
+        conn_id,
+        kind,
+    };
+    write_frame(writer, &frame, &[]).await
+}
+
 /// Read one [`SideChannelMessage`] off a gateway side-channel. A `Send` of an
 /// actor message reads each part exactly like [`read_frame`] (small parts into
 /// owned buffers, large ones into the slab via `mapper`/`client`); other actions
@@ -419,7 +472,7 @@ pub(crate) async fn read_side_channel<R: AsyncRead + Unpin>(
     reader: &mut R,
     mapper: &MapperHandle,
     client: Option<ShmClient>,
-) -> std::io::Result<SideChannelMessage> {
+) -> std::io::Result<SideChannelIncoming> {
     let mut len_buf = [0u8; 8];
     reader.read_exact(&mut len_buf).await?;
     let header_len = u64::from_le_bytes(len_buf) as usize;
@@ -430,7 +483,25 @@ pub(crate) async fn read_side_channel<R: AsyncRead + Unpin>(
         bincode::serde::decode_from_slice::<SideChannelFrame, _>(&header, bincode_config())
             .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
 
-    Ok(match frame {
+    // A heartbeat is transport-internal: return it as its own variant so the reader
+    // routes it into the heartbeat subsystem without ever building a ctx-level
+    // SideChannelMessage.
+    if let SideChannelFrame::Heartbeat {
+        gateway_for_actor,
+        from,
+        conn_id,
+        kind,
+    } = frame
+    {
+        return Ok(SideChannelIncoming::Heartbeat {
+            recipient: gateway_for_actor,
+            from,
+            conn_id,
+            kind,
+        });
+    }
+
+    let message = match frame {
         SideChannelFrame::Send {
             gateway_for_actor,
             payload,
@@ -471,7 +542,9 @@ pub(crate) async fn read_side_channel<R: AsyncRead + Unpin>(
             gateway_for_actor,
             action: SideChannelAction::AckRemoteMonitor { monitoring },
         },
-    })
+        SideChannelFrame::Heartbeat { .. } => unreachable!("heartbeat handled above"),
+    };
+    Ok(SideChannelIncoming::Message(message))
 }
 
 /// Read one message part of `len` bytes off the stream.

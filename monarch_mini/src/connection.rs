@@ -11,12 +11,28 @@ use std::collections::VecDeque;
 
 use serde::Deserialize;
 use serde::Serialize;
+use tokio::sync::mpsc;
 
 use crate::Role;
 use crate::ctx::ChildConnectionKey;
+use crate::ctx::Command;
 use crate::ctx::Key;
 use crate::msg::MsgPart;
 use crate::shm::ShmClient;
+
+/// Tear `connection` down by emitting a `Severed` to the command loop. Shared by
+/// every transport (the QUIC reader, its heartbeat coroutines, …) so the
+/// connection-failure signal is constructed in exactly one place.
+pub(crate) fn sever(
+    loop_tx: &mpsc::UnboundedSender<Command>,
+    connection: ConnectionRef,
+    reason: Vec<u8>,
+) {
+    let _ = loop_tx.send(Command::ConnectionAction {
+        connection,
+        action: ConnectionCommand::Severed { reason },
+    });
+}
 
 pub(crate) struct ConnectRequest {
     pub(crate) role: Role,

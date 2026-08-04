@@ -34,8 +34,10 @@
 //! `MM_QUIC_CA` (the authority a joiner trusts). The server presents its cert; the
 //! client verifies it against the CA for the fixed server name [`SERVER_NAME`].
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
@@ -52,17 +54,23 @@ use tokio::sync::Semaphore;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::time::Duration;
-use tokio::time::MissedTickBehavior;
 
 use crate::connection::ConnectionCommand;
 use crate::connection::ConnectionRef;
 use crate::connection::ConnectionTransport;
 use crate::connection::SideChannelMessage;
+use crate::connection::sever;
 use crate::ctx::Command;
 use crate::framing;
 use crate::framing::Incoming;
 use crate::framing::Preamble;
+use crate::framing::SideChannelIncoming;
 use crate::matcher::Matcher;
+use crate::quic_heartbeat::BeatKind;
+use crate::quic_heartbeat::ConnectionId;
+use crate::quic_heartbeat::Heartbeat;
+use crate::quic_heartbeat::HeartbeatEvent;
+use crate::quic_heartbeat::Heartbeats;
 use crate::shm::MapperHandle;
 use crate::shm::ShmClient;
 use crate::shm::ShmClientSlot;
@@ -77,35 +85,6 @@ const SERVER_NAME: &str = "monarch-mini";
 /// first, backing off to a steady poll.
 const CONNECT_RETRY_MIN: Duration = Duration::from_millis(5);
 const CONNECT_RETRY_MAX: Duration = Duration::from_millis(1000);
-
-/// How often each side emits a heartbeat, and how long a side waits for any frame
-/// before declaring the connection broken. The timeout is several intervals so a
-/// stray scheduling delay doesn't trip it.
-// Heartbeat every 5s; sever after 20s (4 missed beats) of no frame. This is the
-// realistic steady-state liveness setting — heartbeats are active and a lapse
-// actually severs the connection (see reader_task). Both are tunable via
-// `MM_QUIC_HEARTBEAT_INTERVAL_MS` / `MM_QUIC_HEARTBEAT_TIMEOUT_MS`: at very high
-// fan-out the single-threaded root cannot write+service tens of thousands of
-// heartbeats on a 5s cadence, so a longer interval (with a proportionally longer
-// timeout) cuts the steady-state heartbeat load without weakening liveness.
-const DEFAULT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
-const DEFAULT_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(20);
-
-fn heartbeat_interval() -> Duration {
-    std::env::var("MM_QUIC_HEARTBEAT_INTERVAL_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .map(Duration::from_millis)
-        .unwrap_or(DEFAULT_HEARTBEAT_INTERVAL)
-}
-
-fn heartbeat_timeout() -> Duration {
-    std::env::var("MM_QUIC_HEARTBEAT_TIMEOUT_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .map(Duration::from_millis)
-        .unwrap_or(DEFAULT_HEARTBEAT_TIMEOUT)
-}
 
 /// On graceful shutdown each writer sends an explicit `Severed{"context shutdown"}`
 /// frame (reliable stream data — retransmitted by QUIC, unlike `CONNECTION_CLOSE`),
@@ -180,15 +159,40 @@ fn load_tls() -> anyhow::Result<TlsConfig> {
         std::env::var("MM_QUIC_KEY").map_err(|_| anyhow::anyhow!("MM_QUIC_KEY not set"))?;
     let ca_path = std::env::var("MM_QUIC_CA").map_err(|_| anyhow::anyhow!("MM_QUIC_CA not set"))?;
 
-    let server = ServerConfig::with_single_cert(load_certs(&cert_path)?, load_key(&key_path)?)?;
+    // Disable all periodic QUIC traffic so a delegated link is truly silent:
+    // `keep_alive_interval = None` (no PING keep-alives) and `max_idle_timeout =
+    // None` (QUIC must not reap an idle delegated connection — liveness is now the
+    // heartbeat subsystem's responsibility, not the transport's). Applied to both
+    // roles. Message-carrying links are unaffected; delegated links rely on the
+    // sibling fabric. See `HEARTBEAT_DELEGATION_DESIGN.md` §9.
+    let mut transport = quinn::TransportConfig::default();
+    transport.keep_alive_interval(None);
+    transport.max_idle_timeout(None);
+    let transport = Arc::new(transport);
+
+    let mut server = ServerConfig::with_single_cert(load_certs(&cert_path)?, load_key(&key_path)?)?;
+    server.transport_config(transport.clone());
 
     let mut roots = RootCertStore::empty();
     for ca in load_certs(&ca_path)? {
         roots.add(ca)?;
     }
-    let client = ClientConfig::with_root_certificates(Arc::new(roots))?;
+    let mut client = ClientConfig::with_root_certificates(Arc::new(roots))?;
+    client.transport_config(transport);
 
     Ok(TlsConfig { server, client })
+}
+
+/// The gateway dial tag of `ident` (the substring after the last `@`), as a
+/// `String`, or `None` if it has none or is non-utf8. This is the address a beat is
+/// dialed at — the recipient's own gateway.
+fn gateway_tag_str(ident: &[u8]) -> Option<String> {
+    let pos = ident.iter().rposition(|&b| b == b'@')?;
+    let tag = &ident[pos + 1..];
+    if tag.is_empty() {
+        return None;
+    }
+    std::str::from_utf8(tag).ok().map(str::to_owned)
 }
 
 fn parse_addr(url: &str) -> anyhow::Result<SocketAddr> {
@@ -336,28 +340,28 @@ fn make_client_endpoint(
     Ok((endpoint, usable))
 }
 
-/// Owns all QUIC transport state and coroutines. Mirrors `UnixTransport`: the
-/// command loop holds one and forwards serves/joins to it; it never sees streams
-/// or pairing state. TLS configs are built lazily on first use and cached.
-pub(crate) struct QuicTransport {
-    loop_tx: mpsc::UnboundedSender<Command>,
+/// What a gateway side-channel writer carries: either a routable
+/// [`SideChannelMessage`] (from ctx) or a transport-internal delegated-heartbeat
+/// beat/ack (from the heartbeat coroutines). Both ride the same per-gateway writer,
+/// so a beat reuses the exact connection an ordinary message would.
+pub(crate) enum SideChannelOut {
+    Message(SideChannelMessage),
+    Heartbeat {
+        recipient: Vec<u8>,
+        from: Vec<u8>,
+        conn_id: ConnectionId,
+        kind: BeatKind,
+    },
+}
+
+/// The client-side dialing + gateway side-channel state, shared (`Rc<RefCell>`)
+/// between the command-loop-facing [`QuicTransport`] and the heartbeat coroutines.
+/// QUIC owns every side-channel path end to end — opening, reusing, and writing it
+/// — so a delegated-heartbeat beat is sent by the heartbeat coroutine directly
+/// through here, never routed through ctx. Single-threaded (LocalSet), hence
+/// `Rc<RefCell>`. TLS is built lazily on first use and cached.
+pub(crate) struct SideChannels {
     shutdown_tx: watch::Sender<bool>,
-    // The context-global address-space mapper, captured once at construction and
-    // handed to every connection's reader so a large incoming part can be read
-    // straight into a slab block.
-    mapper: MapperHandle,
-    // The context's single shm client slot, used *only* by side-channel readers,
-    // which are not tied to any actor. A join/serve connection reads into its
-    // owning actor's own slot instead (passed through serve/join).
-    context_shm: ShmClientSlot,
-    // One listener coroutine per url; serve connections are forwarded to it and it
-    // owns the serve/accept pairing.
-    listeners: HashMap<String, mpsc::UnboundedSender<(ConnectionRef, ShmCtx)>>,
-    // One side-channel writer per remote gateway, keyed by its dial address (the
-    // `@specifier` tag). Each owns a task that lazily connects (retrying until the
-    // gateway is live), streams message frames, and reconnects if the connection
-    // drops. Never heartbeated; cached across messages.
-    side_channels: HashMap<String, mpsc::UnboundedSender<SideChannelMessage>>,
     tls: Option<Arc<TlsConfig>>,
     // A *pool* of client endpoints (one UDP socket + driver each) per address
     // family, created lazily and assigned round-robin to joins/side-channels.
@@ -373,15 +377,46 @@ pub(crate) struct QuicTransport {
     client_endpoints_v6: Vec<Endpoint>,
     // Round-robin cursor for assigning connections to pool endpoints.
     client_rr: usize,
+    // One side-channel writer per remote gateway, keyed by its dial address (the
+    // `@specifier` tag). Each owns a task that lazily connects (retrying until the
+    // gateway is live), streams frames, and reconnects if the connection drops.
+    // Cached across messages/beats and shared by ordinary messages and heartbeats.
+    channels: HashMap<String, mpsc::UnboundedSender<SideChannelOut>>,
+    // Liveness-token issuer: each connection's/side-channel's writer holds a clone
+    // for its lifetime. Teardown drops this issuing copy so `alive_rx` closes once
+    // every writer has flushed and exited.
+    alive_tx: Option<mpsc::UnboundedSender<()>>,
+}
+
+/// Owns all QUIC transport state and coroutines. Mirrors `UnixTransport`: the
+/// command loop holds one and forwards serves/joins to it; it never sees streams
+/// or pairing state.
+pub(crate) struct QuicTransport {
+    loop_tx: mpsc::UnboundedSender<Command>,
+    // The context-global address-space mapper, captured once at construction and
+    // handed to every connection's reader so a large incoming part can be read
+    // straight into a slab block.
+    mapper: MapperHandle,
+    // The context's single shm client slot, used *only* by side-channel readers,
+    // which are not tied to any actor. A join/serve connection reads into its
+    // owning actor's own slot instead (passed through serve/join).
+    context_shm: ShmClientSlot,
+    // One listener coroutine per url; serve connections are forwarded to it and it
+    // owns the serve/accept pairing.
+    listeners: HashMap<String, mpsc::UnboundedSender<(ConnectionRef, ShmCtx)>>,
     // Bounds simultaneous client connect attempts (see `max_concurrent_connects`).
     // Shared by every connector task; `None` ⇒ unlimited. Created once so all joins
     // in this context contend for the same pool of attempt slots.
     connect_sem: Option<Arc<Semaphore>>,
-    // Liveness-token issuer: each connection's writer holds a clone for its
-    // lifetime. Teardown drops this issuing copy and waits for `alive_rx` to close
-    // — i.e. for every writer to have flushed and exited.
-    alive_tx: Option<mpsc::UnboundedSender<()>>,
+    // Closed once every writer has exited (see `SideChannels::alive_tx`).
     alive_rx: mpsc::UnboundedReceiver<()>,
+    // Delegated-heartbeat state, shared by every connection's heartbeat coroutine.
+    // Spawns the per-connection coroutines and routes inbound side-channel beats.
+    // See [`crate::quic_heartbeat`].
+    heartbeat: Heartbeats,
+    // Client dialing + side-channel writers, shared with the heartbeat coroutines
+    // so QUIC drives every side-channel path without ctx involvement.
+    side_channels: Rc<RefCell<SideChannels>>,
 }
 
 impl QuicTransport {
@@ -397,18 +432,21 @@ impl QuicTransport {
         }
         Self {
             loop_tx,
-            shutdown_tx,
             mapper,
             context_shm,
             listeners: HashMap::new(),
-            side_channels: HashMap::new(),
-            tls: None,
-            client_endpoints_v4: Vec::new(),
-            client_endpoints_v6: Vec::new(),
-            client_rr: 0,
             connect_sem: max_concurrent_connects().map(|n| Arc::new(Semaphore::new(n))),
-            alive_tx: Some(alive_tx),
             alive_rx,
+            heartbeat: Heartbeats::new(),
+            side_channels: Rc::new(RefCell::new(SideChannels {
+                shutdown_tx,
+                tls: None,
+                client_endpoints_v4: Vec::new(),
+                client_endpoints_v6: Vec::new(),
+                client_rr: 0,
+                channels: HashMap::new(),
+                alive_tx: Some(alive_tx),
+            })),
         }
     }
 
@@ -421,12 +459,18 @@ impl QuicTransport {
             client,
         }
     }
+}
 
+impl SideChannels {
     fn alive_token(&self) -> mpsc::UnboundedSender<()> {
         self.alive_tx
             .as_ref()
             .expect("alive-token issuer present before shutdown")
             .clone()
+    }
+
+    fn subscribe_shutdown(&self) -> watch::Receiver<bool> {
+        self.shutdown_tx.subscribe()
     }
 
     /// Build (or return the cached) TLS configs from the environment.
@@ -440,11 +484,11 @@ impl QuicTransport {
     }
 
     /// A client [`Endpoint`] for `target`'s address family, assigned round-robin
-    /// from a lazily-created pool of [`Self::client_pool_size`] endpoints. Returns
-    /// a cheap clone (the endpoint is internally reference-counted). Spreading
-    /// connections across several UDP sockets keeps any one socket's send/receive
-    /// buffers from overflowing under a fan-out burst, which otherwise causes
-    /// packet loss and multi-second QUIC retransmit stalls.
+    /// from a lazily-created pool of endpoints. Returns a cheap clone (the endpoint
+    /// is internally reference-counted). Spreading connections across several UDP
+    /// sockets keeps any one socket's send/receive buffers from overflowing under a
+    /// fan-out burst, which otherwise causes packet loss and multi-second QUIC
+    /// retransmit stalls.
     fn client_endpoint(&mut self, target: &SocketAddr) -> anyhow::Result<Endpoint> {
         let is_v6 = target.is_ipv6();
         let empty = if is_v6 {
@@ -510,26 +554,22 @@ impl QuicTransport {
         Ok(pool)
     }
 
-    /// Send a self-addressing [`SideChannelMessage`] to a remote gateway over a
-    /// direct side-channel, opening (and caching) the connection on first use. The
-    /// caller (the command loop) has already derived `tag` from the message's
-    /// `gateway_for_actor`. The side-channel is best-effort and not heartbeated; a
-    /// message enqueued while the remote gateway is not yet live waits for the
-    /// connection to come up.
-    pub(crate) fn send_to_gateway(&mut self, tag: String, message: SideChannelMessage) {
-        if !self.side_channels.contains_key(&tag) {
+    /// The writer for the gateway at `tag`, opening (and caching) it on first use.
+    /// `None` if the tag is unparseable or an endpoint can't be built.
+    fn writer_for(&mut self, tag: String) -> Option<&mpsc::UnboundedSender<SideChannelOut>> {
+        if !self.channels.contains_key(&tag) {
             let addr = match parse_addr(&tag) {
                 Ok(addr) => addr,
                 Err(err) => {
                     tracing::warn!("side channel address: {err:#}");
-                    return;
+                    return None;
                 }
             };
             let endpoint = match self.client_endpoint(&addr) {
                 Ok(endpoint) => endpoint,
                 Err(err) => {
                     tracing::warn!("side channel endpoint: {err:#}");
-                    return;
+                    return None;
                 }
             };
             let (tx, rx) = mpsc::unbounded_channel();
@@ -540,13 +580,59 @@ impl QuicTransport {
                 self.shutdown_tx.subscribe(),
                 self.alive_token(),
             ));
-            self.side_channels.insert(tag.clone(), tx);
+            self.channels.insert(tag.clone(), tx);
         }
-        let _ = self
-            .side_channels
-            .get(&tag)
-            .expect("side channel just inserted")
-            .send(message);
+        self.channels.get(&tag)
+    }
+
+    /// Send a self-addressing [`SideChannelMessage`] to the gateway at `tag`,
+    /// opening (and caching) the connection on first use. Best-effort and not
+    /// heartbeated; a message enqueued while the remote gateway is not yet live
+    /// waits for the connection to come up.
+    fn send_message(&mut self, tag: String, message: SideChannelMessage) {
+        if let Some(tx) = self.writer_for(tag) {
+            let _ = tx.send(SideChannelOut::Message(message));
+        }
+    }
+
+    /// Send a delegated-heartbeat beat/ack to `recipient`, dialing the side channel
+    /// at `recipient`'s own gateway `@tag` and reusing the same per-gateway side
+    /// channel an ordinary message would (design §6.2). Dropped if `recipient` has
+    /// no gateway tag to dial. Called by the heartbeat coroutines directly — never
+    /// via ctx.
+    pub(crate) fn send_heartbeat(
+        &mut self,
+        recipient: Vec<u8>,
+        from: Vec<u8>,
+        conn_id: ConnectionId,
+        kind: BeatKind,
+    ) {
+        let Some(tag) = gateway_tag_str(&recipient) else {
+            return;
+        };
+        if let Some(tx) = self.writer_for(tag) {
+            let _ = tx.send(SideChannelOut::Heartbeat {
+                recipient,
+                from,
+                conn_id,
+                kind,
+            });
+        }
+    }
+
+    /// Signal every writer to flush and exit, and drop the issuing alive token.
+    fn begin_shutdown(&mut self) {
+        let _ = self.shutdown_tx.send(true);
+        self.alive_tx = None;
+    }
+}
+
+impl QuicTransport {
+    /// Send a self-addressing [`SideChannelMessage`] to a remote gateway over a
+    /// direct side-channel. The caller (the command loop) has already derived `tag`
+    /// from the message's `gateway_for_actor`.
+    pub(crate) fn send_to_gateway(&mut self, tag: String, message: SideChannelMessage) {
+        self.side_channels.borrow_mut().send_message(tag, message);
     }
 
     /// Signal every writer to flush and exit, then wait until they all have.
@@ -558,15 +644,14 @@ impl QuicTransport {
     /// (`alive_rx` closed) the peers have been told — we do not rely on the lossy
     /// `CONNECTION_CLOSE`/socket-drop being noticed.
     pub(crate) async fn shutdown(&mut self) {
-        let _ = self.shutdown_tx.send(true);
-        self.alive_tx = None;
+        self.side_channels.borrow_mut().begin_shutdown();
         let _ = self.alive_rx.recv().await;
     }
 }
 
 impl Transport for QuicTransport {
     fn serve(&mut self, url: String, connection: ConnectionRef, shm_client: ShmClientSlot) {
-        let tls = match self.tls() {
+        let tls = match self.side_channels.borrow_mut().tls() {
             Ok(tls) => tls,
             Err(err) => {
                 sever(
@@ -591,14 +676,18 @@ impl Transport for QuicTransport {
             };
             let (tx, rx) = mpsc::unbounded_channel();
             let context_shm = self.shm_ctx(self.context_shm.clone());
+            let shutdown = self.side_channels.borrow().subscribe_shutdown();
+            let alive = self.side_channels.borrow().alive_token();
             tokio::task::spawn_local(listener_task(
                 addr,
                 tls.server.clone(),
                 rx,
                 self.loop_tx.clone(),
-                self.shutdown_tx.subscribe(),
-                self.alive_token(),
+                shutdown,
+                alive,
                 context_shm,
+                self.heartbeat.clone(),
+                self.side_channels.clone(),
             ));
             self.listeners.insert(url.clone(), tx);
         }
@@ -618,7 +707,7 @@ impl Transport for QuicTransport {
                 return;
             }
         };
-        let endpoint = match self.client_endpoint(&addr) {
+        let endpoint = match self.side_channels.borrow_mut().client_endpoint(&addr) {
             Ok(endpoint) => endpoint,
             Err(err) => {
                 sever(
@@ -629,15 +718,19 @@ impl Transport for QuicTransport {
                 return;
             }
         };
+        let shutdown = self.side_channels.borrow().subscribe_shutdown();
+        let alive = self.side_channels.borrow().alive_token();
         tokio::task::spawn_local(connector_task(
             addr,
             endpoint,
             connection,
             self.loop_tx.clone(),
-            self.shutdown_tx.subscribe(),
-            self.alive_token(),
+            shutdown,
+            alive,
             self.shm_ctx(shm_client),
             self.connect_sem.clone(),
+            self.heartbeat.clone(),
+            self.side_channels.clone(),
         ));
     }
 }
@@ -658,6 +751,10 @@ enum Accepted {
 /// command loop drops the serve sender. `side_channel_shm` is the *context* shm
 /// context, used only for side-channel readers (which have no owning actor); each
 /// Join connection instead uses the per-serve shm forwarded with it.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct piece of listener state; bundling adds indirection without clarifying anything"
+)]
 async fn listener_task(
     addr: SocketAddr,
     server_config: ServerConfig,
@@ -666,6 +763,8 @@ async fn listener_task(
     mut shutdown: watch::Receiver<bool>,
     alive: mpsc::UnboundedSender<()>,
     side_channel_shm: ShmCtx,
+    heartbeat: Heartbeats,
+    side_channels: Rc<RefCell<SideChannels>>,
 ) {
     let endpoint = match Endpoint::server(server_config, addr) {
         Ok(endpoint) => endpoint,
@@ -697,39 +796,54 @@ async fn listener_task(
 
     let mut matcher: Matcher<(ConnectionRef, ShmCtx), (Connection, SendStream, RecvStream)> =
         Matcher::new();
+    // One spawn callback for both Matcher arms: the Matcher hands back
+    // `(serve_side, accepted_side)` either way, so a serve-first (`push_left`) and
+    // an accept-first (`push_right`) pairing spawn identically — serve/acceptor
+    // side, so `log_heartbeats = true` and `dialed = false` (the peer dialed us).
+    // Owns a `shutdown` clone (the select below needs `&mut shutdown` for
+    // `changed()`); the rest are cloned per spawn.
+    let spawn_shutdown = shutdown.clone();
+    let spawn = |(connection, shm): (ConnectionRef, ShmCtx),
+                 (conn, send, recv): (Connection, SendStream, RecvStream)| {
+        spawn_connection(
+            send,
+            recv,
+            connection,
+            loop_tx.clone(),
+            spawn_shutdown.clone(),
+            alive.clone(),
+            conn,
+            shm,
+            true,
+            false,
+            heartbeat.clone(),
+            side_channels.clone(),
+        );
+    };
+    // The Matcher just pairs the two sides; `spawn` (reused across iterations) does
+    // the work, so the pairing callback is a trivial identity.
     loop {
         tokio::select! {
             serve = serves.recv() => {
                 let Some((connection, shm)) = serve else { return; };
-                let _ = matcher.push_left((connection, shm), |(connection, shm), (conn, send, recv)| {
-                    spawn_connection(
-                        send, recv, connection,
-                        loop_tx.clone(), shutdown.clone(), alive.clone(),
-                        conn,
-                        shm,
-                        // Serving/acceptor side: log heartbeat sends (under MM_QUIC_DEBUG).
-                        true,
-                    )
-                });
+                if let Some((left, right)) = matcher.push_left((connection, shm), |l, r| (l, r)) {
+                    spawn(left, right);
+                }
             }
             accepted = accepted_rx.recv() => {
                 match accepted {
                     None => return,
                     Some(Accepted::Join(conn, send, recv)) => {
-                        let _ = matcher.push_right((conn, send, recv), |(connection, shm), (conn, send, recv)| {
-                            spawn_connection(
-                                send, recv, connection,
-                                loop_tx.clone(), shutdown.clone(), alive.clone(),
-                                conn,
-                                shm,
-                                // Serving/acceptor side: log heartbeat sends (under MM_QUIC_DEBUG).
-                                true,
-                            )
-                        });
+                        if let Some((left, right)) =
+                            matcher.push_right((conn, send, recv), |l, r| (l, r))
+                        {
+                            spawn(left, right);
+                        }
                     }
                     Some(Accepted::SideChannel(conn, recv)) => {
                         tokio::task::spawn_local(side_channel_reader_task(
                             conn, recv, loop_tx.clone(), side_channel_shm.clone(),
+                            heartbeat.clone(),
                         ));
                     }
                 }
@@ -772,23 +886,33 @@ async fn acceptor_task(
     }
 }
 
-/// Read message frames off a gateway side-channel and forward each to the command
-/// loop, which resolves the owning gateway from the destination. There is no
-/// heartbeat and no establishment: an EOF or error just ends the reader (the
-/// sending gateway reconnects when it next has something to send). `_conn` is held
-/// only to keep the QUIC connection (and thus `recv`) alive.
+/// Read frames off a gateway side-channel. A routable [`SideChannelMessage`] is
+/// forwarded to the command loop (which resolves the owning gateway); a
+/// delegated-heartbeat beat/ack is routed *directly* into the heartbeat subsystem
+/// here — it never reaches ctx. There is no establishment: an EOF or error just
+/// ends the reader (the sending gateway reconnects when it next has something to
+/// send). `_conn` is held only to keep the QUIC connection (and thus `recv`) alive.
 async fn side_channel_reader_task(
     _conn: Connection,
     mut recv: RecvStream,
     loop_tx: mpsc::UnboundedSender<Command>,
     shm: ShmCtx,
+    heartbeat: Heartbeats,
 ) {
     loop {
         match framing::read_side_channel(&mut recv, &shm.mapper, shm.client()).await {
-            Ok(message) => {
+            Ok(SideChannelIncoming::Message(message)) => {
                 if loop_tx.send(Command::SideChannelDeliver(message)).is_err() {
                     return;
                 }
+            }
+            Ok(SideChannelIncoming::Heartbeat {
+                recipient,
+                from,
+                conn_id,
+                kind,
+            }) => {
+                heartbeat.deliver(&recipient, from, conn_id, kind);
             }
             Err(_) => return,
         }
@@ -797,6 +921,10 @@ async fn side_channel_reader_task(
 
 /// Connect to `addr`, retrying until the server binds and the handshake succeeds
 /// (so a join may precede its serve), then open one bi-stream and wire it up.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct piece of connector state; bundling adds indirection without clarifying anything"
+)]
 async fn connector_task(
     addr: SocketAddr,
     endpoint: Endpoint,
@@ -810,6 +938,8 @@ async fn connector_task(
     // duration of one attempt (connect + handshake + open_bi) and released before
     // backing off, so a waiting task can attempt while this one sleeps.
     connect_sem: Option<Arc<Semaphore>>,
+    heartbeat: Heartbeats,
+    side_channels: Rc<RefCell<SideChannels>>,
 ) {
     let mut retry = CONNECT_RETRY_MIN;
     loop {
@@ -851,7 +981,20 @@ async fn connector_task(
                     // Joiner side (the root has tens of thousands of writers): do not
                     // log heartbeat sends here even under debug — it would flood.
                     spawn_connection(
-                        send, recv, connection, loop_tx, shutdown, alive, conn, shm, false,
+                        send,
+                        recv,
+                        connection,
+                        loop_tx,
+                        shutdown,
+                        alive,
+                        conn,
+                        shm,
+                        false,
+                        // We dialed this connection (join): the delegation guard's
+                        // "parent is the joiner" precondition holds on this side.
+                        true,
+                        heartbeat,
+                        side_channels,
                     );
                     return;
                 }
@@ -871,16 +1014,16 @@ async fn connector_task(
     }
 }
 
-/// Drive a gateway side-channel writer: drain queued message commands, writing
-/// each as a frame to the remote gateway. The connection is established lazily on
-/// the first message (retrying until the gateway is live) and reconnected if it
-/// drops — there is no heartbeat, so a dropped connection is noticed on the next
-/// write. A message in flight when the connection drops may be lost; the channel
+/// Drive a gateway side-channel writer: drain queued outbound items — routable
+/// [`SideChannelMessage`]s and transport-internal heartbeat beats/acks alike —
+/// writing each as a frame to the remote gateway. The connection is established
+/// lazily on the first item (retrying until the gateway is live) and reconnected if
+/// it drops. An item in flight when the connection drops may be lost; the channel
 /// is best-effort by design (any gateway may drop a side-channel to reclaim state).
 async fn side_channel_writer_task(
     addr: SocketAddr,
     endpoint: Endpoint,
-    mut rx: mpsc::UnboundedReceiver<SideChannelMessage>,
+    mut rx: mpsc::UnboundedReceiver<SideChannelOut>,
     mut shutdown: watch::Receiver<bool>,
     _alive: mpsc::UnboundedSender<()>,
 ) {
@@ -888,9 +1031,9 @@ async fn side_channel_writer_task(
     // held to keep it open. `None` means we must (re)connect before the next write.
     let mut stream: Option<(SendStream, Connection)> = None;
     loop {
-        let message = tokio::select! {
-            message = rx.recv() => match message {
-                Some(message) => message,
+        let item = tokio::select! {
+            item = rx.recv() => match item {
+                Some(item) => item,
                 None => break, // sender dropped (gateway gone)
             },
             _ = shutdown.changed() => break,
@@ -906,13 +1049,22 @@ async fn side_channel_writer_task(
                 .await
                 .is_err()
             {
-                continue; // reconnect on the next message (this one is dropped)
+                continue; // reconnect on the next item (this one is dropped)
             }
             stream = Some((send, conn));
         }
         let (send, _conn) = stream.as_mut().expect("stream is connected");
-        if framing::write_side_channel(send, message).await.is_err() {
-            stream = None; // dropped; reconnect on the next message
+        let wrote = match item {
+            SideChannelOut::Message(message) => framing::write_side_channel(send, message).await,
+            SideChannelOut::Heartbeat {
+                recipient,
+                from,
+                conn_id,
+                kind,
+            } => framing::write_side_channel_heartbeat(send, recipient, from, conn_id, kind).await,
+        };
+        if wrote.is_err() {
+            stream = None; // dropped; reconnect on the next item
         }
     }
     if let Some((mut send, _conn)) = stream {
@@ -974,16 +1126,36 @@ fn spawn_connection(
     // Forwarded to the writer: log heartbeat sends (gated to the serve/acceptor side
     // by the call sites, and further gated by MM_QUIC_DEBUG in the writer).
     log_heartbeats: bool,
+    // Whether *we* dialed this connection (join / "quic connect"). One half of the
+    // delegation guard (§8): only a link the parent dialed may be delegated.
+    dialed: bool,
+    heartbeat: Heartbeats,
+    side_channels: Rc<RefCell<SideChannels>>,
 ) {
     let (writer_tx, writer_rx) = mpsc::unbounded_channel();
     // Reader → writer signal: the peer responded to our shutdown, so the writer
     // may close. Unbounded but only ever carries a single `()`.
     let (peer_responded_tx, peer_responded_rx) = mpsc::unbounded_channel();
+    // heartbeat coroutine → writer: beats to write out.
+    let (beats_tx, beats_rx) = mpsc::unbounded_channel();
     let transport = Box::new(QuicConnectionTransport { tx: writer_tx });
     let _ = loop_tx.send(Command::TransportConnected {
         connection,
         transport,
     });
+    // The heartbeat coroutine sends its side-channel beats through this closure — it
+    // never sees the transport's side-channel types, keeping `quic_heartbeat`
+    // decoupled from the transport. The closure reuses the existing gateway side
+    // channels.
+    let send_beat =
+        move |recipient: Vec<u8>, from: Vec<u8>, conn_id: ConnectionId, kind: BeatKind| {
+            side_channels
+                .borrow_mut()
+                .send_heartbeat(recipient, from, conn_id, kind);
+        };
+    // Spawn the coroutine; the returned sender is how the reader/writer feed it
+    // inbound beats, Establish snoops, and reader-closed.
+    let hb_event_tx = heartbeat.spawn(connection, dialed, beats_tx, send_beat, loop_tx.clone());
     tokio::task::spawn_local(writer_task(
         send,
         writer_rx,
@@ -992,6 +1164,8 @@ fn spawn_connection(
         peer_responded_rx,
         conn,
         log_heartbeats,
+        beats_rx,
+        hb_event_tx.clone(),
     ));
     tokio::task::spawn_local(reader_task(
         recv,
@@ -999,6 +1173,7 @@ fn spawn_connection(
         loop_tx,
         peer_responded_tx,
         shm,
+        hb_event_tx,
     ));
 }
 
@@ -1015,9 +1190,15 @@ impl ConnectionTransport for QuicConnectionTransport {
     }
 }
 
-/// Write each queued command as a frame, and a heartbeat every
-/// [`HEARTBEAT_INTERVAL`] so the peer's reader keeps seeing traffic. On teardown,
+/// Write each queued command as a frame, plus the heartbeat beats the connection's
+/// `heartbeat_task` sends over `beats` (the writer no longer drives its own tick —
+/// liveness policy lives in the heartbeat_task). Also snoops its own outgoing
+/// `Establish` and forwards the local ident to the heartbeat_task. On teardown,
 /// drains queued frames first, then finishes the stream.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct per-connection channel/handle; bundling adds indirection without clarifying anything"
+)]
 async fn writer_task(
     mut send: SendStream,
     mut rx: mpsc::UnboundedReceiver<ConnectionCommand>,
@@ -1034,9 +1215,11 @@ async fn writer_task(
     // writers don't flood), and MM_QUIC_DEBUG is on, log each heartbeat sent — so a
     // connection the peer later reaps can be proven to have kept sending.
     log_heartbeats: bool,
+    // Beats this connection's heartbeat_task wants sent.
+    mut beats: mpsc::UnboundedReceiver<Heartbeat>,
+    // To forward our own outgoing Establish's ident to the heartbeat_task.
+    hb_events: mpsc::UnboundedSender<HeartbeatEvent>,
 ) {
-    let mut heartbeat = tokio::time::interval(heartbeat_interval());
-    heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let log_heartbeats = log_heartbeats && crate::ctx::connection_debug();
     let mut heartbeats_sent: u64 = 0;
     let mut graceful = false;
@@ -1046,12 +1229,23 @@ async fn writer_task(
                 let Some(command) = command else {
                     break; // transport dropped
                 };
+                // Snoop our own Establish so the heartbeat_task learns our ident (its
+                // side-channel address / delegate-eligibility key) without any new
+                // threading through ctx.
+                if let ConnectionCommand::Establish { ident: Some(ident), .. } = &command {
+                    let _ = hb_events.send(HeartbeatEvent::EstablishLocal {
+                        local_ident: ident.clone(),
+                    });
+                }
                 if framing::write_command(&mut send, command).await.is_err() {
                     return;
                 }
             }
-            _ = heartbeat.tick() => {
-                if framing::write_heartbeat(&mut send).await.is_err() {
+            beat = beats.recv() => {
+                let Some(heartbeat) = beat else {
+                    break; // heartbeat_task gone
+                };
+                if framing::write_heartbeat(&mut send, heartbeat).await.is_err() {
                     return;
                 }
                 // Flushed to the QUIC stream; log it from the *sender* so loss vs. a
@@ -1102,9 +1296,18 @@ async fn writer_task(
     }
 }
 
-/// Decode each frame off the stream and forward it to the command loop. A read
-/// that does not complete within [`HEARTBEAT_TIMEOUT`] — or an error/EOF — emits
-/// `Severed`. Heartbeat frames refresh the deadline and are not forwarded.
+/// Decode each frame off the stream and forward it to the command loop. The
+/// heartbeat *timeout* has moved to this connection's `heartbeat_task`; the reader
+/// is dumb plumbing now. Heartbeat frames are forwarded to the heartbeat_task as
+/// [`HeartbeatEvent`]s (never to ctx). An error/EOF is a hard transport close: it
+/// emits `Severed` to the loop and `ReaderClosed` to the heartbeat_task.
+///
+/// A message flood must not flood the heartbeat_task, so ordinary data frames
+/// notify it only as a *throttled backstop*: the reader tracks `last_notify` and
+/// sends an empty beat (matching the peer's direction) only when a full
+/// `2 × HEARTBEAT_INTERVAL` has passed with no real beat — so real beats cost one
+/// event each while data frames cost nothing, yet a peer that stops beating but
+/// keeps sending data still proves the pipe live at ≤ one event per two intervals.
 async fn reader_task(
     mut recv: RecvStream,
     connection: ConnectionRef,
@@ -1113,8 +1316,13 @@ async fn reader_task(
     // (it sent its own Severed, or the connection ended) so the writer can close.
     peer_responded: mpsc::UnboundedSender<()>,
     shm: ShmCtx,
+    // Forwards inbound heartbeats and liveness/close signals to the heartbeat_task.
+    hb_events: mpsc::UnboundedSender<HeartbeatEvent>,
 ) {
-    let hb_timeout = heartbeat_timeout();
+    // The peer's heartbeat direction: the peer of a Parent-side connection is a
+    // Child (sends FromChild) and vice versa. Used for the empty backstop beat.
+    let peer_role = connection.role();
+    let backstop_gap = crate::quic_heartbeat::heartbeat_interval() * 2;
     // Per-connection diagnostics, folded into the failure reason under MM_QUIC_DEBUG:
     // did we ever read the peer's Establish (identity exchange)? how many heartbeats
     // and other frames arrived, and how long since the last read? This pinpoints
@@ -1126,6 +1334,10 @@ async fn reader_task(
     let mut heartbeats: u64 = 0;
     let mut commands: u64 = 0;
     let mut last_read: Option<std::time::Duration> = None;
+    // When the heartbeat_task was last notified (by a real beat or a backstop),
+    // throttling the data-frame backstop. Seeded to now so a fresh pipe waits a
+    // full gap before its first backstop.
+    let mut last_notify = std::time::Instant::now();
     let stats = |established: bool, heartbeats, commands, last_read: Option<_>| {
         let last = match last_read {
             Some(d) => format!(
@@ -1145,33 +1357,34 @@ async fn reader_task(
         // is read straight into the slab once the client is known (a gateway seeds
         // its own at creation, before any frame arrives).
         let read = framing::read_frame(&mut recv, &shm.mapper, shm.client());
-        match tokio::time::timeout(hb_timeout, read).await {
-            Err(_elapsed) => {
-                let _ = peer_responded.send(());
-                let reason = if debug {
-                    format!(
-                        "quic heartbeat timeout ({})",
-                        stats(established, heartbeats, commands, last_read)
-                    )
-                    .into_bytes()
-                } else {
-                    b"quic heartbeat timeout".to_vec()
-                };
-                sever(&loop_tx, connection, reason);
-                return;
-            }
-            Ok(Ok(Incoming::Command(action))) => {
+        match read.await {
+            Ok(Incoming::Command(action)) => {
                 last_read = Some(start.elapsed());
                 commands += 1;
                 // The peer's Establish is how we learn its identity: reading it is
-                // the moment this side considers the connection established.
-                if matches!(action, ConnectionCommand::Establish { .. }) {
+                // the moment this side considers the connection established. Forward
+                // the peer ident to the heartbeat_task (one-shot, at setup).
+                if let ConnectionCommand::Establish { ident, .. } = &action {
                     established = true;
+                    if let Some(ident) = ident {
+                        let _ = hb_events.send(HeartbeatEvent::EstablishPeer {
+                            peer_ident: ident.clone(),
+                        });
+                    }
                 }
                 // A Severed from the peer is its response to our shutdown (or the
                 // peer initiating its own) — wake any writer waiting to close.
                 if matches!(action, ConnectionCommand::Severed { .. }) {
                     let _ = peer_responded.send(());
+                }
+                // Throttled liveness backstop: an ordinary frame proves the pipe is
+                // live even if the peer's beats stopped. An empty beat refreshes the
+                // heartbeat_task's Direct deadline and is a no-op for delegation.
+                if last_notify.elapsed() >= backstop_gap {
+                    last_notify = std::time::Instant::now();
+                    let _ = hb_events.send(HeartbeatEvent::ReceivedHeartbeat(
+                        Heartbeat::empty_for_peer(peer_role),
+                    ));
                 }
                 if loop_tx
                     .send(Command::ConnectionAction { connection, action })
@@ -1180,13 +1393,17 @@ async fn reader_task(
                     return;
                 }
             }
-            Ok(Ok(Incoming::Heartbeat)) => {
+            Ok(Incoming::Heartbeat(heartbeat)) => {
                 last_read = Some(start.elapsed());
                 heartbeats += 1;
-                continue;
+                // A real beat: forward it (with its coverage diff / delegate
+                // instruction) and count it as a notification for the backstop.
+                last_notify = std::time::Instant::now();
+                let _ = hb_events.send(HeartbeatEvent::ReceivedHeartbeat(heartbeat));
             }
-            Ok(Err(err)) => {
+            Err(err) => {
                 let _ = peer_responded.send(());
+                let _ = hb_events.send(HeartbeatEvent::ReaderClosed);
                 let reason = if debug {
                     // Walk the io::Error source chain to recover the concrete quinn
                     // ConnectionError — ReadError::ConnectionLost's own Display is just
@@ -1212,11 +1429,4 @@ async fn reader_task(
             }
         }
     }
-}
-
-fn sever(loop_tx: &mpsc::UnboundedSender<Command>, connection: ConnectionRef, reason: Vec<u8>) {
-    let _ = loop_tx.send(Command::ConnectionAction {
-        connection,
-        action: ConnectionCommand::Severed { reason },
-    });
 }
