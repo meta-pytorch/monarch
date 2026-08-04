@@ -43,21 +43,24 @@
 //! networking. The command loop drives tcp as `NetTransport<Tcp>` (aliased
 //! `TcpTransport` in [`crate::ctx`]).
 //!
-//! ## Streams: one socket each, paired by a prefix
+//! ## Streams: one socket each, opened on demand and paired by index
 //!
-//! A QUIC connection multiplexes its two streams (data + heartbeat) on one transport
+//! A QUIC connection multiplexes its streams (data + heartbeat) on one transport
 //! connection; TCP has no multiplexing, so each stream is its own TLS-over-TCP socket.
-//! Unlike quic — where a stream is materialized lazily and the "first messenger" side
-//! opens it — TCP must open **both** sockets up front on connect: the generic layer
-//! may make either side the first messenger of a given stream, and a plain socket has
-//! no way to be opened "from the accepting side". So the dialer opens all `streams`
-//! sockets eagerly, each prefixed with `(connection_id, stream_index)`; the listener
-//! reads that prefix and groups sockets with the same id into one logical connection,
-//! ordered by index. [`NetConn::stream`] then just hands back the pre-opened sockets
-//! in order (`first_messenger` is irrelevant — a socket is full-duplex). This is
-//! cruder than the quic path (two sockets even for a message-only side channel, and a
-//! slow TLS handshake head-of-line-blocks accept), but tcp is the fallback, so simple
-//! and correct beats optimal.
+//! A plain socket can only be opened from the dialing side, so a tcp connection is
+//! *directional*: the dialer's [`NetConn::stream`] dials a fresh socket, the acceptor's
+//! awaits one. Each socket the dialer opens carries a `(connection_id, stream_index)`
+//! prefix. Many logical connections share one listening socket, so a single listener
+//! demux pairs each accepted socket with the acceptor-side `stream` request naming the
+//! same `(connection_id, index)` — a matcher per pair, dropped as soon as the two halves
+//! meet. A socket for stream index 0 (the connection's first stream) surfaces the
+//! connection out of [`Net::accept`]; later sockets (the heartbeat stream, or data
+//! streams for striping) just pair against their requests.
+//!
+//! Streams are opened lazily and per index — nothing is pre-opened at connect time — so
+//! a message-only side channel opens exactly one socket, and the transport can request a
+//! heartbeat or additional data stream whenever it needs one. `priority` is ignored:
+//! tcp has no per-stream send priority.
 //!
 //! ## No transport keepalive
 //!
@@ -102,26 +105,21 @@
 //!   `CAP_NET_ADMIN`, e.g. as root on MAST) with a fall back to the ordinary setters
 //!   otherwise.
 
-use std::cell::Cell;
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
-use std::future::Ready;
+use std::future::Future;
 use std::hash::BuildHasher;
 use std::io;
 use std::net::SocketAddr;
 use std::os::fd::AsRawFd;
 use std::os::fd::RawFd;
 use std::pin::Pin;
-use std::rc::Rc;
-use std::rc::Weak;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
-use std::time::Duration;
 
 use ktls::CorkStream;
 use ktls::KtlsStream;
@@ -140,11 +138,15 @@ use tokio::net::TcpListener;
 use tokio::net::TcpSocket;
 use tokio::net::TcpStream;
 use tokio::runtime::Handle;
+use tokio::sync::Mutex;
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::TlsConnector;
 use tokio_rustls::client::TlsStream as ClientTlsStream;
 use tokio_rustls::server::TlsStream as ServerTlsStream;
 
+use crate::matcher::Matcher;
 use crate::net::Net;
 use crate::net::NetConn;
 
@@ -267,22 +269,6 @@ fn set_congestion(fd: RawFd) {
     }
 }
 
-/// How long a connection may stay half-paired — some of its sockets arrived, but not
-/// all — before the listener reaps it, dropping the sockets that did arrive and freeing
-/// their fds.
-///
-/// Deliberately **longer than the heartbeat timeout**: a connection whose sockets pair
-/// (even slowly) finishes setup and starts heartbeating well within this window, so we
-/// never reap a valid pairing; and once set up, an inactive link is severed by the
-/// heartbeat subsystem, not by us. That makes a reap indistinguishable from "the
-/// connection set up, then was severed for inactivity" — a path the peer already
-/// handles — rather than a special failure. A truly abandoned pairing (a client that
-/// could not open every socket, so its `connect` failed and the generic connector is
-/// already retrying with a fresh id) is all that is left for us to clean up.
-fn pending_reap_timeout() -> Duration {
-    crate::heartbeat::heartbeat_timeout() * 2
-}
-
 /// The ring crypto provider, passed explicitly to every rustls config builder so this
 /// transport does not depend on a process-global default being installed.
 fn provider() -> Arc<rustls::crypto::CryptoProvider> {
@@ -361,25 +347,29 @@ fn new_connection_id() -> u128 {
 }
 
 /// Write the socket-pairing prefix (`connection_id` then `stream_index`) that lets the
-/// listener group the sockets of one logical connection. Precedes every generic frame.
+/// listener demux group the sockets of one logical connection and route each to its
+/// stream-index request. Precedes every generic frame on a dialed socket.
 async fn write_pairing_prefix<W: AsyncWrite + Unpin>(
     writer: &mut W,
     connection_id: u128,
     stream_index: usize,
 ) -> io::Result<()> {
     writer.write_all(&connection_id.to_le_bytes()).await?;
-    writer.write_all(&[stream_index as u8]).await?;
+    writer
+        .write_all(&(stream_index as u16).to_le_bytes())
+        .await?;
     writer.flush().await
 }
 
-/// Read the socket-pairing prefix written by [`write_pairing_prefix`]. `None` on EOF
-/// or a short read (a peer that spoke a bad dialect — the socket is dropped).
+/// Read the socket-pairing prefix written by [`write_pairing_prefix`], as
+/// `(connection_id, stream_index)`. `None` on EOF or a short read (a peer that spoke a
+/// bad dialect — the socket is dropped).
 async fn read_pairing_prefix<R: AsyncRead + Unpin>(reader: &mut R) -> Option<(u128, usize)> {
     let mut id = [0u8; 16];
     reader.read_exact(&mut id).await.ok()?;
-    let mut index = [0u8; 1];
+    let mut index = [0u8; 2];
     reader.read_exact(&mut index).await.ok()?;
-    Some((u128::from_le_bytes(id), index[0] as usize))
+    Some((u128::from_le_bytes(id), u16::from_le_bytes(index) as usize))
 }
 
 /// A TLS-over-TCP stream in one of three flavors, unified so framing (and the pairing
@@ -562,48 +552,97 @@ pub(crate) struct TcpDialer {
     server_name: ServerName<'static>,
 }
 
-/// Connection ids mid-pairing, each mapped to its per-index sockets so far. A
-/// completed connection is removed from the map (and handed up); an abandoned one is
-/// removed by its [`reap_unpaired`] timeout coroutine.
-type PendingMap = HashMap<u128, Vec<Option<TlsStream>>>;
-
-/// A bound TCP server plus the pairing state accept needs. `accept` runs the TLS
-/// handshake, reads each socket's pairing prefix, and groups sockets by connection id
-/// until a logical connection has all its streams. `pending` is interior-mutable
-/// because [`Net::accept`] takes `&self` (single-threaded, so the `RefCell` is never
-/// contended and no borrow is held across an await); it is shared with the per-
-/// connection [`reap_unpaired`] timeout coroutines via a `Weak`, so it drops (with any
-/// half-paired sockets) as soon as the listener does.
+/// A bound TCP server. All accept/pairing work runs in the [`listener_demux`] coroutine
+/// spawned by [`Net::bind`]; the handle keeps only the receiving end of the
+/// newly-surfaced-connection channel. [`Net::accept`] pulls the next new connection from
+/// it. `Mutex` (tokio) because `accept` takes `&self` and holds the receiver across the
+/// await — uncontended, since a single task accepts.
 pub(crate) struct TcpListenerHandle {
-    listener: TcpListener,
-    acceptor: TlsAcceptor,
-    streams: usize,
-    pending: Rc<RefCell<PendingMap>>,
+    new_conns: Mutex<mpsc::UnboundedReceiver<TcpConn>>,
 }
 
-/// Reap `connection_id` if it never finishes pairing. Spawned when its first socket
-/// arrives: after [`pending_reap_timeout`], if the id is still in the map it never
-/// completed (its client abandoned the connect after opening only some sockets), so
-/// drop it, freeing the orphaned sockets' fds. If the id is already gone, it completed
-/// and there is nothing to do.
-async fn reap_unpaired(pending: Weak<RefCell<PendingMap>>, connection_id: u128) {
-    tokio::time::sleep(pending_reap_timeout()).await;
-    if let Some(pending) = pending.upgrade() {
-        // If the id is still present it never finished pairing: the peer opened some
-        // but not all of its sockets (or they arrived too far apart). Log which stream
-        // indices did arrive (under `MM_QUIC_DEBUG`) so a server-side half-open — the
-        // other way a rank goes missing at high fan-out — is visible, not silent.
-        if let Some(slots) = pending.borrow_mut().remove(&connection_id) {
-            if crate::ctx::connection_debug() {
-                let arrived: Vec<usize> = slots
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, s)| s.as_ref().map(|_| i))
-                    .collect();
-                eprintln!(
-                    "MM_TCP reaped half-paired connection {connection_id:#x}: only stream indices {arrived:?} of {} arrived",
-                    slots.len()
-                );
+/// The single demux for a bound tcp server. Many logical connections share one listening
+/// socket, so it pairs each accepted socket with the [`TcpStreamRequest`] naming the same
+/// `(connection_id, index)` — one [`Matcher`] per pair, removed the moment its two halves
+/// meet, so a healthy connection leaves nothing behind (no per-connection coroutine, no
+/// live map). A socket for stream index 0 is a connection's first stream (it carries the
+/// preamble and arrives once), so it surfaces a fresh [`TcpConn`] out of [`Net::accept`].
+///
+/// Each socket's TLS handshake + prefix read runs in its own task — so a slow handshake
+/// doesn't head-of-line-block accept — then lands on `sockets`. Requests from every
+/// acceptor connection's `stream` calls share `requests`. The loop holds no lock and
+/// never awaits while touching the matchers, so sockets and requests never block each
+/// other.
+async fn listener_demux(
+    listener: TcpListener,
+    acceptor: TlsAcceptor,
+    new_conns: mpsc::UnboundedSender<TcpConn>,
+) {
+    // Requests from every acceptor connection's `stream` calls. The sender is cloned into
+    // each surfaced connection; the loop keeps `requests_tx` too, so `requests.recv()`
+    // never closes on its own.
+    let (requests_tx, mut requests) = mpsc::unbounded_channel::<TcpStreamRequest>();
+    // Handshaked sockets from the per-socket handshake tasks.
+    let (sock_tx, mut sockets) = mpsc::unbounded_channel::<(SocketAddr, u128, usize, TlsStream)>();
+    // For each (connection_id, index): the socket or the request that arrived first,
+    // parked until its partner shows up. An entry lives only while a half is waiting.
+    let mut matchers: HashMap<(u128, usize), Matcher<TcpStreamRequest, TlsStream>> = HashMap::new();
+    loop {
+        tokio::select! {
+            accepted = listener.accept() => {
+                let Ok((tcp, peer)) = accepted else {
+                    continue; // transient accept error; the listener stays open
+                };
+                // The connection is up (accept returned), so pin nodelay/congestion now;
+                // the buffer window scale was inherited from the listening socket.
+                tune_established(&tcp);
+                let acceptor = acceptor.clone();
+                let sock_tx = sock_tx.clone();
+                tokio::task::spawn_local(async move {
+                    let Ok(mut stream) = server_tls(&acceptor, tcp).await else {
+                        return; // TLS/kTLS handshake failed
+                    };
+                    let Some((cid, index)) = read_pairing_prefix(&mut stream).await else {
+                        return; // bad/short prefix
+                    };
+                    let _ = sock_tx.send((peer, cid, index, stream));
+                });
+            }
+            sock = sockets.recv() => {
+                let Some((peer, cid, index, stream)) = sock else { continue; };
+                let key = (cid, index);
+                if matchers
+                    .entry(key)
+                    .or_insert_with(Matcher::new)
+                    .push_right(stream, fulfill_tcp)
+                    .is_some()
+                {
+                    matchers.remove(&key);
+                }
+                // Index 0 is the connection's first stream; surface it once, here.
+                if index == 0 {
+                    let conn = TcpConn::Acceptor {
+                        remote: peer,
+                        connection_id: cid,
+                        requests: requests_tx.clone(),
+                    };
+                    if new_conns.send(conn).is_err() {
+                        return; // transport gone
+                    }
+                }
+            }
+            req = requests.recv() => {
+                // We hold `requests_tx`, so recv never returns None; guard anyway.
+                let Some(req) = req else { return; };
+                let key = (req.connection_id, req.index);
+                if matchers
+                    .entry(key)
+                    .or_insert_with(Matcher::new)
+                    .push_left(req, fulfill_tcp)
+                    .is_some()
+                {
+                    matchers.remove(&key);
+                }
             }
         }
     }
@@ -636,13 +675,12 @@ impl Net for Tcp {
         })
     }
 
-    fn bind(&mut self, addr: SocketAddr, streams: usize) -> anyhow::Result<TcpListenerHandle> {
+    fn bind(&mut self, addr: SocketAddr) -> anyhow::Result<TcpListenerHandle> {
         log_tuning_once();
         let acceptor = TlsAcceptor::from(self.tls()?.server.clone());
-        // `bind` is synchronous (the command loop can't await); build the listener
-        // socket directly so the kernel buffers can be enlarged *before* bind (so the
-        // window scale accepted sockets inherit reflects the enlarged window), then
-        // bind and listen — none of which awaits.
+        // Build the listener socket directly so the kernel buffers can be enlarged
+        // *before* bind (so the window scale accepted sockets inherit reflects the
+        // enlarged window), then bind and listen — none of which awaits.
         let socket = if addr.is_ipv6() {
             TcpSocket::new_v6()?
         } else {
@@ -652,185 +690,159 @@ impl Net for Tcp {
         socket.set_reuseaddr(true)?;
         socket.bind(addr)?;
         let listener = socket.listen(LISTEN_BACKLOG)?;
-        let pending: Rc<RefCell<PendingMap>> = Rc::new(RefCell::new(HashMap::new()));
+        // Spawn the demux on the command-loop LocalSet (bind is called from it). It owns
+        // the listener and pairs accepted sockets to stream requests, surfacing new
+        // connections on `new_tx`.
+        let (new_tx, new_rx) = mpsc::unbounded_channel();
+        tokio::task::spawn_local(listener_demux(listener, acceptor, new_tx));
         Ok(TcpListenerHandle {
-            listener,
-            acceptor,
-            streams,
-            pending,
+            new_conns: Mutex::new(new_rx),
         })
     }
 
     async fn accept(listener: &TcpListenerHandle) -> Option<TcpConn> {
-        loop {
-            let Ok((tcp, peer)) = listener.listener.accept().await else {
-                continue; // transient accept error; the listener stays open
-            };
-            // The connection is up (accept returned), so pin nodelay/congestion now;
-            // the buffer window scale was inherited from the listening socket.
-            tune_established(&tcp);
-            let Ok(mut stream) = server_tls(&listener.acceptor, tcp).await else {
-                continue; // TLS/kTLS handshake failed
-            };
-            let Some((connection_id, index)) = read_pairing_prefix(&mut stream).await else {
-                continue; // bad/short prefix
-            };
-            if index >= listener.streams {
-                continue; // out-of-range index; drop this socket
-            }
-            // Group by connection id. No await is held across this borrow.
-            let mut pending = listener.pending.borrow_mut();
-            let is_new = !pending.contains_key(&connection_id);
-            let slots = pending
-                .entry(connection_id)
-                .or_insert_with(|| (0..listener.streams).map(|_| None).collect());
-            slots[index] = Some(stream);
-            if slots.iter().all(Option::is_some) {
-                // Complete: remove it (so its reaper sees it gone and knows it
-                // completed) and hand it up.
-                let slots = pending.remove(&connection_id).expect("just inserted");
-                let streams = slots
-                    .into_iter()
-                    .map(|s| s.expect("all slots filled"))
-                    .collect();
-                return Some(TcpConn::new(peer, streams));
-            }
-            if is_new {
-                // First socket for this id: bound how long it may stay half-paired.
-                tokio::task::spawn_local(reap_unpaired(
-                    Rc::downgrade(&listener.pending),
-                    connection_id,
-                ));
-            }
-        }
+        listener.new_conns.lock().await.recv().await
     }
 
-    async fn connect(dialer: &TcpDialer, addr: SocketAddr, streams: usize) -> Option<TcpConn> {
-        // Open every stream up front (see the module docs): the accepting side may be
-        // the first messenger of a stream, and a plain socket can't be opened from the
-        // accepting side. Each socket is prefixed so the listener can pair them.
-        log_tuning_once();
-        // Each failure path below logs (under `MM_QUIC_DEBUG`) the exact peer address,
-        // stream index, and stage that failed, so a connect that never completes at high
-        // fan-out can be traced to the specific rank (the root dials in rank order).
-        let debug = crate::ctx::connection_debug();
-        let connection_id = new_connection_id();
-        let mut opened = Vec::with_capacity(streams);
-        for index in 0..streams {
-            // Build the socket directly so the kernel buffers can be enlarged *before*
-            // connect (so window scaling is negotiated for the enlarged window), then
-            // pin nodelay/congestion once the connection is up.
-            let socket = match if addr.is_ipv6() {
-                TcpSocket::new_v6()
-            } else {
-                TcpSocket::new_v4()
-            } {
-                Ok(s) => s,
-                Err(e) => {
-                    if debug {
-                        eprintln!(
-                            "MM_TCP connect {addr} stream {index}/{streams}: socket() failed: {e}"
-                        );
-                    }
-                    return None;
-                }
-            };
-            set_buffers(socket.as_raw_fd());
-            let tcp = match socket.connect(addr).await {
-                Ok(t) => t,
-                Err(e) => {
-                    if debug {
-                        eprintln!(
-                            "MM_TCP connect {addr} stream {index}/{streams}: connect() failed: {e}"
-                        );
-                    }
-                    return None;
-                }
-            };
-            tune_established(&tcp);
-            let mut stream = match client_tls(&dialer.connector, dialer.server_name.clone(), tcp)
-                .await
-            {
-                Ok(s) => s,
-                Err(e) => {
-                    if debug {
-                        eprintln!(
-                            "MM_TCP connect {addr} stream {index}/{streams}: TLS/kTLS handshake failed: {e:#}"
-                        );
-                    }
-                    return None;
-                }
-            };
-            if let Err(e) = write_pairing_prefix(&mut stream, connection_id, index).await {
-                if debug {
-                    eprintln!(
-                        "MM_TCP connect {addr} stream {index}/{streams}: pairing-prefix write failed: {e}"
-                    );
-                }
-                return None;
-            }
-            opened.push(stream);
-        }
-        Some(TcpConn::new(addr, opened))
+    async fn connect(dialer: &TcpDialer, addr: SocketAddr) -> Option<TcpConn> {
+        // Lazy: no socket is opened here. Each stream dials its own socket on demand (see
+        // `TcpConn::stream`), so a tcp join's reachability is proven by the first stream
+        // call, not here. Just mint the id that groups this connection's sockets.
+        Some(TcpConn::Dialer {
+            dialer: dialer.clone(),
+            addr,
+            connection_id: new_connection_id(),
+        })
     }
 
-    /// tcp opens `STREAMS` OS sockets plus a TLS handshake per connection and pairs
-    /// them on the acceptor, so it needs a much smaller default than quic: an
-    /// unthrottled connect storm at high fan-out leaves stragglers whose sockets never
-    /// finish pairing (seen as the root's `only N-1/N workers connected` aborts). 128
-    /// has proven safe through a full 65k-worker sweep; raise with
-    /// `MM_QUIC_MAX_CONCURRENT_CONNECTS` if a run needs faster connect ramp.
+    /// tcp opens an OS socket plus a TLS handshake per stream, so it needs a much smaller
+    /// default than quic: an unthrottled connect storm at high fan-out leaves stragglers
+    /// whose first socket never finishes handshaking (seen as the root's `only N-1/N
+    /// workers connected` aborts). 128 has proven safe through a full 65k-worker sweep;
+    /// raise with `MM_QUIC_MAX_CONCURRENT_CONNECTS` if a run needs faster connect ramp.
+    /// (The throttle covers the first stream's dial; the heartbeat and any data streams
+    /// open later, naturally staggered.)
     fn default_connect_concurrency() -> Option<usize> {
         Some(128)
     }
 }
 
-/// One logical TCP connection: the `streams` pre-opened, pairing-ordered sockets.
-/// [`NetConn::stream`] hands them out in index order (`first_messenger` is irrelevant
-/// — each socket is full-duplex, and both ends already hold their matching socket).
-pub(crate) struct TcpConn {
-    remote: SocketAddr,
-    streams: RefCell<Vec<Option<TlsStream>>>,
-    cursor: Cell<usize>,
+/// The send/recv halves of one paired tcp stream.
+type TcpHalves = (WriteHalf<TlsStream>, ReadHalf<TlsStream>);
+
+/// A [`NetConn::stream`] request from an acceptor connection to the listener demux: which
+/// `(connection_id, index)` socket it wants, and the one-shot the demux fulfils with the
+/// paired socket's halves. (tcp has no per-stream priority, so none is carried.)
+pub(crate) struct TcpStreamRequest {
+    connection_id: u128,
+    index: usize,
+    reply: oneshot::Sender<io::Result<TcpHalves>>,
 }
 
-impl TcpConn {
-    fn new(remote: SocketAddr, streams: Vec<TlsStream>) -> Self {
-        Self {
-            remote,
-            streams: RefCell::new(streams.into_iter().map(Some).collect()),
-            cursor: Cell::new(0),
-        }
-    }
+/// Fulfil a request with the socket the demux paired to its `(connection_id, index)`:
+/// split the socket and send the halves back through the one-shot.
+fn fulfill_tcp(req: TcpStreamRequest, stream: TlsStream) {
+    let (recv, send) = tokio::io::split(stream);
+    let _ = req.reply.send(Ok((send, recv)));
+}
+
+/// Dial one TLS-over-TCP socket to `addr` (see the module tuning docs for the socket
+/// options). The caller ([`NetConn::stream`]) writes the pairing prefix afterwards.
+async fn dial_one(dialer: &TcpDialer, addr: SocketAddr) -> io::Result<TlsStream> {
+    log_tuning_once();
+    // Build the socket directly so the kernel buffers can be enlarged *before* connect
+    // (so window scaling is negotiated for the enlarged window), then pin
+    // nodelay/congestion once the connection is up.
+    let socket = if addr.is_ipv6() {
+        TcpSocket::new_v6()?
+    } else {
+        TcpSocket::new_v4()?
+    };
+    set_buffers(socket.as_raw_fd());
+    let tcp = socket.connect(addr).await?;
+    tune_established(&tcp);
+    client_tls(&dialer.connector, dialer.server_name.clone(), tcp)
+        .await
+        .map_err(|e| io::Error::other(format!("tcp/tls dial {addr}: {e:#}")))
+}
+
+/// One logical TCP connection, in one of two roles set at construction, and cloneable so
+/// several tasks (data reader/writer, heartbeat) can each open the streams they own. A
+/// **dialer** connection (from [`Net::connect`]) opens each requested stream by dialing a
+/// fresh socket and writing its `(connection_id, index)` prefix. An **acceptor**
+/// connection (from [`Net::accept`]) sends each request — tagged with its `connection_id`
+/// and index — to the shared [`listener_demux`], which pairs it with the matching socket.
+/// The demux keeps no per-connection state past a pending pair, so cloning the handle is
+/// free of lifecycle concerns.
+#[derive(Clone)]
+pub(crate) enum TcpConn {
+    Dialer {
+        dialer: TcpDialer,
+        addr: SocketAddr,
+        connection_id: u128,
+    },
+    Acceptor {
+        remote: SocketAddr,
+        connection_id: u128,
+        requests: mpsc::UnboundedSender<TcpStreamRequest>,
+    },
 }
 
 impl fmt::Debug for TcpConn {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("TcpConn").field(&self.remote).finish()
+        let remote = match self {
+            TcpConn::Dialer { addr, .. } => addr,
+            TcpConn::Acceptor { remote, .. } => remote,
+        };
+        f.debug_tuple("TcpConn").field(remote).finish()
     }
 }
 
 impl NetConn for TcpConn {
     type Send = WriteHalf<TlsStream>;
     type Recv = ReadHalf<TlsStream>;
-    // The sockets are already open, so producing a stream is synchronous — a ready
-    // future, never touching the wire (the generic layer just awaits it like quic's).
-    type Stream = Ready<io::Result<(Self::Send, Self::Recv)>>;
+    type Stream = Pin<Box<dyn Future<Output = io::Result<(Self::Send, Self::Recv)>>>>;
 
-    fn stream(&self, _first_messenger: bool) -> Self::Stream {
-        let index = self.cursor.get();
-        self.cursor.set(index + 1);
-        let taken = self
-            .streams
-            .borrow_mut()
-            .get_mut(index)
-            .and_then(Option::take);
-        match taken {
-            Some(stream) => {
-                let (recv, send) = tokio::io::split(stream);
-                std::future::ready(Ok((send, recv)))
+    fn stream(&self, index: usize, _priority: i32) -> Self::Stream {
+        match self {
+            // Dialer: open a fresh socket for this index and tag it with the prefix.
+            TcpConn::Dialer {
+                dialer,
+                addr,
+                connection_id,
+            } => {
+                let dialer = dialer.clone();
+                let addr = *addr;
+                let connection_id = *connection_id;
+                Box::pin(async move {
+                    let mut stream = dial_one(&dialer, addr).await?;
+                    write_pairing_prefix(&mut stream, connection_id, index).await?;
+                    let (recv, send) = tokio::io::split(stream);
+                    Ok((send, recv))
+                })
             }
-            None => std::future::ready(Err(io::Error::other("tcp stream index exhausted"))),
+            // Acceptor: ask the demux for this (connection, index) socket and await the
+            // paired halves.
+            TcpConn::Acceptor {
+                connection_id,
+                requests,
+                ..
+            } => {
+                let connection_id = *connection_id;
+                let requests = requests.clone();
+                Box::pin(async move {
+                    let (reply, rx) = oneshot::channel();
+                    requests
+                        .send(TcpStreamRequest {
+                            connection_id,
+                            index,
+                            reply,
+                        })
+                        .map_err(|_| io::Error::other("tcp connection closed"))?;
+                    rx.await
+                        .map_err(|_| io::Error::other("tcp connection closed"))?
+                })
+            }
         }
     }
 }
