@@ -95,6 +95,55 @@ fn bincode_config() -> bincode::config::Configuration {
     bincode::config::standard()
 }
 
+/// The first frame a QUIC *joiner* (the connecting side) writes, declaring what
+/// the freshly opened bi-stream is for. The accepting side reads exactly one of
+/// these before deciding how to drive the stream:
+///
+/// - `Join` — an ordinary parent/child connection; the command loop takes over
+///   (identity exchange, hello, heartbeated liveness) exactly as before.
+/// - `SideChannel` — a gateway-to-gateway message channel: the accepting gateway
+///   just reads [`WireFrame::Message`] frames and routes them locally. It is
+///   never paired with a serve, never establishes a parent/child link, and is
+///   never heartbeated.
+///
+/// Only the joiner writes a preamble (one direction); the server never does, so
+/// the joiner's own reader keeps reading [`WireFrame`]s as before.
+#[derive(Serialize, Deserialize)]
+pub(crate) enum Preamble {
+    Join,
+    SideChannel,
+}
+
+/// Write the connection preamble (see [`Preamble`]). Length-prefixed bincode,
+/// the same scheme as [`write_frame`], so a reader can decode it with
+/// [`read_preamble`] before switching to the per-frame loop.
+pub(crate) async fn write_preamble<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    preamble: Preamble,
+) -> std::io::Result<()> {
+    let header = bincode::serde::encode_to_vec(&preamble, bincode_config())
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+    writer
+        .write_all(&(header.len() as u64).to_le_bytes())
+        .await?;
+    writer.write_all(&header).await?;
+    writer.flush().await
+}
+
+/// Read the connection preamble written by [`write_preamble`].
+pub(crate) async fn read_preamble<R: AsyncRead + Unpin>(
+    reader: &mut R,
+) -> std::io::Result<Preamble> {
+    let mut len_buf = [0u8; 8];
+    reader.read_exact(&mut len_buf).await?;
+    let header_len = u64::from_le_bytes(len_buf) as usize;
+    let mut header = vec![0u8; header_len];
+    reader.read_exact(&mut header).await?;
+    let (preamble, _) = bincode::serde::decode_from_slice::<Preamble, _>(&header, bincode_config())
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+    Ok(preamble)
+}
+
 /// A frame decoded off the wire: either a command for the loop, or a transport
 /// heartbeat (consumed internally to refresh the liveness deadline).
 pub(crate) enum Incoming {

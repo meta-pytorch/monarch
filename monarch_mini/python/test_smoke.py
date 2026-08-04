@@ -461,6 +461,88 @@ async def test_quic_kill_child_end_caught_by_heartbeat() -> None:
             await _kill_worker(proc)
 
 
+def _spawn_gateway_worker(
+    root_url: str, b_url: str, a_tag: str
+) -> "subprocess.Popen[bytes]":
+    worker = os.path.join(os.path.dirname(__file__), "gateway_worker.py")
+    return subprocess.Popen([sys.executable, worker, root_url, b_url, a_tag])
+
+
+async def test_quic_gateways_cross_gateway_bypasses_root_and_reaches_root() -> None:
+    # Two QUIC gateways joined to a shared root. gwA (and its inproc child a1) lives
+    # in this process; gwB (and its inproc child b1) is a subprocess. We verify:
+    #   * a1@A -> b1@B reaches b1 over a *direct* gateway-to-gateway side-channel
+    #     (b1 replies pong straight back to a1), and
+    #   * a1@A -> root and a1@A -> rootchild still climb gwA's parent link to the
+    #     root domain, and
+    #   * the root actor never sees the cross-gateway traffic (its only deliveries
+    #     are the join hellos and the message explicitly addressed to it).
+    _quic_certs_env()
+    root_url = _quic_url()
+    a_url = _quic_url()
+    b_url = _quic_url()
+    a_tag = a_url.split("://", 1)[1]
+    b_tag = b_url.split("://", 1)[1]
+
+    root = Actor(b"root", gateway=True)
+    rootchild = Actor(b"rootchild")
+    gwa = Actor(f"gwA@{a_tag}".encode(), gateway=True)
+    a1 = Actor(f"a1@{a_tag}".encode())
+
+    # root is the shared rendezvous: it serves once per joining gateway (gwA here,
+    # gwB in the worker).
+    root.serve(root_url, "parent")
+    root.serve(root_url, "parent")
+    gwa.join(root_url, "child")
+    gwa.serve(a_url, "parent")  # listener so gwB can side-channel its reply to us
+    root.serve("inproc://root-rc", "parent")
+    rootchild.join("inproc://root-rc", "child")
+    gwa.serve("inproc://a-a1", "parent")
+    a1.join("inproc://a-a1", "child")
+
+    proc = _spawn_gateway_worker(root_url, b_url, a_tag)
+    try:
+        # Local establishment hellos.
+        assert await asyncio.wait_for(a1.next(), 30) == [
+            f"a1@{a_tag}".encode(),
+            f"gwA@{a_tag}".encode(),
+        ]
+        assert await asyncio.wait_for(rootchild.next(), 30) == [b"rootchild", b"root"]
+
+        # root sees all three join hellos (gwA, gwB, rootchild) in any order; drain
+        # them so the only further delivery to root is the message addressed to it.
+        expected_peers = {
+            f"gwA@{a_tag}".encode(),
+            f"gwB@{b_tag}".encode(),
+            b"rootchild",
+        }
+        seen: set[bytes] = set()
+        while seen != expected_peers:
+            hello = await asyncio.wait_for(root.next(), 30)
+            assert bytes(hello[0]) == b"root"
+            seen.add(bytes(hello[1]))
+
+        # a1@A -> root: the empty (root-domain) specifier climbs gwA's parent link.
+        a1.send(b"root", [ba(b"hi-root")])
+        assert await asyncio.wait_for(root.next(), 30) == [b"hi-root"]
+
+        # a1@A -> rootchild: up to root, then down its inproc child link.
+        a1.send(b"rootchild", [ba(b"hi-rc")])
+        assert await asyncio.wait_for(rootchild.next(), 30) == [b"hi-rc"]
+
+        # a1@A -> b1@B crosses gateways directly; b1 replies pong straight back.
+        a1.send(f"b1@{b_tag}".encode(), [ba(b"ping")])
+        assert await asyncio.wait_for(a1.next(), 30) == [b"pong"]
+
+        # Bypass: the cross-gateway ping/pong and the hi-rc message never reached the
+        # root actor — its queue is empty now that the hellos and hi-root are drained.
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(root.next(), 0.5)
+    finally:
+        if proc.poll() is None:
+            await _kill_worker(proc)
+
+
 async def test_monitor_fires_when_target_dies() -> None:
     # watcher and target are siblings under root. watcher monitors target; when
     # target dies, the failure climbs to their common ancestor (root) and fires
