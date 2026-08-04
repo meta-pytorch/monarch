@@ -4742,6 +4742,7 @@ dependencies = [
  "slotmap",
  "socket2 0.6.5",
  "tokio",
+ "tokio-rustls",
  "tracing",
 ]
 

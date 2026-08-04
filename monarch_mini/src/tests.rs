@@ -1956,6 +1956,153 @@ fn quic_gateway_to_gateway_bypasses_root() {
 }
 
 #[test]
+fn tcp_serve_join_establishes_and_routes() {
+    // The tcp analogue of `quic_serve_join_establishes_and_routes`: connect opens the
+    // data + heartbeat sockets up front (paired by prefix), establishment runs over
+    // the data socket, and messages route both directions. Exercises the whole tcp
+    // Net impl and the generic transport driving it.
+    set_quic_env(); // tcp reuses the same MM_QUIC_* cert material
+    let ctx = CtxHandle::new().expect("context should start");
+    let parent = runtime_actor(&ctx, "t-parent");
+    let child = runtime_actor(&ctx, "t-child");
+    let (parent_poller, mut parent_rx) = runtime_poller(&ctx);
+    let (child_poller, mut child_rx) = runtime_poller(&ctx);
+    runtime_subscribe(&ctx, parent_poller, 0, parent);
+    runtime_subscribe(&ctx, child_poller, 0, child);
+
+    let url = free_tcp_url();
+    ctx.send_command(Command::Serve {
+        actor: parent,
+        url: url.clone(),
+        request: request(Role::Parent),
+    })
+    .expect("serve should enqueue");
+    ctx.send_command(Command::Join {
+        actor: child,
+        url,
+        request: request(Role::Child),
+    })
+    .expect("join should enqueue");
+
+    // The TLS handshake completes on both sockets and both sides get their hello.
+    assert_eq!(recv_strings(&mut parent_rx), vec!["t-parent", "t-child"]);
+    assert_eq!(recv_strings(&mut child_rx), vec!["t-child", "t-parent"]);
+
+    // A message both directions is framed over the data socket and delivered intact.
+    ctx.send_command(Command::Send {
+        sender: parent,
+        destination_ident: MsgPart::from_bytes(b"t-child".to_vec()),
+        parts: vec![
+            MsgPart::from_bytes(b"down".to_vec()),
+            MsgPart::from_bytes(b"socket".to_vec()),
+        ],
+    })
+    .expect("send should enqueue");
+    assert_eq!(recv_strings(&mut child_rx), vec!["down", "socket"]);
+
+    ctx.send_command(Command::Send {
+        sender: child,
+        destination_ident: MsgPart::from_bytes(b"t-parent".to_vec()),
+        parts: vec![MsgPart::from_bytes(b"up".to_vec())],
+    })
+    .expect("send should enqueue");
+    assert_eq!(recv_strings(&mut parent_rx), vec!["up"]);
+
+    shutdown(ctx);
+}
+
+#[test]
+fn tcp_gateway_to_gateway_bypasses_root() {
+    // The tcp analogue of `quic_gateway_to_gateway_bypasses_root`. The gateway tags
+    // carry the `tcp://` scheme, so ctx's `send_to_gateway` routes the direct
+    // gateway-to-gateway side-channels over tcp (not quic). Exercises the eager
+    // two-socket side-channel open and the scheme-aware routing.
+    set_quic_env();
+    let root_ctx = CtxHandle::new().expect("root ctx");
+    let a_ctx = CtxHandle::new().expect("a ctx");
+    let b_ctx = CtxHandle::new().expect("b ctx");
+
+    let root_url = free_tcp_url();
+    let a_url = free_tcp_url();
+    let b_url = free_tcp_url();
+    // The gateway tag *is* the full `tcp://addr` url, so the ident carries the scheme
+    // and cross-gateway routing picks the tcp transport.
+    let a_tag = a_url.clone();
+    let b_tag = b_url.clone();
+
+    let root = runtime_gateway_actor(&root_ctx, "root");
+    let gw_a = runtime_gateway_actor(&a_ctx, &format!("gwA@{a_tag}"));
+    let a1 = runtime_actor(&a_ctx, &format!("a1@{a_tag}"));
+    let gw_b = runtime_gateway_actor(&b_ctx, &format!("gwB@{b_tag}"));
+    let b1 = runtime_actor(&b_ctx, &format!("b1@{b_tag}"));
+
+    let (root_poller, mut root_rx) = runtime_poller(&root_ctx);
+    let (a1_poller, mut a1_rx) = runtime_poller(&a_ctx);
+    let (b1_poller, mut b1_rx) = runtime_poller(&b_ctx);
+    runtime_subscribe(&root_ctx, root_poller, 0, root);
+    runtime_subscribe(&a_ctx, a1_poller, 0, a1);
+    runtime_subscribe(&b_ctx, b1_poller, 0, b1);
+
+    runtime_serve(&root_ctx, root, &root_url);
+    runtime_serve(&root_ctx, root, &root_url);
+    runtime_join(&a_ctx, gw_a, &root_url);
+    runtime_join(&b_ctx, gw_b, &root_url);
+
+    runtime_serve(&a_ctx, gw_a, &a_url);
+    runtime_serve(&b_ctx, gw_b, &b_url);
+    runtime_connect(&a_ctx, gw_a, a1, "inproc://bypass-tcp-a");
+    runtime_connect(&b_ctx, gw_b, b1, "inproc://bypass-tcp-b");
+
+    assert_eq!(
+        recv_strings(&mut a1_rx),
+        vec![format!("a1@{a_tag}"), format!("gwA@{a_tag}")]
+    );
+    assert_eq!(
+        recv_strings(&mut b1_rx),
+        vec![format!("b1@{b_tag}"), format!("gwB@{b_tag}")]
+    );
+
+    let mut peers: Vec<String> = (0..2)
+        .map(|_| {
+            let hello = recv_strings(&mut root_rx);
+            assert_eq!(hello[0], "root");
+            hello[1].clone()
+        })
+        .collect();
+    peers.sort();
+    assert_eq!(peers, vec![format!("gwA@{a_tag}"), format!("gwB@{b_tag}")]);
+
+    // a1@A -> b1@B: gwA opens a direct tcp side-channel to gwB, bypassing root.
+    a_ctx
+        .send_command(Command::Send {
+            sender: a1,
+            destination_ident: MsgPart::from_bytes(format!("b1@{b_tag}").into_bytes()),
+            parts: vec![MsgPart::from_bytes(b"cross-gateway".to_vec())],
+        })
+        .expect("send should enqueue");
+    assert_eq!(recv_strings(&mut b1_rx), vec!["cross-gateway"]);
+
+    b_ctx
+        .send_command(Command::Send {
+            sender: b1,
+            destination_ident: MsgPart::from_bytes(format!("a1@{a_tag}").into_bytes()),
+            parts: vec![MsgPart::from_bytes(b"reply".to_vec())],
+        })
+        .expect("send should enqueue");
+    assert_eq!(recv_strings(&mut a1_rx), vec!["reply"]);
+
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert!(
+        root_rx.try_recv().is_err(),
+        "root must not receive cross-gateway traffic"
+    );
+
+    shutdown(a_ctx);
+    shutdown(b_ctx);
+    shutdown(root_ctx);
+}
+
+#[test]
 fn quic_gateway_reaches_root_actor_and_its_inproc_child() {
     // From a child of gateway A, a message to the root domain (an empty specifier)
     // climbs A's parent link to root rather than side-channelling: it reaches both
@@ -2312,6 +2459,13 @@ fn free_quic_url() -> String {
     let port = socket.local_addr().expect("local addr").port();
     drop(socket);
     format!("quic://127.0.0.1:{port}")
+}
+
+fn free_tcp_url() -> String {
+    let socket = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral tcp");
+    let port = socket.local_addr().expect("local addr").port();
+    drop(socket);
+    format!("tcp://127.0.0.1:{port}")
 }
 
 fn unix_test_url(name: &str) -> String {
