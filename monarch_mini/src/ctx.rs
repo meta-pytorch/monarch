@@ -174,11 +174,11 @@ struct Ctx {
     unix: UnixTransport,
     quic: QuicTransport,
     // The context-global shared-memory address-space manager. Always present
-    // (idle if shm is unused); handed to the unix transport, and unmaps everything
-    // when the context — and thus this last reference — is dropped.
+    // (idle if shm is unused); handed to the unix and quic transports, and unmaps
+    // everything when the context — and thus this last reference — is dropped.
     #[expect(
         dead_code,
-        reason = "held so the mapper outlives the context; used via the unix transport"
+        reason = "held so the mapper outlives the context; used via the unix and quic transports"
     )]
     mapper: MapperHandle,
     // A clone of the loop sender, used to schedule debounced monitor unsubscribes
@@ -196,7 +196,7 @@ impl Ctx {
             pollers: SlotMap::with_key(),
             inproc: InprocTransport::new(tx.clone()),
             unix: UnixTransport::new(tx.clone(), mapper.clone()),
-            quic: QuicTransport::new(tx.clone()),
+            quic: QuicTransport::new(tx.clone(), mapper.clone()),
             mapper,
             loop_tx: tx,
             thread: None,

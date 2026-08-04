@@ -13,8 +13,18 @@
 //! Each frame is `[u64 header_len][header][raw part bytes...]`. The header is a
 //! bincode-encoded [`WireFrame`] holding only small metadata; for a message it
 //! carries the *lengths* of the parts, never their bytes. Message-part bytes are
-//! written straight from the owning `MsgPart` and read straight into a freshly
-//! allocated per-part buffer — no copies of payload beyond the socket read/write.
+//! written straight from the owning `MsgPart`.
+//!
+//! On the read side a small part is read into a freshly allocated owned buffer.
+//! A *large* part, when the receiving actor has learned its gateway's
+//! [`ShmClient`] (every actor on a quic link is a gateway, so it has one), is read
+//! **straight into a freshly allocated shared-memory slab block** instead: the
+//! reader allocates the block, maps it, and reads the stream bytes directly into
+//! the mapping, yielding a [`MsgPart::Shm`]. The payload then never touches an
+//! owned heap buffer — and if the message is later forwarded across a machine-local
+//! unix hop, that hop relays the slab descriptor by reference rather than copying
+//! the bytes into shared memory a second time. Either way the only copy is the
+//! unavoidable kernel-to-userspace one.
 //!
 //! The reader/writer are generic over tokio's [`AsyncRead`]/[`AsyncWrite`], so the
 //! same code drives a QUIC stream's `RecvStream`/`SendStream`. Liveness policy
@@ -35,6 +45,9 @@ use crate::connection::AncestorPayload;
 use crate::connection::ConnectionCommand;
 use crate::connection::SendPayload;
 use crate::msg::MsgPart;
+use crate::shm::MapperHandle;
+use crate::shm::SHM_THRESHOLD;
+use crate::shm::ShmClient;
 
 /// One frame on the wire. There is a variant per [`ConnectionCommand`] that
 /// crosses the pipe (including `Establish`, which is how the two ends exchange
@@ -170,11 +183,18 @@ async fn write_frame<W: AsyncWrite + Unpin>(
     writer.flush().await
 }
 
-/// Read one frame. For a message the part bytes are read directly into the
-/// command's own buffers — the only copy is the unavoidable kernel-to-userspace
-/// one. A `Heartbeat` frame returns [`Incoming::Heartbeat`]; everything else maps
-/// straight back to a [`ConnectionCommand`].
-pub(crate) async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Result<Incoming> {
+/// Read one frame. For a message each part is read directly into its destination
+/// buffer — an owned heap buffer for a small part, or (when `client` is present
+/// and the part is large) a freshly allocated shared-memory slab block, so the
+/// only copy is the unavoidable kernel-to-userspace one. `mapper`/`client` are the
+/// receiving actor's shared-memory context (see [`read_part`]). A `Heartbeat`
+/// frame returns [`Incoming::Heartbeat`]; everything else maps straight back to a
+/// [`ConnectionCommand`].
+pub(crate) async fn read_frame<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    mapper: &MapperHandle,
+    client: Option<ShmClient>,
+) -> std::io::Result<Incoming> {
     let mut len_buf = [0u8; 8];
     reader.read_exact(&mut len_buf).await?;
     let header_len = u64::from_le_bytes(len_buf) as usize;
@@ -194,9 +214,7 @@ pub(crate) async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> std::io:
                 WirePayload::ActorMessage { part_lens } => {
                     let mut parts = Vec::with_capacity(part_lens.len());
                     for len in part_lens {
-                        let mut buf = vec![0u8; len as usize];
-                        reader.read_exact(&mut buf).await?;
-                        parts.push(MsgPart::from_bytes(buf));
+                        parts.push(read_part(reader, len, mapper, client).await?);
                     }
                     SendPayload::ActorMessage(parts)
                 }
@@ -230,4 +248,47 @@ pub(crate) async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> std::io:
         }),
         WireFrame::Severed { reason } => Incoming::Command(ConnectionCommand::Severed { reason }),
     })
+}
+
+/// Read one message part of `len` bytes off the stream.
+///
+/// A part `>= SHM_THRESHOLD` on a connection whose actor has learned its gateway
+/// [`ShmClient`] is read straight into a freshly allocated slab block: allocate the
+/// block, map it through the context `mapper`, and read the stream bytes directly
+/// into the mapping — yielding a [`MsgPart::Shm`] that a later unix hop forwards by
+/// descriptor without copying into shared memory again. Everything else (no client,
+/// or a small part) is read into an owned heap buffer as before.
+async fn read_part<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    len: u64,
+    mapper: &MapperHandle,
+    client: Option<ShmClient>,
+) -> std::io::Result<MsgPart> {
+    let Some(client) = client.filter(|_| len >= SHM_THRESHOLD) else {
+        let mut buf = vec![0u8; len as usize];
+        reader.read_exact(&mut buf).await?;
+        return Ok(MsgPart::from_bytes(buf));
+    };
+
+    let (offset, token) = client.allocate(len).await?;
+    let dst = {
+        let mut mapper = mapper.lock().expect("shm mapper mutex poisoned");
+        // SAFETY: `offset` was just granted for `len` bytes against `client`'s slab,
+        // so the file is grown to cover it and the mapper can map the range.
+        unsafe { mapper.map(client.slab_fd(), offset, len as usize)? }
+    };
+    // SAFETY: `dst` points at a writable mapping of exactly `len` bytes that stays
+    // valid for the mapper's (context's) lifetime — well past this read — so the
+    // slice is sound to fill across the await. The mapper lock was released above,
+    // so it is not held across IO. `len >= SHM_THRESHOLD > 0`, so this is non-empty.
+    let buf = unsafe { std::slice::from_raw_parts_mut(dst, len as usize) };
+    reader.read_exact(buf).await?;
+
+    Ok(MsgPart::new_shm(
+        mapper.clone(),
+        client.slab_fd(),
+        token,
+        offset,
+        len,
+    ))
 }
