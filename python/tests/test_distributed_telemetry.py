@@ -26,11 +26,6 @@ from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
 from monarch._src.actor.actor_mesh import Actor, ActorMesh, current_rank
 from monarch._src.actor.endpoint import endpoint
-from monarch._src.actor.proc_mesh import (
-    _proc_mesh_spawn_callbacks,
-    SetupActor,
-    unregister_proc_mesh_spawn_callback,
-)
 from monarch.actor import span
 from monarch.config import configured
 from monarch.distributed_telemetry.engine import QueryEngine
@@ -389,28 +384,6 @@ def test_collector_telemetry_is_ingested_once() -> None:
         assert result["copies"] == [1], result
 
 
-@pytest.fixture
-def cleanup_callbacks():
-    """Fixture to clean up any callbacks registered during tests."""
-    initial_callbacks = list(_proc_mesh_spawn_callbacks)
-    initial_startup_functions = list(SetupActor._startup_functions)
-    yield
-    # Remove any callbacks added during the test
-    callbacks_to_remove = [
-        cb for cb in _proc_mesh_spawn_callbacks if cb not in initial_callbacks
-    ]
-    for cb in callbacks_to_remove:
-        unregister_proc_mesh_spawn_callback(cb)
-    # Remove any startup functions added during the test
-    startup_to_remove = [
-        fn
-        for fn in SetupActor._startup_functions
-        if fn not in initial_startup_functions
-    ]
-    for fn in startup_to_remove:
-        SetupActor._startup_functions.remove(fn)
-
-
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
 def test_actors_table() -> None:
@@ -722,7 +695,7 @@ def test_proc_mesh_in_meshes_table() -> None:
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
-def test_actors_join_meshes_on_mesh_id(cleanup_callbacks) -> None:
+def test_actors_join_meshes_on_mesh_id() -> None:
     """Test that actors.mesh_id matches meshes.id, enabling joins."""
     # Spawn actors — this populates both the actors and meshes tables
     with scoped_state(
@@ -775,7 +748,7 @@ def test_actors_join_meshes_on_mesh_id(cleanup_callbacks) -> None:
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
-def test_all_actors_in_proc_mesh(cleanup_callbacks) -> None:
+def test_all_actors_in_proc_mesh() -> None:
     """Test that all actor meshes within a proc mesh have actors in the actors table."""
     # Spawn a named proc mesh and user actors
     with scoped_state(
@@ -845,7 +818,7 @@ def test_all_actors_in_proc_mesh(cleanup_callbacks) -> None:
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
-def test_all_actors_in_host_mesh(cleanup_callbacks) -> None:
+def test_all_actors_in_host_mesh() -> None:
     """Test that all actor meshes within a proc mesh have actors in the actors table."""
     # Spawn a named proc mesh and user actors
     with scoped_state(
@@ -1129,7 +1102,7 @@ def test_actor_status_events_failed_actor() -> None:
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
-def test_sliced_vs_full_view_rank(cleanup_callbacks) -> None:
+def test_sliced_vs_full_view_rank() -> None:
     """Test that rank and parent_view_json are correct for sliced and full actor meshes."""
     # Spawn 3 workers so we can slice a subset
     with scoped_state(
@@ -1229,9 +1202,7 @@ def test_sliced_vs_full_view_rank(cleanup_callbacks) -> None:
         ("choose", []),
     ],
 )
-def test_sent_messages_table(
-    cleanup_callbacks, send_path: str, expected_view_labels: list
-) -> None:
+def test_sent_messages_table(send_path: str, expected_view_labels: list) -> None:
     """Test that sent_messages are logged with correct view/shape for each send path.
 
     All send paths (call, call_one, broadcast, choose) go through
@@ -1375,7 +1346,7 @@ def test_telemetry_workload_sent_message_fanout() -> None:
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
-def test_messages_table(cleanup_callbacks) -> None:
+def test_messages_table() -> None:
     """Test that the messages table is populated when messages are received."""
     with scoped_state(
         ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
@@ -1499,7 +1470,7 @@ def test_telemetry_workload_message_fanout() -> None:
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
-def test_messages_endpoint(cleanup_callbacks) -> None:
+def test_messages_endpoint() -> None:
     """Test that the messages table endpoint column is populated with the method name."""
     with scoped_state(
         ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
@@ -1636,7 +1607,7 @@ def test_message_status_events_failed_handler() -> None:
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
-def test_sent_messages_with_sliced_mesh(cleanup_callbacks) -> None:
+def test_sent_messages_with_sliced_mesh() -> None:
     """Test that sent_messages view_json/shape_json reflect sliced vs full actor mesh casts."""
     with scoped_state(
         ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
@@ -1697,7 +1668,7 @@ def test_sent_messages_with_sliced_mesh(cleanup_callbacks) -> None:
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
-def test_sent_messages_sender_actor_id(cleanup_callbacks) -> None:
+def test_sent_messages_sender_actor_id() -> None:
     """Test that sender_actor_id identifies the actor that initiated the cast,
     not the target actor, when one actor casts to another actor mesh."""
     with scoped_state(
@@ -1868,7 +1839,7 @@ def test_worker_telemetry_failure_preserves_other_workers() -> None:
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
-def test_query_after_stopping_proc_mesh(cleanup_callbacks) -> None:
+def test_query_after_stopping_proc_mesh() -> None:
     """Test that query still works after a user-spawned actor's proc mesh is stopped."""
     with scoped_state(
         ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
@@ -1958,7 +1929,7 @@ def test_query_after_stopping_proc_mesh(cleanup_callbacks) -> None:
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
-def test_query_after_stopping_actor_mesh(cleanup_callbacks) -> None:
+def test_query_after_stopping_actor_mesh() -> None:
     """Test that stopping a user ActorMesh does not affect telemetry queries.
 
     Stopping an ActorMesh is a user-initiated action that does not trigger
@@ -2115,7 +2086,7 @@ def test_query_after_stopping_actor_mesh(cleanup_callbacks) -> None:
 
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
-def test_store_pyspy_dump_and_query(cleanup_callbacks) -> None:
+def test_store_pyspy_dump_and_query() -> None:
     """Store a py-spy dump via the sidecar API, query it back via SQL."""
     with scoped_state(
         ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
@@ -2211,7 +2182,7 @@ def test_store_pyspy_dump_and_query(cleanup_callbacks) -> None:
 
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
-def test_pyspy_tables_in_information_schema(cleanup_callbacks) -> None:
+def test_pyspy_tables_in_information_schema() -> None:
     """py-spy tables are visible in information_schema."""
     with scoped_state(
         ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
@@ -2231,7 +2202,7 @@ def test_pyspy_tables_in_information_schema(cleanup_callbacks) -> None:
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
-def test_store_pyspy_dump_with_child_proc_ref(cleanup_callbacks) -> None:
+def test_store_pyspy_dump_with_child_proc_ref() -> None:
     """store_pyspy_dump stores data with a child proc_ref."""
     with scoped_state(
         ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
@@ -2312,7 +2283,7 @@ def test_store_pyspy_dump_with_child_proc_ref(cleanup_callbacks) -> None:
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
-def test_store_pyspy_dump_with_unknown_proc_ref(cleanup_callbacks) -> None:
+def test_store_pyspy_dump_with_unknown_proc_ref() -> None:
     """store_pyspy_dump stores data even for unknown proc_ref values."""
     with scoped_state(
         ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
@@ -2462,7 +2433,7 @@ def test_json_columns_are_valid_json() -> None:
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
-def test_per_table_row_retention(cleanup_callbacks) -> None:
+def test_per_table_row_retention() -> None:
     """Test that time-based retention deletes old rows from message tables."""
 
     # Use a 1-second retention window so rows expire quickly.
@@ -2506,7 +2477,7 @@ def test_per_table_row_retention(cleanup_callbacks) -> None:
 
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
-def test_scan_timeout_on_dead_child(cleanup_callbacks) -> None:
+def test_scan_timeout_on_dead_child() -> None:
     """Test that scan completes with partial results when a child times out.
 
     Stops a child proc mesh and patches the scan timeout to a short value,
@@ -2570,7 +2541,7 @@ def test_scan_timeout_on_dead_child(cleanup_callbacks) -> None:
 
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
-def test_snapshot_schemas_pre_registered(cleanup_callbacks) -> None:
+def test_snapshot_schemas_pre_registered() -> None:
     """Snapshot table schemas are always present in the query surface.
 
     Even with default config (no periodic timer), the 11 snapshot
@@ -2623,7 +2594,7 @@ def test_snapshot_schemas_pre_registered(cleanup_callbacks) -> None:
 
 @pytest.mark.timeout(180)
 @isolate_in_subprocess
-def test_snapshot_periodic_capture_populates_tables(cleanup_callbacks) -> None:
+def test_snapshot_periodic_capture_populates_tables() -> None:
     """Periodic snapshots become queryable through the live query path.
 
     With periodic capture enabled, the timer fires and the full
@@ -2734,7 +2705,8 @@ def test_snapshot_periodic_capture_populates_tables(cleanup_callbacks) -> None:
 
 
 @pytest.mark.timeout(60)
-def test_public_custom_trace_is_queryable(cleanup_callbacks) -> None:
+@isolate_in_subprocess
+def test_public_custom_trace_is_queryable() -> None:
     trace_name = f"custom_trace_{uuid.uuid4().hex}"
     with scoped_state(
         ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
