@@ -19,11 +19,12 @@
 //!
 //! ## Framing
 //!
-//! Each frame is `[u64 header_len][header][raw part bytes...]`. The header is a
-//! bincode-encoded [`WireFrame`] holding only small metadata; for a message it
-//! carries the *lengths* of the parts, never their bytes. Message-part bytes are
-//! written straight from the owning `MsgPart` and read straight into a freshly
-//! allocated per-part buffer — no copies of payload beyond the socket read/write.
+//! Framing lives in [`crate::unix_framing`]: each frame is
+//! `[u64 header_len][header][raw part bytes...]`, where the header is a bincode
+//! `UnixFrame` holding only small metadata; for a message it carries the
+//! *lengths* of the parts, never their bytes. Message-part bytes are written
+//! straight from the owning `MsgPart` and read straight into a freshly allocated
+//! per-part buffer — no copies of payload beyond the socket read/write.
 //!
 //! ## Liveness
 //!
@@ -51,10 +52,9 @@ use crate::connection::ConnectionCommand;
 use crate::connection::ConnectionRef;
 use crate::connection::ConnectionTransport;
 use crate::ctx::Command;
-use crate::framing;
-use crate::framing::Incoming;
 use crate::matcher::Matcher;
 use crate::transport::Transport;
+use crate::unix_framing;
 
 /// Connect-retry backoff bounds. A join may be posted before its serve, so the
 /// connector polls; it starts fast and backs off (doubling) to a steady poll so a
@@ -313,7 +313,7 @@ async fn writer_task(
                 let Some(command) = command else {
                     break; // transport dropped
                 };
-                if framing::write_command(&mut write_half, command).await.is_err() {
+                if unix_framing::write_command(&mut write_half, command).await.is_err() {
                     return;
                 }
             }
@@ -321,7 +321,7 @@ async fn writer_task(
                 // Teardown: the command loop has stopped, so no further commands
                 // will be enqueued. Flush whatever is already queued, then stop.
                 while let Ok(command) = rx.try_recv() {
-                    if framing::write_command(&mut write_half, command).await.is_err() {
+                    if unix_framing::write_command(&mut write_half, command).await.is_err() {
                         return;
                     }
                 }
@@ -336,8 +336,7 @@ async fn writer_task(
 
 /// Decode each frame off the socket and forward it to the command loop. Any read
 /// error or EOF turns into a `Severed` so the command loop tears the connection
-/// down. UNIX never sends heartbeats, so a `Heartbeat` frame is not expected here;
-/// it is harmlessly ignored if one ever arrives.
+/// down. The UNIX wire has no heartbeat frame — liveness is socket EOF.
 async fn reader_task(
     mut read_half: OwnedReadHalf,
     fd: RawFd,
@@ -346,13 +345,13 @@ async fn reader_task(
     loop_tx: mpsc::UnboundedSender<Command>,
 ) {
     loop {
-        // Before parking in read_frame's await, cooperatively spin peeking the
+        // Before parking in read_command's await, cooperatively spin peeking the
         // socket so an imminent frame is picked up without a kernel read-wakeup.
         // yield_now (not a tight spin) keeps the loop processing other commands
         // — e.g. the reply this peer is about to send.
         spin_for_readable(fd, spin).await;
-        match framing::read_frame(&mut read_half).await {
-            Ok(Incoming::Command(action)) => {
+        match unix_framing::read_command(&mut read_half).await {
+            Ok(action) => {
                 if loop_tx
                     .send(Command::ConnectionAction { connection, action })
                     .is_err()
@@ -360,7 +359,6 @@ async fn reader_task(
                     return;
                 }
             }
-            Ok(Incoming::Heartbeat) => continue,
             Err(_) => {
                 sever(&loop_tx, connection, b"unix connection closed".to_vec());
                 return;

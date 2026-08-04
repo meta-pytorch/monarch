@@ -16,6 +16,7 @@ mod msg;
 mod poller;
 mod quic_transport;
 mod transport;
+mod unix_framing;
 mod unix_transport;
 
 use std::cell::RefCell;

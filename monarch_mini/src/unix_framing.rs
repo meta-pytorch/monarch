@@ -6,22 +6,24 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! Wire framing for the QUIC transport (and, later, tcp). The UNIX transport has
-//! its own framing (see [`crate::unix_framing`]) so machine-local shared-memory
-//! and fd-passing concerns never leak into the cross-machine wire format.
+//! Wire framing for the UNIX-socket transport.
+//!
+//! Deliberately **separate** from the generic [`crate::framing`] used by quic
+//! (and, later, tcp): the UNIX transport is where machine-local shared-memory
+//! handling lives, so its wire format grows fd-passing and shared-memory part
+//! descriptors that have no business leaking into the cross-machine framing.
+//! Keeping a private copy of the small set of frame types is cheaper than a
+//! shared abstraction that both sides have to bend around.
 //!
 //! Each frame is `[u64 header_len][header][raw part bytes...]`. The header is a
-//! bincode-encoded [`WireFrame`] holding only small metadata; for a message it
+//! bincode-encoded [`UnixFrame`] holding only small metadata; for a message it
 //! carries the *lengths* of the parts, never their bytes. Message-part bytes are
 //! written straight from the owning `MsgPart` and read straight into a freshly
 //! allocated per-part buffer — no copies of payload beyond the socket read/write.
 //!
-//! The reader/writer are generic over tokio's [`AsyncRead`]/[`AsyncWrite`], so the
-//! same code drives a QUIC stream's `RecvStream`/`SendStream`. Liveness policy
-//! (heartbeats, timeouts, EOF) lives in each
-//! transport; this module only serializes frames — with the one exception of the
-//! [`WireFrame::Heartbeat`] probe, which a transport may emit/consume but which is
-//! never a [`ConnectionCommand`].
+//! Unlike quic, the UNIX transport relies on socket EOF for liveness and never
+//! emits heartbeats, so there is no heartbeat frame and a decoded frame maps
+//! straight to a [`ConnectionCommand`].
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -36,12 +38,11 @@ use crate::connection::ConnectionCommand;
 use crate::connection::SendPayload;
 use crate::msg::MsgPart;
 
-/// One frame on the wire. There is a variant per [`ConnectionCommand`] that
+/// One frame on the UNIX wire. There is a variant per [`ConnectionCommand`] that
 /// crosses the pipe (including `Establish`, which is how the two ends exchange
-/// identity), plus a transport-internal `Heartbeat`. Message-part *bytes* are
-/// never carried here — only their lengths.
+/// identity). Message-part *bytes* are never carried here — only their lengths.
 #[derive(Serialize, Deserialize)]
-enum WireFrame {
+enum UnixFrame {
     Establish {
         role: Role,
         ident: Option<Vec<u8>>,
@@ -50,7 +51,7 @@ enum WireFrame {
     },
     Message {
         destination_ident: Vec<u8>,
-        payload: WirePayload,
+        payload: UnixPayload,
     },
     PublishRoutes {
         live: Vec<Vec<u8>>,
@@ -63,9 +64,6 @@ enum WireFrame {
     Severed {
         reason: Vec<u8>,
     },
-    /// Transport-internal liveness probe; consumed by the reader to refresh its
-    /// deadline and never surfaced as a [`ConnectionCommand`].
-    Heartbeat,
 }
 
 /// Wire form of a [`SendMessage`](ConnectionCommand::SendMessage)'s payload. An
@@ -73,7 +71,7 @@ enum WireFrame {
 /// streamed raw afterwards, zero-copy); a monitor fire carries the small dead
 /// target ident inline.
 #[derive(Serialize, Deserialize)]
-enum WirePayload {
+enum UnixPayload {
     ActorMessage { part_lens: Vec<u64> },
     FireMonitor { to_monitor: Vec<u8> },
 }
@@ -82,16 +80,9 @@ fn bincode_config() -> bincode::config::Configuration {
     bincode::config::standard()
 }
 
-/// A frame decoded off the wire: either a command for the loop, or a transport
-/// heartbeat (consumed internally to refresh the liveness deadline).
-pub(crate) enum Incoming {
-    Command(ConnectionCommand),
-    Heartbeat,
-}
-
 /// Serialize and write one command: a length-prefixed bincode header, then — for
-/// a message — each part's bytes streamed straight from its buffer. Flushes so the
-/// peer (and, for quic, its heartbeat deadline) sees it promptly.
+/// a message — each part's bytes streamed straight from its buffer. Flushes so
+/// the peer sees it promptly.
 pub(crate) async fn write_command<W: AsyncWrite + Unpin>(
     writer: &mut W,
     command: ConnectionCommand,
@@ -111,11 +102,11 @@ pub(crate) async fn write_command<W: AsyncWrite + Unpin>(
                         .map(|part| part.as_bytes().len() as u64)
                         .collect();
                     parts = message_parts;
-                    WirePayload::ActorMessage { part_lens }
+                    UnixPayload::ActorMessage { part_lens }
                 }
-                SendPayload::FireMonitor(to_monitor) => WirePayload::FireMonitor { to_monitor },
+                SendPayload::FireMonitor(to_monitor) => UnixPayload::FireMonitor { to_monitor },
             };
-            WireFrame::Message {
+            UnixFrame::Message {
                 destination_ident,
                 payload,
             }
@@ -125,33 +116,28 @@ pub(crate) async fn write_command<W: AsyncWrite + Unpin>(
             ident,
             name_for_other,
             alive,
-        } => WireFrame::Establish {
+        } => UnixFrame::Establish {
             role,
             ident,
             name_for_other,
             alive,
         },
-        ConnectionCommand::PublishRoutes { live, dead } => WireFrame::PublishRoutes { live, dead },
+        ConnectionCommand::PublishRoutes { live, dead } => UnixFrame::PublishRoutes { live, dead },
         ConnectionCommand::ToAncestor {
             to_monitor,
             payload,
-        } => WireFrame::ToAncestor {
+        } => UnixFrame::ToAncestor {
             to_monitor,
             payload,
         },
-        ConnectionCommand::Severed { reason } => WireFrame::Severed { reason },
+        ConnectionCommand::Severed { reason } => UnixFrame::Severed { reason },
     };
     write_frame(writer, &frame, &parts).await
 }
 
-/// Write a transport heartbeat probe.
-pub(crate) async fn write_heartbeat<W: AsyncWrite + Unpin>(writer: &mut W) -> std::io::Result<()> {
-    write_frame(writer, &WireFrame::Heartbeat, &[]).await
-}
-
 async fn write_frame<W: AsyncWrite + Unpin>(
     writer: &mut W,
-    frame: &WireFrame,
+    frame: &UnixFrame,
     parts: &[MsgPart],
 ) -> std::io::Result<()> {
     let header = bincode::serde::encode_to_vec(frame, bincode_config())
@@ -167,28 +153,28 @@ async fn write_frame<W: AsyncWrite + Unpin>(
     writer.flush().await
 }
 
-/// Read one frame. For a message the part bytes are read directly into the
-/// command's own buffers — the only copy is the unavoidable kernel-to-userspace
-/// one. A `Heartbeat` frame returns [`Incoming::Heartbeat`]; everything else maps
-/// straight back to a [`ConnectionCommand`].
-pub(crate) async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Result<Incoming> {
+/// Read one frame and map it straight back to a [`ConnectionCommand`]. For a
+/// message the part bytes are read directly into the command's own buffers — the
+/// only copy is the unavoidable kernel-to-userspace one.
+pub(crate) async fn read_command<R: AsyncRead + Unpin>(
+    reader: &mut R,
+) -> std::io::Result<ConnectionCommand> {
     let mut len_buf = [0u8; 8];
     reader.read_exact(&mut len_buf).await?;
     let header_len = u64::from_le_bytes(len_buf) as usize;
 
     let mut header = vec![0u8; header_len];
     reader.read_exact(&mut header).await?;
-    let (frame, _) = bincode::serde::decode_from_slice::<WireFrame, _>(&header, bincode_config())
+    let (frame, _) = bincode::serde::decode_from_slice::<UnixFrame, _>(&header, bincode_config())
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
 
     Ok(match frame {
-        WireFrame::Heartbeat => Incoming::Heartbeat,
-        WireFrame::Message {
+        UnixFrame::Message {
             destination_ident,
             payload,
         } => {
             let payload = match payload {
-                WirePayload::ActorMessage { part_lens } => {
+                UnixPayload::ActorMessage { part_lens } => {
                     let mut parts = Vec::with_capacity(part_lens.len());
                     for len in part_lens {
                         let mut buf = vec![0u8; len as usize];
@@ -197,34 +183,32 @@ pub(crate) async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> std::io:
                     }
                     SendPayload::ActorMessage(parts)
                 }
-                WirePayload::FireMonitor { to_monitor } => SendPayload::FireMonitor(to_monitor),
+                UnixPayload::FireMonitor { to_monitor } => SendPayload::FireMonitor(to_monitor),
             };
-            Incoming::Command(ConnectionCommand::SendMessage {
+            ConnectionCommand::SendMessage {
                 destination_ident,
                 payload,
-            })
+            }
         }
-        WireFrame::Establish {
+        UnixFrame::Establish {
             role,
             ident,
             name_for_other,
             alive,
-        } => Incoming::Command(ConnectionCommand::Establish {
+        } => ConnectionCommand::Establish {
             role,
             ident,
             name_for_other,
             alive,
-        }),
-        WireFrame::PublishRoutes { live, dead } => {
-            Incoming::Command(ConnectionCommand::PublishRoutes { live, dead })
-        }
-        WireFrame::ToAncestor {
+        },
+        UnixFrame::PublishRoutes { live, dead } => ConnectionCommand::PublishRoutes { live, dead },
+        UnixFrame::ToAncestor {
             to_monitor,
             payload,
-        } => Incoming::Command(ConnectionCommand::ToAncestor {
+        } => ConnectionCommand::ToAncestor {
             to_monitor,
             payload,
-        }),
-        WireFrame::Severed { reason } => Incoming::Command(ConnectionCommand::Severed { reason }),
+        },
+        UnixFrame::Severed { reason } => ConnectionCommand::Severed { reason },
     })
 }
