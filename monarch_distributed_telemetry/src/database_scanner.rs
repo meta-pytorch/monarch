@@ -12,11 +12,14 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 use anyhow::Context;
+use datafusion::arrow::compute::concat_batches;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::dataframe::DataFrame;
@@ -50,11 +53,30 @@ use crate::serialize_batch;
 use crate::serialize_schema;
 use crate::timestamp_to_micros;
 
+/// Target rows per stored batch.
+///
+/// Ingest appends one `RecordBatch` per write, so without compaction a table
+/// accumulates one small batch per event indefinitely. Batch count -- not row
+/// count -- drives the cost of everything downstream: DataFusion plans over the
+/// partition, the retention rewrite walks it, and each batch a scan emits is a
+/// separate Arrow IPC serialization and hyperactor message. Merging the
+/// trailing run of small batches once it reaches this many rows keeps the
+/// partition proportional to rows stored rather than to writes performed.
+/// A row trigger alone bounds the uncompacted tail: `push` rejects empty
+/// batches, so the pending run never exceeds this many batches either.
+const COMPACT_TARGET_ROWS: usize = 8192;
+
 /// Wraps a table's data so we can dynamically push new batches.
 /// The MemTable is created on initialization and shared with queries.
 pub struct LiveTableData {
     /// The MemTable that queries use
     mem_table: Arc<MemTable>,
+    /// Batches appended since the last compaction, and their total rows.
+    ///
+    /// Only ever read or written while holding the partition write lock, which
+    /// is what keeps them consistent with the partition itself.
+    pending_batches: AtomicUsize,
+    pending_rows: AtomicUsize,
 }
 
 impl LiveTableData {
@@ -63,10 +85,13 @@ impl LiveTableData {
             .expect("failed to create MemTable with empty partition");
         Self {
             mem_table: Arc::new(mem_table),
+            pending_batches: AtomicUsize::new(0),
+            pending_rows: AtomicUsize::new(0),
         }
     }
 
-    /// Push a new batch to the table.
+    /// Push a new batch to the table, compacting the trailing run when it grows
+    /// large enough to be worth merging.
     pub async fn push(&self, batch: RecordBatch) {
         if batch.num_rows() == 0 {
             return;
@@ -74,7 +99,39 @@ impl LiveTableData {
 
         let partition = &self.mem_table.batches[0];
         let mut guard = partition.write().await;
+        let rows = batch.num_rows();
         guard.push(batch);
+
+        let pending = self.pending_batches.fetch_add(1, Ordering::Relaxed) + 1;
+        let pending_rows = self.pending_rows.fetch_add(rows, Ordering::Relaxed) + rows;
+        if pending_rows >= COMPACT_TARGET_ROWS {
+            self.compact_tail(&mut guard, pending);
+        }
+    }
+
+    /// Merge the last `tail_len` batches of the partition into one.
+    ///
+    /// Resets the pending counters whether or not the merge happens, so a batch
+    /// that cannot be concatenated does not wedge compaction permanently.
+    fn compact_tail(&self, partition: &mut Vec<RecordBatch>, tail_len: usize) {
+        self.pending_batches.store(0, Ordering::Relaxed);
+        self.pending_rows.store(0, Ordering::Relaxed);
+
+        let start = partition.len().saturating_sub(tail_len);
+        if partition.len() - start < 2 {
+            return;
+        }
+
+        let schema = partition[start].schema();
+        match concat_batches(&schema, partition[start..].iter()) {
+            Ok(merged) => {
+                partition.truncate(start);
+                partition.push(merged);
+            }
+            Err(error) => {
+                tracing::warn!("telemetry batch compaction failed: {error}");
+            }
+        }
     }
 
     /// Filter the table's data, keeping only rows that match the WHERE clause.
@@ -107,6 +164,10 @@ impl LiveTableData {
                 guard.push(batch);
             }
         }
+
+        // The rewrite emits coalesced batches, so nothing is left pending.
+        self.pending_batches.store(0, Ordering::Relaxed);
+        self.pending_rows.store(0, Ordering::Relaxed);
         Ok(())
     }
 
@@ -972,7 +1033,6 @@ mod tests {
     use datafusion::arrow::array::Int64Array;
     use datafusion::arrow::array::StringArray;
     use datafusion::arrow::array::UInt64Array;
-    use datafusion::arrow::compute::concat_batches;
     use datafusion::arrow::datatypes::DataType;
     use datafusion::arrow::datatypes::Field;
     use datafusion::arrow::datatypes::Schema;
@@ -1022,6 +1082,10 @@ mod tests {
             .iter()
             .map(|b| b.num_rows())
             .sum()
+    }
+
+    async fn batch_count(table: &LiveTableData) -> usize {
+        table.mem_table.batches[0].read().await.len()
     }
 
     fn test_scanner(retention_us: i64) -> DatabaseScanner {
@@ -1900,6 +1964,118 @@ mod tests {
         assert!(
             store.table_provider("missing").unwrap().is_none(),
             "TS-3: unknown table should return None"
+        );
+    }
+
+    // Ingest appends one batch per write; compaction must keep the partition
+    // proportional to rows stored, not to writes performed. Without it a table
+    // reaches tens of thousands of few-row batches, and batch count is what
+    // drives scan, retention, and planning cost.
+    #[tokio::test]
+    async fn test_push_compacts_small_batches() {
+        let table = LiveTableData::new(make_batch(&[1]).schema());
+        let writes = COMPACT_TARGET_ROWS * 3;
+
+        for i in 0..writes {
+            table.push(make_batch(&[i as i64])).await;
+        }
+
+        assert_eq!(
+            row_count(&table).await,
+            writes,
+            "compaction must not drop rows"
+        );
+        // Three full targets compact to 3 batches, plus at most one open tail.
+        assert!(
+            batch_count(&table).await <= 4,
+            "expected <=4 compacted batches for {writes} single-row writes, got {}",
+            batch_count(&table).await
+        );
+    }
+
+    // Compaction merges by position, so the stored order must survive it.
+    #[tokio::test]
+    async fn test_compaction_preserves_row_order() {
+        let table = LiveTableData::new(make_batch(&[1]).schema());
+        let writes = COMPACT_TARGET_ROWS + 10;
+
+        for i in 0..writes {
+            table.push(make_batch(&[i as i64])).await;
+        }
+
+        let guard = table.mem_table.batches[0].read().await;
+        let values: Vec<i64> = guard
+            .iter()
+            .flat_map(|b| {
+                b.column(0)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap()
+                    .values()
+                    .to_vec()
+            })
+            .collect();
+        let expected: Vec<i64> = (0..writes as i64).collect();
+        assert_eq!(values, expected, "compaction must preserve write order");
+    }
+
+    // `push` rejects empty batches, so pending rows always reach the target
+    // before the pending run can exceed that many batches. This is what lets a
+    // row-only trigger bound the tail.
+    #[tokio::test]
+    async fn test_uncompacted_tail_is_bounded() {
+        let table = LiveTableData::new(make_batch(&[1]).schema());
+
+        // One row short of a second compaction: the worst case tail.
+        for i in 0..(COMPACT_TARGET_ROWS * 2 - 1) {
+            table.push(make_batch(&[i as i64])).await;
+        }
+
+        assert!(
+            batch_count(&table).await <= COMPACT_TARGET_ROWS,
+            "tail must stay bounded by the row target, got {}",
+            batch_count(&table).await
+        );
+    }
+
+    // Retention rewrites the whole partition, so the pending counters must be
+    // cleared or compaction would merge against a stale tail length.
+    #[tokio::test]
+    async fn test_retention_resets_pending_counters() {
+        let table = LiveTableData::new(make_batch(&[1]).schema());
+        for i in 0..10 {
+            table.push(make_batch(&[i])).await;
+        }
+        assert!(table.pending_batches.load(Ordering::Relaxed) > 0);
+
+        table.apply_retention("t", "1=1").await.unwrap();
+
+        assert_eq!(table.pending_batches.load(Ordering::Relaxed), 0);
+        assert_eq!(table.pending_rows.load(Ordering::Relaxed), 0);
+        assert_eq!(row_count(&table).await, 10, "retention kept every row");
+    }
+
+    // Coalescing preserves every row when batches carry columns.
+    #[test]
+    fn test_concat_preserves_rows() {
+        let batches = [
+            make_batch(&[1, 2]),
+            make_batch(&[3]),
+            make_batch(&[4, 5, 6]),
+        ];
+
+        let merged = concat_batches(&batches[0].schema(), batches.iter()).unwrap();
+
+        assert_eq!(merged.num_rows(), 6, "3 batches of 2+1+3 rows merge to 6");
+        let values = merged
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(
+            values.values(),
+            &[1, 2, 3, 4, 5, 6],
+            "coalescing must preserve row order across batches"
         );
     }
 }
