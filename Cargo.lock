@@ -4665,6 +4665,7 @@ dependencies = [
  "opentelemetry",
  "pyo3",
  "pyo3-async-runtimes",
+ "rand 0.10.2",
  "serde",
  "serde_json",
  "serde_multipart",

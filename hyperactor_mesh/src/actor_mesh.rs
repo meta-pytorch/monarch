@@ -117,10 +117,9 @@ pub struct ActorMesh<A: Referable> {
 
 /// A data-only actor mesh.
 ///
-/// This mesh is detached from [`ActorMesh`] and [`ActorMeshRef`]. It is the
-/// baseline representation for the cheap mesh API: a [`RankSpace`] paired with
-/// its visible actor refs. The rank space can be sparse, so a mesh can represent
-/// failed or absent ranks as occlusions.
+/// This mesh is the data variant of [`ActorMeshRef`]: a [`RankSpace`] paired
+/// with its visible actor refs. The rank space can be sparse, so a mesh can
+/// represent failed or absent ranks as occlusions.
 ///
 /// The mesh carries no identity beyond its members: two data meshes over the
 /// same rank space and refs are interchangeable. It holds no supervision state
@@ -147,7 +146,7 @@ impl<A: Referable> ActorMesh<A> {
         controller: Option<ActorRef<ActorMeshController<A>>>,
         members: Arc<ValueMesh<ActorAddr>>,
     ) -> Self {
-        let current_ref = ActorMeshRef::new(
+        let current_ref = ActorMeshRef::new_managed(
             id.clone(),
             Some(proc_mesh.id().clone()),
             proc_mesh.region().clone(),
@@ -169,11 +168,19 @@ impl<A: Referable> ActorMesh<A> {
 
     pub(crate) fn set_controller(&mut self, controller: Option<ActorRef<ActorMeshController<A>>>) {
         self.controller = controller.clone();
-        self.current_ref.set_controller(controller);
+        if let ActorMeshRef::Managed(current_ref) = &mut self.current_ref {
+            current_ref.set_controller(controller);
+        }
     }
 
     /// Stop actors on this mesh across all procs.
     pub async fn stop(&mut self, cx: &impl context::Actor, reason: String) -> crate::Result<()> {
+        let ActorMeshRef::Managed(ref mut current_ref) = self.current_ref else {
+            return Err(Error::Other(anyhow::anyhow!(
+                "cannot stop an ActorMesh of DataActorMeshRef"
+            )));
+        };
+        let actor_mesh_name = self.id.to_string();
         // Remove the controller as an optimization so all future meshes
         // created from this one (such as slices) know they are already stopped.
         // Refs and slices on other machines will still be able to query the
@@ -188,7 +195,7 @@ impl<A: Referable> ActorMesh<A> {
             // hide the fact that the stop never reached (or never confirmed)
             // the actors.
             let id = self.id.resource_id().clone();
-            let num_ranks = self.current_ref.region().num_ranks();
+            let num_ranks = current_ref.region().num_ranks();
             let result: crate::Result<()> = async {
                 controller.post(
                     cx,
@@ -250,13 +257,13 @@ impl<A: Referable> ActorMesh<A> {
                 Ok(()) => ActorStatus::Stopped("mesh stopped".to_string()),
                 Err(e) => ActorStatus::Stopped(format!("mesh stop failed: {e}")),
             };
-            let mut entry = self.health_state.entry(cx).or_default();
+            let mut entry = current_ref.health_state.entry(cx).or_default();
             let health_state = entry.get_mut();
             health_state.unhealthy_event = Some(Unhealthy::StreamClosed(MeshFailure {
-                actor_mesh_name: Some(self.id().to_string()),
+                actor_mesh_name: Some(actor_mesh_name),
                 event: ActorSupervisionEvent::new(
                     // Use an actor id from the mesh.
-                    ndslice::view::Ranked::get(&self.current_ref, 0)
+                    ndslice::view::Ranked::get(current_ref.as_ref(), 0)
                         .unwrap()
                         .actor_addr()
                         .clone(),
@@ -274,7 +281,7 @@ impl<A: Referable> ActorMesh<A> {
         }
         // Also take the controller from the ref, since that is used for
         // some operations.
-        self.current_ref.controller.take();
+        current_ref.controller.take();
         Ok(())
     }
 }
@@ -376,6 +383,34 @@ impl<A: Referable> DataActorMesh<A> {
         let actors = self.members.map(|actor| actor.actor_addr().clone());
         MeshMonitor::spawn(cx, actors)
     }
+
+    /// Cast `message` to every member. The data path has no cast domain, so it
+    /// iterates the members and posts to each directly: correct but unoptimized.
+    pub fn cast<M>(&self, cx: &impl context::Actor, message: M) -> crate::Result<()>
+    where
+        A: RemoteHandles<M>,
+        M: RemoteMessage + Clone,
+    {
+        self.cast_with_headers(cx, &Flattrs::new(), message)
+    }
+
+    /// Cast `message` to every member, merging `caller_headers` into each
+    /// envelope.
+    pub fn cast_with_headers<M>(
+        &self,
+        cx: &impl context::Actor,
+        caller_headers: &Flattrs,
+        message: M,
+    ) -> crate::Result<()>
+    where
+        A: RemoteHandles<M>,
+        M: RemoteMessage + Clone,
+    {
+        for actor in self.members.data() {
+            actor.post_with_headers(cx, caller_headers.clone(), message.clone());
+        }
+        Ok(())
+    }
 }
 
 impl<A: Referable> Clone for DataActorMesh<A> {
@@ -391,6 +426,272 @@ impl<A: Referable> rankspace::view::View<ActorRef<A>> for DataActorMesh<A> {
 
     fn get_rank(&self, rank: Rank) -> Option<&ActorRef<A>> {
         self.members.get_rank(rank)
+    }
+}
+
+/// A reference to a stable snapshot of an [`ActorMesh`]: the cast and address
+/// surface, cheap to clone and to serialize.
+///
+/// `Managed` is the legacy controller-backed ref over a dense `ndslice` region;
+/// `Data` is the detached, rankspace-based data ref. Casting and rankspace
+/// addressing work on both. The legacy dense
+/// [`view::Ranked`]/[`view::RankedSliceable`] surface is meaningful only for
+/// `Managed`; use [`Self::as_managed`] to discriminate without panicking.
+#[derive(typeuri::Named)]
+pub enum ActorMeshRef<A: Referable> {
+    // Boxed so the cheap `Data` variant does not pay the (much larger) `Managed`
+    // variant's size (`clippy::large_enum_variant`).
+    Managed(Box<ManagedActorMeshRef<A>>),
+    Data(DataActorMesh<A>),
+}
+
+// Serde representation for `ActorMeshRef`, tagged by variant. Manual (via this
+// derived repr) so we do not require `A: Serialize`/`Deserialize`; the field
+// types are unconditionally serde. The `Managed` payload is boxed (both to match
+// the enum and to avoid `clippy::large_enum_variant`); `Box<T>` preserves the
+// managed payload's shape inside the new tagged representation.
+#[derive(Serialize, Deserialize)]
+#[serde(bound(serialize = "", deserialize = ""))]
+enum ActorMeshRefRepr<A: Referable> {
+    Managed(
+        Box<(
+            ActorMeshId,
+            Option<ProcMeshId>,
+            Option<ActorRef<ActorMeshController<A>>>,
+            ActorMeshCastDomain,
+        )>,
+    ),
+    Data(CompactView<Vec<ActorRef<A>>>),
+}
+
+impl<A: Referable> ActorMeshRef<A> {
+    pub(crate) fn new_managed(
+        id: ActorMeshId,
+        proc_mesh_id: Option<ProcMeshId>,
+        region: Region,
+        controller: Option<ActorRef<ActorMeshController<A>>>,
+        members: Arc<ValueMesh<ActorAddr>>,
+    ) -> Self {
+        Self::Managed(Box::new(ManagedActorMeshRef::new(
+            id,
+            proc_mesh_id,
+            region,
+            controller,
+            members,
+        )))
+    }
+
+    /// Create a data-only ref from a rank space and its actor refs.
+    pub fn try_new_data(
+        space: impl Into<RankSpace>,
+        members: Vec<ActorRef<A>>,
+    ) -> crate::Result<Self> {
+        Ok(Self::Data(DataActorMesh::try_new(space, members)?))
+    }
+
+    /// Return the legacy dense ref when this is the managed variant.
+    pub fn as_managed(&self) -> Option<&ManagedActorMeshRef<A>> {
+        match self {
+            Self::Managed(managed) => Some(managed),
+            Self::Data(_) => None,
+        }
+    }
+
+    /// Cast a message to all the actors in this mesh.
+    pub fn cast<M>(&self, cx: &impl context::Actor, message: M) -> crate::Result<()>
+    where
+        A: RemoteHandles<M>,
+        M: RemoteMessage + Clone,
+    {
+        match self {
+            Self::Managed(m) => m.cast(cx, message),
+            Self::Data(d) => d.cast(cx, message),
+        }
+    }
+
+    pub fn cast_with_headers<M>(
+        &self,
+        cx: &impl context::Actor,
+        caller_headers: &Flattrs,
+        message: M,
+    ) -> crate::Result<()>
+    where
+        A: RemoteHandles<M>,
+        M: RemoteMessage + Clone,
+    {
+        match self {
+            Self::Managed(m) => m.cast_with_headers(cx, caller_headers, message),
+            Self::Data(d) => d.cast_with_headers(cx, caller_headers, message),
+        }
+    }
+
+    /// Return the next supervision event observed on this mesh.
+    pub async fn next_supervision_event(
+        &self,
+        cx: &impl context::Actor,
+    ) -> Result<MeshFailure, anyhow::Error> {
+        match self {
+            Self::Managed(managed) => managed.next_supervision_event(cx).await,
+            Self::Data(data) => Ok((&data.monitor(cx)).await),
+        }
+    }
+
+    /// See [`ManagedActorMeshRef::clone_with_supervision_receiver`].
+    pub fn clone_with_supervision_receiver(&self) -> Self {
+        match self {
+            Self::Managed(m) => Self::Managed(Box::new(m.clone_with_supervision_receiver())),
+            Self::Data(d) => Self::Data(d.clone()),
+        }
+    }
+}
+
+impl<A: Referable> Clone for ActorMeshRef<A> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Managed(m) => Self::Managed(m.clone()),
+            Self::Data(d) => Self::Data(d.clone()),
+        }
+    }
+}
+
+impl<A: Referable> fmt::Display for ActorMeshRef<A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Managed(m) => write!(f, "{}", m),
+            Self::Data(d) => write!(f, "{:?}", d),
+        }
+    }
+}
+
+impl<A: Referable> fmt::Debug for ActorMeshRef<A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Managed(m) => write!(f, "{:?}", m),
+            Self::Data(d) => write!(f, "{:?}", d),
+        }
+    }
+}
+
+impl<A: Referable> PartialEq for ActorMeshRef<A> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Managed(a), Self::Managed(b)) => a == b,
+            (Self::Data(a), Self::Data(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+impl<A: Referable> Eq for ActorMeshRef<A> {}
+
+impl<A: Referable> Hash for ActorMeshRef<A> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            Self::Managed(m) => {
+                0u8.hash(state);
+                m.hash(state);
+            }
+            Self::Data(d) => {
+                1u8.hash(state);
+                d.hash(state);
+            }
+        }
+    }
+}
+
+impl<A: Referable> Serialize for ActorMeshRef<A> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let repr = match self {
+            Self::Managed(m) => ActorMeshRefRepr::<A>::Managed(Box::new((
+                m.id.clone(),
+                m.proc_mesh_id.clone(),
+                m.controller.clone(),
+                m.cast_domain.clone(),
+            ))),
+            Self::Data(d) => ActorMeshRefRepr::<A>::Data(d.members.clone()),
+        };
+        repr.serialize(serializer)
+    }
+}
+
+impl<'de, A: Referable> Deserialize<'de> for ActorMeshRef<A> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(match ActorMeshRefRepr::<A>::deserialize(deserializer)? {
+            ActorMeshRefRepr::Managed(boxed) => {
+                let (id, proc_mesh_id, controller, cast_domain) = *boxed;
+                Self::Managed(Box::new(ManagedActorMeshRef::with_cast_domain(
+                    id,
+                    proc_mesh_id,
+                    controller,
+                    cast_domain,
+                    DEFAULT_PAGE,
+                )))
+            }
+            ActorMeshRefRepr::Data(members) => Self::Data(DataActorMesh::new_unchecked(members)),
+        })
+    }
+}
+
+impl<A: Referable> view::Ranked for ActorMeshRef<A> {
+    type Item = ActorRef<A>;
+
+    fn region(&self) -> &Region {
+        view::Ranked::region(
+            self.as_managed()
+                .expect("Data ActorMeshRef is sparse; use its rankspace View"),
+        )
+    }
+
+    fn get(&self, rank: usize) -> Option<&Self::Item> {
+        view::Ranked::get(
+            self.as_managed()
+                .expect("Data ActorMeshRef is sparse; use its rankspace View"),
+            rank,
+        )
+    }
+}
+
+impl<A: Referable> view::RankedSliceable for ActorMeshRef<A> {
+    fn sliced(&self, region: Region) -> Self {
+        Self::Managed(Box::new(view::RankedSliceable::sliced(
+            self.as_managed()
+                .expect("Data ActorMeshRef slices via rankspace, not a dense region"),
+            region,
+        )))
+    }
+}
+
+impl<A: Referable> rankspace::view::View<ActorRef<A>> for ActorMeshRef<A> {
+    fn space(&self) -> &RankSpace {
+        match self {
+            Self::Managed(managed) => managed.space(),
+            Self::Data(data) => data.space(),
+        }
+    }
+
+    fn get_rank(&self, rank: Rank) -> Option<&ActorRef<A>> {
+        match self {
+            Self::Managed(managed) => managed.get_rank(rank),
+            Self::Data(data) => data.get_rank(rank),
+        }
+    }
+}
+
+impl<A: Referable> PartialEq for DataActorMesh<A> {
+    fn eq(&self, other: &Self) -> bool {
+        self.members == other.members
+    }
+}
+impl<A: Referable> Eq for DataActorMesh<A> {}
+
+impl<A: Referable> Hash for DataActorMesh<A> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.members.hash(state);
     }
 }
 
@@ -633,9 +934,9 @@ fn into_watch<M: Send + Sync + Clone + Default + 'static>(
     receiver
 }
 
-/// A reference to a stable snapshot of an [`ActorMesh`].
-#[derive(typeuri::Named)]
-pub struct ActorMeshRef<A: Referable> {
+/// The managed variant of [`ActorMeshRef`]: a controller-backed reference to a
+/// stable snapshot of a legacy [`ActorMesh`], over a dense `ndslice` region.
+pub struct ManagedActorMeshRef<A: Referable> {
     id: ActorMeshId,
     /// Id of the proc mesh backing this actor mesh, if any. Retained as a
     /// lightweight id (not the `ProcMeshRef`) so telemetry can derive the same
@@ -673,6 +974,7 @@ pub struct ActorMeshRef<A: Referable> {
             )>,
         >,
     >,
+    space: RankSpace,
     /// Lazily allocated collection of pages:
     /// - The outer `OnceCell` defers creating the vector until first
     ///   use.
@@ -687,7 +989,7 @@ pub struct ActorMeshRef<A: Referable> {
     page_size: usize,
 }
 
-impl<A: Referable> ActorMeshRef<A> {
+impl<A: Referable> ManagedActorMeshRef<A> {
     fn cached_failure(&self, cx: &impl context::Actor) -> Option<MeshFailure> {
         let health_state = self.health_state.entry(cx).or_default();
         health_state
@@ -898,6 +1200,7 @@ impl<A: Referable> ActorMeshRef<A> {
         cast_domain: ActorMeshCastDomain,
         page_size: usize,
     ) -> Self {
+        let space = cast_domain.region().clone().into();
         Self {
             id,
             proc_mesh_id,
@@ -905,6 +1208,7 @@ impl<A: Referable> ActorMeshRef<A> {
             cast_domain,
             health_state: ActorLocal::new(),
             receiver: ActorLocal::new(),
+            space,
             pages: OnceCell::new(),
             page_size: page_size.max(1),
         }
@@ -1115,6 +1419,7 @@ impl<A: Referable> ActorMeshRef<A> {
             cast_domain: self.cast_domain.clone(),
             health_state: self.health_state.clone(),
             receiver: self.receiver.clone(),
+            space: self.space.clone(),
             // Cache does not support Clone at this time.
             pages: OnceCell::new(),
             page_size: self.page_size,
@@ -1122,7 +1427,7 @@ impl<A: Referable> ActorMeshRef<A> {
     }
 }
 
-impl<A: Referable> Clone for ActorMeshRef<A> {
+impl<A: Referable> Clone for ManagedActorMeshRef<A> {
     fn clone(&self) -> Self {
         Self {
             id: self.id.clone(),
@@ -1133,13 +1438,14 @@ impl<A: Referable> Clone for ActorMeshRef<A> {
             // it should make a new subscriber.
             health_state: ActorLocal::new(),
             receiver: ActorLocal::new(),
+            space: self.space.clone(),
             pages: OnceCell::new(), // No clone cache.
             page_size: self.page_size,
         }
     }
 }
 
-impl<A: Referable> fmt::Display for ActorMeshRef<A> {
+impl<A: Referable> fmt::Display for ManagedActorMeshRef<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -1151,7 +1457,7 @@ impl<A: Referable> fmt::Display for ActorMeshRef<A> {
     }
 }
 
-impl<A: Referable> PartialEq for ActorMeshRef<A> {
+impl<A: Referable> PartialEq for ManagedActorMeshRef<A> {
     fn eq(&self, other: &Self) -> bool {
         // Value identity: the same mesh (`id`) over the same `region`. `id` is
         // cloned through `sliced()` and preserved across serialization, and the
@@ -1163,16 +1469,16 @@ impl<A: Referable> PartialEq for ActorMeshRef<A> {
         self.id == other.id && self.cast_domain.region() == other.cast_domain.region()
     }
 }
-impl<A: Referable> Eq for ActorMeshRef<A> {}
+impl<A: Referable> Eq for ManagedActorMeshRef<A> {}
 
-impl<A: Referable> Hash for ActorMeshRef<A> {
+impl<A: Referable> Hash for ManagedActorMeshRef<A> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.id.hash(state);
         self.cast_domain.region().hash(state);
     }
 }
 
-impl<A: Referable> fmt::Debug for ActorMeshRef<A> {
+impl<A: Referable> fmt::Debug for ManagedActorMeshRef<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ActorMeshRef")
             .field("region", self.cast_domain.region())
@@ -1183,7 +1489,7 @@ impl<A: Referable> fmt::Debug for ActorMeshRef<A> {
 }
 
 // Implement Serialize manually, without requiring A: Serialize
-impl<A: Referable> Serialize for ActorMeshRef<A> {
+impl<A: Referable> Serialize for ManagedActorMeshRef<A> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -1200,7 +1506,7 @@ impl<A: Referable> Serialize for ActorMeshRef<A> {
 }
 
 // Implement Deserialize manually, without requiring A: Deserialize
-impl<'de, A: Referable> Deserialize<'de> for ActorMeshRef<A> {
+impl<'de, A: Referable> Deserialize<'de> for ManagedActorMeshRef<A> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -1221,7 +1527,7 @@ impl<'de, A: Referable> Deserialize<'de> for ActorMeshRef<A> {
     }
 }
 
-impl<A: Referable> view::Ranked for ActorMeshRef<A> {
+impl<A: Referable> view::Ranked for ManagedActorMeshRef<A> {
     type Item = ActorRef<A>;
 
     #[inline]
@@ -1235,7 +1541,7 @@ impl<A: Referable> view::Ranked for ActorMeshRef<A> {
     }
 }
 
-impl<A: Referable> view::RankedSliceable for ActorMeshRef<A> {
+impl<A: Referable> view::RankedSliceable for ManagedActorMeshRef<A> {
     /// Return a pure slice of this actor mesh.
     ///
     /// This method cannot install routing state because the trait has no caller
@@ -1258,9 +1564,23 @@ impl<A: Referable> view::RankedSliceable for ActorMeshRef<A> {
             ),
             health_state: self.health_state.clone(),
             receiver: ActorLocal::new(),
+            space: region.into(),
             pages: OnceCell::new(),
             page_size: self.page_size,
         }
+    }
+}
+
+impl<A: Referable> rankspace::view::View<ActorRef<A>> for ManagedActorMeshRef<A> {
+    fn space(&self) -> &RankSpace {
+        &self.space
+    }
+
+    fn get_rank(&self, rank: Rank) -> Option<&ActorRef<A>> {
+        // `Managed` is dense, so a base rank maps to an ordinal via its
+        // rank space, which then indexes the lazily-materialized ref.
+        let ordinal = self.space.local_index_of(rank)?;
+        view::Ranked::get(self, ordinal)
     }
 }
 
@@ -1324,7 +1644,7 @@ mod tests {
     }
 
     #[test]
-    fn test_data_actor_mesh_is_detached_data_structure() {
+    fn test_actor_mesh_ref_data_variant_is_detached_data_structure() {
         let region: Region = extent!(replicas = 2).into();
         let space = RankSpace::from(region);
         let members = vec![
@@ -1336,19 +1656,23 @@ mod tests {
             ),
         ];
 
-        let mesh = DataActorMesh::try_new(space.clone(), members.clone()).unwrap();
+        let mesh: ActorMeshRef<testactor::TestActor> =
+            ActorMeshRef::try_new_data(space.clone(), members.clone()).unwrap();
 
-        assert_eq!(mesh.members().len(), 2);
         assert_eq!(mesh.space(), &space);
         assert_eq!(
             mesh.get_rank(Rank(1)).unwrap().actor_addr(),
             members[1].actor_addr()
         );
+        let ActorMeshRef::Data(data) = &mesh else {
+            panic!("data constructor returned a managed ref");
+        };
+        assert_eq!(data.members().len(), 2);
 
         // Slice to the second replica; the rank space keeps base rank 1, so the
         // sliced mesh addresses its single member by base rank rather than a
         // renumbered ordinal.
-        let slice = mesh
+        let slice = data
             .sliced(
                 mesh.space()
                     .select("replicas", 1..2)
@@ -1366,7 +1690,7 @@ mod tests {
             Slice::new(1, vec![2], vec![1]).expect("test region should be valid"),
         );
         assert!(matches!(
-            mesh.sliced(invalid_region),
+            data.sliced(invalid_region),
             Err(crate::Error::InvalidRankCardinality {
                 expected: 2,
                 actual: 1,
@@ -1426,14 +1750,18 @@ mod tests {
         // force multiple pages:
         // page 0: ranks [0,1], page 1: [2,3], page 2: [4,5]
         let page_size = 2;
-        let amr: ActorMeshRef<testactor::TestActor> = ActorMeshRef::with_page_size(
-            am.id().clone(),
-            am.deref().proc_mesh_id.clone(),
-            am.region().clone(),
-            page_size,
-            None,
-            Arc::clone(&am.deref().cast_domain.members),
-        );
+        let ActorMeshRef::Managed(managed) = am.deref() else {
+            panic!("spawned actor mesh should be managed");
+        };
+        let amr: ActorMeshRef<testactor::TestActor> =
+            ActorMeshRef::Managed(Box::new(super::ManagedActorMeshRef::with_page_size(
+                am.id().clone(),
+                managed.proc_mesh_id.clone(),
+                am.region().clone(),
+                page_size,
+                None,
+                Arc::clone(&managed.cast_domain.members),
+            )));
         assert_eq!(amr.extent(), extent!(hosts = 2, gpus = 2));
         assert_eq!(amr.region().num_ranks(), 4);
 
@@ -1874,7 +2202,7 @@ mod tests {
             let sliced = actor_mesh
                 .range("hosts", 1..2)
                 .expect("slice should be valid");
-            let sliced_replicas = sliced.len();
+            let sliced_replicas = sliced.region().num_ranks();
             (hm, actor_mesh, sliced, sliced_replicas, child_name)
         };
 
@@ -2085,7 +2413,7 @@ mod tests {
             )
             .unwrap();
 
-        let mut point_to_actor: HashSet<_> = actor_mesh.iter().collect();
+        let mut point_to_actor: HashSet<_> = ndslice::ViewExt::iter(actor_mesh.deref()).collect();
         while !point_to_actor.is_empty() {
             let (point, origin_actor_ref, sender_actor_id) = cast_info_rx.recv().await.unwrap();
             let key = (point, origin_actor_ref);
@@ -2544,7 +2872,11 @@ mod tests {
         // Each owned mesh has an implicit ref mesh though, so that is what we
         // test here.
         let next_event = actor_mesh.next_supervision_event(instance).await.unwrap();
-        assert_eq!(next_event.actor_mesh_name, Some(mesh_ref.id().to_string()));
+        let mesh_id = mesh_ref
+            .as_managed()
+            .expect("owned actor mesh ref should be managed")
+            .id();
+        assert_eq!(next_event.actor_mesh_name, Some(mesh_id.to_string()));
         assert!(matches!(
             next_event.event.actor_status,
             ActorStatus::Stopped(_)
@@ -2552,7 +2884,7 @@ mod tests {
         // Check that a cloned Ref from earlier gets the same event. Every clone
         // should get the same event, even if it's not a subscriber.
         let next_event = mesh_ref.next_supervision_event(instance).await.unwrap();
-        assert_eq!(next_event.actor_mesh_name, Some(mesh_ref.id().to_string()));
+        assert_eq!(next_event.actor_mesh_name, Some(mesh_id.to_string()));
         assert!(matches!(
             next_event.event.actor_status,
             ActorStatus::Stopped(_)

@@ -371,7 +371,10 @@ impl RdmaManagerOwnerActor {
         // asynchronously when it handles the message. The controller may itself
         // be the failed subject, so the post is made non-returning and cannot
         // bounce into the owner.
-        if let Some(controller) = manager_mesh.controller().as_ref() {
+        if let Some(controller) = manager_mesh
+            .as_managed()
+            .and_then(|mesh| mesh.controller().as_ref())
+        {
             let mut unsub = controller.port();
             unsub.return_undeliverable(false);
             let _ = unsub.post(cx, Unsubscribe(subscriber));
@@ -645,7 +648,11 @@ impl Handler<EnsureRdmaManager> for RdmaManagerOwnerActor {
             match self.entries.get_mut(&entry) {
                 Some(MeshState::Ready { manager_mesh, .. }) => {
                     debug_assert!(
-                        manager_mesh.controller().is_some(),
+                        manager_mesh
+                            .as_managed()
+                            .expect("ready RDMA manager mesh should be managed")
+                            .controller()
+                            .is_some(),
                         "RMO-13: a Ready manager mesh is controller-ful",
                     );
                     reply.post(cx, Ok(()));
@@ -702,6 +709,8 @@ impl Handler<EnsureRdmaManager> for RdmaManagerOwnerActor {
         // controller-ful `spawn_service` always sets one (RMO-13), so `expect`
         // here asserts that invariant.
         let controller = mesh
+            .as_managed()
+            .expect("spawned RDMA manager mesh should be managed")
             .controller()
             .as_ref()
             .expect("controller-ful spawn_service always sets a controller")
@@ -1272,7 +1281,11 @@ mod tests {
             )
             .await?;
         assert!(
-            owner_mesh.controller().is_none(),
+            owner_mesh
+                .as_managed()
+                .expect("RDMA manager owner mesh should be managed")
+                .controller()
+                .is_none(),
             "owner is spawned controllerless",
         );
         let owner_ref: ActorRef<RdmaManagerOwnerActor> =
@@ -1551,6 +1564,8 @@ mod tests {
                     }) => {
                         *remaining_acks += 1;
                         let controller = manager_mesh
+                            .as_managed()
+                            .expect("pending RDMA manager mesh should be managed")
                             .controller()
                             .as_ref()
                             .expect("controller-ful manager mesh")

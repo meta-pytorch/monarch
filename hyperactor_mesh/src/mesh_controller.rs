@@ -1105,7 +1105,11 @@ impl<A: Referable> Controlled for ActorMeshControlPlane<A> {
     }
 
     fn id(&self) -> &ResourceId {
-        self.actor_mesh.id().resource_id()
+        self.actor_mesh
+            .as_managed()
+            .expect("actor mesh control plane requires a managed mesh")
+            .id()
+            .resource_id()
     }
 
     fn region(&self) -> &ndslice::Region {
@@ -1120,7 +1124,13 @@ impl<A: Referable> Controlled for ActorMeshControlPlane<A> {
         self.proc_mesh.agent_mesh().cast(
             cx,
             resource::StreamState::<ActorState> {
-                id: self.actor_mesh.id().resource_id().clone(),
+                id: self
+                    .actor_mesh
+                    .as_managed()
+                    .expect("actor mesh control plane requires a managed mesh")
+                    .id()
+                    .resource_id()
+                    .clone(),
                 subscriber_rank: resource::Rank::default(),
                 subscriber,
             },
@@ -1207,7 +1217,15 @@ impl<A: Referable> Controlled for ActorMeshControlPlane<A> {
         // Query resource states with keepalive.
         let actor_states = self
             .proc_mesh
-            .actor_states_with_keepalive(cx, self.actor_mesh.id().clone(), compute_keepalive())
+            .actor_states_with_keepalive(
+                cx,
+                self.actor_mesh
+                    .as_managed()
+                    .expect("actor mesh control plane requires a managed mesh")
+                    .id()
+                    .clone(),
+                compute_keepalive(),
+            )
             .await;
         match actor_states {
             Err(e) => send_poll_failure(
@@ -1343,7 +1361,15 @@ impl<A: Referable> Controlled for ActorMeshControlPlane<A> {
         // Cannot use "ActorMesh::stop" as it tries to message the controller.
         let result = self
             .proc_mesh
-            .stop_actor_by_id(cx, self.actor_mesh.id().clone(), reason)
+            .stop_actor_by_id(
+                cx,
+                self.actor_mesh
+                    .as_managed()
+                    .expect("actor mesh control plane requires a managed mesh")
+                    .id()
+                    .clone(),
+                reason,
+            )
             .await;
 
         match result {
@@ -1382,7 +1408,15 @@ impl<A: Referable> Controlled for ActorMeshControlPlane<A> {
 
     async fn cleanup_stop(&self, cx: &impl context::Actor, reason: String) -> anyhow::Result<()> {
         self.proc_mesh
-            .stop_actor_by_id(cx, self.actor_mesh.id().clone(), reason)
+            .stop_actor_by_id(
+                cx,
+                self.actor_mesh
+                    .as_managed()
+                    .expect("actor mesh control plane requires a managed mesh")
+                    .id()
+                    .clone(),
+                reason,
+            )
             .await?;
         Ok(())
     }
