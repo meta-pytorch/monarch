@@ -157,6 +157,22 @@ fn parse_addr(url: &str) -> anyhow::Result<SocketAddr> {
         .map_err(|err| anyhow::anyhow!("invalid quic address {authority:?}: {err}"))
 }
 
+/// The wildcard client bind address matching `target`'s address family. A QUIC
+/// client endpoint binds a local UDP socket before dialing, and that socket's
+/// family must match the destination: an IPv4-bound socket cannot reach an IPv6
+/// peer (and vice versa). Dialing across machines is normally over IPv6, so this
+/// must pick `[::]:0` for an IPv6 target rather than always binding `0.0.0.0:0`.
+fn client_bind_addr(target: &SocketAddr) -> SocketAddr {
+    match target {
+        SocketAddr::V6(_) => {
+            SocketAddr::new(std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED), 0)
+        }
+        SocketAddr::V4(_) => {
+            SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), 0)
+        }
+    }
+}
+
 /// Owns all QUIC transport state and coroutines. Mirrors `UnixTransport`: the
 /// command loop holds one and forwards serves/joins to it; it never sees streams
 /// or pairing state. TLS configs are built lazily on first use and cached.
@@ -520,7 +536,7 @@ async fn connector_task(
     alive: mpsc::UnboundedSender<()>,
     shm: ShmCtx,
 ) {
-    let endpoint = match Endpoint::client("0.0.0.0:0".parse().expect("valid bind addr")) {
+    let endpoint = match Endpoint::client(client_bind_addr(&addr)) {
         Ok(mut endpoint) => {
             endpoint.set_default_client_config(client_config);
             endpoint
@@ -600,7 +616,7 @@ async fn side_channel_writer_task(
     mut shutdown: watch::Receiver<bool>,
     _alive: mpsc::UnboundedSender<()>,
 ) {
-    let endpoint = match Endpoint::client("0.0.0.0:0".parse().expect("valid bind addr")) {
+    let endpoint = match Endpoint::client(client_bind_addr(&addr)) {
         Ok(mut endpoint) => {
             endpoint.set_default_client_config(client_config);
             endpoint
