@@ -6,12 +6,10 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! Python-facing supervision boundary. `SupervisionError`'s
-//! pyclass shape is unchanged by the mesh-name plumbing in this
-//! diff; any rendered improvement users see in the Python
-//! exception comes from the upstream `Display` chain once mesh
-//! name and Python-class `display_name` are populated by their
-//! producer sites.
+//! Python-facing supervision boundary. `MeshFailure.mesh_name`
+//! exposes optional display metadata; callers that need identity
+//! should use `MeshFailure.mesh_id` and compare it with the mesh's
+//! public `id`.
 
 use async_trait::async_trait;
 use hyperactor::Instance;
@@ -20,6 +18,8 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
 use crate::actor::PythonActor;
+use crate::actor_mesh::PyActorSupervisionEvent;
+use crate::shape::PyPoint;
 
 /// Trait for types that can provide supervision events.
 ///
@@ -149,11 +149,23 @@ impl PyMeshFailure {
     fn mesh(&self) {}
 
     #[getter]
-    fn mesh_name(&self) -> String {
-        self.inner
-            .actor_mesh_name
-            .clone()
-            .unwrap_or("<none>".into())
+    fn mesh_name(&self) -> Option<String> {
+        self.inner.actor_mesh_name.clone()
+    }
+
+    #[getter]
+    fn mesh_id(&self) -> Option<String> {
+        self.inner.mesh_id.clone()
+    }
+
+    #[getter]
+    fn coordinate(&self) -> Option<PyPoint> {
+        self.inner.coordinate.clone().map(PyPoint::from)
+    }
+
+    #[getter]
+    fn event(&self) -> PyActorSupervisionEvent {
+        PyActorSupervisionEvent::from(self.inner.event.clone())
     }
 
     fn __repr__(&self) -> String {

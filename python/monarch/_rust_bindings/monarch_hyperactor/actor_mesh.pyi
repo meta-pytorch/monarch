@@ -21,10 +21,12 @@ class ActorMeshProtocol(Protocol):
     Protocol defining the common interface for actor mesh and mesh ref.
     """
 
-    def name(self) -> PythonTask[str]:
-        """Get the name of the mesh."""
+    @property
+    def id(self) -> str:
+        """Get the stable internal mesh ID."""
         ...
 
+    def name(self) -> PythonTask[str]: ...
     def cast(
         self,
         message: PythonMessage,

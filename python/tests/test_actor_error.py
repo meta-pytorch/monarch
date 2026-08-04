@@ -1485,6 +1485,25 @@ class ErrorActorWithSupervise(ErrorActor):
         return [str(f) for f in self.failures]
 
     @endpoint
+    async def get_failure_details(self) -> list[dict[str, object]]:
+        details: list[dict[str, object]] = []
+        for failure in self.failures:
+            coordinate = failure.coordinate
+            details.append(
+                {
+                    "mesh_name": failure.mesh_name,
+                    "mesh_id": failure.mesh_id,
+                    "coordinate_rank": None if coordinate is None else coordinate.rank,
+                    "coordinate_gpus": None
+                    if coordinate is None
+                    else coordinate["gpus"],
+                    "event_actor_label": failure.event.actor_id.label,
+                    "event_actor_status": failure.event.actor_status,
+                }
+            )
+        return details
+
+    @endpoint
     async def kill_nest(self) -> None:
         pids = await self.mesh.get_pid.call()
         # Kill the actors directly, make sure we get an error.
@@ -1656,7 +1675,18 @@ async def test_supervise_callback_with_mesh_ref():
     second_mesh = spawn_procs_on_this_host({"gpus": 4})
     supervisor = pm.spawn("supervisor", ErrorActorWithSupervise, second_mesh)
     supervisor2 = pm.spawn("supervisor2", ErrorActorWithSupervise, second_mesh)
+    host_mesh = this_host()
+    supervisor_mesh = cast(ActorMesh[ErrorActorWithSupervise], supervisor)
+    host_mesh_id = host_mesh.id
+    proc_mesh_id = second_mesh.id
+    supervisor_mesh_id = supervisor_mesh.id
+    assert isinstance(host_mesh_id, str)
+    assert isinstance(proc_mesh_id, str)
+    assert isinstance(supervisor_mesh_id, str)
+
     error_actor_mesh = await supervisor2.get_mesh.call_one()
+    error_actor_mesh_id = cast(ActorMesh[ErrorActor], error_actor_mesh).id
+    assert isinstance(error_actor_mesh_id, str)
 
     # Call on a mesh that is not owned by that supervisor actor.
     await supervisor.subworker_fail_on_mesh_ref.call(error_actor_mesh)
@@ -1686,6 +1716,29 @@ async def test_supervise_callback_with_mesh_ref():
     for msg in r:
         assert "MeshFailure" in msg
         assert "error_actor" in msg
+
+    details2 = await supervisor2.get_failure_details.call()
+    details2 = [d for _, d in details2]
+    assert len(details2) == 1
+    details = details2[0]
+    assert len(details) == 4
+    assert sorted(detail["coordinate_rank"] for detail in details) == list(range(4))
+    assert sorted(detail["coordinate_gpus"] for detail in details) == list(range(4))
+    for detail in details:
+        mesh_name = detail["mesh_name"]
+        mesh_id = detail["mesh_id"]
+        event_actor_label = detail["event_actor_label"]
+        event_actor_status = detail["event_actor_status"]
+
+        assert mesh_name is None or isinstance(mesh_name, str)
+        assert isinstance(mesh_id, str)
+        assert "error_actor" in mesh_id
+        assert mesh_id == error_actor_mesh_id
+        assert mesh_id != proc_mesh_id
+        assert isinstance(event_actor_label, str)
+        assert event_actor_label.startswith("error_actor")
+        assert isinstance(event_actor_status, str)
+        assert "failed" in event_actor_status.lower()
 
     await pm.stop()
     await second_mesh.stop()

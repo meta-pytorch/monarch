@@ -8,16 +8,20 @@
 
 //! Messages used in supervision of actor meshes.
 //!
-//! ## Mesh-name propagation
+//! ## Mesh identity propagation
 //!
 //! When a `MeshFailure` is constructed for a supervision event
-//! whose constructing site has the mesh name locally in scope, the
-//! mesh name is carried on `MeshFailure.actor_mesh_name`. The
-//! constructing site does not perform a lookup to obtain the mesh
-//! name; if the mesh name is not locally available at the site,
-//! `None` is correct. `MeshFailure::Display` surfaces the mesh
-//! name as an `on mesh "{name}"` segment when `actor_mesh_name`
-//! is populated; stable identifiers continue to appear in detail
+//! whose constructing site has a user-facing display name locally
+//! in scope, that display name is carried on
+//! `MeshFailure.actor_mesh_name`. The constructing site does not
+//! use an internal ID as a fallback display name; if the display
+//! name is not locally available at the site, `None` is correct.
+//! `MeshFailure.mesh_id` carries the stable internal mesh ID when
+//! the constructing site has it, and callers should compare this
+//! field against the mesh object's public `id`.
+//! `MeshFailure::Display` surfaces the display name as an
+//! `on mesh "{name}"` segment when `actor_mesh_name` is
+//! populated; stable identifiers continue to appear in detail
 //! segments where the renderer already includes them.
 //! Python-binding-specific plumbing for this carrier — how a
 //! Python-spawned actor ends up with a mesh base-name string to
@@ -51,6 +55,7 @@ use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
 use hyperactor::context;
 use hyperactor::supervision::ActorSupervisionEvent;
+use ndslice::Point;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -59,12 +64,14 @@ use typeuri::Named;
 /// actor.
 #[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq)]
 pub struct MeshFailure {
-    /// Mesh name carried by the `MeshFailure` construction site,
-    /// when locally available. On the direct actor-handled path
-    /// this is the observing PythonActor's mesh base name. On
-    /// controller-owned paths this is the monitored mesh name
-    /// supplied by the controller path.
+    /// Optional user-facing display name carried by the `MeshFailure`
+    /// construction site when locally available. This field is for
+    /// diagnostics and display, not identity; construction sites must not
+    /// use the internal mesh ID as a fallback display name.
     pub actor_mesh_name: Option<String>,
+    /// Stable internal mesh ID (for example, `workers_abc123`) when available.
+    /// Python callers should compare this to the mesh object's public `id`.
+    pub mesh_id: Option<String>,
     /// The supervision event on an actor located at mesh + rank.
     pub event: ActorSupervisionEvent,
     /// The set of crashed ranks in the mesh. Empty means the event
@@ -76,6 +83,10 @@ pub struct MeshFailure {
     /// controller-originated event. `None` on construction paths with no
     /// reporting controller, which carry no controller attribution.
     pub reporting_controller: Option<ActorId>,
+    /// The coordinate of the point in the mesh where the failure occurred.
+    /// For single-point failures, this is the coordinate of the failed point.
+    /// For whole-mesh failures, this is None.
+    pub coordinate: Option<Point>,
 }
 wirevalue::register_type!(MeshFailure);
 
@@ -120,10 +131,15 @@ impl std::fmt::Display for MeshFailure {
         } else {
             format!(" at ranks {:?}", self.crashed_ranks)
         };
+        let coordinate = if let Some(coord) = &self.coordinate {
+            format!(" at coordinate {}", coord)
+        } else {
+            String::new()
+        };
         write!(
             f,
-            "failure{}{} with event: {}",
-            actor_mesh_name, ranks, self.event
+            "failure{}{}{} with event: {}",
+            actor_mesh_name, ranks, coordinate, self.event
         )
     }
 }
@@ -176,9 +192,11 @@ mod tests {
     fn mesh_failure_display_renders_mesh_name_when_populated() {
         let failure = MeshFailure {
             actor_mesh_name: Some("training".to_string()),
+            mesh_id: Some("training_12345".to_string()),
             event: test_event("actor_a", None),
             crashed_ranks: vec![],
             reporting_controller: None,
+            coordinate: None,
         };
         let rendered = format!("{}", failure);
         assert!(
@@ -194,9 +212,11 @@ mod tests {
     fn mesh_failure_display_omits_mesh_segment_when_none() {
         let failure = MeshFailure {
             actor_mesh_name: None,
+            mesh_id: None,
             event: test_event("actor_a", None),
             crashed_ranks: vec![],
             reporting_controller: None,
+            coordinate: None,
         };
         let rendered = format!("{}", failure);
         assert!(
@@ -213,12 +233,14 @@ mod tests {
     fn mesh_failure_display_renders_mesh_and_python_class() {
         let failure = MeshFailure {
             actor_mesh_name: Some("training".to_string()),
+            mesh_id: Some("training_12345".to_string()),
             event: test_event(
                 "actor_a",
                 Some("instance0.<my_module.Philosopher training>".to_string()),
             ),
             crashed_ranks: vec![],
             reporting_controller: None,
+            coordinate: None,
         };
         let rendered = format!("{}", failure);
         assert!(
@@ -265,15 +287,19 @@ mod tests {
     fn proof_motivating_incident_root_client_undeliverable() {
         let without_mesh_name = MeshFailure {
             actor_mesh_name: None,
+            mesh_id: None,
             event: undeliverable_synthesized_event(),
             crashed_ranks: vec![],
             reporting_controller: None,
+            coordinate: None,
         };
         let with_mesh_name = MeshFailure {
             actor_mesh_name: Some("training".to_string()),
+            mesh_id: Some("training_12345".to_string()),
             event: undeliverable_synthesized_event(),
             crashed_ranks: vec![],
             reporting_controller: None,
+            coordinate: None,
         };
         let expected_without = "failure with event: Supervision event: \
                                 actor worker_proc@inproc://0,dead_actor failed:\n  \
@@ -328,15 +354,19 @@ mod tests {
         };
         let without_mesh_name = MeshFailure {
             actor_mesh_name: None,
+            mesh_id: None,
             event: panicked_event.clone(),
             crashed_ranks: vec![],
             reporting_controller: None,
+            coordinate: None,
         };
         let with_mesh_name = MeshFailure {
             actor_mesh_name: Some("training".to_string()),
+            mesh_id: Some("training_12345".to_string()),
             event: panicked_event,
             crashed_ranks: vec![],
             reporting_controller: None,
+            coordinate: None,
         };
         let expected_without = "failure with event: Supervision event: actor \
                                 instance0.<monarch_examples.dining.Philosopher \
@@ -354,12 +384,11 @@ mod tests {
     // Controller-unreachable path.
     //
     // When the controller for a mesh becomes unreachable, code in
-    // `actor_mesh.rs` synthesizes a `MeshFailure` with
-    // `actor_mesh_name: Some(self.id().to_string())` — the slot is
-    // already populated on this path, and the inner event's
-    // `display_name` is `None` because the construction site has
-    // no `PythonActor` context. This test pins the rendered string
-    // for that exact shape.
+    // `actor_mesh.rs` synthesizes a `MeshFailure` with the stable
+    // mesh ID populated but no display name. The inner event's
+    // `display_name` is also `None` because the construction site
+    // has no `PythonActor` context. This test pins the rendered
+    // string for that exact shape.
     #[test]
     fn proof_controller_unreachable() {
         let controller_timeout_event = {
@@ -375,12 +404,14 @@ mod tests {
             )
         };
         let failure = MeshFailure {
-            actor_mesh_name: Some("training".to_string()),
+            actor_mesh_name: None,
+            mesh_id: Some("training_12345".to_string()),
             event: controller_timeout_event,
             crashed_ranks: vec![],
             reporting_controller: None,
+            coordinate: None,
         };
-        let expected = "failure on mesh \"training\" with event: \
+        let expected = "failure with event: \
                         Supervision event: actor \
                         controller_proc@inproc://0,training_controller \
                         failed:\n  \

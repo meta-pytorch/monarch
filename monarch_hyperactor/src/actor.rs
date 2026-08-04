@@ -51,6 +51,7 @@ use hyperactor_mesh::host_mesh::HostMeshRef;
 use hyperactor_mesh::introspect::ActiveHandler;
 use hyperactor_mesh::introspect::EXECUTION;
 use hyperactor_mesh::introspect::Execution;
+use hyperactor_mesh::mesh_id::ActorMeshId;
 use hyperactor_mesh::supervision::MeshFailure;
 use hyperactor_mesh::transport::default_bind_spec;
 use hyperactor_mesh::value_mesh::ValueOverlay;
@@ -1027,6 +1028,8 @@ pub struct PythonActor {
     /// side channel; downstream code must not consume this field for
     /// any other purpose.
     mesh_base_name: Option<String>,
+    /// Stable ID of the actor mesh that contains this actor.
+    mesh_id: Option<ActorMeshId>,
 
     /// Per-actor in-flight handler tracker (producer of the mesh
     /// `execution` field). Read GIL-free by the introspect seam; a clone
@@ -1041,6 +1044,7 @@ impl PythonActor {
         init_message: Option<PythonMessage>,
         spawn_point: Option<Point>,
         mesh_base_name: Option<String>,
+        mesh_id: Option<ActorMeshId>,
     ) -> Result<Self, anyhow::Error> {
         let use_queue_dispatch = hyperactor_config::global::get(ACTOR_QUEUE_DISPATCH);
         if !use_queue_dispatch {
@@ -1082,6 +1086,7 @@ impl PythonActor {
                     spawn_point: OnceLock::from(spawn_point),
                     init_message,
                     mesh_base_name,
+                    mesh_id,
                     execution_tracker: Arc::new(ExecutionTracker::new()),
                 })
             },
@@ -1207,6 +1212,7 @@ impl PythonActor {
             Some(init_message),
             Some(extent!().point_of_rank(0).unwrap()),
             None, // root client actor has no user-facing mesh name
+            None,
         )
         .expect("create client PythonActor");
 
@@ -1635,11 +1641,13 @@ impl Actor for PythonActor {
                 // plumbed through PythonActorParams at spawn time —
                 // no lookup.
                 actor_mesh_name: self.mesh_base_name.clone(),
+                mesh_id: self.mesh_id.as_ref().map(ToString::to_string),
                 event: event.clone(),
                 crashed_ranks: vec![],
                 // MFCA-4: direct actor-handled supervision conversion, not a
                 // controller report.
                 reporting_controller: None,
+                coordinate: None,
             },
         )
         .await
@@ -1664,6 +1672,8 @@ pub struct PythonActorParams {
     // `supervision_display_name`, which is a rendered supervision
     // display string passed through `spawn_with_name(...)`.
     mesh_base_name: Option<String>,
+    // Stable actor mesh ID generated before the asynchronous spawn.
+    mesh_id: Option<ActorMeshId>,
 }
 
 impl PythonActorParams {
@@ -1671,11 +1681,13 @@ impl PythonActorParams {
         actor_type: PickledPyObject,
         init_message: Option<PythonMessage>,
         mesh_base_name: Option<String>,
+        mesh_id: Option<ActorMeshId>,
     ) -> Self {
         Self {
             actor_type,
             init_message,
             mesh_base_name,
+            mesh_id,
         }
     }
 }
@@ -1689,11 +1701,18 @@ impl RemoteSpawn for PythonActor {
             actor_type,
             init_message,
             mesh_base_name,
+            mesh_id,
         }: PythonActorParams,
         environment: Flattrs,
     ) -> Result<Self, anyhow::Error> {
         let spawn_point = environment.get(CAST_POINT);
-        Self::new(actor_type, init_message, spawn_point, mesh_base_name)
+        Self::new(
+            actor_type,
+            init_message,
+            spawn_point,
+            mesh_base_name,
+            mesh_id,
+        )
     }
 }
 

@@ -1244,7 +1244,7 @@ impl HostMeshRef {
     where
         C::A: Handler<MeshFailure>,
     {
-        self.spawn_inner(
+        self.spawn_with_id(
             cx,
             ProcMeshId::instance(Label::strip(name)),
             per_host,
@@ -1254,8 +1254,9 @@ impl HostMeshRef {
         .await
     }
 
+    /// Spawn a ProcMesh with an ID allocated by the caller.
     #[hyperactor::instrument(fields(host_mesh=self.id.to_string(), proc_mesh=proc_mesh_id.to_string()))]
-    async fn spawn_inner<C: context::Actor>(
+    pub async fn spawn_with_id<C: context::Actor>(
         &self,
         cx: &C,
         proc_mesh_id: ProcMeshId,

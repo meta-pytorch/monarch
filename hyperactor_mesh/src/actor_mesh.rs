@@ -253,7 +253,8 @@ impl<A: Referable> ActorMesh<A> {
             let mut entry = self.health_state.entry(cx).or_default();
             let health_state = entry.get_mut();
             health_state.unhealthy_event = Some(Unhealthy::StreamClosed(MeshFailure {
-                actor_mesh_name: Some(self.id().to_string()),
+                actor_mesh_name: None,
+                mesh_id: Some(self.id().to_string()),
                 event: ActorSupervisionEvent::new(
                     // Use an actor id from the mesh.
                     ndslice::view::Ranked::get(&self.current_ref, 0)
@@ -268,6 +269,7 @@ impl<A: Referable> ActorMesh<A> {
                 // MFCA-4: synthesized locally by the mesh handle, not a
                 // controller report.
                 reporting_controller: None,
+                coordinate: None,
             }));
 
             result?;
@@ -1067,7 +1069,8 @@ impl<A: Referable> ActorMeshRef<A> {
                     // Treat timeout from controller as a supervision failure,
                     // the controller is unreachable.
                     Ok(MeshFailure {
-                        actor_mesh_name: Some(self.id().to_string()),
+                        actor_mesh_name: None,
+                        mesh_id: Some(self.id().to_string()),
                         event: ActorSupervisionEvent::new(
                             controller.actor_addr().clone(),
                             None,
@@ -1082,6 +1085,7 @@ impl<A: Referable> ActorMeshRef<A> {
                         // MFCA-4: synthesized locally when the controller is
                         // unreachable, not a controller report.
                         reporting_controller: None,
+                        coordinate: None,
                     })
                 }
             }?
@@ -1697,7 +1701,17 @@ mod tests {
             .unwrap()
             .expect("no supervision event found on ref from wrapper actor");
         let check_failure = move |failure: MeshFailure| {
-            assert_eq!(failure.actor_mesh_name, Some(child_name.to_string()));
+            let expected_mesh_id = child_name.to_string();
+            assert_eq!(
+                failure.actor_mesh_name.as_deref(),
+                Some(expected_mesh_id.as_str())
+            );
+            assert_eq!(failure.mesh_id.as_deref(), Some(expected_mesh_id.as_str()));
+            let coordinate = failure
+                .coordinate
+                .as_ref()
+                .expect("single-rank failure should include coordinate");
+            assert_eq!(coordinate.rank(), 0);
             assert!(
                 failure
                     .event
@@ -1805,7 +1819,17 @@ mod tests {
             .expect("no supervision event found on ref from wrapper actor");
 
         let check_failure = move |failure: MeshFailure| {
-            assert_eq!(failure.actor_mesh_name, Some(child_name.to_string()));
+            let expected_mesh_id = child_name.to_string();
+            assert_eq!(
+                failure.actor_mesh_name.as_deref(),
+                Some(expected_mesh_id.as_str())
+            );
+            assert_eq!(failure.mesh_id.as_deref(), Some(expected_mesh_id.as_str()));
+            let coordinate = failure
+                .coordinate
+                .as_ref()
+                .expect("single-rank failure should include coordinate");
+            assert_eq!(coordinate.rank(), 0);
             assert!(
                 failure
                     .event
@@ -2544,7 +2568,14 @@ mod tests {
         // Each owned mesh has an implicit ref mesh though, so that is what we
         // test here.
         let next_event = actor_mesh.next_supervision_event(instance).await.unwrap();
-        assert_eq!(next_event.actor_mesh_name, Some(mesh_ref.id().to_string()));
+        let expected_mesh_id = mesh_ref.id().to_string();
+        assert_eq!(next_event.actor_mesh_name.as_deref(), None);
+        assert_eq!(
+            next_event.mesh_id.as_deref(),
+            Some(expected_mesh_id.as_str())
+        );
+        assert!(next_event.crashed_ranks.is_empty());
+        assert!(next_event.coordinate.is_none());
         assert!(matches!(
             next_event.event.actor_status,
             ActorStatus::Stopped(_)
@@ -2552,7 +2583,13 @@ mod tests {
         // Check that a cloned Ref from earlier gets the same event. Every clone
         // should get the same event, even if it's not a subscriber.
         let next_event = mesh_ref.next_supervision_event(instance).await.unwrap();
-        assert_eq!(next_event.actor_mesh_name, Some(mesh_ref.id().to_string()));
+        assert_eq!(next_event.actor_mesh_name.as_deref(), None);
+        assert_eq!(
+            next_event.mesh_id.as_deref(),
+            Some(expected_mesh_id.as_str())
+        );
+        assert!(next_event.crashed_ranks.is_empty());
+        assert!(next_event.coordinate.is_none());
         assert!(matches!(
             next_event.event.actor_status,
             ActorStatus::Stopped(_)

@@ -924,22 +924,23 @@ Custom supervision for fine-grained error handling:
 ```python
 class SupervisorActor(Actor):
     def __init__(self):
-        self.children = []
+        self.children_by_id = {}
 
     def __supervise__(self, failure: MeshFailure) -> bool:
         # failure.report() returns a human-readable error string
-        # failure.mesh_name identifies which owned mesh failed
-        print(f"Supervision event for {failure.mesh_name}: {failure.report()}")
+        # failure.mesh_id is the stable identity field and matches mesh.id
+        child = self.children_by_id.get(failure.mesh_id)
+        print(f"Supervision event for {failure.mesh_id}: {failure.report()}")
 
         # Return True to mark the failure as handled,
         # or False to propagate it up the ownership hierarchy.
-        return False
+        return child is not None
 
     @endpoint
     def spawn_worker(self):
         # Spawn supervised child (proc accessed via actor instance)
         worker = context().actor_instance.proc.spawn("worker", WorkerActor)
-        self.children.append(worker)
+        self.children_by_id[worker.id] = worker
         return worker
 ```
 

@@ -14,7 +14,6 @@ from monarch._rust_bindings.monarch_hyperactor.bootstrap import (
     attach_to_workers as _attach_to_workers,
     run_worker_loop_forever as _run_worker_loop_forever,
 )
-from monarch._rust_bindings.monarch_hyperactor.host_mesh import HostMesh as HyHostMesh
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent
 from monarch._src.actor.actor_mesh import _Lazy
@@ -135,12 +134,11 @@ def attach_to_workers(
     from monarch._src.actor.actor_mesh import context
 
     instance = context().actor_instance._as_rust()
-    host_mesh: PythonTask[HyHostMesh] = _attach_to_workers(
-        instance, workers_tasks, name=name
-    )
+    host_mesh_id, host_mesh = _attach_to_workers(instance, workers_tasks, name=name)
     extent = Extent(["hosts"], [len(workers)])
     hm = HostMesh(
         host_mesh.spawn(),
+        host_mesh_id,
         extent.region,
         stream_logs=False,
         is_fake_in_process=False,

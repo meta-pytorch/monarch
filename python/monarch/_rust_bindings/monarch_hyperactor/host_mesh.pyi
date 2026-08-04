@@ -15,6 +15,8 @@ from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Point, Regio
 
 @final
 class HostMesh:
+    @staticmethod
+    def create_proc_mesh_id(name: str) -> str: ...
     def spawn_nonblocking(
         self,
         instance: Instance,
@@ -22,6 +24,7 @@ class HostMesh:
         per_host: Extent,
         proc_bind: list[dict[str, str]] | None = None,
         per_rank_bootstrap: Callable[[Point], BootstrapCommand] | None = None,
+        mesh_id: str | None = None,
     ) -> PythonTask[ProcMesh]:
         """
         Spawn a new actor on this mesh.
@@ -64,6 +67,12 @@ class HostMesh:
         """
         ...
 
+    @property
+    def id(self) -> str:
+        """Get the stable internal mesh ID."""
+        ...
+
+    def name(self) -> PythonTask[str]: ...
     def __reduce__(self) -> Any: ...
     # pyrefly: ignore [bad-override]
     def __eq__(self, other: "HostMesh") -> bool: ...

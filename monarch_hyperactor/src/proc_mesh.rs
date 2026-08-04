@@ -89,6 +89,9 @@ impl PyProcMesh {
         let init_message = init_message.take()?;
         let task = proc_mesh.task()?.take_task()?;
         let instance = instance.clone();
+        let mesh_id = ActorMeshId::instance(Label::strip(&mesh_base_name));
+        let mesh_id_string = mesh_id.to_string();
+        let spawn_mesh_id = mesh_id.clone();
         let mesh_impl = async move {
             let proc_mesh = task.await?;
 
@@ -111,16 +114,16 @@ impl PyProcMesh {
                             pickled_type,
                             Some(init_message),
                             Some(mesh_base_name.clone()),
+                            Some(spawn_mesh_id),
                         ),
                     ))
                 })
                 .await?;
 
-            let mesh_name = ActorMeshId::instance(Label::strip(&mesh_base_name));
             let actor_mesh = proc_mesh
                 .spawn_with_name(
                     instance.deref(),
-                    mesh_name,
+                    mesh_id,
                     &params,
                     supervision_display_name,
                     false,
@@ -136,6 +139,7 @@ impl PyProcMesh {
             monarch_with_gil_blocking(GilSite::Convert, |py| r.into_py_any(py))
         } else {
             let r = PythonActorMesh::new(
+                mesh_id_string,
                 async move {
                     let mesh_impl: Box<dyn SupervisableActorMesh> = mesh_impl.await?;
                     Ok(mesh_impl)
@@ -174,6 +178,16 @@ impl PyProcMesh {
     #[getter]
     fn region(&self) -> PyResult<PyRegion> {
         Ok(self.mesh_ref()?.region().into())
+    }
+
+    #[getter]
+    fn id(&self) -> PyResult<String> {
+        Ok(self.mesh_ref()?.id().to_string())
+    }
+
+    fn name(&self) -> PyResult<PyPythonTask> {
+        let name = self.mesh_ref()?.id().to_string();
+        PyPythonTask::new(async move { Ok(name) })
     }
 
     fn stop_nonblocking(&self, instance: &PyInstance, reason: String) -> PyResult<PyPythonTask> {
