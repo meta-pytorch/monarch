@@ -56,7 +56,7 @@ use tokio::time::MissedTickBehavior;
 use crate::connection::ConnectionCommand;
 use crate::connection::ConnectionRef;
 use crate::connection::ConnectionTransport;
-use crate::connection::SendPayload;
+use crate::connection::SideChannelMessage;
 use crate::ctx::Command;
 use crate::framing;
 use crate::framing::Incoming;
@@ -178,7 +178,7 @@ pub(crate) struct QuicTransport {
     // `@specifier` tag). Each owns a task that lazily connects (retrying until the
     // gateway is live), streams message frames, and reconnects if the connection
     // drops. Never heartbeated; cached across messages.
-    side_channels: HashMap<String, mpsc::UnboundedSender<ConnectionCommand>>,
+    side_channels: HashMap<String, mpsc::UnboundedSender<SideChannelMessage>>,
     tls: Option<Arc<TlsConfig>>,
     // Liveness-token issuer: each connection's writer holds a clone for its
     // lifetime. Teardown drops this issuing copy and waits for `alive_rx` to close
@@ -235,17 +235,13 @@ impl QuicTransport {
         Ok(tls)
     }
 
-    /// Send a message to a remote gateway over a direct side-channel, opening (and
-    /// caching) the connection on first use. The caller (the command loop) has
-    /// already determined `tag` is a different gateway than the sender's own. The
-    /// side-channel is best-effort and not heartbeated; a message enqueued while
-    /// the remote gateway is not yet live waits for the connection to come up.
-    pub(crate) fn send_to_gateway(
-        &mut self,
-        tag: String,
-        destination_ident: Vec<u8>,
-        payload: SendPayload,
-    ) {
+    /// Send a self-addressing [`SideChannelMessage`] to a remote gateway over a
+    /// direct side-channel, opening (and caching) the connection on first use. The
+    /// caller (the command loop) has already derived `tag` from the message's
+    /// `gateway_for_actor`. The side-channel is best-effort and not heartbeated; a
+    /// message enqueued while the remote gateway is not yet live waits for the
+    /// connection to come up.
+    pub(crate) fn send_to_gateway(&mut self, tag: String, message: SideChannelMessage) {
         if !self.side_channels.contains_key(&tag) {
             let client = match self.tls() {
                 Ok(tls) => tls.client.clone(),
@@ -275,10 +271,7 @@ impl QuicTransport {
             .side_channels
             .get(&tag)
             .expect("side channel just inserted")
-            .send(ConnectionCommand::SendMessage {
-                destination_ident,
-                payload,
-            });
+            .send(message);
     }
 
     /// Signal every writer to flush and exit, then wait until they all have — the
@@ -505,23 +498,12 @@ async fn side_channel_reader_task(
     shm: ShmCtx,
 ) {
     loop {
-        match framing::read_frame(&mut recv, &shm.mapper, shm.client()).await {
-            Ok(Incoming::Command(ConnectionCommand::SendMessage {
-                destination_ident,
-                payload,
-            })) => {
-                if loop_tx
-                    .send(Command::SideChannelDeliver {
-                        destination_ident,
-                        payload,
-                    })
-                    .is_err()
-                {
+        match framing::read_side_channel(&mut recv, &shm.mapper, shm.client()).await {
+            Ok(message) => {
+                if loop_tx.send(Command::SideChannelDeliver(message)).is_err() {
                     return;
                 }
             }
-            // A side-channel carries only messages; ignore anything else.
-            Ok(_) => {}
             Err(_) => return,
         }
     }
@@ -614,7 +596,7 @@ async fn connector_task(
 async fn side_channel_writer_task(
     addr: SocketAddr,
     client_config: ClientConfig,
-    mut rx: mpsc::UnboundedReceiver<ConnectionCommand>,
+    mut rx: mpsc::UnboundedReceiver<SideChannelMessage>,
     mut shutdown: watch::Receiver<bool>,
     _alive: mpsc::UnboundedSender<()>,
 ) {
@@ -633,9 +615,9 @@ async fn side_channel_writer_task(
     // QUIC connection open. `None` means we must (re)connect before the next write.
     let mut stream: Option<(SendStream, KeepAlive)> = None;
     loop {
-        let command = tokio::select! {
-            command = rx.recv() => match command {
-                Some(command) => command,
+        let message = tokio::select! {
+            message = rx.recv() => match message {
+                Some(message) => message,
                 None => break, // sender dropped (gateway gone)
             },
             _ = shutdown.changed() => break,
@@ -656,7 +638,7 @@ async fn side_channel_writer_task(
             stream = Some((send, keep));
         }
         let (send, _keep) = stream.as_mut().expect("stream is connected");
-        if framing::write_command(send, command).await.is_err() {
+        if framing::write_side_channel(send, message).await.is_err() {
             stream = None; // dropped; reconnect on the next message
         }
     }

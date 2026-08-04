@@ -41,9 +41,11 @@ use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt;
 
 use crate::Role;
-use crate::connection::AncestorPayload;
 use crate::connection::ConnectionCommand;
+use crate::connection::MonitorOp;
 use crate::connection::SendPayload;
+use crate::connection::SideChannelAction;
+use crate::connection::SideChannelMessage;
 use crate::msg::MsgPart;
 use crate::shm::MapperHandle;
 use crate::shm::SHM_THRESHOLD;
@@ -69,9 +71,10 @@ enum WireFrame {
         live: Vec<Vec<u8>>,
         dead: Vec<Vec<u8>>,
     },
-    ToAncestor {
-        to_monitor: Vec<u8>,
-        payload: AncestorPayload,
+    UpdateMonitorSubscription {
+        listener: Vec<u8>,
+        target: Vec<u8>,
+        op: MonitorOp,
     },
     Severed {
         reason: Vec<u8>,
@@ -99,6 +102,26 @@ enum WirePayload {
     FireMonitor {
         to_monitor: Vec<u8>,
         is_timeout: bool,
+    },
+}
+
+/// One frame on a gateway side-channel — the wire form of a [`SideChannelMessage`].
+/// `Send` of an actor message reuses [`WirePayload`]'s zero-copy part-length header
+/// + streamed bytes (+ shm); every other case is header-only.
+#[derive(Serialize, Deserialize)]
+enum SideChannelFrame {
+    Send {
+        gateway_for_actor: Vec<u8>,
+        payload: WirePayload,
+    },
+    UpdateRemoteMonitorState {
+        gateway_for_actor: Vec<u8>,
+        listener: Vec<u8>,
+        op: MonitorOp,
+    },
+    AckRemoteMonitor {
+        gateway_for_actor: Vec<u8>,
+        monitoring: Vec<u8>,
     },
 }
 
@@ -211,12 +234,14 @@ pub(crate) async fn write_command<W: AsyncWrite + Unpin>(
             alive,
         },
         ConnectionCommand::PublishRoutes { live, dead } => WireFrame::PublishRoutes { live, dead },
-        ConnectionCommand::ToAncestor {
-            to_monitor,
-            payload,
-        } => WireFrame::ToAncestor {
-            to_monitor,
-            payload,
+        ConnectionCommand::UpdateMonitorSubscription {
+            listener,
+            target,
+            op,
+        } => WireFrame::UpdateMonitorSubscription {
+            listener,
+            target,
+            op,
         },
         ConnectionCommand::Severed { reason } => WireFrame::Severed { reason },
         ConnectionCommand::PublishGatewayRoutes { live } => {
@@ -237,7 +262,7 @@ pub(crate) async fn write_heartbeat<W: AsyncWrite + Unpin>(writer: &mut W) -> st
 
 async fn write_frame<W: AsyncWrite + Unpin>(
     writer: &mut W,
-    frame: &WireFrame,
+    frame: &impl Serialize,
     parts: &[MsgPart],
 ) -> std::io::Result<()> {
     let header = bincode::serde::encode_to_vec(frame, bincode_config())
@@ -315,12 +340,14 @@ pub(crate) async fn read_frame<R: AsyncRead + Unpin>(
         WireFrame::PublishRoutes { live, dead } => {
             Incoming::Command(ConnectionCommand::PublishRoutes { live, dead })
         }
-        WireFrame::ToAncestor {
-            to_monitor,
-            payload,
-        } => Incoming::Command(ConnectionCommand::ToAncestor {
-            to_monitor,
-            payload,
+        WireFrame::UpdateMonitorSubscription {
+            listener,
+            target,
+            op,
+        } => Incoming::Command(ConnectionCommand::UpdateMonitorSubscription {
+            listener,
+            target,
+            op,
         }),
         WireFrame::Severed { reason } => Incoming::Command(ConnectionCommand::Severed { reason }),
         WireFrame::PublishGatewayRoutes { live } => {
@@ -329,6 +356,121 @@ pub(crate) async fn read_frame<R: AsyncRead + Unpin>(
         WireFrame::GatewayDied { dead } => {
             Incoming::Command(ConnectionCommand::GatewayDied { dead })
         }
+    })
+}
+
+/// Serialize and write one [`SideChannelMessage`]: a length-prefixed bincode
+/// header, then — for a `Send` of an actor message — each part's bytes streamed
+/// raw after it (zero-copy, same scheme as [`write_command`]). Every other action
+/// is header-only.
+pub(crate) async fn write_side_channel<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    message: SideChannelMessage,
+) -> std::io::Result<()> {
+    let SideChannelMessage {
+        gateway_for_actor,
+        action,
+    } = message;
+    let mut parts: Vec<MsgPart> = Vec::new();
+    let frame = match action {
+        SideChannelAction::Send(payload) => {
+            let payload = match payload {
+                SendPayload::ActorMessage(message_parts) => {
+                    let part_lens = message_parts
+                        .iter()
+                        .map(|part| part.as_bytes().len() as u64)
+                        .collect();
+                    parts = message_parts;
+                    WirePayload::ActorMessage { part_lens }
+                }
+                SendPayload::FireMonitor {
+                    to_monitor,
+                    is_timeout,
+                } => WirePayload::FireMonitor {
+                    to_monitor,
+                    is_timeout,
+                },
+            };
+            SideChannelFrame::Send {
+                gateway_for_actor,
+                payload,
+            }
+        }
+        SideChannelAction::UpdateRemoteMonitorState { listener, op } => {
+            SideChannelFrame::UpdateRemoteMonitorState {
+                gateway_for_actor,
+                listener,
+                op,
+            }
+        }
+        SideChannelAction::AckRemoteMonitor { monitoring } => SideChannelFrame::AckRemoteMonitor {
+            gateway_for_actor,
+            monitoring,
+        },
+    };
+    write_frame(writer, &frame, &parts).await
+}
+
+/// Read one [`SideChannelMessage`] off a gateway side-channel. A `Send` of an
+/// actor message reads each part exactly like [`read_frame`] (small parts into
+/// owned buffers, large ones into the slab via `mapper`/`client`); other actions
+/// are header-only.
+pub(crate) async fn read_side_channel<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    mapper: &MapperHandle,
+    client: Option<ShmClient>,
+) -> std::io::Result<SideChannelMessage> {
+    let mut len_buf = [0u8; 8];
+    reader.read_exact(&mut len_buf).await?;
+    let header_len = u64::from_le_bytes(len_buf) as usize;
+
+    let mut header = vec![0u8; header_len];
+    reader.read_exact(&mut header).await?;
+    let (frame, _) =
+        bincode::serde::decode_from_slice::<SideChannelFrame, _>(&header, bincode_config())
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+
+    Ok(match frame {
+        SideChannelFrame::Send {
+            gateway_for_actor,
+            payload,
+        } => {
+            let payload = match payload {
+                WirePayload::ActorMessage { part_lens } => {
+                    let mut parts = Vec::with_capacity(part_lens.len());
+                    for len in part_lens {
+                        parts.push(read_part(reader, len, mapper, client).await?);
+                    }
+                    SendPayload::ActorMessage(parts)
+                }
+                WirePayload::FireMonitor {
+                    to_monitor,
+                    is_timeout,
+                } => SendPayload::FireMonitor {
+                    to_monitor,
+                    is_timeout,
+                },
+            };
+            SideChannelMessage {
+                gateway_for_actor,
+                action: SideChannelAction::Send(payload),
+            }
+        }
+        SideChannelFrame::UpdateRemoteMonitorState {
+            gateway_for_actor,
+            listener,
+            op,
+        } => SideChannelMessage {
+            gateway_for_actor,
+            action: SideChannelAction::UpdateRemoteMonitorState { listener, op },
+        },
+        SideChannelFrame::AckRemoteMonitor {
+            gateway_for_actor,
+            monitoring,
+        } => SideChannelMessage {
+            gateway_for_actor,
+            action: SideChannelAction::AckRemoteMonitor { monitoring },
+        },
     })
 }
 

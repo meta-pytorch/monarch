@@ -38,8 +38,8 @@ use tokio::io::Interest;
 use tokio::net::UnixStream;
 
 use crate::Role;
-use crate::connection::AncestorPayload;
 use crate::connection::ConnectionCommand;
+use crate::connection::MonitorOp;
 use crate::connection::SendPayload;
 use crate::msg::MsgPart;
 use crate::shm::MapperHandle;
@@ -67,9 +67,10 @@ enum UnixFrame {
         live: Vec<Vec<u8>>,
         dead: Vec<Vec<u8>>,
     },
-    ToAncestor {
-        to_monitor: Vec<u8>,
-        payload: AncestorPayload,
+    UpdateMonitorSubscription {
+        listener: Vec<u8>,
+        target: Vec<u8>,
+        op: MonitorOp,
     },
     Severed {
         reason: Vec<u8>,
@@ -166,15 +167,17 @@ pub(crate) async fn write_command(
         ConnectionCommand::PublishRoutes { live, dead } => {
             write_header(stream, &UnixFrame::PublishRoutes { live, dead }).await
         }
-        ConnectionCommand::ToAncestor {
-            to_monitor,
-            payload,
+        ConnectionCommand::UpdateMonitorSubscription {
+            listener,
+            target,
+            op,
         } => {
             write_header(
                 stream,
-                &UnixFrame::ToAncestor {
-                    to_monitor,
-                    payload,
+                &UnixFrame::UpdateMonitorSubscription {
+                    listener,
+                    target,
+                    op,
                 },
             )
             .await
@@ -314,12 +317,14 @@ pub(crate) async fn read_command(
             alive,
         },
         UnixFrame::PublishRoutes { live, dead } => ConnectionCommand::PublishRoutes { live, dead },
-        UnixFrame::ToAncestor {
-            to_monitor,
-            payload,
-        } => ConnectionCommand::ToAncestor {
-            to_monitor,
-            payload,
+        UnixFrame::UpdateMonitorSubscription {
+            listener,
+            target,
+            op,
+        } => ConnectionCommand::UpdateMonitorSubscription {
+            listener,
+            target,
+            op,
         },
         UnixFrame::Severed { reason } => ConnectionCommand::Severed { reason },
         UnixFrame::PublishGatewayRoutes { live } => {

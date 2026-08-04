@@ -17,13 +17,17 @@ use crate::Role;
 use crate::actor::ActorEntry;
 use crate::actor::ActorName;
 use crate::actor::Delivery;
+use crate::actor::GatewayMonitors;
 use crate::actor::GatewayState;
 use crate::actor::Route;
 use crate::connection::ConnectRequest;
 use crate::connection::Connection;
 use crate::connection::ConnectionCommand;
 use crate::connection::ConnectionRef;
+use crate::connection::MonitorOp;
 use crate::connection::SendPayload;
+use crate::connection::SideChannelAction;
+use crate::connection::SideChannelMessage;
 use crate::ctx::ChildConnectionKey;
 use crate::ctx::Command;
 use crate::ctx::Ctx;
@@ -296,14 +300,8 @@ fn side_channel_routes_to_owning_gateway_among_several_on_one_endpoint() {
     connect(&mut ctx, gw2, c2, "inproc://gw2-c2");
     drain_commands(&mut ctx, &mut rx);
 
-    ctx.deliver_side_channel(
-        b"c2@X".to_vec(),
-        SendPayload::ActorMessage(vec![MsgPart::from_bytes(b"two".to_vec())]),
-    );
-    ctx.deliver_side_channel(
-        b"c1@X".to_vec(),
-        SendPayload::ActorMessage(vec![MsgPart::from_bytes(b"one".to_vec())]),
-    );
+    side_channel_send(&mut ctx, "c2@X", b"two");
+    side_channel_send(&mut ctx, "c1@X", b"one");
     drain_commands(&mut ctx, &mut rx);
 
     assert_eq!(buffered_strings(&ctx, c2), vec!["c2@X", "gw2@X", "two"]);
@@ -312,23 +310,21 @@ fn side_channel_routes_to_owning_gateway_among_several_on_one_endpoint() {
 
 #[test]
 fn side_channel_message_pends_until_a_gateway_route_is_known() {
-    // A side-channel message for a destination no gateway can route yet is held in
-    // the context-wide pending table, then flushed once a gateway learns the route.
+    // A side-channel message that arrives before any gateway for its destination's
+    // tag even exists cannot be resolved, so it is held in the context-wide pending
+    // table, then flushed once a gateway learns the route.
     let (mut ctx, mut rx) = test_ctx();
-    let gw = gateway_actor(&mut ctx, "gw@X");
-    let child = actor(&mut ctx, "c@X");
 
-    ctx.deliver_side_channel(
-        b"c@X".to_vec(),
-        SendPayload::ActorMessage(vec![MsgPart::from_bytes(b"held".to_vec())]),
-    );
+    side_channel_send(&mut ctx, "c@X", b"held");
     assert!(
         ctx.pending_side_channel.contains_key(b"c@X".as_slice()),
         "unroutable side-channel message should pend"
     );
 
-    // The destination joins the gateway; its route propagates up and the pending
-    // message flushes down to it.
+    // The gateway and destination appear; the destination's route propagates up and
+    // the pending message flushes down to it.
+    let gw = gateway_actor(&mut ctx, "gw@X");
+    let child = actor(&mut ctx, "c@X");
     connect(&mut ctx, gw, child, "inproc://gw-c");
     drain_commands(&mut ctx, &mut rx);
 
@@ -355,10 +351,7 @@ fn side_channel_message_dropped_when_owning_gateway_is_dead() {
         reason: MsgPart::from_bytes(b"gone".to_vec()),
     });
 
-    ctx.deliver_side_channel(
-        b"c@X".to_vec(),
-        SendPayload::ActorMessage(vec![MsgPart::from_bytes(b"x".to_vec())]),
-    );
+    side_channel_send(&mut ctx, "c@X", b"x");
     assert!(
         !ctx.pending_side_channel.contains_key(b"c@X".as_slice()),
         "a message for a dead gateway's subtree should be dropped, not pended"
@@ -395,10 +388,37 @@ fn has_gateway_route(ctx: &Ctx, actor: Key, tag: &str) -> bool {
         .any(|tags| tags.contains(tag.as_bytes()))
 }
 
-/// `actor`'s known-dead gateway set (panics if `actor` is not a gateway).
-fn dead_gateways(ctx: &Ctx, actor: Key) -> &std::collections::HashSet<Vec<u8>> {
+/// `actor`'s cross-gateway monitor map (panics if `actor` is not a gateway).
+fn gateway_state(ctx: &Ctx, actor: Key) -> &std::collections::HashMap<Vec<u8>, GatewayMonitors> {
     match &ctx.actors[actor].gateway {
-        GatewayState::Gateway { dead_gateways } => dead_gateways,
+        GatewayState::Gateway { gateway_state } => gateway_state,
+        GatewayState::NotAGateway => panic!("actor should be a gateway"),
+    }
+}
+
+/// Whether `actor` (a gateway) has recorded `tag` as dead.
+fn gateway_is_dead(ctx: &Ctx, actor: Key, tag: &str) -> bool {
+    matches!(
+        gateway_state(ctx, actor).get(tag.as_bytes()),
+        Some(GatewayMonitors::Dead)
+    )
+}
+
+/// How many gateway tags `actor` (a gateway) has recorded as dead.
+fn dead_gateway_count(ctx: &Ctx, actor: Key) -> usize {
+    gateway_state(ctx, actor)
+        .values()
+        .filter(|state| matches!(state, GatewayMonitors::Dead))
+        .count()
+}
+
+/// Mark `tag` dead in `actor`'s (a gateway's) gateway state, as a death broadcast
+/// would.
+fn mark_gateway_dead(ctx: &mut Ctx, actor: Key, tag: &str) {
+    match &mut ctx.actors[actor].gateway {
+        GatewayState::Gateway { gateway_state } => {
+            gateway_state.insert(tag.as_bytes().to_vec(), GatewayMonitors::Dead);
+        }
         GatewayState::NotAGateway => panic!("actor should be a gateway"),
     }
 }
@@ -439,10 +459,7 @@ fn populate_gateway_routes_ignores_already_dead_tags() {
     connect(&mut ctx, root, child, "inproc://dead-tag");
     drain_commands(&mut ctx, &mut rx);
 
-    match &mut ctx.actors[root].gateway {
-        GatewayState::Gateway { dead_gateways } => dead_gateways.insert(b"A".to_vec()),
-        GatewayState::NotAGateway => panic!("root is a gateway"),
-    };
+    mark_gateway_dead(&mut ctx, root, "A");
     let root_to_child = only_child_slot(&ctx, root);
     publish_gateway_routes(&mut ctx, root, root_to_child, vec![b"A".to_vec()]);
 
@@ -479,7 +496,7 @@ fn connection_failure_announces_nested_gateway_death_to_root() {
     drain_commands(&mut ctx, &mut rx);
 
     assert!(
-        dead_gateways(&ctx, root).contains(b"G".as_slice()),
+        gateway_is_dead(&ctx, root, "G"),
         "the root learns the gateway died"
     );
     assert!(
@@ -527,7 +544,7 @@ fn gateway_death_fans_down_through_nongateway_relays() {
     ctx.gateway_died(root, vec![b"D".to_vec()], true);
     drain_commands(&mut ctx, &mut rx);
 
-    assert!(dead_gateways(&ctx, root).contains(b"D".as_slice()));
+    assert!(gateway_is_dead(&ctx, root, "D"));
     assert!(
         has_gateway_route(&ctx, root, "S"),
         "the still-live sibling route is untouched"
@@ -549,9 +566,248 @@ fn gateway_death_is_recorded_once_at_a_gateway() {
     ctx.gateway_died(gw, vec![b"B".to_vec()], true);
 
     assert_eq!(
-        dead_gateways(&ctx, gw).len(),
+        dead_gateway_count(&ctx, gw),
         1,
         "a repeated death wave is absorbed without duplication"
+    );
+}
+
+// -- Cross-gateway (remote) monitors, driven synchronously -------------------
+
+/// Number of cross-gateway monitors `gw` holds against owning-gateway `tag` (0 if
+/// the tag has no `Subscribed` entry).
+fn remote_monitor_count(ctx: &Ctx, gw: Key, tag: &str) -> usize {
+    match gateway_state(ctx, gw).get(tag.as_bytes()) {
+        Some(GatewayMonitors::Subscribed(subs)) => subs.len(),
+        _ => 0,
+    }
+}
+
+/// Whether `gw` holds an *acked* cross-gateway monitor for (`listener`,
+/// `monitoring`).
+fn remote_monitor_acked(ctx: &Ctx, gw: Key, listener: &str, monitoring: &str) -> bool {
+    let tag = monitoring.rsplit('@').next().unwrap_or("");
+    matches!(
+        gateway_state(ctx, gw).get(tag.as_bytes()),
+        Some(GatewayMonitors::Subscribed(subs))
+            if subs.iter().any(|m| m.listener == listener.as_bytes()
+                && m.monitoring == monitoring.as_bytes()
+                && m.acked)
+    )
+}
+
+/// The parts of `actor`'s most recently buffered message (panics if none).
+fn last_message(ctx: &Ctx, actor: Key) -> Vec<String> {
+    let Delivery::NoPoller { buffered } = &ctx.actors[actor].delivery else {
+        panic!("actor should not be subscribed");
+    };
+    buffered
+        .back()
+        .expect("a message should have been buffered")
+        .iter()
+        .map(|part| String::from_utf8(part.as_bytes().to_vec()).unwrap())
+        .collect()
+}
+
+/// Deliver a side-channel `AckRemoteMonitor` confirming (`listener`, `monitoring`).
+fn deliver_ack(ctx: &mut Ctx, listener: &str, monitoring: &str) {
+    ctx.deliver_side_channel(SideChannelMessage {
+        gateway_for_actor: listener.as_bytes().to_vec(),
+        action: SideChannelAction::AckRemoteMonitor {
+            monitoring: monitoring.as_bytes().to_vec(),
+        },
+    });
+}
+
+/// Build a gateway `gwA@A` with a local listener child `L@A` joined over inproc,
+/// returning `(gateway, listener)` with establishment hellos drained.
+fn gateway_with_listener(ctx: &mut Ctx, rx: &mut mpsc::UnboundedReceiver<Command>) -> (Key, Key) {
+    let gw = gateway_actor(ctx, "gwA@A");
+    let listener = actor(ctx, "L@A");
+    connect(ctx, gw, listener, "inproc://rm-listener");
+    drain_commands(ctx, rx);
+    (gw, listener)
+}
+
+#[test]
+fn remote_monitor_fires_when_owning_gateway_dies() {
+    // L@A monitors T@B (a different gateway). The subscription climbs to gwA and is
+    // held there as a cross-gateway monitor against tag B. When B is announced dead,
+    // gwA fires the held monitor back to L and records B as dead.
+    let (mut ctx, mut rx) = test_ctx();
+    let (gw, listener) = gateway_with_listener(&mut ctx, &mut rx);
+
+    monitor(&mut ctx, listener, 1, "T@B", "T-DOWN");
+    drain_commands(&mut ctx, &mut rx);
+    assert_eq!(
+        remote_monitor_count(&ctx, gw, "B"),
+        1,
+        "the cross-gateway subscription is held at gwA"
+    );
+
+    ctx.gateway_died(gw, vec![b"B".to_vec()], true);
+    drain_commands(&mut ctx, &mut rx);
+
+    assert!(gateway_is_dead(&ctx, gw, "B"), "B is recorded dead");
+    assert_eq!(
+        last_message(&ctx, listener),
+        vec!["T-DOWN", "T@B", "actor died"],
+        "the listener's monitor fired"
+    );
+}
+
+#[test]
+fn unacked_remote_subscribe_timeout_declares_gateway_dead() {
+    // The owning gateway never acknowledges the registration (the sync harness sends
+    // nothing back), so the must-exist timer at gwA treats B as unreachable: it
+    // declares B dead, which fires the monitor.
+    let (mut ctx, mut rx) = test_ctx();
+    let (gw, listener) = gateway_with_listener(&mut ctx, &mut rx);
+
+    monitor_with_timeout(&mut ctx, listener, 1, "T@B", "T-DOWN", 50);
+    drain_commands(&mut ctx, &mut rx);
+    assert_eq!(remote_monitor_count(&ctx, gw, "B"), 1);
+    assert!(
+        !remote_monitor_acked(&ctx, gw, "L@A", "T@B"),
+        "no ack arrived in the sync harness"
+    );
+
+    check_monitor_timeout(&mut ctx, gw, "L@A", "T@B");
+    drain_commands(&mut ctx, &mut rx);
+
+    assert!(
+        gateway_is_dead(&ctx, gw, "B"),
+        "the unreachable gateway is dead"
+    );
+    assert_eq!(
+        last_message(&ctx, listener),
+        vec!["T-DOWN", "T@B", "actor died"]
+    );
+}
+
+#[test]
+fn acked_remote_subscribe_timeout_is_noop() {
+    // Once the owning gateway acknowledges, the must-exist timer no longer declares
+    // it dead: the registration is confirmed, so a timer fire is a no-op.
+    let (mut ctx, mut rx) = test_ctx();
+    let (gw, listener) = gateway_with_listener(&mut ctx, &mut rx);
+
+    monitor_with_timeout(&mut ctx, listener, 1, "T@B", "T-DOWN", 50);
+    drain_commands(&mut ctx, &mut rx);
+    deliver_ack(&mut ctx, "L@A", "T@B");
+    assert!(
+        remote_monitor_acked(&ctx, gw, "L@A", "T@B"),
+        "the registration is acked"
+    );
+
+    check_monitor_timeout(&mut ctx, gw, "L@A", "T@B");
+    drain_commands(&mut ctx, &mut rx);
+
+    assert!(
+        !gateway_is_dead(&ctx, gw, "B"),
+        "an acked gateway is not declared dead"
+    );
+    assert_eq!(
+        remote_monitor_count(&ctx, gw, "B"),
+        1,
+        "the monitor is still held"
+    );
+    assert_eq!(
+        buffered_strings(&ctx, listener),
+        vec!["L@A", "gwA@A"],
+        "no monitor fired (only the establishment hellos)"
+    );
+}
+
+#[test]
+fn cancelled_remote_monitor_timeout_does_not_declare_dead() {
+    // Cancelling the monitor drops the held cross-gateway record and its now-empty
+    // tag entry, so a stale must-exist timer finds nothing and does not declare the
+    // gateway dead.
+    let (mut ctx, mut rx) = test_ctx();
+    let (gw, listener) = gateway_with_listener(&mut ctx, &mut rx);
+
+    monitor_with_timeout(&mut ctx, listener, 1, "T@B", "T-DOWN", 50);
+    drain_commands(&mut ctx, &mut rx);
+    assert_eq!(remote_monitor_count(&ctx, gw, "B"), 1);
+
+    ctx.run_command(Command::CancelMonitor {
+        actor: listener,
+        id: 1,
+    });
+    drain_commands(&mut ctx, &mut rx);
+    assert_eq!(
+        remote_monitor_count(&ctx, gw, "B"),
+        0,
+        "cancellation drops the held monitor"
+    );
+
+    check_monitor_timeout(&mut ctx, gw, "L@A", "T@B");
+    drain_commands(&mut ctx, &mut rx);
+    assert!(
+        !gateway_is_dead(&ctx, gw, "B"),
+        "a stale timer must not declare the gateway dead after cancellation"
+    );
+}
+
+#[test]
+fn subscribe_on_already_dead_gateway_fires_immediately() {
+    // Subscribing to a target on a gateway already known dead fires the monitor at
+    // once and holds nothing.
+    let (mut ctx, mut rx) = test_ctx();
+    let (gw, listener) = gateway_with_listener(&mut ctx, &mut rx);
+    mark_gateway_dead(&mut ctx, gw, "B");
+
+    monitor(&mut ctx, listener, 1, "T@B", "T-DOWN");
+    drain_commands(&mut ctx, &mut rx);
+
+    assert_eq!(
+        remote_monitor_count(&ctx, gw, "B"),
+        0,
+        "no monitor is held for an already-dead gateway"
+    );
+    assert_eq!(
+        last_message(&ctx, listener),
+        vec!["T-DOWN", "T@B", "actor died"],
+        "the monitor fired immediately"
+    );
+}
+
+#[test]
+fn pending_side_channel_holds_any_action_until_resolvable() {
+    // A non-`Send` side-channel action (a remote subscribe) that arrives before its
+    // owning gateway exists is held whole in pending_side_channel — not dropped —
+    // and replayed once the gateway and target route appear, registering an ordinary
+    // local monitor at the owning gateway.
+    let (mut ctx, mut rx) = test_ctx();
+
+    ctx.deliver_side_channel(SideChannelMessage {
+        gateway_for_actor: b"T@B".to_vec(),
+        action: SideChannelAction::UpdateRemoteMonitorState {
+            listener: b"L@A".to_vec(),
+            op: MonitorOp::Subscribe { timeout_ms: 0 },
+        },
+    });
+    assert!(
+        ctx.pending_side_channel.contains_key(b"T@B".as_slice()),
+        "an unresolvable remote subscribe should pend, not be dropped"
+    );
+
+    // gwB and its child T@B appear; the route propagates and the pended subscribe is
+    // replayed, becoming a local MonitorSub on gwB's route to T.
+    let gw_b = gateway_actor(&mut ctx, "gwB@B");
+    let target = actor(&mut ctx, "T@B");
+    connect(&mut ctx, gw_b, target, "inproc://pend-t");
+    drain_commands(&mut ctx, &mut rx);
+
+    assert!(
+        !ctx.pending_side_channel.contains_key(b"T@B".as_slice()),
+        "the pending message is released once T@B is resolvable"
+    );
+    assert_eq!(
+        route_monitor_count(&ctx, gw_b, "T@B"),
+        1,
+        "the replayed subscribe registered a local monitor at the owning gateway"
     );
 }
 
@@ -1768,6 +2024,195 @@ fn quic_gateway_reaches_root_actor_and_its_inproc_child() {
 }
 
 #[test]
+fn quic_monitor_on_root_domain_target_climbs_to_root() {
+    // A child of gateway A monitors a root-domain target (blank specifier). The
+    // subscription must climb gwA's parent link to the root — where the target
+    // actually lives — rather than being held at gwA (which would never see the
+    // target and would fire a false non-existence). Killing the root-domain target
+    // then fires the monitor back to the gateway child over a side-channel.
+    set_quic_env();
+    let root_ctx = CtxHandle::new().expect("root ctx");
+    let a_ctx = CtxHandle::new().expect("a ctx");
+
+    let root_url = free_quic_url();
+    let a_url = free_quic_url();
+    let a_tag = quic_authority(&a_url);
+
+    let root = runtime_gateway_actor(&root_ctx, "root");
+    let rootchild = runtime_actor(&root_ctx, "rootchild");
+    let gw_a = runtime_gateway_actor(&a_ctx, &format!("gwA@{a_tag}"));
+    let a1 = runtime_actor(&a_ctx, &format!("a1@{a_tag}"));
+
+    let (rc_poller, mut rc_rx) = runtime_poller(&root_ctx);
+    let (a1_poller, mut a1_rx) = runtime_poller(&a_ctx);
+    runtime_subscribe(&root_ctx, rc_poller, 0, rootchild);
+    runtime_subscribe(&a_ctx, a1_poller, 0, a1);
+
+    runtime_serve(&root_ctx, root, &root_url);
+    runtime_join(&a_ctx, gw_a, &root_url);
+    // gwA serves its own endpoint so root can side-channel the fire back to it.
+    runtime_serve(&a_ctx, gw_a, &a_url);
+    runtime_connect(&root_ctx, root, rootchild, "inproc://climb-rc");
+    runtime_connect(&a_ctx, gw_a, a1, "inproc://climb-a");
+
+    // Drain establishment hellos so rootchild is routable before a1 subscribes.
+    assert_eq!(recv_strings(&mut rc_rx), vec!["rootchild", "root"]);
+    assert_eq!(
+        recv_strings(&mut a1_rx),
+        vec![format!("a1@{a_tag}"), format!("gwA@{a_tag}")]
+    );
+
+    // a1@A monitors rootchild (root domain); the subscribe climbs gwA -> root.
+    runtime_monitor(&a_ctx, a1, 1, "rootchild", "RC-DOWN");
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    root_ctx
+        .send_command(Command::Die {
+            actor: rootchild,
+            reason: MsgPart::from_bytes(b"boom".to_vec()),
+        })
+        .expect("die should enqueue");
+
+    assert_eq!(
+        recv_strings(&mut a1_rx),
+        vec!["RC-DOWN", "rootchild", "actor died"],
+        "the root-domain target's death fired the gateway child's monitor"
+    );
+
+    shutdown(a_ctx);
+    shutdown(root_ctx);
+}
+
+/// Build a three-context cross-gateway topology (root + gwA + gwB) with a listener
+/// `L@A` under gwA and a target `T@B` under gwB, all establishment hellos drained.
+/// Returns the contexts, the gwB/target keys, the listener's delivery receiver, and
+/// the `b_tag`. Mirrors `quic_gateway_to_gateway_bypasses_root`'s wiring.
+fn quic_cross_gateway_monitor_setup() -> (
+    CtxHandle,
+    CtxHandle,
+    CtxHandle,
+    Key,
+    Key,
+    Key,
+    mpsc::UnboundedReceiver<Delivered>,
+    String,
+) {
+    set_quic_env();
+    let root_ctx = CtxHandle::new().expect("root ctx");
+    let a_ctx = CtxHandle::new().expect("a ctx");
+    let b_ctx = CtxHandle::new().expect("b ctx");
+
+    let root_url = free_quic_url();
+    let a_url = free_quic_url();
+    let b_url = free_quic_url();
+    let a_tag = quic_authority(&a_url);
+    let b_tag = quic_authority(&b_url);
+
+    let root = runtime_gateway_actor(&root_ctx, "root");
+    let gw_a = runtime_gateway_actor(&a_ctx, &format!("gwA@{a_tag}"));
+    let listener = runtime_actor(&a_ctx, &format!("L@{a_tag}"));
+    let gw_b = runtime_gateway_actor(&b_ctx, &format!("gwB@{b_tag}"));
+    let target = runtime_actor(&b_ctx, &format!("T@{b_tag}"));
+
+    let (l_poller, l_rx) = runtime_poller(&a_ctx);
+    let (t_poller, mut t_rx) = runtime_poller(&b_ctx);
+    runtime_subscribe(&a_ctx, l_poller, 0, listener);
+    runtime_subscribe(&b_ctx, t_poller, 0, target);
+
+    // root is the shared rendezvous (serves once per joining gateway).
+    runtime_serve(&root_ctx, root, &root_url);
+    runtime_serve(&root_ctx, root, &root_url);
+    runtime_join(&a_ctx, gw_a, &root_url);
+    runtime_join(&b_ctx, gw_b, &root_url);
+    // Each gateway serves its own endpoint so a sibling can side-channel to it.
+    runtime_serve(&a_ctx, gw_a, &a_url);
+    runtime_serve(&b_ctx, gw_b, &b_url);
+    runtime_connect(&a_ctx, gw_a, listener, "inproc://rm-listener");
+    runtime_connect(&b_ctx, gw_b, target, "inproc://rm-target");
+
+    let mut l_rx = l_rx;
+    // Drain the local-child hellos so T is routable before L subscribes.
+    assert_eq!(
+        recv_strings(&mut l_rx),
+        vec![format!("L@{a_tag}"), format!("gwA@{a_tag}")]
+    );
+    assert_eq!(
+        recv_strings(&mut t_rx),
+        vec![format!("T@{b_tag}"), format!("gwB@{b_tag}")]
+    );
+
+    (root_ctx, a_ctx, b_ctx, gw_b, target, listener, l_rx, b_tag)
+}
+
+#[test]
+fn quic_remote_monitor_fires_when_target_dies() {
+    // L@A monitors T@B across gateways. The subscription crosses to gwB over a
+    // side-channel and is held as a local monitor on gwB's route to T. When T dies,
+    // gwB fires it straight back to L over a side-channel.
+    let (root_ctx, a_ctx, b_ctx, _gw_b, target, listener, mut l_rx, b_tag) =
+        quic_cross_gateway_monitor_setup();
+
+    runtime_monitor(&a_ctx, listener, 1, &format!("T@{b_tag}"), "T-DOWN");
+    // Let the cross-gateway subscribe register at gwB before T dies.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    b_ctx
+        .send_command(Command::Die {
+            actor: target,
+            reason: MsgPart::from_bytes(b"boom".to_vec()),
+        })
+        .expect("die should enqueue");
+
+    assert_eq!(
+        recv_strings(&mut l_rx),
+        vec![
+            "T-DOWN".to_string(),
+            format!("T@{b_tag}"),
+            "actor died".to_string()
+        ],
+        "the target's death fires L's monitor"
+    );
+
+    shutdown(a_ctx);
+    shutdown(b_ctx);
+    shutdown(root_ctx);
+}
+
+#[test]
+fn quic_remote_monitor_fires_when_owning_gateway_dies() {
+    // L@A monitors T@B. Killing all of gwB drops its link to root; root broadcasts
+    // the gateway death down to gwA, which fires the cross-gateway monitor it held
+    // for B directly — even though T itself never sent a death.
+    let (root_ctx, a_ctx, b_ctx, gw_b, _target, listener, mut l_rx, b_tag) =
+        quic_cross_gateway_monitor_setup();
+
+    runtime_monitor(&a_ctx, listener, 1, &format!("T@{b_tag}"), "GW-DOWN");
+    // The MonitorToFire is recorded at gwA as soon as the monitor is processed.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    b_ctx
+        .send_command(Command::Die {
+            actor: gw_b,
+            reason: MsgPart::from_bytes(b"gateway gone".to_vec()),
+        })
+        .expect("die should enqueue");
+
+    assert_eq!(
+        recv_strings(&mut l_rx),
+        vec![
+            "GW-DOWN".to_string(),
+            format!("T@{b_tag}"),
+            "actor died".to_string()
+        ],
+        "the owning gateway's death fires L's monitor"
+    );
+
+    shutdown(a_ctx);
+    shutdown(b_ctx);
+    shutdown(root_ctx);
+}
+
+#[test]
 fn quic_heartbeat_timeout_severs_connection() {
     // A peer that holds the QUIC connection open but never sends anything (no
     // Establish, no heartbeats) can't be detected by EOF — only the heartbeat
@@ -1939,13 +2384,23 @@ fn monitor_with_timeout(
     });
 }
 
-/// Drive a non-existence timeout timer fire at common ancestor `at` (the
-/// in-process command a real timer would have sent on expiry).
-fn check_monitor_timeout(ctx: &mut Ctx, at: Key, dest: &str, to_monitor: &str) {
+/// Drive a "must exist" timer fire at `at` (the in-process command a real timer
+/// would have sent on expiry).
+fn check_monitor_timeout(ctx: &mut Ctx, at: Key, listener: &str, target: &str) {
     ctx.run_command(Command::CheckMonitorTimeout {
         at,
-        dest: dest.as_bytes().to_vec(),
-        to_monitor: to_monitor.as_bytes().to_vec(),
+        listener: listener.as_bytes().to_vec(),
+        target: target.as_bytes().to_vec(),
+    });
+}
+
+/// Deliver a side-channel `Send` of a single-part actor message to `dest`.
+fn side_channel_send(ctx: &mut Ctx, dest: &str, body: &[u8]) {
+    ctx.deliver_side_channel(SideChannelMessage {
+        gateway_for_actor: dest.as_bytes().to_vec(),
+        action: SideChannelAction::Send(SendPayload::ActorMessage(vec![MsgPart::from_bytes(
+            body.to_vec(),
+        )])),
     });
 }
 
