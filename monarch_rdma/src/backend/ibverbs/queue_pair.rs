@@ -244,50 +244,6 @@ pub trait IbvQueuePair: std::fmt::Debug + Send + Sync + 'static + Sized {
     ) -> Result<Option<Result<IbvWc, WorkRequestError>>, PollCompletionError>;
 }
 
-impl IbvQueuePair for legacy::IbvQueuePair {
-    unsafe fn new<I: IbvDomainImpl<QueuePair = Self>>(
-        domain: &IbvDomain<I>,
-        config: IbvConfig,
-    ) -> Result<Self, anyhow::Error> {
-        legacy::IbvQueuePair::new(domain, config)
-    }
-
-    fn connect(&mut self, info: &IbvQpInfo) -> Result<(), anyhow::Error> {
-        legacy::IbvQueuePair::connect(self, info)
-    }
-
-    fn get_qp_info(&mut self) -> Result<IbvQpInfo, anyhow::Error> {
-        legacy::IbvQueuePair::get_qp_info(self)
-    }
-
-    fn state(&mut self) -> Result<u32, anyhow::Error> {
-        legacy::IbvQueuePair::state(self)
-    }
-
-    fn put(
-        &mut self,
-        remote_dst: IbvBuffer,
-        local_src: IbvBuffer,
-    ) -> Result<Vec<u64>, anyhow::Error> {
-        legacy::IbvQueuePair::put(self, local_src, remote_dst)
-    }
-
-    fn get(
-        &mut self,
-        local_dst: IbvBuffer,
-        remote_src: IbvBuffer,
-    ) -> Result<Vec<u64>, anyhow::Error> {
-        legacy::IbvQueuePair::get(self, local_dst, remote_src)
-    }
-
-    fn poll_completion(
-        &mut self,
-        target: PollTarget,
-    ) -> Result<Option<Result<IbvWc, WorkRequestError>>, PollCompletionError> {
-        legacy::IbvQueuePair::poll_completion(self, target)
-    }
-}
-
 /// Queries the local endpoint info for `qp`, whose device `context` and the QP
 /// `config` (port, PSN) describe the connection. `gid` is the port's source GID.
 ///
