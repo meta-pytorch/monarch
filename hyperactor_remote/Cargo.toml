@@ -18,7 +18,7 @@ name = "hyperactor_remote_example_token_supervision"
 path = "example/token_supervision.rs"
 
 [dependencies]
-anyhow = "1.0.103"
+anyhow = "1.0.104"
 async-trait = "0.1.91"
 base64 = { version = "0.22.1", features = ["alloc"] }
 bincode = { version = "2", features = ["serde"] }

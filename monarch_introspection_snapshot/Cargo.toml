@@ -12,7 +12,7 @@ name = "snapshot_integration_test"
 path = "test/snapshot_integration_test.rs"
 
 [dependencies]
-anyhow = "1.0.103"
+anyhow = "1.0.104"
 async-trait = "0.1.91"
 datafusion = "52.5.0"
 hyperactor = { version = "0.0.0", path = "../hyperactor" }

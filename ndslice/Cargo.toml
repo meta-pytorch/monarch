@@ -14,7 +14,7 @@ name = "fuzz_reshape_selection"
 path = "tests/fuzz_reshape_selection.rs"
 
 [dependencies]
-anyhow = "1.0.103"
+anyhow = "1.0.104"
 cityhasher = "0.1.0"
 clap = { version = "4.6.2", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }

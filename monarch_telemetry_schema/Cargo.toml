@@ -8,7 +8,7 @@ edition = "2024"
 license = "BSD-3-Clause"
 
 [dependencies]
-anyhow = "1.0.103"
+anyhow = "1.0.104"
 datafusion = "52.5.0"
 monarch_record_batch = { version = "0.0.0", path = "../monarch_record_batch" }
 serde_json = { version = "1.0.151", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }

@@ -10,7 +10,7 @@ repository = "https://github.com/meta-pytorch/monarch/"
 license = "BSD-3-Clause"
 
 [dependencies]
-anyhow = "1.0.103"
+anyhow = "1.0.104"
 bincode = { version = "2", features = ["serde"] }
 bytes = { version = "1.12.1", features = ["serde"] }
 crc32fast = "1.4"

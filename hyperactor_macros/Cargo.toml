@@ -26,7 +26,7 @@ quote = "1.0.47"
 syn = { version = "2.0.119", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 
 [dev-dependencies]
-anyhow = "1.0.103"
+anyhow = "1.0.104"
 async-trait = "0.1.91"
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 serde = { version = "1.0.185", features = ["derive", "rc"] }

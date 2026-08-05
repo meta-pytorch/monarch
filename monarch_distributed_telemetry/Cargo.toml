@@ -8,7 +8,7 @@ edition = "2024"
 license = "BSD-3-Clause"
 
 [dependencies]
-anyhow = "1.0.103"
+anyhow = "1.0.104"
 arrow = { version = "=57.3.0", features = ["ffi", "json", "prettyprint", "pyarrow"] }
 arrow-array = "=57.3.0"
 arrow-buffer = "=57.3.0"

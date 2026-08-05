@@ -20,7 +20,7 @@ name = "actor_mesh_benchmarks"
 path = "benches/main.rs"
 
 [dependencies]
-anyhow = "1.0.103"
+anyhow = "1.0.104"
 async-trait = "0.1.91"
 axum = { version = "0.8.9", features = ["macros", "multipart", "ws"] }
 base64 = { version = "0.22.1", features = ["alloc"] }
