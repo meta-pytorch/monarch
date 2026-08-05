@@ -486,7 +486,14 @@ def main() -> None:
 
     if args.launch:
         submit_via_thrift(spec)
+        # Execution-details page for rank 0 (the root task). The ':' in the run id
+        # (<job>:prod:0) is percent-encoded as %3A so the link pastes cleanly.
+        run_id = f"{job_name}%3Aprod%3A0"
+        details_url = (
+            f"https://msl-runs.internalmeta.com/mast/{run_id}/execution-details"
+        )
         print(f"\nmonitor with:  mast get-status {job_name}", flush=True)
+        print(f"details:       {details_url}", flush=True)
     else:
         print("\nTo launch (rerun with --launch, or submit directly):", flush=True)
         print(
