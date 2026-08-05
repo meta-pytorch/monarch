@@ -14,6 +14,29 @@
 //! the same TLS material as quic (`MM_QUIC_CERT`/`MM_QUIC_KEY`/`MM_QUIC_CA`), verified
 //! against the CA for the fixed server name [`SERVER_NAME`].
 //!
+//! ## kTLS, with a userspace fallback
+//!
+//! When the kernel supports it, every socket is upgraded to **kTLS** immediately after
+//! its rustls handshake: the negotiated secrets are handed to the kernel (via the
+//! `ktls` crate), so the AES-GCM record crypto runs in-kernel and the data path keeps
+//! TSO — one sender core can then drive tens of Gbps, unlike userspace TLS which is
+//! per-connection-core-bound. Both configs enable secret extraction so the keys can be
+//! exported, and the `CorkStream` wrapper lets `ktls` drain rustls' buffered records
+//! cleanly at the handoff.
+//!
+//! kTLS is a purely *local* optimization — the wire bytes are identical TLS either way,
+//! and the two ends decide independently — so a host whose kernel lacks the TLS ULP
+//! (the `tls` module) simply keeps userspace `tokio-rustls`. We [`probe_tls_ulp`] once
+//! per process and route every handshake to the kTLS or the userspace path accordingly,
+//! so a kTLS-less host never wastes a connection discovering it the hard way (this
+//! transport is already sensitive to connect-time waste at high fan-out). A kTLS setup
+//! that fails at runtime latches the whole process to userspace ([`disable_ktls`]) so
+//! we don't retry a path the kernel has already refused. `MM_TCP_KTLS=0` forces the
+//! userspace path outright (for debugging or to sidestep a flaky kernel). The three
+//! stream flavors — in-kernel and the two userspace half-types — are unified behind
+//! [`TlsStream`], over which the pairing prefix and every generic frame flow
+//! identically.
+//!
 //! Everything protocol-independent — establishment, heartbeats (on their own stream),
 //! matching serves to joins, side channels, retry/backoff, shutdown — lives in
 //! [`crate::net_transport`], generic over [`Net`]. This module supplies only the raw
@@ -94,10 +117,14 @@ use std::rc::Rc;
 use std::rc::Weak;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 use std::time::Duration;
 
+use ktls::CorkStream;
+use ktls::KtlsStream;
 use rustls::RootCertStore;
 use rustls_pki_types::CertificateDer;
 use rustls_pki_types::PrivateKeyDer;
@@ -288,21 +315,25 @@ fn load_tls() -> anyhow::Result<TlsConfig> {
         std::env::var("MM_QUIC_KEY").map_err(|_| anyhow::anyhow!("MM_QUIC_KEY not set"))?;
     let ca_path = std::env::var("MM_QUIC_CA").map_err(|_| anyhow::anyhow!("MM_QUIC_CA not set"))?;
 
-    let server = rustls::ServerConfig::builder_with_provider(provider())
+    // Both configs enable secret extraction so the negotiated keys can be handed to
+    // the kernel for kTLS (see the module docs and [`client_ktls`]/[`server_ktls`]).
+    let mut server = rustls::ServerConfig::builder_with_provider(provider())
         .with_safe_default_protocol_versions()
         .map_err(|err| anyhow::anyhow!("tls server versions: {err}"))?
         .with_no_client_auth()
         .with_single_cert(load_certs(&cert_path)?, load_key(&key_path)?)?;
+    server.enable_secret_extraction = true;
 
     let mut roots = RootCertStore::empty();
     for ca in load_certs(&ca_path)? {
         roots.add(ca)?;
     }
-    let client = rustls::ClientConfig::builder_with_provider(provider())
+    let mut client = rustls::ClientConfig::builder_with_provider(provider())
         .with_safe_default_protocol_versions()
         .map_err(|err| anyhow::anyhow!("tls client versions: {err}"))?
         .with_root_certificates(roots)
         .with_no_client_auth();
+    client.enable_secret_extraction = true;
 
     Ok(TlsConfig {
         server: Arc::new(server),
@@ -350,9 +381,12 @@ async fn read_pairing_prefix<R: AsyncRead + Unpin>(reader: &mut R) -> Option<(u1
     Some((u128::from_le_bytes(id), index[0] as usize))
 }
 
-/// A TLS-over-TCP stream, server- or client-side. Both appear as one `Net::Conn`
-/// stream type, so they are unified in an enum that delegates the async IO traits.
+/// A TLS-over-TCP stream in one of three flavors, unified so framing (and the pairing
+/// prefix) drives them identically: an in-kernel [`KtlsStream`] on a host with the TLS
+/// ULP, or a userspace `tokio-rustls` stream (server- or client-side) otherwise. See
+/// the module docs on the kTLS fallback.
 pub(crate) enum TlsStream {
+    Ktls(KtlsStream<TcpStream>),
     Server(ServerTlsStream<TcpStream>),
     Client(ClientTlsStream<TcpStream>),
 }
@@ -364,6 +398,7 @@ impl AsyncRead for TlsStream {
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         match self.get_mut() {
+            TlsStream::Ktls(s) => Pin::new(s).poll_read(cx, buf),
             TlsStream::Server(s) => Pin::new(s).poll_read(cx, buf),
             TlsStream::Client(s) => Pin::new(s).poll_read(cx, buf),
         }
@@ -377,6 +412,7 @@ impl AsyncWrite for TlsStream {
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
         match self.get_mut() {
+            TlsStream::Ktls(s) => Pin::new(s).poll_write(cx, buf),
             TlsStream::Server(s) => Pin::new(s).poll_write(cx, buf),
             TlsStream::Client(s) => Pin::new(s).poll_write(cx, buf),
         }
@@ -384,6 +420,7 @@ impl AsyncWrite for TlsStream {
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         match self.get_mut() {
+            TlsStream::Ktls(s) => Pin::new(s).poll_flush(cx),
             TlsStream::Server(s) => Pin::new(s).poll_flush(cx),
             TlsStream::Client(s) => Pin::new(s).poll_flush(cx),
         }
@@ -391,10 +428,114 @@ impl AsyncWrite for TlsStream {
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         match self.get_mut() {
+            TlsStream::Ktls(s) => Pin::new(s).poll_shutdown(cx),
             TlsStream::Server(s) => Pin::new(s).poll_shutdown(cx),
             TlsStream::Client(s) => Pin::new(s).poll_shutdown(cx),
         }
     }
+}
+
+/// Set once a kTLS setup has failed at runtime (or the up-front probe found the TLS ULP
+/// missing): from then on every handshake takes the userspace path. Starts `false`; the
+/// first [`use_ktls`] call resolves the probe into it.
+static KTLS_DISABLED: AtomicBool = AtomicBool::new(false);
+
+/// Whether to attempt kTLS for the next handshake. `true` until we learn the kernel
+/// can't do it — either because `MM_TCP_KTLS=0` opted out, from the one-time
+/// [`probe_tls_ulp`] (resolved on first call), or from a runtime failure that called
+/// [`disable_ktls`].
+fn use_ktls() -> bool {
+    static PROBED: OnceLock<()> = OnceLock::new();
+    PROBED.get_or_init(|| {
+        if matches!(
+            std::env::var("MM_TCP_KTLS").as_deref(),
+            Ok("0") | Ok("false")
+        ) {
+            disable_ktls("opted out via MM_TCP_KTLS");
+        } else if !probe_tls_ulp() {
+            disable_ktls("kernel TLS ULP (tls module) not available");
+        }
+    });
+    !KTLS_DISABLED.load(Ordering::Relaxed)
+}
+
+/// Latch kTLS off for the whole process, logging the reason once. Called on a runtime
+/// kTLS setup failure so the connection retry — and every later handshake — uses
+/// userspace TLS instead of re-attempting a path the kernel refused.
+fn disable_ktls(reason: &str) {
+    if !KTLS_DISABLED.swap(true, Ordering::Relaxed) {
+        eprintln!("MM_TCP kTLS disabled, falling back to userspace TLS: {reason}");
+    }
+}
+
+/// Probe whether the kernel exposes the TLS upper-layer protocol (kTLS), by trying to
+/// set the `tls` ULP on a throwaway TCP socket. A missing kernel module fails with
+/// `ENOENT`; any other outcome — including `ENOTCONN`, since we deliberately don't
+/// connect the socket — means the module is present. Cheap and connection-free, so a
+/// kTLS-less host learns its fate without sacrificing a real connection.
+fn probe_tls_ulp() -> bool {
+    // SAFETY: a plain `socket()`/`setsockopt()`/`close()` sequence. `fd` is valid
+    // between its creation and close; the option value is the 3-byte string `tls` of
+    // the matching length, as `TCP_ULP` expects (a non-terminated name).
+    unsafe {
+        let fd = libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0);
+        if fd < 0 {
+            return false;
+        }
+        let name = b"tls";
+        let ret = libc::setsockopt(
+            fd,
+            libc::SOL_TCP,
+            libc::TCP_ULP,
+            name.as_ptr().cast::<libc::c_void>(),
+            name.len() as libc::socklen_t,
+        );
+        let errno = (ret != 0).then(|| std::io::Error::last_os_error().raw_os_error());
+        libc::close(fd);
+        !matches!(errno, Some(Some(libc::ENOENT)))
+    }
+}
+
+/// Run the client rustls handshake over `tcp`, then hand back a [`TlsStream`]. When
+/// [`use_ktls`] is set the socket is wrapped in a `CorkStream` and upgraded to kTLS
+/// (the cork lets `ktls` drain rustls' buffered records cleanly at the handoff, and any
+/// decrypted-but-unconsumed app data is re-injected for the caller); a kTLS setup that
+/// fails latches the process to userspace so the connection's retry succeeds there.
+/// Otherwise the plain userspace `tokio-rustls` stream is returned directly.
+async fn client_tls(
+    connector: &TlsConnector,
+    server_name: ServerName<'static>,
+    tcp: TcpStream,
+) -> anyhow::Result<TlsStream> {
+    if use_ktls() {
+        let stream = connector.connect(server_name, CorkStream::new(tcp)).await?;
+        return match ktls::config_ktls_client(stream).await {
+            Ok(ktls) => Ok(TlsStream::Ktls(ktls)),
+            Err(err) => {
+                disable_ktls(&format!("client kTLS setup failed: {err}"));
+                Err(anyhow::anyhow!("client kTLS setup failed: {err}"))
+            }
+        };
+    }
+    let stream = connector.connect(server_name, tcp).await?;
+    Ok(TlsStream::Client(stream))
+}
+
+/// Run the server rustls handshake over `tcp`, then hand back a [`TlsStream`] (see
+/// [`client_tls`] for the kTLS/userspace split).
+async fn server_tls(acceptor: &TlsAcceptor, tcp: TcpStream) -> anyhow::Result<TlsStream> {
+    if use_ktls() {
+        let stream = acceptor.accept(CorkStream::new(tcp)).await?;
+        return match ktls::config_ktls_server(stream).await {
+            Ok(ktls) => Ok(TlsStream::Ktls(ktls)),
+            Err(err) => {
+                disable_ktls(&format!("server kTLS setup failed: {err}"));
+                Err(anyhow::anyhow!("server kTLS setup failed: {err}"))
+            }
+        };
+    }
+    let stream = acceptor.accept(tcp).await?;
+    Ok(TlsStream::Server(stream))
 }
 
 /// The shared per-context TCP state: TLS configs, loaded lazily on first use.
@@ -524,8 +665,8 @@ impl Net for Tcp {
             // The connection is up (accept returned), so pin nodelay/congestion now;
             // the buffer window scale was inherited from the listening socket.
             tune_established(&tcp);
-            let Ok(mut stream) = listener.acceptor.accept(tcp).await.map(TlsStream::Server) else {
-                continue; // TLS handshake failed
+            let Ok(mut stream) = server_tls(&listener.acceptor, tcp).await else {
+                continue; // TLS/kTLS handshake failed
             };
             let Some((connection_id, index)) = read_pairing_prefix(&mut stream).await else {
                 continue; // bad/short prefix
@@ -603,22 +744,19 @@ impl Net for Tcp {
                 }
             };
             tune_established(&tcp);
-            let tls = match dialer
-                .connector
-                .connect(dialer.server_name.clone(), tcp)
+            let mut stream = match client_tls(&dialer.connector, dialer.server_name.clone(), tcp)
                 .await
             {
-                Ok(t) => TlsStream::Client(t),
+                Ok(s) => s,
                 Err(e) => {
                     if debug {
                         eprintln!(
-                            "MM_TCP connect {addr} stream {index}/{streams}: TLS handshake failed: {e}"
+                            "MM_TCP connect {addr} stream {index}/{streams}: TLS/kTLS handshake failed: {e:#}"
                         );
                     }
                     return None;
                 }
             };
-            let mut stream = tls;
             if let Err(e) = write_pairing_prefix(&mut stream, connection_id, index).await {
                 if debug {
                     eprintln!(
