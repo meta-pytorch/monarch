@@ -87,19 +87,21 @@ async def test_next_blocks_until_message() -> None:
     assert parts == [b"late"]
 
 
-@pytest.mark.parametrize(
-    "name,call",
-    [
-        ("serve", lambda a: a.serve("inproc://a", "parent")),
-        ("join", lambda a: a.join("inproc://a", "child")),
-        ("monitor", lambda a: a.monitor(b"other@root")),
-    ],
-)
-async def test_unimplemented_bindings_raise(name, call) -> None:
-    # serve/join/monitor are bound but the underlying Rust is not implemented.
+async def test_serve_join_inproc() -> None:
+    parent = Actor(b"py-parent")
+    child = Actor(b"py-child")
+
+    parent.serve("inproc://py-smoke", "parent")
+    child.join("inproc://py-smoke", "child")
+
+    assert await parent.next() == [b"py-parent", b"py-child"]
+    assert await child.next() == [b"py-child", b"py-parent"]
+
+
+async def test_unimplemented_monitor_raises() -> None:
     a = Actor(b"srv-actor")
     with pytest.raises(RuntimeError, match="implement"):
-        call(a)
+        a.monitor(b"other@root")
 
 
 async def test_die_is_void() -> None:

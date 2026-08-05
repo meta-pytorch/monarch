@@ -8,6 +8,8 @@
 
 use std::ffi::c_void;
 
+struct OwnedBytes(Vec<u8>);
+
 /// Owning Rust message part. Calls the C deleter on drop.
 /// The C caller must not free or use the data after passing it in.
 pub struct MsgPart {
@@ -34,6 +36,18 @@ pub struct CMsg {
 }
 
 impl MsgPart {
+    pub fn from_bytes(bytes: Vec<u8>) -> Self {
+        let owned = Box::new(OwnedBytes(bytes));
+        let data = owned.0.as_ptr().cast();
+        let len = owned.0.len();
+        MsgPart {
+            data,
+            len,
+            deleter: Some(drop_owned_bytes),
+            deleter_ctx: Box::into_raw(owned).cast(),
+        }
+    }
+
     /// Take ownership of a CMsgPart passed in from C.
     pub unsafe fn from_c(part: CMsgPart) -> Self {
         MsgPart {
@@ -66,6 +80,15 @@ impl MsgPart {
     }
 }
 
+unsafe extern "C" fn drop_owned_bytes(ctx: *mut c_void) {
+    // SAFETY: `ctx` was created by `MsgPart::from_bytes` with
+    // `Box::into_raw(Box<OwnedBytes>)`, and this deleter is installed exactly
+    // once on the owning `MsgPart`.
+    unsafe {
+        drop(Box::from_raw(ctx.cast::<OwnedBytes>()));
+    }
+}
+
 impl Drop for MsgPart {
     fn drop(&mut self) {
         if let Some(deleter) = self.deleter {
@@ -74,5 +97,10 @@ impl Drop for MsgPart {
     }
 }
 
+// SAFETY: `MsgPart` transfers opaque C-owned memory between threads without
+// dereferencing it except to read immutable bytes. Ownership remains unique,
+// and the deleter runs only from `Drop`.
 unsafe impl Send for MsgPart {}
+// SAFETY: shared references to `MsgPart` expose only immutable byte slices.
+// Mutation and destruction require ownership of the `MsgPart`.
 unsafe impl Sync for MsgPart {}
