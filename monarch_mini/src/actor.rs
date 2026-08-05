@@ -95,12 +95,39 @@ pub(crate) enum TargetMonitors {
 pub(crate) enum GatewayState {
     NotAGateway,
     Gateway {
-        /// Known-dead gateway tags. The set is replicated to every gateway as
-        /// deaths are broadcast, and a gateway consults it to deduplicate repeated
-        /// broadcasts (and, later, to fire monitors on actors that lived on a
-        /// now-dead gateway).
-        dead_gateways: HashSet<Vec<u8>>,
+        /// Per *owning* gateway tag, the cross-gateway monitor state this gateway
+        /// holds for it. A tag with no entry is assumed alive and carries no
+        /// monitors; a [`GatewayMonitors::Dead`] entry both records the death (so a
+        /// repeated death wave is deduplicated and a new subscribe fires at once)
+        /// and replaces the base's separate dead-gateway set. The map is consulted
+        /// when a death is broadcast (to fire the monitors held for the now-dead
+        /// gateway) and when filtering stale routes to a known-dead gateway.
+        gateway_state: HashMap<Vec<u8>, GatewayMonitors>,
     },
+}
+
+/// The cross-gateway monitor state a gateway holds for one *owning* gateway tag.
+pub(crate) enum GatewayMonitors {
+    /// The owning gateway is known dead. Encodes "already dead" directly: a new
+    /// subscribe to a target on it fires immediately, and a repeat death broadcast
+    /// for the tag is deduplicated.
+    Dead,
+    /// Live monitors this (subscribing) gateway holds on actors owned by the tag's
+    /// gateway. Each fires its `listener` when the owning gateway is known dead.
+    Subscribed(Vec<MonitorToFire>),
+}
+
+/// One cross-gateway monitor held at the *subscribing* gateway. Fires `listener`
+/// when `monitoring` (on the owning gateway) is known to have died.
+pub(crate) struct MonitorToFire {
+    /// Whether the owning gateway has acknowledged this registration. Until then
+    /// the "must exist" timer may declare the gateway dead (the gateway never
+    /// answered, so it is treated as unreachable).
+    pub(crate) acked: bool,
+    /// The actor to fire to (the monitoring actor, `== dest`).
+    pub(crate) listener: Vec<u8>,
+    /// The monitored target ident on the owning gateway.
+    pub(crate) monitoring: Vec<u8>,
 }
 
 impl ActorEntry {
@@ -116,7 +143,7 @@ impl ActorEntry {
             monitored: HashMap::new(),
             gateway: if gateway {
                 GatewayState::Gateway {
-                    dead_gateways: HashSet::new(),
+                    gateway_state: HashMap::new(),
                 }
             } else {
                 GatewayState::NotAGateway

@@ -129,19 +129,46 @@ pub(crate) enum SendPayload {
     },
 }
 
-/// What a [`ConnectionCommand::ToAncestor`] does once it reaches the common
-/// ancestor of `to_monitor` (the first actor up the tree that holds it in its
-/// routing table, or the root). Both variants route up that same path, differing
-/// only in the action at the ancestor; `dest` is the monitoring actor a fire
-/// returns to.
-#[derive(Serialize, Deserialize)]
-pub(crate) enum AncestorPayload {
-    /// Register the subscription on the target's route (firing at once if it is
-    /// already dead). `timeout_ms` (0 = none) arms a non-existence timer at the
-    /// ancestor that installs the subscription, and rides up with it on migration.
-    Subscribe { dest: Vec<u8>, timeout_ms: u64 },
-    /// Remove the matching subscription from the target's route.
-    Unsubscribe { dest: Vec<u8> },
+/// A monitor subscription change, carried both up the local hierarchy (in
+/// [`ConnectionCommand::UpdateMonitorSubscription`]) and across a gateway
+/// side-channel (in [`SideChannelAction::UpdateRemoteMonitorState`]). It crosses
+/// both wire formats, so it is `Serialize`/`Deserialize`.
+#[derive(Clone, Copy, Serialize, Deserialize)]
+pub(crate) enum MonitorOp {
+    /// Register a monitor. `timeout_ms` (0 = none) is the "must exist" timeout:
+    /// for a local target it arms a non-existence timer; for a remote one it also
+    /// bounds how long the owning gateway has to acknowledge the registration.
+    Subscribe { timeout_ms: u64 },
+    /// Cancel a previously registered monitor.
+    Unsubscribe,
+}
+
+/// A self-addressing message crossing a gateway-to-gateway side-channel.
+/// `gateway_for_actor` names the actor whose gateway should receive it, and the
+/// side-channel is dialed at `gateway_tag(gateway_for_actor)` — there is no
+/// separate destination tag. Routing never inspects the action; the receiving
+/// gateway resolves the gateway once and dispatches on [`SideChannelAction`].
+pub(crate) struct SideChannelMessage {
+    /// Ident of the actor whose gateway gets this message. For a `Send` it is also
+    /// the destination actor; for an ack it is the `listener`. The side-channel is
+    /// dialed at `gateway_tag(this)`.
+    pub(crate) gateway_for_actor: Vec<u8>,
+    pub(crate) action: SideChannelAction,
+}
+
+/// What a [`SideChannelMessage`] does at the owning gateway.
+pub(crate) enum SideChannelAction {
+    /// Deliver this payload to `gateway_for_actor` (an ordinary cross-gateway
+    /// message, or a `FireMonitor` headed back to a listener).
+    Send(SendPayload),
+    /// Register/cancel a monitor on `gateway_for_actor` (the target) firing to
+    /// `listener`. The owning gateway applies it and, for a subscribe, replies with
+    /// [`SideChannelAction::AckRemoteMonitor`].
+    UpdateRemoteMonitorState { listener: Vec<u8>, op: MonitorOp },
+    /// Confirm a registration. The carrying message's `gateway_for_actor` is the
+    /// `listener`; `monitoring` identifies the target (hence the owning gateway, by
+    /// its `@tag`).
+    AckRemoteMonitor { monitoring: Vec<u8> },
 }
 
 pub(crate) enum ConnectionCommand {
@@ -174,13 +201,17 @@ pub(crate) enum ConnectionCommand {
         live: Vec<Vec<u8>>,
         dead: Vec<Vec<u8>>,
     },
-    /// Route a monitor operation up toward the common ancestor that has
-    /// `to_monitor` in its routing table (or the root): one per monitoring actor
-    /// per target — no per-monitor id, since a fire is identified by the dead
-    /// ident. The [`AncestorPayload`] selects register vs. cancel.
-    ToAncestor {
-        to_monitor: Vec<u8>,
-        payload: AncestorPayload,
+    /// Climb a monitor subscription change up the *local* hierarchy toward the
+    /// actor that handles `target` (the common ancestor that routes it, or the
+    /// gateway at the top of the domain). One per monitoring actor per target — no
+    /// per-monitor id, since a fire is identified by the dead ident. The
+    /// [`MonitorOp`] selects register vs. cancel. Acks never travel this link —
+    /// they only ever cross side-channels as
+    /// [`SideChannelAction::AckRemoteMonitor`].
+    UpdateMonitorSubscription {
+        listener: Vec<u8>,
+        target: Vec<u8>,
+        op: MonitorOp,
     },
     /// The parent handing the child its gateway's [`ShmClient`] (the slab + dgram
     /// request socket fds), so the child can move large parts through the same
@@ -203,7 +234,7 @@ pub(crate) enum ConnectionCommand {
     /// the connection it arrives on: arriving from a child it travels *up* toward
     /// the root; the root turns it around and it travels *down* every gateway-route
     /// child connection, reaching every gateway so each records the death in its
-    /// [`dead_gateways`](crate::actor::ActorEntry::dead_gateways) set.
+    /// gateway state (firing any monitors it held for the now-dead gateway).
     GatewayDied {
         dead: Vec<Vec<u8>>,
     },
