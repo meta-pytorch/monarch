@@ -2213,7 +2213,7 @@ fn quic_remote_monitor_fires_when_owning_gateway_dies() {
 }
 
 #[test]
-fn quic_heartbeat_timeout_severs_connection() {
+fn heartbeat_timeout_severs_connection() {
     // A peer that holds the QUIC connection open but never sends anything (no
     // Establish, no heartbeats) can't be detected by EOF — only the heartbeat
     // timeout catches it. A raw silent quinn server stands in for such a peer; the
@@ -2305,6 +2305,9 @@ fn set_quic_env() {
     std::env::set_var("MM_QUIC_CERT", dir.join("cert.pem"));
     std::env::set_var("MM_QUIC_KEY", dir.join("key.pem"));
     std::env::set_var("MM_QUIC_CA", dir.join("ca.pem"));
+    // Keep multi-context tests under CI socket limits; endpoint-pool behavior has
+    // dedicated coverage in `quic_net`.
+    std::env::set_var("MM_QUIC_CLIENT_ENDPOINTS", "1");
 }
 
 fn free_quic_url() -> String {
