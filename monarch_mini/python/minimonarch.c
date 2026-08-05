@@ -108,7 +108,8 @@ typedef struct {
 } Actor;
 
 typedef struct {
-  PyObject_HEAD mm_monitor_handle_t handle;
+  PyObject_HEAD PyObject* actor; // creating Actor (strong ref; owns mm_actor_t)
+  mm_monitor_handle_t handle; // monitor id (owns nothing)
 } MonitorHandle;
 
 // ---------------------------------------------------------------------------
@@ -1132,7 +1133,7 @@ static PyObject* Actor_monitor(Actor* self, PyObject* args, PyObject* kwds) {
     failure_ptr = &failure_msg;
   }
 
-  mm_monitor_handle_t handle = NULL;
+  mm_monitor_handle_t handle = 0;
   mm_err_t err = mm_actor_monitor(
       self->actor,
       to_monitor,
@@ -1148,6 +1149,8 @@ static PyObject* Actor_monitor(Actor* self, PyObject* args, PyObject* kwds) {
   if (!mh) {
     return NULL;
   }
+  Py_INCREF(self);
+  mh->actor = (PyObject*)self;
   mh->handle = handle;
   return (PyObject*)mh;
 }
@@ -1197,14 +1200,18 @@ static PyTypeObject ActorType = {
 static PyObject* MonitorHandle_cancel(
     MonitorHandle* self,
     PyObject* Py_UNUSED(ignored)) {
-  if (self->handle) {
-    mm_monitor_handle_cancel(self->handle);
-    self->handle = NULL;
+  if (self->actor) {
+    mm_monitor_handle_cancel(((Actor*)self->actor)->actor, self->handle);
+    // Release the actor and mark cancelled so repeat calls are no-ops.
+    Py_CLEAR(self->actor);
   }
   Py_RETURN_NONE;
 }
 
+// Dropping the handle does NOT cancel the monitor (it stays active); we only
+// release our reference to the actor.
 static void MonitorHandle_dealloc(MonitorHandle* self) {
+  Py_XDECREF(self->actor);
   Py_TYPE(self)->tp_free((PyObject*)self);
 }
 
