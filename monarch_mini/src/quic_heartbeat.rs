@@ -211,13 +211,12 @@ impl Heartbeats {
 // Wire types (serialized by `framing.rs`)
 // ---------------------------------------------------------------------------
 
-/// The body of a [`WireFrame::Heartbeat`](crate::framing) probe. `FromChild` /
-/// `FromParent` are the *real*, request/response liveness beats — a Child sends
+/// The wire body of a heartbeat probe, serialized bare onto a connection's
+/// dedicated heartbeat stream (see [`crate::framing::write_heartbeat`]). `FromChild`
+/// / `FromParent` are the *real*, request/response liveness beats — a Child sends
 /// `FromChild`, its Parent answers with `FromParent` — and they drive delegation.
-/// `TransportActivity` is what a reader synthesizes when ordinary data flows over the
-/// link: it proves the pipe is alive without being a beat, so it refreshes the
-/// liveness deadline on whichever side reads it but is *not* a request/response — it
-/// never advances delegation state or the echo pacing.
+/// Riding their own stream, a beat is never delayed by a large data transfer and no
+/// synthesized "still here" backstop is needed.
 #[derive(Serialize, Deserialize, Clone)]
 pub(crate) enum Heartbeat {
     /// Child → parent: the running diff of connections this child covers for the
@@ -230,9 +229,6 @@ pub(crate) enum Heartbeat {
     /// `None` never revokes — a child reverts on its own ack-timeout, a parent on
     /// `ResumeHeartbeat`.
     FromParent { delegate: Option<Delegate> },
-    /// Reader → its own heartbeat_task: ordinary data arrived on the link, so it is
-    /// alive. "I am still here" — refresh the deadline, nothing more.
-    TransportActivity,
 }
 
 /// A delegation instruction carried on a `FromParent` beat: "you are connection
@@ -953,15 +949,6 @@ async fn parent_direct_loop(
                         let delegate = shared.borrow_mut().pool_mut(key).delegate(conn_id);
                         let _ = beats.send(Heartbeat::FromParent { delegate });
                     }
-                    HeartbeatEvent::ReceivedHeartbeat(Heartbeat::TransportActivity) => {
-                        // Data flowed over the link: it is alive. Refresh our watch, but
-                        // only while watching directly — a paused (delegated) connection
-                        // stays paused (its sibling proves it live). Not a real beat, so
-                        // no answer, no delegation, no un-pause.
-                        if deadline.is_some() {
-                            deadline = Some(Instant::now() + config.timeout);
-                        }
-                    }
                     HeartbeatEvent::PauseHeartbeat => {
                         // A sibling now covers this child: stop watching it directly — but
                         // only while we are still delegating it. If it already fell back to
@@ -1053,11 +1040,6 @@ async fn parent_cover_loop(
                         shared.borrow().signal_coverage(&mut covered, cover_add, cover_del);
                         // Answer so the delegate host paces its next beat.
                         let _ = beats.send(Heartbeat::FromParent { delegate: None });
-                    }
-                    HeartbeatEvent::ReceivedHeartbeat(Heartbeat::TransportActivity) => {
-                        // Data over the cover host's link proves it alive; refresh, but
-                        // do not answer (not a real beat).
-                        deadline = Instant::now() + config.timeout;
                     }
                     // Establishment is a one-shot exchange that completed back in the
                     // direct loop; a stray duplicate here is harmless.
@@ -1245,16 +1227,6 @@ async fn child_task<S: SendBeat>(ctx: HeartbeatCtx<S>) {
                                 next_beat = Some(Instant::now() + interval);
                             }
                             _ => {}
-                        }
-                    }
-                    HeartbeatEvent::ReceivedHeartbeat(Heartbeat::TransportActivity) => {
-                        // Data from the parent proves the pipe alive; refresh our direct
-                        // deadline. It is not an answer, so it does not pace the next beat.
-                        // Ignored while delegated — our liveness clock then tracks our
-                        // delegate's acks, not the parent, and the parent's death would
-                        // arrive as a reader close instead.
-                        if matches!(state, ChildState::Direct) {
-                            primary = Instant::now() + timeout;
                         }
                     }
                     HeartbeatEvent::Side(from, conn_id, BeatKind::Beat) => {

@@ -314,6 +314,7 @@ async def run_root(
     min_rounds: int = 1,
     chain_length: int = 0,
     close_ctx: bool = True,
+    settle_ms: float = 0.0,
 ) -> int:
     """Performance sweep: grow the connected set 2, 4, 8, ..., N and time each size.
 
@@ -397,6 +398,26 @@ async def run_root(
             except asyncio.TimeoutError:
                 log(f"[sweep] ERROR: a worker stalled at size {size}")
                 return 1
+            # Optional heartbeat-only settle: idle the whole connected set with *no
+            # data* for longer than the heartbeat timeout, so a link survives only if
+            # its heartbeats (direct or delegated) keep flowing. Then one direct+ring
+            # round confirms every link is still alive. This is what the back-to-back
+            # rounds above deliberately do not test. Run it only once, at the final
+            # (largest) size — it costs a full timeout window, so doing it per size
+            # would dominate the whole sweep's runtime.
+            if settle_ms > 0 and size == sizes[-1]:
+                await asyncio.sleep(settle_ms / 1000.0)
+                try:
+                    if await _direct_round(root, workers, timeout):
+                        log(f"[sweep] FAILURE after settle (direct) at size {size}")
+                        return 1
+                    if await _ring_round(root, workers, timeout, heads):
+                        log(f"[sweep] FAILURE after settle (ring) at size {size}")
+                        return 1
+                except asyncio.TimeoutError:
+                    log(f"[sweep] ERROR: a worker stalled after settle at size {size}")
+                    return 1
+                log(f"[sweep] size={size:>6}  settled {settle_ms:.0f}ms OK")
             log(
                 f"[sweep] size={size:>6}  connect(+{len(batch)})={connect_ms:9.1f} ms  "
                 f"direct min={direct_best:8.2f} avg={direct_sum / rounds:8.2f} ms  "
@@ -419,6 +440,7 @@ async def run_root_coordinated(
     connect_timeout: float,
     min_rounds: int = 1,
     chain_length: int = 0,
+    settle_ms: float = 0.0,
 ) -> int:
     """Root variant that waits for a controller to hand it the worker addresses.
 
@@ -466,7 +488,13 @@ async def run_root_coordinated(
     # Run the normal sweep as a fresh root actor, but keep the context alive so we
     # can report completion to the controller afterward.
     rc = await run_root(
-        hosts, timeout, connect_timeout, min_rounds, chain_length, close_ctx=False
+        hosts,
+        timeout,
+        connect_timeout,
+        min_rounds,
+        chain_length,
+        close_ctx=False,
+        settle_ms=settle_ms,
     )
 
     log(f"[coord] sweep finished rc={rc}; notifying controller and closing")
@@ -545,6 +573,14 @@ def main() -> None:
         help="root: run this many direct+ring rounds at each sweep size "
         "(default: 1). More rounds give a min/avg per size.",
     )
+    parser.add_argument(
+        "--settle-ms",
+        type=float,
+        default=0.0,
+        help="root: after each sweep size, idle the connected set with no data for "
+        "this many ms (should exceed the heartbeat timeout), then verify every link "
+        "survived. 0 (default) disables. Isolates heartbeat-only liveness failures.",
+    )
     args = parser.parse_args()
 
     ensure_quic_certs(args.certs_dir)
@@ -561,6 +597,7 @@ def main() -> None:
                     args.connect_timeout,
                     args.min_rounds,
                     args.chain_length,
+                    args.settle_ms,
                 )
             )
         )
@@ -578,6 +615,7 @@ def main() -> None:
                     args.connect_timeout,
                     args.min_rounds,
                     args.chain_length,
+                    settle_ms=args.settle_ms,
                 )
             )
         )
