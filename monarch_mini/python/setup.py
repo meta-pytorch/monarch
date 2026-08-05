@@ -20,16 +20,22 @@ from setuptools.command.build_ext import build_ext
 HERE = os.path.dirname(os.path.abspath(__file__))
 CRATE_DIR = os.path.dirname(HERE)  # monarch_mini/
 WORKSPACE_DIR = os.path.dirname(CRATE_DIR)  # monarch/
-STATIC_LIB = os.path.join(WORKSPACE_DIR, "target", "debug", "libmonarch_mini.a")
+# Default to an optimized build so benchmark numbers are meaningful; override
+# with MINIMONARCH_PROFILE=debug for fast iterative builds.
+PROFILE = os.environ.get("MINIMONARCH_PROFILE", "release")
+STATIC_LIB = os.path.join(WORKSPACE_DIR, "target", PROFILE, "libmonarch_mini.a")
 
 
 class CargoBuildExt(build_ext):
     """Build the Rust staticlib before compiling the C extension."""
 
     def run(self):
-        subprocess.check_call(
-            ["cargo", "build", "-p", "monarch_mini"], cwd=WORKSPACE_DIR
-        )
+        cargo = ["cargo", "build", "-p", "monarch_mini"]
+        if PROFILE == "release":
+            cargo.append("--release")
+        elif PROFILE != "debug":
+            cargo.append(f"--profile={PROFILE}")
+        subprocess.check_call(cargo, cwd=WORKSPACE_DIR)
         super().run()
 
 
