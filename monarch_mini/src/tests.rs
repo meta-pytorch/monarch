@@ -279,6 +279,89 @@ fn message_to_unrouted_actor_buffers_at_gateway_then_flushes() {
 }
 
 #[test]
+fn side_channel_routes_to_owning_gateway_among_several_on_one_endpoint() {
+    // Two gateways with the same endpoint tag `X` (e.g. two independent trees in
+    // one serving process) share the listener. A side-channel arrival is routed by
+    // its destination, so a message for c2@X reaches c2 (under gw2), not gw1.
+    let (mut ctx, mut rx) = test_ctx();
+    let gw1 = gateway_actor(&mut ctx, "gw1@X");
+    let c1 = actor(&mut ctx, "c1@X");
+    let gw2 = gateway_actor(&mut ctx, "gw2@X");
+    let c2 = actor(&mut ctx, "c2@X");
+    connect(&mut ctx, gw1, c1, "inproc://gw1-c1");
+    connect(&mut ctx, gw2, c2, "inproc://gw2-c2");
+    drain_commands(&mut ctx, &mut rx);
+
+    ctx.deliver_side_channel(
+        b"c2@X".to_vec(),
+        SendPayload::ActorMessage(vec![MsgPart::from_bytes(b"two".to_vec())]),
+    );
+    ctx.deliver_side_channel(
+        b"c1@X".to_vec(),
+        SendPayload::ActorMessage(vec![MsgPart::from_bytes(b"one".to_vec())]),
+    );
+    drain_commands(&mut ctx, &mut rx);
+
+    assert_eq!(buffered_strings(&ctx, c2), vec!["c2@X", "gw2@X", "two"]);
+    assert_eq!(buffered_strings(&ctx, c1), vec!["c1@X", "gw1@X", "one"]);
+}
+
+#[test]
+fn side_channel_message_pends_until_a_gateway_route_is_known() {
+    // A side-channel message for a destination no gateway can route yet is held in
+    // the context-wide pending table, then flushed once a gateway learns the route.
+    let (mut ctx, mut rx) = test_ctx();
+    let gw = gateway_actor(&mut ctx, "gw@X");
+    let child = actor(&mut ctx, "c@X");
+
+    ctx.deliver_side_channel(
+        b"c@X".to_vec(),
+        SendPayload::ActorMessage(vec![MsgPart::from_bytes(b"held".to_vec())]),
+    );
+    assert!(
+        ctx.pending_side_channel.contains_key(b"c@X".as_slice()),
+        "unroutable side-channel message should pend"
+    );
+
+    // The destination joins the gateway; its route propagates up and the pending
+    // message flushes down to it.
+    connect(&mut ctx, gw, child, "inproc://gw-c");
+    drain_commands(&mut ctx, &mut rx);
+
+    assert!(
+        !ctx.pending_side_channel.contains_key(b"c@X".as_slice()),
+        "pending entry should be released once the route is known"
+    );
+    assert_eq!(buffered_strings(&ctx, child), vec!["c@X", "gw@X", "held"]);
+}
+
+#[test]
+fn side_channel_message_dropped_when_owning_gateway_is_dead() {
+    // A dead gateway is kept in the lookup set: its routing table still shows the
+    // destination was reachable through it, so a side-channel message for that
+    // (now-gone) subtree is dropped rather than held pending forever.
+    let (mut ctx, mut rx) = test_ctx();
+    let gw = gateway_actor(&mut ctx, "gw@X");
+    let child = actor(&mut ctx, "c@X");
+    connect(&mut ctx, gw, child, "inproc://gw-c");
+    drain_commands(&mut ctx, &mut rx);
+
+    ctx.run_command(Command::Die {
+        actor: gw,
+        reason: MsgPart::from_bytes(b"gone".to_vec()),
+    });
+
+    ctx.deliver_side_channel(
+        b"c@X".to_vec(),
+        SendPayload::ActorMessage(vec![MsgPart::from_bytes(b"x".to_vec())]),
+    );
+    assert!(
+        !ctx.pending_side_channel.contains_key(b"c@X".as_slice()),
+        "a message for a dead gateway's subtree should be dropped, not pended"
+    );
+}
+
+#[test]
 fn buffered_messages_flush_upward_when_actor_gains_a_parent() {
     let (mut ctx, mut rx) = test_ctx();
     let root = actor(&mut ctx, "root");
@@ -1093,6 +1176,171 @@ fn quic_join_before_serve() {
 }
 
 #[test]
+fn quic_gateway_to_gateway_bypasses_root() {
+    // Two QUIC gateways (gwA, gwB), each its own process/context, both joined to a
+    // shared root gateway. A message from a1@A to b1@B must reach b1 by a *direct*
+    // gateway-to-gateway side-channel (A dials B), bypassing root entirely — proven
+    // by root receiving only the join hellos and never the cross-gateway traffic.
+    set_quic_env();
+    let root_ctx = CtxHandle::new().expect("root ctx");
+    let a_ctx = CtxHandle::new().expect("a ctx");
+    let b_ctx = CtxHandle::new().expect("b ctx");
+
+    let root_url = free_quic_url();
+    let a_url = free_quic_url();
+    let b_url = free_quic_url();
+    let a_tag = quic_authority(&a_url);
+    let b_tag = quic_authority(&b_url);
+
+    let root = runtime_gateway_actor(&root_ctx, "root");
+    let gw_a = runtime_gateway_actor(&a_ctx, &format!("gwA@{a_tag}"));
+    let a1 = runtime_actor(&a_ctx, &format!("a1@{a_tag}"));
+    let gw_b = runtime_gateway_actor(&b_ctx, &format!("gwB@{b_tag}"));
+    let b1 = runtime_actor(&b_ctx, &format!("b1@{b_tag}"));
+
+    let (root_poller, mut root_rx) = runtime_poller(&root_ctx);
+    let (a1_poller, mut a1_rx) = runtime_poller(&a_ctx);
+    let (b1_poller, mut b1_rx) = runtime_poller(&b_ctx);
+    runtime_subscribe(&root_ctx, root_poller, 0, root);
+    runtime_subscribe(&a_ctx, a1_poller, 0, a1);
+    runtime_subscribe(&b_ctx, b1_poller, 0, b1);
+
+    // root is the shared rendezvous: each gateway joins it as a child, so root
+    // serves once per gateway.
+    runtime_serve(&root_ctx, root, &root_url);
+    runtime_serve(&root_ctx, root, &root_url);
+    runtime_join(&a_ctx, gw_a, &root_url);
+    runtime_join(&b_ctx, gw_b, &root_url);
+
+    // Each gateway serves its own address so a sibling gateway can side-channel to
+    // it; local children join their gateway over inproc.
+    runtime_serve(&a_ctx, gw_a, &a_url);
+    runtime_serve(&b_ctx, gw_b, &b_url);
+    runtime_connect(&a_ctx, gw_a, a1, "inproc://bypass-a");
+    runtime_connect(&b_ctx, gw_b, b1, "inproc://bypass-b");
+
+    // Drain the local-child hellos (so b1 is routable before we send).
+    assert_eq!(
+        recv_strings(&mut a1_rx),
+        vec![format!("a1@{a_tag}"), format!("gwA@{a_tag}")]
+    );
+    assert_eq!(
+        recv_strings(&mut b1_rx),
+        vec![format!("b1@{b_tag}"), format!("gwB@{b_tag}")]
+    );
+
+    // root's only deliveries are the two gateway-join hellos (in either order).
+    let mut peers: Vec<String> = (0..2)
+        .map(|_| {
+            let hello = recv_strings(&mut root_rx);
+            assert_eq!(hello[0], "root");
+            hello[1].clone()
+        })
+        .collect();
+    peers.sort();
+    assert_eq!(peers, vec![format!("gwA@{a_tag}"), format!("gwB@{b_tag}")]);
+
+    // a1@A -> b1@B: gwA opens a direct side-channel to gwB, bypassing root.
+    a_ctx
+        .send_command(Command::Send {
+            sender: a1,
+            destination_ident: MsgPart::from_bytes(format!("b1@{b_tag}").into_bytes()),
+            parts: vec![MsgPart::from_bytes(b"cross-gateway".to_vec())],
+        })
+        .expect("send should enqueue");
+    assert_eq!(recv_strings(&mut b1_rx), vec!["cross-gateway"]);
+
+    // The reply path b1@B -> a1@A side-channels back the other way.
+    b_ctx
+        .send_command(Command::Send {
+            sender: b1,
+            destination_ident: MsgPart::from_bytes(format!("a1@{a_tag}").into_bytes()),
+            parts: vec![MsgPart::from_bytes(b"reply".to_vec())],
+        })
+        .expect("send should enqueue");
+    assert_eq!(recv_strings(&mut a1_rx), vec!["reply"]);
+
+    // Neither message touched root: after both arrived, root has nothing pending.
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert!(
+        root_rx.try_recv().is_err(),
+        "root must not receive cross-gateway traffic"
+    );
+
+    shutdown(a_ctx);
+    shutdown(b_ctx);
+    shutdown(root_ctx);
+}
+
+#[test]
+fn quic_gateway_reaches_root_actor_and_its_inproc_child() {
+    // From a child of gateway A, a message to the root domain (an empty specifier)
+    // climbs A's parent link to root rather than side-channelling: it reaches both
+    // the root actor itself and an inproc child of root.
+    set_quic_env();
+    let root_ctx = CtxHandle::new().expect("root ctx");
+    let a_ctx = CtxHandle::new().expect("a ctx");
+
+    let root_url = free_quic_url();
+    // gwA's domain tag; gwA need not serve it here (no side-channels are used).
+    let a_tag = quic_authority(&free_quic_url());
+
+    let root = runtime_gateway_actor(&root_ctx, "root");
+    let rootchild = runtime_actor(&root_ctx, "rootchild");
+    let gw_a = runtime_gateway_actor(&a_ctx, &format!("gwA@{a_tag}"));
+    let a1 = runtime_actor(&a_ctx, &format!("a1@{a_tag}"));
+
+    let (root_poller, mut root_rx) = runtime_poller(&root_ctx);
+    let (rc_poller, mut rc_rx) = runtime_poller(&root_ctx);
+    let (a1_poller, mut a1_rx) = runtime_poller(&a_ctx);
+    runtime_subscribe(&root_ctx, root_poller, 0, root);
+    runtime_subscribe(&root_ctx, rc_poller, 1, rootchild);
+    runtime_subscribe(&a_ctx, a1_poller, 0, a1);
+
+    runtime_serve(&root_ctx, root, &root_url);
+    runtime_join(&a_ctx, gw_a, &root_url);
+    runtime_connect(&root_ctx, root, rootchild, "inproc://reach-rc");
+    runtime_connect(&a_ctx, gw_a, a1, "inproc://reach-a");
+
+    // Drain establishment hellos.
+    assert_eq!(recv_strings(&mut rc_rx), vec!["rootchild", "root"]);
+    assert_eq!(
+        recv_strings(&mut a1_rx),
+        vec![format!("a1@{a_tag}"), format!("gwA@{a_tag}")]
+    );
+    let h1 = recv_strings(&mut root_rx);
+    let h2 = recv_strings(&mut root_rx);
+    assert_eq!(h1[0], "root");
+    assert_eq!(h2[0], "root");
+    let mut peers = vec![h1[1].clone(), h2[1].clone()];
+    peers.sort();
+    assert_eq!(peers, vec![format!("gwA@{a_tag}"), "rootchild".to_string()]);
+
+    // a1@A -> root: empty specifier climbs gwA's parent link to the root actor.
+    a_ctx
+        .send_command(Command::Send {
+            sender: a1,
+            destination_ident: MsgPart::from_bytes(b"root".to_vec()),
+            parts: vec![MsgPart::from_bytes(b"hi-root".to_vec())],
+        })
+        .expect("send should enqueue");
+    assert_eq!(recv_strings(&mut root_rx), vec!["hi-root"]);
+
+    // a1@A -> rootchild: up to root, then down its inproc child link.
+    a_ctx
+        .send_command(Command::Send {
+            sender: a1,
+            destination_ident: MsgPart::from_bytes(b"rootchild".to_vec()),
+            parts: vec![MsgPart::from_bytes(b"hi-rc".to_vec())],
+        })
+        .expect("send should enqueue");
+    assert_eq!(recv_strings(&mut rc_rx), vec!["hi-rc"]);
+
+    shutdown(a_ctx);
+    shutdown(root_ctx);
+}
+
+#[test]
 fn quic_heartbeat_timeout_severs_connection() {
     // A peer that holds the QUIC connection open but never sends anything (no
     // Establish, no heartbeats) can't be detected by EOF — only the heartbeat
@@ -1220,13 +1468,11 @@ fn actor(ctx: &mut Ctx, ident: &str) -> Key {
     // Test actors default to non-gateways: most join a local parent, which a
     // gateway is forbidden from doing. Tests that need a gateway construct it
     // explicitly with `gateway_actor`.
-    ctx.actors
-        .insert(ActorEntry::new(Some(ident.as_bytes().to_vec()), false))
+    ctx.insert_actor(Some(ident.as_bytes().to_vec()), false)
 }
 
 fn gateway_actor(ctx: &mut Ctx, ident: &str) -> Key {
-    ctx.actors
-        .insert(ActorEntry::new(Some(ident.as_bytes().to_vec()), true))
+    ctx.insert_actor(Some(ident.as_bytes().to_vec()), true)
 }
 
 fn connect(ctx: &mut Ctx, parent: Key, child: Key, url: &str) {
@@ -1267,6 +1513,33 @@ fn runtime_connect(ctx: &CtxHandle, parent: Key, child: Key, url: &str) {
         request: request(Role::Child),
     })
     .expect("join should enqueue");
+}
+
+/// Serve `url` from `actor` as a parent (the listening side). Used to set up a
+/// gateway's own QUIC endpoint or a shared rendezvous across contexts.
+fn runtime_serve(ctx: &CtxHandle, actor: Key, url: &str) {
+    ctx.send_command(Command::Serve {
+        actor,
+        url: url.to_owned(),
+        request: request(Role::Parent),
+    })
+    .expect("serve should enqueue");
+}
+
+/// Join `url` from `actor` as a child (the connecting side).
+fn runtime_join(ctx: &CtxHandle, actor: Key, url: &str) {
+    ctx.send_command(Command::Join {
+        actor,
+        url: url.to_owned(),
+        request: request(Role::Child),
+    })
+    .expect("join should enqueue");
+}
+
+/// The authority of a `quic://host:port` url — the gateway specifier tag that goes
+/// in the `@suffix` of idents owned by the gateway serving that url.
+fn quic_authority(url: &str) -> String {
+    url.strip_prefix("quic://").unwrap_or(url).to_owned()
 }
 
 fn runtime_actor(ctx: &CtxHandle, ident: &str) -> Key {

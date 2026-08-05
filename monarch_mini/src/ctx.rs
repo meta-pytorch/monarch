@@ -43,6 +43,7 @@ use crate::poller::PollerEntry;
 use crate::quic_transport::QuicTransport;
 use crate::shm::MapperHandle;
 use crate::shm::ShmClient;
+use crate::shm::ShmClientSlot;
 use crate::shm::ShmMapper;
 use crate::shm::ShmServer;
 use crate::transport::Transport;
@@ -62,6 +63,18 @@ fn valid_scheme(url: &str) -> bool {
 /// for its process group. (Today only quic; tcp joins this set later.)
 fn is_network_scheme(url: &str) -> bool {
     url.starts_with("quic://")
+}
+
+/// The gateway specifier (the `@endpoint` suffix) of an ident, or an empty slice
+/// if it has none. Actor idents are formatted `name@gateway_specifier`; an ident
+/// with no `@` belongs to the root gateway (specifier-less). The specifier is the
+/// address a gateway dials to reach the ident's owning gateway directly, so it is
+/// also a gateway's own domain tag (parsed from its own ident).
+fn gateway_tag(ident: &[u8]) -> &[u8] {
+    match ident.iter().rposition(|&b| b == b'@') {
+        Some(pos) => &ident[pos + 1..],
+        None => &[],
+    }
 }
 
 new_key_type! {
@@ -129,6 +142,13 @@ pub(crate) enum Command {
         connection: ConnectionRef,
         action: ConnectionCommand,
     },
+    // A message arrived over a gateway side-channel (a direct gateway-to-gateway
+    // QUIC connection, not a parent/child link). The receiving gateway is resolved
+    // from the destination, since several gateways may share one endpoint url.
+    SideChannelDeliver {
+        destination_ident: Vec<u8>,
+        payload: SendPayload,
+    },
     // A transport's pipe is up; install it on the connection. Transport-agnostic:
     // both inproc and unix emit it, and the command loop drives establishment
     // from here (sends our Establish along the transport).
@@ -181,6 +201,28 @@ struct Ctx {
         reason = "held so the mapper outlives the context; used via the unix and quic transports"
     )]
     mapper: MapperHandle,
+    // The context-global shared-memory server, shared by every gateway in this
+    // context (created lazily when the first gateway appears). One slab + client
+    // per serving process — not per gateway actor — so multiple independent actor
+    // trees in the same process share it. Dropping it (with the context) releases
+    // the slab.
+    shm_server: Option<ShmServer>,
+    // The single shm client for this context: the slab handed to gateways and to
+    // the quic listener coroutines. Empty until the first gateway creates the
+    // server. A clone of this slot lives in the quic transport.
+    shm_client: ShmClientSlot,
+    // Side-channel messages whose destination no gateway in this context can route
+    // yet, keyed by destination ident. The destination's owning gateway is not
+    // known up front (several gateways may serve the same endpoint url), so these
+    // are held context-wide and flushed once a gateway learns a route to the
+    // destination — or the destination actor is created here.
+    pending_side_channel: HashMap<Vec<u8>, Vec<SendPayload>>,
+    // Every gateway actor ever created in this context, so resolving a side-channel
+    // destination scans only gateways (a handful) rather than every actor. A
+    // *dead* gateway is kept: its routing table still tells us whether a destination
+    // was reachable through it, so we can drop a side-channel message for a dead
+    // subtree rather than hold it forever.
+    gateways: Vec<Key>,
     // A clone of the loop sender, used to schedule debounced monitor unsubscribes
     // back onto the event loop after a grace period.
     loop_tx: mpsc::UnboundedSender<Command>,
@@ -191,17 +233,32 @@ struct Ctx {
 impl Ctx {
     fn new(tx: mpsc::UnboundedSender<Command>) -> Self {
         let mapper: MapperHandle = Arc::new(Mutex::new(ShmMapper::new()));
+        let shm_client: ShmClientSlot = Arc::new(Mutex::new(None));
         Self {
             actors: SlotMap::with_key(),
             pollers: SlotMap::with_key(),
             inproc: InprocTransport::new(tx.clone()),
             unix: UnixTransport::new(tx.clone(), mapper.clone()),
-            quic: QuicTransport::new(tx.clone(), mapper.clone()),
+            quic: QuicTransport::new(tx.clone(), mapper.clone(), shm_client.clone()),
             mapper,
+            shm_server: None,
+            shm_client,
+            pending_side_channel: HashMap::new(),
+            gateways: Vec::new(),
             loop_tx: tx,
             thread: None,
             _not_send: PhantomData,
         }
+    }
+
+    /// Insert a new actor, tracking it in `gateways` if it is one (so side-channel
+    /// delivery scans only gateways, never every actor).
+    fn insert_actor(&mut self, ident: Option<Vec<u8>>, gateway: bool) -> Key {
+        let key = self.actors.insert(ActorEntry::new(ident, gateway));
+        if gateway {
+            self.gateways.push(key);
+        }
+        key
     }
 
     fn run_command(&mut self, command: Command) {
@@ -214,15 +271,13 @@ impl Ctx {
                 gateway,
                 done,
             } => {
-                let key = self.actors.insert(ActorEntry::new(
-                    ident.as_ref().map(|part| part.as_bytes().to_vec()),
-                    gateway,
-                ));
+                let key =
+                    self.insert_actor(ident.as_ref().map(|part| part.as_bytes().to_vec()), gateway);
                 drop(ident);
-                // A gateway owns the slab for its process group: stand up its
-                // shared-memory server now and seed its own client slot, so it can
-                // shm-ify large sends to its children and hand the state down to
-                // them. Best-effort — on failure the gateway just streams inline.
+                // A gateway shares the context's slab (created lazily on the first
+                // gateway): seed its client slot from it, so it can shm-ify large
+                // sends to its children and hand the state down to them. Best-effort
+                // — on failure the gateway just streams inline.
                 if gateway {
                     self.init_gateway_shm(key);
                 }
@@ -322,6 +377,12 @@ impl Ctx {
                 transport,
             } => {
                 self.transport_connected(connection, transport);
+            }
+            Command::SideChannelDeliver {
+                destination_ident,
+                payload,
+            } => {
+                self.deliver_side_channel(destination_ident, payload);
             }
             Command::Die { actor, reason } => {
                 let reason = reason.as_bytes().to_vec();
@@ -425,6 +486,36 @@ impl Ctx {
             // forwarding it up (where it would buffer forever at the gateway).
             Some(Route::Dead) => return,
             Some(Route::Unknown { .. }) | None => {}
+        }
+
+        // No local route. A gateway is the boundary of its routing domain, so a
+        // destination on a *different* gateway is reached by a direct side-channel
+        // rather than by climbing toward the root. Destinations in the root domain
+        // (no specifier) still climb the parent chain; destinations in our own
+        // domain that we simply do not know yet are buffered locally — never sent
+        // up, which would only bounce them back to us.
+        if self.actor(sender).gateway {
+            let own_tag = gateway_tag(self.actor(sender).name().unwrap_or_default()).to_vec();
+            let dest_tag = gateway_tag(&destination_ident).to_vec();
+            if !dest_tag.is_empty() && dest_tag != own_tag {
+                match std::str::from_utf8(&dest_tag) {
+                    Ok(tag) => {
+                        self.quic
+                            .send_to_gateway(tag.to_owned(), destination_ident, payload)
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            "gateway destination has non-utf8 specifier; dropping message"
+                        )
+                    }
+                }
+                return;
+            }
+            if !own_tag.is_empty() && dest_tag == own_tag {
+                self.actor_mut(sender)
+                    .buffer_unrouted(destination_ident, payload);
+                return;
+            }
         }
 
         // No known route here. Forward the payload — intact — toward the gateway;
@@ -652,11 +743,18 @@ impl Ctx {
             // route and flush its buffered messages. Monitors stay here: this actor is
             // the responsible ancestor for the destination (it is reachable below it).
             let previous = self.actor_mut(parent).routes.remove(ident.as_slice());
-            let (monitors, buffered) = match previous {
+            let (monitors, mut buffered) = match previous {
                 Some(Route::Unknown { messages, monitors }) => (monitors, messages),
                 Some(Route::Connection { monitors, .. }) => (monitors, Vec::new()),
                 _ => (Vec::new(), Vec::new()),
             };
+            // Side-channel messages held context-wide for this destination become
+            // routable at this same moment, so route them alongside the buffered
+            // ones — this is the one place a previously-unroutable side-channel
+            // destination gains a route.
+            if let Some(pending) = self.pending_side_channel.remove(ident.as_slice()) {
+                buffered.extend(pending);
+            }
             self.actor_mut(parent).routes.insert(
                 ident.clone(),
                 Route::Connection {
@@ -669,7 +767,8 @@ impl Ctx {
             self.actor_mut(parent)
                 .record_routed_via_child(child_connection, ident);
 
-            // Re-route any payloads buffered while the route was unknown; route_message
+            // Re-route every payload that was waiting on this route (buffered against
+            // the Unknown route, plus any pending side-channel messages); route_message
             // sends them down the child connection we just recorded.
             for payload in buffered {
                 self.route_message(parent, ident.clone(), payload);
@@ -708,6 +807,14 @@ impl Ctx {
 
     fn publish_routes_to_parent(&mut self, actor: Key, live: Vec<Vec<u8>>, dead: Vec<Vec<u8>>) {
         if live.is_empty() && dead.is_empty() {
+            return;
+        }
+        // A gateway is the top of its routing domain: it does not leak its
+        // subtree's routes up to its (network) parent. This is what keeps actors
+        // on one gateway out of another gateway's routing tables — cross-gateway
+        // delivery uses direct side-channels (see route_message) instead. (Message
+        // forwarding up the parent chain is unaffected; only route publication is.)
+        if self.actor(actor).gateway {
             return;
         }
         let actor = self.actor_mut(actor);
@@ -1010,18 +1117,35 @@ impl Ctx {
 
     // -- Shared-memory gateway state --------------------------------------------
 
-    /// Stand up a gateway actor's shared-memory server and record its own client
-    /// in the registry. Best-effort: a failure leaves the actor without shm
-    /// (inline sends).
+    /// Seed a gateway actor's client slot from the context's shared shm server,
+    /// creating that server on the first gateway. Best-effort: if the server can't
+    /// start, the gateway just streams inline.
     fn init_gateway_shm(&mut self, actor: Key) {
-        match ShmServer::new() {
-            Ok(server) => {
-                let client = server.client();
-                self.set_shm_client(actor, client);
-                self.actor_mut(actor).shm_server = Some(server);
-            }
-            Err(err) => tracing::warn!("failed to start gateway shm server: {err}"),
+        if let Some(client) = self.ensure_context_shm() {
+            self.set_shm_client(actor, client);
         }
+    }
+
+    /// The context's shared shm client, creating the single server on first use.
+    /// All gateways in the context share it, so the slab is per serving process
+    /// rather than per gateway actor. Returns `None` if the server can't start.
+    fn ensure_context_shm(&mut self) -> Option<ShmClient> {
+        if self.shm_server.is_none() {
+            match ShmServer::new() {
+                Ok(server) => {
+                    *self
+                        .shm_client
+                        .lock()
+                        .expect("shm client slot mutex poisoned") = Some(server.client());
+                    self.shm_server = Some(server);
+                }
+                Err(err) => tracing::warn!("failed to start context shm server: {err}"),
+            }
+        }
+        *self
+            .shm_client
+            .lock()
+            .expect("shm client slot mutex poisoned")
     }
 
     /// Record `actor`'s gateway client in its slot (which its transport coroutines
@@ -1057,6 +1181,33 @@ impl Ctx {
             if let Some(connection) = self.actor_mut(actor).children.get_mut(slot) {
                 let _ = connection.send(ConnectionCommand::GatewayState { client });
             }
+        }
+    }
+
+    // -- Side-channel delivery --------------------------------------------------
+
+    /// Route a message that arrived over a gateway side-channel. Because several
+    /// gateways may serve the same endpoint url, the destination's owning gateway is
+    /// not known up front, so find the first gateway that has the destination in its
+    /// routing table (or *is* it) and hand off to `route_message`, which delivers a
+    /// live route, drops a dead one, drops anything via a dead gateway, and buffers
+    /// an `Unknown` entry. An `Unknown` entry counts: it means an actor under that
+    /// gateway already addressed the destination, so it is expected to appear there.
+    /// If no gateway knows the destination at all, hold the message in
+    /// `pending_side_channel` until a route is recorded (see `populate_routes`).
+    fn deliver_side_channel(&mut self, destination_ident: Vec<u8>, payload: SendPayload) {
+        let routable = self.gateways.iter().copied().find(|&key| {
+            let actor = &self.actors[key];
+            actor.name() == Some(destination_ident.as_slice())
+                || actor.routes.contains_key(&destination_ident)
+        });
+        match routable {
+            Some(key) => self.route_message(key, destination_ident, payload),
+            None => self
+                .pending_side_channel
+                .entry(destination_ident)
+                .or_default()
+                .push(payload),
         }
     }
 
