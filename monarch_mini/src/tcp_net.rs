@@ -801,7 +801,7 @@ impl fmt::Debug for TcpConn {
 impl NetConn for TcpConn {
     type Send = WriteHalf<TlsStream>;
     type Recv = ReadHalf<TlsStream>;
-    type Stream = Pin<Box<dyn Future<Output = io::Result<(Self::Send, Self::Recv)>>>>;
+    type Stream = Pin<Box<dyn Future<Output = io::Result<(Self::Send, Self::Recv)>> + Send>>;
 
     fn stream(&self, index: usize, _priority: i32) -> Self::Stream {
         match self {

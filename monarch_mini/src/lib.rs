@@ -9,6 +9,7 @@
 mod actor;
 mod connection;
 mod ctx;
+mod dataio;
 mod framing;
 mod heartbeat;
 mod inproc_transport;

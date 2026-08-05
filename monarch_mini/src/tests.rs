@@ -1818,6 +1818,190 @@ fn quic_gateway_reads_large_message_into_shared_memory() {
     shutdown(ctx);
 }
 
+/// Enable striping across `n` data streams per direction for the tests that exercise
+/// it. Global (like `set_quic_env`), but the default 1 MiB threshold means only the
+/// deliberately-large payloads below are striped; every other test's small messages
+/// stay inline regardless.
+fn set_striping_env(n: usize) {
+    std::env::set_var("MM_NET_N_DATA_STREAMS", n.to_string());
+}
+
+/// A large payload striped across quic data streams reassembles byte-for-byte at the
+/// gateway. Sized above the 1 MiB threshold, with a remainder past an even 4-way split
+/// (so the shards are unequal) and a companion small part (so one message mixes an
+/// inline part and a striped part). The striped part lands in the slab (`is_shm`).
+#[test]
+fn quic_stripes_large_message_across_data_streams() {
+    set_quic_env();
+    set_striping_env(4);
+    let ctx = CtxHandle::new().expect("context should start");
+    let gw = runtime_gateway_actor(&ctx, "q-stripe-gw");
+    let sender = runtime_actor(&ctx, "q-stripe-sender");
+    let (gw_poller, mut gw_rx) = runtime_poller(&ctx);
+    runtime_subscribe(&ctx, gw_poller, 0, gw);
+
+    let url = free_quic_url();
+    ctx.send_command(Command::Serve {
+        actor: gw,
+        url: url.clone(),
+        request: request(Role::Parent),
+    })
+    .expect("serve should enqueue");
+    ctx.send_command(Command::Join {
+        actor: sender,
+        url,
+        request: request(Role::Child),
+    })
+    .expect("join should enqueue");
+    assert_eq!(
+        recv_strings(&mut gw_rx),
+        vec!["q-stripe-gw", "q-stripe-sender"]
+    );
+
+    let len = 3 * 1024 * 1024 + 777;
+    let payload: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+    ctx.send_command(Command::Send {
+        sender,
+        destination_ident: MsgPart::from_bytes(b"q-stripe-gw".to_vec()),
+        parts: vec![
+            MsgPart::from_bytes(b"meta".to_vec()),
+            MsgPart::from_bytes(payload.clone()),
+        ],
+    })
+    .expect("send should enqueue");
+
+    let delivered = gw_rx.blocking_recv().expect("striped message delivered");
+    assert_eq!(delivered.msg.len(), 2, "both parts delivered");
+    assert_eq!(
+        delivered.msg[0].as_bytes(),
+        b"meta",
+        "the inline part is intact"
+    );
+    assert!(
+        delivered.msg[1].is_shm(),
+        "the large striped part lands in the slab"
+    );
+    assert_eq!(
+        delivered.msg[1].as_bytes(),
+        payload.as_slice(),
+        "the striped payload reassembles intact across the data streams"
+    );
+
+    shutdown(ctx);
+}
+
+/// The tcp analogue: a large payload striped across several tcp sockets (one per data
+/// stream) reassembles intact at the gateway.
+#[test]
+fn tcp_stripes_large_message_across_data_streams() {
+    set_quic_env(); // tcp reuses the same MM_QUIC_* cert material
+    set_striping_env(3);
+    let ctx = CtxHandle::new().expect("context should start");
+    let gw = runtime_gateway_actor(&ctx, "t-stripe-gw");
+    let sender = runtime_actor(&ctx, "t-stripe-sender");
+    let (gw_poller, mut gw_rx) = runtime_poller(&ctx);
+    runtime_subscribe(&ctx, gw_poller, 0, gw);
+
+    let url = free_tcp_url();
+    ctx.send_command(Command::Serve {
+        actor: gw,
+        url: url.clone(),
+        request: request(Role::Parent),
+    })
+    .expect("serve should enqueue");
+    ctx.send_command(Command::Join {
+        actor: sender,
+        url,
+        request: request(Role::Child),
+    })
+    .expect("join should enqueue");
+    assert_eq!(
+        recv_strings(&mut gw_rx),
+        vec!["t-stripe-gw", "t-stripe-sender"]
+    );
+
+    let len = 2 * 1024 * 1024 + 5;
+    let payload: Vec<u8> = (0..len).map(|i| (i % 253) as u8).collect();
+    ctx.send_command(Command::Send {
+        sender,
+        destination_ident: MsgPart::from_bytes(b"t-stripe-gw".to_vec()),
+        parts: vec![MsgPart::from_bytes(payload.clone())],
+    })
+    .expect("send should enqueue");
+
+    let delivered = gw_rx.blocking_recv().expect("striped message delivered");
+    assert_eq!(delivered.msg.len(), 1, "one part delivered");
+    assert_eq!(
+        delivered.msg[0].as_bytes(),
+        payload.as_slice(),
+        "the striped payload reassembles intact across the tcp data sockets"
+    );
+
+    shutdown(ctx);
+}
+
+/// Delivery stays in `seq` order across striping: a small message sent right after a
+/// large striped one is held back until the large one is fully assembled, so the two
+/// arrive in send order even though the small one's bytes are trivially ready first.
+#[test]
+fn quic_striping_preserves_in_order_delivery() {
+    set_quic_env();
+    set_striping_env(4);
+    let ctx = CtxHandle::new().expect("context should start");
+    let gw = runtime_gateway_actor(&ctx, "q-order-gw");
+    let sender = runtime_actor(&ctx, "q-order-sender");
+    let (gw_poller, mut gw_rx) = runtime_poller(&ctx);
+    runtime_subscribe(&ctx, gw_poller, 0, gw);
+
+    let url = free_quic_url();
+    ctx.send_command(Command::Serve {
+        actor: gw,
+        url: url.clone(),
+        request: request(Role::Parent),
+    })
+    .expect("serve should enqueue");
+    ctx.send_command(Command::Join {
+        actor: sender,
+        url,
+        request: request(Role::Child),
+    })
+    .expect("join should enqueue");
+    assert_eq!(
+        recv_strings(&mut gw_rx),
+        vec!["q-order-gw", "q-order-sender"]
+    );
+
+    let len = 4 * 1024 * 1024 + 13;
+    let big: Vec<u8> = (0..len).map(|i| (i % 249) as u8).collect();
+    ctx.send_command(Command::Send {
+        sender,
+        destination_ident: MsgPart::from_bytes(b"q-order-gw".to_vec()),
+        parts: vec![MsgPart::from_bytes(big.clone())],
+    })
+    .expect("send big should enqueue");
+    ctx.send_command(Command::Send {
+        sender,
+        destination_ident: MsgPart::from_bytes(b"q-order-gw".to_vec()),
+        parts: vec![MsgPart::from_bytes(b"after".to_vec())],
+    })
+    .expect("send small should enqueue");
+
+    let first = gw_rx.blocking_recv().expect("first message");
+    assert_eq!(
+        first.msg[0].as_bytes(),
+        big.as_slice(),
+        "the large striped message is delivered first, in send order"
+    );
+    let second = gw_rx.blocking_recv().expect("second message");
+    assert_eq!(
+        second.msg[0].as_bytes(),
+        b"after",
+        "the following small message is delivered after the large one it followed"
+    );
+
+    shutdown(ctx);
+}
+
 #[test]
 fn quic_join_before_serve() {
     // The joiner's QUIC handshake fails until the server binds, so the connector

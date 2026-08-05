@@ -126,7 +126,18 @@ pub(crate) trait Net: Sized + 'static {
 /// preambles — it just hands out ordered streams, told per stream which side speaks
 /// first. `Debug` supplies the peer identity for diagnostics (quic: the remote
 /// address), used by the heartbeat send log.
-pub(crate) trait NetConn: Debug + 'static {
+///
+/// `Clone` is cheap and shares one underlying connection: the reader, the writer, and
+/// the heartbeat task each hold a clone and open the streams they own via
+/// [`Self::stream`] (for striping the reader and writer open their own data streams the
+/// same way), with no half handed between tasks. A quic dialer clones its `Connection`;
+/// the quic/tcp acceptors clone a request-sender to their demux; a tcp dialer clones
+/// its dial handle.
+///
+/// `Send` so a data coroutine holding the handle — the writer, the reader, and their
+/// striping objects that open their own data streams inline — can run on the data
+/// runtime.
+pub(crate) trait NetConn: Debug + Clone + Send + 'static {
     /// The send half of a stream; framing drives it via [`AsyncWrite`]. It keeps the
     /// underlying connection alive for its lifetime. `Send` so the data writer
     /// coroutine can run on a multi-threaded runtime (the connection handle and the
@@ -136,8 +147,10 @@ pub(crate) trait NetConn: Debug + 'static {
     /// the underlying connection alive for its lifetime. `Send` for the same reason as
     /// [`Self::Send`] — the data reader coroutine may run off the command-loop thread.
     type Recv: AsyncRead + Unpin + Send + 'static;
-    /// The awaitable that materializes one stream's halves on first poll.
-    type Stream: Future<Output = std::io::Result<(Self::Send, Self::Recv)>> + 'static;
+    /// The awaitable that materializes one stream's halves on first poll. `Send` so a
+    /// data coroutine on the data runtime can open a striping data stream inline (the
+    /// acceptor's variant just messages its demux; the dialer's opens/dials directly).
+    type Stream: Future<Output = std::io::Result<(Self::Send, Self::Recv)>> + Send + 'static;
 
     /// An awaitable for the stream addressed by `index`, paired with the peer's stream
     /// of the same index. On a *dialer* connection it opens the stream; on an *acceptor*
