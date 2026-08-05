@@ -56,9 +56,11 @@ use tokio::time::MissedTickBehavior;
 use crate::connection::ConnectionCommand;
 use crate::connection::ConnectionRef;
 use crate::connection::ConnectionTransport;
+use crate::connection::SendPayload;
 use crate::ctx::Command;
 use crate::framing;
 use crate::framing::Incoming;
+use crate::framing::Preamble;
 use crate::matcher::Matcher;
 use crate::shm::MapperHandle;
 use crate::shm::ShmClient;
@@ -165,9 +167,18 @@ pub(crate) struct QuicTransport {
     // handed to every connection's reader so a large incoming part can be read
     // straight into a slab block.
     mapper: MapperHandle,
-    // One listener coroutine per url; serve connections (with the owning actor's
-    // shm context) are forwarded to it and it owns the serve/accept pairing.
+    // The context's single shm client slot, used *only* by side-channel readers,
+    // which are not tied to any actor. A join/serve connection reads into its
+    // owning actor's own slot instead (passed through serve/join).
+    context_shm: ShmClientSlot,
+    // One listener coroutine per url; serve connections are forwarded to it and it
+    // owns the serve/accept pairing.
     listeners: HashMap<String, mpsc::UnboundedSender<(ConnectionRef, ShmCtx)>>,
+    // One side-channel writer per remote gateway, keyed by its dial address (the
+    // `@specifier` tag). Each owns a task that lazily connects (retrying until the
+    // gateway is live), streams message frames, and reconnects if the connection
+    // drops. Never heartbeated; cached across messages.
+    side_channels: HashMap<String, mpsc::UnboundedSender<ConnectionCommand>>,
     tls: Option<Arc<TlsConfig>>,
     // Liveness-token issuer: each connection's writer holds a clone for its
     // lifetime. Teardown drops this issuing copy and waits for `alive_rx` to close
@@ -177,22 +188,29 @@ pub(crate) struct QuicTransport {
 }
 
 impl QuicTransport {
-    pub(crate) fn new(loop_tx: mpsc::UnboundedSender<Command>, mapper: MapperHandle) -> Self {
+    pub(crate) fn new(
+        loop_tx: mpsc::UnboundedSender<Command>,
+        mapper: MapperHandle,
+        context_shm: ShmClientSlot,
+    ) -> Self {
         let (shutdown_tx, _) = watch::channel(false);
         let (alive_tx, alive_rx) = mpsc::unbounded_channel();
         Self {
             loop_tx,
             shutdown_tx,
             mapper,
+            context_shm,
             listeners: HashMap::new(),
+            side_channels: HashMap::new(),
             tls: None,
             alive_tx: Some(alive_tx),
             alive_rx,
         }
     }
 
-    /// Pair the context mapper with an actor's client slot into a connection's
-    /// shared-memory context.
+    /// A connection's shared-memory context: the context mapper paired with the
+    /// given client slot. A join/serve connection passes its owning actor's slot; a
+    /// side-channel passes [`Self::context_shm`].
     fn shm_ctx(&self, client: ShmClientSlot) -> ShmCtx {
         ShmCtx {
             mapper: self.mapper.clone(),
@@ -215,6 +233,52 @@ impl QuicTransport {
         let tls = Arc::new(load_tls()?);
         self.tls = Some(tls.clone());
         Ok(tls)
+    }
+
+    /// Send a message to a remote gateway over a direct side-channel, opening (and
+    /// caching) the connection on first use. The caller (the command loop) has
+    /// already determined `tag` is a different gateway than the sender's own. The
+    /// side-channel is best-effort and not heartbeated; a message enqueued while
+    /// the remote gateway is not yet live waits for the connection to come up.
+    pub(crate) fn send_to_gateway(
+        &mut self,
+        tag: String,
+        destination_ident: Vec<u8>,
+        payload: SendPayload,
+    ) {
+        if !self.side_channels.contains_key(&tag) {
+            let client = match self.tls() {
+                Ok(tls) => tls.client.clone(),
+                Err(err) => {
+                    tracing::warn!("side channel tls: {err:#}");
+                    return;
+                }
+            };
+            let addr = match parse_addr(&tag) {
+                Ok(addr) => addr,
+                Err(err) => {
+                    tracing::warn!("side channel address: {err:#}");
+                    return;
+                }
+            };
+            let (tx, rx) = mpsc::unbounded_channel();
+            tokio::task::spawn_local(side_channel_writer_task(
+                addr,
+                client,
+                rx,
+                self.shutdown_tx.subscribe(),
+                self.alive_token(),
+            ));
+            self.side_channels.insert(tag.clone(), tx);
+        }
+        let _ = self
+            .side_channels
+            .get(&tag)
+            .expect("side channel just inserted")
+            .send(ConnectionCommand::SendMessage {
+                destination_ident,
+                payload,
+            });
     }
 
     /// Signal every writer to flush and exit, then wait until they all have — the
@@ -240,7 +304,9 @@ impl Transport for QuicTransport {
             }
         };
         // The first serve on a url spawns its listener coroutine; later serves just
-        // forward another connection to it.
+        // forward another connection to it. The listener carries the *context* shm
+        // context for side-channel readers (which have no owning actor); each Join
+        // connection instead uses the owning actor's slot, forwarded alongside it.
         if !self.listeners.contains_key(&url) {
             let addr = match parse_addr(&url) {
                 Ok(addr) => addr,
@@ -250,6 +316,7 @@ impl Transport for QuicTransport {
                 }
             };
             let (tx, rx) = mpsc::unbounded_channel();
+            let context_shm = self.shm_ctx(self.context_shm.clone());
             tokio::task::spawn_local(listener_task(
                 addr,
                 tls.server.clone(),
@@ -257,6 +324,7 @@ impl Transport for QuicTransport {
                 self.loop_tx.clone(),
                 self.shutdown_tx.subscribe(),
                 self.alive_token(),
+                context_shm,
             ));
             self.listeners.insert(url.clone(), tx);
         }
@@ -299,10 +367,22 @@ impl Transport for QuicTransport {
     }
 }
 
-/// Bind a QUIC server endpoint on `addr` and pair each accepted connection's
-/// stream with the next queued serve (either may arrive first). On a bind failure
-/// the serves are severed instead. Stops on teardown or when the command loop
-/// drops the serve sender.
+/// A connection accepted by the listener, classified by the joiner's preamble.
+/// A `Join` is paired with a serve and driven by the command loop as before; a
+/// `SideChannel` is a gateway-to-gateway message stream read directly into the
+/// home gateway's routing.
+enum Accepted {
+    Join(Connection, SendStream, RecvStream),
+    SideChannel(Connection, RecvStream),
+}
+
+/// Bind a QUIC server endpoint on `addr` and dispatch each accepted connection by
+/// its preamble: a `Join` is paired with the next queued serve (either may arrive
+/// first); a `SideChannel` is read straight into the context's gateway routing. On
+/// a bind failure the serves are severed instead. Stops on teardown or when the
+/// command loop drops the serve sender. `side_channel_shm` is the *context* shm
+/// context, used only for side-channel readers (which have no owning actor); each
+/// Join connection instead uses the per-serve shm forwarded with it.
 async fn listener_task(
     addr: SocketAddr,
     server_config: ServerConfig,
@@ -310,6 +390,7 @@ async fn listener_task(
     loop_tx: mpsc::UnboundedSender<Command>,
     mut shutdown: watch::Receiver<bool>,
     alive: mpsc::UnboundedSender<()>,
+    side_channel_shm: ShmCtx,
 ) {
     let endpoint = match Endpoint::server(server_config, addr) {
         Ok(endpoint) => endpoint,
@@ -329,9 +410,9 @@ async fn listener_task(
         }
     };
 
-    // Accepting a connection and its stream is a multi-step handshake; run it off
-    // the pairing loop so a slow handshake doesn't stall matching. Each accepted
-    // (connection, stream) lands on `accepted_rx`.
+    // Accepting a connection, its stream, and its preamble is a multi-step
+    // handshake; run it off the pairing loop so a slow handshake doesn't stall
+    // matching. Each classified connection lands on `accepted_rx`.
     let (accepted_tx, mut accepted_rx) = mpsc::unbounded_channel();
     tokio::task::spawn_local(acceptor_task(
         endpoint.clone(),
@@ -355,15 +436,24 @@ async fn listener_task(
                 });
             }
             accepted = accepted_rx.recv() => {
-                let Some(triple) = accepted else { return; };
-                let _ = matcher.push_right(triple, |(connection, shm), (conn, send, recv)| {
-                    spawn_connection(
-                        send, recv, connection,
-                        loop_tx.clone(), shutdown.clone(), alive.clone(),
-                        KeepAlive { _endpoint: None, _connection: conn },
-                        shm,
-                    )
-                });
+                match accepted {
+                    None => return,
+                    Some(Accepted::Join(conn, send, recv)) => {
+                        let _ = matcher.push_right((conn, send, recv), |(connection, shm), (conn, send, recv)| {
+                            spawn_connection(
+                                send, recv, connection,
+                                loop_tx.clone(), shutdown.clone(), alive.clone(),
+                                KeepAlive { _endpoint: None, _connection: conn },
+                                shm,
+                            )
+                        });
+                    }
+                    Some(Accepted::SideChannel(conn, recv)) => {
+                        tokio::task::spawn_local(side_channel_reader_task(
+                            conn, recv, loop_tx.clone(), side_channel_shm.clone(),
+                        ));
+                    }
+                }
             }
             _ = shutdown.changed() => return,
         }
@@ -373,11 +463,11 @@ async fn listener_task(
 }
 
 /// Accept connections on `endpoint`, accept the one bi-stream each joiner opens,
-/// and forward the result. Each handshake runs in its own task so one slow peer
-/// doesn't block others.
+/// read its preamble, and forward the classified result. Each handshake runs in
+/// its own task so one slow peer doesn't block others.
 async fn acceptor_task(
     endpoint: Endpoint,
-    accepted_tx: mpsc::UnboundedSender<(Connection, SendStream, RecvStream)>,
+    accepted_tx: mpsc::UnboundedSender<Accepted>,
     mut shutdown: watch::Receiver<bool>,
 ) {
     loop {
@@ -388,12 +478,51 @@ async fn acceptor_task(
                 tokio::task::spawn_local(async move {
                     let Ok(connecting) = incoming.accept() else { return; };
                     let Ok(connection) = connecting.await else { return; };
-                    if let Ok((send, recv)) = connection.accept_bi().await {
-                        let _ = accepted_tx.send((connection, send, recv));
-                    }
+                    let Ok((send, mut recv)) = connection.accept_bi().await else { return; };
+                    // The joiner's first frame says what this stream is for.
+                    let accepted = match framing::read_preamble(&mut recv).await {
+                        Ok(Preamble::Join) => Accepted::Join(connection, send, recv),
+                        Ok(Preamble::SideChannel) => Accepted::SideChannel(connection, recv),
+                        Err(_) => return,
+                    };
+                    let _ = accepted_tx.send(accepted);
                 });
             }
             _ = shutdown.changed() => return,
+        }
+    }
+}
+
+/// Read message frames off a gateway side-channel and forward each to the command
+/// loop, which resolves the owning gateway from the destination. There is no
+/// heartbeat and no establishment: an EOF or error just ends the reader (the
+/// sending gateway reconnects when it next has something to send). `_conn` is held
+/// only to keep the QUIC connection (and thus `recv`) alive.
+async fn side_channel_reader_task(
+    _conn: Connection,
+    mut recv: RecvStream,
+    loop_tx: mpsc::UnboundedSender<Command>,
+    shm: ShmCtx,
+) {
+    loop {
+        match framing::read_frame(&mut recv, &shm.mapper, shm.client()).await {
+            Ok(Incoming::Command(ConnectionCommand::SendMessage {
+                destination_ident,
+                payload,
+            })) => {
+                if loop_tx
+                    .send(Command::SideChannelDeliver {
+                        destination_ident,
+                        payload,
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            // A side-channel carries only messages; ignore anything else.
+            Ok(_) => {}
+            Err(_) => return,
         }
     }
 }
@@ -437,7 +566,16 @@ async fn connector_task(
         };
         if let Some(conn) = connected {
             match conn.open_bi().await {
-                Ok((send, recv)) => {
+                Ok((mut send, recv)) => {
+                    // Tell the acceptor this is an ordinary join (not a side-channel)
+                    // before the command loop drives establishment over the stream.
+                    if framing::write_preamble(&mut send, Preamble::Join)
+                        .await
+                        .is_err()
+                    {
+                        sever(&loop_tx, connection, b"quic open stream failed".to_vec());
+                        return;
+                    }
                     spawn_connection(
                         send,
                         recv,
@@ -462,6 +600,103 @@ async fn connector_task(
         tokio::select! {
             _ = tokio::time::sleep(retry) => {}
             _ = shutdown.changed() => return,
+        }
+        retry = (retry * 2).min(CONNECT_RETRY_MAX);
+    }
+}
+
+/// Drive a gateway side-channel writer: drain queued message commands, writing
+/// each as a frame to the remote gateway. The connection is established lazily on
+/// the first message (retrying until the gateway is live) and reconnected if it
+/// drops — there is no heartbeat, so a dropped connection is noticed on the next
+/// write. A message in flight when the connection drops may be lost; the channel
+/// is best-effort by design (any gateway may drop a side-channel to reclaim state).
+async fn side_channel_writer_task(
+    addr: SocketAddr,
+    client_config: ClientConfig,
+    mut rx: mpsc::UnboundedReceiver<ConnectionCommand>,
+    mut shutdown: watch::Receiver<bool>,
+    _alive: mpsc::UnboundedSender<()>,
+) {
+    let endpoint = match Endpoint::client("0.0.0.0:0".parse().expect("valid bind addr")) {
+        Ok(mut endpoint) => {
+            endpoint.set_default_client_config(client_config);
+            endpoint
+        }
+        Err(err) => {
+            tracing::warn!("side channel client bind failed: {err}");
+            return;
+        }
+    };
+
+    // The current connection, if up: its send stream plus a keep-alive holding the
+    // QUIC connection open. `None` means we must (re)connect before the next write.
+    let mut stream: Option<(SendStream, KeepAlive)> = None;
+    loop {
+        let command = tokio::select! {
+            command = rx.recv() => match command {
+                Some(command) => command,
+                None => break, // sender dropped (gateway gone)
+            },
+            _ = shutdown.changed() => break,
+        };
+        if stream.is_none() {
+            let Some((mut send, keep)) = connect_side_channel(&endpoint, addr, &mut shutdown).await
+            else {
+                break; // shutting down before the gateway came up
+            };
+            // Announce the stream as a side-channel so the peer reads messages
+            // rather than driving a join handshake.
+            if framing::write_preamble(&mut send, Preamble::SideChannel)
+                .await
+                .is_err()
+            {
+                continue; // reconnect on the next message (this one is dropped)
+            }
+            stream = Some((send, keep));
+        }
+        let (send, _keep) = stream.as_mut().expect("stream is connected");
+        if framing::write_command(send, command).await.is_err() {
+            stream = None; // dropped; reconnect on the next message
+        }
+    }
+    if let Some((mut send, _keep)) = stream {
+        let _ = send.finish();
+    }
+}
+
+/// Connect a side-channel to `addr`, retrying with backoff until the gateway binds
+/// and a bi-stream opens, or until teardown (then `None`). Mirrors the join
+/// connector's retry so a side-channel may be opened before its target gateway is
+/// live.
+async fn connect_side_channel(
+    endpoint: &Endpoint,
+    addr: SocketAddr,
+    shutdown: &mut watch::Receiver<bool>,
+) -> Option<(SendStream, KeepAlive)> {
+    let mut retry = CONNECT_RETRY_MIN;
+    loop {
+        if *shutdown.borrow() {
+            return None;
+        }
+        let connected = match endpoint.connect(addr, SERVER_NAME) {
+            Ok(connecting) => connecting.await.ok(),
+            Err(_) => None,
+        };
+        if let Some(conn) = connected {
+            if let Ok((send, _recv)) = conn.open_bi().await {
+                return Some((
+                    send,
+                    KeepAlive {
+                        _endpoint: None,
+                        _connection: conn,
+                    },
+                ));
+            }
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(retry) => {}
+            _ = shutdown.changed() => return None,
         }
         retry = (retry * 2).min(CONNECT_RETRY_MAX);
     }

@@ -19,7 +19,6 @@ use crate::ctx::ChildConnectionKey;
 use crate::ctx::PollerKey;
 use crate::msg::MsgPart;
 use crate::shm::ShmClientSlot;
-use crate::shm::ShmServer;
 
 pub(crate) struct ActorEntry {
     pub(crate) name: ActorName,
@@ -47,15 +46,12 @@ pub(crate) struct ActorEntry {
     /// route through it. Joining a gateway to a non-network parent is rejected.
     pub(crate) gateway: bool,
     pub(crate) alive: bool,
-    /// This actor's gateway shared-memory client, once it learns its gateway. The
-    /// value is `Option<ShmClient>`; it lives behind an `Arc<Mutex<_>>` only so the
-    /// actor's transport coroutines can read it and the reader can set it the
-    /// moment a gateway-state handoff arrives.
+    /// This actor's gateway shared-memory client, once it learns its gateway (the
+    /// context's shared slab for a gateway, or a parent's slab received via
+    /// gateway-state handoff). The value is `Option<ShmClient>`; it lives behind an
+    /// `Arc<Mutex<_>>` only so the actor's transport coroutines can read it and the
+    /// reader can set it the moment a handoff arrives.
     pub(crate) shm_client: ShmClientSlot,
-    /// The shared-memory allocation authority, present only on a gateway actor.
-    /// Dropping it (when the gateway is destroyed) stops the server and releases
-    /// the slab.
-    pub(crate) shm_server: Option<ShmServer>,
 }
 
 /// State of this actor's monitoring of one target ident. The variant *is* the
@@ -89,7 +85,6 @@ impl ActorEntry {
             gateway,
             alive: true,
             shm_client: Arc::new(Mutex::new(None)),
-            shm_server: None,
         }
     }
 
