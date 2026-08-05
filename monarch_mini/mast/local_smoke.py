@@ -69,16 +69,10 @@ def main() -> None:
     parser.add_argument("--hb-interval-ms", type=int, default=300)
     parser.add_argument("--hb-timeout-ms", type=int, default=1200)
     parser.add_argument(
-        "--duration",
-        type=float,
-        default=12.0,
-        help="root ping-loop seconds (default: 12)",
-    )
-    parser.add_argument(
-        "--send-interval",
-        type=float,
-        default=2.0,
-        help="seconds between ping rounds (default: 2, > heartbeat timeout)",
+        "--rounds",
+        type=int,
+        default=5,
+        help="direct+ring rounds the root runs at each sweep size (default: 5)",
     )
     parser.add_argument(
         "--chain-length",
@@ -113,7 +107,7 @@ def main() -> None:
         f"[local] {args.workers} workers on ::1 ports {ports[0]}..{ports[-1]}; "
         f"max_direct={args.max_direct} "
         f"hb={args.hb_interval_ms}/{args.hb_timeout_ms}ms "
-        f"duration={args.duration}s send_interval={args.send_interval}s",
+        f"sweep rounds={args.rounds}",
         flush=True,
     )
 
@@ -146,10 +140,8 @@ def main() -> None:
                 SMOKE,
                 "--root",
                 *addrs,
-                "--duration",
-                str(args.duration),
-                "--send-interval",
-                str(args.send_interval),
+                "--min-rounds",
+                str(args.rounds),
                 "--chain-length",
                 str(args.chain_length),
                 "--timeout",
