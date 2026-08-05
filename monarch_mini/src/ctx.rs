@@ -6,6 +6,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::marker::PhantomData;
 use std::os::fd::OwnedFd;
 use std::thread;
@@ -19,14 +21,17 @@ use tokio::sync::oneshot;
 
 use crate::Role;
 use crate::actor::ActorEntry;
+use crate::actor::ActorName;
 use crate::actor::Delivery;
+use crate::actor::LocalMonitor;
+use crate::actor::MonitorSub;
+use crate::actor::PendingMonitor;
 use crate::actor::Route;
 use crate::connection::ConnectRequest;
 use crate::connection::Connection;
 use crate::connection::ConnectionCommand;
 use crate::connection::ConnectionRef;
 use crate::connection::ConnectionTransport;
-use crate::connection::EstablishFailure;
 use crate::inproc_transport::InprocTransport;
 use crate::msg::MsgPart;
 use crate::poller::Delivered;
@@ -96,7 +101,7 @@ pub(crate) enum Command {
         url: String,
         request: ConnectRequest,
     },
-    ConnectionSentCommand {
+    ConnectionAction {
         connection: ConnectionRef,
         action: ConnectionCommand,
     },
@@ -111,6 +116,16 @@ pub(crate) enum Command {
         actor: Key,
         reason: MsgPart,
     },
+    Monitor {
+        actor: Key,
+        id: u64,
+        to_monitor: MsgPart,
+        failure_prefix: Vec<MsgPart>,
+    },
+    CancelMonitor {
+        actor: Key,
+        id: u64,
+    },
     Shutdown {
         done: oneshot::Sender<JoinHandle<()>>,
     },
@@ -121,7 +136,7 @@ struct Ctx {
     pollers: SlotMap<PollerKey, PollerEntry>,
     // The transports. Each owns its own pairing/socket state and coroutines plus
     // a clone of the loop sender; the command loop only forwards serves/joins to
-    // them and handles the generic TransportConnected/ConnectionSentCommand they
+    // them and handles the generic TransportConnected/ConnectionAction they
     // emit.
     inproc: InprocTransport,
     unix: UnixTransport,
@@ -233,7 +248,7 @@ impl Ctx {
             } => {
                 self.join(actor, url, request);
             }
-            Command::ConnectionSentCommand { connection, action } => {
+            Command::ConnectionAction { connection, action } => {
                 if !matches!(self.connection(connection), Connection::Failed) {
                     self.run_connection_command(connection, action);
                 }
@@ -247,6 +262,48 @@ impl Ctx {
             Command::Die { actor, reason } => {
                 let reason = reason.as_bytes().to_vec();
                 self.die_actor(actor, reason);
+            }
+            Command::Monitor {
+                actor,
+                id,
+                to_monitor,
+                failure_prefix,
+            } => {
+                let to_monitor = to_monitor.as_bytes().to_vec();
+                self.actor_mut(actor).monitors.insert(
+                    id,
+                    LocalMonitor {
+                        to_monitor: to_monitor.clone(),
+                        failure_prefix,
+                    },
+                );
+                // The fire is addressed by our own ident. If we are not named yet,
+                // defer the subscription until a name is assigned (a join will); the
+                // local record above still lets us cancel it meanwhile.
+                let dest = match &mut self.actor_mut(actor).name {
+                    ActorName::Named(name) => name.clone(),
+                    ActorName::Unknown { pending_monitors } => {
+                        pending_monitors.push(PendingMonitor { id, to_monitor });
+                        return;
+                    }
+                };
+                self.route_subscribe(actor, dest, id, to_monitor);
+            }
+            Command::CancelMonitor { actor, id } => {
+                // Drop the local record (so an in-flight fire is dropped on arrival).
+                let Some(local) = self.actor_mut(actor).monitors.remove(&id) else {
+                    return;
+                };
+                // If we are named the subscription was propagated upstream, so walk an
+                // unsubscribe up; otherwise it is still in our deferred list, drop it.
+                let dest = match &mut self.actor_mut(actor).name {
+                    ActorName::Named(name) => name.clone(),
+                    ActorName::Unknown { pending_monitors } => {
+                        pending_monitors.retain(|pending| pending.id != id);
+                        return;
+                    }
+                };
+                self.route_unsubscribe(actor, dest, id, local.to_monitor);
             }
             Command::Shutdown { .. } => {
                 // Handled directly by the event loop (see CtxHandle::new) so it
@@ -301,24 +358,30 @@ impl Ctx {
         if !entry.alive {
             return;
         }
-        if entry.ident.as_deref() == Some(destination_ident.as_slice()) {
+        if entry.name() == Some(destination_ident.as_slice()) {
             self.deliver_to_actor(sender, parts);
             return;
         }
 
-        // A known child route: hand the message down toward the destination.
-        if let Some(Route::Connection(child_key)) = entry.routes.get(destination_ident.as_slice()) {
-            let child_key = *child_key;
-            let connection = self
-                .actor_mut(sender)
-                .children
-                .get_mut(child_key)
-                .expect("route child connection should exist");
-            let _ = connection.send(ConnectionCommand::SendMessage {
-                destination_ident,
-                parts,
-            });
-            return;
+        match entry.routes.get(destination_ident.as_slice()) {
+            // A known child route: hand the message down toward the destination.
+            Some(Route::Connection { child, .. }) => {
+                let child_key = *child;
+                let connection = self
+                    .actor_mut(sender)
+                    .children
+                    .get_mut(child_key)
+                    .expect("route child connection should exist");
+                let _ = connection.send(ConnectionCommand::SendMessage {
+                    destination_ident,
+                    parts,
+                });
+                return;
+            }
+            // The destination is known to be dead: drop the message rather than
+            // forwarding it up (where it would buffer forever at the gateway).
+            Some(Route::Dead) => return,
+            Some(Route::Unknown { .. }) | None => {}
         }
 
         // No known route here. Forward toward the gateway; the gateway itself (no
@@ -445,7 +508,10 @@ impl Ctx {
         transport: Box<dyn ConnectionTransport>,
     ) {
         let role = connection.role();
-        let ident = self.actor(connection.owning_actor()).ident.clone();
+        let ident = self
+            .actor(connection.owning_actor())
+            .name()
+            .map(|name| name.to_vec());
         let alive = matches!(
             self.connection(connection),
             Connection::Unestablished { .. }
@@ -491,36 +557,83 @@ impl Ctx {
         }
     }
 
+    /// Record routes arriving over `child_connection`: `live` idents become
+    /// concrete routes to that child (and are remembered against it, so they can be
+    /// marked dead if it later fails), `dead` idents are marked [`Route::Dead`].
+    /// Both kinds are carried further up.
     fn populate_routes(
         &mut self,
         parent: Key,
         child_connection: ChildConnectionKey,
-        idents: Vec<Vec<u8>>,
+        live: Vec<Vec<u8>>,
+        dead: Vec<Vec<u8>>,
     ) {
-        for ident in &idents {
-            let previous = self
-                .actor_mut(parent)
-                .routes
-                .insert(ident.clone(), Route::Connection(child_connection));
+        for ident in &live {
+            // Take any existing entry so we can carry its monitors onto the now-known
+            // route and flush its buffered messages. Monitors stay here: this actor is
+            // the responsible ancestor for the destination (it is reachable below it).
+            let previous = self.actor_mut(parent).routes.remove(ident.as_slice());
+            let (monitors, buffered) = match previous {
+                Some(Route::Unknown { messages, monitors }) => (monitors, messages),
+                Some(Route::Connection { monitors, .. }) => (monitors, Vec::new()),
+                _ => (Vec::new(), Vec::new()),
+            };
+            self.actor_mut(parent).routes.insert(
+                ident.clone(),
+                Route::Connection {
+                    child: child_connection,
+                    monitors,
+                },
+            );
+            // Remember the ident is carried by this child so we can mark exactly
+            // these dead (no table scan) if the connection later fails.
+            self.actor_mut(parent)
+                .record_routed_via_child(child_connection, ident);
 
-            // If we had been buffering messages for this destination because its route
-            // was unknown, re-route them now that it is known; route_message sends them
-            // down the child connection we just recorded.
-            if let Some(Route::Unknown(buffered)) = previous {
-                for parts in buffered {
-                    self.route_message(parent, ident.clone(), parts);
-                }
+            // Re-route any messages buffered while the route was unknown; route_message
+            // sends them down the child connection we just recorded.
+            for parts in buffered {
+                self.route_message(parent, ident.clone(), parts);
             }
         }
-        self.publish_routes_to_parent(parent, idents);
+
+        // Mark the dead idents dead (they are not tracked against the child — they
+        // are already dead, so a later failure of this connection has nothing to
+        // re-kill there). Keep only those that newly transitioned so propagation
+        // can't loop, firing the monitors that were waiting on each.
+        let mut newly_dead = Vec::new();
+        let mut to_fire: Vec<MonitorSub> = Vec::new();
+        for ident in dead {
+            let routes = &mut self.actor_mut(parent).routes;
+            match routes.get_mut(&ident) {
+                Some(Route::Dead) => continue, // already dead
+                Some(route) => {
+                    to_fire.extend(route.monitors_mut().map(std::mem::take).unwrap_or_default());
+                    *route = Route::Dead;
+                }
+                None => {
+                    routes.insert(ident.clone(), Route::Dead);
+                }
+            }
+            newly_dead.push(ident);
+        }
+        for sub in to_fire {
+            self.route_fire_monitor(parent, sub.dest, sub.id);
+        }
+
+        // Forward both the live and the newly-dead idents up to the parent.
+        self.publish_routes_to_parent(parent, live, newly_dead);
     }
 
-    fn publish_routes_to_parent(&mut self, actor: Key, actor_idents: Vec<Vec<u8>>) {
+    fn publish_routes_to_parent(&mut self, actor: Key, live: Vec<Vec<u8>>, dead: Vec<Vec<u8>>) {
+        if live.is_empty() && dead.is_empty() {
+            return;
+        }
         let actor = self.actor_mut(actor);
         let Some(parent) = actor.parent.as_mut() else {
             return;
         };
-        let _ = parent.send(ConnectionCommand::PublishRoutes { actor_idents });
+        let _ = parent.send(ConnectionCommand::PublishRoutes { live, dead });
     }
 
     fn publish_routes_after_established(
@@ -531,31 +644,41 @@ impl Ctx {
     ) {
         match connection {
             ConnectionRef::ChildConnection { ofactor, slot } => {
-                self.populate_routes(ofactor, slot, vec![peer_ident]);
+                self.populate_routes(ofactor, slot, vec![peer_ident], Vec::new());
             }
             ConnectionRef::ParentConnection { ofactor } => {
-                // We just gained a parent. Stop buffering for destinations we couldn't
-                // place while parentless: drop those entries and re-route their held
-                // messages, which now flow up to the parent (route_message forwards
-                // them, since their local routes are gone).
-                let buffered = self.actor_mut(ofactor).drain_buffered_routes();
-
-                // Advertise the destinations we can already reach (concrete child
-                // routes) plus our own ident.
-                let mut actor_idents = self
-                    .actor(ofactor)
-                    .routes
-                    .keys()
-                    .cloned()
-                    .collect::<Vec<_>>();
-                actor_idents.push(local_ident);
-                self.publish_routes_to_parent(ofactor, actor_idents);
-
-                for (destination, messages) in buffered {
-                    for parts in messages {
-                        self.route_message(ofactor, destination.clone(), parts);
+                // We just gained a parent. Walk the whole routing table once: concrete
+                // routes are advertised up (live as live, dead as dead — a dead route
+                // must travel up *as dead*, else the parent treats a known-dead actor
+                // as alive), while buffered Unknown routes — which we could not place
+                // while parentless — are dropped and their held messages and monitor
+                // subscriptions re-routed up (route_message / route_subscribe now
+                // forward, since there is a parent and no local route).
+                let mut live = vec![local_ident];
+                let mut dead = Vec::new();
+                let mut kept = HashMap::new();
+                for (ident, route) in std::mem::take(&mut self.actor_mut(ofactor).routes) {
+                    match route {
+                        Route::Connection { .. } => {
+                            live.push(ident.clone());
+                            kept.insert(ident, route);
+                        }
+                        Route::Dead => {
+                            dead.push(ident.clone());
+                            kept.insert(ident, route);
+                        }
+                        Route::Unknown { messages, monitors } => {
+                            for parts in messages {
+                                self.route_message(ofactor, ident.clone(), parts);
+                            }
+                            for sub in monitors {
+                                self.route_subscribe(ofactor, sub.dest, sub.id, ident.clone());
+                            }
+                        }
                     }
                 }
+                self.actor_mut(ofactor).routes = kept;
+                self.publish_routes_to_parent(ofactor, live, dead);
             }
         }
     }
@@ -572,67 +695,94 @@ impl Ctx {
                 name_for_other,
                 alive,
             } => {
-                // The peer announced itself; finalize our side using the transport
-                // we stashed when our pipe connected.
-                if let Err(EstablishFailure {
-                    failure_prefix,
-                    peer_ident,
-                    reason,
-                }) = self.establish_connection(connection, role, ident, name_for_other, alive)
+                // The peer announced itself; finalize our side using the transport we
+                // stashed when our pipe connected. On failure establish_connection
+                // parks the connection carrying its failure info, so fail_connection
+                // tears it down the same way a sever does.
+                if let Err(reason) =
+                    self.establish_connection(connection, role, ident, name_for_other, alive)
                 {
-                    // Establishment failed (peer announced dead, roles disagree,
-                    // name conflict, ...): sever the connection and notify the actor.
-                    let _ = self.connection_set(connection, Connection::Failed);
-                    self.fail_connection(connection, failure_prefix, peer_ident, reason);
+                    self.fail_connection(connection, reason);
                 }
             }
             ConnectionCommand::Severed { reason } => {
-                // The peer (or our own death cascade) tore this connection down. Mark
-                // it failed and pull out what we need to notify the owning actor.
-                let Some((failure_prefix, peer_ident)) = self
-                    .connection_set(connection, Connection::Failed)
-                    .into_failure_report()
-                else {
-                    return;
-                };
-                self.fail_connection(connection, failure_prefix, peer_ident, reason);
+                // The peer (or our own death cascade) tore this connection down.
+                self.fail_connection(connection, reason);
             }
-            ConnectionCommand::PublishRoutes { actor_idents } => {
+            ConnectionCommand::PublishRoutes { live, dead } => {
                 assert!(
                     matches!(self.connection(connection), Connection::Established { .. }),
                     "published routes should arrive on an established connection"
                 );
                 // Published routes always arrive over a child connection: record them
-                // as routes to that child (which also forwards them on toward the root).
+                // (live and dead) as routes to that child, forwarding both up the tree.
                 let ConnectionRef::ChildConnection { ofactor, slot } = connection else {
                     panic!("published routes should arrive on a child connection");
                 };
-                self.populate_routes(ofactor, slot, actor_idents);
+                self.populate_routes(ofactor, slot, live, dead);
+            }
+            ConnectionCommand::Subscribe {
+                dest,
+                id,
+                to_monitor,
+            } => {
+                self.route_subscribe(connection.owning_actor(), dest, id, to_monitor);
+            }
+            ConnectionCommand::Unsubscribe {
+                dest,
+                id,
+                to_monitor,
+            } => {
+                self.route_unsubscribe(connection.owning_actor(), dest, id, to_monitor);
+            }
+            ConnectionCommand::FireMonitor {
+                dest_ident,
+                monitor_id,
+            } => {
+                self.route_fire_monitor(connection.owning_actor(), dest_ident, monitor_id);
             }
         }
     }
 
-    /// Notify an actor that one of its connections failed: deliver the failure
-    /// prefix (followed by the peer ident and the reason), and — since a child
-    /// cannot exist without its parent — tear the actor down if this was its
-    /// parent connection. `deliver_to_actor`/`die_actor` are no-ops on a dead
-    /// actor, so this is safe to call regardless of the actor's liveness.
-    fn fail_connection(
-        &mut self,
-        connection: ConnectionRef,
-        mut failure_prefix: Vec<MsgPart>,
-        peer_ident: Vec<u8>,
-        reason: Vec<u8>,
-    ) {
+    /// Tear `connection` down: mark it [`Connection::Failed`] and derive everything
+    /// to report from the connection it replaced — the failure prefix, the peer
+    /// ident, and the idents it routed. Deliver the failure (prefix, peer ident,
+    /// reason), and — since a child cannot exist without its parent — tear the actor
+    /// down if this was its parent connection. An already-failed connection yields
+    /// nothing (a duplicate severance), so this is safe to call more than once.
+    fn fail_connection(&mut self, connection: ConnectionRef, reason: Vec<u8>) {
+        let Some((mut failure_prefix, peer_ident, routed_idents)) = self
+            .connection_set(connection, Connection::Failed)
+            .into_failure_report()
+        else {
+            return;
+        };
         let actor = connection.owning_actor();
         failure_prefix.push(MsgPart::from_bytes(peer_ident));
         failure_prefix.push(MsgPart::from_bytes(reason.clone()));
         self.deliver_to_actor(actor, failure_prefix);
-        if connection.role() == Role::Child {
-            self.die_actor(actor, reason);
+        match connection.role() {
+            // The failed connection was this actor's parent: the actor cannot
+            // outlive its parent, so it dies (which severs its own children).
+            Role::Child => self.die_actor(actor, reason),
+            // The failed connection was a child: everything that was live through it
+            // is now dead. Publish exactly that — as if those idents had arrived dead
+            // over the connection — which marks them dead, fires monitors, and
+            // propagates up. (`slot` goes unused: there are no live idents to record.)
+            Role::Parent => {
+                let ConnectionRef::ChildConnection { slot, .. } = connection else {
+                    unreachable!("a Role::Parent connection is a child connection");
+                };
+                self.populate_routes(actor, slot, Vec::new(), routed_idents.into_iter().collect());
+            }
         }
     }
 
+    /// Finalize a connecting connection from the peer's `Establish`. On any failure
+    /// (peer dead, roles disagree, name conflict, ...) the connection is parked as
+    /// `Established` carrying only its failure info — prefix and the peer ident to
+    /// blame — and `Err(reason)` is returned so the caller's `fail_connection` tears
+    /// it down uniformly. Routes are empty in that case (it never really came up).
     fn establish_connection(
         &mut self,
         connection: ConnectionRef,
@@ -640,13 +790,11 @@ impl Ctx {
         peer_name: Option<Vec<u8>>,
         requested_name: Option<Vec<u8>>,
         peer_alive: bool,
-    ) -> Result<(), EstablishFailure> {
+    ) -> Result<(), Vec<u8>> {
         // Take the connecting connection apart; establishing it consumes the
         // hello/failure prefixes, any commands queued before it was ready, and the
         // transport stashed when the pipe connected.
-        let local_connection = self.connection_mut(connection);
-        let local_status = std::mem::replace(local_connection, Connection::Failed);
-
+        let local_status = std::mem::replace(self.connection_mut(connection), Connection::Failed);
         let Connection::Connecting {
             transport,
             name_for_other,
@@ -658,83 +806,93 @@ impl Ctx {
             unreachable!("peer Establish should arrive only on a connecting connection");
         };
 
+        let actor = connection.owning_actor();
+        // Peer ident to blame in a failure: the peer's own ident, else whatever we
+        // named it. Resolved up front so it is available on the error path.
         let failure_peer_ident = peer_name
             .clone()
             .or_else(|| name_for_other.clone())
             .unwrap_or_default();
 
-        let mut failure_prefix = Some(failure_prefix);
-        let result = (|| -> Result<(), Vec<u8>> {
-            // The peer announced it had already died; sever instead of finalizing.
-            // `failure_peer_ident` (above) still carries the peer ident it sent, so
-            // the failure names which connection died.
+        // Validate and resolve the two idents we need, without mutating actor state.
+        let resolved = 'resolve: {
             if !peer_alive {
-                return Err(b"peer actor died".to_vec());
+                break 'resolve Err(b"peer actor died".to_vec());
             }
             if connection.role() == peer_role {
-                return Err(b"connection roles do not agree".to_vec());
+                break 'resolve Err(b"connection roles do not agree".to_vec());
             }
             if !self.connection_topology_is_valid(connection) {
-                return Err(b"invalid parent-child topology".to_vec());
+                break 'resolve Err(b"invalid parent-child topology".to_vec());
             }
-
-            let actor = connection.owning_actor();
-            let local_ident = {
-                let actor_entry = self.actor_mut(actor);
-                if let Some(requested_name) = requested_name {
-                    match &actor_entry.ident {
-                        Some(existing) if existing != &requested_name => {
-                            return Err(b"actor name conflict".to_vec());
-                        }
-                        Some(_) => {}
-                        None => actor_entry.ident = Some(requested_name),
+            // Resolve the name we will end up with (erroring on a conflict), without
+            // mutating yet — the actual adopt-and-flush happens via assign_name once
+            // the connection is established and deferred monitors can route.
+            let local_ident = if let Some(requested_name) = requested_name {
+                match self.actor(actor).name() {
+                    Some(existing) if existing != requested_name.as_slice() => {
+                        break 'resolve Err(b"actor name conflict".to_vec());
                     }
+                    Some(existing) => existing.to_vec(),
+                    None => requested_name,
                 }
-                actor_entry
-                    .ident
-                    .clone()
-                    .ok_or_else(|| b"actor has no ident".to_vec())?
+            } else {
+                match self.actor(actor).name() {
+                    Some(name) => name.to_vec(),
+                    None => break 'resolve Err(b"actor has no ident".to_vec()),
+                }
             };
-            let peer_ident = peer_name
-                .or(name_for_other)
-                .ok_or_else(|| b"peer actor has no ident".to_vec())?;
-
-            self.connection_set(
-                connection,
-                Connection::Established {
-                    transport,
-                    failure_prefix: failure_prefix
-                        .take()
-                        .expect("failure prefix should be available"),
-                    peer_ident: peer_ident.clone(),
-                },
-            );
-            let connection_entry = self.connection_mut(connection);
-            let mut queued_commands = queued_commands;
-            while let Some(command) = queued_commands.pop_front() {
-                let _ = connection_entry.send(command);
+            match peer_name.or(name_for_other) {
+                Some(peer_ident) => Ok((local_ident, peer_ident)),
+                None => Err(b"peer actor has no ident".to_vec()),
             }
+        };
 
-            self.publish_routes_after_established(
-                connection,
-                local_ident.clone(),
-                peer_ident.clone(),
-            );
+        let (local_ident, peer_ident) = match resolved {
+            Ok(idents) => idents,
+            Err(reason) => {
+                // Park the connection carrying just its failure info so
+                // fail_connection can report it from the connection like any sever.
+                self.connection_set(
+                    connection,
+                    Connection::Established {
+                        transport,
+                        failure_prefix,
+                        peer_ident: failure_peer_ident,
+                        routed_idents: HashSet::new(),
+                    },
+                );
+                return Err(reason);
+            }
+        };
 
-            let mut msg = hello_prefix;
-            msg.push(MsgPart::from_bytes(local_ident));
-            msg.push(MsgPart::from_bytes(peer_ident));
-            self.deliver_to_actor(actor, msg);
-            Ok(())
-        })();
+        self.connection_set(
+            connection,
+            Connection::Established {
+                transport,
+                failure_prefix,
+                peer_ident: peer_ident.clone(),
+                routed_idents: HashSet::new(),
+            },
+        );
+        let connection_entry = self.connection_mut(connection);
+        let mut queued_commands = queued_commands;
+        while let Some(command) = queued_commands.pop_front() {
+            let _ = connection_entry.send(command);
+        }
 
-        result.map_err(|reason| EstablishFailure {
-            failure_prefix: failure_prefix
-                .take()
-                .expect("failure prefix should be available"),
-            peer_ident: failure_peer_ident,
-            reason,
-        })
+        // Adopt the name now that the connection is established: this also replays
+        // any monitor subscriptions deferred while we were unnamed, which can now
+        // route up through this freshly-established link.
+        self.assign_name(actor, local_ident.clone());
+
+        self.publish_routes_after_established(connection, local_ident.clone(), peer_ident.clone());
+
+        let mut msg = hello_prefix;
+        msg.push(MsgPart::from_bytes(local_ident));
+        msg.push(MsgPart::from_bytes(peer_ident));
+        self.deliver_to_actor(actor, msg);
+        Ok(())
     }
 
     fn deliver_connect_failure(
@@ -772,6 +930,143 @@ impl Ctx {
             connection.send(ConnectionCommand::Severed { reason });
             *connection = Connection::Failed;
         }
+    }
+
+    // -- Monitors ---------------------------------------------------------------
+
+    /// Assign `name` to `actor` (a no-op if already named) and replay any monitor
+    /// subscriptions that were deferred while it was unnamed — now they have a
+    /// fire-back address. The connection that carried the name must already be
+    /// established so the replayed subscriptions can route up.
+    fn assign_name(&mut self, actor: Key, name: Vec<u8>) {
+        let entry = self.actor_mut(actor);
+        let pending = match &mut entry.name {
+            ActorName::Named(_) => return, // already named; nothing was deferred
+            ActorName::Unknown { pending_monitors } => std::mem::take(pending_monitors),
+        };
+        entry.name = ActorName::Named(name.clone());
+        for monitor in pending {
+            self.route_subscribe(actor, name.clone(), monitor.id, monitor.to_monitor);
+        }
+    }
+
+    /// Walk a subscription up from `at` until the actor that has `to_monitor` in
+    /// its routing table (the common ancestor) or the root. Fire immediately if
+    /// the monitored actor is already known dead.
+    fn route_subscribe(&mut self, at: Key, dest: Vec<u8>, id: u64, to_monitor: Vec<u8>) {
+        enum Step {
+            FireDead,
+            Register,
+            Forward,
+        }
+        let entry = self.actor(at);
+        let step = match entry.routes.get(to_monitor.as_slice()) {
+            Some(Route::Dead) => Step::FireDead,
+            // A live (or buffered-unknown) route means this is the common ancestor.
+            Some(_) => Step::Register,
+            // Not an ancestor of the target: forward up, or hold here if we are the
+            // root (the target may not exist yet — it will end up watched here).
+            None if entry.parent.is_some() => Step::Forward,
+            None => Step::Register,
+        };
+        match step {
+            Step::FireDead => {
+                self.route_fire_monitor(at, dest, id);
+            }
+            Step::Register => {
+                self.actor_mut(at)
+                    .buffer_monitor(to_monitor, MonitorSub { dest, id });
+            }
+            Step::Forward => {
+                let _ = self
+                    .actor_mut(at)
+                    .parent
+                    .as_mut()
+                    .expect("forward implies a parent")
+                    .send(ConnectionCommand::Subscribe {
+                        dest,
+                        id,
+                        to_monitor,
+                    });
+            }
+        }
+    }
+
+    /// Walk the same path as [`route_subscribe`] and remove the matching
+    /// subscription. Idempotent: a sub that already fired (and was removed) or was
+    /// never registered is a no-op.
+    fn route_unsubscribe(&mut self, at: Key, dest: Vec<u8>, id: u64, to_monitor: Vec<u8>) {
+        let entry = self.actor(at);
+        let forward = !entry.routes.contains_key(to_monitor.as_slice()) && entry.parent.is_some();
+        if forward {
+            let _ = self
+                .actor_mut(at)
+                .parent
+                .as_mut()
+                .expect("forward implies a parent")
+                .send(ConnectionCommand::Unsubscribe {
+                    dest,
+                    id,
+                    to_monitor,
+                });
+            return;
+        }
+        if let Some(monitors) = self
+            .actor_mut(at)
+            .routes
+            .get_mut(to_monitor.as_slice())
+            .and_then(Route::monitors_mut)
+        {
+            monitors.retain(|sub| !(sub.id == id && sub.dest == dest));
+        }
+    }
+
+    /// Route a monitor fire toward `dest`. The subscription is held at the common
+    /// ancestor of the monitoring actor (`dest`) and the monitored actor, so `dest`
+    /// is always this actor or one of its descendants: the fire only ever travels
+    /// *down*. It is delivered locally if we own `dest`, forwarded down its child
+    /// route otherwise, or dropped if that route has since died (the monitoring
+    /// actor is gone). The route is never unknown here and the fire never routes up.
+    fn route_fire_monitor(&mut self, from: Key, dest: Vec<u8>, id: u64) {
+        let entry = self.actor(from);
+        if entry.name() == Some(dest.as_slice()) {
+            self.deliver_monitor_failure(from, id);
+            return;
+        }
+        match entry.routes.get(dest.as_slice()) {
+            Some(Route::Connection { child, .. }) => {
+                let child = *child;
+                let _ = self
+                    .actor_mut(from)
+                    .children
+                    .get_mut(child)
+                    .expect("a live child route must have its connection")
+                    .send(ConnectionCommand::FireMonitor {
+                        dest_ident: dest,
+                        monitor_id: id,
+                    });
+            }
+            // The monitoring actor's branch died before the fire reached it.
+            Some(Route::Dead) => {}
+            Some(Route::Unknown { .. }) | None => {
+                unreachable!(
+                    "monitor fire target must be a known descendant of the subscription holder"
+                )
+            }
+        }
+    }
+
+    /// A monitor fired and reached the monitoring actor. Reconstruct the failure
+    /// message from the local failure_prefix and deliver it with a fixed reason. A
+    /// cancelled monitor (no local record) drops the fire.
+    fn deliver_monitor_failure(&mut self, actor: Key, id: u64) {
+        let Some(local) = self.actor_mut(actor).monitors.remove(&id) else {
+            return;
+        };
+        let mut msg = local.failure_prefix;
+        msg.push(MsgPart::from_bytes(local.to_monitor));
+        msg.push(MsgPart::from_bytes(b"actor died".to_vec()));
+        self.deliver_to_actor(actor, msg);
     }
 
     fn deliver_to_actor(&mut self, actor: Key, msg: Vec<MsgPart>) {

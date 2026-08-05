@@ -6,6 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::collections::HashSet;
 use std::collections::VecDeque;
 
 use crate::Role;
@@ -80,6 +81,12 @@ pub(crate) enum Connection {
         transport: Box<dyn ConnectionTransport>,
         failure_prefix: Vec<MsgPart>,
         peer_ident: Vec<u8>,
+        /// Every ident that has been *live* through this connection (the peer and,
+        /// for a child connection, the live routes published up through it). On
+        /// failure these are exactly the idents to mark dead — no route-table scan
+        /// needed. Idents that arrived already dead are not tracked: they are dead
+        /// regardless of this connection's fate.
+        routed_idents: HashSet<Vec<u8>>,
     },
     Failed,
 }
@@ -113,8 +120,37 @@ pub(crate) enum ConnectionCommand {
     Severed {
         reason: Vec<u8>,
     },
+    /// Carry route state up the ancestry. `live` idents become
+    /// [`Route::Connection`](crate::actor::Route::Connection) toward this child;
+    /// `dead` idents become [`Route::Dead`](crate::actor::Route::Dead) and fire any
+    /// monitors watching them. Death travels in the *same* command as life so a
+    /// route's state is never lost on the way up (a dead actor is never mistaken
+    /// for one that does not exist yet). This is the only way dead routes propagate.
     PublishRoutes {
-        actor_idents: Vec<Vec<u8>>,
+        live: Vec<Vec<u8>>,
+        dead: Vec<Vec<u8>>,
+    },
+    /// Register a monitor: travels up from the monitoring actor until it reaches
+    /// the common ancestor that has `to_monitor` in its routing table (or the
+    /// root). That ancestor records the subscription.
+    Subscribe {
+        dest: Vec<u8>,
+        id: u64,
+        to_monitor: Vec<u8>,
+    },
+    /// Cancel a previously-registered monitor; travels the same path as
+    /// [`ConnectionCommand::Subscribe`] and removes the subscription.
+    Unsubscribe {
+        dest: Vec<u8>,
+        id: u64,
+        to_monitor: Vec<u8>,
+    },
+    /// Deliver a monitor firing toward the monitoring actor `dest_ident`. Routed
+    /// like a normal message; on arrival the owner reconstructs the failure
+    /// message from its local failure_prefix (the reason is a fixed "actor died").
+    FireMonitor {
+        dest_ident: Vec<u8>,
+        monitor_id: u64,
     },
 }
 
@@ -151,35 +187,41 @@ impl Connection {
     }
 
     /// Consume a connection that is being torn down, yielding the failure-message
-    /// prefix and the peer ident to report. `None` if it had already failed.
-    pub(crate) fn into_failure_report(self) -> Option<(Vec<MsgPart>, Vec<u8>)> {
+    /// prefix, the peer ident to report, and every ident that was reachable
+    /// through it (to mark dead). `None` if it had already failed.
+    pub(crate) fn into_failure_report(self) -> Option<FailureReport> {
         match self {
             Self::Established {
                 failure_prefix,
                 peer_ident,
+                routed_idents,
                 ..
-            } => Some((failure_prefix, peer_ident)),
+            } => Some((failure_prefix, peer_ident, routed_idents)),
             Self::Unestablished {
                 name_for_other,
                 failure_prefix,
                 ..
-            } => Some((failure_prefix, name_for_other.unwrap_or_default())),
+            } => Some((
+                failure_prefix,
+                name_for_other.unwrap_or_default(),
+                HashSet::new(),
+            )),
             // Connecting has not yet learned the peer's ident; fall back to the
             // name we assigned it, if any.
             Self::Connecting {
                 name_for_other,
                 failure_prefix,
                 ..
-            } => Some((failure_prefix, name_for_other.unwrap_or_default())),
+            } => Some((
+                failure_prefix,
+                name_for_other.unwrap_or_default(),
+                HashSet::new(),
+            )),
             Self::Failed => None,
         }
     }
 }
 
-/// Why a connection failed to establish, carrying everything needed to notify
-/// the owning actor: the failure-message prefix, the peer ident, and the reason.
-pub(crate) struct EstablishFailure {
-    pub(crate) failure_prefix: Vec<MsgPart>,
-    pub(crate) peer_ident: Vec<u8>,
-    pub(crate) reason: Vec<u8>,
-}
+/// What [`Connection::into_failure_report`] yields: the failure-message prefix,
+/// the peer ident to report, and every ident that routed through the connection.
+pub(crate) type FailureReport = (Vec<MsgPart>, Vec<u8>, HashSet<Vec<u8>>);

@@ -25,6 +25,8 @@ use std::ffi::c_void;
 use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
 use std::os::fd::OwnedFd;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 
 use connection::ConnectRequest;
 use ctx::Command;
@@ -55,6 +57,10 @@ pub struct CCtx(CtxHandle);
 pub struct CActor {
     ctx: CtxHandle,
     key: Key,
+    // Monitor ids are allocated here, on the caller's side, so mm_actor_monitor
+    // never has to round-trip the event loop for one. Ids only need to be unique
+    // among this actor's own monitors (they key its per-actor `monitors` map).
+    next_monitor_id: AtomicU64,
 }
 
 pub struct CPoller {
@@ -76,7 +82,8 @@ pub struct CPoller {
 
 pub struct CMonitorHandle {
     ctx: CtxHandle,
-    key: Key,
+    actor: Key,
+    id: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -146,12 +153,12 @@ impl From<anyhow::Result<()>> for Error {
     }
 }
 
-fn not_implemented() -> Error {
-    anyhow::anyhow!("Not yet implemented").into()
-}
-
 fn actor_from_create(ctx: CtxHandle, key: Key) -> CActor {
-    CActor { ctx, key }
+    CActor {
+        ctx,
+        key,
+        next_monitor_id: AtomicU64::new(0),
+    }
 }
 
 fn create_eventfd() -> anyhow::Result<OwnedFd> {
@@ -379,10 +386,25 @@ pub unsafe extern "C" fn mm_actor_monitor(
     out: *mut *mut CMonitorHandle,
 ) -> Error {
     let a = &*actor;
-    let _ = (&a.ctx, a.key, out);
-    let _to_monitor_ident = MsgPart::from_c(to_monitor_ident);
-    let _failure_prefix = parts_from_cmsg(failure_prefix);
-    not_implemented()
+    // Allocate the id locally and fire the command without waiting: this runs in
+    // messaging loops and must never block on the event loop thread.
+    let id = a.next_monitor_id.fetch_add(1, Ordering::Relaxed);
+    match a.ctx.send_command(Command::Monitor {
+        actor: a.key,
+        id,
+        to_monitor: MsgPart::from_c(to_monitor_ident),
+        failure_prefix: parts_from_cmsg(failure_prefix),
+    }) {
+        Ok(()) => {
+            *out = Box::into_raw(Box::new(CMonitorHandle {
+                ctx: a.ctx.clone(),
+                actor: a.key,
+                id,
+            }));
+            Error::Ok
+        }
+        Err(e) => e.into(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -391,8 +413,11 @@ pub unsafe extern "C" fn mm_actor_monitor(
 
 #[no_mangle]
 pub unsafe extern "C" fn mm_monitor_handle_cancel(handle: *mut CMonitorHandle) {
-    let h = &*handle;
-    let _ = (&h.ctx, h.key);
+    let handle = Box::from_raw(handle);
+    let _ = handle.ctx.send_command(Command::CancelMonitor {
+        actor: handle.actor,
+        id: handle.id,
+    });
 }
 
 // ---------------------------------------------------------------------------

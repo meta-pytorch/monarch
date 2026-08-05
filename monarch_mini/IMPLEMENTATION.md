@@ -204,9 +204,46 @@ cost hierarchical.
 
 ## Monitoring
 
-Two mechanisms work together:
+### Single-gateway implementation *(current)*
 
-### Registration
+The multi-gateway design below is the eventual target. Until TCP gateways exist
+the whole job is a single tree rooted at the root actor, and monitoring is built
+directly on the routing table rather than on a dead-gateway set.
+
+- **Dead routes.** A routing entry is now `Connection`, `Unknown` (gateway
+  buffer), or `Dead`. `Dead` is carried up the ancestry inside the *same*
+  `PublishRoutes` command that carries live routes (one `live` list, one `dead`
+  list) — death is just another route state, never a separate channel and never
+  dropped on a republish (e.g. when an actor with a known-dead route gains a
+  parent). An actor that dies, or whose subtree becomes unreachable because a
+  connection failed, has its idents marked `Dead` and the newly-dead ones
+  published up so every ancestor learns it. Each established connection remembers
+  the idents routed through it, so a connection failure marks exactly those dead
+  in O(idents-handled) — never an O(route-table) scan. Messages to a `Dead` route
+  are dropped.
+
+- **Local monitor state.** The monitoring actor stores each monitor as
+  `(id, monitored_ident, failure_prefix)`. The `failure_prefix` never leaves this
+  actor; cancellation just removes the local record, so an in-flight firing is
+  dropped on arrival.
+
+- **Subscribe / fire.** `Subscribe` climbs from the monitoring actor until it
+  reaches the first actor that has the monitored ident in its routing table — the
+  common ancestor where a normal message to the target would turn downward (or
+  the root, for a target that does not exist yet). That ancestor records the
+  subscription. When the target's route there turns `Dead`, the ancestor routes a
+  `FireMonitor` back down to the monitor, which reconstructs
+  `[failure_prefix…, target, "actor died"]` from its local state. (The death
+  reason is not propagated for now; the monitor always reports a fixed reason.) If
+  the target is already `Dead` at the common ancestor, the monitor fires
+  immediately.
+
+This always fires a live monitor: a target's death always reaches the common
+ancestor as a `Dead` route (published up from the failure point), and the only
+way the ancestor misses it is if the ancestor itself dies — which also kills the
+monitoring actor (it is a descendant), so no firing is owed.
+
+### Registration *(multi-gateway design — implement later)*
 
 When `mm_actor_monitor` is called, a registration message is sent to the
 gateway of the actor being monitored. The gateway acknowledges with the full

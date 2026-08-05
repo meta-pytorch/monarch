@@ -17,11 +17,22 @@ use crate::ctx::PollerKey;
 use crate::msg::MsgPart;
 
 pub(crate) struct ActorEntry {
-    pub(crate) ident: Option<Vec<u8>>,
+    pub(crate) name: ActorName,
     pub(crate) delivery: Delivery,
     pub(crate) parent: Option<Connection>,
     pub(crate) children: SlotMap<ChildConnectionKey, Connection>,
+    /// Routing table: per destination ident, where it lives (or that it is dead)
+    /// *and* the monitor subscriptions this actor is responsible for on it. Monitors
+    /// live on the route because they share its key and travel the same paths: a
+    /// monitor registered against an `Unknown` route is forwarded up exactly like a
+    /// buffered message when this actor gains a parent, and one on a `Connection`
+    /// route fires when that route transitions to `Dead`.
     pub(crate) routes: HashMap<Vec<u8>, Route>,
+    /// Monitors this actor *created* (it is the monitoring/`dest` side). Keyed by
+    /// monitor id so they can be fired locally and cancelled. The failure_prefix
+    /// stays here and never travels — the responsible ancestor only sends back
+    /// `id` and we reconstruct the full failure message from this.
+    pub(crate) monitors: HashMap<u64, LocalMonitor>,
     pub(crate) gateway: bool,
     pub(crate) alive: bool,
 }
@@ -29,15 +40,34 @@ pub(crate) struct ActorEntry {
 impl ActorEntry {
     pub(crate) fn new(ident: Option<Vec<u8>>) -> Self {
         Self {
-            ident,
+            name: ActorName::new(ident),
             delivery: Delivery::NoPoller {
                 buffered: VecDeque::new(),
             },
             parent: None,
             children: SlotMap::with_key(),
             routes: HashMap::new(),
+            monitors: HashMap::new(),
             gateway: true,
             alive: true,
+        }
+    }
+
+    /// Record that `ident` is live through child connection `child`, so that if that
+    /// connection later fails we can mark exactly those idents dead in
+    /// O(idents-handled) instead of scanning the whole routing table. Only live
+    /// idents are tracked; ones already dead need no re-killing on failure.
+    pub(crate) fn record_routed_via_child(&mut self, child: ChildConnectionKey, ident: &[u8]) {
+        if let Some(Connection::Established { routed_idents, .. }) = self.children.get_mut(child) {
+            routed_idents.insert(ident.to_vec());
+        }
+    }
+
+    /// This actor's ident, or `None` if it has not been named yet.
+    pub(crate) fn name(&self) -> Option<&[u8]> {
+        match &self.name {
+            ActorName::Named(name) => Some(name),
+            ActorName::Unknown { .. } => None,
         }
     }
 
@@ -75,42 +105,117 @@ impl ActorEntry {
     /// here, so it can be flushed once the route becomes known or this actor gains
     /// a parent. This is the only place messages enter a [`Route::Unknown`] buffer.
     pub(crate) fn buffer_unrouted(&mut self, destination: Vec<u8>, parts: Vec<MsgPart>) {
-        let Route::Unknown(buffered) = self
+        match self
             .routes
             .entry(destination)
-            .or_insert_with(|| Route::Unknown(Vec::new()))
-        else {
-            unreachable!("a known route would have been used to send instead of buffering");
-        };
-        buffered.push(parts);
+            .or_insert_with(Route::new_unknown)
+        {
+            Route::Unknown { messages, .. } => messages.push(parts),
+            _ => unreachable!("a known route would have been used to send instead of buffering"),
+        }
     }
 
-    /// Remove every buffered (unrouted) destination, returning each with its pending
-    /// messages and leaving only concrete routes behind. Used when the actor gains a
-    /// parent: the messages are re-routed up to the parent and no longer buffered here.
-    pub(crate) fn drain_buffered_routes(&mut self) -> Vec<(Vec<u8>, Vec<Vec<MsgPart>>)> {
-        let mut buffered = Vec::new();
-        let mut kept = HashMap::new();
-        for (ident, route) in std::mem::take(&mut self.routes) {
-            match route {
-                Route::Unknown(messages) => buffered.push((ident, messages)),
-                Route::Connection(_) => {
-                    kept.insert(ident, route);
-                }
+    /// Register a monitor subscription on `to_monitor`'s route. Held on the route
+    /// (creating an `Unknown` buffer if there is none yet) until the route turns
+    /// `Dead` (fired) or this actor gains a parent (forwarded up, for `Unknown`).
+    /// The caller guarantees the route is not `Dead` (a dead route fires at once).
+    pub(crate) fn buffer_monitor(&mut self, to_monitor: Vec<u8>, sub: MonitorSub) {
+        match self
+            .routes
+            .entry(to_monitor)
+            .or_insert_with(Route::new_unknown)
+        {
+            Route::Unknown { monitors, .. } | Route::Connection { monitors, .. } => {
+                monitors.push(sub)
             }
+            Route::Dead => unreachable!("a dead route fires immediately and never registers"),
         }
-        self.routes = kept;
-        buffered
     }
 }
 
-/// A destination ident's entry in an actor's routing table.
+/// A destination ident's entry in an actor's routing table. Carries the monitor
+/// subscriptions this actor is responsible for on that destination alongside its
+/// reachability, so the two stay in lock-step (same key, same propagation path).
 pub(crate) enum Route {
     /// The destination is not (yet) known here — it may not have been created.
-    /// Messages for it are buffered until a route is published, then flushed.
-    Unknown(Vec<Vec<MsgPart>>),
-    /// The destination is reachable through this child connection.
-    Connection(ChildConnectionKey),
+    /// Messages and monitor subscriptions for it are buffered until a route is
+    /// published (then carried into [`Route::Connection`]) or this actor gains a
+    /// parent (then forwarded up).
+    Unknown {
+        messages: Vec<Vec<MsgPart>>,
+        monitors: Vec<MonitorSub>,
+    },
+    /// The destination is reachable through this child connection. Monitors here
+    /// fire when the route transitions to [`Route::Dead`].
+    Connection {
+        child: ChildConnectionKey,
+        monitors: Vec<MonitorSub>,
+    },
+    /// The destination was reachable but has since died (directly, or because a
+    /// connection on the path to it failed). Messages for it are dropped; its
+    /// monitors were fired and removed at the moment of transition.
+    Dead,
+}
+
+impl Route {
+    pub(crate) fn new_unknown() -> Self {
+        Route::Unknown {
+            messages: Vec::new(),
+            monitors: Vec::new(),
+        }
+    }
+
+    /// The monitor subscriptions held on this route, if it can hold any (i.e. it is
+    /// not `Dead`).
+    pub(crate) fn monitors_mut(&mut self) -> Option<&mut Vec<MonitorSub>> {
+        match self {
+            Route::Unknown { monitors, .. } | Route::Connection { monitors, .. } => Some(monitors),
+            Route::Dead => None,
+        }
+    }
+}
+
+/// A monitor created by this actor (the monitoring/`dest` side). Held until the
+/// monitored actor dies or the monitor is cancelled.
+pub(crate) struct LocalMonitor {
+    pub(crate) to_monitor: Vec<u8>,
+    pub(crate) failure_prefix: Vec<MsgPart>,
+}
+
+/// A subscription held at the responsible common ancestor `R`: when the watched
+/// ident dies, route a fire to `dest` carrying `id`.
+pub(crate) struct MonitorSub {
+    pub(crate) dest: Vec<u8>,
+    pub(crate) id: u64,
+}
+
+/// An actor's ident, which may not be known at creation (a child can be named by
+/// its parent when it joins).
+pub(crate) enum ActorName {
+    /// Not named yet. Monitors created in the meantime cannot address their
+    /// fire-backs (which route to this actor's own ident), so they wait here until
+    /// a name is assigned, then subscribe for real.
+    Unknown {
+        pending_monitors: Vec<PendingMonitor>,
+    },
+    Named(Vec<u8>),
+}
+
+impl ActorName {
+    pub(crate) fn new(ident: Option<Vec<u8>>) -> Self {
+        match ident {
+            Some(name) => ActorName::Named(name),
+            None => ActorName::Unknown {
+                pending_monitors: Vec::new(),
+            },
+        }
+    }
+}
+
+/// A monitor whose subscription was deferred until its creating actor is named.
+pub(crate) struct PendingMonitor {
+    pub(crate) id: u64,
+    pub(crate) to_monitor: Vec<u8>,
 }
 
 pub(crate) enum Delivery {
