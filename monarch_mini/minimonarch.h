@@ -54,7 +54,7 @@ typedef struct mm_msg {
 /* Opaque handle types. */
 typedef struct mm_ctx* mm_ctx_t;
 typedef struct mm_actor* mm_actor_t;
-typedef struct mm_monitor_handle* mm_monitor_handle_t;
+typedef uint64_t mm_monitor_handle_t;
 typedef struct mm_poller* mm_poller_t;
 
 typedef enum mm_role {
@@ -107,7 +107,7 @@ mm_err_t mm_actor_monitor(
     const mm_msg_t* failure_prefix,
     uint64_t timeout_for_nonexistence,
     mm_monitor_handle_t* out);
-void mm_monitor_handle_cancel(mm_monitor_handle_t handle);
+void mm_monitor_handle_cancel(mm_actor_t actor, mm_monitor_handle_t handle);
 mm_err_t mm_poller_create(mm_ctx_t ctx, int* fd_out, mm_poller_t* out);
 void mm_poller_destroy(mm_poller_t poller);
 mm_err_t
@@ -286,7 +286,9 @@ void mm_actor_die(mm_actor_t actor, mm_msg_part_t reason);
  * reason]
  * where reason is "actor died".
  *
- * On success, writes the new handle to `*out`.
+ * On success, writes the monitor handle (an id scoped to `actor`) to `*out`.
+ * Pass it back to mm_monitor_handle_cancel(actor, handle) to cancel; there is
+ * nothing to free.
  *
  * Non-existence timeout
  * ---------------------
@@ -323,13 +325,17 @@ mm_err_t mm_actor_monitor(
  */
 
 /*
- * Cancel the monitor.
+ * Cancel the monitor identified by `handle` on `actor` (the actor that created
+ * it via mm_actor_monitor).
  *
  * The failure message will no longer be delivered after this call. If there
  * is one still undelivered in the internal queue it will be dropped before
  * delivery on mm_poller_next().
+ *
+ * The handle owns nothing, so cancelling is optional: discarding a handle
+ * simply leaves the monitor active.
  */
-void mm_monitor_handle_cancel(mm_monitor_handle_t handle);
+void mm_monitor_handle_cancel(mm_actor_t actor, mm_monitor_handle_t handle);
 
 /* ---------------------------------------------------------------------------
  * Poller

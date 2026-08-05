@@ -84,12 +84,6 @@ pub struct CPoller {
     armed_at: Option<u64>,
 }
 
-pub struct CMonitorHandle {
-    ctx: CtxHandle,
-    actor: Key,
-    id: u64,
-}
-
 // ---------------------------------------------------------------------------
 // C-compatible enums and structs (mirror minimonarch.h)
 // ---------------------------------------------------------------------------
@@ -390,11 +384,12 @@ pub unsafe extern "C" fn mm_actor_monitor(
     to_monitor_ident: CMsgPart,
     failure_prefix: *const CMsg,
     timeout_for_nonexistence: u64,
-    out: *mut *mut CMonitorHandle,
+    out: *mut u64,
 ) -> Error {
     let a = &*actor;
     // Allocate the id locally and fire the command without waiting: this runs in
-    // messaging loops and must never block on the event loop thread.
+    // messaging loops and must never block on the event loop thread. The handle
+    // is simply that id — no allocation, so nothing to free.
     let id = a.next_monitor_id.fetch_add(1, Ordering::Relaxed);
     match a.ctx.send_command(Command::Monitor {
         actor: a.key,
@@ -404,11 +399,7 @@ pub unsafe extern "C" fn mm_actor_monitor(
         timeout_ms: timeout_for_nonexistence,
     }) {
         Ok(()) => {
-            *out = Box::into_raw(Box::new(CMonitorHandle {
-                ctx: a.ctx.clone(),
-                actor: a.key,
-                id,
-            }));
+            *out = id;
             Error::Ok
         }
         Err(e) => e.into(),
@@ -420,11 +411,11 @@ pub unsafe extern "C" fn mm_actor_monitor(
 // ---------------------------------------------------------------------------
 
 #[no_mangle]
-pub unsafe extern "C" fn mm_monitor_handle_cancel(handle: *mut CMonitorHandle) {
-    let handle = Box::from_raw(handle);
-    let _ = handle.ctx.send_command(Command::CancelMonitor {
-        actor: handle.actor,
-        id: handle.id,
+pub unsafe extern "C" fn mm_monitor_handle_cancel(actor: *mut CActor, handle: u64) {
+    let a = &*actor;
+    let _ = a.ctx.send_command(Command::CancelMonitor {
+        actor: a.key,
+        id: handle,
     });
 }
 

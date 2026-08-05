@@ -4741,6 +4741,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "monarch_mini_rs"
+version = "0.1.0"
+dependencies = [
+ "monarch_mini",
+ "static_assertions",
+ "thiserror 2.0.19",
+ "tokio",
+]
+
+[[package]]
 name = "monarch_monarch_bench"
 version = "0.0.0"
 dependencies = [
