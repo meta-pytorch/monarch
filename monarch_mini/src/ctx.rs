@@ -146,6 +146,20 @@ new_key_type! {
 /// subscribe/unsubscribe traffic.
 const MONITOR_DEBOUNCE: Duration = Duration::from_millis(25);
 
+/// Wall-clock cost of fanning one gateway-death broadcast out to every gateway at
+/// max scale (~6s for thousands of machines). This single number drives the whole
+/// gateway-death coalescing policy (see `spawn_gateway_death_coroutine`): the root
+/// must never issue broadcasts faster than it can drain them, so it is the spacing
+/// floor between broadcasts — and every other window is derived from it. Overridable
+/// via `MM_GATEWAY_BROADCAST_COST_MS` (mainly so tests can shrink it).
+fn gateway_broadcast_cost() -> Duration {
+    std::env::var("MM_GATEWAY_BROADCAST_COST_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(Duration::from_secs(6))
+}
+
 pub(crate) enum Command {
     Init {
         thread: JoinHandle<()>,
@@ -243,6 +257,15 @@ pub(crate) enum Command {
     UnsubscribeMonitor {
         actor: Key,
         to_monitor: Vec<u8>,
+    },
+    // Emitted by a root's gateway-death coalescing coroutine once its window
+    // elapses: broadcast this coalesced batch of dead tags downward from `at`. This
+    // is the only way back onto the loop from the coroutine — the broadcast mutates
+    // ctx state, and the root's downward turn-around has no parent connection to
+    // carry a `GatewayDied` over, so it cannot reuse `ConnectionAction`.
+    PropagateGatewayDeaths {
+        at: Key,
+        dead: Vec<Vec<u8>>,
     },
     Shutdown {
         done: oneshot::Sender<JoinHandle<()>>,
@@ -474,6 +497,13 @@ impl Ctx {
             }
             Command::UnsubscribeMonitor { actor, to_monitor } => {
                 self.unsubscribe_monitor(actor, to_monitor);
+            }
+            Command::PropagateGatewayDeaths { at, dead } => {
+                // The coroutine fires onto the loop, so the root may have been
+                // destroyed since the batch was buffered; nothing to broadcast if so.
+                if self.actors.contains_key(at) {
+                    self.broadcast_gateway_deaths(at, dead);
+                }
             }
             Command::Shutdown { .. } => {
                 // Handled directly by the event loop (see CtxHandle::new) so it
@@ -1124,7 +1154,7 @@ impl Ctx {
                 // Any gateways reachable only through this now-failed connection are
                 // implicitly dead — including ones nested below us under a
                 // non-gateway child. Begin the gateway-death propagation for them
-                // (climbing toward the root, hence `only_downward: false`). A
+                // (climbing toward the root, hence `downward: false`). A
                 // gateway-route entry is always non-empty, so there is nothing to
                 // guard against. (This also covers a parent actor's own death: its
                 // death severs its parent link, and *that* actor's parent detects the
@@ -1308,16 +1338,16 @@ impl Ctx {
     }
 
     /// Propagate a gateway death through `at`. First forget any routes to the dead
-    /// gateways here. Then, unless `only_downward`, forward the announcement up the
-    /// parent toward the root (which is what carries it there); `only_downward`
+    /// gateways here. Then, unless `downward`, forward the announcement up the
+    /// parent toward the root (which is what carries it there); `downward`
     /// masks off that link, as does simply having no parent (the root). Once the
-    /// announcement is heading down — at the root turn-around, or because it arrived
-    /// from above — record the deaths (gateways only, deduplicating so repeated
-    /// waves die out; non-gateways merely relay) and fan it out down every
-    /// gateway-route child, so every gateway below is reached. Recording on the way
-    /// down (never up) is what lets the broadcast returning from the root still
-    /// reach the detector's other gateway children.
-    fn gateway_died(&mut self, at: Key, dead: Vec<Vec<u8>>, only_downward: bool) {
+    /// announcement is heading down it is broadcast — but with a difference between
+    /// the two ways down: a wave arriving *from above* (`downward`) is relayed
+    /// immediately, while the root turn-around (`!downward`, no parent) instead
+    /// *coalesces* — see [`Self::enqueue_root_gateway_deaths`] — so a storm of
+    /// deaths detected at (or climbing to) the root collapses into one fan-out per
+    /// window rather than one per death.
+    fn gateway_died(&mut self, at: Key, dead: Vec<Vec<u8>>, downward: bool) {
         // Forget routes to the dead gateways: they no longer route anywhere, and a
         // child entry left empty is dropped. Idempotent — an absent tag is a no-op.
         let entry = self.actor_mut(at);
@@ -1328,19 +1358,145 @@ impl Ctx {
         }
         entry.gateway_routes.retain(|_, tags| !tags.is_empty());
 
-        // Still climbing toward the root: forward up and stop here.
-        if !only_downward {
+        if !downward {
+            // Still climbing toward the root: forward up and stop here.
             if let Some(parent) = self.actor_mut(at).parent.as_mut() {
                 let _ = parent.send(ConnectionCommand::GatewayDied { dead });
                 return;
             }
+            // Root turn-around: coalesce instead of broadcasting immediately.
+            self.enqueue_root_gateway_deaths(at, dead);
+            return;
         }
 
-        // Heading down: record the deaths, then fan out to every gateway-route child.
-        // A gateway records each death in its `gateway_state` (deduplicating against
-        // an already-`Dead` entry so repeated waves die out) and, at the moment of
-        // transition, fires every cross-gateway monitor it held for that gateway. A
-        // non-gateway holds no state and merely relays.
+        // Arrived from above: relay this wave down immediately.
+        self.broadcast_gateway_deaths(at, dead);
+    }
+
+    /// Hand `dead` to this root's coalescing coroutine, spawning it on the first
+    /// turn-around. The coroutine (see [`Self::spawn_gateway_death_coroutine`]) owns
+    /// all the timing: it batches every death within a window and emits a single
+    /// [`Command::PropagateGatewayDeaths`], bounding a storm to one broadcast per
+    /// window instead of one per death. Without a tokio runtime (unit tests) there
+    /// is no coroutine, so broadcast immediately.
+    fn enqueue_root_gateway_deaths(&mut self, at: Key, dead: Vec<Vec<u8>>) {
+        if tokio::runtime::Handle::try_current().is_err() {
+            self.broadcast_gateway_deaths(at, dead);
+            return;
+        }
+        let loop_tx = self.loop_tx.clone();
+        let tx = self
+            .actor_mut(at)
+            .gateway_death_tx
+            .get_or_insert_with(|| Self::spawn_gateway_death_coroutine(loop_tx, at));
+        let _ = tx.send(dead);
+    }
+
+    /// Spawn the per-root coalescing coroutine and return the channel that feeds it
+    /// dead-tag packets. It owns the whole coalescing policy — an adaptive window
+    /// that grows with evidence of a storm, plus a spacing floor that rate-limits
+    /// broadcasts — all derived from one number, [`gateway_broadcast_cost`] (`C`),
+    /// the wall-clock cost of fanning one broadcast out to every gateway. Each round
+    /// collects deaths until a deadline, broadcasts, and repeats; the deadline is
+    ///
+    /// ```text
+    /// deadline = max(last_broadcast + C, batch_start + wait)
+    /// ```
+    ///
+    /// where the two terms serve different jobs:
+    ///
+    /// - `batch_start + wait` is the **adaptive window** shaping the leading edge:
+    ///   `wait` starts at `C/16` (**initial wait** — a lone death, the common case,
+    ///   fires this fast) and doubles per genuinely-new tag up to `C` (**max wait**),
+    ///   anchored at the batch's first death so it never slides past `+ C`. The more
+    ///   deaths arrive, the longer we wait to batch them.
+    /// - `last_broadcast + C` is the **spacing floor**: the root cannot fan out
+    ///   faster than `C`, so the next broadcast is held to at least `C` after the
+    ///   previous one regardless of arrival pattern (deaths that land during the gap
+    ///   are collected into the batch as they arrive). This closes the moderate
+    ///   rolling-failure regime that the adaptive window alone would miss — one
+    ///   fan-out per death spaced under `C`. `last_broadcast` is `None` until the
+    ///   first broadcast, so the leading edge is never gated by it.
+    ///
+    /// Cross-broadcast duplicates need no handling here: `broadcast_gateway_deaths`
+    /// dedups them against the root's gateway state. The coroutine ends when the
+    /// channel closes (the actor — and its sender — is torn down) or the loop dies.
+    fn spawn_gateway_death_coroutine(
+        loop_tx: mpsc::UnboundedSender<Command>,
+        at: Key,
+    ) -> mpsc::UnboundedSender<Vec<Vec<u8>>> {
+        let (tx, mut rx) = mpsc::unbounded_channel::<Vec<Vec<u8>>>();
+        let broadcast_time = gateway_broadcast_cost();
+        let max_wait = broadcast_time;
+        let initial_wait = broadcast_time / 16;
+        // The collection deadline: the adaptive window, but never sooner than
+        // `broadcast_time` after the previous broadcast.
+        let deadline_for = move |batch_start: tokio::time::Instant,
+                                 last_broadcast: Option<tokio::time::Instant>,
+                                 wait: Duration| {
+            let adaptive = batch_start + wait;
+            match last_broadcast {
+                Some(last) => adaptive.max(last + broadcast_time),
+                None => adaptive,
+            }
+        };
+        tokio::task::spawn_local(async move {
+            let mut last_broadcast: Option<tokio::time::Instant> = None;
+            loop {
+                // Idle: block for the first death of a batch.
+                let mut batch: HashSet<Vec<u8>> = match rx.recv().await {
+                    Some(first) => first.into_iter().collect(),
+                    None => return, // channel closed: actor torn down
+                };
+
+                // Collect until the deadline, growing `wait` on each new tag and
+                // recomputing the deadline (which also enforces the spacing floor).
+                let batch_start = tokio::time::Instant::now();
+                let mut wait = initial_wait;
+                let deadline =
+                    tokio::time::sleep_until(deadline_for(batch_start, last_broadcast, wait));
+                tokio::pin!(deadline);
+                loop {
+                    tokio::select! {
+                        _ = &mut deadline => break,
+                        packet = rx.recv() => match packet {
+                            None => return,
+                            Some(more) => {
+                                let before = batch.len();
+                                batch.extend(more);
+                                if batch.len() != before {
+                                    wait = (wait * 2).min(max_wait);
+                                    deadline
+                                        .as_mut()
+                                        .reset(deadline_for(batch_start, last_broadcast, wait));
+                                }
+                            }
+                        },
+                    }
+                }
+
+                // Broadcast the batch and record when, so the next round is spaced.
+                let dead: Vec<Vec<u8>> = batch.into_iter().collect();
+                if loop_tx
+                    .send(Command::PropagateGatewayDeaths { at, dead })
+                    .is_err()
+                {
+                    return; // loop gone
+                }
+                last_broadcast = Some(tokio::time::Instant::now());
+            }
+        });
+        tx
+    }
+
+    /// Record the deaths at `at` and fan them out down every gateway-route child, so
+    /// every gateway below is reached. A gateway records each death in its
+    /// `gateway_state` (deduplicating against an already-`Dead` entry so repeated
+    /// waves die out) and, at the moment of transition, fires every cross-gateway
+    /// monitor it held for that gateway. A non-gateway holds no state and merely
+    /// relays. Recording here (on the way down, never up) is what lets the broadcast
+    /// returning from the root still reach the detector's other gateway children.
+    fn broadcast_gateway_deaths(&mut self, at: Key, dead: Vec<Vec<u8>>) {
         let mut to_fire: Vec<(Vec<u8>, Vec<u8>)> = Vec::new(); // (listener, monitoring)
         let newly: Vec<Vec<u8>> = match &mut self.actor_mut(at).gateway {
             GatewayState::Gateway { gateway_state } => {
