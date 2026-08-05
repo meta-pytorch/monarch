@@ -8,11 +8,18 @@
 """End-to-end tests for ``monarch.rdma.RDMAAction``."""
 
 import os
+import sys
 
 # Required to enable RDMA support for CUDA tensors.
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import pytest  # noqa: E402
+
+# Use an early module-level skip instead of skipif because the RDMA native
+# bindings imported below are not built on non-Linux platforms.
+if sys.platform != "linux":
+    pytest.skip("RDMA tests require Linux", allow_module_level=True)
+
 import torch  # noqa: E402
 from monarch.actor import Actor, endpoint, this_host  # noqa: E402
 from monarch.rdma import RDMAAction, RDMABuffer  # noqa: E402

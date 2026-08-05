@@ -172,6 +172,9 @@ fn spawn_snapshot_http_counter() -> (String, Arc<AtomicUsize>, Arc<AtomicBool>, 
                 }
                 Err(error) => panic!("snapshot HTTP test server failed: {error}"),
             };
+            // macOS can propagate the listener's nonblocking mode to accepted
+            // sockets, so make request reads blocking before applying a timeout.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
