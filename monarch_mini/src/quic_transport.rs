@@ -9,23 +9,35 @@
 //! QUIC transport for connecting actors across machines (or local processes).
 //!
 //! Structurally a sibling of the UNIX transport: a connection's coroutines bring
-//! up one bidirectional QUIC stream, produce a [`ConnectionTransport`] for it, and
-//! hand it to the command loop via `Command::TransportConnected`; the reader
+//! up **two** bidirectional QUIC streams — a data/control stream and a dedicated
+//! heartbeat stream — produce a [`ConnectionTransport`] for the data stream, and
+//! hand it to the command loop via `Command::TransportConnected`; the data reader
 //! forwards every decoded frame back as a `ConnectionAction`. Establishment policy
 //! (identity exchange, hello, liveness reporting) lives in the command loop and is
 //! identical across transports. Wire framing is shared (see [`crate::framing`]).
+//!
+//! ## Two streams per connection
+//!
+//! A single QUIC stream is a reliable, in-order byte stream, so a large message
+//! head-of-line-blocks everything queued behind it — including heartbeats, whose
+//! whole job is to keep flowing while data does. QUIC's streams are independently
+//! ordered and flow-controlled and interleave at the packet level, so we put
+//! heartbeats on their **own** stream: a multi-megabyte message on the data stream
+//! can no longer delay a beat. The heartbeat stream is given a higher send priority
+//! so beats are packed into packets ahead of data even under a full congestion
+//! window. (Flow-control *windows* are left at their defaults: they are credit
+//! ceilings, not pre-allocated buffers, and beats are tiny.)
 //!
 //! ## Why QUIC differs from UNIX
 //!
 //! QUIC runs over UDP in userspace, so there is no file-descriptor close to signal
 //! a lost peer: a crashed, frozen, or partitioned peer simply stops sending. So
 //! instead of relying on EOF we run an application-level **bidirectional
-//! heartbeat**: each side's writer emits a [`framing::write_heartbeat`] every
-//! [`HEARTBEAT_INTERVAL`], and each side's reader wraps every frame read in a
-//! [`HEARTBEAT_TIMEOUT`]; any frame (data or heartbeat) refreshes the deadline, and
-//! a timeout emits `Severed`. A clean drop still finishes the stream, so the peer
-//! also observes immediate EOF — the heartbeat is the backstop for the unclean
-//! cases.
+//! heartbeat** on the heartbeat stream: each side emits a [`framing::write_heartbeat`]
+//! every [`HEARTBEAT_INTERVAL`] and times out on the peer's beats after
+//! [`HEARTBEAT_TIMEOUT`], emitting `Severed` on a lapse. A clean drop still finishes
+//! both streams, so the peer also observes immediate EOF — the heartbeat is the
+//! backstop for the unclean cases.
 //!
 //! ## Security
 //!
@@ -47,6 +59,7 @@ use quinn::Endpoint;
 use quinn::RecvStream;
 use quinn::SendStream;
 use quinn::ServerConfig;
+use quinn::VarInt;
 use rustls::RootCertStore;
 use rustls_pki_types::CertificateDer;
 use rustls_pki_types::PrivateKeyDer;
@@ -55,6 +68,7 @@ use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::time::Duration;
 
+use crate::Role;
 use crate::connection::ConnectionCommand;
 use crate::connection::ConnectionRef;
 use crate::connection::ConnectionTransport;
@@ -62,9 +76,8 @@ use crate::connection::SideChannelMessage;
 use crate::connection::sever;
 use crate::ctx::Command;
 use crate::framing;
-use crate::framing::Incoming;
 use crate::framing::Preamble;
-use crate::framing::SideChannelIncoming;
+use crate::framing::SideChannelHeartbeat;
 use crate::matcher::Matcher;
 use crate::quic_heartbeat::BeatKind;
 use crate::quic_heartbeat::ConnectionId;
@@ -86,6 +99,13 @@ const SERVER_NAME: &str = "monarch-mini";
 const CONNECT_RETRY_MIN: Duration = Duration::from_millis(5);
 const CONNECT_RETRY_MAX: Duration = Duration::from_millis(1000);
 
+/// Send priority of a connection's heartbeat stream, above the data stream's
+/// default of `0`. quinn schedules higher-priority stream frames into packets
+/// first, so a beat is packed ahead of queued data-stream bytes even when a large
+/// message has the congestion window full — the heartbeat stream removes in-order
+/// head-of-line blocking, and this removes the congestion-window one.
+const HEARTBEAT_STREAM_PRIORITY: i32 = 1;
+
 /// On graceful shutdown each writer sends an explicit `Severed{"context shutdown"}`
 /// frame (reliable stream data — retransmitted by QUIC, unlike `CONNECTION_CLOSE`),
 /// then keeps the connection open until the peer *responds* (its own `Severed`/EOF,
@@ -101,6 +121,31 @@ fn shutdown_ack_timeout() -> Duration {
         .and_then(|v| v.parse::<u64>().ok())
         .map(Duration::from_millis)
         .unwrap_or(DEFAULT_SHUTDOWN_ACK_TIMEOUT)
+}
+
+/// Per-stream flow-control receive window (`MAX_STREAM_DATA`): how many bytes a peer
+/// may have in flight on one stream before it must wait for the receiver to extend
+/// the window. quinn's default is ~1.25 MB (sized for a 100 ms RTT), which caps a
+/// large message's throughput at window/RTT — a severe throttle on a fast, low-RTT
+/// link. We raise it so a big message can keep the pipe full.
+///
+/// This is a *ceiling* the receiver may buffer up to on a stream actively receiving
+/// unread data, not a preallocation: idle connections cost nothing. It does raise
+/// the worst-case memory a busy connection can hold, which matters for a root with
+/// very many connections all mid-large-transfer — so it is env-tunable
+/// (`MM_QUIC_STREAM_RECV_WINDOW_BYTES`). Only the data stream ever fills it; the
+/// companion heartbeat stream carries tiny frames. The connection-level
+/// `receive_window` is left at quinn's default (`VarInt::MAX`); with just two
+/// streams per connection the per-stream window already bounds what one connection
+/// can buffer.
+const DEFAULT_STREAM_RECV_WINDOW_BYTES: u64 = 16 * 1024 * 1024;
+
+fn stream_recv_window_bytes() -> u64 {
+    std::env::var("MM_QUIC_STREAM_RECV_WINDOW_BYTES")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_STREAM_RECV_WINDOW_BYTES)
 }
 
 /// What a connection's reader needs for shared memory: the context-global mapper
@@ -168,6 +213,12 @@ fn load_tls() -> anyhow::Result<TlsConfig> {
     let mut transport = quinn::TransportConfig::default();
     transport.keep_alive_interval(None);
     transport.max_idle_timeout(None);
+    // Raise the per-stream flow-control window (and the send window with it, keeping
+    // quinn's 8x send:stream ratio) so a large message is not throttled to
+    // window/RTT. See `stream_recv_window_bytes`.
+    let window = stream_recv_window_bytes();
+    transport.stream_receive_window(VarInt::from_u64(window).unwrap_or(VarInt::MAX));
+    transport.send_window(window.saturating_mul(8));
     let transport = Arc::new(transport);
 
     let mut server = ServerConfig::with_single_cert(load_certs(&cert_path)?, load_key(&key_path)?)?;
@@ -735,13 +786,28 @@ impl Transport for QuicTransport {
     }
 }
 
-/// A connection accepted by the listener, classified by the joiner's preamble.
-/// A `Join` is paired with a serve and driven by the command loop as before; a
-/// `SideChannel` is a gateway-to-gateway message stream read directly into the
-/// home gateway's routing.
+/// A connection accepted by the listener, classified by the joiner's first-stream
+/// preamble. Every connection carries two bi-streams: a data/message stream and a
+/// companion heartbeat stream. Only the data/message stream is carried here — its
+/// acceptance is what establishes/pairs the connection, and it must not wait on the
+/// heartbeat stream (whose first bytes only arrive with the peer's first beat). The
+/// heartbeat stream is obtained lazily by the heartbeat management task instead
+/// (dialer opens it, acceptor accepts it). A `Join` is paired with a serve and
+/// driven by the command loop as before; a `SideChannel` is a gateway-to-gateway
+/// link read directly into the home gateway's routing (the joiner only sends, so we
+/// keep just the message recv).
 enum Accepted {
-    Join(Connection, SendStream, RecvStream),
+    Join(JoinStreams),
     SideChannel(Connection, RecvStream),
+}
+
+/// The QUIC connection plus the data-stream halves of a join link, as paired by the
+/// listener's [`Matcher`] and handed to [`spawn_connection`]. The
+/// heartbeat stream is not here — it is acquired later off the establishment path.
+struct JoinStreams {
+    conn: Connection,
+    data_send: SendStream,
+    data_recv: RecvStream,
 }
 
 /// Bind a QUIC server endpoint on `addr` and dispatch each accepted connection by
@@ -794,8 +860,7 @@ async fn listener_task(
         shutdown.clone(),
     ));
 
-    let mut matcher: Matcher<(ConnectionRef, ShmCtx), (Connection, SendStream, RecvStream)> =
-        Matcher::new();
+    let mut matcher: Matcher<(ConnectionRef, ShmCtx), JoinStreams> = Matcher::new();
     // One spawn callback for both Matcher arms: the Matcher hands back
     // `(serve_side, accepted_side)` either way, so a serve-first (`push_left`) and
     // an accept-first (`push_right`) pairing spawn identically — serve/acceptor
@@ -803,11 +868,15 @@ async fn listener_task(
     // Owns a `shutdown` clone (the select below needs `&mut shutdown` for
     // `changed()`); the rest are cloned per spawn.
     let spawn_shutdown = shutdown.clone();
-    let spawn = |(connection, shm): (ConnectionRef, ShmCtx),
-                 (conn, send, recv): (Connection, SendStream, RecvStream)| {
+    let spawn = |(connection, shm): (ConnectionRef, ShmCtx), streams: JoinStreams| {
+        let JoinStreams {
+            conn,
+            data_send,
+            data_recv,
+        } = streams;
         spawn_connection(
-            send,
-            recv,
+            data_send,
+            data_recv,
             connection,
             loop_tx.clone(),
             spawn_shutdown.clone(),
@@ -833,17 +902,21 @@ async fn listener_task(
             accepted = accepted_rx.recv() => {
                 match accepted {
                     None => return,
-                    Some(Accepted::Join(conn, send, recv)) => {
-                        if let Some((left, right)) =
-                            matcher.push_right((conn, send, recv), |l, r| (l, r))
-                        {
+                    Some(Accepted::Join(streams)) => {
+                        if let Some((left, right)) = matcher.push_right(streams, |l, r| (l, r)) {
                             spawn(left, right);
                         }
                     }
-                    Some(Accepted::SideChannel(conn, recv)) => {
+                    Some(Accepted::SideChannel(conn, msg_recv)) => {
+                        // Messages and delegated beats arrive on separate streams, so
+                        // read each in its own task. Both hold the connection to keep
+                        // it alive; the heartbeat reader accepts its (second) stream
+                        // itself, since it may open late or never.
                         tokio::task::spawn_local(side_channel_reader_task(
-                            conn, recv, loop_tx.clone(), side_channel_shm.clone(),
-                            heartbeat.clone(),
+                            conn.clone(), msg_recv, loop_tx.clone(), side_channel_shm.clone(),
+                        ));
+                        tokio::task::spawn_local(side_channel_heartbeat_reader_task(
+                            conn, heartbeat.clone(),
                         ));
                     }
                 }
@@ -871,11 +944,25 @@ async fn acceptor_task(
                 tokio::task::spawn_local(async move {
                     let Ok(connecting) = incoming.accept() else { return; };
                     let Ok(connection) = connecting.await else { return; };
+                    // Every connection opens two bi-streams: the data/message stream
+                    // (first, carrying the preamble) and its companion heartbeat
+                    // stream (second, no preamble — the first preamble already tells
+                    // us it follows). We accept and classify only the first stream
+                    // here: that is what establishes/pairs the connection, and it must
+                    // not wait on the heartbeat stream, whose first bytes only arrive
+                    // with the peer's first beat. The heartbeat stream is accepted by
+                    // the heartbeat management task (`accept` hands out streams in the
+                    // order the peer opened them, so it always gets the second one).
                     let Ok((send, mut recv)) = connection.accept_bi().await else { return; };
-                    // The joiner's first frame says what this stream is for.
                     let accepted = match framing::read_preamble(&mut recv).await {
-                        Ok(Preamble::Join) => Accepted::Join(connection, send, recv),
+                        Ok(Preamble::Join) => Accepted::Join(JoinStreams {
+                            conn: connection,
+                            data_send: send,
+                            data_recv: recv,
+                        }),
+                        // A side-channel is unidirectional (the joiner only sends).
                         Ok(Preamble::SideChannel) => Accepted::SideChannel(connection, recv),
+                        // A decode error: the peer spoke a bad dialect — drop it.
                         Err(_) => return,
                     };
                     let _ = accepted_tx.send(accepted);
@@ -886,27 +973,45 @@ async fn acceptor_task(
     }
 }
 
-/// Read frames off a gateway side-channel. A routable [`SideChannelMessage`] is
-/// forwarded to the command loop (which resolves the owning gateway); a
-/// delegated-heartbeat beat/ack is routed *directly* into the heartbeat subsystem
-/// here — it never reaches ctx. There is no establishment: an EOF or error just
-/// ends the reader (the sending gateway reconnects when it next has something to
-/// send). `_conn` is held only to keep the QUIC connection (and thus `recv`) alive.
+/// Read routable messages off a gateway side-channel's message stream and forward
+/// each to the command loop (which resolves the owning gateway). There is no
+/// establishment: an EOF or error just ends the reader (the sending gateway
+/// reconnects when it next has something to send). `_conn` is held only to keep the
+/// QUIC connection (and thus `recv`) alive. Delegated beats travel on the companion
+/// heartbeat stream (see [`side_channel_heartbeat_reader_task`]).
 async fn side_channel_reader_task(
     _conn: Connection,
     mut recv: RecvStream,
     loop_tx: mpsc::UnboundedSender<Command>,
     shm: ShmCtx,
-    heartbeat: Heartbeats,
 ) {
     loop {
         match framing::read_side_channel(&mut recv, &shm.mapper, shm.client()).await {
-            Ok(SideChannelIncoming::Message(message)) => {
+            Ok(message) => {
                 if loop_tx.send(Command::SideChannelDeliver(message)).is_err() {
                     return;
                 }
             }
-            Ok(SideChannelIncoming::Heartbeat {
+            Err(_) => return,
+        }
+    }
+}
+
+/// Read delegated-heartbeat beats/acks/releases off a gateway side-channel's
+/// heartbeat stream and route them *directly* into the heartbeat subsystem — they
+/// never reach ctx. Kept on its own stream so a large routed message on the message
+/// stream can never delay a beat. The heartbeat stream is the connection's *second*
+/// bi-stream (the message stream, already accepted, is the first), so this task
+/// accepts it itself: it may open late (on the first beat) or never (a channel that
+/// only carries messages), and awaiting it here never blocks the message reader.
+/// `conn` keeps the QUIC connection alive; an EOF or error just ends the reader.
+async fn side_channel_heartbeat_reader_task(conn: Connection, heartbeat: Heartbeats) {
+    let Ok((_send, mut recv)) = conn.accept_bi().await else {
+        return; // connection closed before any heartbeat stream opened
+    };
+    loop {
+        match framing::read_side_channel_heartbeat(&mut recv).await {
+            Ok(SideChannelHeartbeat {
                 recipient,
                 from,
                 conn_id,
@@ -976,7 +1081,10 @@ async fn connector_task(
                         sever(&loop_tx, connection, b"quic open stream failed".to_vec());
                         return;
                     }
-                    // Connection is up; free the attempt slot before handing off.
+                    // Connection is up; free the attempt slot before handing off. The
+                    // companion heartbeat stream is opened by the heartbeat management
+                    // task (its second `open_bi`, after this data stream), off the
+                    // establishment path — see `spawn_connection`.
                     drop(permit);
                     // Joiner side (the root has tens of thousands of writers): do not
                     // log heartbeat sends here even under debug — it would flood.
@@ -991,7 +1099,8 @@ async fn connector_task(
                         shm,
                         false,
                         // We dialed this connection (join): the delegation guard's
-                        // "parent is the joiner" precondition holds on this side.
+                        // "parent is the joiner" precondition holds on this side, and
+                        // the heartbeat task opens (not accepts) the heartbeat stream.
                         true,
                         heartbeat,
                         side_channels,
@@ -1027,9 +1136,12 @@ async fn side_channel_writer_task(
     mut shutdown: watch::Receiver<bool>,
     _alive: mpsc::UnboundedSender<()>,
 ) {
-    // The current connection, if up: its send stream plus the QUIC connection,
-    // held to keep it open. `None` means we must (re)connect before the next write.
-    let mut stream: Option<(SendStream, Connection)> = None;
+    // The current connection, if up: the message send stream, the heartbeat send
+    // stream, and the QUIC connection held to keep them open. `None` means we must
+    // (re)connect before the next write. Routed messages go on the message stream
+    // and delegated beats on the heartbeat stream, so a large message can never
+    // delay a beat.
+    let mut stream: Option<(SendStream, SendStream, Connection)> = None;
     loop {
         let item = tokio::select! {
             item = rx.recv() => match item {
@@ -1039,48 +1151,60 @@ async fn side_channel_writer_task(
             _ = shutdown.changed() => break,
         };
         if stream.is_none() {
-            let Some((mut send, conn)) = connect_side_channel(&endpoint, addr, &mut shutdown).await
+            let Some((mut msg_send, hb_send, conn)) =
+                connect_side_channel(&endpoint, addr, &mut shutdown).await
             else {
                 break; // shutting down before the gateway came up
             };
-            // Announce the stream as a side-channel so the peer reads messages
-            // rather than driving a join handshake.
-            if framing::write_preamble(&mut send, Preamble::SideChannel)
+            // Announce the connection kind on the message stream (which also opens it
+            // on the wire). The heartbeat stream carries no preamble — the peer knows
+            // from this one that a second (heartbeat) stream follows — and opens
+            // lazily on the first beat, so a message-only channel never opens it.
+            if framing::write_preamble(&mut msg_send, Preamble::SideChannel)
                 .await
                 .is_err()
             {
                 continue; // reconnect on the next item (this one is dropped)
             }
-            stream = Some((send, conn));
+            // Beats jump ahead of queued message bytes under a full congestion window.
+            let _ = hb_send.set_priority(HEARTBEAT_STREAM_PRIORITY);
+            stream = Some((msg_send, hb_send, conn));
         }
-        let (send, _conn) = stream.as_mut().expect("stream is connected");
+        let (msg_send, hb_send, _conn) = stream.as_mut().expect("stream is connected");
         let wrote = match item {
-            SideChannelOut::Message(message) => framing::write_side_channel(send, message).await,
+            SideChannelOut::Message(message) => {
+                framing::write_side_channel(msg_send, message).await
+            }
             SideChannelOut::Heartbeat {
                 recipient,
                 from,
                 conn_id,
                 kind,
-            } => framing::write_side_channel_heartbeat(send, recipient, from, conn_id, kind).await,
+            } => {
+                framing::write_side_channel_heartbeat(hb_send, recipient, from, conn_id, kind).await
+            }
         };
         if wrote.is_err() {
             stream = None; // dropped; reconnect on the next item
         }
     }
-    if let Some((mut send, _conn)) = stream {
-        let _ = send.finish();
+    if let Some((mut msg_send, mut hb_send, _conn)) = stream {
+        let _ = msg_send.finish();
+        let _ = hb_send.finish();
     }
 }
 
 /// Connect a side-channel to `addr`, retrying with backoff until the gateway binds
-/// and a bi-stream opens, or until teardown (then `None`). Mirrors the join
-/// connector's retry so a side-channel may be opened before its target gateway is
-/// live.
+/// and both bi-streams open, or until teardown (then `None`). Opens the message
+/// stream first and the heartbeat stream second (so the peer accepts them in that
+/// order) and returns `(message_send, heartbeat_send, connection)`. Mirrors the
+/// join connector's retry so a side-channel may be opened before its target gateway
+/// is live.
 async fn connect_side_channel(
     endpoint: &Endpoint,
     addr: SocketAddr,
     shutdown: &mut watch::Receiver<bool>,
-) -> Option<(SendStream, Connection)> {
+) -> Option<(SendStream, SendStream, Connection)> {
     let mut retry = CONNECT_RETRY_MIN;
     loop {
         if *shutdown.borrow() {
@@ -1091,8 +1215,10 @@ async fn connect_side_channel(
             Err(_) => None,
         };
         if let Some(conn) = connected {
-            if let Ok((send, _recv)) = conn.open_bi().await {
-                return Some((send, conn));
+            if let Ok((msg_send, _msg_recv)) = conn.open_bi().await {
+                if let Ok((hb_send, _hb_recv)) = conn.open_bi().await {
+                    return Some((msg_send, hb_send, conn));
+                }
             }
         }
         tokio::select! {
@@ -1103,13 +1229,20 @@ async fn connect_side_channel(
     }
 }
 
-/// Wire up an established bi-stream: build its [`QuicConnectionTransport`], announce
-/// it to the command loop, and spawn the writer (drains commands → frames, plus a
-/// heartbeat tick) and reader (frames → `ConnectionAction`, with a heartbeat
-/// timeout). `conn` (the QUIC connection) is moved into the writer to keep it
-/// alive for the writer's duration; dropping it closes the connection, which the
-/// peer observes. The client endpoint is not held per-connection — it is owned
-/// (shared) by the [`QuicTransport`] for the whole context lifetime.
+/// Wire up an established connection's two bi-streams: build its
+/// [`QuicConnectionTransport`] over the data stream, announce it to the command
+/// loop, and spawn three tasks — a data writer (commands → frames) and data reader
+/// (frames → `ConnectionAction`) on the data stream, plus a heartbeat management
+/// task that acquires the heartbeat stream and runs a beat writer + reader on it.
+/// Splitting the streams keeps a large message on the data stream from delaying a
+/// beat. Crucially, only the two data-stream halves are passed in: the heartbeat
+/// stream is acquired *inside* the management task (the dialer opens it, the
+/// acceptor accepts it), so neither establishment nor serve-pairing ever waits on
+/// the first heartbeat getting through. `conn` (the QUIC connection) is moved into
+/// the writer tasks to keep it alive for their duration; when they drop, the
+/// connection closes and the peer observes it. The client endpoint is not held
+/// per-connection — it is owned (shared) by the [`QuicTransport`] for the whole
+/// context lifetime.
 #[expect(
     clippy::too_many_arguments,
     reason = "each argument is a distinct piece of per-connection state handed off to the writer or reader; bundling them adds indirection without clarifying anything"
@@ -1123,11 +1256,13 @@ fn spawn_connection(
     alive: mpsc::UnboundedSender<()>,
     conn: Connection,
     shm: ShmCtx,
-    // Forwarded to the writer: log heartbeat sends (gated to the serve/acceptor side
-    // by the call sites, and further gated by MM_QUIC_DEBUG in the writer).
+    // Forwarded to the heartbeat writer: log heartbeat sends (gated to the
+    // serve/acceptor side by the call sites, and further gated by MM_QUIC_DEBUG).
     log_heartbeats: bool,
-    // Whether *we* dialed this connection (join / "quic connect"). One half of the
-    // delegation guard (§8): only a link the parent dialed may be delegated.
+    // Whether *we* dialed this connection (join / "quic connect"). Two roles: one
+    // half of the delegation guard (§8, only a link the parent dialed may be
+    // delegated), and it decides whether the heartbeat management task *opens* the
+    // heartbeat stream (dialer) or *accepts* it (the peer opened it).
     dialed: bool,
     heartbeat: Heartbeats,
     side_channels: Rc<RefCell<SideChannels>>,
@@ -1136,7 +1271,7 @@ fn spawn_connection(
     // Reader → writer signal: the peer responded to our shutdown, so the writer
     // may close. Unbounded but only ever carries a single `()`.
     let (peer_responded_tx, peer_responded_rx) = mpsc::unbounded_channel();
-    // heartbeat coroutine → writer: beats to write out.
+    // heartbeat coroutine → heartbeat writer: beats to write out.
     let (beats_tx, beats_rx) = mpsc::unbounded_channel();
     let transport = Box::new(QuicConnectionTransport { tx: writer_tx });
     let _ = loop_tx.send(Command::TransportConnected {
@@ -1153,18 +1288,17 @@ fn spawn_connection(
                 .borrow_mut()
                 .send_heartbeat(recipient, from, conn_id, kind);
         };
-    // Spawn the coroutine; the returned sender is how the reader/writer feed it
+    // Spawn the coroutine; the returned sender is how the readers/writer feed it
     // inbound beats, Establish snoops, and reader-closed.
     let hb_event_tx = heartbeat.spawn(connection, dialed, beats_tx, send_beat, loop_tx.clone());
+    // Data stream: command writer and frame reader.
     tokio::task::spawn_local(writer_task(
         send,
         writer_rx,
-        shutdown,
+        shutdown.clone(),
         alive,
         peer_responded_rx,
-        conn,
-        log_heartbeats,
-        beats_rx,
+        conn.clone(),
         hb_event_tx.clone(),
     ));
     tokio::task::spawn_local(reader_task(
@@ -1173,8 +1307,51 @@ fn spawn_connection(
         loop_tx,
         peer_responded_tx,
         shm,
-        hb_event_tx,
+        hb_event_tx.clone(),
     ));
+    // Heartbeat stream: acquired off the establishment path, then a beat writer and
+    // reader run on it. Open-vs-accept follows the heartbeat role (the Child opens
+    // and beats first, the Parent accepts) — not `dialed` — to avoid a deadlock when
+    // the beat-initiating child is the side that accepted the connection.
+    tokio::task::spawn_local(heartbeat_stream_task(
+        conn,
+        connection.role(),
+        beats_rx,
+        hb_event_tx,
+        shutdown,
+        log_heartbeats,
+    ));
+}
+
+/// Acquire the connection's heartbeat stream and run the beat writer + reader on
+/// it. Open-vs-accept is tied to the heartbeat *role*, not to who dialed the
+/// connection: the **Child** (which always beats first — [`child_task`] sends a
+/// `FromChild` immediately) *opens* the stream, and the **Parent** (which only ever
+/// *answers*) *accepts* it. This is what avoids a deadlock — if the acceptor were to
+/// wait on `accept_bi` for a stream the parent-dialer opened but, being the parent,
+/// never wrote to, neither side would ever beat. Because the child writes its first
+/// beat as soon as it opens the stream, the stream reaches the wire and the parent's
+/// `accept_bi` resolves. Acquisition happens here, in a task spawned *after* the
+/// connection is established and paired, so the first beat never delays either. If
+/// the connection dies before the stream is acquired, this just ends.
+async fn heartbeat_stream_task(
+    conn: Connection,
+    role: Role,
+    beats_rx: mpsc::UnboundedReceiver<Heartbeat>,
+    hb_events: mpsc::UnboundedSender<HeartbeatEvent>,
+    shutdown: watch::Receiver<bool>,
+    log_heartbeats: bool,
+) {
+    let streams = match role {
+        Role::Child => conn.open_bi().await,
+        Role::Parent => conn.accept_bi().await,
+    };
+    let Ok((hb_send, hb_recv)) = streams else {
+        return; // connection died before the heartbeat stream came up
+    };
+    // Reader in its own task; writer runs inline (it owns `conn` to keep it alive).
+    tokio::task::spawn_local(heartbeat_reader_task(hb_recv, hb_events));
+    heartbeat_writer_task(hb_send, beats_rx, shutdown, conn, log_heartbeats).await;
 }
 
 /// Transport for one end of a QUIC stream: `send` hands a command to the writer
@@ -1190,15 +1367,11 @@ impl ConnectionTransport for QuicConnectionTransport {
     }
 }
 
-/// Write each queued command as a frame, plus the heartbeat beats the connection's
-/// `heartbeat_task` sends over `beats` (the writer no longer drives its own tick —
-/// liveness policy lives in the heartbeat_task). Also snoops its own outgoing
-/// `Establish` and forwards the local ident to the heartbeat_task. On teardown,
-/// drains queued frames first, then finishes the stream.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each argument is a distinct per-connection channel/handle; bundling adds indirection without clarifying anything"
-)]
+/// Write each queued command as a frame onto the data stream. Beats now travel on
+/// the separate heartbeat stream (see [`heartbeat_writer_task`]), so this task only
+/// handles data/control frames. Snoops its own outgoing `Establish` and forwards
+/// the local ident to the heartbeat_task. On teardown, drains queued frames first,
+/// then finishes the stream.
 async fn writer_task(
     mut send: SendStream,
     mut rx: mpsc::UnboundedReceiver<ConnectionCommand>,
@@ -1209,19 +1382,12 @@ async fn writer_task(
     // received the shutdown notice and we can close.
     mut peer_responded: mpsc::UnboundedReceiver<()>,
     // Held only to keep the QUIC connection alive for the writer's lifetime;
-    // dropping it closes the connection, which the peer's reader observes.
+    // dropping it (together with the heartbeat writer's clone) closes the
+    // connection, which the peer's reader observes.
     _conn: Connection,
-    // When set (acceptor/serve side only, so the joiner root's tens of thousands of
-    // writers don't flood), and MM_QUIC_DEBUG is on, log each heartbeat sent — so a
-    // connection the peer later reaps can be proven to have kept sending.
-    log_heartbeats: bool,
-    // Beats this connection's heartbeat_task wants sent.
-    mut beats: mpsc::UnboundedReceiver<Heartbeat>,
     // To forward our own outgoing Establish's ident to the heartbeat_task.
     hb_events: mpsc::UnboundedSender<HeartbeatEvent>,
 ) {
-    let log_heartbeats = log_heartbeats && crate::ctx::connection_debug();
-    let mut heartbeats_sent: u64 = 0;
     let mut graceful = false;
     loop {
         tokio::select! {
@@ -1239,26 +1405,6 @@ async fn writer_task(
                 }
                 if framing::write_command(&mut send, command).await.is_err() {
                     return;
-                }
-            }
-            beat = beats.recv() => {
-                let Some(heartbeat) = beat else {
-                    break; // heartbeat_task gone
-                };
-                if framing::write_heartbeat(&mut send, heartbeat).await.is_err() {
-                    return;
-                }
-                // Flushed to the QUIC stream; log it from the *sender* so loss vs. a
-                // stalled sender can be told apart at the far (receiving) end.
-                if log_heartbeats {
-                    heartbeats_sent += 1;
-                    eprintln!(
-                        "{} MM_HB pid={} sent={} on {:?}",
-                        crate::ctx::wall_clock_hms(),
-                        std::process::id(),
-                        heartbeats_sent,
-                        _conn.remote_address(),
-                    );
                 }
             }
             _ = shutdown.changed() => {
@@ -1296,20 +1442,86 @@ async fn writer_task(
     }
 }
 
-/// Decode each frame off the stream and forward it to the command loop. The
-/// heartbeat *timeout* has moved to this connection's `heartbeat_task`; the reader
-/// is dumb plumbing now. Heartbeat frames are forwarded to the heartbeat_task as
-/// [`HeartbeatEvent`]s (never to ctx). An error/EOF is a hard transport close: it
-/// emits `Severed` to the loop and `ReaderClosed` to the heartbeat_task.
-///
-/// A message flood must not flood the heartbeat_task, so ordinary data frames notify
-/// it only as a *throttled backstop*: the reader tracks `last_notify` and sends a
-/// [`Heartbeat::TransportActivity`] ("still here") only when a full
-/// `2 × HEARTBEAT_INTERVAL` has passed with no real beat — so real beats cost one
-/// event each while data frames cost nothing, yet a peer that stops beating but keeps
-/// sending data still proves the pipe live at ≤ one event per two intervals. The
-/// activity beat only refreshes the reader's heartbeat deadline; it is not a real
-/// beat, so it never participates in the delegation request/response.
+/// Write each beat this connection's `heartbeat_task` produces onto the dedicated
+/// heartbeat stream, at a raised priority so beats are packed ahead of queued
+/// data-stream bytes under a full congestion window. Holds a clone of the QUIC
+/// connection so it stays alive while beats flow, and finishes the stream on
+/// shutdown. A write error just ends the task — the data reader is the one that
+/// severs on connection loss.
+async fn heartbeat_writer_task(
+    mut send: SendStream,
+    mut beats: mpsc::UnboundedReceiver<Heartbeat>,
+    mut shutdown: watch::Receiver<bool>,
+    // Held only to keep the QUIC connection alive while beats flow.
+    _conn: Connection,
+    // When set (acceptor/serve side only, so the joiner root's tens of thousands of
+    // connections don't flood), and MM_QUIC_DEBUG is on, log each heartbeat sent —
+    // so a connection the peer later reaps can be proven to have kept sending.
+    log_heartbeats: bool,
+) {
+    // Beats jump ahead of queued data-stream bytes under a full congestion window.
+    let _ = send.set_priority(HEARTBEAT_STREAM_PRIORITY);
+    let log_heartbeats = log_heartbeats && crate::ctx::connection_debug();
+    let mut heartbeats_sent: u64 = 0;
+    loop {
+        tokio::select! {
+            beat = beats.recv() => {
+                let Some(heartbeat) = beat else {
+                    break; // heartbeat_task gone
+                };
+                if framing::write_heartbeat(&mut send, heartbeat).await.is_err() {
+                    return;
+                }
+                // Flushed to the QUIC stream; log it from the *sender* so loss vs. a
+                // stalled sender can be told apart at the far (receiving) end.
+                if log_heartbeats {
+                    heartbeats_sent += 1;
+                    eprintln!(
+                        "{} MM_HB pid={} sent={} on {:?}",
+                        crate::ctx::wall_clock_hms(),
+                        std::process::id(),
+                        heartbeats_sent,
+                        _conn.remote_address(),
+                    );
+                }
+            }
+            _ = shutdown.changed() => break,
+        }
+    }
+    let _ = send.finish();
+}
+
+/// Read the peer's beats off the dedicated heartbeat stream and forward each to
+/// this connection's `heartbeat_task`. On EOF/error it ends quietly: liveness loss
+/// is caught either by the heartbeat_task's own beat timeout or by the data
+/// reader's `Severed` on connection close.
+async fn heartbeat_reader_task(
+    mut recv: RecvStream,
+    hb_events: mpsc::UnboundedSender<HeartbeatEvent>,
+) {
+    loop {
+        match framing::read_heartbeat(&mut recv).await {
+            Ok(heartbeat) => {
+                if hb_events
+                    .send(HeartbeatEvent::ReceivedHeartbeat(heartbeat))
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            Err(_) => return,
+        }
+    }
+}
+
+/// Decode each frame off the data stream and forward it to the command loop. Beats
+/// arrive on the separate heartbeat stream now (see [`heartbeat_reader_task`]), so
+/// this reader is pure data plumbing. An error/EOF is a hard transport close: it
+/// emits `Severed` to the loop and `ReaderClosed` to the heartbeat_task — this is
+/// the path that detects an unclean peer loss even for a link whose beats are
+/// silent (a delegated child, or a live-but-idle connection). (A stray heartbeat
+/// frame here would be a protocol error; it is defensively forwarded rather than
+/// trusted.)
 async fn reader_task(
     mut recv: RecvStream,
     connection: ConnectionRef,
@@ -1321,23 +1533,18 @@ async fn reader_task(
     // Forwards inbound heartbeats and liveness/close signals to the heartbeat_task.
     hb_events: mpsc::UnboundedSender<HeartbeatEvent>,
 ) {
-    let backstop_gap = crate::quic_heartbeat::heartbeat_interval() * 2;
     // Per-connection diagnostics, folded into the failure reason under MM_QUIC_DEBUG:
-    // did we ever read the peer's Establish (identity exchange)? how many heartbeats
-    // and other frames arrived, and how long since the last read? This pinpoints
-    // exactly how far a reaped connection got. Tracked cheaply either way; only
-    // formatted into the reason when debug is on.
+    // did we ever read the peer's Establish (identity exchange)? how many commands
+    // arrived, and how long since the last read? This pinpoints exactly how far a
+    // reaped connection got. Tracked cheaply either way; only formatted into the
+    // reason when debug is on. (Heartbeats ride their own stream now, so they never
+    // pass through here.)
     let debug = crate::ctx::connection_debug();
     let start = std::time::Instant::now();
     let mut established = false;
-    let mut heartbeats: u64 = 0;
     let mut commands: u64 = 0;
     let mut last_read: Option<std::time::Duration> = None;
-    // When the heartbeat_task was last notified (by a real beat or a backstop),
-    // throttling the data-frame backstop. Seeded to now so a fresh pipe waits a
-    // full gap before its first backstop.
-    let mut last_notify = std::time::Instant::now();
-    let stats = |established: bool, heartbeats, commands, last_read: Option<_>| {
+    let stats = |established: bool, commands, last_read: Option<_>| {
         let last = match last_read {
             Some(d) => format!(
                 "{:.1}s ago",
@@ -1346,8 +1553,7 @@ async fn reader_task(
             None => "never".to_owned(),
         };
         format!(
-            "established={established}, heartbeats={heartbeats}, commands={commands}, \
-             age={:.1}s, last_read={last}",
+            "established={established}, commands={commands}, age={:.1}s, last_read={last}",
             start.elapsed().as_secs_f64(),
         )
     };
@@ -1357,7 +1563,7 @@ async fn reader_task(
         // its own at creation, before any frame arrives).
         let read = framing::read_frame(&mut recv, &shm.mapper, shm.client());
         match read.await {
-            Ok(Incoming::Command(action)) => {
+            Ok(action) => {
                 last_read = Some(start.elapsed());
                 commands += 1;
                 // The peer's Establish is how we learn its identity: reading it is
@@ -1376,29 +1582,12 @@ async fn reader_task(
                 if matches!(action, ConnectionCommand::Severed { .. }) {
                     let _ = peer_responded.send(());
                 }
-                // Throttled liveness backstop: an ordinary frame proves the pipe is
-                // live even if the peer's beats stopped. `TransportActivity` refreshes
-                // the heartbeat_task's deadline and is a no-op for delegation.
-                if last_notify.elapsed() >= backstop_gap {
-                    last_notify = std::time::Instant::now();
-                    let _ = hb_events.send(HeartbeatEvent::ReceivedHeartbeat(
-                        Heartbeat::TransportActivity,
-                    ));
-                }
                 if loop_tx
                     .send(Command::ConnectionAction { connection, action })
                     .is_err()
                 {
                     return;
                 }
-            }
-            Ok(Incoming::Heartbeat(heartbeat)) => {
-                last_read = Some(start.elapsed());
-                heartbeats += 1;
-                // A real beat: forward it (with its coverage diff / delegate
-                // instruction) and count it as a notification for the backstop.
-                last_notify = std::time::Instant::now();
-                let _ = hb_events.send(HeartbeatEvent::ReceivedHeartbeat(heartbeat));
             }
             Err(err) => {
                 let _ = peer_responded.send(());
@@ -1417,7 +1606,7 @@ async fn reader_task(
                     }
                     format!(
                         "quic connection closed: {detail} ({})",
-                        stats(established, heartbeats, commands, last_read)
+                        stats(established, commands, last_read)
                     )
                     .into_bytes()
                 } else {

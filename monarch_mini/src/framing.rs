@@ -28,13 +28,13 @@
 //!
 //! The reader/writer are generic over tokio's [`AsyncRead`]/[`AsyncWrite`], so the
 //! same code drives a QUIC stream's `RecvStream`/`SendStream`. Liveness policy
-//! (heartbeats, timeouts, EOF) lives in each
-//! transport; this module only serializes frames — with the one exception of the
-//! [`WireFrame::Heartbeat`] probe, which a transport may emit/consume but which is
-//! never a [`ConnectionCommand`].
+//! (heartbeats, timeouts, EOF) lives in each transport; this module only serializes
+//! frames — data-stream [`WireFrame`]s, and the bare [`Heartbeat`] probe that rides
+//! its own stream (see [`write_heartbeat`]), which is never a [`ConnectionCommand`].
 
 use serde::Deserialize;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWrite;
@@ -54,10 +54,11 @@ use crate::shm::MapperHandle;
 use crate::shm::SHM_THRESHOLD;
 use crate::shm::ShmClient;
 
-/// One frame on the wire. There is a variant per [`ConnectionCommand`] that
+/// One frame on the data stream. There is a variant per [`ConnectionCommand`] that
 /// crosses the pipe (including `Establish`, which is how the two ends exchange
-/// identity), plus a transport-internal `Heartbeat`. Message-part *bytes* are
-/// never carried here — only their lengths.
+/// identity). Message-part *bytes* are never carried here — only their lengths.
+/// Heartbeats are *not* here: they ride a dedicated stream and are serialized as a
+/// bare [`Heartbeat`] (see [`write_heartbeat`]/[`read_heartbeat`]).
 #[derive(Serialize, Deserialize)]
 enum WireFrame {
     Establish {
@@ -88,10 +89,6 @@ enum WireFrame {
     GatewayDied {
         dead: Vec<Vec<u8>>,
     },
-    /// Transport-internal liveness probe carrying a directional [`Heartbeat`] body
-    /// (a Child sends `FromChild`, a Parent sends `FromParent`). Consumed by the
-    /// reader/heartbeat coroutine and never surfaced as a [`ConnectionCommand`].
-    Heartbeat(Heartbeat),
 }
 
 /// Wire form of a [`SendMessage`](ConnectionCommand::SendMessage)'s payload. An
@@ -109,9 +106,11 @@ enum WirePayload {
     },
 }
 
-/// One frame on a gateway side-channel — the wire form of a [`SideChannelMessage`].
-/// `Send` of an actor message reuses [`WirePayload`]'s zero-copy part-length header
-/// + streamed bytes (+ shm); every other case is header-only.
+/// One frame on a gateway side-channel's *message* stream — the wire form of a
+/// [`SideChannelMessage`]. `Send` of an actor message reuses [`WirePayload`]'s
+/// zero-copy part-length header + streamed bytes (+ shm); every other case is
+/// header-only. Delegated heartbeats are not here — they ride the companion
+/// heartbeat stream as a bare [`SideChannelHeartbeat`].
 #[derive(Serialize, Deserialize)]
 enum SideChannelFrame {
     Send {
@@ -127,35 +126,63 @@ enum SideChannelFrame {
         gateway_for_actor: Vec<u8>,
         monitoring: Vec<u8>,
     },
-    /// A sibling side-channel heartbeat message (see [`crate::quic_heartbeat`]).
-    /// `gateway_for_actor` is the recipient (whose gateway tag the message is dialed
-    /// at); `from` is the sender's ident; `conn_id` is the delegated connection's id;
-    /// `kind` is the [`BeatKind`] (beat / ack / release).
-    Heartbeat {
-        gateway_for_actor: Vec<u8>,
-        from: Vec<u8>,
-        conn_id: ConnectionId,
-        kind: BeatKind,
-    },
 }
 
 fn bincode_config() -> bincode::config::Configuration {
     bincode::config::standard()
 }
 
-/// The first frame a QUIC *joiner* (the connecting side) writes, declaring what
-/// the freshly opened bi-stream is for. The accepting side reads exactly one of
-/// these before deciding how to drive the stream:
+/// Encode `value` as bincode and write it length-prefixed as `[u64 header_len]
+/// [header]`. This is the single place every framed write goes through for its
+/// header — callers layer their own concerns on top: trailing message-part bytes
+/// (see [`write_frame`]) and the flush (every caller decides when to flush, and
+/// this helper never does). The length prefix is little-endian, matching
+/// [`read_header`].
+async fn write_header<W: AsyncWrite + Unpin, T: Serialize>(
+    writer: &mut W,
+    value: &T,
+) -> std::io::Result<()> {
+    let header = bincode::serde::encode_to_vec(value, bincode_config())
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+    writer
+        .write_all(&(header.len() as u64).to_le_bytes())
+        .await?;
+    writer.write_all(&header).await
+}
+
+/// Read a `[u64 header_len][header]`-framed bincode value written by
+/// [`write_header`] and decode it as `T`. The single place every framed read goes
+/// through for its header; callers that carry trailing message-part bytes read them
+/// after this (see [`read_frame`]).
+async fn read_header<R: AsyncRead + Unpin, T: DeserializeOwned>(
+    reader: &mut R,
+) -> std::io::Result<T> {
+    let mut len_buf = [0u8; 8];
+    reader.read_exact(&mut len_buf).await?;
+    let header_len = u64::from_le_bytes(len_buf) as usize;
+    let mut header = vec![0u8; header_len];
+    reader.read_exact(&mut header).await?;
+    let (value, _) = bincode::serde::decode_from_slice::<T, _>(&header, bincode_config())
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+    Ok(value)
+}
+
+/// The first frame a QUIC *joiner* (the connecting side) writes on the **first**
+/// bi-stream it opens, declaring what kind of connection this is. Every connection
+/// carries two bi-streams — a data/message stream and a companion heartbeat stream
+/// — so heartbeats never queue behind a large data transfer on a single ordered
+/// stream. Only the first stream carries a preamble: the second is *always* the
+/// heartbeat stream (opened right after the first), so the acceptor classifies it
+/// by order and reads no preamble on it.
 ///
 /// - `Join` — an ordinary parent/child connection; the command loop takes over
-///   (identity exchange, hello, heartbeated liveness) exactly as before.
-/// - `SideChannel` — a gateway-to-gateway message channel: the accepting gateway
-///   just reads [`WireFrame::Message`] frames and routes them locally. It is
-///   never paired with a serve, never establishes a parent/child link, and is
-///   never heartbeated.
+///   (identity exchange, hello, routing) over the data stream.
+/// - `SideChannel` — a gateway-to-gateway channel: the accepting gateway reads
+///   [`WireFrame::Message`] frames and routes them locally. Never paired with a
+///   serve, never establishes a parent/child link.
 ///
-/// Only the joiner writes a preamble (one direction); the server never does, so
-/// the joiner's own reader keeps reading [`WireFrame`]s as before.
+/// Only the joiner writes the preamble (one direction); the server never does, so
+/// the joiner's own readers keep reading frames as before.
 #[derive(Serialize, Deserialize)]
 pub(crate) enum Preamble {
     Join,
@@ -169,12 +196,7 @@ pub(crate) async fn write_preamble<W: AsyncWrite + Unpin>(
     writer: &mut W,
     preamble: Preamble,
 ) -> std::io::Result<()> {
-    let header = bincode::serde::encode_to_vec(&preamble, bincode_config())
-        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
-    writer
-        .write_all(&(header.len() as u64).to_le_bytes())
-        .await?;
-    writer.write_all(&header).await?;
+    write_header(writer, &preamble).await?;
     writer.flush().await
 }
 
@@ -182,38 +204,22 @@ pub(crate) async fn write_preamble<W: AsyncWrite + Unpin>(
 pub(crate) async fn read_preamble<R: AsyncRead + Unpin>(
     reader: &mut R,
 ) -> std::io::Result<Preamble> {
-    let mut len_buf = [0u8; 8];
-    reader.read_exact(&mut len_buf).await?;
-    let header_len = u64::from_le_bytes(len_buf) as usize;
-    let mut header = vec![0u8; header_len];
-    reader.read_exact(&mut header).await?;
-    let (preamble, _) = bincode::serde::decode_from_slice::<Preamble, _>(&header, bincode_config())
-        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
-    Ok(preamble)
+    read_header(reader).await
 }
 
-/// A frame decoded off the wire: either a command for the loop, or a transport
-/// heartbeat (consumed internally to refresh the liveness deadline).
-pub(crate) enum Incoming {
-    Command(ConnectionCommand),
-    Heartbeat(Heartbeat),
-}
-
-/// A frame decoded off a gateway side-channel: either a routable
-/// [`SideChannelMessage`] for the command loop, or a transport-internal
-/// delegated-heartbeat beat/ack. The heartbeat variant is *never* surfaced to ctx
-/// — the receiving quic reader hands it straight to the heartbeat subsystem — so it
-/// stays out of ctx's [`SideChannelMessage`]/`SideChannelAction` routing types.
-pub(crate) enum SideChannelIncoming {
-    Message(SideChannelMessage),
-    Heartbeat {
-        /// The actor whose gateway received the beat — i.e. the one the addressed
-        /// heartbeat coroutine belongs to as a child.
-        recipient: Vec<u8>,
-        from: Vec<u8>,
-        conn_id: ConnectionId,
-        kind: BeatKind,
-    },
+/// A delegated-heartbeat beat/ack/release carried on a gateway side-channel's
+/// dedicated heartbeat stream. It is the bare wire form on that stream (which
+/// carries only these), and is *never* surfaced to ctx — the receiving quic reader
+/// hands it straight to the heartbeat subsystem — so it stays out of ctx's
+/// [`SideChannelMessage`]/`SideChannelAction` routing types.
+#[derive(Serialize, Deserialize)]
+pub(crate) struct SideChannelHeartbeat {
+    /// The actor whose gateway received the beat — i.e. the one the addressed
+    /// heartbeat coroutine belongs to as a child.
+    pub(crate) recipient: Vec<u8>,
+    pub(crate) from: Vec<u8>,
+    pub(crate) conn_id: ConnectionId,
+    pub(crate) kind: BeatKind,
 }
 
 /// Serialize and write one command: a length-prefixed bincode header, then — for
@@ -286,12 +292,23 @@ pub(crate) async fn write_command<W: AsyncWrite + Unpin>(
     write_frame(writer, &frame, &parts).await
 }
 
-/// Write a transport heartbeat probe carrying `heartbeat`.
+/// Write a transport heartbeat probe carrying `heartbeat`. The dedicated heartbeat
+/// stream carries only these, so it is serialized as a bare [`Heartbeat`] (no
+/// enclosing frame variant) and has no message parts.
 pub(crate) async fn write_heartbeat<W: AsyncWrite + Unpin>(
     writer: &mut W,
     heartbeat: Heartbeat,
 ) -> std::io::Result<()> {
-    write_frame(writer, &WireFrame::Heartbeat(heartbeat), &[]).await
+    write_frame(writer, &heartbeat, &[]).await
+}
+
+/// Read one heartbeat probe off a connection's dedicated heartbeat stream, written
+/// by [`write_heartbeat`] as a bare [`Heartbeat`] (no message parts, so no
+/// shared-memory context is needed).
+pub(crate) async fn read_heartbeat<R: AsyncRead + Unpin>(
+    reader: &mut R,
+) -> std::io::Result<Heartbeat> {
+    read_header(reader).await
 }
 
 async fn write_frame<W: AsyncWrite + Unpin>(
@@ -299,12 +316,7 @@ async fn write_frame<W: AsyncWrite + Unpin>(
     frame: &impl Serialize,
     parts: &[MsgPart],
 ) -> std::io::Result<()> {
-    let header = bincode::serde::encode_to_vec(frame, bincode_config())
-        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
-    writer
-        .write_all(&(header.len() as u64).to_le_bytes())
-        .await?;
-    writer.write_all(&header).await?;
+    write_header(writer, frame).await?;
     // Write each part's bytes straight from its owning buffer — no copy.
     for part in parts {
         writer.write_all(part.as_bytes()).await?;
@@ -312,29 +324,21 @@ async fn write_frame<W: AsyncWrite + Unpin>(
     writer.flush().await
 }
 
-/// Read one frame. For a message each part is read directly into its destination
-/// buffer — an owned heap buffer for a small part, or (when `client` is present
-/// and the part is large) a freshly allocated shared-memory slab block, so the
-/// only copy is the unavoidable kernel-to-userspace one. `mapper`/`client` are the
-/// receiving actor's shared-memory context (see [`read_part`]). A `Heartbeat`
-/// frame returns [`Incoming::Heartbeat`]; everything else maps straight back to a
-/// [`ConnectionCommand`].
+/// Read one data-stream frame and map it back to its [`ConnectionCommand`]. For a
+/// message each part is read directly into its destination buffer — an owned heap
+/// buffer for a small part, or (when `client` is present and the part is large) a
+/// freshly allocated shared-memory slab block, so the only copy is the unavoidable
+/// kernel-to-userspace one. `mapper`/`client` are the receiving actor's
+/// shared-memory context (see [`read_part`]). Heartbeats never arrive here — they
+/// ride their own stream (see [`read_heartbeat`]).
 pub(crate) async fn read_frame<R: AsyncRead + Unpin>(
     reader: &mut R,
     mapper: &MapperHandle,
     client: Option<ShmClient>,
-) -> std::io::Result<Incoming> {
-    let mut len_buf = [0u8; 8];
-    reader.read_exact(&mut len_buf).await?;
-    let header_len = u64::from_le_bytes(len_buf) as usize;
-
-    let mut header = vec![0u8; header_len];
-    reader.read_exact(&mut header).await?;
-    let (frame, _) = bincode::serde::decode_from_slice::<WireFrame, _>(&header, bincode_config())
-        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+) -> std::io::Result<ConnectionCommand> {
+    let frame = read_header::<_, WireFrame>(reader).await?;
 
     Ok(match frame {
-        WireFrame::Heartbeat(heartbeat) => Incoming::Heartbeat(heartbeat),
         WireFrame::Message {
             destination_ident,
             payload,
@@ -355,41 +359,37 @@ pub(crate) async fn read_frame<R: AsyncRead + Unpin>(
                     is_timeout,
                 },
             };
-            Incoming::Command(ConnectionCommand::SendMessage {
+            ConnectionCommand::SendMessage {
                 destination_ident,
                 payload,
-            })
+            }
         }
         WireFrame::Establish {
             role,
             ident,
             name_for_other,
             alive,
-        } => Incoming::Command(ConnectionCommand::Establish {
+        } => ConnectionCommand::Establish {
             role,
             ident,
             name_for_other,
             alive,
-        }),
-        WireFrame::PublishRoutes { live, dead } => {
-            Incoming::Command(ConnectionCommand::PublishRoutes { live, dead })
-        }
+        },
+        WireFrame::PublishRoutes { live, dead } => ConnectionCommand::PublishRoutes { live, dead },
         WireFrame::UpdateMonitorSubscription {
             listener,
             target,
             op,
-        } => Incoming::Command(ConnectionCommand::UpdateMonitorSubscription {
+        } => ConnectionCommand::UpdateMonitorSubscription {
             listener,
             target,
             op,
-        }),
-        WireFrame::Severed { reason } => Incoming::Command(ConnectionCommand::Severed { reason }),
+        },
+        WireFrame::Severed { reason } => ConnectionCommand::Severed { reason },
         WireFrame::PublishGatewayRoutes { live } => {
-            Incoming::Command(ConnectionCommand::PublishGatewayRoutes { live })
+            ConnectionCommand::PublishGatewayRoutes { live }
         }
-        WireFrame::GatewayDied { dead } => {
-            Incoming::Command(ConnectionCommand::GatewayDied { dead })
-        }
+        WireFrame::GatewayDied { dead } => ConnectionCommand::GatewayDied { dead },
     })
 }
 
@@ -445,9 +445,9 @@ pub(crate) async fn write_side_channel<W: AsyncWrite + Unpin>(
     write_frame(writer, &frame, &parts).await
 }
 
-/// Write a sibling side-channel heartbeat message as a frame. Header-only; the
-/// transport builds the wire frame directly, so heartbeats never pass through
-/// ctx's [`SideChannelMessage`] routing types.
+/// Write a sibling side-channel heartbeat onto the heartbeat stream as a bare
+/// [`SideChannelHeartbeat`] (no message parts). The transport builds it directly, so
+/// heartbeats never pass through ctx's [`SideChannelMessage`] routing types.
 pub(crate) async fn write_side_channel_heartbeat<W: AsyncWrite + Unpin>(
     writer: &mut W,
     recipient: Vec<u8>,
@@ -455,51 +455,26 @@ pub(crate) async fn write_side_channel_heartbeat<W: AsyncWrite + Unpin>(
     conn_id: ConnectionId,
     kind: BeatKind,
 ) -> std::io::Result<()> {
-    let frame = SideChannelFrame::Heartbeat {
-        gateway_for_actor: recipient,
+    let heartbeat = SideChannelHeartbeat {
+        recipient,
         from,
         conn_id,
         kind,
     };
-    write_frame(writer, &frame, &[]).await
+    write_frame(writer, &heartbeat, &[]).await
 }
 
-/// Read one [`SideChannelMessage`] off a gateway side-channel. A `Send` of an
-/// actor message reads each part exactly like [`read_frame`] (small parts into
-/// owned buffers, large ones into the slab via `mapper`/`client`); other actions
-/// are header-only.
+/// Read one [`SideChannelMessage`] off a gateway side-channel's message stream. A
+/// `Send` of an actor message reads each part exactly like [`read_frame`] (small
+/// parts into owned buffers, large ones into the slab via `mapper`/`client`); other
+/// actions are header-only. Heartbeats travel on the companion heartbeat stream
+/// (see [`read_side_channel_heartbeat`]) and never appear here.
 pub(crate) async fn read_side_channel<R: AsyncRead + Unpin>(
     reader: &mut R,
     mapper: &MapperHandle,
     client: Option<ShmClient>,
-) -> std::io::Result<SideChannelIncoming> {
-    let mut len_buf = [0u8; 8];
-    reader.read_exact(&mut len_buf).await?;
-    let header_len = u64::from_le_bytes(len_buf) as usize;
-
-    let mut header = vec![0u8; header_len];
-    reader.read_exact(&mut header).await?;
-    let (frame, _) =
-        bincode::serde::decode_from_slice::<SideChannelFrame, _>(&header, bincode_config())
-            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
-
-    // A heartbeat is transport-internal: return it as its own variant so the reader
-    // routes it into the heartbeat subsystem without ever building a ctx-level
-    // SideChannelMessage.
-    if let SideChannelFrame::Heartbeat {
-        gateway_for_actor,
-        from,
-        conn_id,
-        kind,
-    } = frame
-    {
-        return Ok(SideChannelIncoming::Heartbeat {
-            recipient: gateway_for_actor,
-            from,
-            conn_id,
-            kind,
-        });
-    }
+) -> std::io::Result<SideChannelMessage> {
+    let frame = read_header::<_, SideChannelFrame>(reader).await?;
 
     let message = match frame {
         SideChannelFrame::Send {
@@ -542,9 +517,17 @@ pub(crate) async fn read_side_channel<R: AsyncRead + Unpin>(
             gateway_for_actor,
             action: SideChannelAction::AckRemoteMonitor { monitoring },
         },
-        SideChannelFrame::Heartbeat { .. } => unreachable!("heartbeat handled above"),
     };
-    Ok(SideChannelIncoming::Message(message))
+    Ok(message)
+}
+
+/// Read one delegated-heartbeat beat/ack/release off a gateway side-channel's
+/// dedicated heartbeat stream, written by [`write_side_channel_heartbeat`] as a bare
+/// [`SideChannelHeartbeat`] (no message parts).
+pub(crate) async fn read_side_channel_heartbeat<R: AsyncRead + Unpin>(
+    reader: &mut R,
+) -> std::io::Result<SideChannelHeartbeat> {
+    read_header(reader).await
 }
 
 /// Read one message part of `len` bytes off the stream.

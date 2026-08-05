@@ -81,6 +81,14 @@ def main() -> None:
         help="cap the ring into chains of at most this many workers (default: 0 = "
         "one chain of all workers)",
     )
+    parser.add_argument(
+        "--settle-ms",
+        type=float,
+        default=0.0,
+        help="after each sweep size, idle the set with no data for this many ms "
+        "(exceed --hb-timeout-ms), then verify every link survived — isolates "
+        "heartbeat-only liveness (0 = disabled)",
+    )
     parser.add_argument("--startup-grace", type=float, default=2.0)
     parser.add_argument(
         "--debug", action="store_true", help="set MM_QUIC_DEBUG=1 (MM_HB logs)"
@@ -144,6 +152,8 @@ def main() -> None:
                 str(args.rounds),
                 "--chain-length",
                 str(args.chain_length),
+                "--settle-ms",
+                str(args.settle_ms),
                 "--timeout",
                 "5",
                 "--connect-timeout",

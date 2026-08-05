@@ -56,6 +56,11 @@ SMOKE_ROUNDS = int(os.environ.get("SMOKE_ROUNDS", "10"))
 # to the root on its own. Bounds ring latency and blast radius at scale (0 = one
 # chain of every worker).
 SMOKE_CHAIN_LENGTH = int(os.environ.get("SMOKE_CHAIN_LENGTH", "512"))
+# After the final (largest) sweep size, idle the whole connected set with no data
+# for this many ms (should exceed the heartbeat timeout), then verify every link
+# survived — a heartbeat-only liveness check the back-to-back sweep never does.
+# 0 (default) disables it. Passed to smoke.py as --settle-ms.
+SMOKE_SETTLE_MS = float(os.environ.get("SMOKE_SETTLE_MS", "0"))
 # Coordination port (0 = disabled). When set, rank 0 does NOT read the worker list
 # from this job's env; instead it serves a coordination listener on this port and
 # waits for an external controller to send the worker addresses. This is how one
@@ -154,6 +159,8 @@ def main() -> None:
             str(SMOKE_ROUNDS),
             "--chain-length",
             str(SMOKE_CHAIN_LENGTH),
+            "--settle-ms",
+            str(SMOKE_SETTLE_MS),
         ]
         root_env = env
     else:
@@ -200,6 +207,8 @@ def main() -> None:
             str(SMOKE_ROUNDS),
             "--chain-length",
             str(SMOKE_CHAIN_LENGTH),
+            "--settle-ms",
+            str(SMOKE_SETTLE_MS),
         ]
 
     rc = subprocess.call(root_cmd, cwd=HERE, env=root_env)
