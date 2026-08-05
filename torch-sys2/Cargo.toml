@@ -10,7 +10,7 @@ license = "BSD-3-Clause"
 [dependencies]
 monarch_types = { version = "0.0.0", path = "../monarch_types" }
 pyo3 = { version = "0.27", features = ["anyhow", "multiple-pymethods", "py-clone"] }
-serde = { version = "1.0.219", features = ["derive", "rc"] }
+serde = { version = "1.0.229", features = ["derive", "rc"] }
 thiserror = "2.0.18"
 
 [build-dependencies]

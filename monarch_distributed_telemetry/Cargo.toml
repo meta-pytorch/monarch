@@ -29,7 +29,7 @@ monarch_record_batch = { version = "0.0.0", path = "../monarch_record_batch" }
 monarch_telemetry_schema = { version = "0.0.0", path = "../monarch_telemetry_schema" }
 parquet = "=57.3.0"
 pyo3 = { version = "0.27", features = ["anyhow", "multiple-pymethods", "py-clone"] }
-serde = { version = "1.0.219", features = ["derive", "rc"] }
+serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 serde_multipart = { version = "0.0.0", path = "../serde_multipart" }
 tokio = { version = "1.52.4", features = ["full", "test-util", "tracing"] }

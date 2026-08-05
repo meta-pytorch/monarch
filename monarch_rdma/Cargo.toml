@@ -25,7 +25,7 @@ paste = "1.0.14"
 rand = "0.10.2"
 rdmaxcel-sys = { path = "../rdmaxcel-sys" }
 regex = "1.13.1"
-serde = { version = "1.0.219", features = ["derive", "rc"] }
+serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_multipart = { version = "0.0.0", path = "../serde_multipart" }
 tokio = { version = "1.52.4", features = ["full", "test-util", "tracing"] }
 tokio-util = { version = "0.7.18", features = ["full"] }
