@@ -7,6 +7,7 @@
  */
 
 use std::fs::File;
+use std::net::SocketAddr;
 use std::os::fd::OwnedFd;
 
 use tokio::sync::mpsc;
@@ -686,6 +687,200 @@ fn unix_monitor_fires_across_processes() {
 
     shutdown(client_ctx);
     shutdown(server_ctx);
+}
+
+#[test]
+fn quic_serve_join_establishes_and_routes() {
+    set_quic_env();
+    let ctx = CtxHandle::new().expect("context should start");
+    let parent = runtime_actor(&ctx, "q-parent");
+    let child = runtime_actor(&ctx, "q-child");
+    let (parent_poller, mut parent_rx) = runtime_poller(&ctx);
+    let (child_poller, mut child_rx) = runtime_poller(&ctx);
+    runtime_subscribe(&ctx, parent_poller, 0, parent);
+    runtime_subscribe(&ctx, child_poller, 0, child);
+
+    let url = free_quic_url();
+    ctx.send_command(Command::Serve {
+        actor: parent,
+        url: url.clone(),
+        request: request(Role::Parent),
+    })
+    .expect("serve should enqueue");
+    ctx.send_command(Command::Join {
+        actor: child,
+        url,
+        request: request(Role::Child),
+    })
+    .expect("join should enqueue");
+
+    // The QUIC handshake completes and both sides get their hello.
+    assert_eq!(recv_strings(&mut parent_rx), vec!["q-parent", "q-child"]);
+    assert_eq!(recv_strings(&mut child_rx), vec!["q-child", "q-parent"]);
+
+    // A message both directions is framed over the stream and delivered intact.
+    ctx.send_command(Command::Send {
+        sender: parent,
+        destination_ident: MsgPart::from_bytes(b"q-child".to_vec()),
+        parts: vec![
+            MsgPart::from_bytes(b"down".to_vec()),
+            MsgPart::from_bytes(b"stream".to_vec()),
+        ],
+    })
+    .expect("send should enqueue");
+    assert_eq!(recv_strings(&mut child_rx), vec!["down", "stream"]);
+
+    ctx.send_command(Command::Send {
+        sender: child,
+        destination_ident: MsgPart::from_bytes(b"q-parent".to_vec()),
+        parts: vec![MsgPart::from_bytes(b"up".to_vec())],
+    })
+    .expect("send should enqueue");
+    assert_eq!(recv_strings(&mut parent_rx), vec!["up"]);
+
+    shutdown(ctx);
+}
+
+#[test]
+fn quic_join_before_serve() {
+    // The joiner's QUIC handshake fails until the server binds, so the connector
+    // retries — join may go first.
+    set_quic_env();
+    let ctx = CtxHandle::new().expect("context should start");
+    let parent = runtime_actor(&ctx, "q-late-parent");
+    let child = runtime_actor(&ctx, "q-late-child");
+    let (parent_poller, mut parent_rx) = runtime_poller(&ctx);
+    let (child_poller, mut child_rx) = runtime_poller(&ctx);
+    runtime_subscribe(&ctx, parent_poller, 0, parent);
+    runtime_subscribe(&ctx, child_poller, 0, child);
+
+    let url = free_quic_url();
+    ctx.send_command(Command::Join {
+        actor: child,
+        url: url.clone(),
+        request: request(Role::Child),
+    })
+    .expect("join should enqueue");
+    std::thread::sleep(std::time::Duration::from_millis(50)); // let the connector spin
+    ctx.send_command(Command::Serve {
+        actor: parent,
+        url,
+        request: request(Role::Parent),
+    })
+    .expect("serve should enqueue");
+
+    assert_eq!(
+        recv_strings(&mut parent_rx),
+        vec!["q-late-parent", "q-late-child"]
+    );
+    assert_eq!(
+        recv_strings(&mut child_rx),
+        vec!["q-late-child", "q-late-parent"]
+    );
+
+    shutdown(ctx);
+}
+
+#[test]
+fn quic_heartbeat_timeout_severs_connection() {
+    // A peer that holds the QUIC connection open but never sends anything (no
+    // Establish, no heartbeats) can't be detected by EOF — only the heartbeat
+    // timeout catches it. A raw silent quinn server stands in for such a peer; the
+    // joining actor must receive its failure message once the heartbeat lapses.
+    set_quic_env();
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    // Bind the silent server first so we know its concrete port.
+    let port = spawn_silent_quic_server(addr);
+    let url = format!("quic://127.0.0.1:{port}");
+
+    let ctx = CtxHandle::new().expect("context should start");
+    let client = runtime_actor(&ctx, "q-silent-client");
+    let (poller, mut rx) = runtime_poller(&ctx);
+    runtime_subscribe(&ctx, poller, 0, client);
+
+    ctx.send_command(Command::Join {
+        actor: client,
+        url,
+        request: request_with_failure(Role::Child, "client-failed"),
+    })
+    .expect("join should enqueue");
+
+    // No Establish ever arrives, so the peer ident is empty; the heartbeat timeout
+    // is what severs the connection and delivers the failure.
+    assert_eq!(
+        recv_strings(&mut rx),
+        vec!["client-failed", "", "quic heartbeat timeout"]
+    );
+
+    shutdown(ctx);
+}
+
+/// Bind a raw quinn server on an ephemeral port using the test cert, accept one
+/// connection and hold it open (never sending a frame). Returns the bound port.
+/// The server thread is detached; it exits on its own after a grace period.
+fn spawn_silent_quic_server(addr: SocketAddr) -> u16 {
+    use std::io::BufReader;
+
+    let (port_tx, port_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("silent server runtime");
+        rt.block_on(async move {
+            let _ = quinn::rustls::crypto::ring::default_provider().install_default();
+            let dir = cert_dir();
+            let cert_data = std::fs::read(dir.join("cert.pem")).expect("read cert");
+            let key_data = std::fs::read(dir.join("key.pem")).expect("read key");
+            let certs = rustls_pemfile::certs(&mut BufReader::new(&cert_data[..]))
+                .collect::<Result<Vec<_>, _>>()
+                .expect("parse cert");
+            let key = rustls_pemfile::private_key(&mut BufReader::new(&key_data[..]))
+                .expect("parse key")
+                .expect("a private key");
+            let server_config =
+                quinn::ServerConfig::with_single_cert(certs, key).expect("server config");
+            let endpoint = quinn::Endpoint::server(server_config, addr).expect("bind quic server");
+            port_tx
+                .send(endpoint.local_addr().expect("local addr").port())
+                .expect("report port");
+
+            // Accept one connection and hold it open without ever replying.
+            let mut held = Vec::new();
+            if let Some(incoming) = endpoint.accept().await {
+                if let Ok(connecting) = incoming.accept() {
+                    if let Ok(conn) = connecting.await {
+                        held.push(conn);
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            drop(held);
+        });
+    });
+    port_rx
+        .recv()
+        .expect("silent server should report its port")
+}
+
+fn cert_dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("test_certs")
+}
+
+fn set_quic_env() {
+    // All quic tests use the same fixture certs, so setting the same values from
+    // multiple test threads is benign.
+    let dir = cert_dir();
+    std::env::set_var("MM_QUIC_CERT", dir.join("cert.pem"));
+    std::env::set_var("MM_QUIC_KEY", dir.join("key.pem"));
+    std::env::set_var("MM_QUIC_CA", dir.join("ca.pem"));
+}
+
+fn free_quic_url() -> String {
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind ephemeral udp");
+    let port = socket.local_addr().expect("local addr").port();
+    drop(socket);
+    format!("quic://127.0.0.1:{port}")
 }
 
 fn unix_test_url(name: &str) -> String {

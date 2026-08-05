@@ -365,6 +365,102 @@ async def test_unix_subprocess_kill_propagates_failure_and_cascades() -> None:
             await _kill_worker(proc)
 
 
+def _quic_certs_env() -> None:
+    # The quic transport reads its TLS material from these env vars; set them before
+    # any quic serve/join so both this process and the worker subprocess (which
+    # inherits the environment) can build their configs. Same values everywhere.
+    certs = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "test_certs"))
+    os.environ["MM_QUIC_CERT"] = os.path.join(certs, "cert.pem")
+    os.environ["MM_QUIC_KEY"] = os.path.join(certs, "key.pem")
+    os.environ["MM_QUIC_CA"] = os.path.join(certs, "ca.pem")
+
+
+def _quic_url() -> str:
+    # Grab a free UDP port; join/serve retry, so the brief gap before it is rebound
+    # by quic is harmless.
+    import socket
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    return f"quic://127.0.0.1:{port}"
+
+
+def _spawn_quic_worker(url: str, mode: str) -> "subprocess.Popen[bytes]":
+    worker = os.path.join(os.path.dirname(__file__), "quic_worker.py")
+    return subprocess.Popen([sys.executable, worker, url, mode])
+
+
+async def test_quic_subprocess_echo() -> None:
+    # End-to-end across two real processes over QUIC: this process is the parent
+    # `q-srv`; a subprocess child `q-echo` joins, echoes one message back, and exits
+    # cleanly. Exercises handshake + framed send/receive across the stream.
+    _quic_certs_env()
+    url = _quic_url()
+    srv = Actor(b"q-srv")
+    srv.serve(url, "parent")
+    proc = _spawn_quic_worker(url, "echo_child")
+    try:
+        assert await asyncio.wait_for(srv.next(), 30) == [b"q-srv", b"q-echo"]
+        srv.send(b"q-echo", [ba(b"ping")])
+        assert await asyncio.wait_for(srv.next(), 30) == [b"ping"]
+    finally:
+        await _await_worker_exit(proc)
+
+
+async def test_quic_kill_parent_end_caught_by_heartbeat() -> None:
+    # The subprocess hosts the PARENT (`q-up`) and serves over QUIC; this process
+    # joins as child `q-mid`. Hard-killing the subprocess sends no clean close (it's
+    # UDP — there is no FIN), so the only way `q-mid` learns its parent is gone is
+    # the bidirectional heartbeat lapsing. Losing its parent, the child also dies.
+    _quic_certs_env()
+    url = _quic_url()
+    proc = _spawn_quic_worker(url, "parent")
+    try:
+        mid = Actor(b"q-mid")
+        mid.join(url, "child", failure=[ba(b"mid-failed")])
+        assert await asyncio.wait_for(mid.next(), 30) == [b"q-mid", b"q-up"]
+
+        proc.kill()  # SIGKILL: no clean QUIC close, so the heartbeat must catch it
+        await asyncio.get_running_loop().run_in_executor(None, proc.wait)
+
+        assert await asyncio.wait_for(mid.next(), 30) == [
+            b"mid-failed",
+            b"q-up",
+            b"quic heartbeat timeout",
+        ]
+    finally:
+        if proc.poll() is None:
+            await _kill_worker(proc)
+
+
+async def test_quic_kill_child_end_caught_by_heartbeat() -> None:
+    # The mirror image: this process is the PARENT `q-boss` serving over QUIC; the
+    # subprocess child `q-down` joins, then is hard-killed. The parent's child
+    # connection produces no clean close, so the heartbeat timeout is what severs it
+    # and delivers the failure naming the dead child.
+    _quic_certs_env()
+    url = _quic_url()
+    boss = Actor(b"q-boss")
+    boss.serve(url, "parent", failure=[ba(b"boss-failed")])
+    proc = _spawn_quic_worker(url, "child")
+    try:
+        assert await asyncio.wait_for(boss.next(), 30) == [b"q-boss", b"q-down"]
+
+        proc.kill()  # SIGKILL: no clean QUIC close, so the heartbeat must catch it
+        await asyncio.get_running_loop().run_in_executor(None, proc.wait)
+
+        assert await asyncio.wait_for(boss.next(), 30) == [
+            b"boss-failed",
+            b"q-down",
+            b"quic heartbeat timeout",
+        ]
+    finally:
+        if proc.poll() is None:
+            await _kill_worker(proc)
+
+
 async def test_monitor_fires_when_target_dies() -> None:
     # watcher and target are siblings under root. watcher monitors target; when
     # target dies, the failure climbs to their common ancestor (root) and fires
