@@ -21,7 +21,7 @@ path = "benches/main.rs"
 
 [dependencies]
 anyhow = "1.0.103"
-async-trait = "0.1.86"
+async-trait = "0.1.91"
 axum = { version = "0.8.9", features = ["macros", "multipart", "ws"] }
 base64 = { version = "0.22.1", features = ["alloc"] }
 bincode = { version = "2", features = ["serde"] }

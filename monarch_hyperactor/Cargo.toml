@@ -18,7 +18,7 @@ path = "tests/lib.rs"
 [dependencies]
 anyhow = "1.0.103"
 async-once-cell = "0.4.4"
-async-trait = "0.1.86"
+async-trait = "0.1.91"
 bincode = { version = "2", features = ["serde"] }
 bytes = { version = "1.12.1", features = ["serde"] }
 erased-serde = "0.4.10"
