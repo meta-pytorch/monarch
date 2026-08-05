@@ -1093,13 +1093,21 @@ static PyObject* Actor_die(Actor* self, PyObject* args) {
 }
 
 static PyObject* Actor_monitor(Actor* self, PyObject* args, PyObject* kwds) {
-  static char* kw[] = {"ident", "failure", NULL};
+  static char* kw[] = {"ident", "failure", "timeout_for_nonexistence", NULL};
   PyObject* ident;
   PyObject* failure = NULL;
+  unsigned long long timeout_for_nonexistence = 0;
   if (actor_ensure_open(self) < 0) {
     return NULL;
   }
-  if (!PyArg_ParseTupleAndKeywords(args, kwds, "O|O", kw, &ident, &failure)) {
+  if (!PyArg_ParseTupleAndKeywords(
+          args,
+          kwds,
+          "O|OK",
+          kw,
+          &ident,
+          &failure,
+          &timeout_for_nonexistence)) {
     return NULL;
   }
 
@@ -1125,8 +1133,12 @@ static PyObject* Actor_monitor(Actor* self, PyObject* args, PyObject* kwds) {
   }
 
   mm_monitor_handle_t handle = NULL;
-  mm_err_t err =
-      mm_actor_monitor(self->actor, to_monitor, failure_ptr, &handle);
+  mm_err_t err = mm_actor_monitor(
+      self->actor,
+      to_monitor,
+      failure_ptr,
+      (uint64_t)timeout_for_nonexistence,
+      &handle);
   PyMem_Free(arr);
   if (err != MM_OK) {
     return set_mm_error(), NULL;

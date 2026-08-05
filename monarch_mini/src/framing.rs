@@ -87,8 +87,13 @@ enum WireFrame {
 /// target ident inline.
 #[derive(Serialize, Deserialize)]
 enum WirePayload {
-    ActorMessage { part_lens: Vec<u64> },
-    FireMonitor { to_monitor: Vec<u8> },
+    ActorMessage {
+        part_lens: Vec<u64>,
+    },
+    FireMonitor {
+        to_monitor: Vec<u8>,
+        is_timeout: bool,
+    },
 }
 
 fn bincode_config() -> bincode::config::Configuration {
@@ -175,7 +180,13 @@ pub(crate) async fn write_command<W: AsyncWrite + Unpin>(
                     parts = message_parts;
                     WirePayload::ActorMessage { part_lens }
                 }
-                SendPayload::FireMonitor(to_monitor) => WirePayload::FireMonitor { to_monitor },
+                SendPayload::FireMonitor {
+                    to_monitor,
+                    is_timeout,
+                } => WirePayload::FireMonitor {
+                    to_monitor,
+                    is_timeout,
+                },
             };
             WireFrame::Message {
                 destination_ident,
@@ -267,7 +278,13 @@ pub(crate) async fn read_frame<R: AsyncRead + Unpin>(
                     }
                     SendPayload::ActorMessage(parts)
                 }
-                WirePayload::FireMonitor { to_monitor } => SendPayload::FireMonitor(to_monitor),
+                WirePayload::FireMonitor {
+                    to_monitor,
+                    is_timeout,
+                } => SendPayload::FireMonitor {
+                    to_monitor,
+                    is_timeout,
+                },
             };
             Incoming::Command(ConnectionCommand::SendMessage {
                 destination_ident,

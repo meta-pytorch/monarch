@@ -24,6 +24,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 /* ---------------------------------------------------------------------------
  * Types
@@ -104,6 +105,7 @@ mm_err_t mm_actor_monitor(
     mm_actor_t actor,
     mm_msg_part_t to_monitor_ident,
     const mm_msg_t* failure_prefix,
+    uint64_t timeout_for_nonexistence,
     mm_monitor_handle_t* out);
 void mm_monitor_handle_cancel(mm_monitor_handle_t handle);
 mm_err_t mm_poller_create(mm_ctx_t ctx, int* fd_out, mm_poller_t* out);
@@ -282,8 +284,22 @@ void mm_actor_die(mm_actor_t actor, mm_msg_part_t reason);
  * If `to_monitor_ident` dies or is already dead, this actor will be sent:
  *   [failure_prefix[0], ..., failure_prefix[n_failure-1], to_monitor_ident,
  * reason]
+ * where reason is "actor died".
  *
  * On success, writes the new handle to `*out`.
+ *
+ * Non-existence timeout
+ * ---------------------
+ * If `timeout_for_nonexistence` is non-zero and `to_monitor_ident` is still not
+ * known anywhere in the system after that many milliseconds, the monitor fires
+ * with the same failure shape but reason "actor does not exist". This firing is
+ * treated exactly like a death firing: it fires the monitor once and consumes
+ * it — if the target later appears and dies, nothing more is delivered for this
+ * monitor. A value of 0 disables the timeout (the monitor then fires only on an
+ * actual death). The timer starts once the monitoring actor has its own ident.
+ * Only the first monitor an actor places on a given target arms a timeout;
+ * additional monitors of the same target reuse the existing subscription and
+ * ignore their `timeout_for_nonexistence`.
  *
  * Ports
  * -----
@@ -298,6 +314,7 @@ mm_err_t mm_actor_monitor(
     mm_actor_t actor,
     mm_msg_part_t to_monitor_ident,
     const mm_msg_t* failure_prefix,
+    uint64_t timeout_for_nonexistence,
     mm_monitor_handle_t* out);
 
 /* ---------------------------------------------------------------------------
