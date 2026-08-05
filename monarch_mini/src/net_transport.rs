@@ -116,14 +116,22 @@ fn shutdown_ack_timeout() -> Duration {
 /// across the whole context. A root that joins tens of thousands of peers spawns
 /// that many connector tasks, each driving a handshake; run all at once on the
 /// single-threaded runtime they compete for CPU and reorder connection setup badly.
-/// `MM_QUIC_MAX_CONCURRENT_CONNECTS` bounds the simultaneous attempts (each connector
-/// still retries independently, and the permit is released while it backs off).
-/// Unset or `0` ⇒ unlimited.
-fn max_concurrent_connects() -> Option<usize> {
-    std::env::var("MM_QUIC_MAX_CONCURRENT_CONNECTS")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .filter(|&n| n > 0)
+/// Bounds the simultaneous attempts (each connector still retries independently, and
+/// the permit is released while it backs off).
+///
+/// `MM_QUIC_MAX_CONCURRENT_CONNECTS` overrides it: a positive value caps to that;
+/// `0` means unlimited. When the env var is unset (or unparseable) the protocol's
+/// [`Net::default_connect_concurrency`] applies — 1024 for quic, a much smaller cap for
+/// tcp, which otherwise starves stragglers under a large connect storm.
+fn max_concurrent_connects<N: Net>() -> Option<usize> {
+    match std::env::var("MM_QUIC_MAX_CONCURRENT_CONNECTS") {
+        Ok(v) => match v.parse::<usize>() {
+            Ok(0) => None,                              // explicit opt-out ⇒ unlimited
+            Ok(n) => Some(n),                           // explicit cap
+            Err(_) => N::default_connect_concurrency(), // unparseable ⇒ protocol default
+        },
+        Err(_) => N::default_connect_concurrency(), // unset ⇒ protocol default
+    }
 }
 
 /// The gateway dial tag of `ident` (the substring after the last `@`), as a
@@ -227,7 +235,7 @@ impl<N: Net> NetTransport<N> {
     ) -> Self {
         let (shutdown_tx, _) = watch::channel(false);
         let (alive_tx, alive_rx) = mpsc::unbounded_channel();
-        if let Some(n) = max_concurrent_connects() {
+        if let Some(n) = max_concurrent_connects::<N>() {
             eprintln!("MM_QUIC connect concurrency capped at {n} simultaneous attempts");
         }
         Self {
@@ -235,7 +243,7 @@ impl<N: Net> NetTransport<N> {
             mapper,
             context_shm,
             listeners: HashMap::new(),
-            connect_sem: max_concurrent_connects().map(|n| Arc::new(Semaphore::new(n))),
+            connect_sem: max_concurrent_connects::<N>().map(|n| Arc::new(Semaphore::new(n))),
             alive_rx,
             heartbeat: Heartbeats::new(),
             side_channels: Rc::new(RefCell::new(SideChannels {

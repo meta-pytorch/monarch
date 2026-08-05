@@ -46,6 +46,38 @@
 //! subsystem's job (its own stream, and delegated so the root's steady-state cost is
 //! bounded); a link with no heartbeat obligation — e.g. a delegated one — is genuinely
 //! silent, which is what lets the connection count scale.
+//!
+//! ## Throughput tuning
+//!
+//! The fast settings that are *safe* to enable everywhere are on by default; the ones
+//! whose cost or policy impact scales with the connection count are left opt-in.
+//!
+//! On by default (safe regardless of scale):
+//!
+//! - `TCP_NODELAY` — always on: framing flushes per frame, so Nagle would only add
+//!   latency.
+//! - Congestion control defaults to **BBR**, pinned with `TCP_CONGESTION` *after* the
+//!   connection is up — matching the quic transport, which pins BBR unconditionally.
+//!   The post-connect timing is deliberate: cross-region flows at Meta have a NetEdit
+//!   cgroup eBPF `sockops` force their own CUBIC variant at connect time, overriding
+//!   any pre-connect `setsockopt`; a post-connect set sticks. The set is best-effort,
+//!   so a host without the `tcp_bbr` module simply keeps the kernel default. Override
+//!   with `MM_TCP_CONGESTION` (e.g. `cubic`, or empty to pin nothing).
+//! - Listen backlog and `SO_REUSEADDR` on the listener — robustness with negligible
+//!   cost.
+//!
+//! Opt-in (unset ⇒ OS default), because a fixed kernel socket-buffer size both
+//! *disables* Linux's per-socket buffer autotuning and — since tcp uses one socket per
+//! stream per connection, and a root holds a huge number of connections — multiplies
+//! that fixed cost across every socket. Autotuning is the better default at scale;
+//! these are for reproducing the cross-region bandwidth ceilings in a bench:
+//!
+//! - `MM_TCP_SNDBUF_BYTES` / `MM_TCP_RCVBUF_BYTES` — kernel socket-buffer sizes,
+//!   set *before* connect/bind so TCP window scaling is negotiated for the enlarged
+//!   window (accepted sockets inherit the listener's scale). Requested with the
+//!   privileged `SO_*BUFFORCE` options (which bypass `net.core.{r,w}mem_max` under
+//!   `CAP_NET_ADMIN`, e.g. as root on MAST) with a fall back to the ordinary setters
+//!   otherwise.
 
 use std::cell::Cell;
 use std::cell::RefCell;
@@ -55,10 +87,13 @@ use std::future::Ready;
 use std::hash::BuildHasher;
 use std::io;
 use std::net::SocketAddr;
+use std::os::fd::AsRawFd;
+use std::os::fd::RawFd;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::rc::Weak;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::task::Context;
 use std::task::Poll;
 use std::time::Duration;
@@ -75,6 +110,7 @@ use tokio::io::ReadBuf;
 use tokio::io::ReadHalf;
 use tokio::io::WriteHalf;
 use tokio::net::TcpListener;
+use tokio::net::TcpSocket;
 use tokio::net::TcpStream;
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::TlsConnector;
@@ -87,6 +123,121 @@ use crate::net::NetConn;
 /// Server name the client uses to verify the server's certificate (the cert's SAN
 /// must cover it). Shared with the quic transport, which uses the same cert set.
 const SERVER_NAME: &str = "monarch-mini";
+
+/// Listen backlog. Generous so a burst of joiners (e.g. a many-connection bench
+/// against one server) is not refused before the accept loop drains them.
+const LISTEN_BACKLOG: u32 = 1024;
+
+/// Optional kernel send/recv buffer request, in bytes. Unset ⇒ OS default.
+fn sndbuf_bytes() -> Option<usize> {
+    env_usize("MM_TCP_SNDBUF_BYTES")
+}
+
+fn rcvbuf_bytes() -> Option<usize> {
+    env_usize("MM_TCP_RCVBUF_BYTES")
+}
+
+fn env_usize(name: &str) -> Option<usize> {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+}
+
+/// The congestion-control algorithm to pin after connect. Defaults to BBR — matching
+/// the quic transport, which pins BBR unconditionally: it holds a higher steady rate
+/// than CUBIC across the light loss of a high-RTT cross-region path (quinn#2262: CUBIC
+/// stalls at ~1 MiB cwnd where BBR reaches the BDP) and is ~neutral on the lossless
+/// intra-cluster fabric. Best-effort — if the `tcp_bbr` module is not loaded the set
+/// fails and the kernel default stays (see [`set_congestion`]). Override the algorithm
+/// with `MM_TCP_CONGESTION` (e.g. `cubic` to pin the classic default); an empty
+/// `MM_TCP_CONGESTION=` pins nothing at all, leaving whatever the kernel/NetEdit picks.
+fn congestion() -> Option<String> {
+    match std::env::var("MM_TCP_CONGESTION") {
+        Ok(name) if name.is_empty() => None, // explicit opt-out: pin nothing
+        Ok(name) => Some(name),
+        Err(_) => Some("bbr".to_owned()), // default
+    }
+}
+
+/// Log the active tuning knobs once per process, so a bench run records which
+/// levers were set without spamming a line per connection.
+fn log_tuning_once() {
+    static LOGGED: OnceLock<()> = OnceLock::new();
+    LOGGED.get_or_init(|| {
+        if sndbuf_bytes().is_some() || rcvbuf_bytes().is_some() || congestion().is_some() {
+            eprintln!(
+                "MM_TCP tuning: sndbuf={:?} rcvbuf={:?} congestion={:?}",
+                sndbuf_bytes(),
+                rcvbuf_bytes(),
+                congestion(),
+            );
+        }
+    });
+}
+
+/// Enlarge a socket's kernel send/recv buffers, best-effort, *before* connect/bind
+/// so TCP window scaling is negotiated for the enlarged window. Tries the privileged
+/// `SO_*BUFFORCE` options first — these bypass the `net.core.{r,w}mem_max` ceiling
+/// under `CAP_NET_ADMIN` (e.g. running as root on MAST) — and falls back to the
+/// ordinary setters (which the kernel clamps to that ceiling) when not permitted. A
+/// no-op for a buffer whose env knob is unset.
+fn set_buffers(fd: RawFd) {
+    if let Some(bytes) = sndbuf_bytes() {
+        set_buffer(fd, libc::SO_SNDBUFFORCE, libc::SO_SNDBUF, bytes);
+    }
+    if let Some(bytes) = rcvbuf_bytes() {
+        set_buffer(fd, libc::SO_RCVBUFFORCE, libc::SO_RCVBUF, bytes);
+    }
+}
+
+fn set_buffer(fd: RawFd, force_opt: libc::c_int, opt: libc::c_int, bytes: usize) {
+    let size = bytes.min(i32::MAX as usize) as libc::c_int;
+    let len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    // SAFETY: `fd` is a valid socket for the call's duration; the option value is an
+    // `int` of length `len`, as required by SO_*BUF{,FORCE}.
+    let forced = unsafe {
+        let value = std::ptr::from_ref(&size).cast::<libc::c_void>();
+        libc::setsockopt(fd, libc::SOL_SOCKET, force_opt, value, len)
+    };
+    if forced != 0 {
+        // SAFETY: as above; the ordinary setter is clamped by the kernel.
+        unsafe {
+            let value = std::ptr::from_ref(&size).cast::<libc::c_void>();
+            libc::setsockopt(fd, libc::SOL_SOCKET, opt, value, len);
+        }
+    }
+}
+
+/// Apply the post-connect socket tuning to an established socket: `TCP_NODELAY` (always
+/// on — framing flushes per frame, so Nagle would only add latency) and the pinned
+/// congestion-control algorithm (BBR by default; see [`congestion`]). Both are
+/// best-effort. The congestion set must run *after* connect — see the module docs on
+/// the NetEdit connect-time override.
+fn tune_established(stream: &TcpStream) {
+    let _ = stream.set_nodelay(true);
+    set_congestion(stream.as_raw_fd());
+}
+
+/// Pin the congestion-control algorithm on an established connection, if
+/// `MM_TCP_CONGESTION` / `MM_TCP_BBR` requested one. Best-effort: a failure (e.g. the
+/// `tcp_bbr` module is not loaded) leaves the kernel default in place.
+fn set_congestion(fd: RawFd) {
+    let Some(name) = congestion() else {
+        return;
+    };
+    // SAFETY: `fd` is a valid connected TCP socket; `name` bytes are a valid buffer
+    // of `name.len()`, the form TCP_CONGESTION expects (a non-terminated string).
+    unsafe {
+        libc::setsockopt(
+            fd,
+            libc::IPPROTO_TCP,
+            libc::TCP_CONGESTION,
+            name.as_ptr().cast::<libc::c_void>(),
+            name.len() as libc::socklen_t,
+        );
+    }
+}
 
 /// How long a connection may stay half-paired — some of its sockets arrived, but not
 /// all — before the listener reaps it, dropping the sockets that did arrive and freeing
@@ -296,7 +447,23 @@ pub(crate) struct TcpListenerHandle {
 async fn reap_unpaired(pending: Weak<RefCell<PendingMap>>, connection_id: u128) {
     tokio::time::sleep(pending_reap_timeout()).await;
     if let Some(pending) = pending.upgrade() {
-        pending.borrow_mut().remove(&connection_id);
+        // If the id is still present it never finished pairing: the peer opened some
+        // but not all of its sockets (or they arrived too far apart). Log which stream
+        // indices did arrive (under `MM_QUIC_DEBUG`) so a server-side half-open — the
+        // other way a rank goes missing at high fan-out — is visible, not silent.
+        if let Some(slots) = pending.borrow_mut().remove(&connection_id) {
+            if crate::ctx::connection_debug() {
+                let arrived: Vec<usize> = slots
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, s)| s.as_ref().map(|_| i))
+                    .collect();
+                eprintln!(
+                    "MM_TCP reaped half-paired connection {connection_id:#x}: only stream indices {arrived:?} of {} arrived",
+                    slots.len()
+                );
+            }
+        }
     }
 }
 
@@ -325,12 +492,21 @@ impl Net for Tcp {
     }
 
     fn bind(&mut self, addr: SocketAddr, streams: usize) -> anyhow::Result<TcpListenerHandle> {
+        log_tuning_once();
         let acceptor = TlsAcceptor::from(self.tls()?.server.clone());
-        // `bind` is synchronous (the command loop can't await); build the listener via
-        // std and adopt it into tokio without an await.
-        let std_listener = std::net::TcpListener::bind(addr)?;
-        std_listener.set_nonblocking(true)?;
-        let listener = TcpListener::from_std(std_listener)?;
+        // `bind` is synchronous (the command loop can't await); build the listener
+        // socket directly so the kernel buffers can be enlarged *before* bind (so the
+        // window scale accepted sockets inherit reflects the enlarged window), then
+        // bind and listen — none of which awaits.
+        let socket = if addr.is_ipv6() {
+            TcpSocket::new_v6()?
+        } else {
+            TcpSocket::new_v4()?
+        };
+        set_buffers(socket.as_raw_fd());
+        socket.set_reuseaddr(true)?;
+        socket.bind(addr)?;
+        let listener = socket.listen(LISTEN_BACKLOG)?;
         let pending: Rc<RefCell<PendingMap>> = Rc::new(RefCell::new(HashMap::new()));
         Ok(TcpListenerHandle {
             listener,
@@ -345,6 +521,9 @@ impl Net for Tcp {
             let Ok((tcp, peer)) = listener.listener.accept().await else {
                 continue; // transient accept error; the listener stays open
             };
+            // The connection is up (accept returned), so pin nodelay/congestion now;
+            // the buffer window scale was inherited from the listening socket.
+            tune_established(&tcp);
             let Ok(mut stream) = listener.acceptor.accept(tcp).await.map(TlsStream::Server) else {
                 continue; // TLS handshake failed
             };
@@ -385,22 +564,82 @@ impl Net for Tcp {
         // Open every stream up front (see the module docs): the accepting side may be
         // the first messenger of a stream, and a plain socket can't be opened from the
         // accepting side. Each socket is prefixed so the listener can pair them.
+        log_tuning_once();
+        // Each failure path below logs (under `MM_QUIC_DEBUG`) the exact peer address,
+        // stream index, and stage that failed, so a connect that never completes at high
+        // fan-out can be traced to the specific rank (the root dials in rank order).
+        let debug = crate::ctx::connection_debug();
         let connection_id = new_connection_id();
         let mut opened = Vec::with_capacity(streams);
         for index in 0..streams {
-            let tcp = TcpStream::connect(addr).await.ok()?;
-            let tls = dialer
+            // Build the socket directly so the kernel buffers can be enlarged *before*
+            // connect (so window scaling is negotiated for the enlarged window), then
+            // pin nodelay/congestion once the connection is up.
+            let socket = match if addr.is_ipv6() {
+                TcpSocket::new_v6()
+            } else {
+                TcpSocket::new_v4()
+            } {
+                Ok(s) => s,
+                Err(e) => {
+                    if debug {
+                        eprintln!(
+                            "MM_TCP connect {addr} stream {index}/{streams}: socket() failed: {e}"
+                        );
+                    }
+                    return None;
+                }
+            };
+            set_buffers(socket.as_raw_fd());
+            let tcp = match socket.connect(addr).await {
+                Ok(t) => t,
+                Err(e) => {
+                    if debug {
+                        eprintln!(
+                            "MM_TCP connect {addr} stream {index}/{streams}: connect() failed: {e}"
+                        );
+                    }
+                    return None;
+                }
+            };
+            tune_established(&tcp);
+            let tls = match dialer
                 .connector
                 .connect(dialer.server_name.clone(), tcp)
                 .await
-                .ok()?;
-            let mut stream = TlsStream::Client(tls);
-            write_pairing_prefix(&mut stream, connection_id, index)
-                .await
-                .ok()?;
+            {
+                Ok(t) => TlsStream::Client(t),
+                Err(e) => {
+                    if debug {
+                        eprintln!(
+                            "MM_TCP connect {addr} stream {index}/{streams}: TLS handshake failed: {e}"
+                        );
+                    }
+                    return None;
+                }
+            };
+            let mut stream = tls;
+            if let Err(e) = write_pairing_prefix(&mut stream, connection_id, index).await {
+                if debug {
+                    eprintln!(
+                        "MM_TCP connect {addr} stream {index}/{streams}: pairing-prefix write failed: {e}"
+                    );
+                }
+                return None;
+            }
             opened.push(stream);
         }
         Some(TcpConn::new(addr, opened))
+    }
+
+    /// tcp opens `STREAMS` OS sockets plus a TLS handshake per connection and pairs
+    /// them on the acceptor, so it needs a much smaller default than quic: an
+    /// unthrottled connect storm at high fan-out leaves stragglers whose sockets never
+    /// finish pairing (seen as the root's `only N-1/N workers connected` aborts). 128
+    /// has proven safe through a full 65k-worker sweep; raise with
+    /// `MM_QUIC_MAX_CONCURRENT_CONNECTS` if a run needs faster connect ramp.
+    fn default_connect_concurrency() -> Option<usize> {
+        Some(128)
     }
 }
 

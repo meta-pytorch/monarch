@@ -163,6 +163,22 @@ fn load_tls() -> anyhow::Result<TlsConfig> {
     // loopback / the lossless intra-cluster fabric it is ~neutral. quinn re-exports
     // BbrConfig at quinn::congestion.
     transport.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
+    // Raise the MTU-discovery ceiling so QUIC can use the jumbo headroom of the
+    // intra-cluster fabric. On GPU hosts the frontend `eth0` carries a deliberate
+    // jumbo MTU of 5000 (chef sets `JUMBO_MTU=5000` for GPU_TC hosts), but quinn's
+    // default MTU discovery caps the UDP payload at 1452, so it never uses that
+    // headroom — leaving ~3x more datagrams and their per-packet kernel cost
+    // (`sendmsg` on TX, skb alloc/free on RX) on the table at the single-host receive
+    // ceiling. We only raise the *ceiling* (from `mtu_search_upper_bound`) and let
+    // quinn's DPLPMTUD *discover* the real path MTU — we never pin `initial_mtu` or
+    // disable discovery — so an over-large ceiling on a smaller path simply settles
+    // lower (a lost probe leaves the MTU where it was, it never stalls data or
+    // black-holes the handshake). The companion `endpoint_config()` advertises the
+    // same `max_udp_payload_size` on both roles; without that the peer would clamp our
+    // probes back to its 1472 default (quinn-proto `mtud`: `current_mtu.min(peer_max)`).
+    let mut mtud = quinn::MtuDiscoveryConfig::default();
+    mtud.upper_bound(mtu_search_upper_bound());
+    transport.mtu_discovery_config(Some(mtud));
     let transport = Arc::new(transport);
 
     let mut server = ServerConfig::with_single_cert(load_certs(&cert_path)?, load_key(&key_path)?)?;
@@ -176,6 +192,64 @@ fn load_tls() -> anyhow::Result<TlsConfig> {
     client.transport_config(transport);
 
     Ok(TlsConfig { server, client })
+}
+
+/// IP + UDP header overhead subtracted from a link MTU to get the largest QUIC UDP
+/// payload that fits. Cross-machine QUIC is IPv6 (40 B header) + UDP (8 B) = 48 B;
+/// using the IPv6 figure is the conservative choice (IPv4's 28 B is smaller, so this
+/// never over-estimates the payload).
+const IP_UDP_OVERHEAD: u16 = 48;
+
+/// Fallback UDP-payload discovery ceiling when the local link MTU can't be read (see
+/// [`eth0_udp_payload`]). Larger than quinn's 1452 default so discovery can still
+/// climb on a jumbo fabric; because it is only a *ceiling* for DPLPMTUD probing (never
+/// pinned), an over-large value on a smaller path just settles lower.
+const DEFAULT_MTU_SEARCH_UPPER_BOUND: u16 = 4800;
+
+/// The largest QUIC UDP payload that fits `eth0`'s link MTU (`mtu − IP_UDP_OVERHEAD`),
+/// or `None` if the sysfs file is absent/unparseable. `eth0` is the frontend fabric
+/// that on GPU hosts carries a jumbo MTU (chef sets `JUMBO_MTU=5000` for GPU_TC
+/// hosts). Deliberately reads only this one file — no interface scanning and no active
+/// probing.
+fn eth0_udp_payload() -> Option<u16> {
+    let mtu: u16 = std::fs::read_to_string("/sys/class/net/eth0/mtu")
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+    mtu.checked_sub(IP_UDP_OVERHEAD).filter(|&p| p >= 1200)
+}
+
+/// The UDP-payload ceiling for QUIC MTU discovery, read in one place so the
+/// [`quinn::TransportConfig`] (the DPLPMTUD `upper_bound`) and the
+/// [`quinn::EndpointConfig`] (the advertised `max_udp_payload_size`, which caps what
+/// the peer probes toward us) stay consistent. It is `MM_QUIC_MTU` if set (≥1200; an
+/// operator override, e.g. to reduce the ceiling), else `eth0`'s link MTU (see
+/// [`eth0_udp_payload`]), else [`DEFAULT_MTU_SEARCH_UPPER_BOUND`]. This is only a
+/// ceiling — quinn always *discovers* the real path MTU up to it (see [`load_tls`]),
+/// so a too-large value never breaks a smaller path.
+fn mtu_search_upper_bound() -> u16 {
+    std::env::var("MM_QUIC_MTU")
+        .ok()
+        .and_then(|m| m.parse::<u16>().ok())
+        .filter(|&m| m >= 1200)
+        .or_else(eth0_udp_payload)
+        .unwrap_or(DEFAULT_MTU_SEARCH_UPPER_BOUND)
+}
+
+/// The [`quinn::EndpointConfig`] for every client/server socket in this context.
+/// quinn's default advertises `max_udp_payload_size = 1472` as this endpoint's receive
+/// limit, and QUIC clamps the *peer's* probed MTU down to it (quinn-proto
+/// `mtud::on_peer_max_udp_payload_size_received`: `current_mtu.min(peer_max)`), so
+/// raising the discovery ceiling on the sender alone is a no-op — the receiver must
+/// advertise the larger size too. We set it to [`mtu_search_upper_bound`] on both
+/// roles; this value also sizes quinn's GRO recv buffer (`max_udp_payload_size ·
+/// gro_segments · BATCH_SIZE`).
+fn endpoint_config() -> quinn::EndpointConfig {
+    let mut cfg = quinn::EndpointConfig::default();
+    // Only errors if the value is < 1200, already excluded by `mtu_search_upper_bound`.
+    let _ = cfg.max_udp_payload_size(mtu_search_upper_bound());
+    cfg
 }
 
 /// Parse a `quic://host:port` (or bare `host:port`) url into a socket address.
@@ -304,9 +378,51 @@ fn make_client_endpoint(
     let std_socket: std::net::UdpSocket = socket.into();
     let runtime =
         quinn::default_runtime().ok_or_else(|| anyhow::anyhow!("no quic async runtime"))?;
-    let mut endpoint = Endpoint::new(quinn::EndpointConfig::default(), None, std_socket, runtime)?;
+    let mut endpoint = Endpoint::new(endpoint_config(), None, std_socket, runtime)?;
     endpoint.set_default_client_config(client_config);
     Ok((endpoint, usable))
+}
+
+/// Default kernel recv-buffer size for the *server* UDP socket (64 MiB). quinn never
+/// raises `SO_RCVBUF` itself, so a high-rate receiver drops datagrams whenever the
+/// socket backlog spikes (→ QUIC RTO stalls, seen as throughput variance at the
+/// single-host ceiling). We force it up by default — matching the total budget the
+/// client pool targets ([`DEFAULT_UDP_BUF_TOTAL_BYTES`]) and the value validated in
+/// the throughput sweep. Override (typically to *reduce* it on a small host) with
+/// `MM_QUIC_SERVER_UDP_BUF_BYTES`.
+const DEFAULT_SERVER_UDP_BUF_BYTES: usize = 64 * 1024 * 1024;
+
+fn server_udp_buf_bytes() -> usize {
+    std::env::var("MM_QUIC_SERVER_UDP_BUF_BYTES")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_SERVER_UDP_BUF_BYTES)
+}
+
+/// Build a server [`Endpoint`] bound to `addr`. Like [`Endpoint::server`] but (a) it
+/// uses [`endpoint_config`] so the advertised `max_udp_payload_size` matches our MTU
+/// discovery ceiling (a plain `Endpoint::server` hardcodes quinn's 1472 default, which
+/// would clamp the peer's probed MTU back down), and (b) it enlarges the receive
+/// buffer to [`server_udp_buf_bytes`] (best-effort; see [`set_udp_buffers`]).
+fn make_server_endpoint(addr: SocketAddr, server_config: ServerConfig) -> anyhow::Result<Endpoint> {
+    let domain = if addr.is_ipv6() {
+        socket2::Domain::IPV6
+    } else {
+        socket2::Domain::IPV4
+    };
+    let socket = socket2::Socket::new(domain, socket2::Type::DGRAM, Some(socket2::Protocol::UDP))?;
+    set_udp_buffers(&socket, server_udp_buf_bytes());
+    socket.bind(&addr.into())?;
+    let std_socket: std::net::UdpSocket = socket.into();
+    let runtime =
+        quinn::default_runtime().ok_or_else(|| anyhow::anyhow!("no quic async runtime"))?;
+    Ok(Endpoint::new(
+        endpoint_config(),
+        Some(server_config),
+        std_socket,
+        runtime,
+    )?)
 }
 
 /// The shared per-context QUIC state: TLS configs (loaded lazily on first use) and a
@@ -439,7 +555,7 @@ impl Net for Quic {
 
     fn bind(&mut self, addr: SocketAddr, _streams: usize) -> anyhow::Result<Endpoint> {
         let server = self.tls()?.server.clone();
-        Ok(Endpoint::server(server, addr)?)
+        make_server_endpoint(addr, server)
     }
 
     async fn accept(listener: &Endpoint) -> Option<QuicConn> {
@@ -455,6 +571,13 @@ impl Net for Quic {
         let connecting = dialer.connect(addr, SERVER_NAME).ok()?;
         let conn = connecting.await.ok()?;
         Some(QuicConn::new(conn))
+    }
+
+    /// quic multiplexes all streams on one endpoint-paced connection, so a large number
+    /// of simultaneous handshakes is cheap; 1024 has proven safe at 64k+ fan-out.
+    /// Overridable via `MM_QUIC_MAX_CONCURRENT_CONNECTS`.
+    fn default_connect_concurrency() -> Option<usize> {
+        Some(1024)
     }
 }
 
