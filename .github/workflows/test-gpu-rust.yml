@@ -58,6 +58,7 @@ jobs:
 
         # Run GPU Rust tests
         echo "Running OSS Rust tests..."
+        ./monarch_mini/test_certs/generate.sh
         # Uses cargo nextest to run tests in separate processes, which better matches
         # internal buck test behavior.
         # The CI profile is configured in .config/nextest.toml
