@@ -41,7 +41,7 @@
 //! `MM_QUIC_CA` (the authority a joiner trusts). The server presents its cert; the
 //! client verifies it against the CA for the fixed server name [`SERVER_NAME`].
 
-use std::cell::Cell;
+use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
 use std::io;
@@ -66,7 +66,10 @@ use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
 use tokio::io::ReadBuf;
 use tokio::runtime::Handle;
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 
+use crate::matcher::Matcher;
 use crate::net::Net;
 use crate::net::NetConn;
 
@@ -573,7 +576,7 @@ impl Net for Quic {
     // runtime to place dialed connections' drivers on.
     type Dialer = QuicDialer;
     // A server endpoint plus that runtime. quic multiplexes all streams on one
-    // connection, so it ignores the stream count passed to `bind`.
+    // connection; each stream is opened/accepted on demand, addressed by index.
     type Listener = QuicListener;
     type Conn = QuicConn;
 
@@ -605,7 +608,7 @@ impl Net for Quic {
         Ok(QuicDialer { endpoint, rt })
     }
 
-    fn bind(&mut self, addr: SocketAddr, _streams: usize) -> anyhow::Result<QuicListener> {
+    fn bind(&mut self, addr: SocketAddr) -> anyhow::Result<QuicListener> {
         let server = self.tls()?.server.clone();
         // Enter the data runtime (if any) so quinn spawns this server endpoint's driver
         // there; the handle also rides on the QuicListener for `accept` to use.
@@ -627,10 +630,10 @@ impl Net for Quic {
             incoming.accept().ok()?
         };
         let conn = connecting.await.ok()?;
-        Some(QuicConn::new(conn))
+        Some(QuicConn::new_acceptor(conn))
     }
 
-    async fn connect(dialer: &QuicDialer, addr: SocketAddr, _streams: usize) -> Option<QuicConn> {
+    async fn connect(dialer: &QuicDialer, addr: SocketAddr) -> Option<QuicConn> {
         // connect() fails synchronously on a bad config; the handshake (.await) fails
         // until the server is up. Both surface as `None` and the caller retries. Enter
         // the data runtime around the synchronous connect() — which spawns the
@@ -640,7 +643,7 @@ impl Net for Quic {
             dialer.endpoint.connect(addr, SERVER_NAME).ok()?
         };
         let conn = connecting.await.ok()?;
-        Some(QuicConn::new(conn))
+        Some(QuicConn::new_dialer(conn))
     }
 
     /// quic multiplexes all streams on one endpoint-paced connection, so a large number
@@ -651,36 +654,134 @@ impl Net for Quic {
     }
 }
 
-/// One QUIC connection. Each [`NetConn::stream`] call hands out the *next*
-/// bidirectional stream — `open_bi` when this side is the first messenger, `accept_bi`
-/// otherwise. quinn pairs streams in open/accept order, and the two peers call
-/// `stream` in the same order, so the pairs line up without any explicit index.
-///
-/// `next_priority` is the send priority handed to the next stream, bumped each call,
-/// so a later stream (the heartbeat stream) outranks an earlier one (the data
-/// stream). Not `Clone`: the cursor is per-connection state, and each connection is
-/// created once and moved between its tasks (single-threaded runtime, so the `Cell`
-/// is never contended).
-pub(crate) struct QuicConn {
+/// The two-byte little-endian index prefix the dialer writes at the head of every
+/// bidirectional stream it opens, so the acceptor can pair it with the peer's stream of
+/// the same index (a bare quic connection is already private to the two peers, so unlike
+/// tcp no connection id is needed — only the stream index). `open_bi`/`accept_bi` pair
+/// in open order per initiator, but only the dialer opens, and it opens streams in
+/// whatever order the transport requests them; the explicit index removes any dependence
+/// on that order and lets the acceptor demultiplex.
+async fn write_index_prefix(send: &mut SendStream, index: usize) -> io::Result<()> {
+    // quinn's inherent `write_all` returns its own `WriteError`; map it to io::Error.
+    send.write_all(&(index as u16).to_le_bytes())
+        .await
+        .map_err(io::Error::other)
+}
+
+async fn read_index_prefix(recv: &mut RecvStream) -> io::Result<usize> {
+    let mut buf = [0u8; 2];
+    // quinn's inherent `read_exact` returns its own `ReadExactError`; map it to io::Error.
+    recv.read_exact(&mut buf).await.map_err(io::Error::other)?;
+    Ok(u16::from_le_bytes(buf) as usize)
+}
+
+/// A [`NetConn::stream`] request handed to an acceptor connection's demux: the wanted
+/// index, its send priority, and the one-shot the demux fulfils with the paired stream.
+pub(crate) struct QuicStreamRequest {
+    index: usize,
+    priority: i32,
+    reply: oneshot::Sender<io::Result<(QuicSend, QuicRecv)>>,
+}
+
+/// Fulfil a request with its paired stream: set the send priority and send the halves
+/// back through the one-shot.
+fn fulfill_quic(conn: &Connection, req: QuicStreamRequest, stream: (SendStream, RecvStream)) {
+    let (send, recv) = stream;
+    let _ = send.set_priority(req.priority);
+    let _ = req.reply.send(Ok(quic_halves(conn.clone(), send, recv)));
+}
+
+/// The acceptor-side demux for one connection: the single owner of `accept_bi`. It reads
+/// each accepted stream's index prefix and pairs it with the matching [`QuicStreamRequest`]
+/// using a per-index [`Matcher`] (each index sees at most one stream and one request,
+/// whichever arrives first parks for the other). Being the only accept-driver means
+/// `stream` never touches `accept_bi` directly — it just sends a request and awaits the
+/// one-shot — so there is no mutex held across an await. Ends when the connection drops
+/// (its senders close) or `accept_bi` errors; dropping the parked requests then fails
+/// their awaiting `stream` calls.
+async fn quic_acceptor_demux(
     conn: Connection,
-    next_priority: Cell<i32>,
+    mut requests: mpsc::UnboundedReceiver<QuicStreamRequest>,
+) {
+    let mut matchers: HashMap<usize, Matcher<QuicStreamRequest, (SendStream, RecvStream)>> =
+        HashMap::new();
+    loop {
+        tokio::select! {
+            req = requests.recv() => {
+                let Some(req) = req else {
+                    return; // every `stream` handle dropped: the connection is going away
+                };
+                matchers
+                    .entry(req.index)
+                    .or_insert_with(Matcher::new)
+                    .push_left(req, |req, stream| fulfill_quic(&conn, req, stream));
+            }
+            // `accept_bi` is cancel-safe, so racing it in `select!` never drops a stream.
+            accepted = conn.accept_bi() => {
+                let Ok((send, mut recv)) = accepted else {
+                    return; // connection lost: dropping the matchers fails parked requests
+                };
+                let Ok(index) = read_index_prefix(&mut recv).await else {
+                    continue; // peer opened a stream with a bad prefix — drop it
+                };
+                matchers
+                    .entry(index)
+                    .or_insert_with(Matcher::new)
+                    .push_right((send, recv), |req, stream| fulfill_quic(&conn, req, stream));
+            }
+        }
+    }
+}
+
+/// One QUIC connection, in one of two roles set at construction. A **dialer** connection
+/// (from [`Net::connect`]) opens each requested stream with `open_bi` and writes the
+/// index prefix. An **acceptor** connection (from [`Net::accept`]) delegates all
+/// `accept_bi` work to a per-connection [`quic_acceptor_demux`] coroutine; its `stream`
+/// just sends a request down `requests` and awaits the paired stream. The demux holds the
+/// `Connection` alive; the acceptor keeps `remote` only for [`fmt::Debug`].
+pub(crate) enum QuicConn {
+    Dialer {
+        conn: Connection,
+    },
+    Acceptor {
+        remote: SocketAddr,
+        requests: mpsc::UnboundedSender<QuicStreamRequest>,
+    },
 }
 
 impl QuicConn {
-    fn new(conn: Connection) -> Self {
-        Self {
-            conn,
-            next_priority: Cell::new(0),
-        }
+    fn new_dialer(conn: Connection) -> Self {
+        Self::Dialer { conn }
+    }
+
+    fn new_acceptor(conn: Connection) -> Self {
+        let remote = conn.remote_address();
+        let (requests, rx) = mpsc::unbounded_channel();
+        // Spawn on the command-loop LocalSet (`accept` runs there); the demux owns the
+        // connection and lives until every `stream` handle is dropped or it errors.
+        tokio::task::spawn_local(quic_acceptor_demux(conn, rx));
+        Self::Acceptor { remote, requests }
     }
 }
 
 impl fmt::Debug for QuicConn {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("QuicConn")
-            .field(&self.conn.remote_address())
-            .finish()
+        let remote = match self {
+            QuicConn::Dialer { conn } => conn.remote_address(),
+            QuicConn::Acceptor { remote, .. } => *remote,
+        };
+        f.debug_tuple("QuicConn").field(&remote).finish()
     }
+}
+
+fn quic_halves(conn: Connection, send: SendStream, recv: RecvStream) -> (QuicSend, QuicRecv) {
+    (
+        QuicSend {
+            send,
+            _conn: conn.clone(),
+        },
+        QuicRecv { recv, _conn: conn },
+    )
 }
 
 impl NetConn for QuicConn {
@@ -688,30 +789,33 @@ impl NetConn for QuicConn {
     type Recv = QuicRecv;
     type Stream = Pin<Box<dyn Future<Output = io::Result<(QuicSend, QuicRecv)>>>>;
 
-    fn stream(&self, first_messenger: bool) -> Self::Stream {
-        // Claim this stream's send priority now (at call order), not at poll time.
-        let priority = self.next_priority.get();
-        self.next_priority.set(priority + 1);
-        let conn = self.conn.clone();
-        Box::pin(async move {
-            let (send, recv) = if first_messenger {
-                conn.open_bi().await
-            } else {
-                conn.accept_bi().await
+    fn stream(&self, index: usize, priority: i32) -> Self::Stream {
+        match self {
+            QuicConn::Dialer { conn } => {
+                let conn = conn.clone();
+                Box::pin(async move {
+                    let (mut send, recv) = conn.open_bi().await.map_err(io::Error::other)?;
+                    write_index_prefix(&mut send, index).await?;
+                    let _ = send.set_priority(priority);
+                    Ok(quic_halves(conn, send, recv))
+                })
             }
-            .map_err(io::Error::other)?;
-            // A later stream ⇒ higher send priority, so a beat (the heartbeat stream,
-            // opened after the data stream) is packed ahead of queued data under a full
-            // congestion window.
-            let _ = send.set_priority(priority);
-            Ok((
-                QuicSend {
-                    send,
-                    _conn: conn.clone(),
-                },
-                QuicRecv { recv, _conn: conn },
-            ))
-        })
+            QuicConn::Acceptor { requests, .. } => {
+                let requests = requests.clone();
+                Box::pin(async move {
+                    let (reply, rx) = oneshot::channel();
+                    requests
+                        .send(QuicStreamRequest {
+                            index,
+                            priority,
+                            reply,
+                        })
+                        .map_err(|_| io::Error::other("quic connection closed"))?;
+                    rx.await
+                        .map_err(|_| io::Error::other("quic connection closed"))?
+                })
+            }
+        }
     }
 }
 
