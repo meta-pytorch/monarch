@@ -11,7 +11,7 @@ license = "BSD-3-Clause"
 anyhow = "1.0.103"
 datafusion = "52.5.0"
 monarch_record_batch = { version = "0.0.0", path = "../monarch_record_batch" }
-serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
+serde_json = { version = "1.0.151", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 
 [lints]
 workspace = true

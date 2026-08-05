@@ -19,7 +19,7 @@ erased-serde = "0.4.10"
 hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
 inventory = "0.3.24"
 serde = { version = "1.0.229", features = ["derive", "rc"] }
-serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
+serde_json = { version = "1.0.151", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 serde_multipart = { version = "0.0.0", path = "../serde_multipart" }
 strum = { version = "0.28.0", features = ["derive"] }
 thiserror = "2.0.19"
