@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use slotmap::SlotMap;
+use tokio::sync::mpsc::UnboundedSender;
 
 use crate::connection::Connection;
 use crate::connection::SendPayload;
@@ -57,6 +58,15 @@ pub(crate) struct ActorEntry {
     /// non-gateway parent is still announced when that parent (and thus the
     /// connection to the gateway) dies.
     pub(crate) gateway_routes: HashMap<ChildConnectionKey, HashSet<Vec<u8>>>,
+    /// Root-only handle to this actor's gateway-death coalescing coroutine, spawned
+    /// lazily on the first death that turns around here. A death wave climbs to the
+    /// root and, rather than fanning out one broadcast per detected death
+    /// (O(deaths x gateways) — a "dead-gateway storm" when many machines fail at
+    /// once), each dead-tag packet is written to this channel; the coroutine owns
+    /// all the timing and emits one coalesced downward broadcast per window. `None`
+    /// until the first turn-around (and always `None` on non-root actors); dropping
+    /// it on actor teardown closes the channel and ends the coroutine.
+    pub(crate) gateway_death_tx: Option<UnboundedSender<Vec<Vec<u8>>>>,
     pub(crate) alive: bool,
     /// This actor's gateway shared-memory client, once it learns its gateway (the
     /// context's shared slab for a gateway, or a parent's slab received via
@@ -149,6 +159,7 @@ impl ActorEntry {
                 GatewayState::NotAGateway
             },
             gateway_routes: HashMap::new(),
+            gateway_death_tx: None,
             alive: true,
             shm_client: Arc::new(Mutex::new(None)),
         }
