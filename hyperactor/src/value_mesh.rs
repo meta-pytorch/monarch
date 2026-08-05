@@ -23,6 +23,7 @@ use std::ptr;
 use std::ptr::NonNull;
 
 use futures::Future;
+use ndslice::Slice;
 use ndslice::extent;
 use ndslice::view;
 use ndslice::view::Ranked;
@@ -562,6 +563,29 @@ impl<T: 'static> ValueMesh<T> {
 impl<T: Clone + 'static> view::RankedSliceable for ValueMesh<T> {
     fn sliced(&self, region: Region) -> Self {
         debug_assert!(region.is_subset(self.region()), "sliced: not a subset");
+
+        match &self.rep {
+            Rep::Dense { .. } => self.slice_dense(region),
+            Rep::Compressed { .. } if region.num_ranks() == 0 => Self {
+                region,
+                rep: Rep::Compressed {
+                    table: Vec::new(),
+                    runs: Vec::new(),
+                },
+            },
+            Rep::Compressed { table, runs } => {
+                let source_ordinal_slice = region
+                    .slice()
+                    .relative_ordinal_slice(self.region.slice())
+                    .expect("sliced region should preserve the parent dimensions");
+                self.slice_compressed(region, table, runs, source_ordinal_slice)
+            }
+        }
+    }
+}
+
+impl<T: Clone + 'static> ValueMesh<T> {
+    fn slice_dense(&self, region: Region) -> Self {
         let ranks: Vec<T> = self
             .region()
             .remap(&region)
@@ -574,6 +598,152 @@ impl<T: Clone + 'static> view::RankedSliceable for ValueMesh<T> {
             "sliced: cardinality mismatch"
         );
         Self::new_unchecked(region, ranks)
+    }
+
+    /// Slice an RLE mesh without visiting every selected rank.
+    ///
+    /// For each source run that intersects the slice, find the first selected
+    /// rank inside the run and the first selected rank after the run. These
+    /// slice-relative ranks become the start and end of an output run.
+    ///
+    /// `slice_ordinals` maps each ordinal in the result to an ordinal in the
+    /// source mesh. For each source run, walking the dimensions finds the last
+    /// selected rank inside the run without visiting each selected rank.
+    ///
+    /// ```text
+    /// slice_ordinals: sizes=[3, 3], strides=[8, 2], offset=9
+    ///
+    ///    9 _ 11 _ 13
+    ///   17 _ 19 _ 21
+    ///   25 _ 27 _ 29
+    ///
+    /// source runs:  A=[0,13)  B=[13,20)  C=[20,40)
+    /// selected:       A  A      B  B  B      C  C  C  C
+    /// output runs:  A=[0,2)   B=[2,5)     C=[5,9)
+    /// ```
+    ///
+    /// Work therefore scales with intersecting source runs rather than selected
+    /// ranks when the source compresses well.
+    fn slice_compressed(
+        &self,
+        slice_region: Region,
+        value_table: &[T],
+        source_runs: &[Run],
+        slice_ordinals: Slice,
+    ) -> Self {
+        // Find the last slice ordinal at or before a source ordinal by jumping
+        // as far as possible in each dimension.
+        //
+        // For example, use a dense 2 x 3 x 4 slice:
+        //
+        //   sizes:   [2, 3, 4]
+        //   strides: [12, 4, 1]
+        //   offset:  0
+        //
+        // The source contains these runs:
+        //
+        //   A=[0,3)  B=[3,19)  C=[19,24)
+        //
+        //   page 0                  page 1
+        //    0A  1A  2A  3B        12B 13B 14B 15B
+        //    4B  5B  6B  7B        16B 17B 18B 19C
+        //    8B  9B 10B 11B        20C 21C 22C 23C
+        //
+        // B ends at 19, so its last source ordinal is 18. Decompose 18 across
+        // the dimensions:
+        //
+        //   page:   18 / 12 = 1  -> slice ordinal 12, remainder 6
+        //   row:     6 /  4 = 1  -> slice ordinal 16, remainder 2
+        //   column:  2 /  1 = 2  -> slice ordinal 18, remainder 0
+        //
+        // The last slice ordinal in B is 18. The exclusive end of the output
+        // run is therefore 19. This takes one step per dimension and does not
+        // visit source ordinals 3 through 18 individually.
+        let last_slice_ordinal_at_or_before = |source_ordinal: usize| {
+            let mut distance = source_ordinal - slice_ordinals.offset();
+            let mut slice_stride = slice_region.num_ranks();
+            let mut slice_ordinal = 0;
+
+            for (&dim_size, &source_stride) in
+                slice_ordinals.sizes().iter().zip(slice_ordinals.strides())
+            {
+                slice_stride /= dim_size;
+                let coordinate = (distance / source_stride).min(dim_size - 1);
+                slice_ordinal += coordinate * slice_stride;
+                distance -= coordinate * source_stride;
+            }
+
+            slice_ordinal
+        };
+
+        let source_ordinal_at = |mut slice_ordinal: usize| {
+            let mut source_ordinal = slice_ordinals.offset();
+
+            for (&dim_size, &stride) in slice_ordinals
+                .sizes()
+                .iter()
+                .zip(slice_ordinals.strides())
+                .rev()
+            {
+                source_ordinal += slice_ordinal % dim_size * stride;
+                slice_ordinal /= dim_size;
+            }
+
+            source_ordinal
+        };
+
+        let mut slice_runs: Vec<Run> = Vec::new();
+        let mut slice_ordinal_cursor = 0usize;
+        let mut source_ordinal_cursor = slice_ordinals.offset();
+        let mut source_run_index = 0usize;
+
+        while slice_ordinal_cursor < slice_region.num_ranks() {
+            // Slice iteration and source runs are both ordered, so this cursor
+            // only moves forward. Strided selections can skip complete runs.
+            while source_runs
+                .get(source_run_index)
+                .is_some_and(|run| run.end as usize <= source_ordinal_cursor)
+            {
+                source_run_index += 1;
+            }
+
+            let source_run = &source_runs[source_run_index];
+            debug_assert!(source_run.start as usize <= source_ordinal_cursor);
+
+            let next_slice_ordinal =
+                last_slice_ordinal_at_or_before(source_run.end as usize - 1) + 1;
+
+            if let Some(previous_run) = slice_runs.last_mut()
+                && previous_run.id == source_run.id
+            {
+                // `Run` has same value as the previous `Run`, extend the previous `Run`:
+                //   source runs:    2A  2B  2A
+                //   selected ranks: 2A      2A
+                //   output:         4A
+                previous_run.end = next_slice_ordinal as u64;
+            } else {
+                // Append `Run` to end
+                slice_runs.push(Run::new(
+                    slice_ordinal_cursor,
+                    next_slice_ordinal,
+                    source_run.id,
+                ));
+            }
+
+            slice_ordinal_cursor = next_slice_ordinal;
+
+            if slice_ordinal_cursor < slice_region.num_ranks() {
+                source_ordinal_cursor = source_ordinal_at(slice_ordinal_cursor);
+            }
+        }
+
+        Self {
+            region: slice_region,
+            rep: Rep::Compressed {
+                table: value_table.to_vec(),
+                runs: slice_runs,
+            },
+        }
     }
 }
 
@@ -1097,6 +1267,93 @@ mod tests {
     use typeuri::Named;
 
     use super::*;
+
+    /// Generates supported rectangular slicing cases.
+    fn rectangular_slicing_case() -> impl Strategy<Value = (Region, Region, Vec<u8>)> {
+        // Generate one- to four-dimensional parents with small, sometimes
+        // singleton extents.
+        prop::collection::vec(1usize..=5, 1..=4)
+            // Bound the work performed by each property-test case.
+            .prop_filter("rank count must stay small", |sizes| {
+                sizes.iter().product::<usize>() <= 256
+            })
+            // Generate the affine layout, rectangular selection, and values
+            // after the parent shape determines their lengths.
+            .prop_flat_map(|sizes| {
+                let num_dims = sizes.len();
+                let num_ranks: usize = sizes.iter().product();
+                (
+                    Just(sizes),
+                    // Exercise arbitrary base-rank offsets.
+                    0usize..=16,
+                    // Exercise dense row-major layouts with scaled strides.
+                    1usize..=4,
+                    // Seed a nonempty contiguous or strided range per dimension.
+                    prop::collection::vec((0usize..=32, 0usize..=32, 0usize..=32), num_dims),
+                    // A small alphabet produces merged and fragmented RLE runs.
+                    prop::collection::vec(0u8..=3, num_ranks),
+                )
+            })
+            // Convert the generated parameters into a parent region and one
+            // rectangular subregion.
+            .prop_map(|(sizes, offset, scale, ranges, values)| {
+                let labels: Vec<_> = (0..sizes.len()).map(|dim| format!("d{dim}")).collect();
+                let mut strides = vec![0; sizes.len()];
+                let mut stride = scale;
+                for dim in (0..sizes.len()).rev() {
+                    strides[dim] = stride;
+                    stride *= sizes[dim];
+                }
+
+                let region = Region::new(
+                    labels.clone(),
+                    Slice::new(offset, sizes.clone(), strides)
+                        .expect("generated parent slice should be valid"),
+                );
+                let selected = ranges.into_iter().enumerate().fold(
+                    region.clone(),
+                    |selected, (dim, (begin_seed, end_seed, step_seed))| {
+                        let begin = begin_seed % sizes[dim];
+                        let end = begin + 1 + end_seed % (sizes[dim] - begin);
+                        let valid_steps: Vec<_> = (1..=sizes[dim])
+                            .filter(|step| sizes[dim].is_multiple_of(*step))
+                            .collect();
+                        let step = valid_steps[step_seed % valid_steps.len()];
+                        selected
+                            .range(&labels[dim], ndslice::Range(begin, Some(end), step))
+                            .expect("generated range should be valid")
+                    },
+                );
+
+                (region, selected, values)
+            })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+
+        #[test]
+        fn compressed_slicing_matches_dense_slicing(
+            (region, selected, values) in rectangular_slicing_case()
+        ) {
+            let dense = ValueMesh::new_unchecked(region, values);
+            let mut compressed = dense.clone();
+            compressed.compress_adjacent_in_place();
+
+            let expected = dense.sliced(selected.clone());
+            let actual = compressed.sliced(selected);
+
+            prop_assert_eq!(actual.region(), expected.region());
+            prop_assert_eq!(
+                actual.values().collect::<Vec<_>>(),
+                expected.values().collect::<Vec<_>>(),
+            );
+            prop_assert!(
+                matches!(actual.rep, Rep::Compressed { .. }),
+                "the supported rectangular selection should stay compressed",
+            );
+        }
+    }
 
     #[test]
     fn value_mesh_new_ok() {
