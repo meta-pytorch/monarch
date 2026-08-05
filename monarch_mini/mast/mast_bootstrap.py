@@ -49,6 +49,12 @@ PORT = int(os.environ.get("SMOKE_PORT", "26600"))
 WORKERS_PER_HOST = int(os.environ.get("SMOKE_WORKERS_PER_HOST", "1"))
 # Seconds rank 0 waits before dialing, giving every worker time to bind.
 STARTUP_GRACE = float(os.environ.get("SMOKE_STARTUP_GRACE", "15"))
+# Heartbeat timeout in effect (env override, else minimonarch's 20s default). The
+# root's inter-round gap and end-of-run settle window are sized off this so that
+# between rounds no data flows and only heartbeats hold the links up.
+HB_TIMEOUT_MS = int(os.environ.get("MM_QUIC_HEARTBEAT_TIMEOUT_MS", "20000"))
+# Number of ping/ring rounds the root runs, each separated by a heartbeat-only gap.
+SMOKE_ROUNDS = int(os.environ.get("SMOKE_ROUNDS", "5"))
 
 
 def task_hosts() -> list[str]:
@@ -134,7 +140,37 @@ def main() -> None:
     addr_file = os.path.join(tempfile.gettempdir(), "mm_root_hosts.txt")
     with open(addr_file, "w") as f:
         f.write("\n".join(addrs))
-    rc = subprocess.call([python, smoke, "--root-file", addr_file], cwd=HERE, env=env)
+
+    # Run several rounds back-to-back (a short send-interval, well under the
+    # heartbeat timeout, so data keeps flowing between them), then idle for a single
+    # heartbeat-only gap before teardown: the end-sleep, sized above the heartbeat
+    # timeout, is the one window where links must survive on heartbeats alone.
+    hb_timeout_s = HB_TIMEOUT_MS / 1000.0
+    send_interval = float(os.environ.get("SMOKE_SEND_INTERVAL", "1"))
+    duration = send_interval * max(SMOKE_ROUNDS - 1, 0)
+    end_sleep = hb_timeout_s * 1.5
+    print(
+        f"[bootstrap] root: {SMOKE_ROUNDS} rounds, send-interval {send_interval:.1f}s, "
+        f"duration {duration:.1f}s, single heartbeat gap (end-sleep) {end_sleep:.1f}s "
+        f"(heartbeat timeout {hb_timeout_s:.1f}s)",
+        flush=True,
+    )
+    rc = subprocess.call(
+        [
+            python,
+            smoke,
+            "--root-file",
+            addr_file,
+            "--duration",
+            str(duration),
+            "--send-interval",
+            str(send_interval),
+            "--end-sleep",
+            str(end_sleep),
+        ],
+        cwd=HERE,
+        env=env,
+    )
     print(f"[bootstrap] root finished with code {rc}", flush=True)
 
     # The smoke test is done; tear down our local workers and exit with its status.

@@ -62,7 +62,6 @@ type Handle = mpsc::UnboundedSender<HeartbeatEvent>;
 // ---------------------------------------------------------------------------
 
 const DEFAULT_MAX_DIRECT_CHILDREN: usize = 256;
-const DEFAULT_MAX_COVERAGE_PER_SIBLING: usize = 32;
 
 /// How often each side emits a heartbeat, and how long a side waits for any beat
 /// before declaring the connection broken. The timeout is several intervals so a
@@ -100,18 +99,11 @@ pub(crate) fn heartbeat_timeout() -> Duration {
         .unwrap_or(DEFAULT_HEARTBEAT_TIMEOUT)
 }
 
-/// Threshold above which a parent's new children are delegated rather than
-/// monitored directly.
+/// The number of children a parent heartbeats directly. Any beyond this are
+/// delegated to (balanced across) the direct ones, so the parent's steady-state
+/// heartbeat load is bounded by this regardless of fan-out.
 fn max_direct_children() -> usize {
     env_usize("MM_QUIC_MAX_DIRECT_CHILDREN", DEFAULT_MAX_DIRECT_CHILDREN)
-}
-
-/// Cap on how many delegated connections one sibling may cover.
-fn max_coverage_per_sibling() -> usize {
-    env_usize(
-        "MM_QUIC_MAX_COVERAGE_PER_SIBLING",
-        DEFAULT_MAX_COVERAGE_PER_SIBLING,
-    )
 }
 
 /// The heartbeat tunables, resolved once and carried by [`Heartbeats`] into every
@@ -123,7 +115,6 @@ pub(crate) struct HeartbeatConfig {
     pub(crate) interval: Duration,
     pub(crate) timeout: Duration,
     pub(crate) max_direct_children: usize,
-    pub(crate) max_coverage_per_sibling: usize,
 }
 
 impl HeartbeatConfig {
@@ -133,7 +124,6 @@ impl HeartbeatConfig {
             interval: heartbeat_interval(),
             timeout: heartbeat_timeout(),
             max_direct_children: max_direct_children(),
-            max_coverage_per_sibling: max_coverage_per_sibling(),
         }
     }
 }
@@ -165,7 +155,7 @@ impl Heartbeats {
     pub(crate) fn with_config(config: HeartbeatConfig) -> Self {
         Self {
             shared: Rc::new(RefCell::new(HeartbeatShared::new(
-                config.max_coverage_per_sibling,
+                config.max_direct_children,
             ))),
             config,
         }
@@ -321,8 +311,8 @@ enum ChildStatus {
 }
 
 /// A parent's record of one child connection. Owned by [`ParentPool`], the single
-/// source of truth for it: the direct-heartbeat count and each sibling's coverage are
-/// *derived* from these fields as statuses transition, never poked by callers.
+/// source of truth for it: the keeper set and each target's coverage are *derived*
+/// from these fields as statuses transition, never poked by callers.
 struct SiblingInfo {
     /// The child's ident, once its `Establish` is snooped. `Some` implies the child
     /// has established; whether it is *addressable* (has a dialable gateway tag) is
@@ -332,109 +322,198 @@ struct SiblingInfo {
     /// serve as a delegate.
     dialed: bool,
     status: ChildStatus,
-    /// The sibling we delegated this child to; meaningful only while `Delegating` /
-    /// `Paused`.
-    sibling: Option<ConnectionId>,
-    /// How many other children we have *requested* this one cover for us (charged at
-    /// delegation-decision time, which may run ahead of the coverage the sibling has
-    /// actually reported); nonzero only while `Direct`.
-    requested_covers: usize,
+    /// The delegate (a sibling keeper) we offloaded this child to; meaningful only
+    /// while `Delegating` / `Paused`.
+    delegated_to: Option<ConnectionId>,
 }
 
 impl SiblingInfo {
-    /// Whether this child may be handed another child to cover right now: it must be a
-    /// direct child under its coverage cap, dialed by us, and addressable.
-    fn is_delegate_candidate(&self, cap: usize) -> bool {
+    /// Whether this child may be offloaded to a delegate right now: it must be a
+    /// live direct child, dialed by us, and addressable (a sibling needs a dialable
+    /// gateway tag to reach it). A child already chosen as a delegate target
+    /// (a keeper) is excluded by the caller, not here.
+    fn is_delegable(&self) -> bool {
         self.status == ChildStatus::Direct
-            && self.requested_covers < cap
             && self.dialed
             && self.ident.as_deref().is_some_and(is_addressable)
     }
 }
 
-/// The set of connections currently eligible to be handed a sibling to cover, kept in
-/// sync by [`ParentPool::set_status`]. A `Vec` gives the round-robin cursor something to
-/// index; the position map makes add/remove O(1) (remove is `swap_remove` + an index
-/// fixup for the element that moved into the hole).
+/// The parent's delegate targets: the (at most `max_direct`) children it keeps
+/// heartbeating directly, each labelled with how many delegated siblings it
+/// currently covers. Every new delegate is handed to the least-loaded target, so
+/// coverage stays balanced. Capping the target count at `max_direct` is what makes
+/// the parent's direct-heartbeat load respect `max_direct`: the targets are the
+/// only permanently-direct children, and everything else is delegated onto them.
+///
+/// Internally a binary min-heap keyed by cover count: `heap[0]` is always a
+/// least-loaded target. An index map (`pos`) locates any target in the array in O(1)
+/// so its count can be re-heaped in place. Add, remove, and re-charge are all
+/// O(log n); reading the least-loaded target is O(1). All the heap machinery is
+/// contained here; callers only add/remove targets, read the least-loaded one, and
+/// report a `+/-1` cover-count change.
 #[derive(Default)]
-struct CandidateRing {
-    ids: Vec<ConnectionId>,
+struct DelegateTargets {
+    /// Cap on the number of targets — i.e. on children heartbeated directly.
+    max_direct: usize,
+    /// Target ids in min-heap order by cover count; `heap[0]` is least loaded.
+    heap: Vec<ConnectionId>,
+    /// id -> its index in `heap`.
     pos: HashMap<ConnectionId, usize>,
+    /// id -> its current cover count (the heap key).
+    count: HashMap<ConnectionId, usize>,
 }
 
-impl CandidateRing {
-    fn insert(&mut self, id: ConnectionId) {
-        if self.pos.contains_key(&id) {
-            return;
+impl DelegateTargets {
+    fn new(max_direct: usize) -> Self {
+        Self {
+            max_direct,
+            ..Default::default()
         }
-        self.pos.insert(id, self.ids.len());
-        self.ids.push(id);
     }
 
+    fn len(&self) -> usize {
+        self.heap.len()
+    }
+
+    fn is_full(&self) -> bool {
+        self.heap.len() >= self.max_direct
+    }
+
+    fn contains(&self, id: ConnectionId) -> bool {
+        self.pos.contains_key(&id)
+    }
+
+    fn load_of(&self, id: ConnectionId) -> usize {
+        self.count.get(&id).copied().unwrap_or(0)
+    }
+
+    /// The least-loaded target, or `None` if there are none.
+    fn least_loaded(&self) -> Option<ConnectionId> {
+        self.heap.first().copied()
+    }
+
+    /// Add `id` as a target with zero cover count. Caller ensures `!is_full()` and
+    /// that `id` is not already present. Push at the end and sift up (zero is the
+    /// minimum key, so it bubbles to the root).
+    fn add(&mut self, id: ConnectionId) {
+        debug_assert!(!self.contains(id), "target added twice");
+        let i = self.heap.len();
+        self.heap.push(id);
+        self.pos.insert(id, i);
+        self.count.insert(id, 0);
+        self.heap_up(i);
+    }
+
+    /// Drop a target that is gone; the children it covered fall back on their own.
+    /// Move the last element into the hole and re-heap from there.
     fn remove(&mut self, id: ConnectionId) {
         let Some(i) = self.pos.remove(&id) else {
             return;
         };
-        let last = self.ids.len() - 1;
-        self.ids.swap(i, last);
-        self.ids.pop();
-        if i != last {
-            *self
-                .pos
-                .get_mut(&self.ids[i])
-                .expect("swapped id is tracked") = i;
+        self.count.remove(&id);
+        let last = self.heap.len() - 1;
+        self.heap.swap(i, last);
+        self.heap.pop();
+        if i < self.heap.len() {
+            self.pos.insert(self.heap[i], i);
+            self.reheap(i);
         }
     }
 
-    /// The next candidate other than `exclude` (the child being delegated is itself a
-    /// candidate), advancing the cursor. `None` if there is no other candidate.
-    fn next(&self, rr: &mut usize, exclude: ConnectionId) -> Option<ConnectionId> {
-        let n = self.ids.len();
-        for _ in 0..n {
-            let id = self.ids[*rr % n];
-            *rr = rr.wrapping_add(1);
-            if id != exclude {
-                return Some(id);
-            }
+    /// Report that `id`'s cover count changed by `delta` (+1 when it takes on a
+    /// delegate, -1 when one leaves) and restore the heap. A no-op if `id` is not a
+    /// current target: a keeper can die (its slot freed by [`Self::remove`]) while
+    /// children still point at it, and those children shed their coverage only
+    /// afterwards.
+    fn change_count_if_present(&mut self, id: ConnectionId, delta: i64) {
+        let Some(&i) = self.pos.get(&id) else {
+            return;
+        };
+        let new = (self.count[&id] as i64 + delta).max(0) as usize;
+        self.count.insert(id, new);
+        self.reheap(i);
+    }
+
+    // --- heap internals ---
+
+    /// Cover count of the target at heap index `i`.
+    fn count_at(&self, i: usize) -> usize {
+        self.count[&self.heap[i]]
+    }
+
+    /// Swap two heap slots and fix both index-map entries.
+    fn swap(&mut self, i: usize, j: usize) {
+        self.heap.swap(i, j);
+        self.pos.insert(self.heap[i], i);
+        self.pos.insert(self.heap[j], j);
+    }
+
+    /// Restore the heap property at `i`, which may need to move in either direction
+    /// (used after a removal drops an arbitrary element into the hole).
+    fn reheap(&mut self, i: usize) {
+        if i > 0 && self.count_at(i) < self.count_at((i - 1) / 2) {
+            self.heap_up(i);
+        } else {
+            self.heap_down(i);
         }
-        None
+    }
+
+    /// Sift the element at `i` toward the root while it is lighter than its parent.
+    fn heap_up(&mut self, mut i: usize) {
+        while i > 0 {
+            let parent = (i - 1) / 2;
+            if self.count_at(i) >= self.count_at(parent) {
+                break;
+            }
+            self.swap(i, parent);
+            i = parent;
+        }
+    }
+
+    /// Sift the element at `i` toward the leaves while a child is lighter than it.
+    fn heap_down(&mut self, mut i: usize) {
+        let n = self.heap.len();
+        loop {
+            let mut smallest = i;
+            for child in [2 * i + 1, 2 * i + 2] {
+                if child < n && self.count_at(child) < self.count_at(smallest) {
+                    smallest = child;
+                }
+            }
+            if smallest == i {
+                break;
+            }
+            self.swap(i, smallest);
+            i = smallest;
+        }
     }
 }
 
 /// A parent's pool of child connections and the delegation state derived from them.
 /// It owns the per-child [`SiblingInfo`] records and is the *only* place eligibility
-/// and the direct-heartbeat count are computed: callers narrate connection events
-/// (the lifecycle methods below) and never touch the derived state.
+/// and the keeper set are computed: callers narrate connection events (the lifecycle
+/// methods below) and never touch the derived state.
 struct ParentPool {
     siblings: HashMap<ConnectionId, SiblingInfo>,
-    /// Count of children currently heartbeated directly. Derived — maintained as
-    /// statuses transition — and drives the delegation budget.
-    active_direct: i64,
-    /// Round-robin cursor over `candidates`, so consecutive delegations spread across
-    /// siblings and a just-failed one is unlikely to be re-picked immediately.
-    rr: usize,
-    /// Connections eligible to cover a sibling right now, maintained incrementally by
-    /// `set_status` so `pick_delegate` is O(1).
-    candidates: CandidateRing,
-    /// Max children any one sibling may be asked to cover; feeds `is_delegate_candidate`.
-    cap: usize,
+    /// The children kept direct (the delegate targets), capped at `max_direct`, with
+    /// their cover counts. Every child beyond these is delegated onto the
+    /// least-loaded one of them. Its size *is* the direct-heartbeat budget.
+    delegate_targets: DelegateTargets,
 }
 
 impl ParentPool {
-    fn new(cap: usize) -> Self {
+    fn new(max_direct: usize) -> Self {
         Self {
             siblings: HashMap::new(),
-            active_direct: 0,
-            rr: 0,
-            candidates: CandidateRing::default(),
-            cap,
+            delegate_targets: DelegateTargets::new(max_direct),
         }
     }
 
     // --- connection lifecycle (the only way callers change pool state) ---
 
-    /// A child connection was added (not yet established). We beat it directly from now
-    /// on, so it immediately counts toward the budget.
+    /// A child connection was added (not yet established). We beat it directly until
+    /// it establishes and is possibly delegated.
     fn add_child(&mut self, conn_id: ConnectionId, dialed: bool) {
         self.siblings.insert(
             conn_id,
@@ -442,11 +521,9 @@ impl ParentPool {
                 ident: None,
                 dialed,
                 status: ChildStatus::NotEstablished,
-                sibling: None,
-                requested_covers: 0,
+                delegated_to: None,
             },
         );
-        self.active_direct += 1;
     }
 
     /// The child's `Establish` arrived: record its ident and treat it as a live
@@ -455,49 +532,63 @@ impl ParentPool {
         if let Some(info) = self.siblings.get_mut(&conn_id) {
             info.ident = Some(ident);
         }
-        self.set_status(conn_id, Some(ChildStatus::Direct));
+        self.restore_direct(conn_id);
     }
 
-    /// If we are over the direct-heartbeat budget and `conn_id` is a plain live direct
-    /// child, delegate it to an eligible sibling: record the delegation, charge that
-    /// sibling's coverage, and return the [`Delegate`] instruction to send. `None` if
-    /// not over budget, the child isn't delegable, or no sibling is free.
-    fn delegate(&mut self, conn_id: ConnectionId, config: HeartbeatConfig) -> Option<Delegate> {
-        let info = self.siblings.get(&conn_id)?;
-        // Only a plain, established, dialed direct child is delegated — never a cover
-        // host, an already-delegating/paused one, or one we can't dial or address.
-        if info.status != ChildStatus::Direct
-            || info.requested_covers != 0
-            || !info.dialed
-            || info.ident.is_none()
+    /// Decide what to do with `conn_id`, which just beat us:
+    ///
+    /// - If it is a keeper (delegate target), keep heartbeating it directly.
+    /// - Else if the keeper set has room, make it a keeper — so the first `max_direct`
+    ///   delegable children become the direct set.
+    /// - Once the keeper set is full, offload it: delegate it to the least-loaded
+    ///   keeper and return the [`Delegate`] instruction. `assign_delegate` charges
+    ///   that keeper's cover count, rebalancing the target order.
+    ///
+    /// The keeper cap *is* the budget: at most `max_direct` children are ever
+    /// heartbeated directly, and every other child is delegated and balanced across
+    /// them. (A non-keeper only reaches the offload path once the set is full, which
+    /// is exactly when there are more direct children than the cap.)
+    fn delegate(&mut self, conn_id: ConnectionId) -> Option<Delegate> {
+        // A keeper is heartbeated directly forever.
+        if self.delegate_targets.contains(conn_id) {
+            return None;
+        }
+        // Only a plain, established, dialed, addressable direct child is offloaded.
+        if !self
+            .siblings
+            .get(&conn_id)
+            .is_some_and(SiblingInfo::is_delegable)
         {
             return None;
         }
-        if !self.over_budget(config.max_direct_children) {
+        // Fill the keeper set first; only once it is full do we start offloading.
+        if !self.delegate_targets.is_full() {
+            self.delegate_targets.add(conn_id);
+            if crate::ctx::connection_debug() {
+                eprintln!(
+                    "MM_DELEG keeper conn_id={conn_id} keepers={}/{}",
+                    self.delegate_targets.len(),
+                    self.delegate_targets.max_direct,
+                );
+            }
             return None;
         }
+        let target = self.delegate_targets.least_loaded()?;
+        let sibling_ident = self.siblings.get(&target)?.ident.clone()?;
         if crate::ctx::connection_debug() {
             eprintln!(
-                "MM_DELEG over budget: active_direct={} max_direct={} candidates={}",
-                self.active_direct,
-                config.max_direct_children,
-                self.candidates.ids.len(),
+                "MM_DELEG pick child={conn_id} -> target={target} target_load={} keepers={}",
+                self.delegate_targets.load_of(target),
+                self.delegate_targets.len(),
             );
         }
-        let (sibling_conn, sibling_ident) = self.pick_delegate(conn_id)?;
-        // Point the child at its delegate, then transition: `set_status` charges
-        // `sibling_conn`'s coverage as the child enters `Delegating`.
-        self.siblings.get_mut(&conn_id)?.sibling = Some(sibling_conn);
-        self.set_status(conn_id, Some(ChildStatus::Delegating));
+        // Enter `Delegating`, pointing the child at its target and charging that
+        // target's cover count.
+        self.assign_delegate(conn_id, target);
         Some(Delegate {
             connection_id: conn_id,
             sibling_ident,
         })
-    }
-
-    /// Whether we are over the direct-heartbeat budget.
-    fn over_budget(&self, max_direct_children: usize) -> bool {
-        self.active_direct > max_direct_children as i64
     }
 
     /// This child's current status, if we still track it.
@@ -506,102 +597,64 @@ impl ParentPool {
     }
 
     // --- derived-state maintenance (internal) ---
+    //
+    // The only derived state is a target's cover count, and it moves solely when a
+    // child *crosses the delegation boundary*: entering the delegated set charges its
+    // target +1 (`assign_delegate`), leaving it charges its old target -1
+    // (`restore_direct`, `remove_child`). Staying on the same side of the boundary
+    // (`acknowledge_delegate`, the `Delegating` → `Paused` step) moves nothing. Every
+    // record is `add_child`ed before its parent task's loop runs and dropped only by
+    // the single teardown `remove_child`, so each call in between finds its record
+    // present.
 
-    /// Move a child to `status` (or, if `None`, remove it entirely — a connection is
-    /// gone). All accounting is done here by reversing what the child contributed before
-    /// the change, then applying what it contributes after; the candidate list follows
-    /// the child's own candidacy across the transition (the coverage change to any
-    /// *sibling* is reflected in `account`, where that sibling's count moves).
-    fn set_status(&mut self, conn_id: ConnectionId, status: Option<ChildStatus>) {
-        let was_candidate = self.is_candidate(conn_id);
-        self.account(conn_id, -1);
-        match status {
-            Some(status) => {
-                let Some(info) = self.siblings.get_mut(&conn_id) else {
-                    return;
-                };
-                info.status = status;
-                // Only a delegated child points at a sibling.
-                if !matches!(status, ChildStatus::Delegating | ChildStatus::Paused) {
-                    info.sibling = None;
-                }
-                self.account(conn_id, 1);
-            }
-            None => {
-                self.siblings.remove(&conn_id);
-            }
-        }
-        self.refresh_candidate(conn_id, was_candidate);
-    }
-
-    /// Apply (`sign` = 1) or reverse (`sign` = -1) the bookkeeping the child at `conn_id`
-    /// implies given its current status: whether we heartbeat it directly (the budget),
-    /// and the unit of coverage it consumes from the sibling it is delegated to.
-    fn account(&mut self, conn_id: ConnectionId, sign: i64) {
-        let Some(info) = self.siblings.get(&conn_id) else {
-            return;
-        };
-        let (status, sibling) = (info.status, info.sibling);
-        match status {
-            // We heartbeat it directly — it counts toward the budget.
-            ChildStatus::NotEstablished | ChildStatus::Direct => self.active_direct += sign,
-            // Delegated to a sibling: once we *request* delegation we treat it as
-            // offloaded (so we don't keep delegating others while the pause is in
-            // flight), and we charge the sibling one requested cover. `Delegating` still
-            // watches directly at the loop level, but for the budget it no longer counts;
-            // if the delegation falls back it reverts to `Direct` and counts again. The
-            // sibling may already be gone if it died before the child it was covering.
-            ChildStatus::Delegating | ChildStatus::Paused => {
-                let sibling = sibling.expect("a delegated child has a sibling");
-                let was_candidate = self.is_candidate(sibling);
-                if let Some(info) = self.siblings.get_mut(&sibling) {
-                    info.requested_covers =
-                        info.requested_covers.saturating_add_signed(sign as isize);
-                }
-                // Changing the sibling's `requested_covers` can move it across the cap.
-                self.refresh_candidate(sibling, was_candidate);
-            }
-        }
-    }
-
-    /// Whether `conn_id` is currently a delegate candidate.
-    fn is_candidate(&self, conn_id: ConnectionId) -> bool {
+    /// The record for `conn_id`, which every lifecycle call after `add_child` (and
+    /// before `remove_child`) is guaranteed to find (see the note above).
+    fn info_mut(&mut self, conn_id: ConnectionId) -> &mut SiblingInfo {
         self.siblings
-            .get(&conn_id)
-            .is_some_and(|i| i.is_delegate_candidate(self.cap))
+            .get_mut(&conn_id)
+            .expect("no record for connection (never add_child'd, or already removed)")
     }
 
-    /// Sync `conn_id`'s membership in the candidate ring after a change, given whether it
-    /// was a candidate beforehand.
-    fn refresh_candidate(&mut self, conn_id: ConnectionId, was_candidate: bool) {
-        match (was_candidate, self.is_candidate(conn_id)) {
-            (false, true) => self.candidates.insert(conn_id),
-            (true, false) => self.candidates.remove(conn_id),
-            _ => {}
+    /// Restore `conn_id` to a live direct child (it just established, beat us directly
+    /// after being delegated, or a sibling stopped covering it). If it had been
+    /// delegated, its old target sheds a unit of coverage.
+    fn restore_direct(&mut self, conn_id: ConnectionId) {
+        let info = self.info_mut(conn_id);
+        info.status = ChildStatus::Direct;
+        // Only a delegated child points at a target; clearing it uncharges that target.
+        if let Some(target) = info.delegated_to.take() {
+            self.delegate_targets.change_count_if_present(target, -1);
         }
     }
 
-    /// Round-robin pick of a delegate candidate other than `exclude`.
-    fn pick_delegate(&mut self, exclude: ConnectionId) -> Option<(ConnectionId, Vec<u8>)> {
-        let chosen = self.candidates.next(&mut self.rr, exclude)?;
-        let ident = self.siblings.get(&chosen)?.ident.clone()?;
-        Some((chosen, ident))
+    /// Offload `conn_id` to `target`: it enters `Delegating` and charges `target`'s
+    /// cover count +1. It is still watched directly at the loop level until its
+    /// delegate acks (see `acknowledge_delegate`).
+    fn assign_delegate(&mut self, conn_id: ConnectionId, target: ConnectionId) {
+        let info = self.info_mut(conn_id);
+        info.status = ChildStatus::Delegating;
+        info.delegated_to = Some(target);
+        self.delegate_targets.change_count_if_present(target, 1);
     }
 
-    /// Rebuild the candidate ring from scratch (tests that stuff `siblings` directly,
-    /// bypassing the incremental `set_status` maintenance).
-    #[cfg(test)]
-    fn rebuild_candidates(&mut self) {
-        self.candidates = CandidateRing::default();
-        let ids: Vec<ConnectionId> = self
+    /// Acknowledge that `conn_id`'s delegate now covers it: it goes silent to us
+    /// (`Delegating` → `Paused`). It keeps the same target, so no cover count moves.
+    fn acknowledge_delegate(&mut self, conn_id: ConnectionId) {
+        self.info_mut(conn_id).status = ChildStatus::Paused;
+    }
+
+    /// Drop `conn_id` entirely — its connection is gone. If it was delegated, its
+    /// target sheds a unit of coverage; if it was itself a keeper, its slot is freed
+    /// so its covered children fall back to direct.
+    fn remove_child(&mut self, conn_id: ConnectionId) {
+        let info = self
             .siblings
-            .iter()
-            .filter(|(_, i)| i.is_delegate_candidate(self.cap))
-            .map(|(&id, _)| id)
-            .collect();
-        for id in ids {
-            self.candidates.insert(id);
+            .remove(&conn_id)
+            .expect("remove_child on a connection that was never add_child'd");
+        if let Some(target) = info.delegated_to {
+            self.delegate_targets.change_count_if_present(target, -1);
         }
+        self.delegate_targets.remove(conn_id);
     }
 }
 
@@ -618,18 +671,19 @@ pub(crate) struct HeartbeatShared {
     parents_by_conn_id: HashMap<ConnectionId, Handle>,
     /// For each local actor that parents quic children, its delegate pool.
     parents: HashMap<Key, ParentPool>,
-    /// Max children any one sibling may cover; seeded into each [`ParentPool`].
-    max_coverage_per_sibling: usize,
+    /// Number of children each parent heartbeats directly; seeded into each
+    /// [`ParentPool`] as the keeper cap.
+    max_direct: usize,
 }
 
 impl HeartbeatShared {
-    pub(crate) fn new(max_coverage_per_sibling: usize) -> Self {
+    pub(crate) fn new(max_direct: usize) -> Self {
         Self {
             next_conn_id: 0,
             children_by_ident: HashMap::new(),
             parents_by_conn_id: HashMap::new(),
             parents: HashMap::new(),
-            max_coverage_per_sibling,
+            max_direct,
         }
     }
 
@@ -646,10 +700,10 @@ impl HeartbeatShared {
     }
 
     fn pool_mut(&mut self, key: Key) -> &mut ParentPool {
-        let cap = self.max_coverage_per_sibling;
+        let max_direct = self.max_direct;
         self.parents
             .entry(key)
-            .or_insert_with(|| ParentPool::new(cap))
+            .or_insert_with(|| ParentPool::new(max_direct))
     }
 
     /// Route a delegate host's coverage diff to the covered connections' Parent-side
@@ -831,7 +885,7 @@ async fn parent_task<S: SendBeat>(ctx: HeartbeatCtx<S>) {
     // deregister. (A delegate host's covered children are resumed by
     // `parent_cover_loop` itself as it exits.)
     let mut s = shared.borrow_mut();
-    s.pool_mut(key).set_status(conn_id, None);
+    s.pool_mut(key).remove_child(conn_id);
     s.parents_by_conn_id.remove(&conn_id);
 }
 
@@ -883,7 +937,7 @@ async fn parent_direct_loop(
                         shared
                             .borrow_mut()
                             .pool_mut(key)
-                            .set_status(conn_id, Some(ChildStatus::Direct));
+                            .restore_direct(conn_id);
 
                         if !cover_add.is_empty() {
                             // First coverage report: it is now a delegate host. Answer this
@@ -896,7 +950,7 @@ async fn parent_direct_loop(
                         // Answer the beat, carrying a delegate instruction if we are over
                         // budget. The child sends no further direct beat until it processes
                         // this answer, so a delegate here is its last one.
-                        let delegate = shared.borrow_mut().pool_mut(key).delegate(conn_id, config);
+                        let delegate = shared.borrow_mut().pool_mut(key).delegate(conn_id);
                         let _ = beats.send(Heartbeat::FromParent { delegate });
                     }
                     HeartbeatEvent::ReceivedHeartbeat(Heartbeat::TransportActivity) => {
@@ -921,7 +975,7 @@ async fn parent_direct_loop(
                             );
                         }
                         if pool.status(conn_id) == Some(ChildStatus::Delegating) {
-                            pool.set_status(conn_id, Some(ChildStatus::Paused));
+                            pool.acknowledge_delegate(conn_id);
                             deadline = None;
                         }
                     }
@@ -930,7 +984,7 @@ async fn parent_direct_loop(
                         shared
                             .borrow_mut()
                             .pool_mut(key)
-                            .set_status(conn_id, Some(ChildStatus::Direct));
+                            .restore_direct(conn_id);
                         deadline = Some(Instant::now() + config.timeout);
                     }
                     HeartbeatEvent::EstablishPeer { peer_ident } => {
@@ -1327,9 +1381,8 @@ mod tests {
             interval: Duration::from_millis(INTERVAL_MS),
             timeout: Duration::from_millis(TIMEOUT_MS),
             // A parent may keep one child direct; a second established child is over
-            // budget and gets delegated.
+            // budget and gets delegated onto the first.
             max_direct_children: 1,
-            max_coverage_per_sibling: 8,
         }
     }
 
@@ -1438,54 +1491,130 @@ mod tests {
             .unwrap()
     }
 
-    /// Delegate selection skips any sibling that is not a *live* candidate (status
-    /// isn't `Direct`, or it isn't dialed / addressable / under capacity) and
-    /// round-robins over the ones that are — so a dead-but-not-yet-reaped sibling is
-    /// never handed a child.
+    /// `DelegateTargets` hands each new delegate to the least-loaded target and keeps
+    /// coverage balanced as counts move by one, staying correctly sorted throughout.
     #[test]
-    fn pick_delegate_skips_non_candidates_and_round_robins() {
-        let cap = 8;
-        let mut pool = ParentPool::new(cap);
-        let sib = |ident: &[u8], dialed, status, requested_covers| SiblingInfo {
-            ident: Some(ident.to_vec()),
-            dialed,
-            status,
-            sibling: None,
-            requested_covers,
-        };
-        pool.siblings
-            .insert(1, sib(b"c1@x", true, ChildStatus::Direct, 0)); // candidate
-        pool.siblings
-            .insert(2, sib(b"c2@x", true, ChildStatus::Direct, 1)); // candidate (already covers one)
-        pool.siblings
-            .insert(3, sib(b"paused@x", true, ChildStatus::Paused, 0)); // delegated away
-        pool.siblings.insert(
-            4,
-            sib(b"unestablished@x", true, ChildStatus::NotEstablished, 0),
-        ); // not established
-        pool.siblings
-            .insert(5, sib(b"nodial@x", false, ChildStatus::Direct, 0)); // we didn't dial it
-        pool.siblings
-            .insert(6, sib(b"noaddr", true, ChildStatus::Direct, 0)); // no gateway tag
-        pool.siblings
-            .insert(7, sib(b"full@x", true, ChildStatus::Direct, cap)); // at capacity
-        pool.rebuild_candidates();
+    fn delegate_targets_balances_least_loaded() {
+        let mut t = DelegateTargets::new(3);
+        t.add(1);
+        t.add(2);
+        t.add(3); // three targets, all cover count 0
 
-        // The child being delegated (excluded) is conn 99.
-        let picks: Vec<ConnectionId> = (0..6)
-            .map(|_| {
-                pool.pick_delegate(99)
-                    .expect("an eligible sibling exists")
-                    .0
-            })
-            .collect();
-        assert!(
-            picks.iter().all(|&id| id == 1 || id == 2),
-            "only live, dialed, addressable, under-capacity candidates picked: {picks:?}",
+        // Assign six delegates, each to the least-loaded target (charge +1 after each
+        // pick, as the pool does when a child enters `Delegating`).
+        for _ in 0..6 {
+            let id = t.least_loaded().expect("a target exists");
+            t.change_count_if_present(id, 1);
+        }
+        // Balanced: 6 delegates across 3 targets => 2 each.
+        for id in [1, 2, 3] {
+            assert_eq!(t.load_of(id), 2, "target {id} balanced to 2");
+        }
+        assert!(t.is_full(), "three targets fills a cap of three");
+
+        // Discharging one makes it strictly least loaded, so it is picked next.
+        t.change_count_if_present(2, -1);
+        assert_eq!(t.load_of(2), 1, "target 2 now covers one");
+        assert_eq!(
+            t.least_loaded(),
+            Some(2),
+            "the discharged target is least loaded"
         );
-        assert!(
-            picks.contains(&1) && picks.contains(&2),
-            "round-robin uses both candidates: {picks:?}",
+
+        // Removing a target drops it entirely; order among the rest is preserved.
+        t.remove(1);
+        assert!(!t.contains(1), "removed target is gone");
+        assert_eq!(t.len(), 2);
+    }
+
+    /// Stress the min-heap internals: interleave add/remove/charge with a
+    /// deterministic pseudo-random schedule and check, after every mutation, that the
+    /// heap invariant holds, the index map is consistent, and `least_loaded` really is
+    /// a minimum-count target.
+    #[test]
+    fn delegate_targets_heap_invariant_under_churn() {
+        // Assert every structural invariant of `t`.
+        fn check(t: &DelegateTargets) {
+            assert_eq!(t.heap.len(), t.pos.len(), "pos covers exactly the heap");
+            assert_eq!(t.heap.len(), t.count.len(), "count covers exactly the heap");
+            for (i, &id) in t.heap.iter().enumerate() {
+                assert_eq!(t.pos[&id], i, "pos[{id}] tracks its heap slot");
+                if i > 0 {
+                    let parent = (i - 1) / 2;
+                    assert!(
+                        t.count_at(parent) <= t.count_at(i),
+                        "min-heap: parent at {parent} <= child at {i}"
+                    );
+                }
+            }
+            if let Some(top) = t.least_loaded() {
+                let min = t.heap.iter().map(|&id| t.load_of(id)).min().unwrap();
+                assert_eq!(t.load_of(top), min, "least_loaded is a true minimum");
+            }
+        }
+
+        // A tiny deterministic LCG so the test is reproducible without an rng dep.
+        let mut seed: u64 = 0x9e3779b97f4a7c15;
+        let mut rng = || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            (seed >> 33) as usize
+        };
+
+        // Big cap so `add` is never rejected; ids cycle through a small space so
+        // adds, removes, and re-adds all collide and exercise every path.
+        let mut t = DelegateTargets::new(1_000);
+        for _ in 0..5_000 {
+            let id = (rng() % 32) as ConnectionId;
+            match rng() % 3 {
+                0 if !t.contains(id) => t.add(id),
+                1 => t.remove(id), // no-op if absent
+                _ if t.contains(id) => {
+                    // Move the count by +/-1, as the pool does.
+                    let delta = if rng() % 2 == 0 { 1 } else { -1 };
+                    t.change_count_if_present(id, delta);
+                }
+                _ => {}
+            }
+            check(&t);
+        }
+    }
+
+    /// The pool keeps at most `max_direct` children direct (the keepers) and delegates
+    /// every other established child onto them, balanced — so the number of direct
+    /// children settles at exactly `max_direct`, never above it.
+    #[test]
+    fn delegate_respects_max_direct_and_balances() {
+        let mut pool = ParentPool::new(2); // keep at most two children direct
+        for id in 0..6 {
+            pool.add_child(id, true);
+            pool.established(id, format!("c{id}@x").into_bytes());
+        }
+
+        // Each child beats once: the first two become keepers, the rest are delegated
+        // onto them.
+        for id in 0..6 {
+            let _ = pool.delegate(id);
+        }
+
+        let direct = pool
+            .siblings
+            .values()
+            .filter(|s| s.status == ChildStatus::Direct)
+            .count();
+        assert_eq!(direct, 2, "exactly max_direct children remain direct");
+        assert_eq!(pool.delegate_targets.len(), 2, "the two keepers");
+        // The four delegated children are balanced two-per-keeper.
+        let mut loads: Vec<usize> = pool
+            .delegate_targets
+            .heap
+            .iter()
+            .map(|&k| pool.delegate_targets.load_of(k))
+            .collect();
+        loads.sort_unstable();
+        assert_eq!(
+            loads,
+            vec![2, 2],
+            "four delegates balanced across two keepers"
         );
     }
 
@@ -1671,9 +1800,20 @@ mod tests {
             let mut d = spawn_child(&hb, d);
             establish_child(&d, b"D@d", b"B@b");
             establish_parent(&bc, b"C@c");
-            establish_parent(&bd, b"D@d"); // active_direct = 2 > max_direct = 1
+            establish_parent(&bd, b"D@d"); // 2 direct children > max_direct = 1
             nap(INTERVAL_MS).await;
 
+            // One beat from C promotes it to the sole keeper (max_direct = 1); then it
+            // goes silent forever (we never pump `bc` again), so it is the doomed
+            // delegate. Beating B–D next delegates D onto C.
+            send(
+                &bc,
+                HeartbeatEvent::ReceivedHeartbeat(Heartbeat::FromChild {
+                    cover_add: vec![],
+                    cover_del: vec![],
+                }),
+            );
+            nap(INTERVAL_MS).await;
             // Trigger B–D to delegate D to the doomed C.
             send(
                 &bd,
@@ -1752,10 +1892,20 @@ mod tests {
             establish_child(&c, b"C@c", b"B@b");
             establish_child(&d, b"D@d", b"B@b");
             establish_parent(&bc, b"C@c");
-            establish_parent(&bd, b"D@d"); // now active_direct = 2 > max_direct = 1
+            establish_parent(&bd, b"D@d"); // now 2 direct children > max_direct = 1
             nap(INTERVAL_MS).await;
 
-            // Trigger B–D to delegate D to C (a FromChild beat while over budget).
+            // With max_direct = 1 the first over-budget beat promotes a keeper and the
+            // next delegates onto it. Beat B–C first so C becomes the sole keeper...
+            send(
+                &bc,
+                HeartbeatEvent::ReceivedHeartbeat(Heartbeat::FromChild {
+                    cover_add: vec![],
+                    cover_del: vec![],
+                }),
+            );
+            nap(INTERVAL_MS).await;
+            // ...then beat B–D so D is delegated to C.
             send(
                 &bd,
                 HeartbeatEvent::ReceivedHeartbeat(Heartbeat::FromChild {
