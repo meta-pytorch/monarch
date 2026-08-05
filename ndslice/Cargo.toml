@@ -22,7 +22,7 @@ itertools = "0.15.0"
 nom = "8"
 proc-macro2 = { version = "1.0.107", features = ["span-locations"] }
 proptest = "1.11.0"
-quote = "1.0.46"
+quote = "1.0.47"
 rand = "0.10.2"
 rankspace = { version = "0.0.0", path = "../rankspace" }
 serde = { version = "1.0.229", features = ["derive", "rc"] }
