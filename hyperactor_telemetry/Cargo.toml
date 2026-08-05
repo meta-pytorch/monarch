@@ -12,7 +12,7 @@ anyhow = "1.0.104"
 chrono = { version = "0.4.45", features = ["clock", "serde", "std"], default-features = false }
 dashmap = { version = "6.2.1", features = ["rayon", "serde"] }
 erased-serde = "0.4.10"
-hdrhistogram = "7.5"
+hdrhistogram = "7.6.0"
 hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
 libc = "0.2.186"
 monarch_record_batch = { version = "0.0.0", path = "../monarch_record_batch" }
