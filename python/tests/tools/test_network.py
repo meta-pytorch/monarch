@@ -182,3 +182,75 @@ class TestNetwork(unittest.TestCase):
         # since we patched `socket.getaddrinfo` above
         # don't patch and just make sure things don't error out
         self.assertIsNotNone(network.get_sockaddr(socket.getfqdn(), 8080))
+
+
+def _addrinfo(*addrs: tuple[int, str], port: int = 8080) -> List[Any]:
+    """A `socket.getaddrinfo` result for the given `(family, ip)` pairs."""
+    entries: List[Any] = []
+    for family, ip in addrs:
+        sockaddr = (ip, port) if family == socket.AF_INET else (ip, port, 0, 0)
+        entries.append((family, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", sockaddr))
+    return entries
+
+
+class TestConsistentSockaddr(unittest.TestCase):
+    """`get_consistent_sockaddr` promises one thing: any two hosts resolving the
+    same name produce the same string. Each test pins part of that promise."""
+
+    IPV6: tuple[int, str] = (socket.AF_INET6, "2a03:83e4:4027:846b::cba7")
+    IPV4: tuple[int, str] = (socket.AF_INET, "10.130.53.206")
+
+    def _resolve(self, *addrs: tuple[int, str]) -> str:
+        with mock.patch("socket.getaddrinfo", return_value=_addrinfo(*addrs)):
+            return network.get_consistent_sockaddr("node-0", 8080)
+
+    def test_agrees_when_only_one_side_sees_an_extra_ipv6(self) -> None:
+        """The bug: a node's own `/etc/hosts` adds an IPv6 GUA that the A record
+        its peers get from DNS does not have. Both sides must still pick the
+        same address."""
+        advertised = self._resolve(self.IPV6, self.IPV4)  # the node's own view
+        dialed = self._resolve(self.IPV4)  # what DNS gives its peers
+        self.assertEqual(advertised, dialed)
+        self.assertEqual("10.130.53.206:8080", advertised)
+
+    def test_choice_is_independent_of_resolver_order(self) -> None:
+        """getaddrinfo ordering is host-configurable (RFC 6724, gai.conf), so it
+        must not decide the answer -- across families or within one."""
+        other_ipv4 = (socket.AF_INET, "10.130.53.7")
+        for view in ((self.IPV6, self.IPV4), (self.IPV4, self.IPV6)):
+            self.assertEqual("10.130.53.206:8080", self._resolve(*view))
+        for view in ((self.IPV4, other_ipv4), (other_ipv4, self.IPV4)):
+            self.assertEqual("10.130.53.7:8080", self._resolve(*view))
+
+    def test_ipv6_only_host_gets_a_bracketed_ipv6(self) -> None:
+        """No family is hardcoded: unlike `AddrType.IPv4`, an IPv6-only cluster
+        still resolves rather than failing."""
+        self.assertEqual("[2a03:83e4:4027:846b::cba7]:8080", self._resolve(self.IPV6))
+
+    def test_unroutable_addresses_dropped(self) -> None:
+        """Loopback is dropped as well as link-local: both sides would agree on
+        it, but no peer can reach it."""
+        for unroutable in [
+            (socket.AF_INET, "127.0.1.1"),
+            (socket.AF_INET6, "::1"),
+            (socket.AF_INET6, "fe80::222:48ff:fe49:ba90"),
+            (socket.AF_INET, "169.254.1.1"),
+            # a scope id ("fe80::1%eth0") must be stripped before the routability
+            # check, not crash `ipaddress.ip_address` on the way to dropping it
+            (socket.AF_INET6, "fe80::222:48ff:fe49:ba90%eth0"),
+        ]:
+            with self.subTest(unroutable=unroutable[1]):
+                self.assertEqual(
+                    "10.130.53.206:8080", self._resolve(unroutable, self.IPV4)
+                )
+
+    def test_raises_when_nothing_routable_resolves(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "routable"):
+            self._resolve((socket.AF_INET, "127.0.0.1"))
+
+    def test_real_hostname_resolves(self) -> None:
+        # unpatched, like `TestNetwork.test_network`: just make sure the rule
+        # runs against a real resolver on this host.
+        self.assertIsNotNone(
+            network.get_consistent_sockaddr(socket.gethostname(), 8080)
+        )

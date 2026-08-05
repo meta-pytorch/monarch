@@ -18,7 +18,7 @@ from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.config import configure
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.job._batch_env import in_batch_job
-from monarch._src.job._slurm_batch import _WORKER_BOOTSTRAP
+from monarch._src.job._slurm_batch import _WORKER_BOOTSTRAP, worker_address
 from monarch._src.job.job import BatchJob, JobState, JobTrait
 
 
@@ -362,7 +362,11 @@ class SlurmJob(JobTrait):
             ]
             hostname_idx += num_nodes
 
-            workers = [f"tcp://{hostname}:{self._port}" for hostname in mesh_hostnames]
+            # Same helper the workers serve on (_slurm_batch._WORKER_BOOTSTRAP),
+            # so the dialed address is byte-for-byte the advertised one.
+            workers = [
+                worker_address(hostname, self._port) for hostname in mesh_hostnames
+            ]
             host_mesh = attach_to_workers(
                 name=mesh_name,
                 ca="trust_all_connections",

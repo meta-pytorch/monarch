@@ -9,16 +9,19 @@
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
 from typing import Callable
+from unittest.mock import patch
 
 import pytest
 from monarch._src.spmd.host_mesh import (
     _IN_PAR,
     _spawn_worker_process,
     _worker_addr_key,
+    _worker_address,
     host_mesh_from_store,
 )
 
@@ -89,6 +92,32 @@ def test_net_transports_require_explicit_port() -> None:
     for transport in ("tcp", "metatls", "metatls-hostname"):
         with pytest.raises(ValueError, match="monarch_port must be an explicit"):
             _spawn_worker_process(transport=transport, monarch_port=0)
+
+
+def test_worker_address_tcp_publishes_a_resolved_address() -> None:
+    """The tcp address goes into a store for another rank to dial back, so it
+    must be resolved here rather than left as a name: the node's own resolver
+    can answer with a family its peers cannot see (here the IPv6 GUA)."""
+    with patch(
+        "socket.getaddrinfo",
+        return_value=[
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::2", 22222, 0, 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.1", 22222)),
+        ],
+    ):
+        addr = _worker_address("tcp", monarch_port=22222, name="w", ipc_dir=None)
+    assert addr == "tcp://10.0.0.1:22222"
+
+
+def test_worker_address_metatls_keeps_the_hostname() -> None:
+    """TLS deliberately stays on the hostname: ChannelAddr::MetaTls stores it and
+    resolves per dial, so the advertised name is the cert-validated name."""
+    with patch("socket.getfqdn", return_value="node-0.example.com"):
+        for transport in ("metatls", "metatls-hostname"):
+            addr = _worker_address(
+                transport, monarch_port=22222, name="w", ipc_dir=None
+            )
+            assert addr == "metatls://node-0.example.com:22222"
 
 
 @pytest.mark.parametrize(
