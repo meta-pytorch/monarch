@@ -1,0 +1,28 @@
+[package]
+name = "monarch_mini"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+# staticlib: an opaque native archive exporting only the `mm_*` C ABI, with its
+# own std/tokio bundled and internalized — this is how consumers (Python, C, and
+# the Rust bindings) link it, so its runtime is fully isolated from the caller's
+# (no shared allocator, panic runtime, or thread-local state). rlib is kept for
+# any in-tree Rust consumer that wants the crate directly.
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+anyhow = "1"
+bincode = { version = "2", features = ["serde"] }
+ktls = { version = "6", default-features = false, features = ["ring", "tls12"] }
+libc = "0.2"
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring", "log"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls-pemfile = "2"
+rustls-pki-types = "1"
+serde = { version = "1.0.219", features = ["derive"] }
+socket2 = "0.6"
+slotmap = "1"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "net", "io-util", "time", "fs", "macros"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging", "tls12"] }
+tracing = "0.1.41"
