@@ -12,6 +12,89 @@ Philosophy:
 
 ---
 
+## A Complete Example
+
+The whole API fits in a short program. A root `parent` joins two children, `a`
+and `b`, that each *serve* a quic listener on loopback; the parent sends `a` a
+message, then `a` *monitors* its sibling `b` and observes its death.
+
+Two children are what makes `monitor` worth showing: a parent↔child link is
+already watched implicitly (a severed link is delivered via the `failure`
+prefix registered on `serve`/`join`), so an explicit `monitor` only matters
+*between actors with no direct link* — here `a` has no connection to `b`, so it
+must monitor `b` by name. When `b` dies, **both** notices fire: the parent's
+implicit link failure (`[failure_prefix, b, reason]`, carrying `b`'s own death
+reason) and `a`'s explicit monitor (`[failure_prefix, b, "actor died"]`, always
+that fixed reason). The monitor climbs to their common ancestor (the parent) and
+fires from there.
+
+quic reads its TLS material from `MM_QUIC_CERT` / `MM_QUIC_KEY` / `MM_QUIC_CA`
+(see `mast/smoke.py`); an actor that serves a quic listener carries that address
+as the `@endpoint` in its ident, while a root omits the `@` entirely.
+
+Both bindings read *per actor*: Python's `actor.next()` and Rust's
+`actor.recv()` each return that one actor's next message. (Rust also has an
+explicit [`Poller`] for fanning in over many actors at once; `recv` is the
+single-actor convenience that lazily makes a poller under the hood.)
+
+### Python
+
+```python
+import asyncio, minimonarch as mm
+ba = mm.bytearray
+
+async def main():
+    parent = mm.Actor(b"parent")                                    # root; ident omits the @endpoint
+    a, b = mm.Actor(b"a@[::1]:7001"), mm.Actor(b"b@[::1]:7002")
+    a.serve("quic://[::1]:7001", "child"); b.serve("quic://[::1]:7002", "child")
+    parent.join("quic://[::1]:7001", "parent", failure=[ba(b"LINKDOWN")])
+    parent.join("quic://[::1]:7002", "parent", failure=[ba(b"LINKDOWN")])
+    await a.next(); await b.next(); await parent.next(); await parent.next()   # 4 establishment hellos
+
+    parent.send(b"a@[::1]:7001", [ba(b"ping")])                     # route a message parent -> a
+    print(await a.next())                                           # [b"ping"]
+
+    a.monitor(b"b@[::1]:7002", failure=[ba(b"DOWN")])               # sibling monitor: a has no link to b
+    b.die(b"bye")
+    # b's death reaches both actors linked to it:
+    print(await parent.next())   # parent link failed: [b"LINKDOWN", b"b@[::1]:7002", b"bye"]
+    print(await a.next())        # a's monitor fired:   [b"DOWN", b"b@[::1]:7002", b"actor died"]
+
+asyncio.run(main())
+```
+
+### Rust
+
+```rust
+use monarch_mini_rs::{Context, Part, Role};
+
+#[tokio::main]
+async fn main() -> Result<(), monarch_mini_rs::Error> {
+    let ctx = Context::new()?;
+    let parent = ctx.actor(Some(b"parent"), true)?;                 // root; ident omits the @endpoint
+    let a = ctx.actor(Some(b"a@[::1]:7001"), true)?;
+    let b = ctx.actor(Some(b"b@[::1]:7002"), true)?;
+
+    a.serve("quic://[::1]:7001", Role::Child, None, &[], &[])?;
+    b.serve("quic://[::1]:7002", Role::Child, None, &[], &[])?;
+    parent.join("quic://[::1]:7001", Role::Parent, None, &[], &[b"LINKDOWN"])?;
+    parent.join("quic://[::1]:7002", Role::Parent, None, &[], &[b"LINKDOWN"])?;
+    a.recv().await?; b.recv().await?; parent.recv().await?; parent.recv().await?;  // 4 establishment hellos
+
+    parent.send(b"a@[::1]:7001", vec![Part::copy_from(b"ping")])?;  // route a message parent -> a
+    println!("{:?}", a.recv().await?);                              // [b"ping"]
+
+    a.monitor(b"b@[::1]:7002", &[b"DOWN"], 0)?;                      // sibling monitor: a has no link to b
+    b.die(b"bye");
+    // b's death reaches both actors linked to it:
+    println!("{:?}", parent.recv().await?);  // parent link failed: [b"LINKDOWN", b"b@[::1]:7002", b"bye"]
+    println!("{:?}", a.recv().await?);        // a's monitor fired:   [b"DOWN", b"b@[::1]:7002", b"actor died"]
+    Ok(())
+}
+```
+
+---
+
 ## Context
 
 The context is the single runtime state object for a process. It owns:

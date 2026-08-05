@@ -26,11 +26,14 @@
 //!   an error rather than misbehaving.
 //! - [`Actor`] is an addressable endpoint: [`send`](Actor::send),
 //!   [`serve`](Actor::serve), [`join`](Actor::join), [`die`](Actor::die),
-//!   [`monitor`](Actor::monitor).
-//! - [`Poller`] drives message delivery. Subscribe actors to it, then drain
-//!   with [`try_recv`](Poller::try_recv) (non-blocking) or [`recv`](Poller::recv)
-//!   (blocks on the wakeup fd), integrating with any fd-based event loop via
-//!   [`fd`](Poller::fd).
+//!   [`monitor`](Actor::monitor), and [`recv`](Actor::recv) to await this
+//!   actor's own next message (the analogue of Python's `actor.next()`).
+//! - [`Poller`] drives message delivery for *several* actors at once. Subscribe
+//!   actors to it, then drain with [`try_recv`](Poller::try_recv) (non-blocking)
+//!   or [`recv`](Poller::recv) (blocks on the wakeup fd), integrating with any
+//!   fd-based event loop via [`fd`](Poller::fd). [`Actor::recv`] is the
+//!   single-actor convenience built on top: it lazily creates and stores a
+//!   private poller the first time it is called.
 //! - [`Part`] is a multipart-message segment. It owns its bytes (like
 //!   `minimonarch.bytearray`) and can be *moved* into a message zero-copy —
 //!   including forwarding a received part without copying.
@@ -46,12 +49,8 @@
 //! let ctx = Context::new()?;
 //! let actor = ctx.actor(Some(b"hello-actor"), /*gateway=*/ true)?;
 //!
-//! let mut poller = ctx.poller()?;
-//! poller.subscribe(0, &actor)?;
-//!
 //! actor.send(b"hello-actor", vec![Part::copy_from(b"hello, self")])?;
-//! let (index, parts) = poller.recv().await?;
-//! assert_eq!(index, 0);
+//! let parts = actor.recv().await?; // lazily creates this actor's own poller
 //! assert_eq!(parts[0].as_bytes(), b"hello, self");
 //! # Ok(())
 //! # }
@@ -374,7 +373,11 @@ impl Context {
         // valid part whose ownership transfers to the runtime; `out` is ours.
         let err = unsafe { ffi::mm_actor_create(self.ptr, ident_ptr, gateway, &mut ptr) };
         check(err)?;
-        Ok(Actor { ptr })
+        Ok(Actor {
+            ptr,
+            ctx: self.ptr,
+            poller: tokio::sync::Mutex::new(None),
+        })
     }
 
     /// Create a [`Poller`] bound to this context.
@@ -415,13 +418,26 @@ impl Drop for Context {
 /// misbehaving.
 pub struct Actor {
     ptr: *mut ffi::mm_actor,
+    // The context this actor was created from, kept so [`Actor::recv`] can lazily
+    // build its own [`Poller`]. A raw pointer (not a `Context` handle) so an
+    // actor never keeps the runtime alive; if the context is gone, poller
+    // creation simply errors.
+    ctx: *mut ffi::mm_ctx,
+    // A per-actor poller, created on the first call to [`Actor::recv`] and reused
+    // thereafter, so `actor.recv().await` works without the caller ever managing
+    // a [`Poller`] — the Rust analogue of the Python bindings' `actor.next()`.
+    // Behind a `tokio::sync::Mutex` (whose guard is held across the `await`) so
+    // the actor stays `Send + Sync` even though a `Poller` is `!Sync`.
+    poller: tokio::sync::Mutex<Option<Poller>>,
 }
 
-// SAFETY: every `Actor` method takes `&self` and only forwards a command to the
-// runtime over its internal `Send + Sync` channel (monitor-id allocation uses an
-// atomic), so an `Actor` is safe to move between threads (`Send`) and to call
-// concurrently from several threads (`Sync`) — the classic "send from many
-// threads" pattern.
+// SAFETY: every `Actor` method forwards a command to the runtime over its
+// internal `Send + Sync` channel (monitor-id allocation uses an atomic), so an
+// `Actor` is safe to move between threads (`Send`) and to call concurrently from
+// several threads (`Sync`) — the classic "send from many threads" pattern. The
+// raw pointers are just runtime handles; the lazily-created per-actor poller is
+// guarded by a `tokio::sync::Mutex` (itself `Send + Sync` since `Poller: Send`),
+// which serializes the otherwise-`!Sync` poller's use.
 unsafe impl Send for Actor {}
 unsafe impl Sync for Actor {}
 
@@ -566,6 +582,48 @@ impl Actor {
         unsafe { ffi::mm_monitor_handle_cancel(self.ptr, monitor.handle) };
     }
 
+    /// Await this actor's next delivered message — the Rust analogue of the
+    /// Python bindings' awaitable `actor.next()`.
+    ///
+    /// On the first call, the actor lazily creates a private [`Poller`],
+    /// subscribes itself to it, and stores it on the handle; subsequent calls
+    /// reuse it. This is the convenience path for the common "just read this
+    /// actor's messages" case, so the caller never has to manage a [`Poller`]
+    /// or actor indices. Must be called from within a Tokio runtime.
+    ///
+    /// Do not also subscribe this actor to a separate [`Poller`]: the C ABI
+    /// allows an actor on at most one poller at a time, so mixing the two paths
+    /// makes this call (or the manual `subscribe`) fail. For fan-in over many
+    /// actors, use an explicit [`Poller`] instead of per-actor `recv`.
+    pub async fn recv(&self) -> Result<Vec<Part>> {
+        let mut guard = self.poller.lock().await;
+        if guard.is_none() {
+            *guard = Some(self.make_poller()?);
+        }
+        // The guard is held across the await so the `!Sync` poller is used by
+        // one task at a time; concurrent `recv`s on the same actor serialize.
+        let poller = guard.as_mut().expect("poller just created");
+        let (_index, parts) = poller.recv().await?;
+        Ok(parts)
+    }
+
+    /// Build the actor's private poller and subscribe itself at index 0.
+    fn make_poller(&self) -> Result<Poller> {
+        let mut ptr: *mut ffi::mm_poller = std::ptr::null_mut();
+        let mut fd: RawFd = -1;
+        // SAFETY: `self.ctx` is the context this actor was created from; `fd_out`
+        // and `out` point to slots we own and are populated on success. (If the
+        // context has been dropped, this returns an error instead.)
+        check(unsafe { ffi::mm_poller_create(self.ctx, &mut fd, &mut ptr) })?;
+        let poller = Poller {
+            ptr,
+            fd,
+            async_fd: None,
+        };
+        poller.subscribe(0, self)?;
+        Ok(poller)
+    }
+
     /// The raw actor pointer, for [`Poller::subscribe`].
     fn as_ptr(&self) -> *mut ffi::mm_actor {
         self.ptr
@@ -574,6 +632,10 @@ impl Actor {
 
 impl Drop for Actor {
     fn drop(&mut self) {
+        // Drop the lazily-created per-actor poller (if any) first: it holds this
+        // actor subscribed and owns a wakeup fd, so it must be torn down before
+        // the actor. `get_mut` needs no lock — we have exclusive access here.
+        self.poller.get_mut().take();
         // SAFETY: `self.ptr` is a live actor we own; this consumes it.
         unsafe { ffi::mm_actor_destroy(self.ptr) };
     }
