@@ -17,12 +17,13 @@
 //!
 //! ## Two streams per connection
 //!
-//! Every connection carries [`STREAMS`] ordered stream pairs. A single reliable,
-//! in-order stream head-of-line-blocks everything queued behind a large message —
-//! including heartbeats, whose whole job is to keep flowing while data does. So we
-//! put heartbeats on their **own** stream, separate from the data/control stream;
-//! the heartbeat stream is requested second so it carries a higher send priority, and
-//! a beat is packed ahead of queued data even under a full congestion window.
+//! Every connection carries a data/control stream (index 0) and a heartbeat stream
+//! (index 1). A single reliable, in-order stream head-of-line-blocks everything queued
+//! behind a large message — including heartbeats, whose whole job is to keep flowing
+//! while data does. So we put heartbeats on their **own** stream, separate from the
+//! data/control stream; the heartbeat stream is given a higher send priority
+//! ([`PRIORITY_HEARTBEAT`]), so a beat is packed ahead of queued data even under a full
+//! congestion window.
 //!
 //! The heartbeat stream is materialized lazily (see [`crate::net`]): a message-only
 //! gateway side channel never opens it. A parent/child link always heartbeats, so it
@@ -50,7 +51,6 @@ use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::time::Duration;
 
-use crate::Role;
 use crate::connection::ConnectionCommand;
 use crate::connection::ConnectionRef;
 use crate::connection::ConnectionTransport;
@@ -83,12 +83,16 @@ type ConnRecv<N> = <<N as Net>::Conn as NetConn>::Recv;
 /// heartbeat send stream once a beat has been sent (`None` until then).
 type LiveSideChannel<N> = (<N as Net>::Conn, ConnSend<N>, Option<ConnSend<N>>);
 
-/// Streams every connection carries, passed to [`Net::bind`]/[`Net::connect`]. Each
-/// connection requests them in order via [`NetConn::stream`]: first the data/control
-/// stream (the preamble and every [`ConnectionCommand`] frame), then the heartbeat
-/// stream (bare heartbeat probes, materialized lazily and — being requested second —
-/// given a higher send priority than the data stream).
-const STREAMS: usize = 2;
+/// Stream index of the data/control stream: the preamble and every
+/// [`ConnectionCommand`] frame. Opened first, at establishment.
+const STREAM_DATA: usize = 0;
+/// Stream index of the heartbeat stream: bare heartbeat probes, materialized lazily.
+const STREAM_HEARTBEAT: usize = 1;
+/// Send priority of the data stream (quic; tcp ignores it). Lower than the heartbeat's.
+const PRIORITY_DATA: i32 = 0;
+/// Send priority of the heartbeat stream — higher than the data stream, so a beat is
+/// packed ahead of backlogged data under a full congestion window.
+const PRIORITY_HEARTBEAT: i32 = 1;
 
 /// Connect-retry backoff bounds. A join may precede its serve, and the handshake
 /// fails until the server is bound, so the connector polls — fast at first, backing
@@ -365,9 +369,11 @@ impl<N: Net> SideChannels<N> {
         self.net()?.dialer(addr)
     }
 
-    /// Bind a server listener on `addr` carrying `STREAMS` streams.
+    /// Bind a server listener on `addr`. The stream count is not passed here: tcp learns
+    /// it from each connecting side's pairing prefix, and quic multiplexes on one
+    /// connection (see [`Net::bind`]).
     fn bind(&mut self, addr: SocketAddr) -> anyhow::Result<N::Listener> {
-        self.net()?.bind(addr, STREAMS)
+        self.net()?.bind(addr)
     }
 
     fn alive_token(&self) -> mpsc::UnboundedSender<()> {
@@ -653,9 +659,8 @@ async fn listener_task<N: Net>(
 /// Pair a queued serve with an accepted join and wire up the connection. Both the
 /// serve-first (`push_left`) and accept-first (`push_right`) paths land here, so a
 /// pairing spawns identically: this is the serve/acceptor side, so `log_heartbeats =
-/// true` and `dialed = false` (the peer dialed us). The data-stream halves were
-/// already split (with `first_messenger = false`) and the preamble read by the
-/// acceptor.
+/// true` and `dialed = false` (the peer dialed us). The data-stream halves were already
+/// accepted (`conn.stream(STREAM_DATA, …)`) and the preamble read by the acceptor.
 #[expect(
     clippy::too_many_arguments,
     reason = "each argument is a distinct piece of per-connection state forwarded to spawn_connection; bundling adds indirection without clarifying anything"
@@ -693,10 +698,9 @@ fn spawn_join<N: Net>(
     );
 }
 
-/// Accept connections on `listener`, split each one's data stream (this side is the
-/// responder, so `first_messenger = false`), read its preamble, and forward the
-/// classified result. Each handshake runs in its own task so one slow peer doesn't
-/// block others.
+/// Accept connections on `listener`, accept each one's data stream (index 0), read its
+/// preamble, and forward the classified result. Each handshake runs in its own task so
+/// one slow peer doesn't block others.
 async fn acceptor_task<N: Net>(
     listener: N::Listener,
     accepted_tx: mpsc::UnboundedSender<Accepted<N>>,
@@ -713,7 +717,7 @@ async fn acceptor_task<N: Net>(
                     // (by the heartbeat task, or the side-channel heartbeat reader),
                     // so establishment/pairing never waits on the first beat.
                     let Ok((data_send, mut data_recv)) =
-                        conn.stream(false).await else { return; };
+                        conn.stream(STREAM_DATA, PRIORITY_DATA).await else { return; };
                     let accepted = match framing::read_preamble(&mut data_recv).await {
                         Ok(Preamble::Join) => Accepted::Join(JoinStreams {
                             conn,
@@ -763,12 +767,12 @@ async fn side_channel_reader_task<N: Net>(
 /// Read delegated-heartbeat beats/acks/releases off a gateway side-channel's
 /// heartbeat stream and route them *directly* into the heartbeat subsystem — they
 /// never reach ctx. Kept on its own stream so a large routed message can never delay
-/// a beat. The heartbeat stream is materialized here (this side is the responder,
-/// `first_messenger = false`): it may open late (on the peer's first beat) or never
-/// (a channel that only carries messages), and awaiting it here never blocks the
+/// a beat. This side is the acceptor, so awaiting the heartbeat stream (index 1) never
+/// opens it: it materializes only if the dialing peer opens it (on its first beat), and
+/// never for a channel that only carries messages, so this await never blocks the
 /// message reader.
 async fn side_channel_heartbeat_reader_task<N: Net>(conn: N::Conn, heartbeat: Heartbeats) {
-    let Ok((_send, mut recv)) = conn.stream(false).await else {
+    let Ok((_send, mut recv)) = conn.stream(STREAM_HEARTBEAT, PRIORITY_HEARTBEAT).await else {
         return; // connection closed before any heartbeat stream opened
     };
     loop {
@@ -786,10 +790,10 @@ async fn side_channel_heartbeat_reader_task<N: Net>(conn: N::Conn, heartbeat: He
     }
 }
 
-/// Connect to `addr`, retrying until the server binds and the handshake succeeds (so
-/// a join may precede its serve), then split the data stream, announce ourselves as
-/// the joiner via the preamble, and wire it up. This side is the *first messenger* on
-/// the data stream (`first_messenger = true`).
+/// Connect to `addr`, retrying until the server binds and the data stream (index 0)
+/// opens (so a join may precede its serve), then announce ourselves as the joiner via
+/// the preamble and wire it up. This is the dialer side, so `conn.stream` opens each
+/// stream.
 #[expect(
     clippy::too_many_arguments,
     reason = "each argument is a distinct piece of connector state; bundling adds indirection without clarifying anything"
@@ -812,12 +816,17 @@ async fn connector_task<N: Net>(
     data_rt: Option<Handle>,
 ) {
     let mut retry = CONNECT_RETRY_MIN;
-    loop {
+    // Retry until both the connect and the *first* stream open succeed. For quic the
+    // handshake is in `connect`; for tcp `connect` is cheap and the data stream (index
+    // 0) is where the socket is actually dialed — so either failing means the server is
+    // not up yet (a join may precede its serve), and we back off and retry.
+    let (mut data_send, data_recv, conn) = loop {
         if *shutdown.borrow() {
             return;
         }
         // Take a connect-attempt permit before doing any handshake work, so a root
-        // joining tens of thousands of peers drives at most N handshakes at once.
+        // joining tens of thousands of peers drives at most N handshakes at once. Held
+        // across the data-stream dial (the throttled work) and released before backoff.
         let permit = match &connect_sem {
             Some(sem) => Some(
                 Arc::clone(sem)
@@ -827,45 +836,10 @@ async fn connector_task<N: Net>(
             ),
             None => None,
         };
-        if let Some(conn) = N::connect(&dialer, addr, STREAMS).await {
-            match conn.stream(true).await {
-                Ok((mut data_send, data_recv)) => {
-                    // Tell the acceptor this is an ordinary join (not a side-channel)
-                    // before the command loop drives establishment over the stream.
-                    if framing::write_preamble(&mut data_send, Preamble::Join)
-                        .await
-                        .is_err()
-                    {
-                        sever(&loop_tx, connection, b"quic open stream failed".to_vec());
-                        return;
-                    }
-                    // Connection is up; free the attempt slot before handing off.
-                    drop(permit);
-                    // Joiner side (the root has tens of thousands of writers): do not
-                    // log heartbeat sends here even under debug — it would flood.
-                    // `dialed = true`: this is one half of the delegation guard (only
-                    // a link the parent dialed may be delegated).
-                    spawn_connection::<N>(
-                        data_send,
-                        data_recv,
-                        connection,
-                        loop_tx,
-                        shutdown,
-                        alive,
-                        conn,
-                        shm,
-                        false,
-                        true,
-                        heartbeat,
-                        side_channels,
-                        data_rt,
-                    );
-                    return;
-                }
-                Err(_) => {
-                    sever(&loop_tx, connection, b"quic open stream failed".to_vec());
-                    return;
-                }
+        if let Some(conn) = N::connect(&dialer, addr).await {
+            if let Ok((data_send, data_recv)) = conn.stream(STREAM_DATA, PRIORITY_DATA).await {
+                drop(permit); // connection is up; free the attempt slot before handing off
+                break (data_send, data_recv, conn);
             }
         }
         // Attempt failed; release the slot so another task can try while we back off.
@@ -875,7 +849,34 @@ async fn connector_task<N: Net>(
             _ = shutdown.changed() => return,
         }
         retry = (retry * 2).min(CONNECT_RETRY_MAX);
+    };
+    // Tell the acceptor this is an ordinary join (not a side-channel) before the command
+    // loop drives establishment over the stream.
+    if framing::write_preamble(&mut data_send, Preamble::Join)
+        .await
+        .is_err()
+    {
+        sever(&loop_tx, connection, b"quic open stream failed".to_vec());
+        return;
     }
+    // Joiner side (the root has tens of thousands of writers): do not log heartbeat sends
+    // here even under debug — it would flood. `dialed = true`: this is one half of the
+    // delegation guard (only a link the parent dialed may be delegated).
+    spawn_connection::<N>(
+        data_send,
+        data_recv,
+        connection,
+        loop_tx,
+        shutdown,
+        alive,
+        conn,
+        shm,
+        false,
+        true,
+        heartbeat,
+        side_channels,
+        data_rt,
+    );
 }
 
 /// Drive a gateway side-channel writer: drain queued outbound items — routable
@@ -906,21 +907,15 @@ async fn side_channel_writer_task<N: Net>(
             _ = shutdown.changed() => break,
         };
         if live.is_none() {
-            let Some(conn) = connect_side_channel::<N>(&dialer, addr, &mut shutdown).await else {
+            // `connect_side_channel` opens the message stream (index 0) and writes the
+            // preamble as part of its retry, so it returns a ready-to-write send half.
+            // The heartbeat stream (index 1) is opened lazily below, so a message-only
+            // channel never opens it.
+            let Some((conn, msg_send)) =
+                connect_side_channel::<N>(&dialer, addr, &mut shutdown).await
+            else {
                 break; // shutting down before the gateway came up
             };
-            // The message stream (index 0) carries the preamble (which also opens it
-            // on the wire). The heartbeat stream (index 1) carries no preamble and is
-            // opened lazily below, so a message-only channel never opens it.
-            let Ok((mut msg_send, _msg_recv)) = conn.stream(true).await else {
-                continue; // reconnect on the next item
-            };
-            if framing::write_preamble(&mut msg_send, Preamble::SideChannel)
-                .await
-                .is_err()
-            {
-                continue; // reconnect on the next item (this one is dropped)
-            }
             live = Some((conn, msg_send, None));
         }
         let (conn, msg_send, hb_send) = live.as_mut().expect("connected");
@@ -938,7 +933,7 @@ async fn side_channel_writer_task<N: Net>(
                 // higher-priority stream (index > the message stream), so a beat jumps
                 // ahead of queued message bytes under a full congestion window.
                 if hb_send.is_none() {
-                    match conn.stream(true).await {
+                    match conn.stream(STREAM_HEARTBEAT, PRIORITY_HEARTBEAT).await {
                         Ok((send, _recv)) => *hb_send = Some(send),
                         Err(_) => {
                             live = None; // reconnect on the next item
@@ -962,22 +957,32 @@ async fn side_channel_writer_task<N: Net>(
     }
 }
 
-/// Connect a side-channel to `addr`, retrying with backoff until the gateway binds
-/// and the handshake succeeds, or until teardown (then `None`). Streams are opened
-/// lazily by the caller. Mirrors the join connector's retry so a side-channel may be
-/// opened before its target gateway is live.
+/// Connect a side-channel to `addr` and open its message stream, retrying with backoff
+/// until the gateway binds and the handshake succeeds, or until teardown (then `None`).
+/// Returns the connection and the message send half, with the `SideChannel` preamble
+/// already written. Folding the first stream open into the retry gives tcp — whose
+/// `connect` is cheap and whose reachability is proven only when the socket is dialed —
+/// proper backoff. Mirrors the join connector so a side-channel may be opened before its
+/// target gateway is live.
 async fn connect_side_channel<N: Net>(
     dialer: &N::Dialer,
     addr: SocketAddr,
     shutdown: &mut watch::Receiver<bool>,
-) -> Option<N::Conn> {
+) -> Option<(N::Conn, ConnSend<N>)> {
     let mut retry = CONNECT_RETRY_MIN;
     loop {
         if *shutdown.borrow() {
             return None;
         }
-        if let Some(conn) = N::connect(dialer, addr, STREAMS).await {
-            return Some(conn);
+        if let Some(conn) = N::connect(dialer, addr).await {
+            if let Ok((mut msg_send, _msg_recv)) = conn.stream(STREAM_DATA, PRIORITY_DATA).await {
+                if framing::write_preamble(&mut msg_send, Preamble::SideChannel)
+                    .await
+                    .is_ok()
+                {
+                    return Some((conn, msg_send));
+                }
+            }
         }
         tokio::select! {
             _ = tokio::time::sleep(retry) => {}
@@ -1077,16 +1082,14 @@ fn spawn_connection<N: Net>(
             tokio::task::spawn_local(reader);
         }
     }
-    // Heartbeat stream: materialized off the establishment path, then a beat writer
-    // and reader run on it. `first_messenger` is whether this side is the heartbeat
-    // **Child** — which always beats first — so the Child opens the stream and the
-    // Parent accepts it. This (not `dialed`) is what avoids a deadlock: the Child
-    // writes its first beat as soon as it opens the stream, so the Parent's accept
-    // resolves.
-    let hb_first = connection.role() == Role::Child;
+    // Heartbeat stream (index 1): materialized off the establishment path, then a beat
+    // writer and reader run on it. Direction is a property of the connection now — the
+    // dialer opens it, the acceptor awaits it (see [`crate::net`]) — so no per-call flag.
+    // The dialer opens it proactively here (a parent/child link always heartbeats), and
+    // its index-prefix write is what resolves the acceptor's await; whoever is the
+    // heartbeat **Child** then beats first over the established stream.
     tokio::task::spawn_local(heartbeat_stream_task::<N>(
         conn,
-        hb_first,
         beats_rx,
         hb_event_tx,
         shutdown,
@@ -1094,21 +1097,19 @@ fn spawn_connection<N: Net>(
     ));
 }
 
-/// Materialize the connection's heartbeat stream and run the beat writer + reader on
-/// it. `first_messenger` follows the heartbeat *role*, not who dialed the connection:
-/// the **Child** (which always beats first) opens the stream, and the **Parent**
-/// (which only ever answers) accepts it. Materialization happens here, in a task
-/// spawned *after* the connection is established and paired, so the first beat never
-/// delays either. If the connection dies before the stream comes up, this just ends.
+/// Materialize the connection's heartbeat stream (index 1) and run the beat writer +
+/// reader on it. Materialization happens here, in a task spawned *after* the connection
+/// is established, so the first beat never delays establishment; the dialer opens the
+/// stream and the acceptor awaits it. If the connection dies before the stream comes up,
+/// this just ends.
 async fn heartbeat_stream_task<N: Net>(
     conn: N::Conn,
-    first_messenger: bool,
     beats_rx: mpsc::UnboundedReceiver<Heartbeat>,
     hb_events: mpsc::UnboundedSender<HeartbeatEvent>,
     shutdown: watch::Receiver<bool>,
     log_heartbeats: bool,
 ) {
-    let Ok((hb_send, hb_recv)) = conn.stream(first_messenger).await else {
+    let Ok((hb_send, hb_recv)) = conn.stream(STREAM_HEARTBEAT, PRIORITY_HEARTBEAT).await else {
         return; // connection died before the heartbeat stream came up
     };
     // Reader in its own task; writer runs inline (it owns `conn` to keep it alive and

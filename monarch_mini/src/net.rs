@@ -16,33 +16,40 @@
 //! address, building the shared dialing state, binding a listener, dialing, and
 //! producing a [`NetConn`] that hands out ordered byte-stream pairs.
 //!
-//! ## Streams and "who speaks first"
+//! ## Streams, addressed by index
 //!
-//! Every connection carries a fixed number of independent, ordered stream pairs (the
-//! `STREAMS` count in [`crate::net_transport`], passed to [`Net::bind`]/
-//! [`Net::connect`] so a protocol that maps each stream onto its own OS connection
-//! (tcp) knows how many to pair; quic multiplexes them on one connection). Each call
-//! to [`NetConn::stream`] hands back the *next* stream in sequence — there is no
-//! index to get wrong, so the pairs cannot be requested out of order. The two peers
-//! request their streams in the same order, so stream *k* on one side pairs with
-//! stream *k* on the other; each successive stream carries a higher send priority, so
-//! the heartbeat stream (requested after the data stream) is packed ahead of a
-//! backlogged data stream.
+//! A connection hands out independent, ordered stream pairs on demand via
+//! [`NetConn::stream`], each addressed by an explicit `index`. The two peers name the
+//! same index for the two halves of one logical stream, so stream *k* on one side pairs
+//! with stream *k* on the other regardless of the order either side requests them — the
+//! index is carried on the wire (a small prefix), so the pairing can never drift.
+//! `priority` is the send priority (quic uses it to pack a higher-priority stream — the
+//! heartbeat stream — ahead of a backlogged data stream; tcp has no per-stream priority
+//! and ignores it).
 //!
-//! The connection abstraction knows nothing about heartbeats or parent/child roles.
-//! For each stream it is simply told, via [`NetConn::stream`]'s `first_messenger`
-//! flag, whether **this** side opens it and writes first or waits for the peer to
-//! open it — the two peers pass complementary values. The generic transport (which
-//! *does* know about heartbeats) computes those flags.
+//! **Direction is a property of the connection, not the call.** A [`Net::connect`]
+//! yields a *dialer* connection whose [`NetConn::stream`] **opens** each stream (quic:
+//! `open_bi`; tcp: dials a fresh socket); a [`Net::accept`] yields an *acceptor*
+//! connection whose [`NetConn::stream`] **awaits** the peer's matching stream (quic:
+//! `accept_bi`, demultiplexed by the index prefix; tcp: the socket the listener routed
+//! to this connection for that index). Both peers just call `stream(k, prio)` — the
+//! generic transport never has to reason about who speaks first. This is what lets a
+//! plain tcp socket work: only the dialer can open one, so only the dialer's `stream`
+//! opens; the acceptor's waits.
+//!
+//! The connection knows nothing about heartbeats or parent/child roles. The generic
+//! transport picks the indices: index 0 is the data/control stream, index 1 is the
+//! heartbeat stream (a higher `priority`), and it may later request further data-stream
+//! indices for striping large messages.
 //!
 //! ## Laziness
 //!
-//! [`NetConn::stream`] returns an awaitable that touches the wire only on its first
-//! poll (quic: `open_bi`/`accept_bi`). The generic transport awaits the data stream
-//! immediately but holds the heartbeat stream un-awaited until a beat actually needs
-//! to flow, so a message-only side channel never establishes a heartbeat stream. The
-//! data stream is always requested before the heartbeat stream, which is how the two
-//! peers keep their pairs aligned.
+//! [`NetConn::stream`] returns an awaitable that touches the wire only on its first poll
+//! (quic dialer: `open_bi`; quic acceptor: an `accept_bi` demux; tcp dialer: a socket
+//! dial). The generic transport awaits the data stream immediately but can hold a
+//! heartbeat or data stream un-awaited until it is actually needed, so a message-only
+//! side channel (whose dialer never opens index 1) never establishes a heartbeat
+//! stream.
 
 use std::fmt::Debug;
 use std::future::Future;
@@ -86,18 +93,21 @@ pub(crate) trait Net: Sized + 'static {
     /// pool.
     fn dialer(&mut self, addr: SocketAddr) -> anyhow::Result<Self::Dialer>;
 
-    /// Bind a server listener on `addr`. `streams` is how many parallel streams
-    /// every accepted connection will carry (a per-stream-per-socket protocol pairs
-    /// that many; quic ignores it).
-    fn bind(&mut self, addr: SocketAddr, streams: usize) -> anyhow::Result<Self::Listener>;
+    /// Bind a server listener on `addr`. Streams are opened lazily and addressed by
+    /// index (see [`NetConn::stream`]), so the listener needs no stream count up front.
+    fn bind(&mut self, addr: SocketAddr) -> anyhow::Result<Self::Listener>;
 
-    /// The next inbound connection, or `None` once `listener` is closed.
+    /// The next inbound connection, or `None` once `listener` is closed. The returned
+    /// connection is an *acceptor* connection: its [`NetConn::stream`] awaits the peer's
+    /// streams rather than opening them.
     async fn accept(listener: &Self::Listener) -> Option<Self::Conn>;
 
-    /// Dial `addr` once, or `None` on failure — the caller retries with backoff (a
-    /// join may precede its serve). `streams` is as in [`Net::bind`].
-    async fn connect(dialer: &Self::Dialer, addr: SocketAddr, streams: usize)
-    -> Option<Self::Conn>;
+    /// Dial `addr` once, or `None` on failure — the caller retries with backoff (a join
+    /// may precede its serve). The returned connection is a *dialer* connection: its
+    /// [`NetConn::stream`] opens streams. No stream is opened here (quic does complete
+    /// its handshake; tcp opens nothing until the first [`NetConn::stream`]), so a tcp
+    /// join's reachability is proven by the first `stream` call, not by `connect`.
+    async fn connect(dialer: &Self::Dialer, addr: SocketAddr) -> Option<Self::Conn>;
 
     /// The default cap on simultaneous client connect *attempts* when
     /// `MM_QUIC_MAX_CONCURRENT_CONNECTS` is unset (see [`crate::net_transport`]'s
@@ -129,12 +139,13 @@ pub(crate) trait NetConn: Debug + 'static {
     /// The awaitable that materializes one stream's halves on first poll.
     type Stream: Future<Output = std::io::Result<(Self::Send, Self::Recv)>> + 'static;
 
-    /// An awaitable for the **next** stream on this connection. Each call advances a
-    /// per-connection cursor, so streams cannot be requested out of order and the two
-    /// peers' *k*-th streams pair up. `first_messenger` selects whether **this** side
-    /// opens the stream and writes first, or waits for the peer to open it; the two
-    /// peers pass complementary values. Each successive stream is given a higher send
-    /// priority, so a later stream (the heartbeat stream) outranks an earlier one (the
-    /// data stream). Nothing touches the wire until the returned future is polled.
-    fn stream(&self, first_messenger: bool) -> Self::Stream;
+    /// An awaitable for the stream addressed by `index`, paired with the peer's stream
+    /// of the same index. On a *dialer* connection it opens the stream; on an *acceptor*
+    /// connection it awaits the peer's matching one (see the module docs). The index is
+    /// carried on the wire so the two peers' *k*-th streams pair up regardless of request
+    /// order. `priority` is the send priority (quic; tcp ignores it) — the transport
+    /// gives the heartbeat stream a higher priority than the data stream so a beat is
+    /// packed ahead of backlogged data. Nothing touches the wire until the returned
+    /// future is polled.
+    fn stream(&self, index: usize, priority: i32) -> Self::Stream;
 }
