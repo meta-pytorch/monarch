@@ -997,6 +997,62 @@ fn quic_serve_join_establishes_and_routes() {
 }
 
 #[test]
+fn quic_gateway_reads_large_message_into_shared_memory() {
+    // A large message arriving over quic at a gateway is read straight into the
+    // gateway's shared-memory slab (a gateway seeds its own client at creation,
+    // before any frame can arrive), so the delivered part is a slab part — ready to
+    // relay across a later unix hop by descriptor without copying into shared memory
+    // again — and its bytes arrive intact. The non-gateway sender has no slab, so it
+    // just streams the bytes; the receiving gateway is what lands them in the slab.
+    set_quic_env();
+    let ctx = CtxHandle::new().expect("context should start");
+    let gw = runtime_gateway_actor(&ctx, "q-shm-gw");
+    let sender = runtime_actor(&ctx, "q-shm-sender");
+    let (gw_poller, mut gw_rx) = runtime_poller(&ctx);
+    runtime_subscribe(&ctx, gw_poller, 0, gw);
+
+    let url = free_quic_url();
+    ctx.send_command(Command::Serve {
+        actor: gw,
+        url: url.clone(),
+        request: request(Role::Parent),
+    })
+    .expect("serve should enqueue");
+    ctx.send_command(Command::Join {
+        actor: sender,
+        url,
+        request: request(Role::Child),
+    })
+    .expect("join should enqueue");
+
+    // Drain the establishment hellos so the next delivery is the large message.
+    assert_eq!(recv_strings(&mut gw_rx), vec!["q-shm-gw", "q-shm-sender"]);
+
+    let len = crate::shm::SHM_THRESHOLD as usize + 4321;
+    let payload = vec![0x6Cu8; len];
+    ctx.send_command(Command::Send {
+        sender,
+        destination_ident: MsgPart::from_bytes(b"q-shm-gw".to_vec()),
+        parts: vec![MsgPart::from_bytes(payload.clone())],
+    })
+    .expect("send should enqueue");
+
+    let delivered = gw_rx.blocking_recv().expect("large message delivered");
+    assert_eq!(delivered.msg.len(), 1, "one part delivered");
+    assert!(
+        delivered.msg[0].is_shm(),
+        "a large part read off quic at a gateway lands in the slab"
+    );
+    assert_eq!(
+        delivered.msg[0].as_bytes(),
+        payload.as_slice(),
+        "slab payload read off quic arrives intact"
+    );
+
+    shutdown(ctx);
+}
+
+#[test]
 fn quic_join_before_serve() {
     // The joiner's QUIC handshake fails until the server binds, so the connector
     // retries — join may go first.
