@@ -19,6 +19,7 @@ mod net_transport;
 mod poller;
 mod quic_net;
 mod shm;
+mod tcp_net;
 mod transport;
 mod unix_framing;
 mod unix_transport;

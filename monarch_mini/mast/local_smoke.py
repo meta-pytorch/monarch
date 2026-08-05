@@ -94,6 +94,13 @@ def main() -> None:
         "--debug", action="store_true", help="set MM_QUIC_DEBUG=1 (MM_HB logs)"
     )
     parser.add_argument(
+        "--transport",
+        choices=["quic", "tcp"],
+        default="quic",
+        help="network transport for the worker serve / root join (default: quic). "
+        "tcp is the cross-region fallback; both sides use the same value.",
+    )
+    parser.add_argument(
         "--logdir",
         default=None,
         help="if set, each worker/root writes its own stdout+stderr file here "
@@ -131,6 +138,8 @@ def main() -> None:
                 "--worker",
                 "--port",
                 str(p),
+                "--transport",
+                args.transport,
             ],
             env=env,
             stdout=out,
@@ -158,6 +167,8 @@ def main() -> None:
                 "5",
                 "--connect-timeout",
                 "30",
+                "--transport",
+                args.transport,
             ],
             env=env,
             stdout=root_out,

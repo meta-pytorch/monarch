@@ -54,13 +54,15 @@ use crate::shm::ShmClient;
 use crate::shm::ShmClientSlot;
 use crate::shm::ShmMapper;
 use crate::shm::ShmServer;
+use crate::tcp_net::Tcp;
 use crate::transport::Transport;
 use crate::unix_transport::UnixTransport;
 
-/// The command-loop-facing QUIC transport: the generic [`NetTransport`] pinned to the
-/// [`Quic`] protocol. All transport logic is protocol-independent; only the [`Quic`]
-/// `Net` impl is quic-specific.
+/// The command-loop-facing network transports: the generic [`NetTransport`] pinned to
+/// each protocol. All transport logic is protocol-independent; only the [`Quic`]/
+/// [`Tcp`] `Net` impls are protocol-specific.
 type QuicTransport = NetTransport<Quic>;
+type TcpTransport = NetTransport<Tcp>;
 
 /// Whether verbose per-connection debug logging is enabled (`MM_QUIC_DEBUG` set).
 /// Gates the command-loop `MM_CTX`/`MM_UDP` lines and scheduler-lag probe here, and
@@ -117,15 +119,18 @@ pub(crate) fn wall_clock_hms() -> String {
 /// is attached, while the request can still report failure — without a `&mut self`
 /// borrow.
 fn valid_scheme(url: &str) -> bool {
-    url.starts_with("inproc://") || url.starts_with("unix://") || url.starts_with("quic://")
+    url.starts_with("inproc://")
+        || url.starts_with("unix://")
+        || url.starts_with("quic://")
+        || url.starts_with("tcp://")
 }
 
 /// Whether `url`'s scheme connects across machines (a network transport). A
 /// gateway may only gain a parent over such a link — a gateway joined to a
 /// unix/inproc parent is rejected, since it would no longer be the entry point
-/// for its process group. (Today only quic; tcp joins this set later.)
+/// for its process group.
 fn is_network_scheme(url: &str) -> bool {
-    url.starts_with("quic://")
+    url.starts_with("quic://") || url.starts_with("tcp://")
 }
 
 /// The gateway specifier (the `@endpoint` suffix) of an ident, or an empty slice
@@ -288,6 +293,11 @@ struct Ctx {
     inproc: InprocTransport,
     unix: UnixTransport,
     quic: QuicTransport,
+    // TCP is the cross-region fallback (quic's UDP is packet-filtered across
+    // regions). An actor is reached over tcp iff its `@endpoint` tag carries the
+    // `tcp://` scheme; a bare or `quic://` tag routes over quic (see
+    // `send_to_gateway` and `valid_scheme`).
+    tcp: TcpTransport,
     // The context-global shared-memory address-space manager. Always present
     // (idle if shm is unused); handed to the unix and quic transports, and unmaps
     // everything when the context — and thus this last reference — is dropped.
@@ -336,6 +346,7 @@ impl Ctx {
             inproc: InprocTransport::new(tx.clone()),
             unix: UnixTransport::new(tx.clone(), mapper.clone()),
             quic: QuicTransport::new(tx.clone(), mapper.clone(), shm_client.clone()),
+            tcp: TcpTransport::new(tx.clone(), mapper.clone(), shm_client.clone()),
             mapper,
             shm_server: None,
             shm_client,
@@ -663,6 +674,8 @@ impl Ctx {
             &mut self.unix
         } else if url.starts_with("quic://") {
             &mut self.quic
+        } else if url.starts_with("tcp://") {
+            &mut self.tcp
         } else {
             unreachable!("scheme already validated by valid_scheme");
         }
@@ -1712,7 +1725,16 @@ impl Ctx {
         match std::str::from_utf8(tag) {
             Ok(tag) => {
                 let tag = tag.to_owned();
-                self.quic.send_to_gateway(tag, msg);
+                // Pick the transport from the tag's scheme: a `tcp://` gateway is
+                // reached over tcp, everything else (a bare `@addr`, for backward
+                // compat, or an explicit `quic://`) over quic. The tag is passed
+                // through verbatim; each transport's `parse_addr` strips its own
+                // scheme prefix.
+                if tag.starts_with("tcp://") {
+                    self.tcp.send_to_gateway(tag, msg);
+                } else {
+                    self.quic.send_to_gateway(tag, msg);
+                }
             }
             Err(_) => {
                 tracing::warn!("gateway destination has non-utf8 specifier; dropping message");
@@ -2276,6 +2298,7 @@ impl CtxHandle {
                             // the coroutines) is torn down.
                             ctx.unix.shutdown().await;
                             ctx.quic.shutdown().await;
+                            ctx.tcp.shutdown().await;
                             let thread = ctx
                                 .thread
                                 .take()
