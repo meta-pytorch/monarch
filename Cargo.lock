@@ -4735,6 +4735,7 @@ dependencies = [
  "rustls-pki-types",
  "serde",
  "slotmap",
+ "socket2 0.6.5",
  "tokio",
  "tracing",
 ]
