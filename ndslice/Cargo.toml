@@ -20,7 +20,7 @@ clap = { version = "4.6.2", features = ["derive", "env", "string", "unicode", "w
 hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
 itertools = "0.15.0"
 nom = "8"
-proc-macro2 = { version = "1.0.106", features = ["span-locations"] }
+proc-macro2 = { version = "1.0.107", features = ["span-locations"] }
 proptest = "1.11.0"
 quote = "1.0.46"
 rand = "0.10.2"
