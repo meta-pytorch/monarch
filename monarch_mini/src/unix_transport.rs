@@ -33,7 +33,10 @@
 //! ⇒ peer severed" contract the inproc transport implements explicitly.
 
 use std::collections::HashMap;
+use std::os::fd::AsRawFd;
+use std::os::fd::RawFd;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use tokio::io::AsyncWriteExt;
 use tokio::net::UnixListener;
@@ -58,6 +61,13 @@ use crate::transport::Transport;
 /// serve that is slow — or never comes — doesn't spam the OS with connect()s.
 const CONNECT_RETRY_MIN: Duration = Duration::from_millis(5);
 const CONNECT_RETRY_MAX: Duration = Duration::from_millis(1000);
+
+/// A reader waiting for a frame spins this long peeking the socket before
+/// parking on `recv().await`, trading CPU for the elimination of the kernel
+/// read-wakeup latency. Sized to comfortably exceed a small-message round trip
+/// so steady ping-pong traffic never parks; an idle reader spins this long once,
+/// then parks to zero CPU.
+const READ_SPIN: Duration = Duration::from_micros(200);
 
 /// Owns all UNIX transport state and coroutines. The command loop holds one of
 /// these and forwards serves/joins to it; it never sees sockets, urls, or pairing
@@ -258,6 +268,9 @@ fn spawn_connection(
     shutdown: watch::Receiver<bool>,
     alive: mpsc::UnboundedSender<()>,
 ) {
+    // Raw fd of the underlying socket (shared by both split halves); used only
+    // for the read-spin's MSG_PEEK readiness probe.
+    let fd = stream.as_raw_fd();
     let (read_half, write_half) = stream.into_split();
     let (writer_tx, writer_rx) = mpsc::unbounded_channel();
 
@@ -267,7 +280,7 @@ fn spawn_connection(
         transport,
     });
     tokio::task::spawn_local(writer_task(write_half, writer_rx, shutdown, alive));
-    tokio::task::spawn_local(reader_task(read_half, connection, loop_tx));
+    tokio::task::spawn_local(reader_task(read_half, fd, READ_SPIN, connection, loop_tx));
 }
 
 /// Transport for one end of a UNIX connection: `send` hands a command to the
@@ -327,10 +340,17 @@ async fn writer_task(
 /// it is harmlessly ignored if one ever arrives.
 async fn reader_task(
     mut read_half: OwnedReadHalf,
+    fd: RawFd,
+    spin: Duration,
     connection: ConnectionRef,
     loop_tx: mpsc::UnboundedSender<Command>,
 ) {
     loop {
+        // Before parking in read_frame's await, cooperatively spin peeking the
+        // socket so an imminent frame is picked up without a kernel read-wakeup.
+        // yield_now (not a tight spin) keeps the loop processing other commands
+        // — e.g. the reply this peer is about to send.
+        spin_for_readable(fd, spin).await;
         match framing::read_frame(&mut read_half).await {
             Ok(Incoming::Command(action)) => {
                 if loop_tx
@@ -346,6 +366,38 @@ async fn reader_task(
                 return;
             }
         }
+    }
+}
+
+/// Spin up to `spin` waiting for the socket to become readable, yielding between
+/// probes so the event loop keeps running. Returns as soon as data is available
+/// (or EOF / the window elapses); the following `read_frame` then proceeds
+/// without parking when a frame is already waiting. A no-op when `spin` is zero.
+async fn spin_for_readable(fd: RawFd, spin: Duration) {
+    if spin.is_zero() {
+        return;
+    }
+    let start = Instant::now();
+    let mut probe = 0u8;
+    loop {
+        // MSG_PEEK so the byte is not consumed (read_frame still reads it);
+        // MSG_DONTWAIT so the probe never blocks.
+        // SAFETY: `fd` is the live socket fd owned by this task's read half;
+        // `probe` is a valid 1-byte buffer. recv only reads into it.
+        let r = unsafe {
+            libc::recv(
+                fd,
+                (&mut probe as *mut u8).cast(),
+                1,
+                libc::MSG_PEEK | libc::MSG_DONTWAIT,
+            )
+        };
+        // r >= 0 means data is ready (>0) or the peer closed (0) — either way let
+        // read_frame run now. r < 0 is almost always EAGAIN (nothing yet).
+        if r >= 0 || start.elapsed() >= spin {
+            return;
+        }
+        tokio::task::yield_now().await;
     }
 }
 
