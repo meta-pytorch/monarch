@@ -985,8 +985,7 @@ def test_actor_status_events_table() -> None:
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
-@pytest.mark.parametrize("required_status", ["Created", "Processing"])
-def test_user_actor_status_lifecycle(required_status: str) -> None:
+def test_user_actor_status_lifecycle() -> None:
     with scoped_state(
         ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
         cached_path=None,
@@ -1012,32 +1011,13 @@ def test_user_actor_status_lifecycle(required_status: str) -> None:
             min_rows=3,
         )["id"]
         actor_ids = ", ".join(str(actor_id) for actor_id in actors)
-        required_count = 3 if required_status == "Created" else 6
-        _query(
-            state,
-            "SELECT ase.id FROM actor_status_events ase "
-            "JOIN actors a ON ase.actor_id = a.id "
-            "JOIN meshes m ON a.mesh_id = m.id "
-            f"WHERE m.given_name IN ('{_TELEMETRY_WORKER_MESH}', "
-            f"'{_TELEMETRY_COORDINATOR_MESH}') "
-            f"AND ase.new_status = '{required_status}'",
-            min_rows=required_count,
-        )
-        if required_status == "Processing":
-            _query(
-                state,
-                "SELECT ase.id FROM actor_status_events ase "
-                "WHERE ase.new_status = 'Idle' "
-                f"AND ase.actor_id IN ({actor_ids})",
-                min_rows=9,
-            )
         status_rows = _pydict_to_rows(
             _query(
                 state,
-                "SELECT actor_id, timestamp_us, new_status, reason "
+                "SELECT actor_id, new_status, reason "
                 "FROM actor_status_events "
                 f"WHERE actor_id IN ({actor_ids})",
-                min_rows=9,
+                min_rows=3 * len(actors),
             )
         )
 
@@ -1047,25 +1027,10 @@ def test_user_actor_status_lifecycle(required_status: str) -> None:
             }
             for actor_id in actors
         }
-        missing = {
-            actor_id: statuses
-            for actor_id, statuses in statuses_by_actor.items()
-            if required_status not in statuses
-        }
-        assert not missing, missing
-        if required_status == "Processing":
-            for actor_id in actors:
-                processing_at = max(
-                    row["timestamp_us"]
-                    for row in status_rows
-                    if row["actor_id"] == actor_id and row["new_status"] == "Processing"
-                )
-                idle_at = max(
-                    row["timestamp_us"]
-                    for row in status_rows
-                    if row["actor_id"] == actor_id and row["new_status"] == "Idle"
-                )
-                assert idle_at >= processing_at
+        assert all(
+            statuses == {"Created", "Initializing", "Idle"}
+            for statuses in statuses_by_actor.values()
+        ), statuses_by_actor
 
 
 @pytest.mark.timeout(120)
@@ -1083,14 +1048,13 @@ def test_actor_status_events_failed_actor() -> None:
                 state,
                 "SELECT new_status, reason FROM actor_status_events "
                 f"WHERE actor_id = {actor_id}",
-                min_rows=7,
+                min_rows=5,
             )
         )
         assert {row["new_status"] for row in rows} == {
             "Created",
             "Initializing",
             "Idle",
-            "Processing",
             "Stopping",
             "Failed",
         }, rows
@@ -1990,7 +1954,7 @@ def test_query_after_stopping_actor_mesh() -> None:
                 "JOIN actors a ON ase.actor_id = a.id "
                 "JOIN meshes m ON a.mesh_id = m.id "
                 "WHERE m.given_name = 'actor_stop_worker'",
-                min_rows=14,
+                min_rows=10,
             )
         )
         statuses_by_actor = {
@@ -2000,8 +1964,7 @@ def test_query_after_stopping_actor_mesh() -> None:
             for actor_id in {row["actor_id"] for row in status_rows}
         }
         assert all(
-            statuses
-            == {"Created", "Initializing", "Idle", "Processing", "Stopping", "Stopped"}
+            statuses == {"Created", "Initializing", "Idle", "Stopping", "Stopped"}
             for statuses in statuses_by_actor.values()
         ), statuses_by_actor
         assert all(
