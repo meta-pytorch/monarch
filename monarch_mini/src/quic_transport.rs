@@ -60,6 +60,8 @@ use crate::ctx::Command;
 use crate::framing;
 use crate::framing::Incoming;
 use crate::matcher::Matcher;
+use crate::shm::MapperHandle;
+use crate::shm::ShmClient;
 use crate::shm::ShmClientSlot;
 use crate::transport::Transport;
 
@@ -78,6 +80,25 @@ const CONNECT_RETRY_MAX: Duration = Duration::from_millis(1000);
 /// stray scheduling delay doesn't trip it.
 const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(250);
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// What a connection's reader needs for shared memory: the context-global mapper
+/// and the owning actor's gateway-client slot. Mirrors the unix transport's
+/// `ShmCtx`. Only the quic *reader* uses it — to read a large incoming part
+/// straight into a slab block (every actor on a quic link is a gateway, so it has
+/// a client). The writer needs nothing: a `Shm` part carries its own mapper.
+#[derive(Clone)]
+struct ShmCtx {
+    mapper: MapperHandle,
+    client: ShmClientSlot,
+}
+
+impl ShmCtx {
+    /// Snapshot the owning actor's gateway client (`None` until it is learned; a
+    /// gateway seeds its own at creation, before any quic frame can arrive).
+    fn client(&self) -> Option<ShmClient> {
+        *self.client.lock().expect("shm client slot mutex poisoned")
+    }
+}
 
 /// Process-wide rustls crypto provider (ring), installed once before any config is
 /// built. Ignoring the result is intentional: a competing install is fine.
@@ -140,9 +161,13 @@ fn parse_addr(url: &str) -> anyhow::Result<SocketAddr> {
 pub(crate) struct QuicTransport {
     loop_tx: mpsc::UnboundedSender<Command>,
     shutdown_tx: watch::Sender<bool>,
-    // One listener coroutine per url; serve connections are forwarded to it and it
-    // owns the serve/accept pairing.
-    listeners: HashMap<String, mpsc::UnboundedSender<ConnectionRef>>,
+    // The context-global address-space mapper, captured once at construction and
+    // handed to every connection's reader so a large incoming part can be read
+    // straight into a slab block.
+    mapper: MapperHandle,
+    // One listener coroutine per url; serve connections (with the owning actor's
+    // shm context) are forwarded to it and it owns the serve/accept pairing.
+    listeners: HashMap<String, mpsc::UnboundedSender<(ConnectionRef, ShmCtx)>>,
     tls: Option<Arc<TlsConfig>>,
     // Liveness-token issuer: each connection's writer holds a clone for its
     // lifetime. Teardown drops this issuing copy and waits for `alive_rx` to close
@@ -152,16 +177,26 @@ pub(crate) struct QuicTransport {
 }
 
 impl QuicTransport {
-    pub(crate) fn new(loop_tx: mpsc::UnboundedSender<Command>) -> Self {
+    pub(crate) fn new(loop_tx: mpsc::UnboundedSender<Command>, mapper: MapperHandle) -> Self {
         let (shutdown_tx, _) = watch::channel(false);
         let (alive_tx, alive_rx) = mpsc::unbounded_channel();
         Self {
             loop_tx,
             shutdown_tx,
+            mapper,
             listeners: HashMap::new(),
             tls: None,
             alive_tx: Some(alive_tx),
             alive_rx,
+        }
+    }
+
+    /// Pair the context mapper with an actor's client slot into a connection's
+    /// shared-memory context.
+    fn shm_ctx(&self, client: ShmClientSlot) -> ShmCtx {
+        ShmCtx {
+            mapper: self.mapper.clone(),
+            client,
         }
     }
 
@@ -192,7 +227,7 @@ impl QuicTransport {
 }
 
 impl Transport for QuicTransport {
-    fn serve(&mut self, url: String, connection: ConnectionRef, _shm_client: ShmClientSlot) {
+    fn serve(&mut self, url: String, connection: ConnectionRef, shm_client: ShmClientSlot) {
         let tls = match self.tls() {
             Ok(tls) => tls,
             Err(err) => {
@@ -225,14 +260,15 @@ impl Transport for QuicTransport {
             ));
             self.listeners.insert(url.clone(), tx);
         }
+        let shm = self.shm_ctx(shm_client);
         let _ = self
             .listeners
             .get(&url)
             .expect("listener just inserted")
-            .send(connection);
+            .send((connection, shm));
     }
 
-    fn join(&mut self, url: String, connection: ConnectionRef, _shm_client: ShmClientSlot) {
+    fn join(&mut self, url: String, connection: ConnectionRef, shm_client: ShmClientSlot) {
         let tls = match self.tls() {
             Ok(tls) => tls,
             Err(err) => {
@@ -258,6 +294,7 @@ impl Transport for QuicTransport {
             self.loop_tx.clone(),
             self.shutdown_tx.subscribe(),
             self.alive_token(),
+            self.shm_ctx(shm_client),
         ));
     }
 }
@@ -269,7 +306,7 @@ impl Transport for QuicTransport {
 async fn listener_task(
     addr: SocketAddr,
     server_config: ServerConfig,
-    mut serves: mpsc::UnboundedReceiver<ConnectionRef>,
+    mut serves: mpsc::UnboundedReceiver<(ConnectionRef, ShmCtx)>,
     loop_tx: mpsc::UnboundedSender<Command>,
     mut shutdown: watch::Receiver<bool>,
     alive: mpsc::UnboundedSender<()>,
@@ -283,7 +320,7 @@ async fn listener_task(
             loop {
                 tokio::select! {
                     serve = serves.recv() => match serve {
-                        Some(connection) => sever(&loop_tx, connection, reason.clone()),
+                        Some((connection, _shm)) => sever(&loop_tx, connection, reason.clone()),
                         None => return,
                     },
                     _ = shutdown.changed() => return,
@@ -302,26 +339,29 @@ async fn listener_task(
         shutdown.clone(),
     ));
 
-    let mut matcher: Matcher<ConnectionRef, (Connection, SendStream, RecvStream)> = Matcher::new();
+    let mut matcher: Matcher<(ConnectionRef, ShmCtx), (Connection, SendStream, RecvStream)> =
+        Matcher::new();
     loop {
         tokio::select! {
             serve = serves.recv() => {
-                let Some(connection) = serve else { return; };
-                let _ = matcher.push_left(connection, |connection, (conn, send, recv)| {
+                let Some((connection, shm)) = serve else { return; };
+                let _ = matcher.push_left((connection, shm), |(connection, shm), (conn, send, recv)| {
                     spawn_connection(
                         send, recv, connection,
                         loop_tx.clone(), shutdown.clone(), alive.clone(),
                         KeepAlive { _endpoint: None, _connection: conn },
+                        shm,
                     )
                 });
             }
             accepted = accepted_rx.recv() => {
                 let Some(triple) = accepted else { return; };
-                let _ = matcher.push_right(triple, |connection, (conn, send, recv)| {
+                let _ = matcher.push_right(triple, |(connection, shm), (conn, send, recv)| {
                     spawn_connection(
                         send, recv, connection,
                         loop_tx.clone(), shutdown.clone(), alive.clone(),
                         KeepAlive { _endpoint: None, _connection: conn },
+                        shm,
                     )
                 });
             }
@@ -367,6 +407,7 @@ async fn connector_task(
     loop_tx: mpsc::UnboundedSender<Command>,
     mut shutdown: watch::Receiver<bool>,
     alive: mpsc::UnboundedSender<()>,
+    shm: ShmCtx,
 ) {
     let endpoint = match Endpoint::client("0.0.0.0:0".parse().expect("valid bind addr")) {
         Ok(mut endpoint) => {
@@ -408,6 +449,7 @@ async fn connector_task(
                             _endpoint: Some(endpoint),
                             _connection: conn,
                         },
+                        shm,
                     );
                     return;
                 }
@@ -430,6 +472,10 @@ async fn connector_task(
 /// heartbeat tick) and reader (frames → `ConnectionAction`, with a heartbeat
 /// timeout). `keep` holds the QUIC connection (and, for a joiner, the client
 /// endpoint) alive for the duration of the writer.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct piece of per-connection state handed off to the writer or reader; bundling them adds indirection without clarifying anything"
+)]
 fn spawn_connection(
     send: SendStream,
     recv: RecvStream,
@@ -438,6 +484,7 @@ fn spawn_connection(
     shutdown: watch::Receiver<bool>,
     alive: mpsc::UnboundedSender<()>,
     keep: KeepAlive,
+    shm: ShmCtx,
 ) {
     let (writer_tx, writer_rx) = mpsc::unbounded_channel();
     let transport = Box::new(QuicConnectionTransport { tx: writer_tx });
@@ -446,7 +493,7 @@ fn spawn_connection(
         transport,
     });
     tokio::task::spawn_local(writer_task(send, writer_rx, shutdown, alive, keep));
-    tokio::task::spawn_local(reader_task(recv, connection, loop_tx));
+    tokio::task::spawn_local(reader_task(recv, connection, loop_tx, shm));
 }
 
 /// Keeps the QUIC connection (and a joiner's client endpoint) alive for as long as
@@ -520,9 +567,14 @@ async fn reader_task(
     mut recv: RecvStream,
     connection: ConnectionRef,
     loop_tx: mpsc::UnboundedSender<Command>,
+    shm: ShmCtx,
 ) {
     loop {
-        match tokio::time::timeout(HEARTBEAT_TIMEOUT, framing::read_frame(&mut recv)).await {
+        // The owning actor's gateway client is snapshot per frame so a large part
+        // is read straight into the slab once the client is known (a gateway seeds
+        // its own at creation, before any frame arrives).
+        let read = framing::read_frame(&mut recv, &shm.mapper, shm.client());
+        match tokio::time::timeout(HEARTBEAT_TIMEOUT, read).await {
             Err(_elapsed) => {
                 sever(&loop_tx, connection, b"quic heartbeat timeout".to_vec());
                 return;
