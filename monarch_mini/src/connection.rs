@@ -132,25 +132,24 @@ pub(crate) enum ConnectionCommand {
     },
     /// Register a monitor: travels up from the monitoring actor until it reaches
     /// the common ancestor that has `to_monitor` in its routing table (or the
-    /// root). That ancestor records the subscription.
+    /// root). That ancestor records the subscription (one per monitoring actor per
+    /// target — no per-monitor id, since a fire is identified by the dead ident).
     Subscribe {
         dest: Vec<u8>,
-        id: u64,
         to_monitor: Vec<u8>,
     },
     /// Cancel a previously-registered monitor; travels the same path as
     /// [`ConnectionCommand::Subscribe`] and removes the subscription.
     Unsubscribe {
         dest: Vec<u8>,
-        id: u64,
         to_monitor: Vec<u8>,
     },
     /// Deliver a monitor firing toward the monitoring actor `dest_ident`. Routed
-    /// like a normal message; on arrival the owner reconstructs the failure
-    /// message from its local failure_prefix (the reason is a fixed "actor died").
+    /// like a normal message; carries the dead target ident so the owner can fan
+    /// the fire out to every local monitor on it (reason is a fixed "actor died").
     FireMonitor {
         dest_ident: Vec<u8>,
-        monitor_id: u64,
+        to_monitor: Vec<u8>,
     },
 }
 

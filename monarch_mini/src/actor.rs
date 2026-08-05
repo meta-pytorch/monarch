@@ -28,13 +28,33 @@ pub(crate) struct ActorEntry {
     /// buffered message when this actor gains a parent, and one on a `Connection`
     /// route fires when that route transitions to `Dead`.
     pub(crate) routes: HashMap<Vec<u8>, Route>,
-    /// Monitors this actor *created* (it is the monitoring/`dest` side). Keyed by
-    /// monitor id so they can be fired locally and cancelled. The failure_prefix
-    /// stays here and never travels — the responsible ancestor only sends back
-    /// `id` and we reconstruct the full failure message from this.
-    pub(crate) monitors: HashMap<u64, LocalMonitor>,
+    /// Monitors this actor *created* (it is the monitoring/`dest` side), grouped by
+    /// the *monitored target* ident. All of an actor's monitors on one target share
+    /// a single upstream subscription: the first creates it, the rest just join,
+    /// and they all fire together when that target dies (a fire carries only the
+    /// dead ident — no per-monitor id is needed on the wire). The matching
+    /// `Unsubscribe` is debounced via [`TargetMonitors::unsub_timer`], so rapid
+    /// monitor/cancel churn on one target sends no per-cycle traffic.
+    pub(crate) monitored: HashMap<Vec<u8>, TargetMonitors>,
     pub(crate) gateway: bool,
     pub(crate) alive: bool,
+}
+
+/// State of this actor's monitoring of one target ident. The variant *is* the
+/// state — no generation bookkeeping — so a debounced unsubscribe is correct by
+/// construction: re-monitoring aborts the pending task and flips back to
+/// `Active`, and the timer's command only acts if the entry is still
+/// `PendingUnsubscribe` when it is processed.
+pub(crate) enum TargetMonitors {
+    /// Live local monitors: monitor id → its failure-message prefix. The prefix
+    /// never travels; the full message is reconstructed here when the target
+    /// dies. (For an unnamed actor these are recorded but the upstream `Subscribe`
+    /// is held until naming.)
+    Active(HashMap<u64, Vec<MsgPart>>),
+    /// Every monitor on this target was cancelled; the upstream subscription is
+    /// still live, but a debounced unsubscribe task is scheduled. Holds that
+    /// task's abort handle so re-monitoring (or a fire) cancels it.
+    PendingUnsubscribe(tokio::task::AbortHandle),
 }
 
 impl ActorEntry {
@@ -47,7 +67,7 @@ impl ActorEntry {
             parent: None,
             children: SlotMap::with_key(),
             routes: HashMap::new(),
-            monitors: HashMap::new(),
+            monitored: HashMap::new(),
             gateway: true,
             alive: true,
         }
@@ -175,29 +195,21 @@ impl Route {
     }
 }
 
-/// A monitor created by this actor (the monitoring/`dest` side). Held until the
-/// monitored actor dies or the monitor is cancelled.
-pub(crate) struct LocalMonitor {
-    pub(crate) to_monitor: Vec<u8>,
-    pub(crate) failure_prefix: Vec<MsgPart>,
-}
-
 /// A subscription held at the responsible common ancestor `R`: when the watched
-/// ident dies, route a fire to `dest` carrying `id`.
+/// ident dies, route a fire down to `dest` (the monitoring actor). One per
+/// monitoring actor per target — the dead ident itself identifies the fire, so
+/// no per-monitor id is carried.
 pub(crate) struct MonitorSub {
     pub(crate) dest: Vec<u8>,
-    pub(crate) id: u64,
 }
 
 /// An actor's ident, which may not be known at creation (a child can be named by
 /// its parent when it joins).
 pub(crate) enum ActorName {
     /// Not named yet. Monitors created in the meantime cannot address their
-    /// fire-backs (which route to this actor's own ident), so they wait here until
-    /// a name is assigned, then subscribe for real.
-    Unknown {
-        pending_monitors: Vec<PendingMonitor>,
-    },
+    /// fire-backs (which route to this actor's own ident), so their upstream
+    /// `Subscribe` is held (in `monitored`) until a name is assigned, then sent.
+    Unknown {},
     Named(Vec<u8>),
 }
 
@@ -205,17 +217,9 @@ impl ActorName {
     pub(crate) fn new(ident: Option<Vec<u8>>) -> Self {
         match ident {
             Some(name) => ActorName::Named(name),
-            None => ActorName::Unknown {
-                pending_monitors: Vec::new(),
-            },
+            None => ActorName::Unknown {},
         }
     }
-}
-
-/// A monitor whose subscription was deferred until its creating actor is named.
-pub(crate) struct PendingMonitor {
-    pub(crate) id: u64,
-    pub(crate) to_monitor: Vec<u8>,
 }
 
 pub(crate) enum Delivery {

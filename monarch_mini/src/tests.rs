@@ -469,6 +469,89 @@ fn monitor_on_unnamed_actor_waits_for_its_name() {
     );
 }
 
+// A monitor created while unnamed, then cancelled *after* the actor is named:
+// naming subscribes the deferred monitor upstream, and the later cancel must
+// tear that subscription back down (no orphan).
+#[test]
+fn deferred_monitor_cancelled_after_naming_unsubscribes() {
+    let (mut ctx, mut rx) = test_ctx();
+    let root = actor(&mut ctx, "root");
+    let target = actor(&mut ctx, "target");
+    let watcher = ctx.actors.insert(ActorEntry::new(None));
+    connect(&mut ctx, root, target, "inproc://an-target");
+    drain_commands(&mut ctx, &mut rx);
+
+    monitor(&mut ctx, watcher, 0, "target", "DOWN"); // deferred while unnamed
+    drain_commands(&mut ctx, &mut rx);
+    assert_eq!(route_monitor_count(&ctx, root, "target"), 0);
+
+    // Name it: the deferred monitor subscribes up to root.
+    ctx.serve(
+        root,
+        "inproc://an-watcher".to_owned(),
+        request_named(Role::Parent, "watcher"),
+    );
+    ctx.join(
+        watcher,
+        "inproc://an-watcher".to_owned(),
+        request(Role::Child),
+    );
+    drain_commands(&mut ctx, &mut rx);
+    assert_eq!(route_monitor_count(&ctx, root, "target"), 1);
+
+    // Cancel after naming: with no runtime the debounced unsubscribe runs
+    // synchronously, so the upstream subscription is gone.
+    ctx.run_command(Command::CancelMonitor {
+        actor: watcher,
+        id: 0,
+    });
+    drain_commands(&mut ctx, &mut rx);
+    assert_eq!(route_monitor_count(&ctx, root, "target"), 0);
+
+    // The target dying now delivers nothing but the establishment hello.
+    ctx.die_actor(target, b"boom".to_vec());
+    drain_commands(&mut ctx, &mut rx);
+    assert_eq!(buffered_strings(&ctx, watcher), vec!["watcher", "root"]);
+}
+
+// A monitor created while unnamed, then cancelled *before* the actor is named:
+// the deferred record is dropped, so naming subscribes nothing upstream.
+#[test]
+fn deferred_monitor_cancelled_before_naming_never_subscribes() {
+    let (mut ctx, mut rx) = test_ctx();
+    let root = actor(&mut ctx, "root");
+    let target = actor(&mut ctx, "target");
+    let watcher = ctx.actors.insert(ActorEntry::new(None));
+    connect(&mut ctx, root, target, "inproc://bn-target");
+    drain_commands(&mut ctx, &mut rx);
+
+    monitor(&mut ctx, watcher, 0, "target", "DOWN"); // deferred
+    ctx.run_command(Command::CancelMonitor {
+        actor: watcher,
+        id: 0,
+    }); // cancel while still unnamed
+    drain_commands(&mut ctx, &mut rx);
+
+    // Name it: nothing was left to subscribe.
+    ctx.serve(
+        root,
+        "inproc://bn-watcher".to_owned(),
+        request_named(Role::Parent, "watcher"),
+    );
+    ctx.join(
+        watcher,
+        "inproc://bn-watcher".to_owned(),
+        request(Role::Child),
+    );
+    drain_commands(&mut ctx, &mut rx);
+    assert_eq!(route_monitor_count(&ctx, root, "target"), 0);
+
+    // And the target dying delivers no failure.
+    ctx.die_actor(target, b"boom".to_vec());
+    drain_commands(&mut ctx, &mut rx);
+    assert_eq!(buffered_strings(&ctx, watcher), vec!["watcher", "root"]);
+}
+
 #[test]
 fn dead_route_is_carried_up_as_dead_when_gaining_a_parent() {
     let (mut ctx, mut rx) = test_ctx();
