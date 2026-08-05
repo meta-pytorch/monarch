@@ -9,9 +9,12 @@
 mod actor;
 mod connection;
 mod ctx;
+mod inproc_transport;
 mod matcher;
 mod msg;
 mod poller;
+mod transport;
+mod unix_transport;
 
 use std::cell::RefCell;
 use std::ffi::CString;
@@ -81,7 +84,15 @@ pub struct CMonitorHandle {
 // ---------------------------------------------------------------------------
 
 #[repr(i32)]
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(
+    Debug,
+    PartialEq,
+    Eq,
+    Clone,
+    Copy,
+    serde::Serialize,
+    serde::Deserialize
+)]
 pub enum Role {
     Child = 0,
     Parent = 1,

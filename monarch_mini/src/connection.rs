@@ -8,11 +8,8 @@
 
 use std::collections::VecDeque;
 
-use tokio::sync::mpsc;
-
 use crate::Role;
 use crate::ctx::ChildConnectionKey;
-use crate::ctx::Command;
 use crate::ctx::Key;
 use crate::msg::MsgPart;
 
@@ -49,8 +46,31 @@ impl ConnectionRef {
     }
 }
 
+/// A parent/child link. State only moves forward:
+///
+/// ```text
+/// Unestablished → Connecting → Established → Failed
+/// ```
+///
+/// - `Unestablished`: attached, but the transport has not come up yet. Outgoing
+///   commands are buffered.
+/// - `Connecting`: the transport is up (we can send), our own `Establish` has
+///   gone out over it, and we are waiting for the peer's `Establish` to learn the
+///   peer's identity. Outgoing commands are still buffered for hello-ordering.
+/// - `Established`: the peer's identity is known; buffered commands are flushed
+///   and routing/hello proceed.
 pub(crate) enum Connection {
     Unestablished {
+        name_for_other: Option<Vec<u8>>,
+        hello_prefix: Vec<MsgPart>,
+        failure_prefix: Vec<MsgPart>,
+        queued_commands: VecDeque<ConnectionCommand>,
+    },
+    Connecting {
+        transport: Box<dyn ConnectionTransport>,
+        // The name we assigned the peer (if any). Kept — even though we already
+        // sent it in our own Establish — so we can resolve the peer's ident from
+        // it should the peer still have been unnamed when it sent its Establish.
         name_for_other: Option<Vec<u8>>,
         hello_prefix: Vec<MsgPart>,
         failure_prefix: Vec<MsgPart>,
@@ -64,24 +84,13 @@ pub(crate) enum Connection {
     Failed,
 }
 
+/// The send half of a connection's pipe. Transports are pure plumbing: `send`
+/// ferries a [`ConnectionCommand`] to the peer, and **dropping** the transport is
+/// the universal "pipe closed" signal — the peer observes it and is severed.
+/// (For UNIX this falls out of closing the socket; the inproc transport pushes a
+/// `Severed` from its `Drop`.)
 pub(crate) trait ConnectionTransport: Send {
     fn send(&self, action: ConnectionCommand) -> bool;
-}
-
-pub(crate) struct InprocConnectionTransport {
-    pub(crate) tx: mpsc::UnboundedSender<Command>,
-    pub(crate) peer: ConnectionRef,
-}
-
-impl ConnectionTransport for InprocConnectionTransport {
-    fn send(&self, action: ConnectionCommand) -> bool {
-        self.tx
-            .send(Command::ConnectionSentCommand {
-                connection: self.peer,
-                action,
-            })
-            .is_ok()
-    }
 }
 
 pub(crate) enum ConnectionCommand {
@@ -89,12 +98,17 @@ pub(crate) enum ConnectionCommand {
         destination_ident: Vec<u8>,
         parts: Vec<MsgPart>,
     },
+    /// The sender announcing itself to the peer: its role, ident, the name it
+    /// assigns the peer, and whether it is still alive. Flows over the transport
+    /// like any other command. A live sender drives the receiver to `Established`;
+    /// a sender that announces `alive: false` (its actor died before the pipe came
+    /// up) drives the receiver to sever instead — but still carries the ident, so
+    /// the failure names the connection that died.
     Establish {
-        peer_alive: bool,
-        peer_role: Role,
-        peer_name: Option<Vec<u8>>,
-        requested_name: Option<Vec<u8>>,
-        transport: Box<dyn ConnectionTransport>,
+        role: Role,
+        ident: Option<Vec<u8>>,
+        name_for_other: Option<Vec<u8>>,
+        alive: bool,
     },
     Severed {
         reason: Vec<u8>,
@@ -105,7 +119,7 @@ pub(crate) enum ConnectionCommand {
 }
 
 impl Connection {
-    pub(crate) fn new_inproc(request: ConnectRequest) -> Self {
+    pub(crate) fn new_unestablished(request: ConnectRequest) -> Self {
         let name_for_other = request
             .name_for_other
             .as_ref()
@@ -121,7 +135,12 @@ impl Connection {
     pub(crate) fn send(&mut self, command: ConnectionCommand) -> bool {
         match self {
             Self::Established { transport, .. } => transport.send(command),
+            // Before establishment outgoing commands are buffered (even once the
+            // transport is up, so the peer's hello precedes any message).
             Self::Unestablished {
+                queued_commands, ..
+            }
+            | Self::Connecting {
                 queued_commands, ..
             } => {
                 queued_commands.push_back(command);
@@ -141,6 +160,13 @@ impl Connection {
                 ..
             } => Some((failure_prefix, peer_ident)),
             Self::Unestablished {
+                name_for_other,
+                failure_prefix,
+                ..
+            } => Some((failure_prefix, name_for_other.unwrap_or_default())),
+            // Connecting has not yet learned the peer's ident; fall back to the
+            // name we assigned it, if any.
+            Self::Connecting {
                 name_for_other,
                 failure_prefix,
                 ..
