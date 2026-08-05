@@ -6,12 +6,12 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//
-// C FFI layer. CCtx/CActor/CPoller/CMonitorHandle are thin wrappers that exist
-// solely to cross the C boundary. All real logic lives in the inner types.
-
+mod actor;
+mod connection;
 mod ctx;
+mod matcher;
 mod msg;
+mod poller;
 
 use std::cell::RefCell;
 use std::ffi::CString;
@@ -23,14 +23,15 @@ use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
 use std::os::fd::OwnedFd;
 
+use connection::ConnectRequest;
 use ctx::Command;
 use ctx::CtxHandle;
-use ctx::Delivered;
 use ctx::Key;
 use ctx::PollerKey;
 use msg::CMsg;
 use msg::CMsgPart;
 use msg::MsgPart;
+use poller::Delivered;
 
 const EFD_CLOEXEC: c_int = 0o2000000;
 const EFD_NONBLOCK: c_int = 0o4000;
@@ -80,7 +81,7 @@ pub struct CMonitorHandle {
 // ---------------------------------------------------------------------------
 
 #[repr(i32)]
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Role {
     Child = 0,
     Parent = 1,
@@ -292,7 +293,7 @@ pub unsafe extern "C" fn mm_actor_send(
     a.ctx
         .send_command(Command::Send {
             sender: a.key,
-            receiver_ident: MsgPart::from_c(receiver_ident),
+            destination_ident: MsgPart::from_c(receiver_ident),
             parts: parts_from_cmsg(msg),
         })
         .into()
@@ -304,14 +305,24 @@ pub unsafe extern "C" fn mm_actor_serve(
     url: *const c_char,
     args: *const CConnectArgs,
 ) -> Error {
-    let url = std::ffi::CStr::from_ptr(url).to_str().unwrap_or("");
+    let url = std::ffi::CStr::from_ptr(url)
+        .to_str()
+        .unwrap_or("")
+        .to_owned();
     let a = &*actor;
     let args = &*args;
-    let _ = (&a.ctx, a.key, url, args.role == Role::Parent);
-    let _name_for_joiner = opt_name(args.name_for_other);
-    let _hello_prefix = parts_from_cmsg(args.hello_prefix);
-    let _failure_prefix = parts_from_cmsg(args.failure_prefix);
-    not_implemented()
+    a.ctx
+        .send_command(Command::Serve {
+            actor: a.key,
+            url,
+            request: ConnectRequest {
+                role: args.role,
+                name_for_other: opt_name(args.name_for_other),
+                hello_prefix: parts_from_cmsg(args.hello_prefix),
+                failure_prefix: parts_from_cmsg(args.failure_prefix),
+            },
+        })
+        .into()
 }
 
 #[no_mangle]
@@ -320,20 +331,33 @@ pub unsafe extern "C" fn mm_actor_join(
     url: *const c_char,
     args: *const CConnectArgs,
 ) -> Error {
-    let url = std::ffi::CStr::from_ptr(url).to_str().unwrap_or("");
+    let url = std::ffi::CStr::from_ptr(url)
+        .to_str()
+        .unwrap_or("")
+        .to_owned();
     let a = &*actor;
     let args = &*args;
-    let _ = (&a.ctx, a.key, url, args.role == Role::Parent);
-    let _name_for_server = opt_name(args.name_for_other);
-    let _hello_prefix = parts_from_cmsg(args.hello_prefix);
-    let _failure_prefix = parts_from_cmsg(args.failure_prefix);
-    not_implemented()
+    a.ctx
+        .send_command(Command::Join {
+            actor: a.key,
+            url,
+            request: ConnectRequest {
+                role: args.role,
+                name_for_other: opt_name(args.name_for_other),
+                hello_prefix: parts_from_cmsg(args.hello_prefix),
+                failure_prefix: parts_from_cmsg(args.failure_prefix),
+            },
+        })
+        .into()
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn mm_actor_die(actor: *mut CActor, reason: CMsgPart) {
     let a = &*actor;
-    let _ = (&a.ctx, a.key, MsgPart::from_c(reason));
+    let _ = a.ctx.send_command(Command::Die {
+        actor: a.key,
+        reason: MsgPart::from_c(reason),
+    });
 }
 
 #[no_mangle]
