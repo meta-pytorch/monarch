@@ -4349,8 +4349,16 @@ impl InstanceCell {
             return;
         }
         let old = old_status.expect("status change should capture previous status");
-        let actor_id = hash_to_u64(self.actor_addr().id());
+        // Idle/Processing transitions are omitted because they occur for every
+        // message. Duplicate status updates are omitted as well.
+        if (old.is_idle() && new.is_processing())
+            || (old.is_processing() && new.is_idle())
+            || old == new
+        {
+            return;
+        }
 
+        let actor_id = hash_to_u64(self.actor_addr().id());
         let new_status = new.arm().unwrap_or("unknown");
         let change_reason = match &new {
             ActorStatus::Failed(reason) => Some(reason.to_string()),
@@ -4359,22 +4367,15 @@ impl InstanceCell {
             _ => None,
         };
 
-        // Idle/Processing transitions are persisted but omitted from logs because
-        // they occur for every message.
-        if !((old.is_idle() && new.is_processing())
-            || (old.is_processing() && new.is_idle())
-            || old == new)
-        {
-            tracing::info!(
-                name = "ActorStatus",
-                actor_id = %self.actor_addr(),
-                actor_name = self.actor_addr().log_name(),
-                status = new_status,
-                prev_status = old.arm().unwrap_or("unknown"),
-                caller = %PanicLocation::caller(),
-                change_reason = change_reason.as_deref().unwrap_or(""),
-            );
-        }
+        tracing::info!(
+            name = "ActorStatus",
+            actor_id = %self.actor_addr(),
+            actor_name = self.actor_addr().log_name(),
+            status = new_status,
+            prev_status = old.arm().unwrap_or("unknown"),
+            caller = %PanicLocation::caller(),
+            change_reason = change_reason.as_deref().unwrap_or(""),
+        );
         notify_actor_status_changed(ActorStatusEvent {
             id: generate_actor_status_event_id(actor_id),
             timestamp: std::time::SystemTime::now(),
