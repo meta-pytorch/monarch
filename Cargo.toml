@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "algebra",
+    "monarch_mini",
     "build_utils",
     "erased_lifetime",
     "hyper",
@@ -47,6 +48,7 @@ members = [
 ]
 default-members = [
     "algebra",
+    "monarch_mini",
     "build_utils",
     "erased_lifetime",
     "hyper",
