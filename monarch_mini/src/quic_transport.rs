@@ -707,6 +707,8 @@ async fn listener_task(
                         loop_tx.clone(), shutdown.clone(), alive.clone(),
                         conn,
                         shm,
+                        // Serving/acceptor side: log heartbeat sends (under MM_QUIC_DEBUG).
+                        true,
                     )
                 });
             }
@@ -720,6 +722,8 @@ async fn listener_task(
                                 loop_tx.clone(), shutdown.clone(), alive.clone(),
                                 conn,
                                 shm,
+                                // Serving/acceptor side: log heartbeat sends (under MM_QUIC_DEBUG).
+                                true,
                             )
                         });
                     }
@@ -844,7 +848,11 @@ async fn connector_task(
                     }
                     // Connection is up; free the attempt slot before handing off.
                     drop(permit);
-                    spawn_connection(send, recv, connection, loop_tx, shutdown, alive, conn, shm);
+                    // Joiner side (the root has tens of thousands of writers): do not
+                    // log heartbeat sends here even under debug — it would flood.
+                    spawn_connection(
+                        send, recv, connection, loop_tx, shutdown, alive, conn, shm, false,
+                    );
                     return;
                 }
                 Err(_) => {
@@ -963,6 +971,9 @@ fn spawn_connection(
     alive: mpsc::UnboundedSender<()>,
     conn: Connection,
     shm: ShmCtx,
+    // Forwarded to the writer: log heartbeat sends (gated to the serve/acceptor side
+    // by the call sites, and further gated by MM_QUIC_DEBUG in the writer).
+    log_heartbeats: bool,
 ) {
     let (writer_tx, writer_rx) = mpsc::unbounded_channel();
     // Reader → writer signal: the peer responded to our shutdown, so the writer
@@ -980,6 +991,7 @@ fn spawn_connection(
         alive,
         peer_responded_rx,
         conn,
+        log_heartbeats,
     ));
     tokio::task::spawn_local(reader_task(
         recv,
@@ -1018,9 +1030,15 @@ async fn writer_task(
     // Held only to keep the QUIC connection alive for the writer's lifetime;
     // dropping it closes the connection, which the peer's reader observes.
     _conn: Connection,
+    // When set (acceptor/serve side only, so the joiner root's tens of thousands of
+    // writers don't flood), and MM_QUIC_DEBUG is on, log each heartbeat sent — so a
+    // connection the peer later reaps can be proven to have kept sending.
+    log_heartbeats: bool,
 ) {
     let mut heartbeat = tokio::time::interval(heartbeat_interval());
     heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let log_heartbeats = log_heartbeats && crate::ctx::connection_debug();
+    let mut heartbeats_sent: u64 = 0;
     let mut graceful = false;
     loop {
         tokio::select! {
@@ -1035,6 +1053,18 @@ async fn writer_task(
             _ = heartbeat.tick() => {
                 if framing::write_heartbeat(&mut send).await.is_err() {
                     return;
+                }
+                // Flushed to the QUIC stream; log it from the *sender* so loss vs. a
+                // stalled sender can be told apart at the far (receiving) end.
+                if log_heartbeats {
+                    heartbeats_sent += 1;
+                    eprintln!(
+                        "{} MM_HB pid={} sent={} on {:?}",
+                        crate::ctx::wall_clock_hms(),
+                        std::process::id(),
+                        heartbeats_sent,
+                        _conn.remote_address(),
+                    );
                 }
             }
             _ = shutdown.changed() => {
@@ -1085,6 +1115,31 @@ async fn reader_task(
     shm: ShmCtx,
 ) {
     let hb_timeout = heartbeat_timeout();
+    // Per-connection diagnostics, folded into the failure reason under MM_QUIC_DEBUG:
+    // did we ever read the peer's Establish (identity exchange)? how many heartbeats
+    // and other frames arrived, and how long since the last read? This pinpoints
+    // exactly how far a reaped connection got. Tracked cheaply either way; only
+    // formatted into the reason when debug is on.
+    let debug = crate::ctx::connection_debug();
+    let start = std::time::Instant::now();
+    let mut established = false;
+    let mut heartbeats: u64 = 0;
+    let mut commands: u64 = 0;
+    let mut last_read: Option<std::time::Duration> = None;
+    let stats = |established: bool, heartbeats, commands, last_read: Option<_>| {
+        let last = match last_read {
+            Some(d) => format!(
+                "{:.1}s ago",
+                start.elapsed().saturating_sub(d).as_secs_f64()
+            ),
+            None => "never".to_owned(),
+        };
+        format!(
+            "established={established}, heartbeats={heartbeats}, commands={commands}, \
+             age={:.1}s, last_read={last}",
+            start.elapsed().as_secs_f64(),
+        )
+    };
     loop {
         // The owning actor's gateway client is snapshot per frame so a large part
         // is read straight into the slab once the client is known (a gateway seeds
@@ -1093,10 +1148,26 @@ async fn reader_task(
         match tokio::time::timeout(hb_timeout, read).await {
             Err(_elapsed) => {
                 let _ = peer_responded.send(());
-                sever(&loop_tx, connection, b"quic heartbeat timeout".to_vec());
+                let reason = if debug {
+                    format!(
+                        "quic heartbeat timeout ({})",
+                        stats(established, heartbeats, commands, last_read)
+                    )
+                    .into_bytes()
+                } else {
+                    b"quic heartbeat timeout".to_vec()
+                };
+                sever(&loop_tx, connection, reason);
                 return;
             }
             Ok(Ok(Incoming::Command(action))) => {
+                last_read = Some(start.elapsed());
+                commands += 1;
+                // The peer's Establish is how we learn its identity: reading it is
+                // the moment this side considers the connection established.
+                if matches!(action, ConnectionCommand::Establish { .. }) {
+                    established = true;
+                }
                 // A Severed from the peer is its response to our shutdown (or the
                 // peer initiating its own) — wake any writer waiting to close.
                 if matches!(action, ConnectionCommand::Severed { .. }) {
@@ -1109,10 +1180,34 @@ async fn reader_task(
                     return;
                 }
             }
-            Ok(Ok(Incoming::Heartbeat)) => continue,
-            Ok(Err(_)) => {
+            Ok(Ok(Incoming::Heartbeat)) => {
+                last_read = Some(start.elapsed());
+                heartbeats += 1;
+                continue;
+            }
+            Ok(Err(err)) => {
                 let _ = peer_responded.send(());
-                sever(&loop_tx, connection, b"quic connection closed".to_vec());
+                let reason = if debug {
+                    // Walk the io::Error source chain to recover the concrete quinn
+                    // ConnectionError — ReadError::ConnectionLost's own Display is just
+                    // the bare "connection lost", dropping the real cause ("timed out"
+                    // vs "reset by peer" vs "closed by peer").
+                    let mut detail = err.to_string();
+                    let mut src = std::error::Error::source(&err);
+                    while let Some(e) = src {
+                        detail.push_str(": ");
+                        detail.push_str(&e.to_string());
+                        src = e.source();
+                    }
+                    format!(
+                        "quic connection closed: {detail} ({})",
+                        stats(established, heartbeats, commands, last_read)
+                    )
+                    .into_bytes()
+                } else {
+                    b"quic connection closed".to_vec()
+                };
+                sever(&loop_tx, connection, reason);
                 return;
             }
         }
