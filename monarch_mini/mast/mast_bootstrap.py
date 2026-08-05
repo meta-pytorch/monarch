@@ -68,6 +68,20 @@ SMOKE_SETTLE_MS = float(os.environ.get("SMOKE_SETTLE_MS", "0"))
 # every job's hosts and injects them into the one root it picks. See smoke.py's
 # --wait-for-addresses / run_root_coordinated.
 SMOKE_COORD_PORT = int(os.environ.get("SMOKE_COORD_PORT", "0"))
+# Max sweep size (worker count actually exercised). 0 ⇒ sweep every launched worker.
+# Set this BELOW the launched worker count (hosts * WORKERS_PER_HOST) to over-provision:
+# the root builds the sweep from the first SMOKE_TARGET workers that connect and
+# backfills from the reserve when borrowed (preemptible) hosts drop. See smoke.py's
+# --target / run_root.
+SMOKE_TARGET = int(os.environ.get("SMOKE_TARGET", "0"))
+# Network transport for the worker serve / root join, passed to smoke.py's
+# --transport (default quic). The worker and root must agree, so it is read once
+# here and applied to both. Validated against smoke.py's choices.
+SMOKE_TRANSPORT = os.environ.get("SMOKE_TRANSPORT", "quic")
+if SMOKE_TRANSPORT not in ("quic", "tcp"):
+    raise SystemExit(
+        f"SMOKE_TRANSPORT must be 'quic' or 'tcp', got {SMOKE_TRANSPORT!r}"
+    )
 
 
 def task_hosts() -> list[str]:
@@ -124,7 +138,17 @@ def main() -> None:
     # Every task runs WORKERS_PER_HOST workers on sequential ports.
     workers = [
         subprocess.Popen(
-            [python, smoke, "--worker", "--port", str(PORT + i), "--bind", "::"],
+            [
+                python,
+                smoke,
+                "--worker",
+                "--port",
+                str(PORT + i),
+                "--bind",
+                "::",
+                "--transport",
+                SMOKE_TRANSPORT,
+            ],
             cwd=HERE,
             env=env,
         )
@@ -161,6 +185,9 @@ def main() -> None:
             str(SMOKE_CHAIN_LENGTH),
             "--settle-ms",
             str(SMOKE_SETTLE_MS),
+            "--transport",
+            SMOKE_TRANSPORT,
+            *(["--target", str(SMOKE_TARGET)] if SMOKE_TARGET > 0 else []),
         ]
         root_env = env
     else:
@@ -174,12 +201,15 @@ def main() -> None:
         # ~sqrt(N) children direct and delegates the rest, balanced, onto them, so
         # both the keeper count and each keeper's delegated load grow as sqrt(N).
         total_workers = len(hosts) * WORKERS_PER_HOST
-        max_direct = max(1, round(math.sqrt(total_workers)))
+        # The root heartbeats the *swept* (connected) set, which is SMOKE_TARGET when
+        # over-provisioning, else every launched worker. Size the keeper set off that.
+        swept = SMOKE_TARGET if SMOKE_TARGET > 0 else total_workers
+        max_direct = max(1, round(math.sqrt(swept)))
         root_env = dict(env)
         root_env["MM_QUIC_MAX_DIRECT_CHILDREN"] = str(max_direct)
         print(
             f"[bootstrap] root MM_QUIC_MAX_DIRECT_CHILDREN={max_direct} "
-            f"(sqrt of {total_workers} workers)",
+            f"(sqrt of {swept} swept workers; {total_workers} launched)",
             flush=True,
         )
         addrs = [
@@ -209,6 +239,9 @@ def main() -> None:
             str(SMOKE_CHAIN_LENGTH),
             "--settle-ms",
             str(SMOKE_SETTLE_MS),
+            "--transport",
+            SMOKE_TRANSPORT,
+            *(["--target", str(SMOKE_TARGET)] if SMOKE_TARGET > 0 else []),
         ]
 
     rc = subprocess.call(root_cmd, cwd=HERE, env=root_env)

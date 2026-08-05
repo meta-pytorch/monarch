@@ -184,6 +184,8 @@ def make_jobspec(
     server_subtype: int | None = None,
     cluster: str = "MastGenAICluster",
     entitlement: str = "monarch_cicd",
+    opec_tag: int = 0,
+    graceful_preempt: bool = False,
 ) -> dict:
     """A CPU MAST job that runs the bootstrap on every task.
 
@@ -195,6 +197,13 @@ def make_jobspec(
     ``entitlement`` selects the MAST entitlement/tenant. Use ``monarch_training``
     for the classic-MAST clusters (CPUTrainingWorkloads / MastProdCluster), which
     ``monarch_cicd`` is not authorized on.
+
+    ``opec_tag`` is the `OpecTag` thrift enum (hpcscheduler_enums.thrift): 0 =
+    DEDICATED_ONLY (dedicated capacity only), 2 = OPEC_ONLY (elastic/borrowable
+    capacity only), 3 = OPEC_FLOATING (either). The monarch tenants hold NO
+    dedicated CPU quota (only GPU reservations), so a best-effort CPU job MUST use
+    OPEC_ONLY/OPEC_FLOATING to place on the shared elastic pool — a DEDICATED_ONLY
+    CPU job has zero eligible hosts and sits in AWAITING_RESOURCE forever.
     """
     tenant_path = _ENTITLEMENT_TENANT_PATHS.get(entitlement)
     if tenant_path is None:
@@ -258,7 +267,7 @@ def make_jobspec(
                         "failJobOnFinalFailure": True,
                     },
                     "ttlsConfig": {"enable": False},
-                    "opecTag": 0,
+                    "opecTag": opec_tag,
                 },
             }
         ],
@@ -270,7 +279,7 @@ def make_jobspec(
         },
         "identity": {"name": "hyper_monarch"},
         "owner": {"oncallShortname": "monarch", "unixname": os.environ["USER"]},
-        "enableGracefulPreemption": False,
+        "enableGracefulPreemption": graceful_preempt,
         "maxJobFailures": 0,
         "jobType": 0,
         "aiTrainingMetadata": {
@@ -422,12 +431,36 @@ def main() -> None:
         "clusters, else monarch_cicd)",
     )
     parser.add_argument(
+        "--opec-tag",
+        choices=["dedicated_only", "opec_only", "opec_floating"],
+        default="opec_only",
+        help="OpecTag scheduling class (default: opec_only). The monarch tenants "
+        "hold no dedicated CPU quota, so best-effort CPU jobs must run on the "
+        "shared elastic pool. 'opec_only' (elastic only) is what the CPU/Bergamo "
+        "elastic pool accepts; 'opec_floating' (dedicated or elastic) is REJECTED "
+        "by the CPU elastic target (ineligibilityReason=OPEC_FLOATING_JOB). "
+        "'dedicated_only' has zero eligible CPU hosts and sits in AWAITING_RESOURCE "
+        "forever — use it only if you have a reservation.",
+    )
+    parser.add_argument(
+        "--graceful-preempt",
+        action="store_true",
+        help="set enableGracefulPreemption: when running on preemptible (OPEC) "
+        "capacity, gives tasks a grace window (~30 min) after a preempt signal "
+        "before release, so an in-progress sweep can finish instead of the whole "
+        "job being reclaimed and re-queued mid-run.",
+    )
+    parser.add_argument(
         "--launch",
         action="store_true",
         help="submit the job now via thrift (thriftdbg -> the cluster's write "
         "tier) instead of only printing instructions",
     )
     args = parser.parse_args()
+
+    # OpecTag thrift enum (hpcscheduler_enums.thrift): note 1 (OPEC_ELIGIBLE) is
+    # deprecated/skipped, so the enum is non-contiguous.
+    opec_tag = {"dedicated_only": 0, "opec_only": 2, "opec_floating": 3}[args.opec_tag]
 
     extra_env: dict[str, str] = {}
     for item in args.env:
@@ -470,6 +503,8 @@ def main() -> None:
         else (10018 if args.bergamo else None),
         cluster=args.cluster,
         entitlement=entitlement,
+        opec_tag=opec_tag,
+        graceful_preempt=args.graceful_preempt,
     )
 
     spec_path = Path(tempfile.mkdtemp(prefix="mm_smoke_spec_")) / "jobspec.json"
