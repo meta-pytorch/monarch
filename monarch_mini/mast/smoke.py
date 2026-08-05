@@ -258,20 +258,21 @@ async def run_worker(port: int, bind: str, transport: str) -> None:
             log(f"{tag} unexpected header {header!r}; ignoring")
 
 
-async def _direct_round(root: Actor, workers: list[bytes], timeout: float) -> int:
+async def _direct_round(root: Actor, workers: list[bytes], timeout: float, recv) -> int:
     """Send one ping to every worker, await each reply, return the failure count.
 
     Each connected worker yields exactly one terminal message per round: a reply
     (``[H_REPLY, worker_ident]``) or a failure notice (``[H_FAIL, worker_ident,
     reason]``) if its connection dropped (e.g. a heartbeat timeout severed it).
-    Raises ``asyncio.TimeoutError`` if a worker neither replies nor fails within
-    ``timeout`` — the signal that a connection silently stalled.
+    Reads via ``recv`` so establishment hellos from still-connecting spare reserve
+    workers are parked, not counted. Raises ``asyncio.TimeoutError`` if a worker
+    neither replies nor fails within ``timeout`` — a connection silently stalled.
     """
     for wid in workers:
         root.send(wid, [ba(H_PING)])
     failures = 0
     for _ in range(len(workers)):
-        msg = await asyncio.wait_for(root.next(), timeout)
+        msg = await recv(timeout)
         if bytes(msg[0]) == H_REPLY:
             continue
         who, reason = _failure_notice(msg)
@@ -281,7 +282,7 @@ async def _direct_round(root: Actor, workers: list[bytes], timeout: float) -> in
 
 
 async def _ring_round(
-    root: Actor, workers: list[bytes], timeout: float, heads: list[int]
+    root: Actor, workers: list[bytes], timeout: float, heads: list[int], recv
 ) -> int:
     """Inject a token at each chain head and wait for every chain to return.
 
@@ -298,7 +299,7 @@ async def _ring_round(
     total = 0
     failures = 0
     for _ in range(len(heads)):
-        msg = await asyncio.wait_for(root.next(), timeout)
+        msg = await recv(timeout)
         if bytes(msg[0]) == H_RING:
             total += int(bytes(msg[1]))
             continue
@@ -321,6 +322,7 @@ async def run_root(
     close_ctx: bool = True,
     settle_ms: float = 0.0,
     transport: str = "quic",
+    target: int | None = None,
 ) -> int:
     """Performance sweep: grow the connected set 2, 4, 8, ..., N and time each size.
 
@@ -339,40 +341,95 @@ async def run_root(
     root = Actor(b"root")
     rounds = max(min_rounds, 1)
     try:
-        total = len(hosts)
-        # Doubling milestones 2, 4, 8, ... below the total, with the total itself as
-        # the final size (so the full fleet is always measured, power of two or not).
+        reserve = len(hosts)
+        # `target` is the max sweep size. We deliberately launch a *reserve* larger
+        # than `target` so the sweep is built from the FIRST workers that connect and
+        # keeps going when some of the borrowed (preemptible) hosts fail to connect or
+        # drop mid-connect — we just backfill from the reserve. Sizes are milestones of
+        # `target`, not of the reserve.
+        target = min(target or reserve, reserve)
         sizes: list[int] = []
         n = 2
-        while n < total:
+        while n < target:
             sizes.append(n)
             n *= 2
-        if total >= 1 and (not sizes or sizes[-1] != total):
-            sizes.append(total)
-        log(f"[sweep] sizes {sizes} of {total} workers, {rounds} round(s) each")
+        if target >= 1 and (not sizes or sizes[-1] != target):
+            sizes.append(target)
+        log(
+            f"[sweep] target {target} workers (reserve {reserve}, "
+            f"+{reserve - target} spare); sizes {sizes}, {rounds} round(s) each"
+        )
 
-        workers: list[bytes] = []
-        joined = 0
-        for size in sizes:
-            # Join only the next batch to grow the connected set to `size`.
-            batch = hosts[joined:size]
-            t_join = time.monotonic()
-            for host in batch:
-                root.join(f"{transport}://{host}", "parent", failure=[ba(H_FAIL)])
-            joined = size
-            while len(workers) < size:
+        # Connected worker idents in connect order; `next_host` is the reserve cursor,
+        # `inflight` counts joins issued but not yet resolved.
+        # Each worker that connects announces itself with a [b"root", ident] hello.
+        # `pool` collects them in connect order; the sweep exercises `pool[:size]`. We
+        # dial the reserve INCREMENTALLY as the sweep grows — never all up front — so
+        # each step's connects are their own bounded batch and the per-size connect
+        # timing stays meaningful. At each step we keep the dial cursor `DIAL_AHEAD`
+        # ahead of the current need: a dead/preempted host never resolves (the transport
+        # retries the connect forever, signalling failure only on a severed *established*
+        # link), so dialing a little ahead lets the first `need` live hosts connect
+        # without a dead one stalling us; if the lead is entirely dead we widen it.
+        pool: list[bytes] = []
+        next_host = 0
+        DIAL_AHEAD = 128  # spare joins kept dialed beyond the immediate need
+
+        async def recv_round(timeout: float):
+            """Next round/failure message, parking establishment hellos from spare
+            dialed-ahead workers into `pool` (available for a later size) so they're
+            never misread as a round reply."""
+            while True:
+                msg = await asyncio.wait_for(root.next(), timeout)
+                if bytes(msg[0]) == b"root":
+                    pool.append(bytes(msg[1]))
+                    continue
+                return msg
+
+        def dial_through(end: int) -> None:
+            nonlocal next_host
+            end = min(end, reserve)
+            while next_host < end:
+                root.join(
+                    f"{transport}://{hosts[next_host]}", "parent", failure=[ba(H_FAIL)]
+                )
+                next_host += 1
+
+        async def grow_to(need: int) -> bool:
+            """Grow `pool` to `need`, dialing the reserve incrementally (kept
+            `DIAL_AHEAD` ahead of `need`, widened on a stall so dead hosts don't block).
+            False if the reserve is exhausted before `need` workers connect."""
+            dial_through(need + DIAL_AHEAD)
+            while len(pool) < need:
                 try:
                     msg = await asyncio.wait_for(root.next(), connect_timeout)
                 except asyncio.TimeoutError:
-                    log(f"[sweep] ERROR: only {len(workers)}/{size} workers connected")
-                    return 1
+                    if next_host >= reserve:
+                        return False  # whole reserve dialed, still short
+                    dial_through(
+                        next_host + DIAL_AHEAD
+                    )  # dead hosts ate the lead; widen
+                    continue
                 if bytes(msg[0]) == b"root":
-                    workers.append(bytes(msg[1]))
+                    pool.append(bytes(msg[1]))
                 else:
                     who, reason = _failure_notice(msg)
-                    log(f"[sweep] FAILURE (connect) {who}: {reason}")
-                    return 1
+                    log(f"[sweep] connect dropped {who}: {reason}")
+            return True
+
+        prev = 0
+        for size in sizes:
+            t_join = time.monotonic()
+            if not await grow_to(size):
+                log(
+                    f"[sweep] ERROR: only {len(pool)}/{size} workers connected "
+                    f"(reserve of {reserve} exhausted)"
+                )
+                return 1
+            workers = pool[:size]
             connect_ms = (time.monotonic() - t_join) * 1e3
+            grew = size - prev
+            prev = size
 
             # Re-wire the ring over the whole current set (new workers included), so
             # every worker knows its next hop before a token can reach it.
@@ -390,12 +447,12 @@ async def run_root(
             try:
                 for _ in range(rounds):
                     t_d = time.monotonic()
-                    if await _direct_round(root, workers, timeout):
+                    if await _direct_round(root, workers, timeout, recv_round):
                         log(f"[sweep] FAILURE in direct at size {size}")
                         return 1
                     d = (time.monotonic() - t_d) * 1e3
                     t_r = time.monotonic()
-                    if await _ring_round(root, workers, timeout, heads):
+                    if await _ring_round(root, workers, timeout, heads, recv_round):
                         log(f"[sweep] FAILURE in ring at size {size}")
                         return 1
                     r = (time.monotonic() - t_r) * 1e3
@@ -414,10 +471,10 @@ async def run_root(
             if settle_ms > 0 and size == sizes[-1]:
                 await asyncio.sleep(settle_ms / 1000.0)
                 try:
-                    if await _direct_round(root, workers, timeout):
+                    if await _direct_round(root, workers, timeout, recv_round):
                         log(f"[sweep] FAILURE after settle (direct) at size {size}")
                         return 1
-                    if await _ring_round(root, workers, timeout, heads):
+                    if await _ring_round(root, workers, timeout, heads, recv_round):
                         log(f"[sweep] FAILURE after settle (ring) at size {size}")
                         return 1
                 except asyncio.TimeoutError:
@@ -425,7 +482,7 @@ async def run_root(
                     return 1
                 log(f"[sweep] size={size:>6}  settled {settle_ms:.0f}ms OK")
             log(
-                f"[sweep] size={size:>6}  connect(+{len(batch)})={connect_ms:9.1f} ms  "
+                f"[sweep] size={size:>6}  connect(+{grew})={connect_ms:9.1f} ms  "
                 f"direct min={direct_best:8.2f} avg={direct_sum / rounds:8.2f} ms  "
                 f"ring min={ring_best:8.2f} avg={ring_sum / rounds:8.2f} ms  "
                 f"({len(heads)} chain(s))"
@@ -448,6 +505,7 @@ async def run_root_coordinated(
     chain_length: int = 0,
     settle_ms: float = 0.0,
     transport: str = "quic",
+    target: int | None = None,
 ) -> int:
     """Root variant that waits for a controller to hand it the worker addresses.
 
@@ -504,6 +562,7 @@ async def run_root_coordinated(
         close_ctx=False,
         settle_ms=settle_ms,
         transport=transport,
+        target=target,
     )
 
     log(f"[coord] sweep finished rc={rc}; notifying controller and closing")
@@ -591,6 +650,15 @@ def main() -> None:
         "(default: 1). More rounds give a min/avg per size.",
     )
     parser.add_argument(
+        "--target",
+        type=int,
+        default=None,
+        help="root: max sweep size (number of workers to actually exercise). Launch "
+        "MORE hosts than this (the reserve); the sweep is built from the first "
+        "--target workers that connect and backfills from the reserve when borrowed "
+        "hosts fail. Default: sweep every host given (no reserve).",
+    )
+    parser.add_argument(
         "--settle-ms",
         type=float,
         default=0.0,
@@ -616,6 +684,7 @@ def main() -> None:
                     args.chain_length,
                     args.settle_ms,
                     args.transport,
+                    args.target,
                 )
             )
         )
@@ -635,6 +704,7 @@ def main() -> None:
                     args.chain_length,
                     settle_ms=args.settle_ms,
                     transport=args.transport,
+                    target=args.target,
                 )
             )
         )
