@@ -835,11 +835,7 @@ impl PyRdmaManager {
             drop(proc_mesh_shared);
             // Downcast to the native proc mesh and clone its ref under the GIL.
             let proc_mesh: ProcMeshRef = monarch_with_gil(GilSite::Convert, move |py| {
-                mesh_obj
-                    .bind(py)
-                    .downcast::<PyProcMesh>()?
-                    .borrow()
-                    .mesh_ref()
+                mesh_obj.bind(py).cast::<PyProcMesh>()?.borrow().mesh_ref()
             })
             .await?;
             // RMB-3: the inherited capability routes this request to the program
