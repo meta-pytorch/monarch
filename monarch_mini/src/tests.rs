@@ -184,9 +184,13 @@ fn dead_pending_connect_fails_when_matched() {
     );
     drain_commands(&mut ctx, &mut rx);
 
+    // The dead server still announces itself — its ident, but `alive: false` — so
+    // the joiner severs instead of establishing (no hello), and its failure both
+    // names the dead peer ("server") and says why ("peer actor died"). No peer
+    // state was inspected: the dead side reported its own ident and liveness.
     assert_eq!(
         buffered_strings(&ctx, joiner),
-        vec!["joiner-failed", "", "peer actor died"]
+        vec!["joiner-failed", "server", "peer actor died"]
     );
     assert!(matches!(
         ctx.actors[joiner].parent,
@@ -260,6 +264,104 @@ fn buffered_messages_flush_upward_when_actor_gains_a_parent() {
         buffered_strings(&ctx, target),
         vec!["target", "root", "hello-target"]
     );
+}
+
+#[test]
+fn unix_serve_join_establishes_and_routes() {
+    let ctx = CtxHandle::new().expect("context should start");
+    let parent = runtime_actor(&ctx, "ux-parent");
+    let child = runtime_actor(&ctx, "ux-child");
+    let (parent_poller, mut parent_rx) = runtime_poller(&ctx);
+    let (child_poller, mut child_rx) = runtime_poller(&ctx);
+    runtime_subscribe(&ctx, parent_poller, 0, parent);
+    runtime_subscribe(&ctx, child_poller, 0, child);
+
+    let url = unix_test_url("route");
+    ctx.send_command(Command::Serve {
+        actor: parent,
+        url: url.clone(),
+        request: request(Role::Parent),
+    })
+    .expect("serve should enqueue");
+    ctx.send_command(Command::Join {
+        actor: child,
+        url,
+        request: request(Role::Child),
+    })
+    .expect("join should enqueue");
+
+    // The handshake completes over the socket and both sides get their hello.
+    assert_eq!(recv_strings(&mut parent_rx), vec!["ux-parent", "ux-child"]);
+    assert_eq!(recv_strings(&mut child_rx), vec!["ux-child", "ux-parent"]);
+
+    // A message addressed across the socket is framed and delivered intact.
+    ctx.send_command(Command::Send {
+        sender: parent,
+        destination_ident: MsgPart::from_bytes(b"ux-child".to_vec()),
+        parts: vec![MsgPart::from_bytes(b"hi-child".to_vec())],
+    })
+    .expect("send should enqueue");
+    assert_eq!(recv_strings(&mut child_rx), vec!["hi-child"]);
+
+    shutdown(ctx);
+}
+
+#[test]
+fn unix_writer_flushes_pending_sends_before_teardown() {
+    // Two contexts = two runtimes connected by a real socket, standing in for two
+    // processes. A send issued just before the client tears down must reach the
+    // OS before teardown completes, so the (separate) server still receives it.
+    let server_ctx = CtxHandle::new().expect("server context should start");
+    let client_ctx = CtxHandle::new().expect("client context should start");
+    let server = runtime_actor(&server_ctx, "flush-server");
+    let client = runtime_actor(&client_ctx, "flush-client");
+    let (server_poller, mut server_rx) = runtime_poller(&server_ctx);
+    runtime_subscribe(&server_ctx, server_poller, 0, server);
+
+    let url = unix_test_url("flush");
+    server_ctx
+        .send_command(Command::Serve {
+            actor: server,
+            url: url.clone(),
+            request: request(Role::Parent),
+        })
+        .expect("serve should enqueue");
+    client_ctx
+        .send_command(Command::Join {
+            actor: client,
+            url,
+            request: request(Role::Child),
+        })
+        .expect("join should enqueue");
+    assert_eq!(
+        recv_strings(&mut server_rx),
+        vec!["flush-server", "flush-client"]
+    );
+
+    // Enqueue a send, then immediately shut the client down. The shutdown drains
+    // the writer before completing, so the message is not lost.
+    client_ctx
+        .send_command(Command::Send {
+            sender: client,
+            destination_ident: MsgPart::from_bytes(b"flush-server".to_vec()),
+            parts: vec![MsgPart::from_bytes(b"last-words".to_vec())],
+        })
+        .expect("send should enqueue");
+    shutdown(client_ctx);
+
+    assert_eq!(recv_strings(&mut server_rx), vec!["last-words"]);
+    shutdown(server_ctx);
+}
+
+fn unix_test_url(name: &str) -> String {
+    // The listener unlinks any stale socket before binding, so reusing a stable
+    // per-process path across runs is safe.
+    format!(
+        "unix://{}/mm-rs-test-{}-{}.sock",
+        std::env::temp_dir().display(),
+        std::process::id(),
+        name
+    )
 }
 
 fn test_ctx() -> (Ctx, mpsc::UnboundedReceiver<Command>) {
