@@ -66,8 +66,8 @@ class TelemetryActor(Actor):
         # Job-instance identifier; namespaces the per-host socket path under
         # /tmp so concurrent jobs on the same host do not collide.
         self._apply_id: str = apply_id
-        # Collector-side retention window in seconds for message tables; 0
-        # disables retention. Passed to DataFusion's periodic retention task.
+        # Collector-side retention window in seconds for message and trace
+        # tables; 0 disables retention. Passed to the periodic retention task.
         self._retention_secs: int = retention_secs
         # The DataFusion store + socket-ingest pair this actor owns. `None`
         # means this actor has not activated as the single live collector for
