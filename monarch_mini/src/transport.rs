@@ -17,10 +17,13 @@
 //! constructs an `Establish`.
 
 use crate::connection::ConnectionRef;
+use crate::shm::ShmClientSlot;
 
 pub(crate) trait Transport {
     /// Begin serving `connection` on `url` (this actor is the parent/server).
-    fn serve(&mut self, url: String, connection: ConnectionRef);
+    /// `shm_client` is the owning actor's shared-memory client slot; only the unix
+    /// transport uses it (to move large parts through the slab), others ignore it.
+    fn serve(&mut self, url: String, connection: ConnectionRef, shm_client: ShmClientSlot);
     /// Begin joining `connection` on `url` (this actor is the child/client).
-    fn join(&mut self, url: String, connection: ConnectionRef);
+    fn join(&mut self, url: String, connection: ConnectionRef, shm_client: ShmClientSlot);
 }

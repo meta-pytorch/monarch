@@ -28,6 +28,7 @@ use crate::connection::ConnectionRef;
 use crate::connection::ConnectionTransport;
 use crate::ctx::Command;
 use crate::matcher::Matcher;
+use crate::shm::ShmClientSlot;
 use crate::transport::Transport;
 
 pub(crate) struct InprocTransport {
@@ -45,14 +46,14 @@ impl InprocTransport {
 }
 
 impl Transport for InprocTransport {
-    fn serve(&mut self, url: String, connection: ConnectionRef) {
+    fn serve(&mut self, url: String, connection: ConnectionRef, _shm_client: ShmClientSlot) {
         let loop_tx = self.loop_tx.clone();
         let mut matcher = self.matchers.remove(&url).unwrap_or_else(Matcher::new);
         let _ = matcher.push_left(connection, |serve, join| pair(&loop_tx, serve, join));
         self.matchers.insert(url, matcher);
     }
 
-    fn join(&mut self, url: String, connection: ConnectionRef) {
+    fn join(&mut self, url: String, connection: ConnectionRef, _shm_client: ShmClientSlot) {
         let loop_tx = self.loop_tx.clone();
         let mut matcher = self.matchers.remove(&url).unwrap_or_else(Matcher::new);
         let _ = matcher.push_right(connection, |serve, join| pair(&loop_tx, serve, join));
@@ -87,6 +88,8 @@ struct InprocConnectionTransport {
 
 impl ConnectionTransport for InprocConnectionTransport {
     fn send(&self, action: ConnectionCommand) -> bool {
+        // Same process: every command — gateway state (raw fds and all) included —
+        // is delivered straight to the peer connection through the command loop.
         self.tx
             .send(Command::ConnectionAction {
                 connection: self.peer,

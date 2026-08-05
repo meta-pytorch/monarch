@@ -60,6 +60,7 @@ use crate::ctx::Command;
 use crate::framing;
 use crate::framing::Incoming;
 use crate::matcher::Matcher;
+use crate::shm::ShmClientSlot;
 use crate::transport::Transport;
 
 /// Server name the client uses to verify the server's certificate (the cert's SAN
@@ -191,7 +192,7 @@ impl QuicTransport {
 }
 
 impl Transport for QuicTransport {
-    fn serve(&mut self, url: String, connection: ConnectionRef) {
+    fn serve(&mut self, url: String, connection: ConnectionRef, _shm_client: ShmClientSlot) {
         let tls = match self.tls() {
             Ok(tls) => tls,
             Err(err) => {
@@ -231,7 +232,7 @@ impl Transport for QuicTransport {
             .send(connection);
     }
 
-    fn join(&mut self, url: String, connection: ConnectionRef) {
+    fn join(&mut self, url: String, connection: ConnectionRef, _shm_client: ShmClientSlot) {
         let tls = match self.tls() {
             Ok(tls) => tls,
             Err(err) => {

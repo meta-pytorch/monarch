@@ -817,6 +817,134 @@ fn unix_monitor_fires_across_processes() {
 }
 
 #[test]
+fn unix_gateway_sends_large_message_through_shared_memory() {
+    // Two contexts (= two processes) joined by a unix socket. The gateway owns a
+    // slab; on establishment it hands its child the gateway state, then sends a
+    // large message that is moved through the slab (not streamed) and arrives
+    // intact. If the state had not propagated, the receiver could not reconstruct
+    // the slab part and the connection would sever instead.
+    let server_ctx = CtxHandle::new().expect("server context should start");
+    let client_ctx = CtxHandle::new().expect("client context should start");
+    let gw = runtime_gateway_actor(&server_ctx, "shm-gw");
+    let child = runtime_actor(&client_ctx, "shm-child");
+    let (child_poller, mut child_rx) = runtime_poller(&client_ctx);
+    runtime_subscribe(&client_ctx, child_poller, 0, child);
+
+    let url = unix_test_url("shm-gateway");
+    server_ctx
+        .send_command(Command::Serve {
+            actor: gw,
+            url: url.clone(),
+            request: request(Role::Parent),
+        })
+        .expect("serve should enqueue");
+    client_ctx
+        .send_command(Command::Join {
+            actor: child,
+            url,
+            request: request(Role::Child),
+        })
+        .expect("join should enqueue");
+
+    assert_eq!(recv_strings(&mut child_rx), vec!["shm-child", "shm-gw"]);
+
+    let len = crate::shm::SHM_THRESHOLD as usize + 1234;
+    let payload = vec![0x41u8; len];
+    server_ctx
+        .send_command(Command::Send {
+            sender: gw,
+            destination_ident: MsgPart::from_bytes(b"shm-child".to_vec()),
+            parts: vec![MsgPart::from_bytes(payload.clone())],
+        })
+        .expect("send should enqueue");
+
+    let parts = recv_parts(&mut child_rx);
+    assert_eq!(parts.len(), 1, "one part delivered");
+    assert_eq!(parts[0], payload, "large slab payload arrives intact");
+
+    shutdown(client_ctx);
+    shutdown(server_ctx);
+}
+
+#[test]
+fn unix_inproc_unix_forwards_gateway_state_past_inproc_hop() {
+    // gw --unix--> a --inproc--> b --unix--> c, across three contexts. The gateway
+    // state must travel down the unix edge, across the inproc edge, and out the
+    // next unix edge so that the final hop (b -> c) can move a large message
+    // through the slab. The message originates at gw and must arrive intact at c.
+    let ctx_a = CtxHandle::new().expect("ctx a");
+    let ctx_b = CtxHandle::new().expect("ctx b");
+    let ctx_c = CtxHandle::new().expect("ctx c");
+
+    let gw = runtime_gateway_actor(&ctx_a, "hop-gw");
+    let a = runtime_actor(&ctx_b, "hop-a");
+    let b = runtime_actor(&ctx_b, "hop-b");
+    let c = runtime_actor(&ctx_c, "hop-c");
+    let (c_poller, mut c_rx) = runtime_poller(&ctx_c);
+    runtime_subscribe(&ctx_c, c_poller, 0, c);
+
+    // gw --unix--> a
+    let gw_url = unix_test_url("hop-gw");
+    ctx_a
+        .send_command(Command::Serve {
+            actor: gw,
+            url: gw_url.clone(),
+            request: request(Role::Parent),
+        })
+        .expect("serve");
+    ctx_b
+        .send_command(Command::Join {
+            actor: a,
+            url: gw_url,
+            request: request(Role::Child),
+        })
+        .expect("join");
+
+    // a --inproc--> b (same context)
+    runtime_connect(&ctx_b, a, b, "inproc://hop-ab");
+
+    // b --unix--> c
+    let bc_url = unix_test_url("hop-bc");
+    ctx_b
+        .send_command(Command::Serve {
+            actor: b,
+            url: bc_url.clone(),
+            request: request(Role::Parent),
+        })
+        .expect("serve");
+    ctx_c
+        .send_command(Command::Join {
+            actor: c,
+            url: bc_url,
+            request: request(Role::Child),
+        })
+        .expect("join");
+
+    assert_eq!(recv_strings(&mut c_rx), vec!["hop-c", "hop-b"]);
+
+    let len = crate::shm::SHM_THRESHOLD as usize + 99;
+    let payload = vec![0x5Au8; len];
+    ctx_a
+        .send_command(Command::Send {
+            sender: gw,
+            destination_ident: MsgPart::from_bytes(b"hop-c".to_vec()),
+            parts: vec![MsgPart::from_bytes(payload.clone())],
+        })
+        .expect("send");
+
+    let parts = recv_parts(&mut c_rx);
+    assert_eq!(parts.len(), 1);
+    assert_eq!(
+        parts[0], payload,
+        "large payload survives unix->inproc->unix"
+    );
+
+    shutdown(ctx_c);
+    shutdown(ctx_b);
+    shutdown(ctx_a);
+}
+
+#[test]
 fn quic_serve_join_establishes_and_routes() {
     set_quic_env();
     let ctx = CtxHandle::new().expect("context should start");
@@ -1086,14 +1214,33 @@ fn runtime_connect(ctx: &CtxHandle, parent: Key, child: Key, url: &str) {
 }
 
 fn runtime_actor(ctx: &CtxHandle, ident: &str) -> Key {
+    runtime_actor_with_gateway(ctx, ident, false)
+}
+
+fn runtime_gateway_actor(ctx: &CtxHandle, ident: &str) -> Key {
+    runtime_actor_with_gateway(ctx, ident, true)
+}
+
+fn runtime_actor_with_gateway(ctx: &CtxHandle, ident: &str, gateway: bool) -> Key {
     let (done_tx, done_rx) = oneshot::channel();
     ctx.send_command(Command::CreateActor {
         ident: Some(MsgPart::from_bytes(ident.as_bytes().to_vec())),
-        gateway: false,
+        gateway,
         done: done_tx,
     })
     .expect("create actor should enqueue");
     done_rx.blocking_recv().expect("actor should be created")
+}
+
+/// Block for the next delivered message, returning each part's bytes (mapping any
+/// shared-memory parts in the process).
+fn recv_parts(rx: &mut mpsc::UnboundedReceiver<Delivered>) -> Vec<Vec<u8>> {
+    rx.blocking_recv()
+        .expect("message should be delivered")
+        .msg
+        .iter()
+        .map(|part| part.as_bytes().to_vec())
+        .collect()
 }
 
 fn runtime_poller(ctx: &CtxHandle) -> (PollerKey, mpsc::UnboundedReceiver<Delivered>) {
