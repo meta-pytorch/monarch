@@ -36,6 +36,7 @@ use crate::inproc_transport::InprocTransport;
 use crate::msg::MsgPart;
 use crate::poller::Delivered;
 use crate::poller::PollerEntry;
+use crate::quic_transport::QuicTransport;
 use crate::transport::Transport;
 use crate::unix_transport::UnixTransport;
 
@@ -44,7 +45,7 @@ use crate::unix_transport::UnixTransport;
 /// is attached, while the request can still report failure — without a `&mut self`
 /// borrow.
 fn valid_scheme(url: &str) -> bool {
-    url.starts_with("inproc://") || url.starts_with("unix://")
+    url.starts_with("inproc://") || url.starts_with("unix://") || url.starts_with("quic://")
 }
 
 new_key_type! {
@@ -140,6 +141,7 @@ struct Ctx {
     // emit.
     inproc: InprocTransport,
     unix: UnixTransport,
+    quic: QuicTransport,
     thread: Option<JoinHandle<()>>,
     _not_send: PhantomData<*const ()>,
 }
@@ -150,7 +152,8 @@ impl Ctx {
             actors: SlotMap::with_key(),
             pollers: SlotMap::with_key(),
             inproc: InprocTransport::new(tx.clone()),
-            unix: UnixTransport::new(tx),
+            unix: UnixTransport::new(tx.clone()),
+            quic: QuicTransport::new(tx),
             thread: None,
             _not_send: PhantomData,
         }
@@ -406,6 +409,8 @@ impl Ctx {
             &mut self.inproc
         } else if url.starts_with("unix://") {
             &mut self.unix
+        } else if url.starts_with("quic://") {
+            &mut self.quic
         } else {
             unreachable!("scheme already validated by valid_scheme");
         }
@@ -1115,10 +1120,11 @@ impl CtxHandle {
                     let mut ctx = Ctx::new(runtime_tx);
                     while let Some(command) = rx.recv().await {
                         if let Command::Shutdown { done } = command {
-                            // Wait for the UNIX transport to flush every pending
-                            // write to the OS and stop its coroutines before the
-                            // runtime (and the coroutines) is torn down.
+                            // Wait for the socket transports to flush every pending
+                            // write and stop their coroutines before the runtime (and
+                            // the coroutines) is torn down.
                             ctx.unix.shutdown().await;
+                            ctx.quic.shutdown().await;
                             let thread = ctx
                                 .thread
                                 .take()
