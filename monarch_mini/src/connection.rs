@@ -16,6 +16,7 @@ use crate::Role;
 use crate::ctx::ChildConnectionKey;
 use crate::ctx::Key;
 use crate::msg::MsgPart;
+use crate::shm::ShmClient;
 
 pub(crate) struct ConnectRequest {
     pub(crate) role: Role,
@@ -100,6 +101,10 @@ pub(crate) enum Connection {
 /// (For UNIX this falls out of closing the socket; the inproc transport pushes a
 /// `Severed` from its `Drop`.)
 pub(crate) trait ConnectionTransport: Send {
+    /// Send a command to the peer. Each transport decides what to do with each
+    /// command — in particular, quic silently drops
+    /// [`ConnectionCommand::GatewayState`] (shared memory is machine-local), while
+    /// unix and inproc forward it.
     fn send(&self, action: ConnectionCommand) -> bool;
 }
 
@@ -170,6 +175,13 @@ pub(crate) enum ConnectionCommand {
     ToAncestor {
         to_monitor: Vec<u8>,
         payload: AncestorPayload,
+    },
+    /// The parent handing the child its gateway's [`ShmClient`] (the slab + dgram
+    /// request socket fds), so the child can move large parts through the same
+    /// slab and re-propagate the state to its own machine-local children. Flows
+    /// down unix and inproc edges only (never quic).
+    GatewayState {
+        client: ShmClient,
     },
 }
 

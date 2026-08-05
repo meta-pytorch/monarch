@@ -10,6 +10,8 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::marker::PhantomData;
 use std::os::fd::OwnedFd;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -39,6 +41,10 @@ use crate::msg::MsgPart;
 use crate::poller::Delivered;
 use crate::poller::PollerEntry;
 use crate::quic_transport::QuicTransport;
+use crate::shm::MapperHandle;
+use crate::shm::ShmClient;
+use crate::shm::ShmMapper;
+use crate::shm::ShmServer;
 use crate::transport::Transport;
 use crate::unix_transport::UnixTransport;
 
@@ -167,6 +173,14 @@ struct Ctx {
     inproc: InprocTransport,
     unix: UnixTransport,
     quic: QuicTransport,
+    // The context-global shared-memory address-space manager. Always present
+    // (idle if shm is unused); handed to the unix transport, and unmaps everything
+    // when the context — and thus this last reference — is dropped.
+    #[expect(
+        dead_code,
+        reason = "held so the mapper outlives the context; used via the unix transport"
+    )]
+    mapper: MapperHandle,
     // A clone of the loop sender, used to schedule debounced monitor unsubscribes
     // back onto the event loop after a grace period.
     loop_tx: mpsc::UnboundedSender<Command>,
@@ -176,12 +190,14 @@ struct Ctx {
 
 impl Ctx {
     fn new(tx: mpsc::UnboundedSender<Command>) -> Self {
+        let mapper: MapperHandle = Arc::new(Mutex::new(ShmMapper::new()));
         Self {
             actors: SlotMap::with_key(),
             pollers: SlotMap::with_key(),
             inproc: InprocTransport::new(tx.clone()),
-            unix: UnixTransport::new(tx.clone()),
+            unix: UnixTransport::new(tx.clone(), mapper.clone()),
             quic: QuicTransport::new(tx.clone()),
+            mapper,
             loop_tx: tx,
             thread: None,
             _not_send: PhantomData,
@@ -203,6 +219,13 @@ impl Ctx {
                     gateway,
                 ));
                 drop(ident);
+                // A gateway owns the slab for its process group: stand up its
+                // shared-memory server now and seed its own client slot, so it can
+                // shm-ify large sends to its children and hand the state down to
+                // them. Best-effort — on failure the gateway just streams inline.
+                if gateway {
+                    self.init_gateway_shm(key);
+                }
                 let _ = done.send(key);
             }
             Command::DestroyActor { key } => {
@@ -464,7 +487,8 @@ impl Ctx {
         let Some(connection) = self.attach_connection(actor, request) else {
             return;
         };
-        self.transport_for(&url).serve(url, connection);
+        let shm_client = self.actor(actor).shm_client.clone();
+        self.transport_for(&url).serve(url, connection, shm_client);
     }
 
     fn join(&mut self, actor: Key, url: String, request: ConnectRequest) {
@@ -483,7 +507,8 @@ impl Ctx {
         let Some(connection) = self.attach_connection(actor, request) else {
             return;
         };
-        self.transport_for(&url).join(url, connection);
+        let shm_client = self.actor(actor).shm_client.clone();
+        self.transport_for(&url).join(url, connection, shm_client);
     }
 
     /// Whether attaching a parent over `url` to `actor` must be rejected because
@@ -506,6 +531,15 @@ impl Ctx {
                 // publish_routes_after_established). The gateway flag is fixed at
                 // creation and no longer gates this.
                 let slot = self.actor_mut(actor).children.insert(connection);
+                // A new child is where we (re)generate gateway state from what we
+                // already hold: send it down the fresh connection. It buffers until
+                // the connection establishes, and the transport decides whether to
+                // actually forward it (quic drops it).
+                if let Some(client) = self.shm_client_of(actor) {
+                    if let Some(connection) = self.actor_mut(actor).children.get_mut(slot) {
+                        let _ = connection.send(ConnectionCommand::GatewayState { client });
+                    }
+                }
                 ConnectionRef::ChildConnection {
                     ofactor: actor,
                     slot,
@@ -778,6 +812,11 @@ impl Ctx {
             } => {
                 self.route_ancestor(connection.owning_actor(), to_monitor, payload);
             }
+            ConnectionCommand::GatewayState { client } => {
+                // Our parent handed us its gateway's client: adopt it and pass it
+                // on to our own machine-local children.
+                self.receive_gateway_state(connection.owning_actor(), client);
+            }
         }
     }
 
@@ -966,6 +1005,58 @@ impl Ctx {
         if let Some(connection) = entry.parent.as_mut() {
             connection.send(ConnectionCommand::Severed { reason });
             *connection = Connection::Failed;
+        }
+    }
+
+    // -- Shared-memory gateway state --------------------------------------------
+
+    /// Stand up a gateway actor's shared-memory server and record its own client
+    /// in the registry. Best-effort: a failure leaves the actor without shm
+    /// (inline sends).
+    fn init_gateway_shm(&mut self, actor: Key) {
+        match ShmServer::new() {
+            Ok(server) => {
+                let client = server.client();
+                self.set_shm_client(actor, client);
+                self.actor_mut(actor).shm_server = Some(server);
+            }
+            Err(err) => tracing::warn!("failed to start gateway shm server: {err}"),
+        }
+    }
+
+    /// Record `actor`'s gateway client in its slot (which its transport coroutines
+    /// read).
+    fn set_shm_client(&self, actor: Key, client: ShmClient) {
+        *self
+            .actor(actor)
+            .shm_client
+            .lock()
+            .expect("shm client slot mutex poisoned") = Some(client);
+    }
+
+    /// This actor's current gateway client, if it has learned one.
+    fn shm_client_of(&self, actor: Key) -> Option<ShmClient> {
+        *self
+            .actor(actor)
+            .shm_client
+            .lock()
+            .expect("shm client slot mutex poisoned")
+    }
+
+    /// Adopt a gateway client received from our parent and pass it on to every
+    /// child connection — the transport decides whether to actually forward it
+    /// (quic drops it), and an as-yet-unestablished child buffers it until it
+    /// connects. This catches up children that connected before the client
+    /// arrived; children that connect afterwards are handled at attach time.
+    /// (Re-recording the client the unix reader already set is harmless and covers
+    /// the inproc path, which has no reader.)
+    fn receive_gateway_state(&mut self, actor: Key, client: ShmClient) {
+        self.set_shm_client(actor, client);
+        let child_keys: Vec<ChildConnectionKey> = self.actor(actor).children.keys().collect();
+        for slot in child_keys {
+            if let Some(connection) = self.actor_mut(actor).children.get_mut(slot) {
+                let _ = connection.send(ConnectionCommand::GatewayState { client });
+            }
         }
     }
 

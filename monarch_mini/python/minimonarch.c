@@ -43,7 +43,9 @@
 //     the GIL — on any thread. Single-value args (a bytes ident/reason) are
 //     copied into a C buffer; multipart bodies are lists of bytearray whose
 //     storage is moved into the parts. Either way the part owns C memory and
-//     frees it with a plain free().
+//     releases it with its deleter — a plain free(), or (for a buffer adopted
+//     from a received part) that part's own deleter, such as dropping a
+//     shared-memory slab token. None of these touch Python.
 
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
@@ -70,10 +72,11 @@ static PyObject* g_pump_func; // C reader callback registered with add_reader
 // buys nothing, and it only spins while a message is pending (then sleeps on
 // the fd), so an idle consumer doesn't burn a core.
 //
-// This is safe only because the routing thread never blocks on the GIL: every
-// message part is a moved minimonarch.bytearray whose deleter is a plain free()
-// (no Python refcounting), so the runtime never needs the GIL the spinning
-// consumer holds. Otherwise the spin would starve the routing thread.
+// This is safe only because the routing thread never blocks on the GIL: a
+// message part's deleter never touches Python — a plain free(), or a Rust-side
+// release (freeing a buffer, dropping a shared-memory slab token) — so the
+// runtime never needs the GIL the spinning consumer holds. Otherwise the spin
+// would starve the routing thread.
 #define NEXT_SPIN_NS 10000L
 
 static PyTypeObject ContextType;
@@ -120,18 +123,28 @@ static int set_mm_error(void) {
 // ---------------------------------------------------------------------------
 // bytearray — a writable, growable byte buffer (like Python's bytearray) whose
 // C-owned storage can be *moved* into a message part. After a move the part
-// owns the allocation and frees it with a plain free() — no GIL on the runtime
-// thread — and the bytearray is left empty.
+// owns the storage and releases it with the bytearray's deleter — a plain
+// free(), or the deleter of a received part it adopted (no GIL on the runtime
+// thread) — and the bytearray is left empty.
 //
 // The C type is named ByteArray; it is exposed to Python as
 // minimonarch.bytearray.
 // ---------------------------------------------------------------------------
 
 typedef struct {
-  PyObject_HEAD char* data; // malloc'd; NULL when empty/moved
+  PyObject_HEAD char* data; // NULL when empty/moved
   Py_ssize_t len;
   Py_ssize_t cap;
   Py_ssize_t exports; // outstanding buffer-protocol views; block resize/move
+  // How `data` is released. For a buffer this object allocated, this is
+  // `free_deleter` (deleter_ctx == data) and the buffer is malloc'd, so it may
+  // be free()'d and grown in place. For a buffer adopted from a received
+  // message part, this is that part's own deleter (e.g. dropping a
+  // shared-memory slab token) and `data` must NOT be free()/realloc()'d — a
+  // mutation copies it into an owned buffer first (see bytearray_make_owned).
+  // NULL means nothing to release (empty, or borrowed data with no deleter).
+  void (*deleter)(void* ctx);
+  void* deleter_ctx;
 } ByteArray;
 
 static PyTypeObject ByteArrayType;
@@ -140,7 +153,39 @@ static void free_deleter(void* ctx) {
   free(ctx);
 }
 
+// Ensure `data` is a buffer this object owns and may free()/realloc() — i.e.
+// malloc'd with `free_deleter`. A buffer adopted from a message part (any other
+// deleter, including a shared-memory slab token) is copied into a fresh
+// malloc'd buffer and the original released via its own deleter. No-op for an
+// empty or already-owned buffer.
+static int bytearray_make_owned(ByteArray* b) {
+  if (b->data == NULL || b->deleter == free_deleter) {
+    return 0;
+  }
+  char* owned = malloc((size_t)(b->len ? b->len : 1));
+  if (!owned) {
+    PyErr_NoMemory();
+    return -1;
+  }
+  if (b->len) {
+    memcpy(owned, b->data, (size_t)b->len);
+  }
+  if (b->deleter) {
+    b->deleter(b->deleter_ctx);
+  }
+  b->data = owned;
+  b->cap = b->len;
+  b->deleter = free_deleter;
+  b->deleter_ctx = owned;
+  return 0;
+}
+
 static int bytearray_reserve(ByteArray* b, Py_ssize_t need) {
+  // Growing (or any reserve before a write) requires an owned, realloc-able
+  // buffer; materialize an adopted one first.
+  if (bytearray_make_owned(b) < 0) {
+    return -1;
+  }
   if (need <= b->cap) {
     return 0;
   }
@@ -155,6 +200,8 @@ static int bytearray_reserve(ByteArray* b, Py_ssize_t need) {
   }
   b->data = grown;
   b->cap = cap;
+  b->deleter = free_deleter;
+  b->deleter_ctx = grown;
   return 0;
 }
 
@@ -169,19 +216,23 @@ static int bytearray_check_mutable(ByteArray* b) {
   return 0;
 }
 
-// Move the storage into `out` (free deleter) and reset the ByteArray to empty.
-// Returns -1 (exception set) if views are outstanding.
+// Move the storage into `out`, carrying its deleter so the part releases the
+// buffer the same way this bytearray would have (a plain free() for an owned
+// buffer, or the original part's deleter for an adopted one). Resets the
+// ByteArray to empty. Returns -1 (exception set) if views are outstanding.
 static int bytearray_move_to_part(ByteArray* b, mm_msg_part_t* out) {
   if (bytearray_check_mutable(b) < 0) {
     return -1;
   }
   out->data = b->data;
   out->len = (size_t)b->len;
-  out->deleter = b->data ? free_deleter : NULL;
-  out->deleter_ctx = b->data;
+  out->deleter = b->deleter;
+  out->deleter_ctx = b->deleter_ctx;
   b->data = NULL;
   b->len = 0;
   b->cap = 0;
+  b->deleter = NULL;
+  b->deleter_ctx = NULL;
   return 0;
 }
 
@@ -226,7 +277,9 @@ static int ByteArray_init(ByteArray* self, PyObject* args, PyObject* kwds) {
 }
 
 static void ByteArray_dealloc(ByteArray* self) {
-  free(self->data);
+  if (self->deleter) {
+    self->deleter(self->deleter_ctx);
+  }
   Py_TYPE(self)->tp_free((PyObject*)self);
 }
 
@@ -461,12 +514,15 @@ static mm_msg_part_t* build_parts(PyObject* seq, size_t* out_n) {
 }
 
 // Adopt a received part's buffer into a new minimonarch.bytearray, zero-copy:
-// the bytearray takes over the malloc'd storage and will free()/realloc() it
-// like any other bytearray. (Every part this binding produces is malloc-owned
-// with a free() deleter, so adopting the pointer is equivalent to its deleter.)
-// Returns a new reference, or NULL (with the buffer freed) on failure. Because
+// the bytearray takes over the part's storage *and its deleter*, so it is
+// released the part's way (a free() for a heap part, or e.g. dropping a
+// shared-memory slab token) rather than always free()'d. The buffer is treated
+// as read-only-in-place: a mutation copies it to an owned buffer first (see
+// bytearray_make_owned), so we never free()/realloc() foreign or slab memory.
+// Returns a new reference, or NULL (deleter still invoked) on failure. Because
 // the result is itself a bytearray, a received message can be moved straight
-// back into another send() — the buffer is reused, never copied.
+// back into another send() — the buffer (and its deleter) is reused, never
+// copied.
 static PyObject* bytearray_adopt(mm_msg_part_t* part) {
   ByteArray* b = PyObject_New(ByteArray, &ByteArrayType);
   if (!b) {
@@ -479,6 +535,8 @@ static PyObject* bytearray_adopt(mm_msg_part_t* part) {
   b->len = (Py_ssize_t)part->len;
   b->cap = (Py_ssize_t)part->len;
   b->exports = 0;
+  b->deleter = part->deleter;
+  b->deleter_ctx = part->deleter_ctx;
   return (PyObject*)b;
 }
 

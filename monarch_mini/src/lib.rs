@@ -15,6 +15,7 @@ mod matcher;
 mod msg;
 mod poller;
 mod quic_transport;
+mod shm;
 mod transport;
 mod unix_framing;
 mod unix_transport;
