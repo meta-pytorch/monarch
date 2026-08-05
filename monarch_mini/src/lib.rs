@@ -60,6 +60,14 @@ pub struct CPoller {
     rx: tokio::sync::mpsc::UnboundedReceiver<Delivered>,
     pending: Option<Delivered>,
     consumed_count: u64,
+    // The consumed_count at which we last armed the poller, if still armed. The
+    // server side is one-shot: it fires (writes the eventfd) once and disarms,
+    // and firing always enqueues a message first. So while try_recv() keeps
+    // returning Empty at the same consumed_count, the arm we sent is still live
+    // and there is no need to drain the eventfd or re-send ArmPoller. This makes
+    // a busy poll loop (repeated mm_poller_next without waiting) cheap: it only
+    // arms once per consumed message instead of on every empty poll.
+    armed_at: Option<u64>,
 }
 
 pub struct CMonitorHandle {
@@ -392,6 +400,9 @@ pub unsafe extern "C" fn mm_poller_create(
                 rx,
                 pending: None,
                 consumed_count: 0,
+                // The poller is created armed at 0 (PollerEntry::new), so mirror
+                // that here to avoid a redundant first arm.
+                armed_at: Some(0),
             }));
             Error::Ok
         }
@@ -462,11 +473,17 @@ pub unsafe extern "C" fn mm_poller_next(
         Ok(delivered) => delivered,
         Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => return Error::NoMsg,
         Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
-            drain_eventfd(&p.event_fd);
-            let _ = p.ctx.send_command(Command::ArmPoller {
-                poller: p.key,
-                wake_after: p.consumed_count,
-            });
+            // Only drain + arm if we are not already armed at this count. A
+            // repeated empty poll (busy loop, or a spurious fd wakeup) needs
+            // neither, since the prior arm is still live.
+            if p.armed_at != Some(p.consumed_count) {
+                drain_eventfd(&p.event_fd);
+                let _ = p.ctx.send_command(Command::ArmPoller {
+                    poller: p.key,
+                    wake_after: p.consumed_count,
+                });
+                p.armed_at = Some(p.consumed_count);
+            }
             return Error::NoMsg;
         }
     };
