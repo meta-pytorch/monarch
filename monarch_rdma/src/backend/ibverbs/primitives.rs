@@ -1289,6 +1289,13 @@ impl IbvQp {
         &self.recv_cq
     }
 
+    /// The protection domain this QP was created against, shareable as a
+    /// keepalive by resources built on the same PD.
+    #[expect(dead_code, reason = "used by EfaQueuePair in a follow-up commit")]
+    pub(super) fn pd(&self) -> &Arc<IbvPd> {
+        &self.pd
+    }
+
     /// The device context this QP was created on, sourced from its PD.
     pub(super) fn context(&self) -> &IbvContext {
         self.pd.context()
@@ -1524,6 +1531,80 @@ impl Drop for IbvMr {
         let ret = unsafe { rdmaxcel_sys::ibv_dereg_mr(self.mr) };
         if ret != 0 {
             tracing::error!("failed to deregister MR {:p}: error code {}", self.mr, ret);
+        }
+    }
+}
+
+/// Owns an `ibv_ah` together with the `Arc<IbvPd>` it was created against,
+/// destroying the address handle on drop before releasing the PD. Holding the PD
+/// keeps it (and, through it, the context) alive across `ibv_destroy_ah`.
+///
+/// Unlike the other handles here there is no null placeholder: [`Self::create`]
+/// is the only constructor and it rejects a null result, so the pointer is
+/// always live.
+#[derive(Debug)]
+#[expect(dead_code, reason = "used by EfaQueuePair in a follow-up commit")]
+pub(super) struct IbvAh {
+    ah: *mut rdmaxcel_sys::ibv_ah,
+    /// Keeps the PD open until after `ibv_destroy_ah`. Never read.
+    _pd: Arc<IbvPd>,
+}
+
+// SAFETY: the only raw member is the `ibv_ah` pointer. The ibverbs AH it names is
+// not thread-affine — it may be created on one thread and used or destroyed on
+// another (`Send`) — and `IbvAh` exposes no operation that mutates the AH through
+// a shared `&` (`as_ptr` only hands back the pointer value), so sharing an
+// `&IbvAh` cannot race (`Sync`).
+unsafe impl Send for IbvAh {}
+// SAFETY: as for `Send` above.
+unsafe impl Sync for IbvAh {}
+
+#[expect(dead_code, reason = "used by EfaQueuePair in a follow-up commit")]
+impl IbvAh {
+    /// Creates an address handle on `pd` from `attr`.
+    ///
+    /// # Safety
+    ///
+    /// `pd` must hold a live protection domain; a null PD yields `Err`.
+    pub(super) unsafe fn create(
+        pd: Arc<IbvPd>,
+        attr: &mut rdmaxcel_sys::ibv_ah_attr,
+    ) -> Result<Self, anyhow::Error> {
+        if pd.as_ptr().is_null() {
+            anyhow::bail!("cannot create an address handle on a null protection domain");
+        }
+        // SAFETY: `pd.as_ptr()` is non-null (checked above) and, per this
+        // function's contract, a live protection domain; `attr` is a valid,
+        // fully initialized `ibv_ah_attr` that outlives the call.
+        // `ibv_create_ah` returns null on failure.
+        let ah = unsafe { rdmaxcel_sys::ibv_create_ah(pd.as_ptr(), attr) };
+        if ah.is_null() {
+            anyhow::bail!(
+                "failed to create address handle: {}",
+                Error::last_os_error()
+            );
+        }
+        Ok(Self { ah, _pd: pd })
+    }
+
+    /// The raw `ibv_ah`, always live.
+    pub(super) fn as_ptr(&self) -> *mut rdmaxcel_sys::ibv_ah {
+        self.ah
+    }
+}
+
+impl Drop for IbvAh {
+    fn drop(&mut self) {
+        // SAFETY: `self.ah` was returned non-null by `ibv_create_ah` and, since
+        // `IbvAh` is not `Clone`, is destroyed exactly once. `_pd` drops only
+        // after this returns, so the PD is still alive.
+        let ret = unsafe { rdmaxcel_sys::ibv_destroy_ah(self.ah) };
+        if ret != 0 {
+            tracing::error!(
+                "failed to destroy address handle {:p}: error code {}",
+                self.ah,
+                ret
+            );
         }
     }
 }
