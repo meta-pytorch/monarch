@@ -116,12 +116,17 @@ pub(crate) enum SendPayload {
     /// An ordinary actor message: opaque part bytes handed to the destination's
     /// poller.
     ActorMessage(Vec<MsgPart>),
-    /// A monitor firing: the dead target ident, from which the destination (the
-    /// monitoring actor) reconstructs each local monitor's failure message. A fire
-    /// is only ever armed at an ancestor that already has a route to the
-    /// monitoring actor, so it routes strictly *downward* and never buffers at a
-    /// gateway.
-    FireMonitor(Vec<u8>),
+    /// A monitor firing: the dead-or-absent target ident, from which the
+    /// destination (the monitoring actor) reconstructs each local monitor's
+    /// failure message. `is_timeout` distinguishes a non-existence timeout (reason
+    /// `"actor does not exist"`) from an actual death (`"actor died"`); both route
+    /// identically. A fire is only ever armed at an ancestor that already has a
+    /// route to the monitoring actor, so it routes strictly *downward* and never
+    /// buffers at a gateway.
+    FireMonitor {
+        to_monitor: Vec<u8>,
+        is_timeout: bool,
+    },
 }
 
 /// What a [`ConnectionCommand::ToAncestor`] does once it reaches the common
@@ -132,8 +137,9 @@ pub(crate) enum SendPayload {
 #[derive(Serialize, Deserialize)]
 pub(crate) enum AncestorPayload {
     /// Register the subscription on the target's route (firing at once if it is
-    /// already dead).
-    Subscribe { dest: Vec<u8> },
+    /// already dead). `timeout_ms` (0 = none) arms a non-existence timer at the
+    /// ancestor that installs the subscription, and rides up with it on migration.
+    Subscribe { dest: Vec<u8>, timeout_ms: u64 },
     /// Remove the matching subscription from the target's route.
     Unsubscribe { dest: Vec<u8> },
 }

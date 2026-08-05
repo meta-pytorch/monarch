@@ -165,10 +165,20 @@ pub(crate) enum Command {
         id: u64,
         to_monitor: MsgPart,
         failure_prefix: Vec<MsgPart>,
+        timeout_ms: u64,
     },
     CancelMonitor {
         actor: Key,
         id: u64,
+    },
+    // Fired by a non-existence timeout timer armed at common ancestor `at`. A
+    // local check only: if `to_monitor`'s route at `at` is still `Unknown` the
+    // target never appeared, so fire the timeout; any other state (it exists, it
+    // died, or the subscription has migrated away leaving no route) is a no-op.
+    CheckMonitorTimeout {
+        at: Key,
+        dest: Vec<u8>,
+        to_monitor: Vec<u8>,
     },
     // Fired by a debounce timer: if `to_monitor` is still `PendingUnsubscribe`
     // (i.e. it was not re-monitored in the grace window), send the upstream
@@ -393,12 +403,42 @@ impl Ctx {
                 id,
                 to_monitor,
                 failure_prefix,
+                timeout_ms,
             } => {
                 let to_monitor = to_monitor.as_bytes().to_vec();
-                self.monitor_add(actor, id, to_monitor, failure_prefix);
+                self.monitor_add(actor, id, to_monitor, failure_prefix, timeout_ms);
             }
             Command::CancelMonitor { actor, id } => {
                 self.monitor_remove(actor, id);
+            }
+            Command::CheckMonitorTimeout {
+                at,
+                dest,
+                to_monitor,
+            } => {
+                // A non-existence timer armed at `at` expired. Inspect the target's
+                // route *here* only: `Unknown` means the subscription is still held
+                // here and the target never appeared → fire the timeout.
+                // `Connection` (target exists), `Dead` (already fired on the death
+                // path), and absent/`None` (the subscription migrated up, leaving
+                // this ancestor's route gone) are all no-ops. No wire traffic and no
+                // ancestry walk.
+                let still_unknown = matches!(
+                    self.actors
+                        .get(at)
+                        .map(|actor| actor.routes.get(to_monitor.as_slice())),
+                    Some(Some(Route::Unknown { .. }))
+                );
+                if still_unknown {
+                    self.route_message(
+                        at,
+                        dest,
+                        SendPayload::FireMonitor {
+                            to_monitor,
+                            is_timeout: true,
+                        },
+                    );
+                }
             }
             Command::UnsubscribeMonitor { actor, to_monitor } => {
                 self.unsubscribe_monitor(actor, to_monitor);
@@ -539,7 +579,17 @@ impl Ctx {
     fn deliver_payload(&mut self, actor: Key, payload: SendPayload) {
         match payload {
             SendPayload::ActorMessage(parts) => self.deliver_to_actor(actor, parts),
-            SendPayload::FireMonitor(to_monitor) => self.deliver_monitor_failure(actor, to_monitor),
+            SendPayload::FireMonitor {
+                to_monitor,
+                is_timeout,
+            } => {
+                let reason: &[u8] = if is_timeout {
+                    b"actor does not exist"
+                } else {
+                    b"actor died"
+                };
+                self.fire_local_monitors(actor, to_monitor, reason);
+            }
         }
     }
 
@@ -798,7 +848,14 @@ impl Ctx {
             newly_dead.push(ident);
         }
         for (dest, to_monitor) in to_fire {
-            self.route_message(parent, dest, SendPayload::FireMonitor(to_monitor));
+            self.route_message(
+                parent,
+                dest,
+                SendPayload::FireMonitor {
+                    to_monitor,
+                    is_timeout: false,
+                },
+            );
         }
 
         // Forward both the live and the newly-dead idents up to the parent.
@@ -860,10 +917,18 @@ impl Ctx {
                                 self.route_message(ofactor, ident.clone(), payload);
                             }
                             for sub in monitors {
+                                // Forward each subscription up *with its own
+                                // timeout*, so the new ancestor re-arms a fresh
+                                // timer where the subscription now lives. The old
+                                // ancestor's route for this target is now `None`,
+                                // so its still-pending timer no-ops when it fires.
                                 self.route_ancestor(
                                     ofactor,
                                     ident.clone(),
-                                    AncestorPayload::Subscribe { dest: sub.dest },
+                                    AncestorPayload::Subscribe {
+                                        dest: sub.dest,
+                                        timeout_ms: sub.timeout_ms,
+                                    },
                                 );
                             }
                         }
@@ -1224,15 +1289,26 @@ impl Ctx {
         }
         entry.name = ActorName::Named(name.clone());
         // Everything watched while unnamed has its subscription held back; send
-        // them all now. An unnamed actor only ever holds `Active` entries (an
-        // emptied target is removed, never left `PendingUnsubscribe`), so every
-        // one needs exactly one upstream `Subscribe`.
-        let deferred: Vec<Vec<u8>> = entry.monitored.keys().cloned().collect();
-        for to_monitor in deferred {
+        // them all now, each carrying the timeout stored on its record. An unnamed
+        // actor only ever holds `Active` entries (an emptied target is removed,
+        // never left `PendingUnsubscribe` — that path only exists for named
+        // actors), so every one needs exactly one upstream `Subscribe`.
+        let deferred: Vec<(Vec<u8>, u64)> = entry
+            .monitored
+            .iter()
+            .filter_map(|(target, tm)| match tm {
+                TargetMonitors::Active { timeout_ms, .. } => Some((target.clone(), *timeout_ms)),
+                TargetMonitors::PendingUnsubscribe(_) => None,
+            })
+            .collect();
+        for (to_monitor, timeout_ms) in deferred {
             self.route_ancestor(
                 actor,
                 to_monitor,
-                AncestorPayload::Subscribe { dest: name.clone() },
+                AncestorPayload::Subscribe {
+                    dest: name.clone(),
+                    timeout_ms,
+                },
             );
         }
     }
@@ -1248,17 +1324,20 @@ impl Ctx {
         id: u64,
         to_monitor: Vec<u8>,
         failure_prefix: Vec<MsgPart>,
+        timeout_ms: u64,
     ) {
         let entry = self.actor_mut(actor);
         match entry.monitored.get_mut(&to_monitor) {
-            Some(TargetMonitors::Active(entries)) => {
+            Some(TargetMonitors::Active { entries, .. }) => {
+                // Only the first monitor on a target arms a timeout; later ones
+                // join the existing subscription and ignore their `timeout_ms`.
                 entries.insert(id, failure_prefix);
                 return; // subscription already live (or deferred); nothing to send
             }
             Some(TargetMonitors::PendingUnsubscribe(_)) => {
                 // Re-monitor within the grace window: cancel the pending unsubscribe
                 // and reactivate. The upstream subscription was never torn down, so
-                // we do not re-subscribe.
+                // we do not re-subscribe (and do not re-arm a timeout).
                 if let Some(TargetMonitors::PendingUnsubscribe(timer)) =
                     entry.monitored.remove(&to_monitor)
                 {
@@ -1266,23 +1345,34 @@ impl Ctx {
                 }
                 entry.monitored.insert(
                     to_monitor,
-                    TargetMonitors::Active(HashMap::from([(id, failure_prefix)])),
+                    TargetMonitors::Active {
+                        entries: HashMap::from([(id, failure_prefix)]),
+                        timeout_ms: 0,
+                    },
                 );
                 return;
             }
             None => {}
         }
-        // Brand-new target: record it, then subscribe now if named, else defer to
-        // `assign_name` (the local record still allows cancel meanwhile).
+        // Brand-new target: record it (storing the timeout), then subscribe now if
+        // named, else defer to `assign_name` (the local record still allows cancel
+        // meanwhile and carries the timeout until naming).
         entry.monitored.insert(
             to_monitor.clone(),
-            TargetMonitors::Active(HashMap::from([(id, failure_prefix)])),
+            TargetMonitors::Active {
+                entries: HashMap::from([(id, failure_prefix)]),
+                timeout_ms,
+            },
         );
         let dest = match &entry.name {
             ActorName::Named(name) => name.clone(),
             ActorName::Unknown { .. } => return,
         };
-        self.route_ancestor(actor, to_monitor, AncestorPayload::Subscribe { dest });
+        self.route_ancestor(
+            actor,
+            to_monitor,
+            AncestorPayload::Subscribe { dest, timeout_ms },
+        );
     }
 
     /// Remove local monitor `id` (found by scanning its target). Dropping the last
@@ -1299,7 +1389,7 @@ impl Ctx {
             .monitored
             .iter()
             .find(|(_, tm)| match tm {
-                TargetMonitors::Active(entries) => entries.contains_key(&id),
+                TargetMonitors::Active { entries, .. } => entries.contains_key(&id),
                 TargetMonitors::PendingUnsubscribe(_) => false,
             })
             .map(|(target, _)| target.clone())
@@ -1307,7 +1397,7 @@ impl Ctx {
             return;
         };
         let now_empty = match entry.monitored.get_mut(&to_monitor) {
-            Some(TargetMonitors::Active(entries)) => {
+            Some(TargetMonitors::Active { entries, .. }) => {
                 entries.remove(&id);
                 entries.is_empty()
             }
@@ -1394,23 +1484,65 @@ impl Ctx {
             }
         }
         match payload {
-            AncestorPayload::Subscribe { dest } => self.subscribe(at, dest, to_monitor),
+            AncestorPayload::Subscribe { dest, timeout_ms } => {
+                self.subscribe(at, dest, to_monitor, timeout_ms)
+            }
             AncestorPayload::Unsubscribe { dest } => self.unsubscribe(at, dest, to_monitor),
         }
     }
 
     /// Register a subscription at the common ancestor `at`: fire immediately if the
     /// target is already known dead, otherwise hold the subscription on its route
-    /// (creating an `Unknown` buffer if the target is not yet known here).
-    fn subscribe(&mut self, at: Key, dest: Vec<u8>, to_monitor: Vec<u8>) {
+    /// (creating an `Unknown` buffer if the target is not yet known here). This is
+    /// the single place a non-existence timer is armed: if `timeout_ms != 0` and the
+    /// resulting route is `Unknown` (the target is not known here) a timer task is
+    /// spawned that, after the timeout, sends a [`Command::CheckMonitorTimeout`] to
+    /// recheck this same ancestor. The timer is never tracked or cancelled —
+    /// correctness comes from that fire-time route check, not from cancellation.
+    fn subscribe(&mut self, at: Key, dest: Vec<u8>, to_monitor: Vec<u8>, timeout_ms: u64) {
         if matches!(
             self.actor(at).routes.get(to_monitor.as_slice()),
             Some(Route::Dead)
         ) {
-            self.route_message(at, dest, SendPayload::FireMonitor(to_monitor));
-        } else {
-            self.actor_mut(at)
-                .buffer_monitor(to_monitor, MonitorSub { dest });
+            self.route_message(
+                at,
+                dest,
+                SendPayload::FireMonitor {
+                    to_monitor,
+                    is_timeout: false,
+                },
+            );
+            return;
+        }
+        self.actor_mut(at).buffer_monitor(
+            to_monitor.clone(),
+            MonitorSub {
+                dest: dest.clone(),
+                timeout_ms,
+            },
+        );
+        // Arm a non-existence timer only when requested and the target is not
+        // currently known here (route is `Unknown`). On a `Connection` route the
+        // target exists, so a non-existence timeout is meaningless. Without a tokio
+        // runtime (unit-test harness) we skip arming; tests drive
+        // `CheckMonitorTimeout` directly.
+        if timeout_ms != 0
+            && matches!(
+                self.actor(at).routes.get(to_monitor.as_slice()),
+                Some(Route::Unknown { .. })
+            )
+            && tokio::runtime::Handle::try_current().is_ok()
+        {
+            let loop_tx = self.loop_tx.clone();
+            let timeout = Duration::from_millis(timeout_ms);
+            tokio::task::spawn_local(async move {
+                tokio::time::sleep(timeout).await;
+                let _ = loop_tx.send(Command::CheckMonitorTimeout {
+                    at,
+                    dest,
+                    to_monitor,
+                });
+            });
         }
     }
 
@@ -1428,14 +1560,17 @@ impl Ctx {
         }
     }
 
-    /// A subscription fired and reached the monitoring actor. The target died, so
-    /// fan the fire out to *every* local monitor on that target, reconstructing
-    /// each one's failure message from its own prefix, then drop the whole entry
-    /// (the target is gone). A fire for a target with no entries — already
-    /// cancelled-and-debounced-away, or already fired — is dropped.
-    fn deliver_monitor_failure(&mut self, actor: Key, to_monitor: Vec<u8>) {
+    /// A monitor firing (death or non-existence timeout) reached the monitoring
+    /// actor. Fan it out to *every* local monitor on that target, reconstructing
+    /// each one's failure message from its own prefix and the given `reason`, then
+    /// drop the whole entry (the monitors are consumed). Because the entry is
+    /// removed, the monitor cannot fire twice: a later real death routes a fire to
+    /// an actor that no longer has the entry → no-op. A fire for a target with no
+    /// entries — already cancelled-and-debounced-away, or already fired — is
+    /// dropped.
+    fn fire_local_monitors(&mut self, actor: Key, to_monitor: Vec<u8>, reason: &[u8]) {
         let entries = match self.actor_mut(actor).monitored.remove(&to_monitor) {
-            Some(TargetMonitors::Active(entries)) => entries,
+            Some(TargetMonitors::Active { entries, .. }) => entries,
             // All monitors were cancelled (sub still live during the grace); the
             // pending unsubscribe task is now moot — drop it and fire nothing.
             Some(TargetMonitors::PendingUnsubscribe(timer)) => {
@@ -1447,7 +1582,7 @@ impl Ctx {
         for failure_prefix in entries.into_values() {
             let mut msg = failure_prefix;
             msg.push(MsgPart::from_bytes(to_monitor.clone()));
-            msg.push(MsgPart::from_bytes(b"actor died".to_vec()));
+            msg.push(MsgPart::from_bytes(reason.to_vec()));
             self.deliver_to_actor(actor, msg);
         }
     }
