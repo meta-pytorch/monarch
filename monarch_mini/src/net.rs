@@ -50,6 +50,7 @@ use std::net::SocketAddr;
 
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
+use tokio::runtime::Handle;
 
 /// The network-protocol-specific operations the generic transport is built on.
 pub(crate) trait Net: Sized + 'static {
@@ -64,7 +65,18 @@ pub(crate) trait Net: Sized + 'static {
 
     /// Build the shared per-context networking state, lazily, on the first serve or
     /// join (quic: install the crypto provider; TLS is loaded on first bind/dial).
-    fn create() -> anyhow::Result<Self>;
+    ///
+    /// `runtime`, when `Some`, is the multi-threaded runtime the caller wants this
+    /// protocol's network *work* to run on (so it spreads across cores rather than
+    /// serializing on the command-loop thread). A protocol whose work lives in a
+    /// background driver (quic: the per-endpoint driver quinn spawns at endpoint
+    /// construction) builds its endpoints/sockets with this runtime entered, placing
+    /// that driver — and thus its crypto — on the pool. A protocol whose work lives in
+    /// the foreground stream poll (tcp/kTLS: the read/write syscalls happen when the
+    /// stream is polled) cannot relocate its work from here — the generic transport
+    /// spawns its data coroutines on the same runtime instead — so it ignores this.
+    /// `None` ⇒ everything stays on the command-loop thread (single-core default).
+    fn create(runtime: Option<Handle>) -> anyhow::Result<Self>;
 
     /// Parse a transport url (e.g. `quic://[::1]:7001`, or a bare `@endpoint` tag)
     /// into a socket address.
@@ -106,11 +118,14 @@ pub(crate) trait Net: Sized + 'static {
 /// address), used by the heartbeat send log.
 pub(crate) trait NetConn: Debug + 'static {
     /// The send half of a stream; framing drives it via [`AsyncWrite`]. It keeps the
-    /// underlying connection alive for its lifetime.
-    type Send: AsyncWrite + Unpin + 'static;
+    /// underlying connection alive for its lifetime. `Send` so the data writer
+    /// coroutine can run on a multi-threaded runtime (the connection handle and the
+    /// heartbeat stream stay single-threaded; only the two data halves cross threads).
+    type Send: AsyncWrite + Unpin + Send + 'static;
     /// The receive half of a stream; framing drives it via [`AsyncRead`]. It keeps
-    /// the underlying connection alive for its lifetime.
-    type Recv: AsyncRead + Unpin + 'static;
+    /// the underlying connection alive for its lifetime. `Send` for the same reason as
+    /// [`Self::Send`] — the data reader coroutine may run off the command-loop thread.
+    type Recv: AsyncRead + Unpin + Send + 'static;
     /// The awaitable that materializes one stream's halves on first poll.
     type Stream: Future<Output = std::io::Result<(Self::Send, Self::Recv)>> + 'static;
 

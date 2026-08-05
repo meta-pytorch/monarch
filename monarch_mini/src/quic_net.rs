@@ -65,6 +65,7 @@ use rustls_pki_types::PrivateKeyDer;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
 use tokio::io::ReadBuf;
+use tokio::runtime::Handle;
 
 use crate::net::Net;
 use crate::net::NetConn;
@@ -103,8 +104,28 @@ fn stream_recv_window_bytes() -> u64 {
 fn ensure_crypto_provider() {
     static INSTALLED: OnceLock<()> = OnceLock::new();
     INSTALLED.get_or_init(|| {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        let _ = selected_provider().install_default();
     });
+}
+
+/// The ring crypto provider, optionally restricted to a single TLS 1.3 AEAD by
+/// `MM_QUIC_CIPHER` (`aes128` | `aes256` | `chacha20`) so quic's encryption cost can
+/// be A/B'd. Unset ⇒ ring's default suite set and preference order (AES-256-GCM
+/// first on x86). Affects quic only; the tcp/kTLS transport builds its own provider.
+fn selected_provider() -> rustls::crypto::CryptoProvider {
+    use rustls::crypto::ring::cipher_suite;
+    let base = rustls::crypto::ring::default_provider();
+    let suite = match std::env::var("MM_QUIC_CIPHER").ok().as_deref() {
+        Some("aes128") => cipher_suite::TLS13_AES_128_GCM_SHA256,
+        Some("aes256") => cipher_suite::TLS13_AES_256_GCM_SHA384,
+        Some("chacha20") => cipher_suite::TLS13_CHACHA20_POLY1305_SHA256,
+        _ => return base,
+    };
+    eprintln!("MM_QUIC_CIPHER: restricting quic to a single cipher suite");
+    rustls::crypto::CryptoProvider {
+        cipher_suites: vec![suite],
+        ..base
+    }
 }
 
 /// Server + client TLS configs, built once from the environment and shared by all
@@ -442,6 +463,10 @@ pub(crate) struct Quic {
     client_endpoints_v6: Vec<Endpoint>,
     // Round-robin cursor for assigning connections to pool endpoints.
     client_rr: usize,
+    // When set, the multi-threaded runtime to build endpoints under, so quinn spawns
+    // each endpoint's driver (which runs the packet crypto) on the pool rather than on
+    // the command-loop thread. Entered around `Endpoint::new` in `bind`/`dialer`.
+    rt: Option<Handle>,
 }
 
 impl Quic {
@@ -526,22 +551,40 @@ impl Quic {
     }
 }
 
+/// A dialing handle: a pooled client endpoint plus the data runtime to enter when
+/// dialing, so quinn spawns the resulting connection's driver (which runs its packet
+/// crypto) on that runtime rather than on whatever thread calls [`Net::connect`] (the
+/// command loop). `None` ⇒ the connection driver follows the caller (single core).
+#[derive(Clone)]
+pub(crate) struct QuicDialer {
+    endpoint: Endpoint,
+    rt: Option<Handle>,
+}
+
+/// A bound server endpoint plus the data runtime to enter when accepting, for the same
+/// reason as [`QuicDialer`]: the accepted connection's driver spawns on that runtime.
+pub(crate) struct QuicListener {
+    endpoint: Endpoint,
+    rt: Option<Handle>,
+}
+
 impl Net for Quic {
-    // A client endpoint clone (cheap; internally reference-counted). Dialing through it
-    // repeatedly is what a connector/side-channel task does.
-    type Dialer = Endpoint;
-    // A server endpoint. quic multiplexes all streams on one connection, so it ignores
-    // the stream count passed to `bind`.
-    type Listener = Endpoint;
+    // A pooled client endpoint (cheap clone; internally reference-counted) plus the
+    // runtime to place dialed connections' drivers on.
+    type Dialer = QuicDialer;
+    // A server endpoint plus that runtime. quic multiplexes all streams on one
+    // connection, so it ignores the stream count passed to `bind`.
+    type Listener = QuicListener;
     type Conn = QuicConn;
 
-    fn create() -> anyhow::Result<Self> {
+    fn create(runtime: Option<Handle>) -> anyhow::Result<Self> {
         ensure_crypto_provider();
         Ok(Self {
             tls: None,
             client_endpoints_v4: Vec::new(),
             client_endpoints_v6: Vec::new(),
             client_rr: 0,
+            rt: runtime,
         })
     }
 
@@ -549,26 +592,53 @@ impl Net for Quic {
         parse_addr(url)
     }
 
-    fn dialer(&mut self, addr: SocketAddr) -> anyhow::Result<Endpoint> {
-        self.client_endpoint(&addr)
+    fn dialer(&mut self, addr: SocketAddr) -> anyhow::Result<QuicDialer> {
+        // Enter the data runtime (if any) so quinn spawns the pool endpoints' *endpoint*
+        // drivers there. Clone the handle first: the guard borrows the clone, leaving
+        // `self` free for the `&mut self` pool build below. The handle also rides along
+        // on the QuicDialer so `connect` can place each connection's driver there too.
+        let rt = self.rt.clone();
+        let endpoint = {
+            let _guard = rt.as_ref().map(Handle::enter);
+            self.client_endpoint(&addr)?
+        };
+        Ok(QuicDialer { endpoint, rt })
     }
 
-    fn bind(&mut self, addr: SocketAddr, _streams: usize) -> anyhow::Result<Endpoint> {
+    fn bind(&mut self, addr: SocketAddr, _streams: usize) -> anyhow::Result<QuicListener> {
         let server = self.tls()?.server.clone();
-        make_server_endpoint(addr, server)
+        // Enter the data runtime (if any) so quinn spawns this server endpoint's driver
+        // there; the handle also rides on the QuicListener for `accept` to use.
+        let rt = self.rt.clone();
+        let endpoint = {
+            let _guard = rt.as_ref().map(Handle::enter);
+            make_server_endpoint(addr, server)?
+        };
+        Ok(QuicListener { endpoint, rt })
     }
 
-    async fn accept(listener: &Endpoint) -> Option<QuicConn> {
-        let incoming = listener.accept().await?;
-        let connecting = incoming.accept().ok()?;
+    async fn accept(listener: &QuicListener) -> Option<QuicConn> {
+        let incoming = listener.endpoint.accept().await?;
+        // `incoming.accept()` synchronously creates the Connecting and spawns its
+        // connection driver (via ambient `tokio::spawn`), so enter the data runtime
+        // around exactly that call to place the driver — and its crypto — on the pool.
+        let connecting = {
+            let _guard = listener.rt.as_ref().map(Handle::enter);
+            incoming.accept().ok()?
+        };
         let conn = connecting.await.ok()?;
         Some(QuicConn::new(conn))
     }
 
-    async fn connect(dialer: &Endpoint, addr: SocketAddr, _streams: usize) -> Option<QuicConn> {
+    async fn connect(dialer: &QuicDialer, addr: SocketAddr, _streams: usize) -> Option<QuicConn> {
         // connect() fails synchronously on a bad config; the handshake (.await) fails
-        // until the server is up. Both surface as `None` and the caller retries.
-        let connecting = dialer.connect(addr, SERVER_NAME).ok()?;
+        // until the server is up. Both surface as `None` and the caller retries. Enter
+        // the data runtime around the synchronous connect() — which spawns the
+        // connection driver — so that driver's crypto runs on the pool, not the caller.
+        let connecting = {
+            let _guard = dialer.rt.as_ref().map(Handle::enter);
+            dialer.endpoint.connect(addr, SERVER_NAME).ok()?
+        };
         let conn = connecting.await.ok()?;
         Some(QuicConn::new(conn))
     }
