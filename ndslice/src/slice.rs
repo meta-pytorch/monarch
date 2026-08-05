@@ -48,6 +48,9 @@ pub enum SliceError {
 
     #[error("dimension {dim} out of range for {ndims}-dimensional slice")]
     DimensionOutOfRange { dim: usize, ndims: usize },
+
+    #[error("slice arithmetic overflow")]
+    ArithmeticOverflow,
 }
 
 /// Slice is a compact representation of indices into the flat
@@ -193,6 +196,86 @@ impl Slice {
     /// element at a given index in the underlying array.
     pub fn strides(&self) -> &[usize] {
         &self.strides
+    }
+
+    /// Express this slice in the ordinal space of `parent`.
+    ///
+    /// Returns an error if this slice does not select a valid, dimension-
+    /// preserving subregion of `parent`.
+    ///
+    /// ```text
+    /// parent ranks (offset=100, sizes=[4, 4], strides=[8, 2]):
+    /// 100  102   104  106
+    /// 108 [110] [112] 114
+    /// 116  118   120  122
+    /// 124 [126] [128] 130
+    ///
+    /// self:              offset=110, sizes=[2, 2], strides=[16, 2]
+    /// selected ranks:   [110, 112, 126, 128]
+    /// parent ordinals:  [  5,   6,  13,  14]
+    /// result: offset=5, sizes=[2, 2], strides=[8, 1]
+    /// ```
+    pub fn relative_ordinal_slice(&self, parent: &Self) -> Result<Self, SliceError> {
+        if parent.num_dim() != self.num_dim() {
+            return Err(SliceError::InvalidDims {
+                expected: parent.num_dim(),
+                got: self.num_dim(),
+            });
+        }
+
+        // parent_coordinates: [1, 1]
+        let parent_coordinates = parent.coordinates(self.offset())?;
+        // offset: 5
+        let offset = parent.index(self.offset())?;
+        // parent_ordinal_strides: [4, 1]
+        let parent_ordinal_strides = Slice::new_row_major(parent.sizes().to_vec());
+        let strides = self
+            .sizes()
+            .iter()
+            .enumerate()
+            .map(|(dimension, &extent)| -> Result<usize, SliceError> {
+                if extent == 1 {
+                    return Ok(parent_ordinal_strides.strides()[dimension]);
+                }
+
+                let parent_stride = parent.strides()[dimension];
+                let selected_stride = self.strides()[dimension];
+                if !selected_stride.is_multiple_of(parent_stride) {
+                    return Err(SliceError::IncompatibleView {
+                        reason: format!(
+                            "stride {selected_stride} in dimension {dimension} is not a multiple of parent stride {parent_stride}"
+                        ),
+                    });
+                }
+
+                let step = selected_stride / parent_stride;
+                {
+                    let last_coordinate = parent_coordinates[dimension]
+                        .checked_add(
+                            extent
+                                .checked_sub(1)
+                                .and_then(|extent| extent.checked_mul(step))
+                                .ok_or(SliceError::ArithmeticOverflow)?,
+                        )
+                        .ok_or(SliceError::ArithmeticOverflow)?;
+
+                    if last_coordinate >= parent.sizes()[dimension] {
+                        return Err(SliceError::IncompatibleView {
+                            reason: format!(
+                                "dimension {dimension} ends at coordinate {last_coordinate}, outside parent extent {}",
+                                parent.sizes()[dimension]
+                            ),
+                        });
+                    }
+                }
+
+                parent_ordinal_strides.strides()[dimension]
+                    .checked_mul(step)
+                    .ok_or(SliceError::ArithmeticOverflow)
+            })
+            .collect::<Result<_, _>>()?;
+
+        Self::new(offset, self.sizes().to_vec(), strides)
     }
 
     pub fn is_contiguous(&self) -> bool {
@@ -938,6 +1021,30 @@ mod tests {
 
         let s = Slice::new(0, vec![2, 2], vec![4, 2]).unwrap();
         assert_eq!(s.index(2).unwrap(), 1);
+    }
+
+    #[test]
+    fn relative_ordinal_slice_maps_selected_ranks_into_parent_ordinals() {
+        let parent = Slice::new(100, vec![4, 4], vec![8, 2]).expect("parent should be valid");
+        let selected = Slice::new(110, vec![2, 2], vec![16, 2]).expect("selection should be valid");
+
+        assert_eq!(
+            selected
+                .relative_ordinal_slice(&parent)
+                .expect("selection should map into parent ordinals"),
+            Slice::new(5, vec![2, 2], vec![8, 1]).expect("result should be valid")
+        );
+    }
+
+    #[test]
+    fn relative_ordinal_slice_rejects_selection_that_wraps_parent_dimension() {
+        let parent = Slice::new_row_major(vec![2, 4]);
+        let selected = Slice::new(1, vec![1, 4], vec![4, 1]).expect("selection should be valid");
+
+        assert!(matches!(
+            selected.relative_ordinal_slice(&parent),
+            Err(SliceError::IncompatibleView { .. })
+        ));
     }
 
     #[test]
