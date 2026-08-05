@@ -151,17 +151,22 @@ def _advertised_host() -> str:
     return infos[0][4][0]
 
 
-def worker_ident(port: int) -> bytes:
+def worker_ident(port: int, transport: str) -> bytes:
     """A unique, human-readable identity for this worker process.
 
-    The ident always carries a dialable gateway ``@tag`` (``...@[<host>]:<port>``)
-    built from this worker's own routable IPv6 (see ``_advertised_host``) so a
-    *sibling* worker can open a side channel to us — which is what lets the root
-    delegate our heartbeat to a sibling.
+    The ident always carries a dialable gateway ``@tag`` built from this worker's own
+    routable IPv6 (see ``_advertised_host``) so a *sibling* worker can open a side
+    channel to us — which is what lets the root delegate our heartbeat to a sibling.
+
+    The tag encodes the transport so ctx routes the side channel correctly: a bare
+    ``...@[<host>]:<port>`` is quic (the backward-compatible default), while tcp uses
+    an explicit ``...@tcp://[<host>]:<port>`` scheme.
     """
-    return (
-        f"worker-{socket.gethostname()}-{port}@[{_advertised_host()}]:{port}".encode()
+    host = _advertised_host()
+    tag = (
+        f"[{host}]:{port}" if transport == "quic" else f"{transport}://[{host}]:{port}"
     )
+    return f"worker-{socket.gethostname()}-{port}@{tag}".encode()
 
 
 def _failure_notice(parts: list) -> tuple[str, str]:
@@ -188,8 +193,8 @@ def _report_progress(label: str, done: int, total: int, step: int) -> None:
         log(f"[root]   {label} {done}/{total} ({pct}%)")
 
 
-async def run_worker(port: int, bind: str) -> None:
-    """Serve a quic listener, answer round-trips, and exit when the root dies.
+async def run_worker(port: int, bind: str, transport: str) -> None:
+    """Serve a listener, answer round-trips, and exit when the root dies.
 
     The worker is the *child* of the root: it serves (listens) and the root
     joins (dials). On each established link the worker learns the root's identity
@@ -207,9 +212,9 @@ async def run_worker(port: int, bind: str) -> None:
     (count+1) to that successor. Ring routing is plain destination routing — a token
     to a sibling or the root climbs to the common ancestor (the root) and back down.
     """
-    ident = worker_ident(port)
+    ident = worker_ident(port, transport)
     tag = f"[worker :{port}]"
-    url = f"quic://[{bind}]:{port}"
+    url = f"{transport}://[{bind}]:{port}"
     me = Actor(ident)
     me.serve(url, "child", failure=[ba(H_FAIL)])
     # pid lets us map the Rust writer's MM_HB heartbeat-send lines (tagged by pid)
@@ -315,6 +320,7 @@ async def run_root(
     chain_length: int = 0,
     close_ctx: bool = True,
     settle_ms: float = 0.0,
+    transport: str = "quic",
 ) -> int:
     """Performance sweep: grow the connected set 2, 4, 8, ..., N and time each size.
 
@@ -352,7 +358,7 @@ async def run_root(
             batch = hosts[joined:size]
             t_join = time.monotonic()
             for host in batch:
-                root.join(f"quic://{host}", "parent", failure=[ba(H_FAIL)])
+                root.join(f"{transport}://{host}", "parent", failure=[ba(H_FAIL)])
             joined = size
             while len(workers) < size:
                 try:
@@ -441,6 +447,7 @@ async def run_root_coordinated(
     min_rounds: int = 1,
     chain_length: int = 0,
     settle_ms: float = 0.0,
+    transport: str = "quic",
 ) -> int:
     """Root variant that waits for a controller to hand it the worker addresses.
 
@@ -455,8 +462,9 @@ async def run_root_coordinated(
     the controller before tearing the context down.
     """
     coord = Actor(b"coord")
-    coord.serve(f"quic://[{bind}]:{coord_port}", "child", failure=[ba(H_FAIL)])
-    log(f"[coord] serving quic://[{bind}]:{coord_port}; waiting for controller...")
+    coord_url = f"{transport}://[{bind}]:{coord_port}"
+    coord.serve(coord_url, "child", failure=[ba(H_FAIL)])
+    log(f"[coord] serving {coord_url}; waiting for controller...")
 
     # Establishment hello: [self_ident, controller_ident].
     hello = await coord.next()
@@ -495,6 +503,7 @@ async def run_root_coordinated(
         chain_length,
         close_ctx=False,
         settle_ms=settle_ms,
+        transport=transport,
     )
 
     log(f"[coord] sweep finished rc={rc}; notifying controller and closing")
@@ -546,6 +555,14 @@ def main() -> None:
         "--certs-dir", default=None, help="directory holding cert.pem/key.pem/ca.pem"
     )
     parser.add_argument(
+        "--transport",
+        choices=["quic", "tcp"],
+        default="quic",
+        help="network transport for worker serve / root join (default: quic). "
+        "quic is UDP-based (same-region); tcp is the cross-region fallback. The "
+        "worker/root pair MUST agree on this.",
+    )
+    parser.add_argument(
         "--timeout",
         type=float,
         default=60.0,
@@ -586,7 +603,7 @@ def main() -> None:
     ensure_quic_certs(args.certs_dir)
 
     if args.worker:
-        asyncio.run(run_worker(args.port, args.bind))
+        asyncio.run(run_worker(args.port, args.bind, args.transport))
     elif args.wait_for_addresses is not None:
         sys.exit(
             asyncio.run(
@@ -598,6 +615,7 @@ def main() -> None:
                     args.min_rounds,
                     args.chain_length,
                     args.settle_ms,
+                    args.transport,
                 )
             )
         )
@@ -616,6 +634,7 @@ def main() -> None:
                     args.min_rounds,
                     args.chain_length,
                     settle_ms=args.settle_ms,
+                    transport=args.transport,
                 )
             )
         )
