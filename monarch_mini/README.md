@@ -1,15 +1,20 @@
-# mimic
+# Monarch Mini
 
-*A miniature Monarch actor system in 16 C functions and 6 MB.*
+*A miniature Monarch actor system in 16 C functions and 7.2 MB.*
 
-API inspired by zmq: what is the smallest set of functionality to get monitored actors?
+Monarch was designed for _easy_ use. What if we instead designed for simplicity?
+Monarch Mini is a prototype to answer this question. It lets us experiment with low-level
+design choices and optimizations without having to thread them through Monarch's layers.
+
+The API is inspired by ZeroMQ: define the smallest set of functionality needed for monitored actors.
+It is just these 16 C functions:
 
 ```c
 // ctx_t - context, owns the event loop, one per process
 err_t ctx_create(ctx_t* out);
 void ctx_destroy(ctx_t ctx);
 
-// actor_t - actor, actor tree also establishes message routing and acts as gateways.
+// actor_t - an actor. The actor tree establishes message routing and acts as gateways.
 err_t actor_create(ctx_t ctx, msg_part_t* ident, bool gateway, actor_t* out);
 void actor_destroy(actor_t actor);
 
@@ -33,7 +38,7 @@ err_t poller_next(poller_t poller, size_t* index_out, msg_part_t* parts, size_t 
 const char* last_error(void);
 ```
 
-With Python bindings:
+With simple Python bindings:
 
 ```python
 import asyncio, minimonarch as mm

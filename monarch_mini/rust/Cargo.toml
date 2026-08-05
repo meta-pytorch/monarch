@@ -1,0 +1,34 @@
+[package]
+name = "monarch_mini_rs"
+version = "0.1.0"
+edition = "2021"
+# Declares that this crate links the native `monarch_mini` library, so the link
+# directives emitted by build.rs propagate to downstream binaries.
+links = "monarch_mini"
+
+[lib]
+# Rust-native safe bindings over the minimonarch C ABI.
+
+[dependencies]
+thiserror = "2"
+# `Poller::recv` awaits the poller's wakeup fd via tokio's `AsyncFd`; `Actor`'s
+# lazily-created per-actor poller is guarded by a `tokio::sync::Mutex`. Only the
+# caller's own runtime is used; no multi-thread runtime is required.
+tokio = { version = "1", features = ["net", "rt", "sync"] }
+
+[build-dependencies]
+# minimonarch is linked as an opaque native library over its C ABI, NOT as a
+# Rust crate: `artifact = "staticlib"` builds its self-contained `.a` (own
+# std/tokio, internalized symbols) and `lib = false` keeps its rlib off our
+# dependency graph, so its runtime stays fully isolated from ours. Declared as a
+# build-dependency so build.rs receives the archive path and emits the link
+# directives; cargo builds and orders it. Requires `-Z bindeps` (enabled
+# workspace-wide in .cargo/config.toml).
+monarch_mini = { path = "..", artifact = "staticlib", lib = false }
+
+[dev-dependencies]
+# Compile-time assertions for the Send/Sync tagging (incl. the negative
+# `Poller: !Sync`, which a plain trait bound cannot express).
+static_assertions = "1"
+# Runtime + macros so tests/examples can `#[tokio::test]`/`#[tokio::main]`.
+tokio = { version = "1", features = ["rt", "macros", "net"] }

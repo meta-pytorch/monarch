@@ -55,6 +55,7 @@ jobs:
         free -h || true
         echo "=== end runner spec ==="
         echo "Running CPU Rust tests..."
+        ./monarch_mini/test_certs/generate.sh
         # The CI profile is configured in .config/nextest.toml
         # It includes individual test timeouts and a timeout for the entire test run.
         # Capture the test exit code so stage_test_artifacts still runs on
