@@ -12,6 +12,7 @@ use std::collections::VecDeque;
 use slotmap::SlotMap;
 
 use crate::connection::Connection;
+use crate::connection::SendPayload;
 use crate::ctx::ChildConnectionKey;
 use crate::ctx::PollerKey;
 use crate::msg::MsgPart;
@@ -121,16 +122,16 @@ impl ActorEntry {
         }
     }
 
-    /// Buffer a message addressed to a destination whose route is not yet known
+    /// Buffer a payload addressed to a destination whose route is not yet known
     /// here, so it can be flushed once the route becomes known or this actor gains
-    /// a parent. This is the only place messages enter a [`Route::Unknown`] buffer.
-    pub(crate) fn buffer_unrouted(&mut self, destination: Vec<u8>, parts: Vec<MsgPart>) {
+    /// a parent. This is the only place payloads enter a [`Route::Unknown`] buffer.
+    pub(crate) fn buffer_unrouted(&mut self, destination: Vec<u8>, payload: SendPayload) {
         match self
             .routes
             .entry(destination)
             .or_insert_with(Route::new_unknown)
         {
-            Route::Unknown { messages, .. } => messages.push(parts),
+            Route::Unknown { messages, .. } => messages.push(payload),
             _ => unreachable!("a known route would have been used to send instead of buffering"),
         }
     }
@@ -162,7 +163,7 @@ pub(crate) enum Route {
     /// published (then carried into [`Route::Connection`]) or this actor gains a
     /// parent (then forwarded up).
     Unknown {
-        messages: Vec<Vec<MsgPart>>,
+        messages: Vec<SendPayload>,
         monitors: Vec<MonitorSub>,
     },
     /// The destination is reachable through this child connection. Monitors here

@@ -20,6 +20,7 @@ use crate::actor::Delivery;
 use crate::actor::Route;
 use crate::connection::ConnectRequest;
 use crate::connection::Connection;
+use crate::connection::SendPayload;
 use crate::ctx::Command;
 use crate::ctx::Ctx;
 use crate::ctx::CtxHandle;
@@ -69,7 +70,7 @@ fn inproc_send_queues_until_connection_establishes() {
     ctx.route_message(
         child,
         b"parent".to_vec(),
-        vec![MsgPart::from_bytes(b"queued".to_vec())],
+        SendPayload::ActorMessage(vec![MsgPart::from_bytes(b"queued".to_vec())]),
     );
     ctx.serve(parent, "inproc://queue".to_owned(), request(Role::Parent));
     drain_commands(&mut ctx, &mut rx);
@@ -214,7 +215,7 @@ fn message_to_unrouted_actor_buffers_at_gateway_then_flushes() {
     ctx.route_message(
         child,
         b"grandchild".to_vec(),
-        vec![MsgPart::from_bytes(b"early".to_vec())],
+        SendPayload::ActorMessage(vec![MsgPart::from_bytes(b"early".to_vec())]),
     );
     drain_commands(&mut ctx, &mut rx);
     assert!(matches!(

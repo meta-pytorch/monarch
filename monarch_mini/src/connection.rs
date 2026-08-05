@@ -9,6 +9,9 @@
 use std::collections::HashSet;
 use std::collections::VecDeque;
 
+use serde::Deserialize;
+use serde::Serialize;
+
 use crate::Role;
 use crate::ctx::ChildConnectionKey;
 use crate::ctx::Key;
@@ -100,10 +103,40 @@ pub(crate) trait ConnectionTransport: Send {
     fn send(&self, action: ConnectionCommand) -> bool;
 }
 
+/// What a [`ConnectionCommand::SendMessage`] delivers once it reaches the actor
+/// it is addressed to. Both kinds route identically (destination-driven, the same
+/// table walk); they differ only in what the destination does on arrival, so a
+/// single routing pathway carries them.
+pub(crate) enum SendPayload {
+    /// An ordinary actor message: opaque part bytes handed to the destination's
+    /// poller.
+    ActorMessage(Vec<MsgPart>),
+    /// A monitor firing: the dead target ident, from which the destination (the
+    /// monitoring actor) reconstructs each local monitor's failure message. A fire
+    /// is only ever armed at an ancestor that already has a route to the
+    /// monitoring actor, so it routes strictly *downward* and never buffers at a
+    /// gateway.
+    FireMonitor(Vec<u8>),
+}
+
+/// What a [`ConnectionCommand::ToAncestor`] does once it reaches the common
+/// ancestor of `to_monitor` (the first actor up the tree that holds it in its
+/// routing table, or the root). Both variants route up that same path, differing
+/// only in the action at the ancestor; `dest` is the monitoring actor a fire
+/// returns to.
+#[derive(Serialize, Deserialize)]
+pub(crate) enum AncestorPayload {
+    /// Register the subscription on the target's route (firing at once if it is
+    /// already dead).
+    Subscribe { dest: Vec<u8> },
+    /// Remove the matching subscription from the target's route.
+    Unsubscribe { dest: Vec<u8> },
+}
+
 pub(crate) enum ConnectionCommand {
     SendMessage {
         destination_ident: Vec<u8>,
-        parts: Vec<MsgPart>,
+        payload: SendPayload,
     },
     /// The sender announcing itself to the peer: its role, ident, the name it
     /// assigns the peer, and whether it is still alive. Flows over the transport
@@ -130,26 +163,13 @@ pub(crate) enum ConnectionCommand {
         live: Vec<Vec<u8>>,
         dead: Vec<Vec<u8>>,
     },
-    /// Register a monitor: travels up from the monitoring actor until it reaches
-    /// the common ancestor that has `to_monitor` in its routing table (or the
-    /// root). That ancestor records the subscription (one per monitoring actor per
-    /// target — no per-monitor id, since a fire is identified by the dead ident).
-    Subscribe {
-        dest: Vec<u8>,
+    /// Route a monitor operation up toward the common ancestor that has
+    /// `to_monitor` in its routing table (or the root): one per monitoring actor
+    /// per target — no per-monitor id, since a fire is identified by the dead
+    /// ident. The [`AncestorPayload`] selects register vs. cancel.
+    ToAncestor {
         to_monitor: Vec<u8>,
-    },
-    /// Cancel a previously-registered monitor; travels the same path as
-    /// [`ConnectionCommand::Subscribe`] and removes the subscription.
-    Unsubscribe {
-        dest: Vec<u8>,
-        to_monitor: Vec<u8>,
-    },
-    /// Deliver a monitor firing toward the monitoring actor `dest_ident`. Routed
-    /// like a normal message; carries the dead target ident so the owner can fan
-    /// the fire out to every local monitor on it (reason is a fixed "actor died").
-    FireMonitor {
-        dest_ident: Vec<u8>,
-        to_monitor: Vec<u8>,
+        payload: AncestorPayload,
     },
 }
 
