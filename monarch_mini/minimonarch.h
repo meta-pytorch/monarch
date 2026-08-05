@@ -22,6 +22,7 @@
 
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 
 /* ---------------------------------------------------------------------------
@@ -82,7 +83,11 @@ typedef enum mm_err {
 const char* mm_last_error(void);
 mm_err_t mm_ctx_create(mm_ctx_t* out);
 void mm_ctx_destroy(mm_ctx_t ctx);
-mm_err_t mm_actor_create(mm_ctx_t ctx, mm_msg_part_t* ident, mm_actor_t* out);
+mm_err_t mm_actor_create(
+    mm_ctx_t ctx,
+    mm_msg_part_t* ident,
+    bool gateway,
+    mm_actor_t* out);
 void mm_actor_destroy(mm_actor_t actor);
 mm_err_t mm_actor_send(
     mm_actor_t actor,
@@ -166,8 +171,19 @@ void mm_ctx_destroy(mm_ctx_t ctx);
  * omitted if the actor is a parent of the sending actor. Naming the actor on
  * creation is optional. If the name is not specified, it must be provided in
  * the join call. The caller must eventually call mm_actor_destroy().
+ *
+ * `gateway` declares whether this actor is a gateway: the entry point for its
+ * process group. A gateway must have no parent or a network (tcp/quic) parent;
+ * joining a gateway to a unix:// or inproc:// parent is rejected (delivered as
+ * a failure message). The flag is fixed at creation and never changes. Pass
+ * true for a root/endpoint actor that owns a machine-local subtree, false for
+ * an ordinary actor that will join a local parent.
  */
-mm_err_t mm_actor_create(mm_ctx_t ctx, mm_msg_part_t* ident, mm_actor_t* out);
+mm_err_t mm_actor_create(
+    mm_ctx_t ctx,
+    mm_msg_part_t* ident,
+    bool gateway,
+    mm_actor_t* out);
 
 /*
  * Destroy an actor and release all associated resources.

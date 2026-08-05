@@ -46,7 +46,7 @@ int main(int argc, char** argv) {
       .deleter = NULL,
       .deleter_ctx = NULL};
   mm_actor_t actor = NULL;
-  CHECK(mm_actor_create(ctx, &ident, &actor));
+  CHECK(mm_actor_create(ctx, &ident, /*gateway=*/true, &actor));
   int fd = -1;
   mm_poller_t poller = NULL;
   CHECK(mm_poller_create(ctx, &fd, &poller));

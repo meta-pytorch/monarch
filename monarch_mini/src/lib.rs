@@ -276,6 +276,7 @@ pub unsafe extern "C" fn mm_ctx_destroy(ctx: *mut CCtx) {
 pub unsafe extern "C" fn mm_actor_create(
     ctx: *mut CCtx,
     ident: *mut CMsgPart,
+    gateway: bool,
     out: *mut *mut CActor,
 ) -> Error {
     let handle = (*ctx).0.clone();
@@ -283,6 +284,7 @@ pub unsafe extern "C" fn mm_actor_create(
     match handle
         .send_command(Command::CreateActor {
             ident: opt_name(ident),
+            gateway,
             done: done_tx,
         })
         .and_then(|()| done_rx.blocking_recv().map_err(anyhow::Error::from))

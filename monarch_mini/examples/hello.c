@@ -84,7 +84,7 @@ int main(void) {
       .deleter_ctx = NULL,
   };
   mm_actor_t actor = NULL;
-  CHECK(mm_actor_create(ctx, &ident, &actor));
+  CHECK(mm_actor_create(ctx, &ident, /*gateway=*/true, &actor));
 
   /* Send a message before subscribing to show that the actor buffers it. */
   const char* payload = "hello, self";
@@ -142,7 +142,7 @@ int main(void) {
       .deleter_ctx = NULL,
   };
   mm_actor_t child = NULL;
-  CHECK(mm_actor_create(ctx, &child_ident, &child));
+  CHECK(mm_actor_create(ctx, &child_ident, /*gateway=*/false, &child));
 
   mm_poller_t child_poller = NULL;
   int child_fd = -1;
@@ -225,7 +225,7 @@ int main(void) {
       .deleter_ctx = NULL,
   };
   mm_actor_t child2 = NULL;
-  CHECK(mm_actor_create(ctx, &child2_ident, &child2));
+  CHECK(mm_actor_create(ctx, &child2_ident, /*gateway=*/false, &child2));
 
   const char* grandchild2_ident_bytes = "grandchild2-actor";
   mm_msg_part_t grandchild2_ident = {
@@ -235,7 +235,8 @@ int main(void) {
       .deleter_ctx = NULL,
   };
   mm_actor_t grandchild2 = NULL;
-  CHECK(mm_actor_create(ctx, &grandchild2_ident, &grandchild2));
+  CHECK(mm_actor_create(
+      ctx, &grandchild2_ident, /*gateway=*/false, &grandchild2));
 
   const char* child2_url = "inproc://hello-child2";
   CHECK(mm_actor_serve(actor, child2_url, &parent_args));

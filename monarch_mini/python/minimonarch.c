@@ -732,9 +732,10 @@ static PyTypeObject ContextType = {
 // ---------------------------------------------------------------------------
 
 static int Actor_init(Actor* self, PyObject* args, PyObject* kwds) {
-  static char* kw[] = {"ident", NULL};
+  static char* kw[] = {"ident", "gateway", NULL};
   PyObject* ident = Py_None;
-  if (!PyArg_ParseTupleAndKeywords(args, kwds, "|O", kw, &ident)) {
+  int gateway = 0; // 'p' parses any truthy value into 0/1
+  if (!PyArg_ParseTupleAndKeywords(args, kwds, "|Op", kw, &ident, &gateway)) {
     return -1;
   }
 
@@ -750,14 +751,16 @@ static int Actor_init(Actor* self, PyObject* args, PyObject* kwds) {
   mm_actor_t actor = NULL;
   mm_err_t err;
   if (ident == Py_None) {
-    Py_BEGIN_ALLOW_THREADS err = mm_actor_create(c->ctx, NULL, &actor);
+    Py_BEGIN_ALLOW_THREADS err =
+        mm_actor_create(c->ctx, NULL, (bool)gateway, &actor);
     Py_END_ALLOW_THREADS
   } else {
     mm_msg_part_t p;
     if (bytes_to_part(ident, &p) < 0) {
       return -1;
     }
-    Py_BEGIN_ALLOW_THREADS err = mm_actor_create(c->ctx, &p, &actor);
+    Py_BEGIN_ALLOW_THREADS err =
+        mm_actor_create(c->ctx, &p, (bool)gateway, &actor);
     Py_END_ALLOW_THREADS
   }
   if (err != MM_OK) {
