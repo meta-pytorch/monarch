@@ -50,6 +50,14 @@ fn valid_scheme(url: &str) -> bool {
     url.starts_with("inproc://") || url.starts_with("unix://") || url.starts_with("quic://")
 }
 
+/// Whether `url`'s scheme connects across machines (a network transport). A
+/// gateway may only gain a parent over such a link — a gateway joined to a
+/// unix/inproc parent is rejected, since it would no longer be the entry point
+/// for its process group. (Today only quic; tcp joins this set later.)
+fn is_network_scheme(url: &str) -> bool {
+    url.starts_with("quic://")
+}
+
 new_key_type! {
     pub(crate) struct Key;
     pub(crate) struct PollerKey;
@@ -68,6 +76,7 @@ pub(crate) enum Command {
     },
     CreateActor {
         ident: Option<MsgPart>,
+        gateway: bool,
         done: oneshot::Sender<Key>,
     },
     DestroyActor {
@@ -184,9 +193,14 @@ impl Ctx {
             Command::Init { thread } => {
                 self.thread = Some(thread);
             }
-            Command::CreateActor { ident, done } => {
+            Command::CreateActor {
+                ident,
+                gateway,
+                done,
+            } => {
                 let key = self.actors.insert(ActorEntry::new(
                     ident.as_ref().map(|part| part.as_bytes().to_vec()),
+                    gateway,
                 ));
                 drop(ident);
                 let _ = done.send(key);
@@ -439,6 +453,14 @@ impl Ctx {
             self.deliver_connect_failure(actor, request, b"unsupported url scheme".to_vec());
             return;
         }
+        if self.gateway_parent_rejected(actor, request.role, &url) {
+            self.deliver_connect_failure(
+                actor,
+                request,
+                b"gateway must have no parent or a network parent".to_vec(),
+            );
+            return;
+        }
         let Some(connection) = self.attach_connection(actor, request) else {
             return;
         };
@@ -450,10 +472,27 @@ impl Ctx {
             self.deliver_connect_failure(actor, request, b"unsupported url scheme".to_vec());
             return;
         }
+        if self.gateway_parent_rejected(actor, request.role, &url) {
+            self.deliver_connect_failure(
+                actor,
+                request,
+                b"gateway must have no parent or a network parent".to_vec(),
+            );
+            return;
+        }
         let Some(connection) = self.attach_connection(actor, request) else {
             return;
         };
         self.transport_for(&url).join(url, connection);
+    }
+
+    /// Whether attaching a parent over `url` to `actor` must be rejected because
+    /// `actor` is a gateway gaining a non-network parent. A gateway is the entry
+    /// point for its process group, so it may only have no parent or a network
+    /// (quic/tcp) parent; a unix/inproc parent would demote it. Only a `Child`
+    /// role gains a parent, so a `Parent` role never trips this.
+    fn gateway_parent_rejected(&self, actor: Key, role: Role, url: &str) -> bool {
+        role == Role::Child && self.actor(actor).gateway && !is_network_scheme(url)
     }
 
     fn attach_connection(&mut self, actor: Key, request: ConnectRequest) -> Option<ConnectionRef> {
@@ -462,21 +501,10 @@ impl Ctx {
 
         let connection = match role {
             Role::Parent => {
-                let actor_entry = self.actor(actor);
-                if !actor_entry.gateway && actor_entry.parent.is_none() {
-                    let Connection::Unestablished {
-                        mut failure_prefix, ..
-                    } = connection
-                    else {
-                        unreachable!("new connection should be unestablished");
-                    };
-                    failure_prefix.push(MsgPart::from_bytes(Vec::new()));
-                    failure_prefix.push(MsgPart::from_bytes(
-                        b"invalid parent-child topology".to_vec(),
-                    ));
-                    self.deliver_to_actor(actor, failure_prefix);
-                    return None;
-                }
+                // An actor may adopt children before it has a parent (it buffers
+                // routes and hands them upward once it gains one — see
+                // publish_routes_after_established). The gateway flag is fixed at
+                // creation and no longer gates this.
                 let slot = self.actor_mut(actor).children.insert(connection);
                 ConnectionRef::ChildConnection {
                     ofactor: actor,
@@ -486,8 +514,8 @@ impl Ctx {
             Role::Child => {
                 let actor_entry = self.actor_mut(actor);
                 // An actor may have at most one parent. It is free to have already
-                // served children or buffered messages as a gateway; gaining a parent
-                // hands all of that upward (see publish_routes_after_established).
+                // served children or buffered messages; gaining a parent hands all
+                // of that upward (see publish_routes_after_established).
                 if actor_entry.parent.is_some() {
                     let Connection::Unestablished {
                         mut failure_prefix, ..
@@ -503,7 +531,6 @@ impl Ctx {
                     return None;
                 }
                 actor_entry.parent = Some(connection);
-                actor_entry.gateway = false;
                 ConnectionRef::ParentConnection { ofactor: actor }
             }
         };
@@ -568,11 +595,11 @@ impl Ctx {
     }
 
     fn connection_topology_is_valid(&self, connection: ConnectionRef) -> bool {
-        let actor = self.actor(connection.owning_actor());
-        match connection.role() {
-            Role::Parent => actor.alive && (actor.gateway || actor.parent.is_some()),
-            Role::Child => actor.alive,
-        }
+        // The gateway/parent topology is enforced up front at serve/join time (a
+        // gateway only gains a network parent; an actor has at most one parent),
+        // so by establishment the only thing that can have changed is the actor
+        // dying. Both roles are valid as long as the owning actor is still alive.
+        self.actor(connection.owning_actor()).alive
     }
 
     /// Record routes arriving over `child_connection`: `live` idents become

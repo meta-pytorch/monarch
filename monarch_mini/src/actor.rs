@@ -37,6 +37,10 @@ pub(crate) struct ActorEntry {
     /// `Unsubscribe` is debounced via [`TargetMonitors::unsub_timer`], so rapid
     /// monitor/cancel churn on one target sends no per-cycle traffic.
     pub(crate) monitored: HashMap<Vec<u8>, TargetMonitors>,
+    /// Whether this actor is a gateway: the entry point for its process group,
+    /// with no parent or a network (quic/tcp) parent. Set once at creation and
+    /// never flipped — a gateway owns the shared-memory slab for the actors that
+    /// route through it. Joining a gateway to a non-network parent is rejected.
     pub(crate) gateway: bool,
     pub(crate) alive: bool,
 }
@@ -59,7 +63,7 @@ pub(crate) enum TargetMonitors {
 }
 
 impl ActorEntry {
-    pub(crate) fn new(ident: Option<Vec<u8>>) -> Self {
+    pub(crate) fn new(ident: Option<Vec<u8>>, gateway: bool) -> Self {
         Self {
             name: ActorName::new(ident),
             delivery: Delivery::NoPoller {
@@ -69,7 +73,7 @@ impl ActorEntry {
             children: SlotMap::with_key(),
             routes: HashMap::new(),
             monitored: HashMap::new(),
-            gateway: true,
+            gateway,
             alive: true,
         }
     }
