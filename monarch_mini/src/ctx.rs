@@ -26,17 +26,21 @@ use crate::Role;
 use crate::actor::ActorEntry;
 use crate::actor::ActorName;
 use crate::actor::Delivery;
+use crate::actor::GatewayMonitors;
 use crate::actor::GatewayState;
 use crate::actor::MonitorSub;
+use crate::actor::MonitorToFire;
 use crate::actor::Route;
 use crate::actor::TargetMonitors;
-use crate::connection::AncestorPayload;
 use crate::connection::ConnectRequest;
 use crate::connection::Connection;
 use crate::connection::ConnectionCommand;
 use crate::connection::ConnectionRef;
 use crate::connection::ConnectionTransport;
+use crate::connection::MonitorOp;
 use crate::connection::SendPayload;
+use crate::connection::SideChannelAction;
+use crate::connection::SideChannelMessage;
 use crate::inproc_transport::InprocTransport;
 use crate::msg::MsgPart;
 use crate::poller::Delivered;
@@ -144,12 +148,10 @@ pub(crate) enum Command {
         action: ConnectionCommand,
     },
     // A message arrived over a gateway side-channel (a direct gateway-to-gateway
-    // QUIC connection, not a parent/child link). The receiving gateway is resolved
-    // from the destination, since several gateways may share one endpoint url.
-    SideChannelDeliver {
-        destination_ident: Vec<u8>,
-        payload: SendPayload,
-    },
+    // QUIC connection, not a parent/child link). The self-addressing message names
+    // the actor whose gateway should handle it; the receiving gateway is resolved
+    // from that (several gateways may share one endpoint url).
+    SideChannelDeliver(SideChannelMessage),
     // A transport's pipe is up; install it on the connection. Transport-agnostic:
     // both inproc and unix emit it, and the command loop drives establishment
     // from here (sends our Establish along the transport).
@@ -172,14 +174,15 @@ pub(crate) enum Command {
         actor: Key,
         id: u64,
     },
-    // Fired by a non-existence timeout timer armed at common ancestor `at`. A
-    // local check only: if `to_monitor`'s route at `at` is still `Unknown` the
-    // target never appeared, so fire the timeout; any other state (it exists, it
-    // died, or the subscription has migrated away leaving no route) is a no-op.
+    // Fired by a "must exist" timer armed at `at` by a local or remote subscribe.
+    // Remote (a `gateway_state` entry for `target`'s tag whose `MonitorToFire` is
+    // still unacked): the owning gateway never answered, so declare it dead. Local
+    // (a still-`Unknown` route to `target` at `at`): the target never appeared, so
+    // fire the non-existence timeout. Anything else is a no-op.
     CheckMonitorTimeout {
         at: Key,
-        dest: Vec<u8>,
-        to_monitor: Vec<u8>,
+        listener: Vec<u8>,
+        target: Vec<u8>,
     },
     // Fired by a debounce timer: if `to_monitor` is still `PendingUnsubscribe`
     // (i.e. it was not re-monitored in the grace window), send the upstream
@@ -222,12 +225,13 @@ struct Ctx {
     // the quic listener coroutines. Empty until the first gateway creates the
     // server. A clone of this slot lives in the quic transport.
     shm_client: ShmClientSlot,
-    // Side-channel messages whose destination no gateway in this context can route
-    // yet, keyed by destination ident. The destination's owning gateway is not
-    // known up front (several gateways may serve the same endpoint url), so these
-    // are held context-wide and flushed once a gateway learns a route to the
-    // destination — or the destination actor is created here.
-    pending_side_channel: HashMap<Vec<u8>, Vec<SendPayload>>,
+    // Side-channel messages whose `gateway_for_actor` no gateway in this context can
+    // resolve yet, keyed by that ident. The owning gateway is not known up front
+    // (several gateways may serve the same endpoint url, and the actor may not exist
+    // yet), so the *whole* self-addressing message is held context-wide — regardless
+    // of its action — and replayed through `deliver_side_channel` once a route to the
+    // ident is learned (see `populate_routes`).
+    pending_side_channel: HashMap<Vec<u8>, Vec<SideChannelMessage>>,
     // Every gateway actor ever created in this context, so resolving a side-channel
     // destination scans only gateways (a handful) rather than every actor. A
     // *dead* gateway is kept: its routing table still tells us whether a destination
@@ -389,11 +393,8 @@ impl Ctx {
             } => {
                 self.transport_connected(connection, transport);
             }
-            Command::SideChannelDeliver {
-                destination_ident,
-                payload,
-            } => {
-                self.deliver_side_channel(destination_ident, payload);
+            Command::SideChannelDeliver(message) => {
+                self.deliver_side_channel(message);
             }
             Command::Die { actor, reason } => {
                 let reason = reason.as_bytes().to_vec();
@@ -414,32 +415,10 @@ impl Ctx {
             }
             Command::CheckMonitorTimeout {
                 at,
-                dest,
-                to_monitor,
+                listener,
+                target,
             } => {
-                // A non-existence timer armed at `at` expired. Inspect the target's
-                // route *here* only: `Unknown` means the subscription is still held
-                // here and the target never appeared → fire the timeout.
-                // `Connection` (target exists), `Dead` (already fired on the death
-                // path), and absent/`None` (the subscription migrated up, leaving
-                // this ancestor's route gone) are all no-ops. No wire traffic and no
-                // ancestry walk.
-                let still_unknown = matches!(
-                    self.actors
-                        .get(at)
-                        .map(|actor| actor.routes.get(to_monitor.as_slice())),
-                    Some(Some(Route::Unknown { .. }))
-                );
-                if still_unknown {
-                    self.route_message(
-                        at,
-                        dest,
-                        SendPayload::FireMonitor {
-                            to_monitor,
-                            is_timeout: true,
-                        },
-                    );
-                }
+                self.check_monitor_timeout(at, listener, target);
             }
             Command::UnsubscribeMonitor { actor, to_monitor } => {
                 self.unsubscribe_monitor(actor, to_monitor);
@@ -539,17 +518,10 @@ impl Ctx {
             let own_tag = gateway_tag(self.actor(sender).name().unwrap_or_default()).to_vec();
             let dest_tag = gateway_tag(&destination_ident).to_vec();
             if !dest_tag.is_empty() && dest_tag != own_tag {
-                match std::str::from_utf8(&dest_tag) {
-                    Ok(tag) => {
-                        self.quic
-                            .send_to_gateway(tag.to_owned(), destination_ident, payload)
-                    }
-                    Err(_) => {
-                        tracing::warn!(
-                            "gateway destination has non-utf8 specifier; dropping message"
-                        )
-                    }
-                }
+                self.send_to_gateway(SideChannelMessage {
+                    gateway_for_actor: destination_ident,
+                    action: SideChannelAction::Send(payload),
+                });
                 return;
             }
             if !own_tag.is_empty() && dest_tag == own_tag {
@@ -794,18 +766,11 @@ impl Ctx {
             // route and flush its buffered messages. Monitors stay here: this actor is
             // the responsible ancestor for the destination (it is reachable below it).
             let previous = self.actor_mut(parent).routes.remove(ident.as_slice());
-            let (monitors, mut buffered) = match previous {
+            let (monitors, buffered) = match previous {
                 Some(Route::Unknown { messages, monitors }) => (monitors, messages),
                 Some(Route::Connection { monitors, .. }) => (monitors, Vec::new()),
                 _ => (Vec::new(), Vec::new()),
             };
-            // Side-channel messages held context-wide for this destination become
-            // routable at this same moment, so route them alongside the buffered
-            // ones — this is the one place a previously-unroutable side-channel
-            // destination gains a route.
-            if let Some(pending) = self.pending_side_channel.remove(ident.as_slice()) {
-                buffered.extend(pending);
-            }
             self.actor_mut(parent).routes.insert(
                 ident.clone(),
                 Route::Connection {
@@ -818,11 +783,18 @@ impl Ctx {
             self.actor_mut(parent)
                 .record_routed_via_child(child_connection, ident);
 
-            // Re-route every payload that was waiting on this route (buffered against
-            // the Unknown route, plus any pending side-channel messages); route_message
-            // sends them down the child connection we just recorded.
+            // Re-route every payload buffered against the now-resolved Unknown route;
+            // route_message sends them down the child connection we just recorded.
             for payload in buffered {
                 self.route_message(parent, ident.clone(), payload);
+            }
+            // Self-addressing side-channel messages held context-wide for this ident
+            // can now be resolved, so replay each through deliver_side_channel — the
+            // one place a previously-unresolvable side-channel ident gains a route.
+            if let Some(pending) = self.pending_side_channel.remove(ident.as_slice()) {
+                for message in pending {
+                    self.deliver_side_channel(message);
+                }
             }
         }
 
@@ -898,7 +870,7 @@ impl Ctx {
                 // must travel up *as dead*, else the parent treats a known-dead actor
                 // as alive), while buffered Unknown routes — which we could not place
                 // while parentless — are dropped and their held messages and monitor
-                // subscriptions re-routed up (route_message / route_ancestor now
+                // subscriptions re-routed up (route_message / route_monitor_change now
                 // forward, since there is a parent and no local route).
                 let mut live = vec![local_ident];
                 let mut dead = Vec::new();
@@ -923,11 +895,11 @@ impl Ctx {
                                 // timer where the subscription now lives. The old
                                 // ancestor's route for this target is now `None`,
                                 // so its still-pending timer no-ops when it fires.
-                                self.route_ancestor(
+                                self.route_monitor_change(
                                     ofactor,
+                                    sub.dest,
                                     ident.clone(),
-                                    AncestorPayload::Subscribe {
-                                        dest: sub.dest,
+                                    MonitorOp::Subscribe {
                                         timeout_ms: sub.timeout_ms,
                                     },
                                 );
@@ -1003,11 +975,12 @@ impl Ctx {
                 };
                 self.populate_routes(ofactor, slot, live, dead);
             }
-            ConnectionCommand::ToAncestor {
-                to_monitor,
-                payload,
+            ConnectionCommand::UpdateMonitorSubscription {
+                listener,
+                target,
+                op,
             } => {
-                self.route_ancestor(connection.owning_actor(), to_monitor, payload);
+                self.route_monitor_change(connection.owning_actor(), listener, target, op);
             }
             ConnectionCommand::GatewayState { client } => {
                 // Our parent handed us its gateway's client: adopt it and pass it
@@ -1031,7 +1004,9 @@ impl Ctx {
                     // resurrect a route to it. (Only a gateway holds a dead-set; a
                     // non-gateway relay never filters here.)
                     let known_dead = match &entry.gateway {
-                        GatewayState::Gateway { dead_gateways } => dead_gateways.contains(&tag),
+                        GatewayState::Gateway { gateway_state } => {
+                            matches!(gateway_state.get(&tag), Some(GatewayMonitors::Dead))
+                        }
                         GatewayState::NotAGateway => false,
                     };
                     if known_dead {
@@ -1310,17 +1285,42 @@ impl Ctx {
         }
 
         // Heading down: record the deaths, then fan out to every gateway-route child.
+        // A gateway records each death in its `gateway_state` (deduplicating against
+        // an already-`Dead` entry so repeated waves die out) and, at the moment of
+        // transition, fires every cross-gateway monitor it held for that gateway. A
+        // non-gateway holds no state and merely relays.
+        let mut to_fire: Vec<(Vec<u8>, Vec<u8>)> = Vec::new(); // (listener, monitoring)
         let newly: Vec<Vec<u8>> = match &mut self.actor_mut(at).gateway {
-            GatewayState::Gateway { dead_gateways } => dead
-                .into_iter()
-                .filter(|tag| dead_gateways.insert(tag.clone()))
-                .collect(),
+            GatewayState::Gateway { gateway_state } => {
+                let mut newly = Vec::new();
+                for tag in dead {
+                    if matches!(gateway_state.get(&tag), Some(GatewayMonitors::Dead)) {
+                        continue; // already dead; broadcast already fanned out
+                    }
+                    if let Some(GatewayMonitors::Subscribed(subs)) =
+                        gateway_state.insert(tag.clone(), GatewayMonitors::Dead)
+                    {
+                        to_fire.extend(subs.into_iter().map(|m| (m.listener, m.monitoring)));
+                    }
+                    newly.push(tag);
+                }
+                newly
+            }
             GatewayState::NotAGateway => dead,
         };
+        for (listener, monitoring) in to_fire {
+            self.route_message(
+                at,
+                listener,
+                SendPayload::FireMonitor {
+                    to_monitor: monitoring,
+                    is_timeout: false,
+                },
+            );
+        }
         if newly.is_empty() {
             return;
         }
-        // (Remote-monitor firing on these deaths is wired up in the next change.)
         let slots: Vec<ChildConnectionKey> =
             self.actor(at).gateway_routes.keys().copied().collect();
         for slot in slots {
@@ -1403,28 +1403,106 @@ impl Ctx {
 
     // -- Side-channel delivery --------------------------------------------------
 
-    /// Route a message that arrived over a gateway side-channel. Because several
-    /// gateways may serve the same endpoint url, the destination's owning gateway is
-    /// not known up front, so find the first gateway that has the destination in its
-    /// routing table (or *is* it) and hand off to `route_message`, which delivers a
-    /// live route, drops a dead one, drops anything via a dead gateway, and buffers
-    /// an `Unknown` entry. An `Unknown` entry counts: it means an actor under that
-    /// gateway already addressed the destination, so it is expected to appear there.
-    /// If no gateway knows the destination at all, hold the message in
-    /// `pending_side_channel` until a route is recorded (see `populate_routes`).
-    fn deliver_side_channel(&mut self, destination_ident: Vec<u8>, payload: SendPayload) {
-        let routable = self.gateways.iter().copied().find(|&key| {
-            let actor = &self.actors[key];
-            actor.name() == Some(destination_ident.as_slice())
-                || actor.routes.contains_key(&destination_ident)
-        });
-        match routable {
-            Some(key) => self.route_message(key, destination_ident, payload),
-            None => self
-                .pending_side_channel
-                .entry(destination_ident)
+    /// Handle a message that arrived over a gateway side-channel. The owning gateway
+    /// is resolved *once* from `gateway_for_actor` (see [`Self::gateway_for`]),
+    /// uniformly for every action. If it cannot be resolved yet, the whole
+    /// self-addressing message is held in `pending_side_channel` and replayed when a
+    /// route to `gateway_for_actor` is learned (see `populate_routes`) — there is no
+    /// per-action resolution or dropping. Once resolved, the action is dispatched:
+    ///
+    /// - `Send`: hand off to `route_message`, which delivers a live route, drops a
+    ///   dead one, and buffers an `Unknown` entry.
+    /// - `UpdateRemoteMonitorState`: register/cancel the monitor at the owning
+    ///   gateway via the *same* `route_monitor_change` (where the target is now
+    ///   same-domain, so it becomes an ordinary local `MonitorSub`); a subscribe is
+    ///   then confirmed back to the listener's gateway with `AckRemoteMonitor`.
+    /// - `AckRemoteMonitor`: mark the matching held `MonitorToFire` acked so its
+    ///   "must exist" timer stops being able to declare the gateway dead.
+    fn deliver_side_channel(&mut self, message: SideChannelMessage) {
+        let Some(gw) = self.gateway_for(&message.gateway_for_actor) else {
+            self.pending_side_channel
+                .entry(message.gateway_for_actor.clone())
                 .or_default()
-                .push(payload),
+                .push(message);
+            return;
+        };
+        let SideChannelMessage {
+            gateway_for_actor,
+            action,
+        } = message;
+        match action {
+            SideChannelAction::Send(payload) => self.route_message(gw, gateway_for_actor, payload),
+            SideChannelAction::UpdateRemoteMonitorState { listener, op } => {
+                let is_subscribe = matches!(op, MonitorOp::Subscribe { .. });
+                self.route_monitor_change(gw, listener.clone(), gateway_for_actor.clone(), op);
+                if is_subscribe {
+                    // Confirm the registration back to the listener's gateway.
+                    self.send_to_gateway(SideChannelMessage {
+                        gateway_for_actor: listener,
+                        action: SideChannelAction::AckRemoteMonitor {
+                            monitoring: gateway_for_actor,
+                        },
+                    });
+                }
+            }
+            SideChannelAction::AckRemoteMonitor { monitoring } => {
+                let tag = gateway_tag(&monitoring).to_vec();
+                if let GatewayState::Gateway { gateway_state } = &mut self.actor_mut(gw).gateway {
+                    if let Some(GatewayMonitors::Subscribed(subs)) = gateway_state.get_mut(&tag) {
+                        for m in subs.iter_mut() {
+                            if m.listener == gateway_for_actor && m.monitoring == monitoring {
+                                m.acked = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The gateway in this context that owns `ident`: the first gateway that already
+    /// routes or names it, else (for a target not yet created) the gateway whose own
+    /// `@tag` serves `ident`'s `@tag`. An exact route/name match always wins over the
+    /// tag fallback. `None` if no gateway owns it yet (the caller holds or drops the
+    /// message accordingly).
+    fn gateway_for(&self, ident: &[u8]) -> Option<Key> {
+        if let Some(key) = self.gateways.iter().copied().find(|&key| {
+            let actor = &self.actors[key];
+            actor.name() == Some(ident) || actor.routes.contains_key(ident)
+        }) {
+            return Some(key);
+        }
+        let tag = gateway_tag(ident);
+        if tag.is_empty() {
+            return None;
+        }
+        self.gateways
+            .iter()
+            .copied()
+            .find(|&key| gateway_tag(self.actors[key].name().unwrap_or_default()) == tag)
+    }
+
+    /// Ship a self-addressing side-channel message to the gateway that owns
+    /// `msg.gateway_for_actor`, dialing the side-channel at that actor's `@tag`.
+    /// Without a tokio runtime (the sync unit-test harness) this is a no-op; those
+    /// tests drive the receive side (`deliver_side_channel`) directly.
+    fn send_to_gateway(&mut self, msg: SideChannelMessage) {
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+        let tag = gateway_tag(&msg.gateway_for_actor);
+        if tag.is_empty() {
+            tracing::warn!("side-channel message has no gateway specifier; dropping");
+            return;
+        }
+        match std::str::from_utf8(tag) {
+            Ok(tag) => {
+                let tag = tag.to_owned();
+                self.quic.send_to_gateway(tag, msg);
+            }
+            Err(_) => {
+                tracing::warn!("gateway destination has non-utf8 specifier; dropping message");
+            }
         }
     }
 
@@ -1454,13 +1532,11 @@ impl Ctx {
             })
             .collect();
         for (to_monitor, timeout_ms) in deferred {
-            self.route_ancestor(
+            self.route_monitor_change(
                 actor,
+                name.clone(),
                 to_monitor,
-                AncestorPayload::Subscribe {
-                    dest: name.clone(),
-                    timeout_ms,
-                },
+                MonitorOp::Subscribe { timeout_ms },
             );
         }
     }
@@ -1520,11 +1596,7 @@ impl Ctx {
             ActorName::Named(name) => name.clone(),
             ActorName::Unknown { .. } => return,
         };
-        self.route_ancestor(
-            actor,
-            to_monitor,
-            AncestorPayload::Subscribe { dest, timeout_ms },
-        );
+        self.route_monitor_change(actor, dest, to_monitor, MonitorOp::Subscribe { timeout_ms });
     }
 
     /// Remove local monitor `id` (found by scanning its target). Dropping the last
@@ -1612,103 +1684,268 @@ impl Ctx {
             ActorName::Named(name) => name.clone(),
             ActorName::Unknown { .. } => return,
         };
-        self.route_ancestor(actor, to_monitor, AncestorPayload::Unsubscribe { dest });
+        self.route_monitor_change(actor, dest, to_monitor, MonitorOp::Unsubscribe);
     }
 
-    /// Route a monitor operation up to the *common ancestor* of `to_monitor`: the
-    /// first actor from `at` upward that holds `to_monitor` in its routing table
-    /// (or the root). That ancestor is where a normal message to the target turns
-    /// downward, so it is where a subscription is held and where a fire originates.
-    /// Both subscribe and cancel travel this one path, differing only in the
-    /// [`AncestorPayload`] handler that runs once the ancestor is reached.
-    fn route_ancestor(&mut self, at: Key, to_monitor: Vec<u8>, payload: AncestorPayload) {
-        // Forward up while this actor is not yet the common ancestor (it has no
-        // route to the target) and a parent exists. Otherwise we are the ancestor —
-        // or the root, where the target may not exist yet and the subscription is
-        // held until it does — so the payload acts here.
-        if !self.actor(at).routes.contains_key(to_monitor.as_slice()) {
-            if let Some(parent) = self.actor_mut(at).parent.as_mut() {
-                let _ = parent.send(ConnectionCommand::ToAncestor {
-                    to_monitor,
-                    payload,
-                });
+    /// Apply a monitor subscribe/cancel, sending it to the actor responsible for
+    /// `target`. (Replaces the base's `route_ancestor`.) The responsible actor is
+    /// chosen by the target's domain, relative to ours:
+    ///
+    /// - **Root domain** (blank tag): the common ancestor that routes the target —
+    ///   climbing transparently *past* gateways, up to the root. Held locally there.
+    /// - **Our own domain**: the common ancestor, or — failing that — our gateway, the
+    ///   top of the domain, which holds it until the target appears. Held locally.
+    /// - **Another gateway's domain**: our gateway, which mirrors the monitor onto the
+    ///   gateway that owns the target over a side-channel.
+    ///
+    /// Until we reach that actor we forward the change one hop up (see
+    /// [`Self::forward_monitor_up`]).
+    fn route_monitor_change(&mut self, at: Key, listener: Vec<u8>, target: Vec<u8>, op: MonitorOp) {
+        let target_domain = gateway_tag(&target);
+        let my_domain = gateway_tag(self.actor(at).name().unwrap_or_default());
+        let routes_target = self.actor(at).routes.contains_key(target.as_slice());
+        let is_gateway = self.actor(at).is_gateway();
+
+        if target_domain.is_empty() {
+            // Root domain: only the common ancestor that routes the target handles it;
+            // gateways are transparent, so an unrouted target keeps climbing to the root.
+            if routes_target {
+                self.establish_local_monitor(at, listener, target, op);
+            } else {
+                self.forward_monitor_up(at, listener, target, op);
+            }
+        } else if target_domain == my_domain {
+            // Our own domain: the common ancestor, or our gateway (the top of the
+            // domain), holds it; anyone below them forwards up.
+            if routes_target || is_gateway {
+                self.establish_local_monitor(at, listener, target, op);
+            } else {
+                self.forward_monitor_up(at, listener, target, op);
+            }
+        } else {
+            // Another gateway's domain: our gateway mirrors it onto the owning gateway;
+            // anyone below the gateway forwards up to it.
+            if is_gateway {
+                self.mirror_monitor_to_gateway(at, listener, target, op);
+            } else {
+                self.forward_monitor_up(at, listener, target, op);
+            }
+        }
+    }
+
+    /// Forward a monitor change one hop up toward the actor responsible for `target`.
+    /// At the root (no parent) there is nowhere left to climb, so we are that actor:
+    /// hold the monitor locally until the target appears.
+    fn forward_monitor_up(&mut self, at: Key, listener: Vec<u8>, target: Vec<u8>, op: MonitorOp) {
+        if let Some(parent) = self.actor_mut(at).parent.as_mut() {
+            let _ = parent.send(ConnectionCommand::UpdateMonitorSubscription {
+                listener,
+                target,
+                op,
+            });
+        } else {
+            self.establish_local_monitor(at, listener, target, op);
+        }
+    }
+
+    /// Establish a *local* monitor on `target`'s route at the responsible actor `at`
+    /// (the target is in `at`'s own domain). A subscribe fires immediately if the
+    /// route is already `Dead`, else holds a `MonitorSub` (creating an `Unknown`
+    /// buffer if the target is not known here yet) and arms the non-existence timer
+    /// while the route is `Unknown` — on a `Connection` route the target exists, so a
+    /// non-existence timeout is meaningless. An unsubscribe drops the matching
+    /// `MonitorSub` (idempotent: a sub that already fired or was never registered
+    /// leaves nothing to remove).
+    fn establish_local_monitor(
+        &mut self,
+        at: Key,
+        listener: Vec<u8>,
+        target: Vec<u8>,
+        op: MonitorOp,
+    ) {
+        let timeout_ms = match op {
+            MonitorOp::Unsubscribe => {
+                if let Some(monitors) = self
+                    .actor_mut(at)
+                    .routes
+                    .get_mut(target.as_slice())
+                    .and_then(Route::monitors_mut)
+                {
+                    monitors.retain(|sub| sub.dest != listener);
+                }
                 return;
             }
-        }
-        match payload {
-            AncestorPayload::Subscribe { dest, timeout_ms } => {
-                self.subscribe(at, dest, to_monitor, timeout_ms)
-            }
-            AncestorPayload::Unsubscribe { dest } => self.unsubscribe(at, dest, to_monitor),
-        }
-    }
+            MonitorOp::Subscribe { timeout_ms } => timeout_ms,
+        };
 
-    /// Register a subscription at the common ancestor `at`: fire immediately if the
-    /// target is already known dead, otherwise hold the subscription on its route
-    /// (creating an `Unknown` buffer if the target is not yet known here). This is
-    /// the single place a non-existence timer is armed: if `timeout_ms != 0` and the
-    /// resulting route is `Unknown` (the target is not known here) a timer task is
-    /// spawned that, after the timeout, sends a [`Command::CheckMonitorTimeout`] to
-    /// recheck this same ancestor. The timer is never tracked or cancelled —
-    /// correctness comes from that fire-time route check, not from cancellation.
-    fn subscribe(&mut self, at: Key, dest: Vec<u8>, to_monitor: Vec<u8>, timeout_ms: u64) {
         if matches!(
-            self.actor(at).routes.get(to_monitor.as_slice()),
+            self.actor(at).routes.get(target.as_slice()),
             Some(Route::Dead)
         ) {
             self.route_message(
                 at,
-                dest,
+                listener,
                 SendPayload::FireMonitor {
-                    to_monitor,
+                    to_monitor: target,
                     is_timeout: false,
                 },
             );
             return;
         }
         self.actor_mut(at).buffer_monitor(
-            to_monitor.clone(),
+            target.clone(),
             MonitorSub {
-                dest: dest.clone(),
+                dest: listener.clone(),
                 timeout_ms,
             },
         );
-        // Arm a non-existence timer only when requested and the target is not
-        // currently known here (route is `Unknown`). On a `Connection` route the
-        // target exists, so a non-existence timeout is meaningless. Without a tokio
-        // runtime (unit-test harness) we skip arming; tests drive
-        // `CheckMonitorTimeout` directly.
-        if timeout_ms != 0
-            && matches!(
-                self.actor(at).routes.get(to_monitor.as_slice()),
-                Some(Route::Unknown { .. })
-            )
-            && tokio::runtime::Handle::try_current().is_ok()
-        {
-            let loop_tx = self.loop_tx.clone();
-            let timeout = Duration::from_millis(timeout_ms);
-            tokio::task::spawn_local(async move {
-                tokio::time::sleep(timeout).await;
-                let _ = loop_tx.send(Command::CheckMonitorTimeout {
-                    at,
-                    dest,
-                    to_monitor,
-                });
-            });
+        if matches!(
+            self.actor(at).routes.get(target.as_slice()),
+            Some(Route::Unknown { .. })
+        ) {
+            self.arm_must_exist_timer(at, listener, target, timeout_ms);
         }
     }
 
-    /// Remove the matching subscription at the common ancestor `at`. Idempotent: a
-    /// sub that already fired (and was removed), targets a now-dead route, or was
-    /// never registered is a no-op.
-    fn unsubscribe(&mut self, at: Key, dest: Vec<u8>, to_monitor: Vec<u8>) {
-        if let Some(monitors) = self
-            .actor_mut(at)
-            .routes
-            .get_mut(to_monitor.as_slice())
-            .and_then(Route::monitors_mut)
-        {
-            monitors.retain(|sub| sub.dest != dest);
+    /// Mirror a cross-gateway monitor onto the gateway that owns `target`, from the
+    /// subscribing gateway `at`. A subscribe records an (unacked) `MonitorToFire`
+    /// against the owning gateway's tag — so a later death of that gateway fires the
+    /// listener — unless the gateway is already known dead, in which case it fires
+    /// straight back and holds nothing. A cancel drops the matching `MonitorToFire`,
+    /// removing the tag entry if it empties so a stale timer cannot later declare the
+    /// gateway dead. Either way the op is relayed to the owning gateway (which applies
+    /// it as an ordinary local monitor on `target`); a subscribe additionally arms the
+    /// "must exist" timer that declares the gateway dead if it never acknowledges.
+    fn mirror_monitor_to_gateway(
+        &mut self,
+        at: Key,
+        listener: Vec<u8>,
+        target: Vec<u8>,
+        op: MonitorOp,
+    ) {
+        let tag = gateway_tag(&target).to_vec();
+        match op {
+            MonitorOp::Subscribe { timeout_ms } => {
+                let already_dead = matches!(
+                    &self.actor(at).gateway,
+                    GatewayState::Gateway { gateway_state }
+                        if matches!(gateway_state.get(&tag), Some(GatewayMonitors::Dead))
+                );
+                if already_dead {
+                    self.route_message(
+                        at,
+                        listener,
+                        SendPayload::FireMonitor {
+                            to_monitor: target,
+                            is_timeout: false,
+                        },
+                    );
+                    return;
+                }
+                let GatewayState::Gateway { gateway_state } = &mut self.actor_mut(at).gateway
+                else {
+                    unreachable!("a cross-gateway target is handled only at a gateway");
+                };
+                let GatewayMonitors::Subscribed(subs) = gateway_state
+                    .entry(tag)
+                    .or_insert_with(|| GatewayMonitors::Subscribed(Vec::new()))
+                else {
+                    unreachable!("a known-dead gateway fired above and returned");
+                };
+                subs.push(MonitorToFire {
+                    acked: false,
+                    listener: listener.clone(),
+                    monitoring: target.clone(),
+                });
+                self.relay_to_owning_gateway(&listener, &target, op);
+                self.arm_must_exist_timer(at, listener, target, timeout_ms);
+            }
+            MonitorOp::Unsubscribe => {
+                if let GatewayState::Gateway { gateway_state } = &mut self.actor_mut(at).gateway {
+                    if let Some(GatewayMonitors::Subscribed(subs)) = gateway_state.get_mut(&tag) {
+                        subs.retain(|m| !(m.listener == listener && m.monitoring == target));
+                        if subs.is_empty() {
+                            gateway_state.remove(&tag);
+                        }
+                    }
+                }
+                self.relay_to_owning_gateway(&listener, &target, op);
+            }
+        }
+    }
+
+    /// Forward a monitor op to the gateway that owns `target` over a side-channel, so
+    /// it (un)registers an ordinary local monitor on `target` firing back to
+    /// `listener`.
+    fn relay_to_owning_gateway(&mut self, listener: &[u8], target: &[u8], op: MonitorOp) {
+        self.send_to_gateway(SideChannelMessage {
+            gateway_for_actor: target.to_vec(),
+            action: SideChannelAction::UpdateRemoteMonitorState {
+                listener: listener.to_vec(),
+                op,
+            },
+        });
+    }
+
+    /// The "must exist" timer, armed by both local and remote subscribes. After
+    /// `timeout_ms` it sends a [`Command::CheckMonitorTimeout`] back to `at`. Never
+    /// tracked or cancelled — correctness comes from the fire-time check, not from
+    /// cancellation. Without a tokio runtime (unit-test harness) it is a no-op;
+    /// those tests drive `CheckMonitorTimeout` directly.
+    fn arm_must_exist_timer(&self, at: Key, listener: Vec<u8>, target: Vec<u8>, timeout_ms: u64) {
+        if timeout_ms == 0 || tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+        let loop_tx = self.loop_tx.clone();
+        let timeout = Duration::from_millis(timeout_ms);
+        tokio::task::spawn_local(async move {
+            tokio::time::sleep(timeout).await;
+            let _ = loop_tx.send(Command::CheckMonitorTimeout {
+                at,
+                listener,
+                target,
+            });
+        });
+    }
+
+    /// A "must exist" timer armed at `at` expired. Remote and local cases are
+    /// mutually exclusive (only a cross-gateway target has a `gateway_state` entry;
+    /// only a same-domain one has a local route):
+    /// - Remote, still unacknowledged: the owning gateway never answered the
+    ///   registration, so treat it as unreachable — declare it dead, which fires the
+    ///   monitor as the death propagates back (Trigger 2).
+    /// - Local, never appeared: the route is still `Unknown`, so the target never
+    ///   existed — fire the non-existence timeout. Any other route state (it exists,
+    ///   it died, or the subscription migrated up leaving no route) is a no-op.
+    fn check_monitor_timeout(&mut self, at: Key, listener: Vec<u8>, target: Vec<u8>) {
+        let tag = gateway_tag(&target).to_vec();
+        let unacked_remote = match self.actors.get(at).map(|actor| &actor.gateway) {
+            Some(GatewayState::Gateway { gateway_state }) => matches!(
+                gateway_state.get(&tag),
+                Some(GatewayMonitors::Subscribed(subs))
+                    if subs.iter().any(|m| m.listener == listener && m.monitoring == target && !m.acked)
+            ),
+            _ => false,
+        };
+        if unacked_remote {
+            self.gateway_died(at, vec![tag], false);
+            return;
+        }
+        let still_unknown = matches!(
+            self.actors
+                .get(at)
+                .map(|actor| actor.routes.get(target.as_slice())),
+            Some(Some(Route::Unknown { .. }))
+        );
+        if still_unknown {
+            self.route_message(
+                at,
+                listener,
+                SendPayload::FireMonitor {
+                    to_monitor: target,
+                    is_timeout: true,
+                },
+            );
         }
     }
 
