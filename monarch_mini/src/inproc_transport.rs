@@ -88,7 +88,7 @@ struct InprocConnectionTransport {
 impl ConnectionTransport for InprocConnectionTransport {
     fn send(&self, action: ConnectionCommand) -> bool {
         self.tx
-            .send(Command::ConnectionSentCommand {
+            .send(Command::ConnectionAction {
                 connection: self.peer,
                 action,
             })
@@ -101,7 +101,7 @@ impl Drop for InprocConnectionTransport {
         // Dropping the send half is the in-process analogue of a socket closing:
         // tell the peer its side of the pipe is gone. (A no-op if the peer is
         // already failed.)
-        let _ = self.tx.send(Command::ConnectionSentCommand {
+        let _ = self.tx.send(Command::ConnectionAction {
             connection: self.peer,
             action: ConnectionCommand::Severed {
                 reason: b"peer connection closed".to_vec(),
