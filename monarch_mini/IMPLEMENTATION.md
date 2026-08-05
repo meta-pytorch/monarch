@@ -161,18 +161,55 @@ Key design points:
 
 - Gateway URLs include a pseudo-port in addition to the real port so that a
   recovered host reusing the same IP/port is distinguishable from the original
-  dead gateway.
-- When a parent gateway observes a child gateway failure, it announces the
-  failure up its ancestry so that all nodes eventually learn of it.
+  dead gateway. A tag once declared dead is therefore never reused, so a stale
+  live publication for a known-dead tag is simply dropped.
 - The total number of dead gateways is bounded by the number of machines
   (≤ ~1M), making full replication feasible. Only gateways need to track this
-  set; individual actors do not.
+  set (`dead_gateways`); individual actors do not.
 - Per-gateway OS-level monitoring runs on the gateway's own host; the
   assumption is that the gateway's death propagates reliably via this
   mechanism.
-- Nested gateway topologies are handled by having gateways include their
-  ancestry in join/serve announcements, so that observers can detect a nested
-  gateway failure even when an intermediate gateway does not announce it.
+
+### Gateway routes
+
+Every actor — gateway or not — keeps a `gateway_routes` table: per child
+connection, the set of gateway tags reachable through it. It is built by a
+`PublishGatewayRoutes` command that, unlike `PublishRoutes`, is **not bounded by
+gateway domains**: when a gateway gains a parent it publishes its own tag (plus
+any descendant gateway tags it already holds) up the new link, and every hop
+records the tags against the child connection they arrived on and forwards the
+newly-learned ones further up — all the way to the root. A non-gateway actor that
+sits between two gateways (a gateway nested under it) participates too, so the
+whole ancestry up to the root knows where every gateway lives.
+
+This table exists solely to publish gateway deaths, and it is what lets a nested
+gateway's death be announced even by a non-gateway parent: when a parent actor
+dies, its parent detects the severed connection and still holds the aggregated
+gateway routes for the entire lost subtree.
+
+### Declaring and propagating a death
+
+A gateway is declared dead in two cases:
+
+1. A connection carrying one or more gateways (its `gateway_routes` entry) fails.
+   The actor on the parent side detects this in `fail_connection` and declares
+   exactly the tags that connection carried.
+2. *(wired up with remote monitoring)* a monitor registration to a gateway is not
+   acknowledged within the monitor's timeout, so a non-owner declares it dead.
+
+Because deaths are rare, propagation is a simple up-to-root-then-down broadcast,
+carried by a single `GatewayDied` command whose direction is inferred from the
+connection it arrives on:
+
+- Arriving over a **child** connection it is still climbing: forget any routes to
+  the dead tags here and forward it up. At the root (no parent) it turns around.
+- Arriving over the **parent** connection it is fanning down: gateways record the
+  newly-dead tags (deduplicating against `dead_gateways` so repeated waves die
+  out; non-gateways merely relay), then forward it down every gateway-route child.
+
+Recording happens only on the way down, so the broadcast returning from the root
+still reaches the detector's other gateway children. A branch is dropped from the
+fan-out only once it carries no remaining live gateways.
 
 ---
 

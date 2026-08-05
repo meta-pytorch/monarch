@@ -17,10 +17,14 @@ use crate::Role;
 use crate::actor::ActorEntry;
 use crate::actor::ActorName;
 use crate::actor::Delivery;
+use crate::actor::GatewayState;
 use crate::actor::Route;
 use crate::connection::ConnectRequest;
 use crate::connection::Connection;
+use crate::connection::ConnectionCommand;
+use crate::connection::ConnectionRef;
 use crate::connection::SendPayload;
+use crate::ctx::ChildConnectionKey;
 use crate::ctx::Command;
 use crate::ctx::Ctx;
 use crate::ctx::CtxHandle;
@@ -199,7 +203,7 @@ fn dead_pending_connect_fails_when_matched() {
         ctx.actors[joiner].parent,
         Some(Connection::Failed)
     ));
-    assert!(!ctx.actors[joiner].gateway);
+    assert!(!ctx.actors[joiner].is_gateway());
 }
 
 #[test]
@@ -358,6 +362,196 @@ fn side_channel_message_dropped_when_owning_gateway_is_dead() {
     assert!(
         !ctx.pending_side_channel.contains_key(b"c@X".as_slice()),
         "a message for a dead gateway's subtree should be dropped, not pended"
+    );
+}
+
+/// The single child connection key of `actor` (the harness only ever gives a test
+/// actor one child where these helpers are used).
+fn only_child_slot(ctx: &Ctx, actor: Key) -> ChildConnectionKey {
+    ctx.actors[actor]
+        .children
+        .keys()
+        .next()
+        .expect("actor should have a child connection")
+}
+
+/// Simulate a `PublishGatewayRoutes` arriving over `actor`'s established child
+/// connection `slot` — the same path the production handler runs.
+fn publish_gateway_routes(ctx: &mut Ctx, actor: Key, slot: ChildConnectionKey, live: Vec<Vec<u8>>) {
+    ctx.run_command(Command::ConnectionAction {
+        connection: ConnectionRef::ChildConnection {
+            ofactor: actor,
+            slot,
+        },
+        action: ConnectionCommand::PublishGatewayRoutes { live },
+    });
+}
+
+/// Whether `actor` holds a gateway route to `tag` on any child connection.
+fn has_gateway_route(ctx: &Ctx, actor: Key, tag: &str) -> bool {
+    ctx.actors[actor]
+        .gateway_routes
+        .values()
+        .any(|tags| tags.contains(tag.as_bytes()))
+}
+
+/// `actor`'s known-dead gateway set (panics if `actor` is not a gateway).
+fn dead_gateways(ctx: &Ctx, actor: Key) -> &std::collections::HashSet<Vec<u8>> {
+    match &ctx.actors[actor].gateway {
+        GatewayState::Gateway { dead_gateways } => dead_gateways,
+        GatewayState::NotAGateway => panic!("actor should be a gateway"),
+    }
+}
+
+#[test]
+fn gateway_routes_climb_to_root_through_a_nongateway() {
+    // Gateway routes, unlike actor routes, are not bounded by gateway domains: a
+    // gateway reachable below a non-gateway `mid` must be recorded at `mid` *and*
+    // carried up to the root, so the whole ancestry can route a death broadcast
+    // back down to it.
+    let (mut ctx, mut rx) = test_ctx();
+    let root = gateway_actor(&mut ctx, "root");
+    let mid = actor(&mut ctx, "mid");
+    let leaf = actor(&mut ctx, "leaf");
+    connect(&mut ctx, root, mid, "inproc://gr-root-mid");
+    connect(&mut ctx, mid, leaf, "inproc://gr-mid-leaf");
+    drain_commands(&mut ctx, &mut rx);
+
+    // A gateway with tag "A" becomes reachable through mid's connection to leaf.
+    let mid_to_leaf = only_child_slot(&ctx, mid);
+    publish_gateway_routes(&mut ctx, mid, mid_to_leaf, vec![b"A".to_vec()]);
+    drain_commands(&mut ctx, &mut rx);
+
+    assert!(has_gateway_route(&ctx, mid, "A"), "mid records the route");
+    assert!(
+        has_gateway_route(&ctx, root, "A"),
+        "the route climbs past the non-gateway mid up to the root"
+    );
+}
+
+#[test]
+fn populate_gateway_routes_ignores_already_dead_tags() {
+    // A gateway that died never returns under the same tag, so a stale live
+    // publication for a known-dead tag is dropped rather than resurrecting a route.
+    let (mut ctx, mut rx) = test_ctx();
+    let root = gateway_actor(&mut ctx, "root");
+    let child = actor(&mut ctx, "child");
+    connect(&mut ctx, root, child, "inproc://dead-tag");
+    drain_commands(&mut ctx, &mut rx);
+
+    match &mut ctx.actors[root].gateway {
+        GatewayState::Gateway { dead_gateways } => dead_gateways.insert(b"A".to_vec()),
+        GatewayState::NotAGateway => panic!("root is a gateway"),
+    };
+    let root_to_child = only_child_slot(&ctx, root);
+    publish_gateway_routes(&mut ctx, root, root_to_child, vec![b"A".to_vec()]);
+
+    assert!(
+        !has_gateway_route(&ctx, root, "A"),
+        "a route to a known-dead gateway is not recorded"
+    );
+}
+
+#[test]
+fn connection_failure_announces_nested_gateway_death_to_root() {
+    // When the connection carrying a (nested) gateway fails, its non-gateway parent
+    // begins the death propagation: it climbs to the root, which records the death
+    // in its dead-gateway set. This is the connection-loss trigger.
+    let (mut ctx, mut rx) = test_ctx();
+    let root = gateway_actor(&mut ctx, "root");
+    let mid = actor(&mut ctx, "mid");
+    let gwconn = actor(&mut ctx, "gwconn");
+    connect(&mut ctx, root, mid, "inproc://nd-root-mid");
+    connect(&mut ctx, mid, gwconn, "inproc://nd-mid-gw");
+    drain_commands(&mut ctx, &mut rx);
+
+    // Tag "G" is reachable through mid's connection to gwconn; it climbs to root.
+    let mid_to_gw = only_child_slot(&ctx, mid);
+    publish_gateway_routes(&mut ctx, mid, mid_to_gw, vec![b"G".to_vec()]);
+    drain_commands(&mut ctx, &mut rx);
+    assert!(has_gateway_route(&ctx, root, "G"));
+
+    // The gateway dies: its connection to mid drops. mid detects it and announces.
+    ctx.run_command(Command::Die {
+        actor: gwconn,
+        reason: MsgPart::from_bytes(b"gone".to_vec()),
+    });
+    drain_commands(&mut ctx, &mut rx);
+
+    assert!(
+        dead_gateways(&ctx, root).contains(b"G".as_slice()),
+        "the root learns the gateway died"
+    );
+    assert!(
+        !has_gateway_route(&ctx, mid, "G"),
+        "mid forgets the route to the dead gateway"
+    );
+    assert!(
+        !has_gateway_route(&ctx, root, "G"),
+        "the root forgets the route to the dead gateway"
+    );
+}
+
+#[test]
+fn gateway_death_fans_down_through_nongateway_relays() {
+    // The root turns an upward death around and fans it out down its gateway-route
+    // children, traversing non-gateway relays so a gateway nested below them is
+    // reached. (A real gateway cannot be an inproc child — it would be rejected — so
+    // the broadcast reaching `relay` is observed by `relay` forgetting the route to
+    // the now-dead gateway it carried.)
+    let (mut ctx, mut rx) = test_ctx();
+    let root = gateway_actor(&mut ctx, "root");
+    let relay = actor(&mut ctx, "relay");
+    let leaf = actor(&mut ctx, "leaf");
+    connect(&mut ctx, root, relay, "inproc://bc-relay");
+    connect(&mut ctx, relay, leaf, "inproc://bc-leaf");
+    drain_commands(&mut ctx, &mut rx);
+
+    // Root reaches a still-live gateway "S" through `relay` (keeping that branch
+    // alive so the broadcast is forwarded down it), while the doomed gateway "D" is
+    // reachable through `relay`'s connection to `leaf`.
+    let root_to_relay = only_child_slot(&ctx, root);
+    ctx.actors[root]
+        .gateway_routes
+        .entry(root_to_relay)
+        .or_default()
+        .insert(b"S".to_vec());
+    let relay_to_leaf = only_child_slot(&ctx, relay);
+    ctx.actors[relay]
+        .gateway_routes
+        .entry(relay_to_leaf)
+        .or_default()
+        .insert(b"D".to_vec());
+
+    // A death announcement for "D" reaches the root and fans back down.
+    ctx.gateway_died(root, vec![b"D".to_vec()], true);
+    drain_commands(&mut ctx, &mut rx);
+
+    assert!(dead_gateways(&ctx, root).contains(b"D".as_slice()));
+    assert!(
+        has_gateway_route(&ctx, root, "S"),
+        "the still-live sibling route is untouched"
+    );
+    assert!(
+        !has_gateway_route(&ctx, relay, "D"),
+        "the broadcast reached the non-gateway relay, which forgot the dead route"
+    );
+}
+
+#[test]
+fn gateway_death_is_recorded_once_at_a_gateway() {
+    // A gateway deduplicates repeated death waves against its dead-gateway set, so a
+    // second broadcast of the same tag changes nothing and does not re-fan-out.
+    let (mut ctx, _rx) = test_ctx();
+    let gw = gateway_actor(&mut ctx, "gw@A");
+
+    ctx.gateway_died(gw, vec![b"B".to_vec()], true);
+    ctx.gateway_died(gw, vec![b"B".to_vec()], true);
+
+    assert_eq!(
+        dead_gateways(&ctx, gw).len(),
+        1,
+        "a repeated death wave is absorbed without duplication"
     );
 }
 

@@ -76,6 +76,12 @@ enum WireFrame {
     Severed {
         reason: Vec<u8>,
     },
+    PublishGatewayRoutes {
+        live: Vec<Vec<u8>>,
+    },
+    GatewayDied {
+        dead: Vec<Vec<u8>>,
+    },
     /// Transport-internal liveness probe; consumed by the reader to refresh its
     /// deadline and never surfaced as a [`ConnectionCommand`].
     Heartbeat,
@@ -213,6 +219,10 @@ pub(crate) async fn write_command<W: AsyncWrite + Unpin>(
             payload,
         },
         ConnectionCommand::Severed { reason } => WireFrame::Severed { reason },
+        ConnectionCommand::PublishGatewayRoutes { live } => {
+            WireFrame::PublishGatewayRoutes { live }
+        }
+        ConnectionCommand::GatewayDied { dead } => WireFrame::GatewayDied { dead },
         // Shared memory is machine-local, so quic drops gateway state rather than
         // forwarding it: skip without writing anything to the wire.
         ConnectionCommand::GatewayState { .. } => return Ok(()),
@@ -313,6 +323,12 @@ pub(crate) async fn read_frame<R: AsyncRead + Unpin>(
             payload,
         }),
         WireFrame::Severed { reason } => Incoming::Command(ConnectionCommand::Severed { reason }),
+        WireFrame::PublishGatewayRoutes { live } => {
+            Incoming::Command(ConnectionCommand::PublishGatewayRoutes { live })
+        }
+        WireFrame::GatewayDied { dead } => {
+            Incoming::Command(ConnectionCommand::GatewayDied { dead })
+        }
     })
 }
 
