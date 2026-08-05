@@ -37,6 +37,12 @@ use monarch_hyperactor::mailbox::PyPortId;
 use monarch_hyperactor::runtime::get_tokio_runtime;
 use monarch_record_batch::RecordBatchBuffer;
 use monarch_telemetry_schema::deserialize_one_batch;
+use monarch_telemetry_schema::entity_tables::MESSAGE_STATUS_EVENTS;
+use monarch_telemetry_schema::entity_tables::MESSAGES;
+use monarch_telemetry_schema::entity_tables::SENT_MESSAGES;
+use monarch_telemetry_schema::trace_tables::EVENTS;
+use monarch_telemetry_schema::trace_tables::SPAN_EVENTS;
+use monarch_telemetry_schema::trace_tables::SPANS;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -318,8 +324,15 @@ impl TableStore {
 /// Default retention duration: 10 minutes in seconds.
 const DEFAULT_RETENTION_SECS: u64 = 10 * 60;
 
-/// Tables that keep only recent data; all others have unlimited retention.
-const RETENTION_TABLES: &[&str] = &["sent_messages", "messages", "message_status_events"];
+/// Ordered tables that keep only recent data; trace definitions are filtered first.
+const RETENTION_TABLES: &[&str] = &[
+    SPANS,
+    SPAN_EVENTS,
+    EVENTS,
+    SENT_MESSAGES,
+    MESSAGES,
+    MESSAGE_STATUS_EVENTS,
+];
 
 /// Interval between routine retention sweeps.
 const RETENTION_INTERVAL: Duration = Duration::from_secs(30);
@@ -1050,6 +1063,12 @@ mod tests {
     use monarch_telemetry_schema::entity_tables::SENT_MESSAGES;
     use monarch_telemetry_schema::entity_tables::SentMessage;
     use monarch_telemetry_schema::entity_tables::SentMessageBuffer;
+    use monarch_telemetry_schema::trace_tables::Event;
+    use monarch_telemetry_schema::trace_tables::EventBuffer;
+    use monarch_telemetry_schema::trace_tables::Span;
+    use monarch_telemetry_schema::trace_tables::SpanBuffer;
+    use monarch_telemetry_schema::trace_tables::SpanEvent;
+    use monarch_telemetry_schema::trace_tables::SpanEventBuffer;
 
     use super::*;
 
@@ -1189,6 +1208,56 @@ mod tests {
             display_name: Some("fresh".to_string()),
         });
         ingest_batch(scanner, ACTORS, actors.drain_to_record_batch().unwrap()).await;
+
+        let mut spans = SpanBuffer::default();
+        for (id, timestamp_us, parent_id) in [(9, old_us, None), (10, fresh_us, Some(9))] {
+            spans.insert(Span {
+                id,
+                name: format!("span-{id}"),
+                target: "test".to_string(),
+                level: "INFO".to_string(),
+                fields_json: "{}".to_string(),
+                timestamp_us,
+                parent_id,
+                thread_name: "test".to_string(),
+                file: None,
+                line: None,
+            });
+        }
+        ingest_batch(scanner, SPANS, spans.drain_to_record_batch().unwrap()).await;
+
+        let mut span_events = SpanEventBuffer::default();
+        for (timestamp_us, event_type) in [(old_us, "enter"), (fresh_us, "close")] {
+            span_events.insert(SpanEvent {
+                id: 9,
+                timestamp_us,
+                event_type: event_type.to_string(),
+            });
+        }
+        ingest_batch(
+            scanner,
+            SPAN_EVENTS,
+            span_events.drain_to_record_batch().unwrap(),
+        )
+        .await;
+
+        let mut events = EventBuffer::default();
+        for (name, timestamp_us) in [("old", old_us), ("fresh", fresh_us)] {
+            events.insert(Event {
+                name: name.to_string(),
+                target: "test".to_string(),
+                level: "INFO".to_string(),
+                fields_json: "{}".to_string(),
+                timestamp_us,
+                parent_span: Some(9),
+                thread_id: "1".to_string(),
+                thread_name: "test".to_string(),
+                module_path: None,
+                file: None,
+                line: None,
+            });
+        }
+        ingest_batch(scanner, EVENTS, events.drain_to_record_batch().unwrap()).await;
     }
 
     async fn table_row_count_async(scanner: &DatabaseScanner, table_name: &str) -> usize {
@@ -1197,6 +1266,64 @@ mod tests {
             Some(table) => row_count(&table).await,
             None => 0,
         }
+    }
+
+    async fn table_u64_values_async(
+        scanner: &DatabaseScanner,
+        table_name: &str,
+        column_name: &str,
+    ) -> Vec<u64> {
+        let table = scanner
+            .table_data
+            .lock()
+            .expect("table map should be available")
+            .get(table_name)
+            .expect("table should exist")
+            .clone();
+        let batches = table.mem_table.batches[0].read().await;
+        batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column_by_name(column_name)
+                    .expect("column should exist")
+                    .as_any()
+                    .downcast_ref::<UInt64Array>()
+                    .expect("column should be UInt64")
+                    .values()
+                    .iter()
+                    .copied()
+            })
+            .collect()
+    }
+
+    async fn table_i64_values_async(
+        scanner: &DatabaseScanner,
+        table_name: &str,
+        column_name: &str,
+    ) -> Vec<i64> {
+        let table = scanner
+            .table_data
+            .lock()
+            .expect("table map should be available")
+            .get(table_name)
+            .expect("table should exist")
+            .clone();
+        let batches = table.mem_table.batches[0].read().await;
+        batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column_by_name(column_name)
+                    .expect("column should exist")
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .expect("column should be Int64")
+                    .values()
+                    .iter()
+                    .copied()
+            })
+            .collect()
     }
 
     #[tokio::test]
@@ -1422,7 +1549,28 @@ mod tests {
             table_row_count_async(&scanner, MESSAGE_STATUS_EVENTS).await,
             1
         );
+        assert_eq!(
+            table_u64_values_async(&scanner, SPANS, "id").await,
+            vec![10]
+        );
+        assert_eq!(
+            table_u64_values_async(&scanner, SPAN_EVENTS, "id").await,
+            vec![9]
+        );
+        assert_eq!(
+            table_i64_values_async(&scanner, EVENTS, "timestamp_us").await,
+            vec![fresh_us]
+        );
         assert_eq!(table_row_count_async(&scanner, ACTORS).await, 2);
+    }
+
+    #[test]
+    fn test_trace_retention_runs_spans_first() {
+        assert_eq!(
+            &RETENTION_TABLES[..3],
+            &[SPANS, SPAN_EVENTS, EVENTS],
+            "span definitions must be filtered before dependent trace rows"
+        );
     }
 
     #[test]

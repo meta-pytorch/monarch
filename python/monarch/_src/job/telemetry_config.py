@@ -82,7 +82,8 @@ class TelemetryConfig:
     called.
 
     Args:
-        retention_secs: Retention window in seconds for message tables.
+        retention_secs: Retention window in seconds for message and trace
+            history. Trace tables are filtered independently by row timestamp.
             0 disables retention.
         include_dashboard: Whether to start the monarch dashboard web server.
         dashboard_port: Preferred port for the dashboard.
