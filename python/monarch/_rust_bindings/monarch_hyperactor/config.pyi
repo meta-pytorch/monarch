@@ -39,6 +39,10 @@ def reset_config_to_defaults() -> None:
     """
     ...
 
+def get_client_config_bootstrap_env() -> tuple[str, str]:
+    """Return the reserved environment entry carrying the client config snapshot."""
+    ...
+
 def configure(
     default_transport: ChannelTransport | str = ...,
     enable_log_forwarding: bool = ...,

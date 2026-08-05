@@ -58,6 +58,22 @@ pub use typeuri;
 
 // declare_attrs is already exported via #[macro_export] in attrs.rs
 
+const CLIENT_CONFIG_ENV: &str = "HYPERACTOR_CLIENT_CONFIG";
+
+/// Return the reserved environment entry carrying a client config snapshot.
+pub fn client_config_bootstrap_env(attrs: &Attrs) -> anyhow::Result<(&'static str, String)> {
+    Ok((CLIENT_CONFIG_ENV, serde_json::to_string(attrs)?))
+}
+
+/// Read the client config snapshot supplied to this process, if any.
+pub(crate) fn client_config_from_env() -> anyhow::Result<Option<Attrs>> {
+    match env::var(CLIENT_CONFIG_ENV) {
+        Ok(value) => Ok(Some(serde_json::from_str(&value)?)),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
 /// Metadata describing how a configuration key is exposed across
 /// environments.
 ///
@@ -284,7 +300,7 @@ pub fn from_env() -> Attrs {
         let Ok(val) = env::var(env_var) else {
             // Default value
             output.push_str("# ");
-            output.push_str(&export(env_var, key.default));
+            output.push_str(&export(env_var, key.default.map(|default| default())));
             continue;
         };
 
@@ -298,11 +314,11 @@ pub fn from_env() -> Attrs {
                     e
                 );
                 output.push_str("# ");
-                output.push_str(&export(env_var, key.default));
+                output.push_str(&export(env_var, key.default.map(|default| default())));
             }
             Ok(parsed) => {
                 output.push_str("# ");
-                output.push_str(&export(env_var, key.default));
+                output.push_str(&export(env_var, key.default.map(|default| default())));
                 output.push_str(&export(env_var, Some(parsed.as_ref())));
                 config.insert_value_by_name_unchecked(key.name, parsed);
             }
@@ -344,6 +360,7 @@ mod tests {
     use crate::ConfigAttr;
     use crate::NonZeroUsize;
     use crate::attrs::declare_attrs;
+    use crate::client_config_bootstrap_env;
     use crate::from_env;
     use crate::from_yaml;
     use crate::to_yaml;
@@ -481,6 +498,22 @@ mod tests {
             Some("test_no_env_key".to_string()),
         ))
         pub attr NO_ENV_KEY: usize = 999;
+    }
+
+    #[test]
+    fn test_client_config_snapshot_round_trip() {
+        let mut attrs = crate::Attrs::new();
+        attrs.set(USIZE_KEY, 42);
+        attrs.set(STRING_KEY, "worker".to_string());
+
+        let (name, encoded) =
+            client_config_bootstrap_env(&attrs).expect("snapshot should serialize");
+        let decoded: crate::Attrs =
+            serde_json::from_str(&encoded).expect("snapshot should deserialize");
+
+        assert_eq!(name, "HYPERACTOR_CLIENT_CONFIG");
+        assert_eq!(decoded.get(USIZE_KEY), Some(&42));
+        assert_eq!(decoded.get(STRING_KEY).map(String::as_str), Some("worker"));
     }
 
     #[tracing_test::traced_test]
