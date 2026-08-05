@@ -74,6 +74,12 @@ enum UnixFrame {
     Severed {
         reason: Vec<u8>,
     },
+    PublishGatewayRoutes {
+        live: Vec<Vec<u8>>,
+    },
+    GatewayDied {
+        dead: Vec<Vec<u8>>,
+    },
     /// Gateway-state handoff: the header carries nothing; two fds (the slab object
     /// then the dgram request socket) ride the fd-exchange step.
     GatewayState,
@@ -175,6 +181,12 @@ pub(crate) async fn write_command(
         }
         ConnectionCommand::Severed { reason } => {
             write_header(stream, &UnixFrame::Severed { reason }).await
+        }
+        ConnectionCommand::PublishGatewayRoutes { live } => {
+            write_header(stream, &UnixFrame::PublishGatewayRoutes { live }).await
+        }
+        ConnectionCommand::GatewayDied { dead } => {
+            write_header(stream, &UnixFrame::GatewayDied { dead }).await
         }
         ConnectionCommand::GatewayState { client } => {
             write_header(stream, &UnixFrame::GatewayState).await?;
@@ -310,6 +322,10 @@ pub(crate) async fn read_command(
             payload,
         },
         UnixFrame::Severed { reason } => ConnectionCommand::Severed { reason },
+        UnixFrame::PublishGatewayRoutes { live } => {
+            ConnectionCommand::PublishGatewayRoutes { live }
+        }
+        UnixFrame::GatewayDied { dead } => ConnectionCommand::GatewayDied { dead },
         UnixFrame::GatewayState => {
             // Two fds in the order they were sent: slab object, then dgram socket.
             // They must stay open for the process lifetime, so leak the received
