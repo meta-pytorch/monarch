@@ -19,6 +19,7 @@ pub mod device_selection;
 pub(crate) mod domain;
 pub mod efa_device;
 pub mod efa_domain;
+pub mod efa_queue_pair;
 pub mod manager_actor;
 pub mod memory_region;
 pub mod mlx_device;
