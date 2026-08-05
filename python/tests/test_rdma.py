@@ -140,6 +140,65 @@ def test_device_memory_handle_read_write():
         handle.write_at(4, bytes([1, 2, 3]))
 
 
+def test_local_memory_cache_reentrant_eviction():
+    """Evicting an entry whose release triggers a nested eviction must not
+    deadlock.
+
+    Releasing a cached handle runs native code that can collect an
+    unrelated backing, firing that backing's eviction callback on the same
+    thread while the first eviction is still in progress.
+    """
+    import threading
+    import weakref as weakref_mod
+
+    from monarch._src.rdma.rdma import (
+        _evict_local_memory,
+        _local_memory_cache,
+        _local_memory_cache_refs,
+    )
+
+    outer_key = (-1, -1, 1)
+    inner_key = (-2, -2, 2)
+
+    class Backing:
+        pass
+
+    inner_backing = Backing()
+    inner_ref = weakref_mod.ref(inner_backing)
+
+    class EvictsOnRelease:
+        """Stands in for a cached handle whose release collects `inner_key`."""
+
+        def __del__(self) -> None:
+            _evict_local_memory(inner_key, inner_ref)
+
+    outer_backing = Backing()
+    outer_ref = weakref_mod.ref(outer_backing)
+
+    _local_memory_cache[outer_key] = EvictsOnRelease()
+    _local_memory_cache_refs[outer_key] = outer_ref
+    _local_memory_cache[inner_key] = object()
+    _local_memory_cache_refs[inner_key] = inner_ref
+
+    finished = threading.Event()
+
+    def evict() -> None:
+        _evict_local_memory(outer_key, outer_ref)
+        finished.set()
+
+    try:
+        worker = threading.Thread(target=evict, daemon=True)
+        worker.start()
+        worker.join(timeout=60)
+        assert finished.is_set(), "nested eviction deadlocked"
+        assert outer_key not in _local_memory_cache
+        assert inner_key not in _local_memory_cache
+    finally:
+        for key in (outer_key, inner_key):
+            _local_memory_cache.pop(key, None)
+            _local_memory_cache_refs.pop(key, None)
+
+
 # ---------------------------------------------------------------------------
 # RDMA tests (require hardware)
 # ---------------------------------------------------------------------------

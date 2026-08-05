@@ -231,8 +231,23 @@ _local_memory_cache: "Dict[Tuple[int, int, int], _WeakLocalMemoryHandle]" = {}
 # cannot evict a fresh registration whose backing reused a freed id.
 _local_memory_cache_refs: "Dict[Tuple[int, int, int], weakref.ref]" = {}
 # Serializes the get/upgrade/insert and eviction sequences; the GIL
-# only makes the individual dict ops atomic.
-_local_memory_cache_lock = threading.Lock()
+# only makes the individual dict ops atomic. Reentrant by necessity.
+# In pyo3, when a rust-based python object (e.g., a Py<T>) is dropped
+# when the current thread doesn't hold the GIL, decrementing the refcount
+# is deferred until the next time the GIL is acquired. So the following
+# sequence is possible:
+#   1. Rust drops the strong handle backing a _WeakLocalMemoryHandle in
+#      the cache, but decref is deferred.
+#   2. Back in python, a different object backing a different _WeakLocalMemoryHandle
+#      drops, immediately triggering _evict_local_memory.
+#   3. _evict_local_memory acquires the cachelock and drops the _WeakLocalMemoryHandle
+#      from step (2). Because _WeakLocalMemoryHandle is a pyo3 object, it calls
+#      into rust to run the destructor and in doing so, pyo3 acquires the GIL.
+#   4. With the GIL, pyo3 executes the deferred decref from step (1), leading to
+#      another _evict_local_memory call. But the caller already holds the lock,
+#      so we get deadlock.
+# An identical sequence is possible with weak.upgrade() in _make_local_memory_handle.
+_local_memory_cache_lock = threading.RLock()
 
 
 def _evict_local_memory(key: Tuple[int, int, int], ref: "weakref.ref") -> None:
