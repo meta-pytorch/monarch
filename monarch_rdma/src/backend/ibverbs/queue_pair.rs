@@ -201,6 +201,15 @@ pub trait IbvQueuePair: std::fmt::Debug + Send + Sync + 'static + Sized {
     /// Returns the current `ibv_qp_state` of the QP.
     fn state(&mut self) -> Result<u32, anyhow::Error>;
 
+    /// Largest transfer this QP issues as a single work request; [`Self::put`]
+    /// and [`Self::get`] split anything larger into that many WRs. The owning
+    /// [`QueuePairActor`] budgets send-queue credits against this value, so an
+    /// implementation that chunks more finely must report it here or it will
+    /// over-commit the send queue.
+    fn max_msg_size(&self) -> usize {
+        MAX_RDMA_MSG_SIZE
+    }
+
     /// Post an RDMA WRITE of `local_src` into `remote_dst`. The request may
     /// be chunked into multiple WRs. This method returns the list of WR ids
     /// that were posted.
@@ -233,50 +242,6 @@ pub trait IbvQueuePair: std::fmt::Debug + Send + Sync + 'static + Sized {
         &mut self,
         target: PollTarget,
     ) -> Result<Option<Result<IbvWc, WorkRequestError>>, PollCompletionError>;
-}
-
-impl IbvQueuePair for legacy::IbvQueuePair {
-    unsafe fn new<I: IbvDomainImpl<QueuePair = Self>>(
-        domain: &IbvDomain<I>,
-        config: IbvConfig,
-    ) -> Result<Self, anyhow::Error> {
-        legacy::IbvQueuePair::new(domain, config)
-    }
-
-    fn connect(&mut self, info: &IbvQpInfo) -> Result<(), anyhow::Error> {
-        legacy::IbvQueuePair::connect(self, info)
-    }
-
-    fn get_qp_info(&mut self) -> Result<IbvQpInfo, anyhow::Error> {
-        legacy::IbvQueuePair::get_qp_info(self)
-    }
-
-    fn state(&mut self) -> Result<u32, anyhow::Error> {
-        legacy::IbvQueuePair::state(self)
-    }
-
-    fn put(
-        &mut self,
-        remote_dst: IbvBuffer,
-        local_src: IbvBuffer,
-    ) -> Result<Vec<u64>, anyhow::Error> {
-        legacy::IbvQueuePair::put(self, local_src, remote_dst)
-    }
-
-    fn get(
-        &mut self,
-        local_dst: IbvBuffer,
-        remote_src: IbvBuffer,
-    ) -> Result<Vec<u64>, anyhow::Error> {
-        legacy::IbvQueuePair::get(self, local_dst, remote_src)
-    }
-
-    fn poll_completion(
-        &mut self,
-        target: PollTarget,
-    ) -> Result<Option<Result<IbvWc, WorkRequestError>>, PollCompletionError> {
-        legacy::IbvQueuePair::poll_completion(self, target)
-    }
 }
 
 /// Queries the local endpoint info for `qp`, whose device `context` and the QP
@@ -325,7 +290,7 @@ pub(super) unsafe fn get_qp_info(
 /// # Safety
 ///
 /// `qp` must be a live `ibv_qp` (non-null).
-unsafe fn state(qp: *mut rdmaxcel_sys::ibv_qp) -> Result<u32, anyhow::Error> {
+pub(super) unsafe fn state(qp: *mut rdmaxcel_sys::ibv_qp) -> Result<u32, anyhow::Error> {
     let mut qp_attr = rdmaxcel_sys::ibv_qp_attr::default();
     let mut qp_init_attr = rdmaxcel_sys::ibv_qp_init_attr::default();
     let mask = rdmaxcel_sys::ibv_qp_attr_mask::IBV_QP_STATE;
@@ -447,6 +412,68 @@ pub(super) unsafe fn connect(
         ));
     }
     Ok(())
+}
+
+/// Polls `target`'s completion queue on `qp` for a single work completion,
+/// through the device context's `poll_cq` verb. Shared by every queue-pair
+/// implementation built on an [`IbvQp`]; see
+/// [`IbvQueuePair::poll_completion`] for the meaning of the return value.
+///
+/// # Safety
+///
+/// `qp` must hold a non-null, live `ibv_qp` whose send and receive completion
+/// queues and device context are likewise non-null and live: this invokes the
+/// `poll_cq` verb through them without re-checking. A placeholder [`IbvQp`]
+/// built from null handles does not qualify.
+pub(super) unsafe fn poll_one(
+    qp: &IbvQp,
+    target: PollTarget,
+) -> Result<Option<Result<IbvWc, WorkRequestError>>, PollCompletionError> {
+    let (cq, cq_type) = match target {
+        PollTarget::Send => (qp.send_cq().as_ptr(), "send"),
+        PollTarget::Recv => (qp.recv_cq().as_ptr(), "recv"),
+    };
+    let context = qp.context().as_ptr();
+    // SAFETY: `context` is `qp`'s live device context (caller contract); we
+    // invoke its `poll_cq` verb through the ops table.
+    let poll_cq = unsafe {
+        (*context)
+            .ops
+            .poll_cq
+            .expect("poll_cq verb missing from ibv_context ops")
+    };
+    let mut wc = rdmaxcel_sys::ibv_wc::default();
+    // SAFETY: `cq` is a live `ibv_cq` belonging to `qp` (caller contract);
+    // `&mut wc` has room for the single entry requested, and `poll_cq`
+    // overwrites it whenever it returns a completion (`ret >= 1`).
+    let ret = unsafe { poll_cq(cq, 1, &mut wc) };
+
+    if ret < 0 {
+        return Err(PollCompletionError {
+            message: format!("{} CQ poll failed (ibv_poll_cq returned {})", cq_type, ret),
+        });
+    }
+    if ret == 0 {
+        return Ok(None);
+    }
+
+    // `ret >= 1`: a single entry was requested, so `wc` holds one completion.
+    // `error()` is `Some` exactly when the status is not `IBV_WC_SUCCESS`.
+    if let Some((status, vendor_err)) = wc.error() {
+        return Ok(Some(Err(WorkRequestError {
+            wr_id: wc.wr_id(),
+            status,
+            vendor_err,
+            message: format!(
+                "{} completion failed for wr_id={}: status={:?}, vendor_err={}",
+                cq_type,
+                wc.wr_id(),
+                status,
+                vendor_err,
+            ),
+        })));
+    }
+    Ok(Some(Ok(IbvWc::from(wc))))
 }
 
 /// An RDMA reliable-connected (RC) queue pair built on plain ibverbs
@@ -721,51 +748,10 @@ impl IbvQueuePair for RCQueuePair {
         &mut self,
         target: PollTarget,
     ) -> Result<Option<Result<IbvWc, WorkRequestError>>, PollCompletionError> {
-        let (cq, cq_type) = match target {
-            PollTarget::Send => (self.qp.send_cq().as_ptr(), "send"),
-            PollTarget::Recv => (self.qp.recv_cq().as_ptr(), "recv"),
-        };
-        let context = self.qp.context().as_ptr();
-        // SAFETY: `context` is the QP's live device context (read from the live
-        // `qp`); we invoke its `poll_cq` verb through the ops table.
-        let poll_cq = unsafe {
-            (*context)
-                .ops
-                .poll_cq
-                .expect("poll_cq verb missing from ibv_context ops")
-        };
-        let mut wc = rdmaxcel_sys::ibv_wc::default();
-        // SAFETY: `cq` is a live `ibv_cq` belonging to this QP; `&mut wc` has
-        // room for the single entry requested, and `poll_cq` overwrites it
-        // whenever it returns a completion (`ret >= 1`).
-        let ret = unsafe { poll_cq(cq, 1, &mut wc) };
-
-        if ret < 0 {
-            return Err(PollCompletionError {
-                message: format!("{} CQ poll failed (ibv_poll_cq returned {})", cq_type, ret),
-            });
-        }
-        if ret == 0 {
-            return Ok(None);
-        }
-
-        // `ret >= 1`: a single entry was requested, so `wc` holds one completion.
-        // `error()` is `Some` exactly when the status is not `IBV_WC_SUCCESS`.
-        if let Some((status, vendor_err)) = wc.error() {
-            return Ok(Some(Err(WorkRequestError {
-                wr_id: wc.wr_id(),
-                status,
-                vendor_err,
-                message: format!(
-                    "{} completion failed for wr_id={}: status={:?}, vendor_err={}",
-                    cq_type,
-                    wc.wr_id(),
-                    status,
-                    vendor_err,
-                ),
-            })));
-        }
-        Ok(Some(Ok(IbvWc::from(wc))))
+        // SAFETY: `self.qp` wraps a live, fully non-null `ibv_qp` — everything
+        // reached through it included — per `from_qp`'s contract, and it stays
+        // alive for `self`'s lifetime.
+        unsafe { poll_one(&self.qp, target) }
     }
 }
 
@@ -995,10 +981,10 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
 
     /// Number of WRs the QP will issue for an op that targets
     /// `local_size` bytes. The QP splits large transfers into
-    /// `MAX_RDMA_MSG_SIZE`-bound chunks; a zero-byte op still
+    /// [`IbvQueuePair::max_msg_size`]-bound chunks; a zero-byte op still
     /// consumes one WR.
-    fn wr_count(local_size: usize) -> u32 {
-        local_size.div_ceil(MAX_RDMA_MSG_SIZE).max(1) as u32
+    fn wr_count(&self, local_size: usize) -> u32 {
+        local_size.div_ceil(self.qp.max_msg_size()).max(1) as u32
     }
 
     /// Try to post the head of `queue`.
@@ -1302,7 +1288,7 @@ impl<M: Manager, Qp: IbvQueuePair> Handler<ProcessOps<M>> for QueuePairActor<M, 
         msg: ProcessOps<M>,
     ) -> Result<(), anyhow::Error> {
         for (op_idx, op, mrv) in msg.items.into_iter() {
-            let wrs = Self::wr_count(op.local_memory.size());
+            let wrs = self.wr_count(op.local_memory.size());
             let is_read = matches!(op.op_type, RdmaOpType::ReadIntoLocal);
             self.queue.push_back(PendingOp {
                 op_idx,
