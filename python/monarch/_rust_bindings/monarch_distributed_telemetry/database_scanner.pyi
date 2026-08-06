@@ -12,7 +12,7 @@ class DatabaseScanner:
     def __new__(
         cls,
         rank: int,
-        retention_secs: int = 600,
+        retention_secs: int = 3600,
     ) -> "DatabaseScanner": ...
     def apply_retention(self, table_name: str, where_clause: str) -> None:
         """Filter a table, keeping only rows that match the WHERE clause."""

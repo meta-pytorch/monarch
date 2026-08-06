@@ -18,7 +18,7 @@ Enable telemetry before obtaining job state:
 from monarch.job import ProcessJob, TelemetryConfig
 
 job = ProcessJob({"workers": 2}).enable_telemetry(
-    TelemetryConfig(retention_secs=600)
+    TelemetryConfig(retention_secs=3600)
 )
 state = job.state(cached_path=None)
 
@@ -156,7 +156,7 @@ continue operating.
 `metric_histograms`, `spans`, `span_events`, and `events`. Trace tables are
 filtered independently by row timestamp, with spans filtered before dependent
 trace rows. A recent trace row is not displayed by span-joined views if its span
-has already expired. The default is 600 seconds. Set it to `0` to disable
+has already expired. The default is 3600 seconds. Set it to `0` to disable
 automatic retention. Retention runs every 30 seconds, so expired rows can remain
 visible until the next sweep. Other core tables have no automatic retention
 window.
