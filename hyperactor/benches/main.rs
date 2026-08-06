@@ -6,6 +6,12 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::hint::black_box;
+use std::sync::Arc;
+use std::sync::Barrier;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -15,6 +21,8 @@ use criterion::Throughput;
 use criterion::criterion_group;
 use criterion::criterion_main;
 use futures::future::join_all;
+use hyperactor::PortAddr;
+use hyperactor::Proc;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
@@ -26,6 +34,9 @@ use hyperactor::channel::serve;
 use hyperactor::mailbox::Mailbox;
 use hyperactor::mailbox::PortSender;
 use hyperactor::mailbox::monitored_return_handle;
+use hyperactor::ordering::SeqKey;
+use hyperactor::ordering::Sequencer;
+use hyperactor::port::Port;
 use hyperactor::testing::ids::test_actor_id;
 use serde::Deserialize;
 use serde::Serialize;
@@ -40,6 +51,18 @@ fn new_runtime() -> Runtime {
         .enable_all()
         .build()
         .unwrap()
+}
+
+fn new_benchmark_sequencer() -> Sequencer {
+    let runtime = new_runtime();
+    let _guard = runtime.enter();
+    let proc = Proc::direct(
+        ChannelAddr::any(ChannelTransport::Local),
+        "sequencer_bench".to_string(),
+    )
+    .unwrap();
+
+    proc.client("sequencer_bench").sequencer().clone()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Named, PartialEq)]
@@ -343,6 +366,225 @@ fn bench_mailbox_message_rates(c: &mut Criterion) {
     group.finish();
 }
 
+/// Compare single-key and batch sequence assignment across cast fanout sizes.
+fn bench_cast_seq_assignment(c: &mut Criterion) {
+    let mut group = c.benchmark_group("cast_seq_assignment");
+    for n in [1usize, 8, 64, 512, 4096, 8192, 16384, 32768] {
+        let ports: Vec<PortAddr> = (0..n)
+            .map(|i| {
+                test_actor_id(&format!("worker_{i}"), "worker").port_addr(Port::handler_id(0, None))
+            })
+            .collect();
+        let keys: Vec<SeqKey> = ports
+            .iter()
+            .map(|port| SeqKey::for_handler(&port.actor_addr()))
+            .collect();
+
+        group.throughput(Throughput::Elements(n as u64));
+
+        group.bench_with_input(
+            BenchmarkId::new("per_dest_assign_seq", n),
+            &ports,
+            |b, ports| {
+                let seq = new_benchmark_sequencer();
+                for p in ports {
+                    black_box(seq.assign_seq(p));
+                }
+                b.iter(|| {
+                    for p in ports {
+                        black_box(seq.assign_seq(black_box(p)));
+                    }
+                });
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("batch_assign_seqs", n),
+            &keys,
+            |b, keys| {
+                let seq = new_benchmark_sequencer();
+                black_box(seq.assign_seqs(keys));
+                b.iter(|| {
+                    black_box(seq.assign_seqs(black_box(keys)));
+                });
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("batch_assign_seqs_divergent", n),
+            &keys,
+            |b, keys| {
+                let seq = new_benchmark_sequencer();
+                let advanced_keys: Vec<_> = keys.iter().step_by(2).cloned().collect();
+                black_box(seq.assign_seqs(&advanced_keys));
+                b.iter(|| {
+                    black_box(seq.assign_seqs(black_box(keys)));
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
+const CONTENTION_FANOUT: usize = 4096;
+const CONTENTION_WORKERS: usize = 4;
+const MIXED_CONTENTION_FANOUTS: [usize; 5] = [1, 8, 64, 512, 4096];
+
+#[derive(Clone, Copy)]
+enum AssignmentMode {
+    PerDestination,
+    Batch,
+}
+
+impl AssignmentMode {
+    fn assign(self, sequencer: &Sequencer, ports: &[PortAddr], keys: &[SeqKey]) {
+        match self {
+            Self::PerDestination => {
+                for port in ports {
+                    black_box(sequencer.assign_seq(black_box(port)));
+                }
+            }
+            Self::Batch => {
+                black_box(sequencer.assign_seqs(black_box(keys)));
+            }
+        }
+    }
+}
+
+fn contention_inputs(worker_count: usize, fanout: usize) -> Vec<(Vec<PortAddr>, Vec<SeqKey>)> {
+    (0..worker_count)
+        .map(|worker| {
+            let ports: Vec<_> = (0..fanout)
+                .map(|rank| {
+                    test_actor_id(&format!("worker_{worker}_{rank}"), "worker")
+                        .port_addr(Port::handler_id(0, None))
+                })
+                .collect();
+            let keys = ports
+                .iter()
+                .map(|port| SeqKey::for_handler(&port.actor_addr()))
+                .collect();
+            (ports, keys)
+        })
+        .collect()
+}
+
+fn run_concurrent_assignments(
+    iterations: u64,
+    inputs: &[(Vec<PortAddr>, Vec<SeqKey>)],
+    mode: AssignmentMode,
+) -> Duration {
+    let sequencer = new_benchmark_sequencer();
+    for (_, keys) in inputs {
+        black_box(sequencer.assign_seqs(keys));
+    }
+
+    let barrier = Arc::new(Barrier::new(inputs.len() + 1));
+    let mut start = None;
+    thread::scope(|scope| {
+        for (ports, keys) in inputs {
+            let sequencer = sequencer.clone();
+            let barrier = barrier.clone();
+            scope.spawn(move || {
+                barrier.wait();
+                for _ in 0..iterations {
+                    mode.assign(&sequencer, ports, keys);
+                }
+            });
+        }
+
+        start = Some(Instant::now());
+        barrier.wait();
+    });
+    start
+        .expect("timer must start before workers run")
+        .elapsed()
+}
+
+fn run_mixed_assignments(
+    iterations: u64,
+    ports: &[PortAddr],
+    keys: &[SeqKey],
+    scalar_port: &PortAddr,
+    mode: AssignmentMode,
+) -> Duration {
+    let sequencer = new_benchmark_sequencer();
+    black_box(sequencer.assign_seqs(keys));
+    black_box(sequencer.assign_seq(scalar_port));
+
+    let started = AtomicBool::new(false);
+    let stop = AtomicBool::new(false);
+    let mut elapsed = None;
+    thread::scope(|scope| {
+        let background_sequencer = sequencer.clone();
+        let background_started = &started;
+        let background_stop = &stop;
+        scope.spawn(move || {
+            mode.assign(&background_sequencer, ports, keys);
+            background_started.store(true, Ordering::Release);
+            while !background_stop.load(Ordering::Acquire) {
+                mode.assign(&background_sequencer, ports, keys);
+            }
+        });
+
+        while !started.load(Ordering::Acquire) {
+            std::hint::spin_loop();
+        }
+
+        let start = Instant::now();
+        for _ in 0..iterations {
+            black_box(sequencer.assign_seq(black_box(scalar_port)));
+        }
+        elapsed = Some(start.elapsed());
+        stop.store(true, Ordering::Release);
+    });
+    elapsed.expect("scalar assignments must complete")
+}
+
+/// Compare aggregate sequence-assignment throughput from concurrent casts.
+fn bench_cast_seq_concurrent_contention(c: &mut Criterion) {
+    let inputs = contention_inputs(CONTENTION_WORKERS, CONTENTION_FANOUT);
+    let mut group = c.benchmark_group("cast_seq_concurrent_contention");
+    group.throughput(Throughput::Elements(
+        (CONTENTION_WORKERS * CONTENTION_FANOUT) as u64,
+    ));
+
+    for (name, mode) in [
+        ("per_dest_assign_seq", AssignmentMode::PerDestination),
+        ("batch_assign_seqs", AssignmentMode::Batch),
+    ] {
+        group.bench_function(
+            BenchmarkId::new(name, format!("{CONTENTION_WORKERS}x{CONTENTION_FANOUT}")),
+            |b| b.iter_custom(|iterations| run_concurrent_assignments(iterations, &inputs, mode)),
+        );
+    }
+    group.finish();
+}
+
+/// Compare scalar assignment latency while a concurrent cast uses the sequencer.
+fn bench_cast_seq_mixed_contention(c: &mut Criterion) {
+    let mut group = c.benchmark_group("cast_seq_mixed_contention");
+
+    for fanout in MIXED_CONTENTION_FANOUTS {
+        let mut inputs = contention_inputs(1, fanout);
+        let (ports, keys) = inputs.pop().expect("one contention input must exist");
+        let scalar_port =
+            test_actor_id("scalar_worker", "worker").port_addr(Port::handler_id(0, None));
+
+        for (name, mode) in [
+            ("per_dest_cast", AssignmentMode::PerDestination),
+            ("batch_cast", AssignmentMode::Batch),
+        ] {
+            group.bench_function(BenchmarkId::new(name, fanout), |b| {
+                b.iter_custom(|iterations| {
+                    run_mixed_assignments(iterations, &ports, &keys, &scalar_port, mode)
+                })
+            });
+        }
+    }
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default().without_plots();
@@ -351,6 +593,9 @@ criterion_group! {
     bench_mailbox_message_sizes,
     bench_mailbox_message_rates,
     bench_channel_ping_pong,
+    bench_cast_seq_assignment,
+    bench_cast_seq_concurrent_contention,
+    bench_cast_seq_mixed_contention,
 }
 
 criterion_main!(benches);

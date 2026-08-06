@@ -3466,6 +3466,7 @@ dependencies = [
  "proptest",
  "quinn",
  "rand 0.10.2",
+ "rustc-hash",
  "rustls",
  "rustls-pemfile",
  "serde",
