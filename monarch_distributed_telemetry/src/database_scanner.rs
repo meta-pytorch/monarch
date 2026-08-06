@@ -325,8 +325,8 @@ impl TableStore {
     }
 }
 
-/// Default retention duration: 10 minutes in seconds.
-const DEFAULT_RETENTION_SECS: u64 = 10 * 60;
+/// Default retention duration: one hour in seconds.
+const DEFAULT_RETENTION_SECS: u64 = 60 * 60;
 
 /// Ordered tables that keep only recent data; trace definitions are filtered first.
 const RETENTION_TABLES: &[&str] = &[

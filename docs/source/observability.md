@@ -32,7 +32,7 @@ from monarch.job import ProcessJob, TelemetryConfig
 
 job = ProcessJob({"workers": 2}).enable_telemetry(
     TelemetryConfig(
-        retention_secs=600,
+        retention_secs=3600,
         include_dashboard=True,
         dashboard_port=8265,
         snapshot_interval_secs=30,
@@ -104,7 +104,7 @@ are not a durable event archive.
 
 | `TelemetryConfig` field | Default | Effect |
 |-------------------------|---------|--------|
-| `retention_secs` | `600` | Retention window for message, trace, and metric tables; `0` disables retention |
+| `retention_secs` | `3600` | Retention window for message, trace, and metric tables; `0` disables retention |
 | `include_dashboard` | `False` | Advertise the browser dashboard |
 | `dashboard_port` | `8265` | Preferred dashboard port; use `0` for an ephemeral port |
 | `snapshot_interval_secs` | `30` | Mesh-introspection snapshot interval; `0` disables periodic snapshots |

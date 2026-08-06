@@ -149,7 +149,7 @@ Kubernetes collector, Prometheus, and Grafana example.
 | `OTEL_METRIC_EXPORT_INTERVAL` | `1s` | Sets the periodic reader interval |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Unset | Enables OTLP metric export when configured |
 | `OTEL_SERVICE_NAME` | `unknown_service` | Sets the service name resource attribute |
-| `TelemetryConfig.retention_secs` | `600` | Retains distributed metric rows for this many seconds; `0` disables retention |
+| `TelemetryConfig.retention_secs` | `3600` | Retains distributed metric rows for this many seconds; `0` disables retention |
 
 ## Related documentation
 

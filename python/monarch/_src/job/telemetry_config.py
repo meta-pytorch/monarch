@@ -93,7 +93,7 @@ class TelemetryConfig:
             0 disables periodic capture.
     """
 
-    retention_secs: int = 600
+    retention_secs: int = 3600
     include_dashboard: bool = False
     dashboard_port: int = 8265
     snapshot_interval_secs: float = 30.0
