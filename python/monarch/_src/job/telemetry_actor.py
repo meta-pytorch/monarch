@@ -28,7 +28,7 @@ import os
 from typing import Any, List, Optional
 
 from monarch._rust_bindings.monarch_distributed_telemetry import (
-    _register_trace_entity_schemas,
+    _register_telemetry_schemas,
     _start_socket_ingest,
 )
 from monarch._rust_bindings.monarch_distributed_telemetry.database_scanner import (
@@ -107,7 +107,7 @@ class TelemetryActor(Actor):
             retention_secs=self._retention_secs,
         )
         try:
-            _register_trace_entity_schemas(scanner)
+            _register_telemetry_schemas(scanner)
             _pre_register_snapshot_schemas(scanner)
             _start_socket_ingest(scanner, telemetry_socket_path(self._apply_id))
             self._scanner = scanner
