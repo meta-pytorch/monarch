@@ -76,21 +76,28 @@ pub fn init_metrics() {
     {
         let resource = crate::meta::metrics_resource();
         let exporter = crate::meta::scuba_metric_exporter(&resource);
+        let uds = crate::metrics_table::uds_metric_exporter();
         install_metric_provider(|| {
             SdkMeterProvider::builder()
                 .with_reader(periodic_reader(exporter))
+                .with_reader(periodic_reader(uds))
                 .with_resource(resource)
                 .build()
         });
     }
     #[cfg(not(all(fbcode_build, target_os = "linux")))]
-    if let Some(exporter) = crate::otlp::otlp_metric_exporter() {
+    {
+        let otlp = crate::otlp::otlp_metric_exporter();
+        let uds = crate::metrics_table::uds_metric_exporter();
         let resource = Resource::builder().build();
         install_metric_provider(|| {
-            SdkMeterProvider::builder()
-                .with_reader(periodic_reader(exporter))
-                .with_resource(resource)
-                .build()
+            let mut builder = SdkMeterProvider::builder()
+                .with_reader(periodic_reader(uds))
+                .with_resource(resource);
+            if let Some(exporter) = otlp {
+                builder = builder.with_reader(periodic_reader(exporter));
+            }
+            builder.build()
         });
     }
 }
