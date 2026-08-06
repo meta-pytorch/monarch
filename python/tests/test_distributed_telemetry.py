@@ -1619,6 +1619,35 @@ def test_metrics_table() -> None:
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
+def test_custom_metric() -> None:
+    """Test that a user-defined metric retains its scope and attributes."""
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(_sidecar_telemetry_config()),
+        cached_path=None,
+    ) as state:
+        _assert_sidecar(state)
+
+        requests = monarch.actor.get_meter().create_counter("example.requests")
+        requests.add(1, {"operation": "predict", "outcome": "success"})
+
+        metric_rows = _query(
+            state,
+            "SELECT scope_name, attributes_json, sum_u64 AS metric_sum "
+            "FROM metric_sums "
+            "WHERE name = 'example.requests'",
+            timeout_secs=40.0,
+        )
+
+        assert metric_rows["scope_name"] == ["monarch"], metric_rows
+        assert metric_rows["metric_sum"] == [1], metric_rows
+        assert json.loads(metric_rows["attributes_json"][0]) == {
+            "operation": "predict",
+            "outcome": "success",
+        }
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
 def test_sent_messages_with_sliced_mesh() -> None:
     """Test that sent_messages view_json/shape_json reflect sliced vs full actor mesh casts."""
     with scoped_state(
