@@ -21,5 +21,5 @@ Usage:
     client = state.query_engine_client
     assert client is not None
     # ... spawn procs, they're automatically tracked ...
-    result = client.query("SELECT * FROM metrics")
+    result = client.query("SELECT * FROM metric_sums")
 """

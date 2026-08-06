@@ -3689,6 +3689,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "dashmap",
+ "datafusion",
  "erased-serde",
  "hdrhistogram",
  "hyperactor_config",
