@@ -40,6 +40,9 @@ use monarch_telemetry_schema::deserialize_one_batch;
 use monarch_telemetry_schema::entity_tables::MESSAGE_STATUS_EVENTS;
 use monarch_telemetry_schema::entity_tables::MESSAGES;
 use monarch_telemetry_schema::entity_tables::SENT_MESSAGES;
+use monarch_telemetry_schema::metric_tables::METRIC_GAUGES;
+use monarch_telemetry_schema::metric_tables::METRIC_HISTOGRAMS;
+use monarch_telemetry_schema::metric_tables::METRIC_SUMS;
 use monarch_telemetry_schema::trace_tables::EVENTS;
 use monarch_telemetry_schema::trace_tables::SPAN_EVENTS;
 use monarch_telemetry_schema::trace_tables::SPANS;
@@ -332,6 +335,9 @@ const RETENTION_TABLES: &[&str] = &[
     SENT_MESSAGES,
     MESSAGES,
     MESSAGE_STATUS_EVENTS,
+    METRIC_GAUGES,
+    METRIC_SUMS,
+    METRIC_HISTOGRAMS,
 ];
 
 /// Interval between routine retention sweeps.
@@ -1063,6 +1069,12 @@ mod tests {
     use monarch_telemetry_schema::entity_tables::SENT_MESSAGES;
     use monarch_telemetry_schema::entity_tables::SentMessage;
     use monarch_telemetry_schema::entity_tables::SentMessageBuffer;
+    use monarch_telemetry_schema::metric_tables::MetricGauge;
+    use monarch_telemetry_schema::metric_tables::MetricGaugeBuffer;
+    use monarch_telemetry_schema::metric_tables::MetricHistogram;
+    use monarch_telemetry_schema::metric_tables::MetricHistogramBuffer;
+    use monarch_telemetry_schema::metric_tables::MetricSum;
+    use monarch_telemetry_schema::metric_tables::MetricSumBuffer;
     use monarch_telemetry_schema::trace_tables::Event;
     use monarch_telemetry_schema::trace_tables::EventBuffer;
     use monarch_telemetry_schema::trace_tables::Span;
@@ -1258,6 +1270,121 @@ mod tests {
             });
         }
         ingest_batch(scanner, EVENTS, events.drain_to_record_batch().unwrap()).await;
+
+        let mut gauges = MetricGaugeBuffer::default();
+        gauges.insert(MetricGauge {
+            name: "old_gauge".to_string(),
+            timestamp_us: old_us,
+            start_timestamp_us: None,
+            scope_name: "test".to_string(),
+            unit: "1".to_string(),
+            attributes_json: "{}".to_string(),
+            resource_attributes_json: "{}".to_string(),
+            value_f64: Some(1.0),
+            value_i64: None,
+            value_u64: None,
+        });
+        gauges.insert(MetricGauge {
+            name: "fresh_gauge".to_string(),
+            timestamp_us: fresh_us,
+            start_timestamp_us: None,
+            scope_name: "test".to_string(),
+            unit: "1".to_string(),
+            attributes_json: "{}".to_string(),
+            resource_attributes_json: "{}".to_string(),
+            value_f64: Some(2.0),
+            value_i64: None,
+            value_u64: None,
+        });
+        ingest_batch(
+            scanner,
+            METRIC_GAUGES,
+            gauges.drain_to_record_batch().unwrap(),
+        )
+        .await;
+
+        let mut sums = MetricSumBuffer::default();
+        sums.insert(MetricSum {
+            name: "old_sum".to_string(),
+            timestamp_us: old_us,
+            start_timestamp_us: old_us - 1,
+            scope_name: "test".to_string(),
+            unit: "1".to_string(),
+            temporality: "delta".to_string(),
+            is_monotonic: true,
+            attributes_json: "{}".to_string(),
+            resource_attributes_json: "{}".to_string(),
+            sum_f64: None,
+            sum_i64: None,
+            sum_u64: Some(1),
+        });
+        sums.insert(MetricSum {
+            name: "fresh_sum".to_string(),
+            timestamp_us: fresh_us,
+            start_timestamp_us: fresh_us - 1,
+            scope_name: "test".to_string(),
+            unit: "1".to_string(),
+            temporality: "delta".to_string(),
+            is_monotonic: true,
+            attributes_json: "{}".to_string(),
+            resource_attributes_json: "{}".to_string(),
+            sum_f64: None,
+            sum_i64: None,
+            sum_u64: Some(2),
+        });
+        ingest_batch(scanner, METRIC_SUMS, sums.drain_to_record_batch().unwrap()).await;
+
+        let mut histograms = MetricHistogramBuffer::default();
+        histograms.insert(MetricHistogram {
+            name: "old_histogram".to_string(),
+            timestamp_us: old_us,
+            start_timestamp_us: old_us - 1,
+            scope_name: "test".to_string(),
+            unit: "ms".to_string(),
+            temporality: "delta".to_string(),
+            attributes_json: "{}".to_string(),
+            resource_attributes_json: "{}".to_string(),
+            count: 1,
+            sum_f64: Some(1.0),
+            sum_i64: None,
+            sum_u64: None,
+            min_f64: Some(1.0),
+            min_i64: None,
+            min_u64: None,
+            max_f64: Some(1.0),
+            max_i64: None,
+            max_u64: None,
+            bounds_json: "[]".to_string(),
+            bucket_counts_json: "[1]".to_string(),
+        });
+        histograms.insert(MetricHistogram {
+            name: "fresh_histogram".to_string(),
+            timestamp_us: fresh_us,
+            start_timestamp_us: fresh_us - 1,
+            scope_name: "test".to_string(),
+            unit: "ms".to_string(),
+            temporality: "delta".to_string(),
+            attributes_json: "{}".to_string(),
+            resource_attributes_json: "{}".to_string(),
+            count: 1,
+            sum_f64: Some(2.0),
+            sum_i64: None,
+            sum_u64: None,
+            min_f64: None,
+            min_i64: None,
+            min_u64: None,
+            max_f64: None,
+            max_i64: None,
+            max_u64: None,
+            bounds_json: "[]".to_string(),
+            bucket_counts_json: "[1]".to_string(),
+        });
+        ingest_batch(
+            scanner,
+            METRIC_HISTOGRAMS,
+            histograms.drain_to_record_batch().unwrap(),
+        )
+        .await;
     }
 
     async fn table_row_count_async(scanner: &DatabaseScanner, table_name: &str) -> usize {
@@ -1561,6 +1688,9 @@ mod tests {
             table_i64_values_async(&scanner, EVENTS, "timestamp_us").await,
             vec![fresh_us]
         );
+        assert_eq!(table_row_count_async(&scanner, METRIC_GAUGES).await, 1);
+        assert_eq!(table_row_count_async(&scanner, METRIC_SUMS).await, 1);
+        assert_eq!(table_row_count_async(&scanner, METRIC_HISTOGRAMS).await, 1);
         assert_eq!(table_row_count_async(&scanner, ACTORS).await, 2);
     }
 

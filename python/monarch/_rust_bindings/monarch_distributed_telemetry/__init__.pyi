@@ -15,10 +15,10 @@ def _start_socket_ingest(
     """Start Unix-socket ingest for a database scanner."""
     ...
 
-def _register_trace_entity_schemas(
+def _register_telemetry_schemas(
     scanner: database_scanner.DatabaseScanner,
 ) -> None:
-    """Register trace and entity schemas for a database scanner."""
+    """Register trace, entity, and metric schemas for a database scanner."""
     ...
 
 def _set_unix_socket_sink_path(socket_path: str) -> None:
