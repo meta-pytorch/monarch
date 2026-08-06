@@ -9,11 +9,10 @@
 //! OTLP export for OSS observability.
 //!
 //! When `OTEL_EXPORTER_OTLP_ENDPOINT` is set, this module provides:
-//! - A `SdkMeterProvider` that exports metrics via OTLP/HTTP+protobuf
+//! - A metric exporter that sends metrics via OTLP/HTTP+protobuf
 //! - An `OtlpLogSink` that exports log events via OTLP/HTTP+protobuf
 //!
-//! When the env var is unset, both functions return `None`, preserving
-//! the current no-op behavior for OSS builds.
+//! When the env var is unset, the OTLP functions return `None`.
 
 use opentelemetry::logs::AnyValue;
 use opentelemetry::logs::LogRecord;
@@ -23,10 +22,9 @@ use opentelemetry::logs::Severity;
 use opentelemetry_sdk::logs::BatchLogProcessor;
 use opentelemetry_sdk::logs::SdkLogger;
 use opentelemetry_sdk::logs::SdkLoggerProvider;
-use opentelemetry_sdk::metrics::SdkMeterProvider;
+use opentelemetry_sdk::metrics::exporter::PushMetricExporter;
 use tracing_subscriber::filter::Targets;
 
-use crate::config::OTEL_METRIC_EXPORT_INTERVAL;
 use crate::trace_dispatcher::FieldValue;
 use crate::trace_dispatcher::TraceEvent;
 use crate::trace_dispatcher::TraceEventSink;
@@ -34,16 +32,15 @@ use crate::trace_dispatcher::TraceEventSink;
 #[allow(dead_code)]
 const OTLP_ENDPOINT_ENV: &str = "OTEL_EXPORTER_OTLP_ENDPOINT";
 
-/// Build an OTLP-backed `SdkMeterProvider` if `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
+/// Build an OTLP metric exporter if `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
 ///
 /// The `opentelemetry-otlp` crate automatically reads standard OTel env vars
 /// (`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`,
 /// `OTEL_EXPORTER_OTLP_TIMEOUT`, etc.), so callers only need to set those.
 ///
-/// Returns `None` if the endpoint is not configured, leaving the global
-/// meter provider as the default no-op.
+/// Returns `None` if the endpoint is not configured.
 #[allow(dead_code)]
-pub fn otlp_meter_provider() -> Option<SdkMeterProvider> {
+pub fn otlp_metric_exporter() -> Option<impl PushMetricExporter> {
     if std::env::var(OTLP_ENDPOINT_ENV).is_err() {
         return None;
     }
@@ -59,15 +56,7 @@ pub fn otlp_meter_provider() -> Option<SdkMeterProvider> {
         }
     };
 
-    let interval = hyperactor_config::global::get(OTEL_METRIC_EXPORT_INTERVAL);
-
-    let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(exporter)
-        .with_interval(interval)
-        .build();
-
-    let provider = SdkMeterProvider::builder().with_reader(reader).build();
-
-    Some(provider)
+    Some(exporter)
 }
 
 #[allow(dead_code)]
@@ -243,10 +232,10 @@ mod tests {
     use crate::trace_dispatcher::TraceEvent;
 
     #[test]
-    fn test_otlp_meter_provider_returns_none_without_endpoint() {
+    fn test_otlp_metric_exporter_returns_none_without_endpoint() {
         // Safety: test-only; no other threads read this env var concurrently.
         unsafe { std::env::remove_var(OTLP_ENDPOINT_ENV) };
-        assert!(otlp_meter_provider().is_none());
+        assert!(otlp_metric_exporter().is_none());
     }
 
     fn make_test_log_sink() -> OtlpLogSink {
