@@ -1063,7 +1063,6 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
             attrs: vec![],
             colon_token: None,
             bounds: Punctuated::new(),
-            eq_token: None,
             default: None,
         }),
     );
@@ -1137,8 +1136,8 @@ pub fn handle(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     };
 
-    let trait_name = match input.trait_ {
-        Some((_, ref trait_path, _)) => trait_path.segments.last().unwrap().clone(),
+    let trait_name = match &input.trait_ {
+        Some((trait_path, _)) => trait_path.segments.last().unwrap().clone(),
         None => {
             return TokenStream::from(
                 syn::Error::new_spanned(input.self_ty, "no trait in implementation block")
@@ -1560,7 +1559,6 @@ pub fn behavior(input: TokenStream) -> TokenStream {
             ident: Ident::new("A", proc_macro2::Span::call_site()),
             colon_token: None,
             bounds: Punctuated::new(),
-            eq_token: None,
             default: None,
         }),
     );

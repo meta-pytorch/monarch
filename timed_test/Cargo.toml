@@ -18,7 +18,7 @@ path = "tests/basic.rs"
 
 [dependencies]
 quote = "1.0.47"
-syn = { version = "2.0.119", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
+syn = { version = "3", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 
 [dev-dependencies]
 tokio = { version = "1.52.4", features = ["full", "test-util", "tracing"] }
