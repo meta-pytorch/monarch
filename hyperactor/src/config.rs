@@ -18,6 +18,7 @@ use std::time::Duration;
 use hyperactor_config::AttrValue;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
+use hyperactor_config::NonZeroUsize;
 use hyperactor_config::attrs::declare_attrs;
 use serde::Deserialize;
 use serde::Serialize;
@@ -229,6 +230,15 @@ declare_attrs! {
     ))
     pub attr ENABLE_DEST_ACTOR_REORDERING_BUFFER: bool = true;
 
+    /// Maximum number of destination keys assigned while holding the
+    /// sequencer lock.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_SEQUENCER_MAX_LOCKED_KEYS".to_string()),
+        Some("sequencer_max_locked_keys".to_string()),
+    ))
+    pub attr SEQUENCER_MAX_LOCKED_KEYS: NonZeroUsize =
+        NonZeroUsize::new(128).expect("128 is non-zero");
+
     /// Timeout for [`Host::spawn`] to await proc readiness.
     ///
     /// Default: 30 seconds. If set to zero, disables the timeout and
@@ -318,6 +328,7 @@ mod tests {
         );
         assert_eq!(config[MESSAGE_ACK_EVERY_N_MESSAGES], 1000);
         assert_eq!(config[SPLIT_MAX_BUFFER_SIZE], 5);
+        assert_eq!(config[SEQUENCER_MAX_LOCKED_KEYS].get(), 128);
     }
 
     #[tracing_test::traced_test]
@@ -405,6 +416,7 @@ mod tests {
         );
         assert_eq!(config[MESSAGE_ACK_EVERY_N_MESSAGES], 1000);
         assert_eq!(config[SPLIT_MAX_BUFFER_SIZE], 5);
+        assert_eq!(config[SEQUENCER_MAX_LOCKED_KEYS].get(), 128);
 
         // Verify the keys have defaults
         assert!(CODEC_MAX_FRAME_LENGTH.has_default());
@@ -412,6 +424,7 @@ mod tests {
         assert!(MESSAGE_ACK_TIME_INTERVAL.has_default());
         assert!(MESSAGE_ACK_EVERY_N_MESSAGES.has_default());
         assert!(SPLIT_MAX_BUFFER_SIZE.has_default());
+        assert!(SEQUENCER_MAX_LOCKED_KEYS.has_default());
 
         // Verify we can get defaults directly from keys
         assert_eq!(
@@ -428,6 +441,10 @@ mod tests {
         );
         assert_eq!(MESSAGE_ACK_EVERY_N_MESSAGES.default(), Some(&1000));
         assert_eq!(SPLIT_MAX_BUFFER_SIZE.default(), Some(&5));
+        assert_eq!(
+            SEQUENCER_MAX_LOCKED_KEYS.default().map(|v| v.get()),
+            Some(128)
+        );
     }
 
     #[test]

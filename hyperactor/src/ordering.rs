@@ -10,13 +10,14 @@
 //! for any given sender and receiver actor pair.
 
 use std::any::TypeId;
-use std::collections::HashMap;
 use std::fmt;
+use std::ops::Range;
 use std::sync::Arc;
 use std::sync::Mutex;
 
 use hyperactor_config::AttrValue;
 use hyperactor_config::attrs::declare_attrs;
+use rustc_hash::FxHashMap;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -177,11 +178,26 @@ impl std::str::FromStr for OrderingSnapshot {
 /// Handler ports share a sequence per actor; ephemeral ports get individual
 /// sequences. Control ports are direct.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-enum SeqKey {
-    /// Shared sequence for all handler ports of an actor
+pub struct SeqKey(SeqKeyKind);
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+enum SeqKeyKind {
     Actor(ActorAddr),
-    /// Individual sequence for a specific ephemeral port.
     Port(PortAddr),
+}
+
+impl SeqKey {
+    /// Return the sequence key shared by an actor's handler ports.
+    pub fn for_handler(actor: &ActorAddr) -> Self {
+        Self(SeqKeyKind::Actor(actor.clone()))
+    }
+
+    /// Return the sequence key for an ephemeral port.
+    pub fn for_ephemeral_port(port: &PortAddr) -> Option<Self> {
+        port.port()
+            .is_ephemeral()
+            .then(|| Self(SeqKeyKind::Port(port.clone())))
+    }
 }
 
 /// A message's sequencer number infomation.
@@ -246,14 +262,14 @@ declare_attrs! {
 pub struct Sequencer {
     session_id: Uuid,
     // Map's key is the sequence key (actor or port), value is the last seq number.
-    last_seqs: Arc<Mutex<HashMap<SeqKey, u64>>>,
+    last_seqs: Arc<Mutex<FxHashMap<SeqKey, u64>>>,
 }
 
 impl Sequencer {
     pub(crate) fn new(session_id: Uuid) -> Self {
         Self {
             session_id,
-            last_seqs: Arc::new(Mutex::new(HashMap::new())),
+            last_seqs: Arc::new(Mutex::new(FxHashMap::default())),
         }
     }
 
@@ -288,7 +304,7 @@ impl Sequencer {
         self.last_seqs
             .lock()
             .unwrap()
-            .get(&SeqKey::Actor(actor.clone()))
+            .get(&SeqKey::for_handler(actor))
             .copied()
             .unwrap_or_default()
     }
@@ -299,10 +315,52 @@ impl Sequencer {
         }
 
         if port_id.is_handler_port() {
-            Some(SeqKey::Actor(port_id.actor_addr().clone()))
+            Some(SeqKey::for_handler(&port_id.actor_addr()))
         } else {
-            Some(SeqKey::Port(port_id.clone()))
+            SeqKey::for_ephemeral_port(port_id)
         }
+    }
+
+    /// Assign the next sequence number to each key.
+    ///
+    /// This assigns the same sequence numbers, in the same order, as calling
+    /// [`Self::assign_seq`] for each equivalent destination. Each occurrence
+    /// of a repeated key advances its sequence number.
+    ///
+    /// The result is run-length encoded. Each `(range, seq)` assigns `seq` to
+    /// the input indexes in `range`. The ordered ranges cover `0..keys.len()`
+    /// without gaps. An empty input returns an empty result.
+    pub fn assign_seqs(&self, keys: &[SeqKey]) -> Vec<(Range<usize>, u64)> {
+        let mut runs: Vec<(Range<usize>, u64)> = Vec::new();
+        let mut run_start = 0usize;
+        let mut prev: Option<u64> = None;
+        let mut ordinal = 0;
+        for chunk in keys
+            .chunks(hyperactor_config::global::get(crate::config::SEQUENCER_MAX_LOCKED_KEYS).get())
+        {
+            let mut guard = self.last_seqs.lock().unwrap();
+            for key in chunk {
+                let seq = if let Some(last) = guard.get_mut(key) {
+                    *last += 1;
+                    *last
+                } else {
+                    guard.insert(key.clone(), 1);
+                    1
+                };
+                if let Some(prev_seq) = prev
+                    && prev_seq != seq
+                {
+                    runs.push((run_start..ordinal, prev_seq));
+                    run_start = ordinal;
+                }
+                prev = Some(seq);
+                ordinal += 1;
+            }
+        }
+        if let Some(prev_seq) = prev {
+            runs.push((run_start..keys.len(), prev_seq));
+        }
+        runs
     }
 
     /// Id of the session this sequencer belongs to.
@@ -313,6 +371,7 @@ impl Sequencer {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::collections::HashSet;
     use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
@@ -371,10 +430,159 @@ mod tests {
     }
 
     #[test]
+    fn assign_seqs_returns_no_runs_for_empty_input() {
+        // GIVEN a sequencer with no assigned keys.
+        let sequencer = Sequencer::new(Uuid::now_v7());
+
+        // WHEN sequence numbers are requested for no keys.
+        let runs = sequencer.assign_seqs(&[]);
+
+        // THEN there are no encoded runs.
+        assert!(runs.is_empty());
+    }
+
+    #[test]
+    fn seq_key_for_ephemeral_port_rejects_other_port_kinds() {
+        // GIVEN one ephemeral, handler, and control port on the same actor.
+        let actor = test_actor_id("worker_0", "worker");
+        let ephemeral = actor.port_addr(Port::from(1));
+        let handler = actor.port_addr(Port::handler::<TestMsg1>());
+        let control = actor.port_addr(Port::control(ControlPort::Status));
+
+        // WHEN each port is passed to the ephemeral-key constructor.
+        let ephemeral_key = SeqKey::for_ephemeral_port(&ephemeral);
+        let handler_key = SeqKey::for_ephemeral_port(&handler);
+        let control_key = SeqKey::for_ephemeral_port(&control);
+
+        // THEN only the ephemeral port produces a key.
+        assert!(ephemeral_key.is_some());
+        assert!(handler_key.is_none());
+        assert!(control_key.is_none());
+    }
+
+    #[test]
+    fn assign_seqs_coalesces_synchronized_keys() {
+        // GIVEN synchronized keys and a chunk size smaller than the input.
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(
+            crate::config::SEQUENCER_MAX_LOCKED_KEYS,
+            hyperactor_config::NonZeroUsize::MIN,
+        );
+        let sequencer = Sequencer::new(Uuid::now_v7());
+        let keys: Vec<_> = (0..3)
+            .map(|i| SeqKey::for_handler(&test_actor_id(&format!("worker_{i}"), "worker")))
+            .collect();
+
+        // WHEN the keys advance together.
+        let single = sequencer.assign_seqs(&keys[..1]);
+        let first = sequencer.assign_seqs(&keys[1..]);
+        let second = sequencer.assign_seqs(&keys[1..]);
+
+        // THEN each synchronized set is represented by one run.
+        assert_eq!(single, vec![(0..1, 1)]);
+        assert_eq!(first, vec![(0..2, 1)]);
+        assert_eq!(second, vec![(0..2, 2)]);
+    }
+
+    #[test]
+    fn assign_seqs_keeps_nonadjacent_equal_values_in_separate_runs() {
+        // GIVEN the first and third keys are one sequence ahead of the second.
+        let sequencer = Sequencer::new(Uuid::now_v7());
+        let keys: Vec<_> = (0..3)
+            .map(|i| SeqKey::for_handler(&test_actor_id(&format!("worker_{i}"), "worker")))
+            .collect();
+        sequencer.assign_seqs(&[keys[0].clone(), keys[2].clone()]);
+
+        // WHEN all three keys are assigned in input order.
+        let runs = sequencer.assign_seqs(&keys);
+
+        // THEN the values [2, 1, 2] remain three ordered runs.
+        assert_eq!(runs, vec![(0..1, 2), (1..2, 1), (2..3, 2)]);
+    }
+
+    #[test]
+    fn assign_seqs_advances_repeated_interleaved_keys() {
+        // GIVEN two new keys repeated in an interleaved input.
+        let sequencer = Sequencer::new(Uuid::now_v7());
+        let a = SeqKey::for_handler(&test_actor_id("worker_0", "worker"));
+        let b = SeqKey::for_handler(&test_actor_id("worker_1", "worker"));
+        let keys = [a.clone(), b.clone(), a.clone(), b, a];
+
+        // WHEN the batch is assigned.
+        let runs = sequencer.assign_seqs(&keys);
+
+        // THEN every occurrence advances its key and adjacent equal values coalesce.
+        assert_eq!(runs, vec![(0..2, 1), (2..4, 2), (4..5, 3)]);
+    }
+
+    #[test]
+    fn assign_seqs_matches_assign_seq_after_mixed_history() {
+        // GIVEN scalar and batch sequencers with the same mixed history and a
+        // batch chunk size smaller than the requested assignment.
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(
+            crate::config::SEQUENCER_MAX_LOCKED_KEYS,
+            hyperactor_config::NonZeroUsize::new(2).expect("2 is non-zero"),
+        );
+        let scalar = Sequencer::new(Uuid::now_v7());
+        let batch = Sequencer::new(Uuid::now_v7());
+
+        let actor_0 = test_actor_id("worker_0", "worker");
+        let actor_1 = test_actor_id("worker_1", "worker");
+        let ports = [
+            actor_0.port_addr(Port::handler::<TestMsg1>()),
+            actor_1.port_addr(Port::handler::<TestMsg1>()),
+            actor_0.port_addr(Port::from(1)),
+        ];
+        for index in [0, 2, 0] {
+            assert_eq!(
+                get_seq(scalar.assign_seq(&ports[index])),
+                get_seq(batch.assign_seq(&ports[index]))
+            );
+        }
+
+        // WHEN one sequencer assigns an interleaved batch and the other uses scalars.
+        let indexes = [0, 1, 0, 2, 1];
+        let expected: Vec<_> = indexes
+            .iter()
+            .map(|&index| get_seq(scalar.assign_seq(&ports[index])))
+            .collect();
+        // `[(0..2, 1), (2..5, 2)]` -> `[1, 1, 2, 2, 2]`.
+        let actual: Vec<_> = {
+            let keys: Vec<_> = indexes
+                .iter()
+                .map(|&index| {
+                    let port = &ports[index];
+                    if port.is_handler_port() {
+                        SeqKey::for_handler(&port.actor_addr())
+                    } else {
+                        SeqKey::for_ephemeral_port(port).expect("test port must be ephemeral")
+                    }
+                })
+                .collect();
+
+            batch
+                .assign_seqs(&keys)
+                .into_iter()
+                .flat_map(|(range, seq)| range.map(move |_| seq))
+                .collect()
+        };
+
+        // THEN both APIs assign the same values and leave the same subsequent state.
+        assert_eq!(actual, expected);
+        for port in &ports {
+            assert_eq!(
+                get_seq(scalar.assign_seq(port)),
+                get_seq(batch.assign_seq(port))
+            );
+        }
+    }
+
+    #[test]
     fn test_sequencer_clone() {
         let sequencer = Sequencer {
             session_id: Uuid::now_v7(),
-            last_seqs: Arc::new(Mutex::new(HashMap::new())),
+            last_seqs: Arc::new(Mutex::new(FxHashMap::default())),
         };
 
         let actor_ref: ActorAddr = test_actor_id("test_0", "test");
@@ -394,7 +602,7 @@ mod tests {
     fn test_sequencer_handler_ports_share_sequence() {
         let sequencer = Sequencer {
             session_id: Uuid::now_v7(),
-            last_seqs: Arc::new(Mutex::new(HashMap::new())),
+            last_seqs: Arc::new(Mutex::new(FxHashMap::default())),
         };
 
         let actor_ref: ActorAddr = test_actor_id("worker_0", "worker");
@@ -417,7 +625,7 @@ mod tests {
     fn test_sequencer_non_handler_ports_have_independent_sequences() {
         let sequencer = Sequencer {
             session_id: Uuid::now_v7(),
-            last_seqs: Arc::new(Mutex::new(HashMap::new())),
+            last_seqs: Arc::new(Mutex::new(FxHashMap::default())),
         };
 
         let actor_ref_0: ActorAddr = test_actor_id("worker_0", "worker");
@@ -444,7 +652,7 @@ mod tests {
     fn test_sequencer_mixed_handler_and_non_handler_ports() {
         let sequencer = Sequencer {
             session_id: Uuid::now_v7(),
-            last_seqs: Arc::new(Mutex::new(HashMap::new())),
+            last_seqs: Arc::new(Mutex::new(FxHashMap::default())),
         };
 
         let actor_ref: ActorAddr = test_actor_id("worker_0", "worker");
