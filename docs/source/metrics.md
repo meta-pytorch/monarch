@@ -27,6 +27,22 @@ interval for long-running jobs or high-cardinality instruments to reduce
 application and backend load. A slow or unavailable destination does not
 require different instrumentation for the other destinations.
 
+## Record custom metrics
+
+Use Monarch's process-global meter to create OpenTelemetry instruments. The
+same instrument feeds every enabled export path:
+
+```python
+from monarch.actor import get_meter
+
+requests = get_meter().create_counter("example.requests")
+requests.add(1, {"operation": "predict", "outcome": "success"})
+```
+
+Create instruments once and reuse them. Use attributes only for bounded
+dimensions such as operation and outcome; request IDs and other unbounded
+values create a new time series for each value.
+
 ## Metric identity and context
 
 An exported metric point combines context from several levels. Distributed
