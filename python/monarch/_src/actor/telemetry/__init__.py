@@ -310,6 +310,12 @@ _INSTALLED = False
 METER: metrics.Meter = Meter("monarch")
 
 
+def get_meter() -> metrics.Meter:
+    """Return Monarch's process-global OpenTelemetry meter."""
+
+    return METER
+
+
 def install() -> None:
     global _INSTALLED
     if _INSTALLED:
