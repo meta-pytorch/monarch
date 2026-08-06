@@ -21,10 +21,7 @@ Periodic mesh-admin snapshots also flow into telemetry so the dashboard can
 show the live administrative topology.
 
 Distributed telemetry is a job-scoped, in-memory query system. OpenTelemetry
-instruments metrics once, and independent readers deliver them to enabled
-backends. The distributed telemetry exporter sends metrics to the job-local
-SQL tables over a Unix socket, while external export can run alongside it. You
-can use both on the same job.
+export to an external backend can run alongside it on the same job.
 
 ## Enable observability
 
@@ -68,6 +65,21 @@ print(result["rows"])
 Use `state.dashboard_url` in a browser. Pass `state.admin_url` to
 `monarch-tui --addr`.
 
+## Metrics
+
+Monarch records its built-in metrics through one process-global OpenTelemetry
+meter provider. Libraries record counters, gauges, and histograms without
+choosing a destination. Independent readers can send the same instruments to
+job-local distributed telemetry, an external OTLP endpoint, or both.
+
+| Path | Enablement | Destination | Primary use |
+|------|------------|-------------|-------------|
+| Distributed telemetry | `job.enable_telemetry(...)` | Job-local SQL tables | Debugging and analysis within the current job |
+| OTLP | `OTEL_EXPORTER_OTLP_ENDPOINT` | OpenTelemetry Collector over OTLP/HTTP | External aggregation, monitoring, and visualization |
+
+See [Metrics](metrics) for provider scope, collection and flushing behavior,
+configuration, and both export paths.
+
 ## Data flow
 
 ```text
@@ -102,6 +114,7 @@ That supports the TUI, but it does not provide the dashboard or SQL history.
 
 ## Next steps
 
+- [Understand metric collection and export](metrics)
 - [Query distributed telemetry](distributed-telemetry)
 - [Use the Monarch Dashboard](monarch-dashboard)
 - [Diagnose a mesh with the Admin TUI](admin-tui)
@@ -111,6 +124,7 @@ That supports the TUI, but it does not provide the dashboard or SQL history.
 :maxdepth: 1
 :hidden:
 distributed-telemetry
+metrics
 admin-tui
 monarch-dashboard
 ```
