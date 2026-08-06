@@ -39,7 +39,6 @@ use hyperactor_telemetry::declare_static_counter;
 use ndslice::ViewExt;
 use ndslice::view::CollectMeshExt;
 use ndslice::view::Point;
-use ndslice::view::Ranked;
 use opentelemetry::metrics::Counter;
 use serde::Deserialize;
 use serde::Serialize;
@@ -47,7 +46,7 @@ use tokio::time::Duration;
 use typeuri::Named;
 
 use crate::ValueMesh;
-use crate::actor_mesh::ActorMeshRef;
+use crate::actor_mesh::ManagedActorMeshRef;
 use crate::bootstrap::ProcStatus;
 use crate::casting::CAST_ACTOR_MESH_ID;
 use crate::casting::update_undeliverable_envelope_for_casting;
@@ -496,7 +495,7 @@ pub trait Controlled: Clone + Debug + Send + Sync + 'static {
     fn id(&self) -> &ResourceId;
 
     /// The region of ranks in this mesh.
-    fn region(&self) -> &ndslice::Region;
+    fn region(&self) -> ndslice::Region;
 
     /// Subscribe the given port to positioned state updates from the
     /// underlying agents.
@@ -592,17 +591,16 @@ pub struct ResourceController<T: Controlled> {
 
 /// Controller-side state for an actor mesh.
 ///
-/// `ActorMeshRef` is moving toward being a self-contained, serializable mesh
-/// descriptor. The controller is the one place that needs both the actor mesh
-/// and its backing proc mesh: it streams actor state through proc agents and
-/// stops actors through the proc mesh control plane.
+/// The controller needs both the managed actor mesh and its backing proc mesh:
+/// it streams actor state through proc agents and stops actors through the proc
+/// mesh control plane.
 pub struct ActorMeshControlPlane<A: Referable> {
-    actor_mesh: ActorMeshRef<A>,
+    actor_mesh: ManagedActorMeshRef<A>,
     proc_mesh: ProcMeshRef,
 }
 
 impl<A: Referable> ActorMeshControlPlane<A> {
-    pub(crate) fn new(actor_mesh: ActorMeshRef<A>, proc_mesh: ProcMeshRef) -> Self {
+    pub(crate) fn new(actor_mesh: ManagedActorMeshRef<A>, proc_mesh: ProcMeshRef) -> Self {
         Self {
             actor_mesh,
             proc_mesh,
@@ -703,7 +701,7 @@ impl<T: Controlled> ResourceController<T> {
             statuses
                 .into_iter()
                 .map(|(_, s)| s)
-                .collect_mesh::<ValueMesh<_>>(self.mesh.region().clone())?;
+                .collect_mesh::<ValueMesh<_>>(self.mesh.region())?;
         let state = resource::mesh::State {
             statuses,
             state: (),
@@ -1105,15 +1103,11 @@ impl<A: Referable> Controlled for ActorMeshControlPlane<A> {
     }
 
     fn id(&self) -> &ResourceId {
-        self.actor_mesh
-            .as_managed()
-            .expect("actor mesh control plane requires a managed mesh")
-            .id()
-            .resource_id()
+        self.actor_mesh.id().resource_id()
     }
 
-    fn region(&self) -> &ndslice::Region {
-        ndslice::view::Ranked::region(&self.actor_mesh)
+    fn region(&self) -> ndslice::Region {
+        self.actor_mesh.region().clone()
     }
 
     fn subscribe_to_stream(
@@ -1124,13 +1118,7 @@ impl<A: Referable> Controlled for ActorMeshControlPlane<A> {
         self.proc_mesh.agent_mesh().cast(
             cx,
             resource::StreamState::<ActorState> {
-                id: self
-                    .actor_mesh
-                    .as_managed()
-                    .expect("actor mesh control plane requires a managed mesh")
-                    .id()
-                    .resource_id()
-                    .clone(),
+                id: self.actor_mesh.id().resource_id().clone(),
                 subscriber_rank: resource::Rank::default(),
                 subscriber,
             },
@@ -1190,8 +1178,7 @@ impl<A: Referable> Controlled for ActorMeshControlPlane<A> {
                 let event = ActorSupervisionEvent::new(
                     // Attribute this to the monitored actor, even if the underlying
                     // cause is a proc_failure. We propagate the cause explicitly.
-                    self.actor_mesh
-                        .get(point.rank())
+                    rankspace::view::View::get(&self.actor_mesh, point.rank())
                         .unwrap()
                         .actor_addr()
                         .clone(),
@@ -1217,15 +1204,7 @@ impl<A: Referable> Controlled for ActorMeshControlPlane<A> {
         // Query resource states with keepalive.
         let actor_states = self
             .proc_mesh
-            .actor_states_with_keepalive(
-                cx,
-                self.actor_mesh
-                    .as_managed()
-                    .expect("actor mesh control plane requires a managed mesh")
-                    .id()
-                    .clone(),
-                compute_keepalive(),
-            )
+            .actor_states_with_keepalive(cx, self.actor_mesh.id().clone(), compute_keepalive())
             .await;
         match actor_states {
             Err(e) => send_poll_failure(
@@ -1245,10 +1224,9 @@ impl<A: Referable> Controlled for ActorMeshControlPlane<A> {
             Ok(states) => {
                 let did_notify =
                     health_state.apply_updates_and_notify(&states, |point, state, health_state| {
-                        let expected_actor_id = self
-                            .actor_mesh
-                            .get(point.rank())
-                            .map(|r| r.actor_addr().clone());
+                        let expected_actor_id =
+                            rankspace::view::View::get(&self.actor_mesh, point.rank())
+                                .map(|r| r.actor_addr().clone());
                         let events = actor_state_to_supervision_events(state, expected_actor_id);
                         if events.is_empty() {
                             return false;
@@ -1283,7 +1261,8 @@ impl<A: Referable> Controlled for ActorMeshControlPlane<A> {
         };
         // The controller's expected actor at this rank, used as the fallback
         // identity when the payload carries no `ActorState`.
-        let expected_actor_id = self.actor_mesh.get(rank).map(|r| r.actor_addr().clone());
+        let expected_actor_id =
+            rankspace::view::View::get(&self.actor_mesh, rank).map(|r| r.actor_addr().clone());
         let events = actor_state_to_supervision_events(state.clone(), expected_actor_id);
 
         let changed = health_state.maybe_update(point, state.status, state.generation);
@@ -1325,8 +1304,7 @@ impl<A: Referable> Controlled for ActorMeshControlPlane<A> {
         // assume the stop happened on all actors.
         let rank = 0usize;
         let event = ActorSupervisionEvent::new(
-            self.actor_mesh
-                .get(rank)
+            rankspace::view::View::get(&self.actor_mesh, rank)
                 .expect("mesh must have at least one rank")
                 .actor_addr()
                 .clone(),
@@ -1361,15 +1339,7 @@ impl<A: Referable> Controlled for ActorMeshControlPlane<A> {
         // Cannot use "ActorMesh::stop" as it tries to message the controller.
         let result = self
             .proc_mesh
-            .stop_actor_by_id(
-                cx,
-                self.actor_mesh
-                    .as_managed()
-                    .expect("actor mesh control plane requires a managed mesh")
-                    .id()
-                    .clone(),
-                reason,
-            )
+            .stop_actor_by_id(cx, self.actor_mesh.id().clone(), reason)
             .await;
 
         match result {
@@ -1408,15 +1378,7 @@ impl<A: Referable> Controlled for ActorMeshControlPlane<A> {
 
     async fn cleanup_stop(&self, cx: &impl context::Actor, reason: String) -> anyhow::Result<()> {
         self.proc_mesh
-            .stop_actor_by_id(
-                cx,
-                self.actor_mesh
-                    .as_managed()
-                    .expect("actor mesh control plane requires a managed mesh")
-                    .id()
-                    .clone(),
-                reason,
-            )
+            .stop_actor_by_id(cx, self.actor_mesh.id().clone(), reason)
             .await?;
         Ok(())
     }
@@ -1438,8 +1400,8 @@ impl Controlled for ProcMeshRef {
         ProcMeshRef::id(self).resource_id()
     }
 
-    fn region(&self) -> &ndslice::Region {
-        ndslice::view::Ranked::region(self)
+    fn region(&self) -> ndslice::Region {
+        ProcMeshRef::region(self)
     }
 
     fn subscribe_to_stream(
@@ -1576,7 +1538,7 @@ impl Controlled for ProcMeshRef {
         }
 
         let names = self.proc_ids().collect::<Vec<hyperactor::ProcAddr>>();
-        let region = Ranked::region(self).clone();
+        let region = self.region();
         let Some(hosts) = self.hosts() else {
             return Ok(());
         };
@@ -1623,7 +1585,7 @@ impl Controlled for ProcMeshRef {
 
     async fn cleanup_stop(&self, cx: &impl context::Actor, reason: String) -> anyhow::Result<()> {
         let names = self.proc_ids().collect::<Vec<hyperactor::ProcAddr>>();
-        let region = Ranked::region(self).clone();
+        let region = self.region();
         if let Some(hosts) = self.hosts() {
             hosts
                 .stop_proc_mesh(cx, self.id(), names, region, reason)
@@ -1653,12 +1615,7 @@ impl ProcMeshRef {
             None,
         );
         let rank = create_rank
-            .and_then(|r| {
-                ndslice::view::Ranked::region(self)
-                    .extent()
-                    .point_of_rank(r)
-                    .ok()
-            })
+            .and_then(|r| self.region().extent().point_of_rank(r).ok())
             .map(|p| p.rank())
             .unwrap_or(0);
         send_state_change(cx, rank, event, Controlled::id(self), true, health_state);
@@ -1968,7 +1925,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            actor_mesh.deref().extent().num_ranks() > 0,
+            actor_mesh.space().cardinality() > 0,
             "should have spawned at least one actor"
         );
 

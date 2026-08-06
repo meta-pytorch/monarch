@@ -388,14 +388,12 @@ pub async fn rsync_mesh<C: context::Actor + Copy + Unpin>(
     local_workspace: PathBuf,
     remote_workspace: WorkspaceLocation,
 ) -> Result<Vec<RsyncResult>> {
-    use ndslice::View;
-
     // Spawn a rsync daemon to accept incoming connections from actors.
     let daemon = RsyncDaemon::spawn(TcpListener::bind(("::1", 0)).await?, &local_workspace).await?;
     let daemon_addr = daemon.addr();
 
     let (rsync_conns_tx, rsync_conns_rx) = cx.mailbox().open_port::<Connect>();
-    let num_actors = actor_mesh.region().num_ranks();
+    let num_actors = actor_mesh.space().cardinality();
 
     let res = try_join!(
         rsync_conns_rx

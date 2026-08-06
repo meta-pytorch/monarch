@@ -64,12 +64,11 @@ use monarch_tensor_worker::AssignRankMessage;
 use monarch_tensor_worker::WorkerActor;
 use ndslice::Region;
 use ndslice::Slice;
-use ndslice::ViewExt;
-use ndslice::view::Ranked;
-use ndslice::view::RankedSliceable as _;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use rankspace::RankSpace;
+use rankspace::view::View as _;
 use tokio::sync::Mutex;
 
 use crate::convert::convert;
@@ -107,13 +106,20 @@ impl _Controller {
 
         // Build rank map from proc ids to ranks.
         let rank_map: HashMap<reference::ProcAddr, usize> = proc_mesh
-            .iter()
-            .map(|(point, proc)| (proc.proc_addr().clone(), point.rank()))
+            .values()
+            .enumerate()
+            .map(|(index, proc)| (proc.proc_addr().clone(), index))
             .collect();
 
-        let region = Ranked::region(&proc_mesh);
-        let slice = region.slice();
-        if !slice.is_contiguous() || slice.offset() != 0 {
+        // Workers are addressed by their position in `rank_map`, so that
+        // position must equal the base rank: the mesh has to be dense, ordered,
+        // and start at zero.
+        if proc_mesh
+            .space()
+            .iter_ranks()
+            .enumerate()
+            .any(|(index, rank)| rank.get() != index)
+        {
             return Err(PyValueError::new_err(
                 "NYI: proc mesh for workers must be contiguous and start at offset 0",
             ));
@@ -730,7 +736,7 @@ enum ClientToControllerMessage {
 struct MeshControllerActor {
     proc_mesh_ref: ProcMeshRef,
     workers: Option<ActorMesh<WorkerActor>>,
-    worker_slice_cache: HashMap<Region, ActorMeshRef<WorkerActor>>,
+    worker_slice_cache: HashMap<RankSpace, ActorMeshRef<WorkerActor>>,
     brokers: Option<ActorMesh<LocalStateBrokerActor>>,
     history: History,
     id: usize,
@@ -753,7 +759,7 @@ impl MeshControllerActor {
             rank_map,
         }: MeshControllerActorParams,
     ) -> Self {
-        let world_size = Ranked::region(&proc_mesh_ref).num_ranks();
+        let world_size = proc_mesh_ref.space().cardinality();
         MeshControllerActor {
             proc_mesh_ref,
             workers: None,
@@ -771,14 +777,14 @@ impl MeshControllerActor {
         self.workers.as_ref().unwrap()
     }
 
-    fn worker_slice(&mut self, region: Region) -> ActorMeshRef<WorkerActor> {
-        if let Some(slice) = self.worker_slice_cache.get(&region) {
-            return slice.clone();
+    fn worker_slice(&mut self, space: RankSpace) -> anyhow::Result<ActorMeshRef<WorkerActor>> {
+        if let Some(slice) = self.worker_slice_cache.get(&space) {
+            return Ok(slice.clone());
         }
 
-        let slice = self.workers().deref().sliced(region.clone());
-        self.worker_slice_cache.insert(region, slice.clone());
-        slice
+        let slice = self.workers().sliced(space.clone())?;
+        self.worker_slice_cache.insert(space, slice.clone());
+        Ok(slice)
     }
 
     fn workers_mut(&mut self) -> &mut ActorMesh<WorkerActor> {
@@ -791,7 +797,13 @@ impl MeshControllerActor {
         slices: Vec<Slice>,
         message: WorkerMessage,
     ) -> anyhow::Result<()> {
-        let worker_region = Ranked::region(self.workers().deref()).clone();
+        let worker_space = self.workers().space().clone();
+        let worker_labels: Vec<String> = worker_space
+            .base()
+            .dims()
+            .iter()
+            .map(|dim| dim.name().to_string())
+            .collect();
 
         let mut seen = HashSet::new();
         for slice in slices {
@@ -800,16 +812,16 @@ impl MeshControllerActor {
                 continue;
             }
 
-            let labels = if worker_region.labels().len() == slice.num_dim() {
-                worker_region.labels().to_vec()
+            let labels = if worker_labels.len() == slice.num_dim() {
+                worker_labels.clone()
             } else {
                 (0..slice.num_dim())
                     .map(|dim| format!("rank_{dim}"))
                     .collect()
             };
-            let region = Region::new(labels, slice);
+            let space: RankSpace = Region::new(labels, slice).into();
             anyhow::ensure!(
-                region.is_subset(&worker_region),
+                worker_space.contains_space(&space),
                 "worker send target must be a subset of the worker mesh"
             );
 
@@ -818,7 +830,7 @@ impl MeshControllerActor {
             // if later slices overlap earlier ones.
             if ranks.iter().all(|rank| !seen.contains(rank)) {
                 seen.extend(ranks);
-                self.worker_slice(region).cast(this, message.clone())?;
+                self.worker_slice(space)?.cast(this, message.clone())?;
                 continue;
             }
 
@@ -826,11 +838,12 @@ impl MeshControllerActor {
                 if !seen.insert(rank) {
                     continue;
                 }
-                let singleton = Region::new(
+                let singleton: RankSpace = Region::new(
                     Vec::new(),
                     Slice::new(rank, Vec::new(), Vec::new()).map_err(anyhow::Error::from)?,
-                );
-                self.worker_slice(singleton).cast(this, message.clone())?;
+                )
+                .into();
+                self.worker_slice(singleton)?.cast(this, message.clone())?;
             }
         }
         Ok(())
@@ -921,7 +934,7 @@ impl MeshControllerActor {
 impl Actor for MeshControllerActor {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
         let controller_actor_ref: reference::ActorRef<ControllerActor> = this.bind();
-        let world_size = Ranked::region(&self.proc_mesh_ref).num_ranks();
+        let world_size = self.proc_mesh_ref.space().cardinality();
         let param = WorkerParams {
             world_size,
             // Rank assignment is consistent with proc indices.

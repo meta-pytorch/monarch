@@ -38,9 +38,7 @@ use lazy_errors::TryCollectOrStash;
 use monarch_conda::sync::sender;
 use ndslice::Shape;
 use ndslice::ShapeError;
-use ndslice::view::Ranked;
-use ndslice::view::RankedSliceable;
-use ndslice::view::ViewExt;
+use rankspace::view::View as _;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::io::AsyncReadExt;
@@ -136,7 +134,7 @@ impl WorkspaceShape {
         rank: usize,
     ) -> Result<hyperactor_mesh::ActorMeshRef<CodeSyncManager>> {
         let shape = self.downstream(rank)?;
-        Ok(mesh.sliced(shape.region()))
+        Ok(mesh.sliced(shape.region().into())?)
     }
 }
 
@@ -310,7 +308,7 @@ impl CodeSyncMessageHandler for CodeSyncManager {
                     },
                 )?;
                 // Exclude self from the sync.
-                let len = Ranked::region(&mesh).num_ranks() - 1;
+                let len = mesh.space().cardinality() - 1;
                 let _: ((), Vec<()>) = try_join!(
                     // Run reload for this rank.
                     self.reload(cx, self.rank.get().cloned(), tx),
@@ -379,11 +377,13 @@ impl Handler<SetActorMeshMessage> for CodeSyncManager {
     async fn handle(&mut self, cx: &Context<Self>, msg: SetActorMeshMessage) -> Result<()> {
         let mesh = self.self_mesh.get_or_init(|| msg.actor_mesh);
         self.rank.get_or_init(|| {
+            // The rank must be a base rank: it indexes `WorkspaceShape::shape`,
+            // whose slice carries the mesh's base offset and strides.
             mesh.iter()
                 .find(|(_, actor)| *actor.actor_addr() == *cx.self_addr())
                 .unwrap()
                 .0
-                .rank()
+                .get()
         });
         Ok(())
     }
@@ -410,8 +410,8 @@ pub async fn code_sync_mesh(
     // Create a slice of the actor mesh that only includes workspace "owners" (e.g. on multi-GPU hosts,
     // only one of the ranks on that host will participate in the code sync).
     let owner_shape = remote_workspace.shape.owners()?;
-    let actor_mesh = actor_mesh.sliced(owner_shape.region());
-    let num_ranks = Ranked::region(&actor_mesh).num_ranks();
+    let actor_mesh = actor_mesh.sliced(owner_shape.region().into())?;
+    let num_ranks = actor_mesh.space().cardinality();
 
     let (method, method_fut) = match method {
         CodeSyncMethod::Rsync => {

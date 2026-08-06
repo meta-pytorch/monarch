@@ -40,14 +40,13 @@ use hyperactor_mesh::proc_mesh::telemetry_actor_mesh_id;
 use hyperactor_mesh::shared_cell::SharedCell;
 use hyperactor_mesh::transport::default_bind_spec;
 use hyperactor_telemetry::hash_to_u64;
-use ndslice::View;
-use ndslice::view::RankedSliceable;
 use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyException;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
+use rankspace::view::View as _;
 
 use crate::actor::PythonActor;
 use crate::actor::to_py_error;
@@ -230,13 +229,15 @@ impl PyHostMesh {
 
     fn sliced(&self, region: &PyRegion) -> PyResult<Self> {
         Ok(Self::new_ref(
-            self.mesh_ref()?.sliced(region.as_inner().clone()),
+            self.mesh_ref()?
+                .sliced(region.as_inner().clone())
+                .map_err(anyhow::Error::from)?,
         ))
     }
 
     #[getter]
     fn region(&self) -> PyResult<PyRegion> {
-        Ok(PyRegion::from(self.mesh_ref()?.region()))
+        Ok(PyRegion::from(self.mesh_ref()?.region().clone()))
     }
 
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
@@ -608,14 +609,16 @@ impl PythonClientRoot {
             .await?;
         // `Ranked` is not imported at module scope: it would make the existing
         // `.region()` calls in this file ambiguous with `View::region`.
-        let actual = ndslice::view::Ranked::region(&*mesh).num_ranks();
+        let actual = mesh.space().cardinality();
         if actual != 1 {
             return Err(hyperactor_mesh::Error::InvalidRankCardinality {
                 expected: 1,
                 actual,
             });
         }
-        Ok(ndslice::view::Ranked::get(&*mesh, 0)
+        Ok(mesh
+            .values()
+            .next()
             .expect("singleton owner mesh must contain rank 0")
             .clone())
     }

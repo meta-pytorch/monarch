@@ -34,10 +34,12 @@ use hyperactor_config::attrs::declare_attrs;
 use hyperactor_telemetry::hash_to_u64;
 use ndslice::Extent;
 use ndslice::ViewExt as _;
-use ndslice::view;
 use ndslice::view::CollectMeshExt;
-use ndslice::view::Ranked;
 use ndslice::view::Region;
+use rankspace::DimRange;
+use rankspace::Rank;
+use rankspace::RankSpace;
+use rankspace::view::View as _;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -156,7 +158,7 @@ impl ProcMesh {
                 .as_ref()
                 .expect("ProcMesh always has a host mesh");
             let parent_mesh_id = hash_to_u64(hm.id());
-            let parent_view_json = serde_json::to_string(hm.region())
+            let parent_view_json = serde_json::to_string(&hm.region())
                 .unwrap_or_else(|e| format!("encountered error when serializing region: {}", e));
 
             hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
@@ -169,7 +171,8 @@ impl ProcMesh {
                     .unwrap_or("unnamed")
                     .to_string(),
                 full_name: name_str,
-                shape_json: serde_json::to_string(&current_ref.region.extent()).unwrap_or_default(),
+                shape_json: serde_json::to_string(&current_ref.region().extent())
+                    .unwrap_or_default(),
                 parent_mesh_id: Some(parent_mesh_id),
                 parent_view_json: Some(parent_view_json),
             });
@@ -263,7 +266,7 @@ impl ProcMesh {
             return Ok(());
         }
 
-        let region = self.region.clone();
+        let region = self.region();
         let procs = self.current_ref.proc_ids().collect::<Vec<ProcAddr>>();
         // We use the proc mesh region rather than the host mesh region
         // because the host agent stores one entry per proc, not per host.
@@ -315,7 +318,9 @@ impl Drop for ProcMesh {
 #[derive(Debug, Clone, Named, Serialize, Deserialize)]
 pub struct ProcMeshRef {
     id: ProcMeshId,
-    region: Region,
+    /// Rank space of the mesh. Proc meshes are dense by construction, so this
+    /// always projects back onto a [`Region`] via [`ProcMeshRef::region`].
+    space: RankSpace,
     ranks: Arc<Vec<ProcRef>>,
     /// Actor mesh for the `ProcAgent`s backing this proc mesh view.
     ///
@@ -337,7 +342,7 @@ wirevalue::register_type!(ProcMeshRef);
 impl PartialEq for ProcMeshRef {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id
-            && self.region == other.region
+            && self.space == other.space
             && self.ranks == other.ranks
             && self.host_mesh == other.host_mesh
     }
@@ -348,7 +353,7 @@ impl Eq for ProcMeshRef {}
 impl std::hash::Hash for ProcMeshRef {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.id.hash(state);
-        self.region.hash(state);
+        self.space.hash(state);
         self.ranks.hash(state);
         self.host_mesh.hash(state);
     }
@@ -377,7 +382,7 @@ impl ProcMeshRef {
         let proc_agent_mesh = Self::proc_agent_mesh_ref(&id, &region, &ranks)?;
         Ok(Self {
             id,
-            region,
+            space: region.into(),
             ranks,
             proc_agent_mesh,
             host_mesh,
@@ -393,7 +398,7 @@ impl ProcMeshRef {
         let proc_agent_mesh = Self::proc_agent_mesh_ref(&id, &region, &ranks)?;
         Ok(Self {
             id,
-            region,
+            space: region.into(),
             ranks,
             proc_agent_mesh,
             host_mesh: None,
@@ -402,6 +407,61 @@ impl ProcMeshRef {
 
     pub fn id(&self) -> &ProcMeshId {
         &self.id
+    }
+
+    /// The mesh rank space.
+    pub fn space(&self) -> &RankSpace {
+        &self.space
+    }
+
+    /// The dense region of the mesh.
+    ///
+    /// Proc meshes are dense by construction, so this is the `ndslice` geometry
+    /// still used by the spawn, supervision, and telemetry paths.
+    pub fn region(&self) -> Region {
+        Region::try_from(&self.space).expect("proc mesh rank space is dense by construction")
+    }
+
+    /// The proc at visible base `rank`.
+    pub fn get_rank(&self, rank: Rank) -> Option<&ProcRef> {
+        self.ranks.get(self.space.local_index_of(rank)?)
+    }
+
+    /// A sub-mesh over `space`, which must be a dense subspace of this mesh's
+    /// rank space.
+    ///
+    /// The returned `ProcMeshRef` contains the selected `ProcRef`s, and its
+    /// `proc_agent_mesh` carries a lazy actor-mesh slice descriptor.
+    ///
+    /// Sparse spaces are rejected so [`Self::region`] stays total. Every proc
+    /// mesh consumer that spawns, supervises, or reports on procs still speaks
+    /// dense `ndslice` geometry.
+    pub fn sliced(&self, space: impl Into<RankSpace>) -> crate::Result<Self> {
+        let space = space.into();
+        Region::try_from(&space)?;
+        let ranks: Vec<ProcRef> = space
+            .iter_ranks()
+            .filter_map(|rank| self.get_rank(rank).cloned())
+            .collect();
+        if ranks.len() != space.cardinality() {
+            return Err(crate::Error::InvalidRankCardinality {
+                expected: space.cardinality(),
+                actual: ranks.len(),
+            });
+        }
+
+        Ok(Self {
+            id: self.id.clone(),
+            proc_agent_mesh: self.proc_agent_mesh.sliced(space.clone())?,
+            space,
+            ranks: Arc::new(ranks),
+            host_mesh: self.host_mesh.clone(),
+        })
+    }
+
+    /// A sub-mesh restricted to `range` along dimension `dim`.
+    pub fn range(&self, dim: &str, range: impl Into<DimRange>) -> crate::Result<Self> {
+        self.sliced(self.space.select(dim, range)?)
     }
 
     pub fn host_mesh_id(&self) -> Option<&crate::mesh_id::HostMeshId> {
@@ -590,7 +650,7 @@ impl ProcMeshRef {
         let vm = states
             .into_iter()
             .map(|(_, state)| state)
-            .collect_mesh::<ValueMesh<_>>(self.region.clone())?;
+            .collect_mesh::<ValueMesh<_>>(self.region())?;
         Ok(vm)
     }
 
@@ -616,7 +676,7 @@ impl ProcMeshRef {
         let Some(host_mesh) = self.host_mesh.as_ref() else {
             return Ok(None);
         };
-        let region = self.region.clone();
+        let region = self.region();
         let timeout = hyperactor_config::global::get(GET_PROC_STATE_MAX_IDLE);
 
         // Per-rank template seeded with `Timeout` placeholders. Hosts overlay
@@ -856,7 +916,12 @@ impl ProcMeshRef {
             // Spawn a unique mesh manager for each actor mesh, so the type of the
             // mesh can be preserved.
             let controller: ActorMeshController<A> = ActorMeshController::new(
-                ActorMeshControlPlane::new(mesh.deref().clone(), self.clone()),
+                ActorMeshControlPlane::new(
+                    mesh.as_managed()
+                        .expect("newly spawned actor mesh should be managed")
+                        .clone(),
+                    self.clone(),
+                ),
                 supervision_display_name,
                 Some(cx.instance().port().bind()),
                 statuses,
@@ -919,7 +984,7 @@ impl ProcMeshRef {
             },
         )?;
 
-        let region = self.region().clone();
+        let region = self.region();
         // Open an accum port that *receives overlays* and *emits full
         // meshes*.
         //
@@ -1008,7 +1073,7 @@ impl ProcMeshRef {
             self.ranks
                 .iter()
                 .map(|rank| rank.actor_addr(&actor_mesh_id))
-                .collect_mesh::<ValueMesh<_>>(self.region().clone())
+                .collect_mesh::<ValueMesh<_>>(self.region())
                 .map_err(|error| crate::Error::ConfigurationError(error.into()))?,
         );
 
@@ -1025,6 +1090,7 @@ impl ProcMeshRef {
             // Hash the proc mesh id for parent_mesh_id.
             let parent_mesh_id_hash = hash_to_u64(self.id());
             let mesh_id_hash = telemetry_actor_mesh_id(self.id(), mesh.id());
+            let region = self.region();
 
             hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
                 id: mesh_id_hash,
@@ -1040,9 +1106,9 @@ impl ProcMeshRef {
                     .unwrap_or("unnamed")
                     .to_string(),
                 full_name: id_str,
-                shape_json: serde_json::to_string(&self.region().extent()).unwrap_or_default(),
+                shape_json: serde_json::to_string(&region.extent()).unwrap_or_default(),
                 parent_mesh_id: Some(parent_mesh_id_hash),
-                parent_view_json: serde_json::to_string(self.region()).ok(),
+                parent_view_json: serde_json::to_string(&region).ok(),
             });
 
             // Notify telemetry of each actor in this mesh. The rank is
@@ -1051,7 +1117,7 @@ impl ProcMeshRef {
             let now = std::time::SystemTime::now();
             for (rank, proc_ref) in self.ranks.iter().enumerate() {
                 let display_name = supervision_display_name.as_ref().map(|sdn| {
-                    let point = self.region().extent().point_of_rank(rank).unwrap();
+                    let point = region.extent().point_of_rank(rank).unwrap();
                     crate::actor_display_name(sdn, &point)
                 });
                 let actor_addr = proc_ref.actor_addr(&actor_mesh_id);
@@ -1103,7 +1169,7 @@ impl ProcMeshRef {
         actor_mesh_id: ActorMeshId,
         reason: String,
     ) -> crate::Result<ValueMesh<Status>> {
-        let region = self.region().clone();
+        let region = self.region();
         self.proc_agent_mesh.cast(
             cx,
             resource::Stop {
@@ -1189,43 +1255,17 @@ impl ProcMeshRef {
 
 impl fmt::Display for ProcMeshRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}{{{}}}", self.id, self.region)
+        write!(f, "{}{{{}}}", self.id, self.region())
     }
 }
 
-impl view::Ranked for ProcMeshRef {
-    type Item = ProcRef;
-
-    fn region(&self) -> &Region {
-        &self.region
+impl rankspace::view::View<ProcRef> for ProcMeshRef {
+    fn space(&self) -> &RankSpace {
+        ProcMeshRef::space(self)
     }
 
-    fn get(&self, rank: usize) -> Option<&Self::Item> {
-        self.ranks.get(rank)
-    }
-}
-
-impl view::RankedSliceable for ProcMeshRef {
-    /// Return a pure slice of this proc mesh.
-    ///
-    /// The returned `ProcMeshRef` contains the selected dense `ProcRef`s, and
-    /// its `proc_agent_mesh` carries a lazy actor-mesh slice descriptor.
-    fn sliced(&self, region: Region) -> Self {
-        debug_assert!(region.is_subset(view::Ranked::region(self)));
-        let ranks = self
-            .region()
-            .remap(&region)
-            .unwrap()
-            .map(|index| self.get(index).unwrap().clone())
-            .collect::<Vec<_>>();
-
-        Self {
-            id: self.id.clone(),
-            proc_agent_mesh: self.proc_agent_mesh.sliced(region.clone()),
-            region,
-            ranks: Arc::new(ranks),
-            host_mesh: self.host_mesh.clone(),
-        }
+    fn get_rank(&self, rank: Rank) -> Option<&ProcRef> {
+        ProcMeshRef::get_rank(self, rank)
     }
 }
 
@@ -1276,6 +1316,8 @@ mod tests {
     use ndslice::extent;
     #[cfg(fbcode_build)]
     use ndslice::view::Ranked as _;
+    #[cfg(fbcode_build)]
+    use rankspace::view::View as _;
     #[cfg(fbcode_build)]
     use timed_test::assert_no_process_leak;
     #[cfg(fbcode_build)]
@@ -1536,7 +1578,7 @@ mod tests {
             .unwrap();
         assert_shared(&w1, &s1);
         let s1_states = slice.actor_states(instance, s1.id().clone()).await.unwrap();
-        for rank in 0..slice.region().num_ranks() {
+        for rank in 0..slice.space().cardinality() {
             assert_eq!(
                 s1_states
                     .get(rank)
@@ -1558,7 +1600,7 @@ mod tests {
             .unwrap();
         assert_shared(&w2, &s2);
         let w2_states = whole.actor_states(instance, w2.id().clone()).await.unwrap();
-        for rank in 0..whole.region().num_ranks() {
+        for rank in 0..whole.space().cardinality() {
             assert_eq!(
                 w2_states
                     .get(rank)
@@ -1750,7 +1792,9 @@ mod tests {
         .await;
 
         // Verify casting to the sliced actor mesh
-        let sliced_actor_mesh = actor_mesh.range("hosts", 1..3).unwrap();
+        let sliced_actor_mesh = actor_mesh
+            .sliced(actor_mesh.space().select("hosts", 1..3).unwrap())
+            .unwrap();
         // Second cast. The seq should be 2 for actors in the sliced mesh.
         let expected_seqs = vec![2; 2];
         testactor::assert_casting_correctness(
@@ -1761,7 +1805,9 @@ mod tests {
         .await;
 
         // Verify casting to a different sliced actor mesh
-        let sliced_actor_mesh = actor_mesh.range("hosts", 0..2).unwrap();
+        let sliced_actor_mesh = actor_mesh
+            .sliced(actor_mesh.space().select("hosts", 0..2).unwrap())
+            .unwrap();
         // For actors in the previous sliced mesh, the seq should be 3 since
         // this is the third cast for them. For other actors, the seq should
         // be 2.
@@ -1941,7 +1987,7 @@ mod tests {
             .actor_states(instance, actor_name.clone())
             .await
             .unwrap();
-        assert_eq!(slice_states.extent(), host1.extent());
+        assert_eq!(slice_states.extent(), host1.region().extent());
 
         let err = proc_mesh
             .actor_states(instance, actor_name.clone())
@@ -1975,7 +2021,7 @@ mod tests {
             .unwrap()
             .expect("host-backed mesh yields Some");
 
-        assert_eq!(states.extent(), mesh.extent());
+        assert_eq!(states.extent(), mesh.region().extent());
 
         let mut got: Vec<usize> = states
             .values()

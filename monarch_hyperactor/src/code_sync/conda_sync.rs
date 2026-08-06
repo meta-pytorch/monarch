@@ -30,7 +30,6 @@ use lazy_errors::TryCollectOrStash;
 use monarch_conda::sync::Action;
 use monarch_conda::sync::receiver;
 use monarch_conda::sync::sender;
-use ndslice::view::Ranked;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::io::AsyncReadExt;
@@ -124,7 +123,7 @@ pub async fn conda_sync_mesh(
 
     let (res1, res2) = futures::future::join(
         conns_rx
-            .take(actor_mesh.region().slice().len())
+            .take(actor_mesh.space().cardinality())
             .err_into::<anyhow::Error>()
             .try_for_each_concurrent(None, |connect| async {
                 let (mut read, mut write) = accept(instance, instance.self_addr().clone(), connect)
@@ -157,7 +156,7 @@ pub async fn conda_sync_mesh(
 
             // Wait for all actors to report result.
             let results = result_rx
-                .take(actor_mesh.region().slice().len())
+                .take(actor_mesh.space().cardinality())
                 .try_collect::<Vec<_>>()
                 .await?;
 

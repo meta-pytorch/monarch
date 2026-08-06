@@ -36,6 +36,7 @@ nccl-sys = { path = "../nccl-sys", optional = true }
 ndslice = { version = "0.0.0", path = "../ndslice" }
 pyo3 = { version = "0.27", features = ["anyhow", "multiple-pymethods", "py-clone"] }
 pyo3-async-runtimes = { version = "0.27", features = ["attributes", "tokio-runtime"] }
+rankspace = { version = "0.0.0", path = "../rankspace" }
 rdmaxcel-sys = { path = "../rdmaxcel-sys", optional = true }
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 tokio = { version = "1.52.4", features = ["full", "test-util", "tracing"] }

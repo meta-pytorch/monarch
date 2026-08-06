@@ -31,7 +31,7 @@ use hyperactor_mesh::host_mesh::spawn_admin;
 use hyperactor_mesh::mesh_admin::MeshAdminMessageClient;
 use hyperactor_mesh::this_host;
 use hyperactor_mesh::this_proc;
-use ndslice::View;
+use rankspace::view::View as _;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -179,7 +179,7 @@ async fn main() -> Result<ExitCode> {
     let sieve_params = SieveParams { prime: 2 };
     let sieve_mesh: hyperactor_mesh::ActorMesh<SieveActor> =
         proc_mesh.spawn(&instance, "sieve", &sieve_params).await?;
-    let sieve_head = sieve_mesh.get(0).unwrap();
+    let sieve_head = sieve_mesh.get(0).unwrap().clone();
 
     let (prime_collector_tx, mut prime_collector_rx) = instance.open_port();
     let prime_collector_ref = prime_collector_tx.bind();
