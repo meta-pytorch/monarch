@@ -8,10 +8,11 @@
 
 //! Producer-side Unix-socket sink for telemetry sidecars.
 //!
-//! This module is the producer-side transport for telemetry. It installs
-//! an inactive process-global `UnixSocketSink`, buffers trace and entity events into
-//! schema-specific `RecordBatchBuffer`s, and, once activated with a socket
-//! path, forwards flushed batches to the sidecar over a Unix socket.
+//! This module is the producer-side transport for telemetry. It shares one
+//! process-global `UnixSocketSink` across traces, entities, and metrics. It buffers
+//! trace and entity events into schema-specific `RecordBatchBuffer`s and, once
+//! activated with a socket path, forwards flushed batches to the sidecar over a
+//! Unix socket. Metrics are sent only while the sink is active.
 //!
 //! The dispatcher thread only does cheap row buffering and bounded channel
 //! sends. Arrow IPC serialization and socket I/O run on a dedicated writer
@@ -53,6 +54,12 @@ use monarch_telemetry_schema::entity_tables::MessageStatusEventBuffer;
 use monarch_telemetry_schema::entity_tables::SENT_MESSAGES;
 use monarch_telemetry_schema::entity_tables::SentMessage;
 use monarch_telemetry_schema::entity_tables::SentMessageBuffer;
+use monarch_telemetry_schema::metric_tables::METRIC_GAUGES;
+use monarch_telemetry_schema::metric_tables::METRIC_HISTOGRAMS;
+use monarch_telemetry_schema::metric_tables::METRIC_SUMS;
+use monarch_telemetry_schema::metric_tables::MetricGaugeBuffer;
+use monarch_telemetry_schema::metric_tables::MetricHistogramBuffer;
+use monarch_telemetry_schema::metric_tables::MetricSumBuffer;
 use monarch_telemetry_schema::trace_tables::EVENTS;
 use monarch_telemetry_schema::trace_tables::Event;
 use monarch_telemetry_schema::trace_tables::EventBuffer;
@@ -77,6 +84,10 @@ const WORKER_QUEUE_CAPACITY: usize = 10_000;
 
 /// Process-global sink installed with the tracing subscriber and activated later.
 static UNIX_SOCKET_SINK: OnceLock<Arc<UnixSocketSink>> = OnceLock::new();
+
+fn unix_socket_sink() -> &'static Arc<UnixSocketSink> {
+    UNIX_SOCKET_SINK.get_or_init(|| Arc::new(UnixSocketSink::new()))
+}
 
 /// Producer-side sink that forwards telemetry batches to a sidecar socket.
 pub struct UnixSocketSink {
@@ -117,6 +128,9 @@ enum TelemetryTableBuffer {
     SentMessages(SentMessageBuffer),
     Messages(MessageBuffer),
     MessageStatusEvents(MessageStatusEventBuffer),
+    MetricGauges(MetricGaugeBuffer),
+    MetricSums(MetricSumBuffer),
+    MetricHistograms(MetricHistogramBuffer),
 }
 
 struct UnixSocketSinkAdapter {
@@ -197,6 +211,51 @@ impl UnixSocketSink {
     /// Return the cumulative number of dropped socket frames.
     pub fn dropped_frames(&self) -> u64 {
         self.dropped.load(Ordering::Relaxed)
+    }
+
+    fn send_metric_buffers(
+        &self,
+        gauges: MetricGaugeBuffer,
+        sums: MetricSumBuffer,
+        histograms: MetricHistogramBuffer,
+    ) {
+        let sender = match self.inner.lock() {
+            Ok(inner) => inner.worker.as_ref().map(|worker| worker.sender.clone()),
+            Err(_) => {
+                let dropped = [gauges.is_empty(), sums.is_empty(), histograms.is_empty()]
+                    .into_iter()
+                    .filter(|empty| !empty)
+                    .count() as u64;
+                self.dropped.fetch_add(dropped, Ordering::Relaxed);
+                return;
+            }
+        };
+
+        let Some(sender) = sender else {
+            return;
+        };
+
+        if !gauges.is_empty() {
+            try_send_table_buffer(
+                TelemetryTableBuffer::MetricGauges(gauges),
+                &sender,
+                &self.dropped,
+            );
+        }
+        if !sums.is_empty() {
+            try_send_table_buffer(
+                TelemetryTableBuffer::MetricSums(sums),
+                &sender,
+                &self.dropped,
+            );
+        }
+        if !histograms.is_empty() {
+            try_send_table_buffer(
+                TelemetryTableBuffer::MetricHistograms(histograms),
+                &sender,
+                &self.dropped,
+            );
+        }
     }
 
     /// Convert one dispatcher event into its table row and buffer it locally.
@@ -394,8 +453,7 @@ impl TraceEventSink for UnixSocketSinkAdapter {
 
 /// Install the inactive process-global Unix socket sink.
 pub(crate) fn install_unix_socket_sink_inactive() -> Box<dyn TraceEventSink> {
-    let sink = Arc::new(UnixSocketSink::new());
-    let _ = UNIX_SOCKET_SINK.set(Arc::clone(&sink));
+    let sink = Arc::clone(unix_socket_sink());
     Box::new(UnixSocketSinkAdapter {
         sink,
         target_filter: get_tracing_targets(),
@@ -404,10 +462,7 @@ pub(crate) fn install_unix_socket_sink_inactive() -> Box<dyn TraceEventSink> {
 
 /// Activate the process-global Unix socket sink against a socket path.
 pub fn set_unix_socket_sink_path(path: impl Into<PathBuf>) -> anyhow::Result<()> {
-    let sink = UNIX_SOCKET_SINK
-        .get()
-        .ok_or_else(|| anyhow::anyhow!("unix socket sink is not installed"))?;
-    sink.set_path(path.into())
+    unix_socket_sink().set_path(path.into())
 }
 
 /// Return whether the process-global Unix socket sink is active.
@@ -423,6 +478,18 @@ pub fn unix_socket_sink_dropped_frames() -> Option<u64> {
     UNIX_SOCKET_SINK.get().map(|sink| sink.dropped_frames())
 }
 
+/// Send encoded metric table buffers through the active sidecar transport.
+pub(crate) fn send_metric_buffers(
+    gauges: MetricGaugeBuffer,
+    sums: MetricSumBuffer,
+    histograms: MetricHistogramBuffer,
+) {
+    let Some(sink) = UNIX_SOCKET_SINK.get() else {
+        return;
+    };
+    sink.send_metric_buffers(gauges, sums, histograms);
+}
+
 fn flush_buffer<B>(
     buffer: &mut B,
     table_buffer: impl FnOnce(B) -> TelemetryTableBuffer,
@@ -436,7 +503,15 @@ fn flush_buffer<B>(
     }
 
     let batch = table_buffer(std::mem::take(buffer));
-    match sender.try_send(batch) {
+    try_send_table_buffer(batch, sender, dropped);
+}
+
+fn try_send_table_buffer(
+    buffer: TelemetryTableBuffer,
+    sender: &mpsc::SyncSender<TelemetryTableBuffer>,
+    dropped: &AtomicU64,
+) {
+    match sender.try_send(buffer) {
         Ok(()) => {}
         Err(mpsc::TrySendError::Full(_)) | Err(mpsc::TrySendError::Disconnected(_)) => {
             // Socket delivery must never backpressure the tracing dispatcher.
@@ -547,6 +622,15 @@ fn writer_loop(
             TelemetryTableBuffer::MessageStatusEvents(buffer) => {
                 (MESSAGE_STATUS_EVENTS, buffer.drain_to_record_batch())
             }
+            TelemetryTableBuffer::MetricGauges(buffer) => {
+                (METRIC_GAUGES, buffer.drain_to_record_batch())
+            }
+            TelemetryTableBuffer::MetricSums(buffer) => {
+                (METRIC_SUMS, buffer.drain_to_record_batch())
+            }
+            TelemetryTableBuffer::MetricHistograms(buffer) => {
+                (METRIC_HISTOGRAMS, buffer.drain_to_record_batch())
+            }
         };
         let Ok(batch) = batch else {
             dropped.fetch_add(1, Ordering::Relaxed);
@@ -650,6 +734,9 @@ mod tests {
     use std::time::SystemTime;
 
     use monarch_record_batch::RecordBatchBuffer;
+    use monarch_telemetry_schema::metric_tables::MetricGauge;
+    use monarch_telemetry_schema::metric_tables::MetricHistogram;
+    use monarch_telemetry_schema::metric_tables::MetricSum;
 
     use super::*;
     use crate::ActorEvent;
@@ -775,6 +862,69 @@ mod tests {
                 status: "complete".to_string(),
             })),
         ]
+    }
+
+    fn metric_gauge_buffer() -> MetricGaugeBuffer {
+        let mut buffer = MetricGaugeBuffer::default();
+        buffer.insert(MetricGauge {
+            name: "load".to_string(),
+            timestamp_us: 123,
+            start_timestamp_us: None,
+            scope_name: "test".to_string(),
+            unit: "1".to_string(),
+            attributes_json: "{}".to_string(),
+            resource_attributes_json: "{}".to_string(),
+            value_f64: Some(1.5),
+            value_i64: None,
+            value_u64: None,
+        });
+        buffer
+    }
+
+    fn metric_sum_buffer() -> MetricSumBuffer {
+        let mut buffer = MetricSumBuffer::default();
+        buffer.insert(MetricSum {
+            name: "mailbox.posts".to_string(),
+            timestamp_us: 123,
+            start_timestamp_us: 100,
+            scope_name: "hyperactor::mailbox".to_string(),
+            unit: "1".to_string(),
+            temporality: "delta".to_string(),
+            is_monotonic: true,
+            attributes_json: r#"{"actor_id":"actor"}"#.to_string(),
+            resource_attributes_json: r#"{"execution_id":"test"}"#.to_string(),
+            sum_f64: None,
+            sum_i64: None,
+            sum_u64: Some(3),
+        });
+        buffer
+    }
+
+    fn metric_histogram_buffer() -> MetricHistogramBuffer {
+        let mut buffer = MetricHistogramBuffer::default();
+        buffer.insert(MetricHistogram {
+            name: "latency".to_string(),
+            timestamp_us: 123,
+            start_timestamp_us: 100,
+            scope_name: "test".to_string(),
+            unit: "ms".to_string(),
+            temporality: "delta".to_string(),
+            attributes_json: "{}".to_string(),
+            resource_attributes_json: "{}".to_string(),
+            count: 1,
+            sum_f64: Some(5.0),
+            sum_i64: None,
+            sum_u64: None,
+            min_f64: Some(5.0),
+            min_i64: None,
+            min_u64: None,
+            max_f64: Some(5.0),
+            max_i64: None,
+            max_u64: None,
+            bounds_json: "[10.0]".to_string(),
+            bucket_counts_json: "[1,0]".to_string(),
+        });
+        buffer
     }
 
     fn read_frame(stream: &mut UnixStream) -> Frame {
@@ -987,6 +1137,57 @@ mod tests {
         );
         frames.iter().for_each(assert_entity_frame_schema);
         assert_eq!(sink.dropped_frames(), 0);
+    }
+
+    #[test]
+    fn active_sink_sends_metric_frames() {
+        let path = socket_path("metrics.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let read_handle = std::thread::spawn(move || {
+            let (stream, _addr) = listener.accept().unwrap();
+            sender.send(read_frames(stream, 3)).unwrap();
+        });
+
+        let sink = UnixSocketSink::new();
+        sink.set_path(path).unwrap();
+        sink.send_metric_buffers(
+            metric_gauge_buffer(),
+            metric_sum_buffer(),
+            metric_histogram_buffer(),
+        );
+
+        let frames = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+        read_handle.join().unwrap();
+        assert_eq!(frames[0].table_name, METRIC_GAUGES);
+        assert_frame_batch::<MetricGaugeBuffer>(&frames[0]);
+        assert_eq!(frames[1].table_name, METRIC_SUMS);
+        assert_frame_batch::<MetricSumBuffer>(&frames[1]);
+        assert_eq!(frames[2].table_name, METRIC_HISTOGRAMS);
+        assert_frame_batch::<MetricHistogramBuffer>(&frames[2]);
+        assert_eq!(sink.dropped_frames(), 0);
+    }
+
+    #[test]
+    fn poisoned_sink_counts_dropped_metric_frames() {
+        let sink = Arc::new(UnixSocketSink::new());
+        let poison_sink = Arc::clone(&sink);
+        assert!(
+            std::thread::spawn(move || {
+                let _guard = poison_sink.inner.lock().unwrap();
+                panic!("poison metric sink lock");
+            })
+            .join()
+            .is_err()
+        );
+
+        sink.send_metric_buffers(
+            metric_gauge_buffer(),
+            metric_sum_buffer(),
+            metric_histogram_buffer(),
+        );
+
+        assert_eq!(sink.dropped_frames(), 3);
     }
 
     #[test]
