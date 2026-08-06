@@ -19,6 +19,7 @@ use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 use anyhow::Context;
+use datafusion::arrow::compute::BatchCoalescer;
 use datafusion::arrow::compute::concat_batches;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
@@ -336,6 +337,92 @@ const RETENTION_TABLES: &[&str] = &[
 
 /// Interval between routine retention sweeps.
 const RETENTION_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Target rows per batch streamed back to the query root.
+///
+/// Every batch a scan emits costs an Arrow IPC serialization plus a hyperactor
+/// message, so scan cost tracks *batch* count, not row count.
+///
+/// [`COMPACT_TARGET_ROWS`] bounds fragmentation in storage, but that is not
+/// enough on its own: the tail is only merged once the pending run reaches the
+/// target, so between merges it holds up to that many rows spread across as
+/// many batches as there were ingests. An unfiltered scan emits one batch per
+/// stored batch and so pays for the whole tail -- measured at 242 batches for
+/// 9,180 rows, 623 for 10,582, and up to 1,752, against a max of 2 once
+/// coalesced.
+///
+/// This applies specifically to *unfiltered* scans. A filter is pushed down to
+/// the collector, where DataFusion inserts a `CoalesceBatchesExec` after the
+/// `FilterExec`, so filtered output already arrives in one batch regardless of
+/// selectivity. A bare table read has no such operator. The dashboard's hot
+/// queries -- `COUNT(*)`, `GROUP BY`, latest-status aggregates over a whole
+/// table -- are exactly the unfiltered kind.
+///
+/// 8192 matches DataFusion's `execution.batch_size` default, so coalesced
+/// batches arrive at the query root already the size its operators expect.
+const SCAN_TARGET_BATCH_ROWS: usize = 8192;
+
+/// Bypass coalescing for batches larger than this.
+///
+/// Without a bypass every row is copied into per-column accumulators and
+/// re-split to exactly the target, so batches that are already large would be
+/// rebuilt for no benefit.
+///
+/// Half the target, matching every DataFusion call site
+/// (`CoalesceBatchesExec`, hash join, sort-merge join). It must be strictly
+/// below the target: arrow bypasses only when `rows > limit`, so a limit equal
+/// to the target would still rebuild exactly-target-sized batches -- and that
+/// is precisely the size compaction seals and the retention rewrite emits, via
+/// DataFusion's `execution.batch_size` default. The cost of the lower bound is
+/// that a batch between half and one target is emitted as-is rather than being
+/// merged with its neighbours; storage produces at most one such batch per
+/// table (a retention rewrite's remainder), so this trades one extra message
+/// for never rebuilding the common case.
+const SCAN_BYPASS_COALESCE_ROWS: usize = SCAN_TARGET_BATCH_ROWS / 2;
+
+/// Build the coalescer that groups a scan's output batches.
+///
+/// A large batch arriving on a non-empty buffer flushes the buffer first, so
+/// row order is preserved whether or not a batch bypasses.
+fn scan_coalescer(schema: SchemaRef) -> BatchCoalescer {
+    BatchCoalescer::new(schema, SCAN_TARGET_BATCH_ROWS)
+        .with_biggest_coalesce_batch_size(Some(SCAN_BYPASS_COALESCE_ROWS))
+}
+
+/// Schema of the batches a scan emits.
+///
+/// `BatchCoalescer` needs its schema up front, so the zero-column projection
+/// that COUNT(*) uses has to be applied here as well as to each batch.
+fn scan_output_schema(stream_schema: SchemaRef, is_empty_projection: bool) -> DFResult<SchemaRef> {
+    if is_empty_projection {
+        return Ok(Arc::new(stream_schema.project(&[])?));
+    }
+    Ok(stream_schema)
+}
+
+/// Serialize `batch` and post it to `dest_ref`.
+///
+/// A serialization failure fails the scan rather than skipping the batch.
+/// Skipping matched the previous per-batch behaviour, but a coalesced batch
+/// carries up to [`SCAN_TARGET_BATCH_ROWS`] rows, and dropping it would leave
+/// the query silently short of that many rows while still reporting success --
+/// the batch count the root waits for is only incremented on a successful post,
+/// so nothing downstream would notice.
+fn post_batch(
+    batch: &RecordBatch,
+    instance: &Instance<PythonActor>,
+    dest_ref: &reference::PortRef<QueryResponse>,
+) -> DFResult<()> {
+    let data = serialize_batch(batch)
+        .map_err(|error| datafusion::error::DataFusionError::External(error.into()))?;
+    dest_ref.post(
+        instance,
+        QueryResponse {
+            data: Part::from(data),
+        },
+    );
+    Ok(())
+}
 
 fn build_scan_dataframe(
     ctx: &SessionContext,
@@ -979,7 +1066,10 @@ impl DatabaseScanner {
                     limit,
                 )?;
                 let mut stream = df.execute_stream().await?;
+                let mut coalescer =
+                    scan_coalescer(scan_output_schema(stream.schema(), is_empty_projection)?);
                 let mut count: usize = 0;
+                let mut rows: usize = 0;
 
                 while let Some(result) = stream.next().await {
                     let batch = result?;
@@ -991,20 +1081,27 @@ impl DatabaseScanner {
                         batch
                     };
 
-                    if let Ok(data) = serialize_batch(&batch) {
-                        tracing::trace!("Scanner {}: sending batch {}", rank, count);
-                        let msg = QueryResponse {
-                            data: Part::from(data),
-                        };
-                        dest_ref.post(instance, msg);
+                    coalescer.push_batch(batch)?;
+                    while let Some(coalesced) = coalescer.next_completed_batch() {
+                        post_batch(&coalesced, instance, dest_ref)?;
                         count += 1;
+                        rows += coalesced.num_rows();
                     }
                 }
+                coalescer.finish_buffered_batch()?;
+                while let Some(coalesced) = coalescer.next_completed_batch() {
+                    post_batch(&coalesced, instance, dest_ref)?;
+                    count += 1;
+                    rows += coalesced.num_rows();
+                }
 
+                // Counted after posting, so the log never reports rows that
+                // failed to reach the root.
                 tracing::info!(
-                    "Scanner {}: local scan complete, sent {} batches",
+                    "Scanner {}: local scan complete, sent {} batches ({} rows)",
                     rank,
-                    count
+                    count,
+                    rows
                 );
                 Ok::<usize, datafusion::error::DataFusionError>(count)
             })
@@ -2201,6 +2298,154 @@ mod tests {
         assert_eq!(table.pending_batches.load(Ordering::Relaxed), 0);
         assert_eq!(table.pending_rows.load(Ordering::Relaxed), 0);
         assert_eq!(row_count(&table).await, 10, "retention kept every row");
+    }
+
+    /// Drive the coalescer exactly as `execute_scan_streaming` does, through the
+    /// same `scan_output_schema` and `scan_coalescer` the scan path uses,
+    /// returning the batches that would have been posted.
+    fn run_coalescer(input: Vec<RecordBatch>, is_empty_projection: bool) -> Vec<RecordBatch> {
+        // `input` carries the stream's own schema, unprojected, so the schema
+        // and the per-batch projection are derived here the same way the scan
+        // loop derives them.
+        let schema = scan_output_schema(input[0].schema(), is_empty_projection).unwrap();
+        let mut coalescer = scan_coalescer(schema);
+        let mut posted = Vec::new();
+        for batch in input {
+            let batch = if is_empty_projection {
+                batch.project(&[]).unwrap()
+            } else {
+                batch
+            };
+            coalescer.push_batch(batch).unwrap();
+            while let Some(coalesced) = coalescer.next_completed_batch() {
+                posted.push(coalesced);
+            }
+        }
+        coalescer.finish_buffered_batch().unwrap();
+        while let Some(coalesced) = coalescer.next_completed_batch() {
+            posted.push(coalesced);
+        }
+        posted
+    }
+
+    fn values_of(batches: &[RecordBatch]) -> Vec<i64> {
+        batches
+            .iter()
+            .flat_map(|b| {
+                b.column(0)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap()
+                    .values()
+                    .to_vec()
+            })
+            .collect()
+    }
+
+    // The transport groups scan output into few large messages: one message per
+    // SCAN_TARGET_BATCH_ROWS rather than one per stored batch. This is the whole
+    // point of the change -- a 290k-row table previously streamed 68,983
+    // messages.
+    #[test]
+    fn test_scan_coalescer_emits_one_batch_per_target() {
+        let rows = SCAN_TARGET_BATCH_ROWS * 2 + 5;
+        let input: Vec<RecordBatch> = (0..rows).map(|i| make_batch(&[i as i64])).collect();
+
+        let posted = run_coalescer(input, false);
+
+        assert_eq!(
+            posted.len(),
+            3,
+            "{rows} rows should post 2 full batches plus a remainder"
+        );
+        assert_eq!(
+            posted.iter().map(|b| b.num_rows()).sum::<usize>(),
+            rows,
+            "coalescing must not drop rows"
+        );
+        assert_eq!(
+            values_of(&posted),
+            (0..rows as i64).collect::<Vec<_>>(),
+            "coalescing must preserve scan order"
+        );
+        assert!(
+            posted[0].num_rows() >= SCAN_TARGET_BATCH_ROWS,
+            "flushed batches should reach the target"
+        );
+    }
+
+    // A batch that is already exactly the target size must be passed through,
+    // not rebuilt. arrow's bypass triggers on `size > limit`, so a limit equal
+    // to the target would copy every exactly-target-sized batch -- and that is
+    // precisely the size compaction seals and the retention rewrite emits, via
+    // DataFusion's `execution.batch_size` default. Pointer identity on the
+    // column is what distinguishes a pass-through from a rebuild.
+    #[test]
+    fn test_exact_target_size_batch_is_not_copied() {
+        let values: Vec<i64> = (0..SCAN_TARGET_BATCH_ROWS as i64).collect();
+        let batch = make_batch(&values);
+        assert_eq!(batch.num_rows(), SCAN_TARGET_BATCH_ROWS);
+        let original = batch.column(0).clone();
+
+        let posted = run_coalescer(vec![batch], false);
+
+        assert_eq!(posted.len(), 1, "one batch in, one batch out");
+        assert_eq!(posted[0].num_rows(), SCAN_TARGET_BATCH_ROWS);
+        assert!(
+            Arc::ptr_eq(&original, posted[0].column(0)),
+            "an exactly-target-sized batch must bypass coalescing, not be rebuilt"
+        );
+    }
+
+    // A scan that yields only empty batches must post nothing, and must not
+    // leave them buffered.
+    #[test]
+    fn test_scan_coalescer_drops_empty_batches() {
+        let input: Vec<RecordBatch> = (0..100).map(|_| make_batch(&[])).collect();
+
+        let posted = run_coalescer(input, false);
+
+        assert!(posted.is_empty(), "empty batches should post no messages");
+    }
+
+    // The final partial batch must still be emitted; losing it would silently
+    // truncate every result smaller than the target.
+    #[test]
+    fn test_scan_coalescer_flushes_remainder() {
+        let posted = run_coalescer(vec![make_batch(&[1, 2]), make_batch(&[3])], false);
+
+        assert_eq!(posted.len(), 1, "a short scan posts a single batch");
+        assert_eq!(values_of(&posted), vec![1, 2, 3]);
+    }
+
+    // COUNT(*) scans project to zero columns, where the row count lives in
+    // RecordBatch metadata rather than in any array. Coalescing and then the
+    // Arrow IPC roundtrip must both carry it: if either dropped it, every
+    // COUNT(*) in the dashboard would silently return 0.
+    #[test]
+    fn test_empty_projection_survives_coalesce_and_ipc_roundtrip() {
+        // Batches go in with columns, as they arrive from the stream; the
+        // zero-column projection is applied by the scan path being exercised.
+        let input = vec![make_batch(&[1, 2]), make_batch(&[3])];
+
+        let posted = run_coalescer(input, true);
+
+        assert_eq!(posted.len(), 1);
+        assert_eq!(posted[0].num_columns(), 0, "projection yields no columns");
+        assert_eq!(
+            posted[0].num_rows(),
+            3,
+            "2+1 zero-column rows coalesce to 3"
+        );
+
+        let wire = serialize_batch(&posted[0]).expect("serialize zero-column batch");
+        let decoded = deserialize_one_batch(&wire).expect("decode zero-column batch");
+
+        assert_eq!(
+            decoded.num_rows(),
+            3,
+            "row count must survive the wire, or COUNT(*) reads 0"
+        );
     }
 
     // Coalescing preserves every row when batches carry columns.
