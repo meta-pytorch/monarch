@@ -38,6 +38,12 @@ use monarch_telemetry_schema::entity_tables::MessageBuffer;
 use monarch_telemetry_schema::entity_tables::MessageStatusEventBuffer;
 use monarch_telemetry_schema::entity_tables::SENT_MESSAGES;
 use monarch_telemetry_schema::entity_tables::SentMessageBuffer;
+use monarch_telemetry_schema::metric_tables::METRIC_GAUGES;
+use monarch_telemetry_schema::metric_tables::METRIC_HISTOGRAMS;
+use monarch_telemetry_schema::metric_tables::METRIC_SUMS;
+use monarch_telemetry_schema::metric_tables::MetricGaugeBuffer;
+use monarch_telemetry_schema::metric_tables::MetricHistogramBuffer;
+use monarch_telemetry_schema::metric_tables::MetricSumBuffer;
 pub use monarch_telemetry_schema::serialize_batch;
 use monarch_telemetry_schema::trace_tables::EVENTS;
 use monarch_telemetry_schema::trace_tables::EventBuffer;
@@ -99,9 +105,9 @@ fn _start_socket_ingest(scanner: PyRef<'_, DatabaseScanner>, socket_path: &str) 
         .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))
 }
 
-/// Register trace and entity schemas with a database scanner.
+/// Register trace, entity, and metric schemas with a database scanner.
 #[pyfunction]
-fn _register_trace_entity_schemas(scanner: PyRef<'_, DatabaseScanner>) -> PyResult<()> {
+fn _register_telemetry_schemas(scanner: PyRef<'_, DatabaseScanner>) -> PyResult<()> {
     register_table_schema::<SpanBuffer>(&scanner, SPANS)?;
     register_table_schema::<SpanEventBuffer>(&scanner, SPAN_EVENTS)?;
     register_table_schema::<EventBuffer>(&scanner, EVENTS)?;
@@ -111,6 +117,9 @@ fn _register_trace_entity_schemas(scanner: PyRef<'_, DatabaseScanner>) -> PyResu
     register_table_schema::<SentMessageBuffer>(&scanner, SENT_MESSAGES)?;
     register_table_schema::<MessageBuffer>(&scanner, MESSAGES)?;
     register_table_schema::<MessageStatusEventBuffer>(&scanner, MESSAGE_STATUS_EVENTS)?;
+    register_table_schema::<MetricGaugeBuffer>(&scanner, METRIC_GAUGES)?;
+    register_table_schema::<MetricSumBuffer>(&scanner, METRIC_SUMS)?;
+    register_table_schema::<MetricHistogramBuffer>(&scanner, METRIC_HISTOGRAMS)?;
     Ok(())
 }
 
@@ -138,7 +147,7 @@ fn _set_unix_socket_sink_path(socket_path: &str) -> PyResult<()> {
 
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_start_socket_ingest, module)?)?;
-    module.add_function(wrap_pyfunction!(_register_trace_entity_schemas, module)?)?;
+    module.add_function(wrap_pyfunction!(_register_telemetry_schemas, module)?)?;
     module.add_function(wrap_pyfunction!(_set_unix_socket_sink_path, module)?)?;
     Ok(())
 }

@@ -213,14 +213,90 @@ pub mod entity_tables {
     }
 }
 
+/// Metric table row schemas.
+pub mod metric_tables {
+    use super::*;
+
+    /// Table containing OpenTelemetry gauge data points.
+    pub const METRIC_GAUGES: &str = "metric_gauges";
+    /// Table containing OpenTelemetry sum data points.
+    pub const METRIC_SUMS: &str = "metric_sums";
+    /// Table containing OpenTelemetry explicit-histogram data points.
+    pub const METRIC_HISTOGRAMS: &str = "metric_histograms";
+
+    /// Row data for the metric gauges table.
+    #[derive(RecordBatchRow)]
+    pub struct MetricGauge {
+        pub name: String,
+        pub timestamp_us: i64,
+        pub start_timestamp_us: Option<i64>,
+        pub scope_name: String,
+        pub unit: String,
+        pub attributes_json: String,
+        pub resource_attributes_json: String,
+        pub value_f64: Option<f64>,
+        pub value_i64: Option<i64>,
+        pub value_u64: Option<u64>,
+    }
+
+    /// Row data for the metric sums table.
+    #[derive(RecordBatchRow)]
+    pub struct MetricSum {
+        pub name: String,
+        pub timestamp_us: i64,
+        pub start_timestamp_us: i64,
+        pub scope_name: String,
+        pub unit: String,
+        pub temporality: String,
+        pub is_monotonic: bool,
+        pub attributes_json: String,
+        pub resource_attributes_json: String,
+        pub sum_f64: Option<f64>,
+        pub sum_i64: Option<i64>,
+        pub sum_u64: Option<u64>,
+    }
+
+    /// Row data for the metric histograms table.
+    #[derive(RecordBatchRow)]
+    pub struct MetricHistogram {
+        pub name: String,
+        pub timestamp_us: i64,
+        pub start_timestamp_us: i64,
+        pub scope_name: String,
+        pub unit: String,
+        pub temporality: String,
+        pub attributes_json: String,
+        pub resource_attributes_json: String,
+        pub count: u64,
+        pub sum_f64: Option<f64>,
+        pub sum_i64: Option<i64>,
+        pub sum_u64: Option<u64>,
+        pub min_f64: Option<f64>,
+        pub min_i64: Option<i64>,
+        pub min_u64: Option<u64>,
+        pub max_f64: Option<f64>,
+        pub max_i64: Option<i64>,
+        pub max_u64: Option<u64>,
+        pub bounds_json: String,
+        pub bucket_counts_json: String,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use datafusion::arrow::array::Float64Array;
     use datafusion::arrow::array::StringArray;
     use datafusion::arrow::array::UInt64Array;
     use monarch_record_batch::RecordBatchBuffer;
     use serde_json::json;
 
     use super::*;
+    use crate::metric_tables::MetricGauge;
+    use crate::metric_tables::MetricGaugeBuffer;
+    use crate::metric_tables::MetricHistogram;
+    use crate::metric_tables::MetricHistogramBuffer;
+    use crate::metric_tables::MetricSum;
+    use crate::metric_tables::MetricSumBuffer;
     use crate::trace_tables::Span;
     use crate::trace_tables::SpanBuffer;
 
@@ -308,5 +384,121 @@ mod tests {
             .downcast_ref::<StringArray>()
             .unwrap();
         assert_eq!(names.value(0), "span");
+    }
+
+    #[test]
+    fn metric_table_schemas_round_trip() {
+        let mut gauges = MetricGaugeBuffer::default();
+        gauges.insert(MetricGauge {
+            name: "load".to_string(),
+            timestamp_us: 123,
+            start_timestamp_us: None,
+            scope_name: "test".to_string(),
+            unit: "1".to_string(),
+            attributes_json: "{}".to_string(),
+            resource_attributes_json: r#"{"execution_id":"test"}"#.to_string(),
+            value_f64: Some(1.5),
+            value_i64: None,
+            value_u64: None,
+        });
+        let gauge_batch = deserialize_one_batch(
+            &serialize_batch(&gauges.drain_to_record_batch().unwrap()).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(gauge_batch.num_rows(), 1);
+        assert_eq!(
+            gauge_batch
+                .column_by_name("value_f64")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<Float64Array>()
+                .unwrap()
+                .value(0),
+            1.5
+        );
+
+        let mut sums = MetricSumBuffer::default();
+        sums.insert(MetricSum {
+            name: "mailbox.posts".to_string(),
+            timestamp_us: 123,
+            start_timestamp_us: 100,
+            scope_name: "hyperactor::mailbox".to_string(),
+            unit: "1".to_string(),
+            temporality: "delta".to_string(),
+            is_monotonic: true,
+            attributes_json: r#"{"actor_id":"actor"}"#.to_string(),
+            resource_attributes_json: r#"{"execution_id":"test"}"#.to_string(),
+            sum_f64: None,
+            sum_i64: None,
+            sum_u64: Some(u64::MAX),
+        });
+        let sum_batch = deserialize_one_batch(
+            &serialize_batch(&sums.drain_to_record_batch().unwrap()).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(sum_batch.num_rows(), 1);
+        let names = sum_batch
+            .column_by_name("name")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(names.value(0), "mailbox.posts");
+        let resource_attributes = sum_batch
+            .column_by_name("resource_attributes_json")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(resource_attributes.value(0), r#"{"execution_id":"test"}"#);
+        let values = sum_batch
+            .column_by_name("sum_u64")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
+        assert_eq!(values.value(0), u64::MAX);
+
+        let mut histograms = MetricHistogramBuffer::default();
+        histograms.insert(MetricHistogram {
+            name: "latency".to_string(),
+            timestamp_us: 123,
+            start_timestamp_us: 100,
+            scope_name: "test".to_string(),
+            unit: "ms".to_string(),
+            temporality: "delta".to_string(),
+            attributes_json: "{}".to_string(),
+            resource_attributes_json: "{}".to_string(),
+            count: 1,
+            sum_f64: Some(5.0),
+            sum_i64: None,
+            sum_u64: None,
+            min_f64: Some(5.0),
+            min_i64: None,
+            min_u64: None,
+            max_f64: Some(5.0),
+            max_i64: None,
+            max_u64: None,
+            bounds_json: "[1.0,10.0]".to_string(),
+            bucket_counts_json: "[0,1,0]".to_string(),
+        });
+        let histogram_batch = deserialize_one_batch(
+            &serialize_batch(&histograms.drain_to_record_batch().unwrap()).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(histogram_batch.num_rows(), 1);
+        assert_eq!(
+            histogram_batch
+                .column_by_name("count")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<UInt64Array>()
+                .unwrap()
+                .value(0),
+            1
+        );
     }
 }
