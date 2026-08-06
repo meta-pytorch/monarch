@@ -92,7 +92,7 @@ use monarch_rdma::cu_check;
 use monarch_rdma::local_memory::Keepalive;
 use monarch_rdma::local_memory::KeepaliveLocalMemory;
 use ndslice::Extent;
-use ndslice::ViewExt;
+use rankspace::view::View as _;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::process::Command;

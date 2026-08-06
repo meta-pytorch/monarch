@@ -22,7 +22,7 @@ use monarch_rdma::backend::cuda_test_utils::SenderMessageClient;
 use monarch_rdma::backend::ibverbs::device_selection::IbvDeviceTarget;
 use monarch_rdma::backend::ibverbs::device_selection::get_cuda_device_to_ibv_device;
 use monarch_rdma::backend::ibverbs::mlx_device::MlxDevice;
-use ndslice::ViewExt;
+use rankspace::view::View as _;
 
 /// Finds two CUDA devices that map to different RDMA NICs via PCI topology.
 /// Returns `Some((device_a, device_b))` or `None` if all devices share one NIC.

@@ -8,17 +8,17 @@
 
 //! ## Actor mesh invariants (AM-*)
 //!
-//! - **AM-1 (rank-space):** `ActorMeshRef` uses its `CastDomainRef` as
+//! - **AM-1 (managed rank-space):** `ManagedActorMeshRef` uses its `CastDomainRef` as
 //!   the source of truth for actor addresses. The cast domain stores
 //!   members in the same dense rank order as the mesh `Region`, so a
 //!   rank can be materialized by indexing the cast-domain member map
 //!   directly; the reference does not need to retain the `ProcMeshRef`
 //!   that created it.
-//! - **AM-2 (slice materialization):** `RankedSliceable::sliced` has no
-//!   caller context, so it carries only a raw cast-domain descriptor. The first
-//!   cast through that ref materializes the descriptor with the caller context
-//!   before sending the cast message, sequencing setup and delivery on the same
-//!   sender stream.
+//! - **AM-2 (managed slice materialization):** `ManagedActorMeshRef::sliced_region`
+//!   has no caller context, so it carries only a raw cast-domain descriptor. The
+//!   first cast through that ref materializes the descriptor with the caller
+//!   context before sending the cast message, sequencing setup and delivery on
+//!   the same sender stream.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -49,10 +49,12 @@ use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::declare_attrs;
+use ndslice::Slice;
 use ndslice::ViewExt as _;
 use ndslice::view;
+use ndslice::view::RankedSliceable;
 use ndslice::view::Region;
-use ndslice::view::View;
+use rankspace::DimRange;
 use rankspace::Rank;
 use rankspace::RankSpace;
 use rankspace::view::CompactView;
@@ -263,7 +265,11 @@ impl<A: Referable> ActorMesh<A> {
                 actor_mesh_name: Some(actor_mesh_name),
                 event: ActorSupervisionEvent::new(
                     // Use an actor id from the mesh.
-                    ndslice::view::Ranked::get(current_ref.as_ref(), 0)
+                    current_ref
+                        .space()
+                        .iter_ranks()
+                        .next()
+                        .and_then(|rank| current_ref.get_rank(rank))
                         .unwrap()
                         .actor_addr()
                         .clone(),
@@ -359,6 +365,11 @@ impl<A: Referable> DataActorMesh<A> {
         self.members.data().as_slice()
     }
 
+    /// Return the actor ref at visible base `rank`.
+    pub fn get_rank(&self, rank: Rank) -> Option<&ActorRef<A>> {
+        self.members.get_rank(rank)
+    }
+
     /// Return a sub-mesh over `space`, which must be a subspace of this mesh's
     /// rank space. Each visible rank of `space` keeps the actor ref it holds in
     /// this mesh.
@@ -433,10 +444,10 @@ impl<A: Referable> rankspace::view::View<ActorRef<A>> for DataActorMesh<A> {
 /// surface, cheap to clone and to serialize.
 ///
 /// `Managed` is the legacy controller-backed ref over a dense `ndslice` region;
-/// `Data` is the detached, rankspace-based data ref. Casting and rankspace
-/// addressing work on both. The legacy dense
-/// [`view::Ranked`]/[`view::RankedSliceable`] surface is meaningful only for
-/// `Managed`; use [`Self::as_managed`] to discriminate without panicking.
+/// `Data` is the detached, rankspace-based data ref. Both are addressed and
+/// sliced through [`RankSpace`]; the dense [`Region`] survives only on
+/// [`ManagedActorMeshRef`], for the cast and supervision paths that still need
+/// `ndslice` geometry.
 #[derive(typeuri::Named)]
 pub enum ActorMeshRef<A: Referable> {
     // Boxed so the cheap `Data` variant does not pay the (much larger) `Managed`
@@ -497,6 +508,63 @@ impl<A: Referable> ActorMeshRef<A> {
         }
     }
 
+    /// Return the mesh rank space.
+    pub fn space(&self) -> &RankSpace {
+        match self {
+            Self::Managed(managed) => managed.space(),
+            Self::Data(data) => data.space(),
+        }
+    }
+
+    /// Return the actor ref at visible base `rank`.
+    pub fn get_rank(&self, rank: Rank) -> Option<&ActorRef<A>> {
+        match self {
+            Self::Managed(managed) => managed.get_rank(rank),
+            Self::Data(data) => data.get_rank(rank),
+        }
+    }
+
+    /// Return a sub-mesh over `space`, which must be a subspace of this mesh.
+    ///
+    /// A managed mesh slices to a managed mesh, and requires `space` to be
+    /// dense. It does not degrade to a data mesh: a managed ref carries
+    /// controller-backed supervision, failure state inherited from its parent,
+    /// and cast-tree delivery, and a caller holding a live managed mesh would
+    /// otherwise get a slice that has silently lost all three. A space that
+    /// cannot stay managed is [`Error::SparseManagedSlice`].
+    ///
+    /// A data mesh slices to a data mesh, dense or sparse.
+    pub fn sliced(&self, space: RankSpace) -> crate::Result<Self> {
+        if let Self::Managed(managed) = self {
+            let region = dense_region(&space).ok_or(Error::SparseManagedSlice {
+                visible: space.cardinality(),
+                base: space.base().cardinality(),
+            })?;
+            if !region.is_subset(managed.region()) {
+                let present = space
+                    .iter_ranks()
+                    .filter(|rank| managed.space().contains_rank(*rank))
+                    .count();
+                return Err(Error::InvalidRankCardinality {
+                    expected: space.cardinality(),
+                    actual: present,
+                });
+            }
+            return Ok(Self::Managed(Box::new(managed.sliced_region(region))));
+        }
+
+        let members = space
+            .iter_ranks()
+            .filter_map(|rank| rankspace::view::View::get_rank(self, rank).cloned())
+            .collect();
+        Ok(Self::Data(DataActorMesh::try_new(space, members)?))
+    }
+
+    /// Return a sub-mesh restricted to `range` along dimension `dim`.
+    pub fn range(&self, dim: &str, range: impl Into<DimRange>) -> crate::Result<Self> {
+        self.sliced(self.space().select(dim, range)?)
+    }
+
     /// Cast a message to all the actors in this mesh.
     pub fn cast<M>(&self, cx: &impl context::Actor, message: M) -> crate::Result<()>
     where
@@ -543,6 +611,27 @@ impl<A: Referable> ActorMeshRef<A> {
             Self::Data(d) => Self::Data(d.clone()),
         }
     }
+}
+
+fn dense_region(space: &RankSpace) -> Option<Region> {
+    if !space.occlusion().is_empty() {
+        return None;
+    }
+
+    let base = space.base();
+    let labels = base
+        .extent()
+        .dims()
+        .iter()
+        .map(|dim| dim.name().to_string())
+        .collect();
+    let slice = Slice::new(
+        base.offset().get(),
+        base.extent().sizes().collect(),
+        base.strides().to_vec(),
+    )
+    .ok()?;
+    Some(Region::new(labels, slice))
 }
 
 impl<A: Referable> Clone for ActorMeshRef<A> {
@@ -637,48 +726,13 @@ impl<'de, A: Referable> Deserialize<'de> for ActorMeshRef<A> {
     }
 }
 
-impl<A: Referable> view::Ranked for ActorMeshRef<A> {
-    type Item = ActorRef<A>;
-
-    fn region(&self) -> &Region {
-        view::Ranked::region(
-            self.as_managed()
-                .expect("Data ActorMeshRef is sparse; use its rankspace View"),
-        )
-    }
-
-    fn get(&self, rank: usize) -> Option<&Self::Item> {
-        view::Ranked::get(
-            self.as_managed()
-                .expect("Data ActorMeshRef is sparse; use its rankspace View"),
-            rank,
-        )
-    }
-}
-
-impl<A: Referable> view::RankedSliceable for ActorMeshRef<A> {
-    fn sliced(&self, region: Region) -> Self {
-        Self::Managed(Box::new(view::RankedSliceable::sliced(
-            self.as_managed()
-                .expect("Data ActorMeshRef slices via rankspace, not a dense region"),
-            region,
-        )))
-    }
-}
-
 impl<A: Referable> rankspace::view::View<ActorRef<A>> for ActorMeshRef<A> {
     fn space(&self) -> &RankSpace {
-        match self {
-            Self::Managed(managed) => managed.space(),
-            Self::Data(data) => data.space(),
-        }
+        ActorMeshRef::space(self)
     }
 
     fn get_rank(&self, rank: Rank) -> Option<&ActorRef<A>> {
-        match self {
-            Self::Managed(managed) => managed.get_rank(rank),
-            Self::Data(data) => data.get_rank(rank),
-        }
+        ActorMeshRef::get_rank(self, rank)
     }
 }
 
@@ -990,11 +1044,30 @@ pub struct ManagedActorMeshRef<A: Referable> {
 }
 
 impl<A: Referable> ManagedActorMeshRef<A> {
+    /// Return the mesh rank space.
+    pub fn space(&self) -> &RankSpace {
+        &self.space
+    }
+
+    /// Return the dense region this managed ref was created over.
+    ///
+    /// The managed variant is dense by construction, so it retains a region for
+    /// the legacy cast, supervision, and telemetry paths that are still keyed by
+    /// `ndslice` geometry. Crate-private on purpose: `Region` must not escape
+    /// past the mesh interface. External callers use [`Self::space`].
+    pub(crate) fn region(&self) -> &Region {
+        self.cast_domain.region()
+    }
+
+    /// Return the actor ref at visible base `rank`.
+    pub fn get_rank(&self, rank: Rank) -> Option<&ActorRef<A>> {
+        let index = self.space.local_index_of(rank)?;
+        self.materialize(index)
+    }
+
     fn cached_failure(&self, cx: &impl context::Actor) -> Option<MeshFailure> {
         let health_state = self.health_state.entry(cx).or_default();
-        health_state
-            .get()
-            .failure_for_region(ndslice::view::Ranked::region(self))
+        health_state.get().failure_for_region(self.region())
     }
 
     /// Cast a message to all the actors in this mesh
@@ -1025,7 +1098,7 @@ impl<A: Referable> ManagedActorMeshRef<A> {
         M: RemoteMessage + Clone,
     {
         self.check_cached_failure(cx)?;
-        self.emit_sent_message_telemetry(cx, view::Ranked::region(self));
+        self.emit_sent_message_telemetry(cx, self.region());
 
         let mut headers = caller_headers.clone();
         headers.set(
@@ -1323,7 +1396,7 @@ impl<A: Referable> ManagedActorMeshRef<A> {
                     // whole mesh.
                     if let MessageOrFailure::Message(message) = message {
                         if let Some(message) = &message {
-                            let region = ndslice::view::Ranked::region(self).slice();
+                            let region = self.region().slice();
                             if message.crashed_ranks.is_empty() {
                                 // Whole-mesh event (e.g. mesh stop).
                                 true
@@ -1527,33 +1600,21 @@ impl<'de, A: Referable> Deserialize<'de> for ManagedActorMeshRef<A> {
     }
 }
 
-impl<A: Referable> view::Ranked for ManagedActorMeshRef<A> {
-    type Item = ActorRef<A>;
-
-    #[inline]
-    fn region(&self) -> &Region {
-        self.cast_domain.region()
-    }
-
-    #[inline]
-    fn get(&self, rank: usize) -> Option<&Self::Item> {
-        self.materialize(rank)
-    }
-}
-
-impl<A: Referable> view::RankedSliceable for ManagedActorMeshRef<A> {
-    /// Return a pure slice of this actor mesh.
+impl<A: Referable> ManagedActorMeshRef<A> {
+    /// Return a pure slice of this actor mesh over a dense sub-region.
     ///
-    /// This method cannot install routing state because the trait has no caller
+    /// This method cannot install routing state because it has no caller
     /// context. Instead it carries a lazy cast-domain descriptor. The first cast
     /// through the returned ref posts setup from that caller before sending the
     /// cast message, preserving normal sender-side stream ordering.
-    fn sliced(&self, region: Region) -> Self {
+    ///
+    /// The caller guarantees that `region` is a subset of [`Self::region`].
+    pub(crate) fn sliced_region(&self, region: Region) -> Self {
         // Slices inherit cached failures that were already observed on the parent
         // mesh ref so new sub-slices do not race the controller replay path.
         // The supervision receiver stays independent because each slice applies
         // its own region filter to future updates.
-        debug_assert!(region.is_subset(view::Ranked::region(self)));
+        debug_assert!(region.is_subset(self.region()));
         Self {
             id: self.id.clone(),
             proc_mesh_id: self.proc_mesh_id.clone(),
@@ -1573,14 +1634,11 @@ impl<A: Referable> view::RankedSliceable for ManagedActorMeshRef<A> {
 
 impl<A: Referable> rankspace::view::View<ActorRef<A>> for ManagedActorMeshRef<A> {
     fn space(&self) -> &RankSpace {
-        &self.space
+        ManagedActorMeshRef::space(self)
     }
 
     fn get_rank(&self, rank: Rank) -> Option<&ActorRef<A>> {
-        // `Managed` is dense, so a base rank maps to an ordinal via its
-        // rank space, which then indexes the lazily-materialized ref.
-        let ordinal = self.space.local_index_of(rank)?;
-        view::Ranked::get(self, ordinal)
+        ManagedActorMeshRef::get_rank(self, rank)
     }
 }
 
@@ -1607,11 +1665,9 @@ mod tests {
     use ndslice::Extent;
     use ndslice::Region;
     use ndslice::Slice;
-    use ndslice::ViewExt;
     use ndslice::extent;
-    use ndslice::view::Ranked;
-    use ndslice::view::RankedSliceable;
     use rankspace::Rank;
+    use rankspace::RankMask;
     use rankspace::RankSpace;
     use rankspace::view::View as _;
     use timed_test::assert_no_process_leak;
@@ -1620,6 +1676,7 @@ mod tests {
 
     use super::ActorMesh;
     use super::DataActorMesh;
+    use super::dense_region;
     use crate::ActorMeshRef;
     use crate::ProcMesh;
     use crate::host_mesh::GET_PROC_STATE_MAX_IDLE;
@@ -1672,13 +1729,16 @@ mod tests {
         // Slice to the second replica; the rank space keeps base rank 1, so the
         // sliced mesh addresses its single member by base rank rather than a
         // renumbered ordinal.
-        let slice = data
+        let slice = mesh
             .sliced(
                 mesh.space()
                     .select("replicas", 1..2)
                     .expect("rank 1 slice should exist"),
             )
             .expect("selected space should be a valid subspace");
+        let ActorMeshRef::Data(slice) = slice else {
+            panic!("slicing a data ref should return a data ref");
+        };
         assert_eq!(slice.members().len(), 1);
         assert_eq!(
             slice.get_rank(Rank(1)).unwrap().actor_addr(),
@@ -1690,7 +1750,7 @@ mod tests {
             Slice::new(1, vec![2], vec![1]).expect("test region should be valid"),
         );
         assert!(matches!(
-            data.sliced(invalid_region),
+            mesh.sliced(invalid_region.into()),
             Err(crate::Error::InvalidRankCardinality {
                 expected: 2,
                 actual: 1,
@@ -1757,13 +1817,16 @@ mod tests {
             ActorMeshRef::Managed(Box::new(super::ManagedActorMeshRef::with_page_size(
                 am.id().clone(),
                 managed.proc_mesh_id.clone(),
-                am.region().clone(),
+                managed.region().clone(),
                 page_size,
                 None,
                 Arc::clone(&managed.cast_domain.members),
             )));
-        assert_eq!(amr.extent(), extent!(hosts = 2, gpus = 2));
-        assert_eq!(amr.region().num_ranks(), 4);
+        assert_eq!(
+            amr.space().base().extent().sizes().collect::<Vec<_>>(),
+            vec![2, 2]
+        );
+        assert_eq!(amr.space().cardinality(), 4);
 
         // 3) Within-rank pointer stability (OnceLock caches &ActorRef)
         let p0_a = amr.get(0).expect("rank 0 exists") as *const _;
@@ -1795,13 +1858,19 @@ mod tests {
             "cloned ActorMeshRef has a fresh cache (different pointer)"
         );
 
-        // 7) Slicing preserves page_size and clears cache
-        // (RankedSliceable::sliced)
-        let sliced = amr.range("hosts", 0..2).expect("slice should be valid"); // leaves 4 ranks
-        assert_eq!(sliced.region().num_ranks(), 4);
+        // 7) Dense rankspace slicing preserves page_size and clears cache.
+        let sliced = amr
+            .sliced(
+                amr.space()
+                    .select("hosts", 0..2)
+                    .expect("slice should be valid"),
+            )
+            .expect("slice should be a valid subspace"); // leaves 4 ranks
+        assert!(matches!(&sliced, ActorMeshRef::Managed(_)));
+        assert_eq!(sliced.space().cardinality(), 4);
         assert!(
             sliced.get(0).is_some(),
-            "RankedSliceable::sliced preserves a lazy cast-domain descriptor"
+            "dense slicing preserves a lazy cast-domain descriptor"
         );
         // First access materializes a new cache for the sliced view.
         let sp0_a = sliced.get(0).unwrap() as *const _;
@@ -1811,6 +1880,17 @@ mod tests {
         // [0..2), [2..4)).
         let sp2 = sliced.get(2).unwrap() as *const _;
         assert_ne!(sp0_a, sp2, "sliced view crosses its own page boundary");
+
+        // A managed mesh must not silently degrade to a data mesh: the slice
+        // would lose controller supervision, inherited failure state, and
+        // cast-tree delivery.
+        assert!(matches!(
+            amr.sliced(amr.space().clone().without(RankMask::ranks([Rank(1)]))),
+            Err(crate::Error::SparseManagedSlice {
+                visible: 3,
+                base: 4
+            })
+        ));
 
         // 8) Hash/Eq ignore cache state; identical identity collapses
         // to one set entry.
@@ -1856,11 +1936,14 @@ mod tests {
             pm.spawn(instance, "test", &()).await.unwrap();
 
         {
-            let host1_region = actor_mesh
-                .region()
-                .range("hosts", 1..2)
-                .expect("host slice should exist");
-            let host1 = actor_mesh.sliced(host1_region);
+            let host1 = actor_mesh
+                .sliced(
+                    actor_mesh
+                        .space()
+                        .select("hosts", 1..2)
+                        .expect("host slice should exist"),
+                )
+                .expect("host slice should be a valid subspace");
             // This waits for one reply from every actor in the sliced mesh and
             // then asserts that no extra actors replied. Passing `None` does not
             // pin exact sequence numbers, but the destination handler still unwraps
@@ -1868,11 +1951,14 @@ mod tests {
             testactor::assert_casting_correctness(&host1, instance, None).await;
 
             {
-                let host1_gpu1_region = host1
-                    .region()
-                    .range("gpus", 1..2)
-                    .expect("nested slice should exist");
-                let host1_gpu1 = host1.sliced(host1_gpu1_region);
+                let host1_gpu1 = host1
+                    .sliced(
+                        host1
+                            .space()
+                            .select("gpus", 1..2)
+                            .expect("nested slice should exist"),
+                    )
+                    .expect("nested slice should be a valid subspace");
                 testactor::assert_casting_correctness(&host1_gpu1, instance, None).await;
             }
         }
@@ -1894,14 +1980,17 @@ mod tests {
             )
             .unwrap();
 
+        let extent = dense_region(actor_mesh.space())
+            .expect("cast point test uses a dense actor mesh")
+            .extent()
+            .clone();
         let mut expected: HashMap<_, _> = actor_mesh
             .values()
             .enumerate()
             .map(|(rank, actor_ref)| {
                 (
                     actor_ref.actor_addr().clone(),
-                    actor_mesh
-                        .extent()
+                    extent
                         .point_of_rank(rank)
                         .expect("rank must be in-bounds for slice extent"),
                 )
@@ -1940,18 +2029,24 @@ mod tests {
         let actor_mesh: ActorMesh<testactor::TestActor> =
             pm.spawn(instance, "test", &()).await.unwrap();
 
-        let host1_region = actor_mesh
-            .region()
-            .range("hosts", 1..2)
-            .expect("host slice should exist");
-        let host1 = actor_mesh.sliced(host1_region);
+        let host1 = actor_mesh
+            .sliced(
+                actor_mesh
+                    .space()
+                    .select("hosts", 1..2)
+                    .expect("host slice should exist"),
+            )
+            .expect("host slice should be a valid subspace");
         assert_slice_cast_points(&host1, instance).await;
 
-        let host1_gpu1_region = host1
-            .region()
-            .range("gpus", 1..2)
-            .expect("nested slice should exist");
-        let host1_gpu1 = host1.sliced(host1_gpu1_region);
+        let host1_gpu1 = host1
+            .sliced(
+                host1
+                    .space()
+                    .select("gpus", 1..2)
+                    .expect("nested slice should exist"),
+            )
+            .expect("nested slice should be a valid subspace");
         assert_slice_cast_points(&host1_gpu1, instance).await;
 
         let _ = hm.shutdown(instance).await;
@@ -2200,9 +2295,14 @@ mod tests {
                 .await
                 .unwrap();
             let sliced = actor_mesh
-                .range("hosts", 1..2)
-                .expect("slice should be valid");
-            let sliced_replicas = sliced.region().num_ranks();
+                .sliced(
+                    actor_mesh
+                        .space()
+                        .select("hosts", 1..2)
+                        .expect("slice should be valid"),
+                )
+                .expect("slice should be a valid subspace");
+            let sliced_replicas = sliced.space().cardinality();
             (hm, actor_mesh, sliced, sliced_replicas, child_name)
         };
 
@@ -2280,11 +2380,14 @@ mod tests {
             .await
             .unwrap();
 
-        let child_slice_region = _whole_child
-            .region()
-            .range("gpus", 1..2)
-            .expect("child slice should exist");
-        let child_slice = _whole_child.sliced(child_slice_region);
+        let child_slice = _whole_child
+            .sliced(
+                _whole_child
+                    .space()
+                    .select("gpus", 1..2)
+                    .expect("child slice should exist"),
+            )
+            .expect("child slice should be a valid subspace");
 
         let (stream_port, mut stream_rx) =
             instance.open_port::<resource::RankedState<ActorState>>();
@@ -2314,11 +2417,18 @@ mod tests {
             1,
         );
 
+        let child_managed = child_slice
+            .as_managed()
+            .expect("dense child slice should remain managed")
+            .clone();
         let controller: ActorMeshController<testactor::TestActor> = ActorMeshController::new(
-            ActorMeshControlPlane::new(child_slice.clone(), slice),
+            ActorMeshControlPlane::new(child_managed.clone(), slice),
             Some("svc_sup".to_string()),
             Some(supervisor),
-            crate::StatusMesh::from_single(child_slice.region().clone(), resource::Status::Running),
+            crate::StatusMesh::from_single(
+                child_managed.region().clone(),
+                resource::Status::Running,
+            ),
         );
         let controller_handle = instance.spawn_with_label("stream_rank_controller", controller);
         controller_handle
@@ -2413,7 +2523,22 @@ mod tests {
             )
             .unwrap();
 
-        let mut point_to_actor: HashSet<_> = ndslice::ViewExt::iter(actor_mesh.deref()).collect();
+        let extent = dense_region(actor_mesh.space())
+            .expect("spawned actor mesh should be dense")
+            .extent()
+            .clone();
+        let mut point_to_actor: HashSet<_> = actor_mesh
+            .values()
+            .enumerate()
+            .map(|(index, actor_ref)| {
+                (
+                    extent
+                        .point_of_rank(index)
+                        .expect("actor index should be in the mesh extent"),
+                    actor_ref.clone(),
+                )
+            })
+            .collect();
         while !point_to_actor.is_empty() {
             let (point, origin_actor_ref, sender_actor_id) = cast_info_rx.recv().await.unwrap();
             let key = (point, origin_actor_ref);
@@ -2449,10 +2574,15 @@ mod tests {
 
         // Cast through a sliced mesh — `cast` still means all, but all is
         // scoped to the immutable sliced rank space.
-        let actor_mesh = root_actor_mesh.sliced(Region::new(
-            vec!["rank".to_string()],
-            Slice::new(0, vec![1], vec![1]).unwrap(),
-        ));
+        let actor_mesh = root_actor_mesh
+            .sliced(
+                Region::new(
+                    vec!["rank".to_string()],
+                    Slice::new(0, vec![1], vec![1]).unwrap(),
+                )
+                .into(),
+            )
+            .expect("rank 0 should be a valid subspace");
         let (cast_info, mut cast_info_rx) = instance.mailbox().open_port();
         actor_mesh
             .cast(
@@ -2634,8 +2764,8 @@ mod tests {
             .unwrap();
 
         // Get individual actor refs
-        let ping_handle = ping_mesh.values().next().unwrap();
-        let pong_handle = pong_mesh.values().next().unwrap();
+        let ping_handle = ping_mesh.values().next().unwrap().clone();
+        let pong_handle = pong_mesh.values().next().unwrap().clone();
 
         // Verify ping-pong works initially
         let (done_tx, done_rx) = instance.open_once_port();

@@ -157,7 +157,6 @@ use hyperactor_mesh::ProcMeshRef;
 use hyperactor_mesh::mesh_controller::Subscribe;
 use hyperactor_mesh::mesh_controller::Unsubscribe;
 use hyperactor_mesh::supervision::MeshFailure;
-use ndslice::view::Ranked;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -282,9 +281,9 @@ impl MeshState {
 /// is a per-proc singleton), two views share a manager iff their proc-id sets
 /// intersect, so this drives cold-path overlap without a per-rank index.
 fn proc_ids(mesh: &ProcMeshRef) -> std::collections::HashSet<ProcId> {
-    let n = Ranked::region(mesh).num_ranks();
-    (0..n)
-        .filter_map(|rank| Ranked::get(mesh, rank).map(|p| p.proc_addr().id().clone()))
+    mesh.space()
+        .iter_ranks()
+        .filter_map(|rank| mesh.get_rank(rank).map(|p| p.proc_addr().id().clone()))
         .collect()
 }
 
@@ -293,8 +292,10 @@ fn proc_ids(mesh: &ProcMeshRef) -> std::collections::HashSet<ProcId> {
 /// candidate view against the single materialized source set avoids allocating a
 /// fresh `HashSet` per view on the cold controller-termination path.
 fn view_intersects(mesh: &ProcMeshRef, procs: &std::collections::HashSet<ProcId>) -> bool {
-    let n = Ranked::region(mesh).num_ranks();
-    (0..n).any(|rank| Ranked::get(mesh, rank).is_some_and(|p| procs.contains(p.proc_addr().id())))
+    mesh.space().iter_ranks().any(|rank| {
+        mesh.get_rank(rank)
+            .is_some_and(|p| procs.contains(p.proc_addr().id()))
+    })
 }
 
 /// Static client-root service name for the RDMA manager owner.
@@ -720,7 +721,7 @@ impl Handler<EnsureRdmaManager> for RdmaManagerOwnerActor {
         // entry registers this same port with its own controller's subscriber
         // set (RMO-16). Reports are demultiplexed by typed `reporting_controller`.
         let subscriber = cx.instance().port::<Option<MeshFailure>>().bind();
-        let remaining_acks = mesh.region().num_ranks();
+        let remaining_acks = mesh.space().cardinality();
         let manager_for_cast = mesh.clone();
 
         // Record `Pending` BEFORE subscribing and casting, so a replayed terminal
@@ -858,8 +859,7 @@ mod tests {
     use hyperactor_mesh::mesh_id::ResourceId;
     use hyperactor_mesh::resource;
     use hyperactor_mesh::supervision::MeshFailure;
-    use ndslice::ViewExt;
-    use ndslice::view::Ranked;
+    use rankspace::view::View as _;
     use tokio::sync::oneshot;
     use tokio::time::timeout;
 
@@ -1006,11 +1006,9 @@ mod tests {
 
     /// The member `ActorId`s of a manager mesh (one per proc in the view).
     fn manager_mesh_ids(mesh: &ActorMesh<RdmaManagerActor>) -> Vec<ActorId> {
-        let ranks = Ranked::region(&**mesh).num_ranks();
+        let ranks = mesh.space().cardinality();
         (0..ranks)
-            .filter_map(|rank| {
-                Ranked::get(&**mesh, rank).map(|actor| actor.actor_addr().id().clone())
-            })
+            .filter_map(|rank| mesh.get(rank).map(|actor| actor.actor_addr().id().clone()))
             .collect()
     }
 

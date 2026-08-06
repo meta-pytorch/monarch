@@ -1102,6 +1102,57 @@ impl From<Region> for RankSpace {
     }
 }
 
+/// Errors produced when projecting a [`RankSpace`] back onto dense `ndslice`
+/// geometry.
+#[derive(Debug, Error)]
+pub enum DenseSpaceError {
+    /// The space hides some of its base ranks, so it is not a hyperrect.
+    #[error("sparse rank space: {visible} of {base} base ranks visible")]
+    Sparse { visible: usize, base: usize },
+
+    /// The base rectangle's offset and strides do not form a valid slice.
+    #[error(transparent)]
+    Slice(#[from] SliceError),
+}
+
+impl TryFrom<&RankSpace> for Region {
+    type Error = DenseSpaceError;
+
+    /// Converts a dense rank space into the region that describes it.
+    ///
+    /// A [`Region`] is a hyperrect, so a space with occluded ranks has no
+    /// faithful region representation and is rejected.
+    fn try_from(space: &RankSpace) -> Result<Self, Self::Error> {
+        if !space.occlusion().is_empty() {
+            return Err(DenseSpaceError::Sparse {
+                visible: space.cardinality(),
+                base: space.base().cardinality(),
+            });
+        }
+
+        let base = space.base();
+        Ok(Region::new(
+            base.dims()
+                .iter()
+                .map(|dim| dim.name().to_string())
+                .collect(),
+            Slice::new(
+                base.offset().get(),
+                base.extent().sizes().collect(),
+                base.strides().to_vec(),
+            )?,
+        ))
+    }
+}
+
+impl TryFrom<RankSpace> for Region {
+    type Error = DenseSpaceError;
+
+    fn try_from(space: RankSpace) -> Result<Self, Self::Error> {
+        Region::try_from(&space)
+    }
+}
+
 impl Region {
     #[allow(dead_code)]
     fn empty() -> Region {
@@ -1940,6 +1991,34 @@ mod test {
         for (index, base_rank) in region.slice().iter().enumerate() {
             assert_eq!(space.local_index_of(Rank(base_rank)), Some(index));
         }
+    }
+
+    #[test]
+    fn dense_rankspace_round_trips_through_region() {
+        // A strided sub-region keeps its offset and strides across both
+        // conversions, so the round trip must be the identity.
+        let region: Region = extent!(host = 4, gpu = 8)
+            .range("gpu", Range(2, Some(6), 2))
+            .unwrap();
+        let space = RankSpace::from(region.clone());
+
+        assert_eq!(Region::try_from(&space).unwrap(), region);
+        assert_eq!(Shape::try_from(&space).unwrap(), Shape::from(region));
+    }
+
+    #[test]
+    fn sparse_rankspace_has_no_region() {
+        let space = RankSpace::from(Region::from(extent!(host = 2, gpu = 2)))
+            .without(rankspace::RankMask::ranks([Rank(1)]));
+
+        assert!(matches!(
+            Region::try_from(&space),
+            Err(DenseSpaceError::Sparse {
+                visible: 3,
+                base: 4
+            })
+        ));
+        assert!(Shape::try_from(&space).is_err());
     }
 
     #[test]

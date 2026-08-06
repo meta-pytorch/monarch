@@ -36,7 +36,7 @@ use hyperactor_config::attrs::declare_attrs;
 use hyperactor_config::global::Source;
 use ndslice::Point;
 #[cfg(test)]
-use ndslice::ViewExt as _;
+use rankspace::view::View as _;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -530,12 +530,14 @@ pub async fn assert_mesh_shape(actor_mesh: ActorMesh<TestActor>) {
     assert_casting_correctness(&actor_mesh, instance, None).await;
 
     // Just pick the first dimension. Slice half of it off.
-    // actor_mesh.extent().
-    let label = actor_mesh.extent().labels()[0].clone();
-    let size = actor_mesh.extent().sizes()[0] / 2;
+    let dim = &actor_mesh.space().base().extent().dims()[0];
+    let label = dim.name().to_string();
+    let size = dim.size() / 2;
 
     // Verify casting to the sliced actor mesh
-    let sliced_actor_mesh = actor_mesh.range(&label, 0..size).unwrap();
+    let sliced_actor_mesh = actor_mesh
+        .sliced(actor_mesh.space().select(&label, 0..size).unwrap())
+        .unwrap();
     assert_casting_correctness(&sliced_actor_mesh, instance, None).await;
 }
 

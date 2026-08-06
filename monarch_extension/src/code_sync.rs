@@ -27,7 +27,6 @@ use monarch_hyperactor::context::PyInstance;
 use monarch_hyperactor::proc_mesh::PyProcMesh;
 use monarch_hyperactor::runtime::signal_safe_block_on;
 use ndslice::Shape;
-use ndslice::view::Ranked;
 use pyo3::Bound;
 use pyo3::exceptions::PyException;
 use pyo3::exceptions::PyRuntimeError;
@@ -249,7 +248,7 @@ impl CodeSyncMeshClient {
         auto_reload: bool,
     ) -> Result<()> {
         let shape = WorkspaceShape {
-            shape: Shape::from(actor_mesh.region()),
+            shape: Shape::try_from(actor_mesh.space())?,
             dimension: remote.shape.dimension.clone(),
         };
         eprintln!("Syncing workspace: {:?}", shape.owners()?);

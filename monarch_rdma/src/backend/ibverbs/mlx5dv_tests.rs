@@ -11,7 +11,7 @@
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::context;
 use hyperactor_mesh::host_mesh::HostMesh;
-use ndslice::ViewExt;
+use rankspace::view::View as _;
 
 use crate::IbvConfig;
 use crate::RdmaManagerActor;

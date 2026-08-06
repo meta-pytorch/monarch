@@ -65,6 +65,11 @@ pub trait View<Item> {
         self.get_rank(self.space().rank_of(coord)?)
     }
 
+    /// Returns the value at compact visible `index`.
+    fn get(&self, index: usize) -> Option<&Item> {
+        self.get_rank(self.space().rank_at(index)?)
+    }
+
     /// Iterates visible ranks and their values.
     fn iter<'a>(&'a self) -> impl Iterator<Item = (Rank, &'a Item)> + 'a
     where
@@ -73,6 +78,14 @@ pub trait View<Item> {
         self.space()
             .iter_ranks()
             .filter_map(|rank| self.get_rank(rank).map(|item| (rank, item)))
+    }
+
+    /// Iterates visible values in compact order.
+    fn values<'a>(&'a self) -> impl Iterator<Item = &'a Item> + 'a
+    where
+        Item: 'a,
+    {
+        self.iter().map(|(_, item)| item)
     }
 }
 
@@ -564,15 +577,19 @@ mod tests {
 
     #[test]
     fn generic_view_trait_reads_base_and_compact_views() {
-        fn values<Item: Clone>(view: &impl View<Item>) -> Vec<(Rank, Item)> {
+        fn entries<Item: Clone>(view: &impl View<Item>) -> Vec<(Rank, Item)> {
             view.iter()
                 .map(|(rank, item)| (rank, item.clone()))
                 .collect()
         }
 
+        fn values<Item: Clone>(view: &impl View<Item>) -> Vec<Item> {
+            view.values().cloned().collect()
+        }
+
         let base = BaseView::new(host_gpu_space(), (0..8).collect::<Vec<_>>());
         assert_eq!(
-            values(&base),
+            entries(&base),
             vec![
                 (Rank(0), 0),
                 (Rank(1), 1),
@@ -583,8 +600,12 @@ mod tests {
                 (Rank(7), 7)
             ]
         );
+        assert_eq!(values(&base), vec![0, 1, 2, 3, 4, 6, 7]);
+        assert_eq!(View::get(&base, 5), Some(&6));
 
         let compact = CompactView::new(host_gpu_space(), vec![0, 1, 2, 3, 4, 6, 7]).unwrap();
+        assert_eq!(entries(&compact), entries(&base));
         assert_eq!(values(&compact), values(&base));
+        assert_eq!(View::get(&compact, 5), Some(&6));
     }
 }

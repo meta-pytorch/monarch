@@ -144,6 +144,20 @@ pub enum Error {
     #[error("invalid mesh ref: expected {expected} ranks, but contains {actual} ranks")]
     InvalidRankCardinality { expected: usize, actual: usize },
 
+    /// A managed actor mesh was sliced to a space it cannot represent.
+    ///
+    /// A managed mesh carries controller-backed supervision, inherited failure
+    /// state, and cast-tree delivery, all of which are defined only over a
+    /// dense region. Returning a data mesh instead would silently drop them.
+    #[error("cannot sparsely slice a managed actor mesh: {visible} of {base} base ranks visible")]
+    SparseManagedSlice { visible: usize, base: usize },
+
+    #[error(transparent)]
+    RankSpaceError(#[from] rankspace::RankSpaceError),
+
+    #[error(transparent)]
+    DenseSpaceError(#[from] ndslice::view::DenseSpaceError),
+
     #[error(transparent)]
     ResourceIdParseError(#[from] mesh_id::ResourceIdParseError),
 
