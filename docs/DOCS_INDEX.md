@@ -26,6 +26,7 @@
 | Document | Location |
 |----------|----------|
 | **Observability Overview** | `docs/source/observability.md` |
+| **Metrics** | `docs/source/metrics.md` |
 | **Distributed Telemetry** | `docs/source/distributed-telemetry.md` |
 | **Mesh Admin TUI** | `docs/source/admin-tui.md` |
 | **Monarch Dashboard** | `docs/source/monarch-dashboard.md` |

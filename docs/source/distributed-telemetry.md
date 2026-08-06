@@ -183,6 +183,7 @@ and event telemetry describe different views of the same job:
 
 ## Related documentation
 
+- [Metrics](metrics)
 - [Observability overview](observability)
 - [Monarch Dashboard](monarch-dashboard)
 - [Mesh Admin TUI](admin-tui)
