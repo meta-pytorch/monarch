@@ -23,6 +23,12 @@ by default and wires up the OTLP log sink.
 Built-in actor system metrics (mailbox posts, messages sent/received, queue
 sizes, etc.) and log events are exported with no code changes.
 
+External OTLP export is independent of distributed telemetry. When a job also
+enables distributed telemetry, the same OTel metric provider feeds a job-local
+Unix-socket exporter and exposes points through the ``metric_gauges``,
+``metric_sums``, and ``metric_histograms`` SQL tables. Metric instrumentation
+does not need to know which readers or exporters are active.
+
 Architecture
 ------------
 
