@@ -1,7 +1,7 @@
 # Distributed Telemetry
 
-Monarch distributed telemetry collects actor-system events on each host and
-makes them queryable as one logical database. It uses
+Monarch distributed telemetry collects actor-system events and OpenTelemetry
+metrics on each host and makes them queryable as one logical database. It uses
 [Apache DataFusion](https://github.com/apache/datafusion), an extensible SQL
 query engine built on [Apache Arrow](https://arrow.apache.org/). Distributed
 telemetry is the query layer behind the [Monarch Dashboard](monarch-dashboard)
@@ -52,6 +52,9 @@ meaning from their numeric values.
 | `actors` | Actor identity, rank, mesh, and creation time |
 | `events` | Structured tracing events and log fields |
 | `meshes` | Mesh creation, shape, class, name, and parent view |
+| `metric_gauges` | Gauge points with typed `value_f64`, `value_i64`, or `value_u64` values |
+| `metric_histograms` | Explicit histogram counts, typed summaries, bounds, and bucket counts |
+| `metric_sums` | Counter and up-down-counter points with typed sums and sum semantics |
 | `message_status_events` | Message delivery status transitions |
 | `messages` | Individual sender-to-receiver message deliveries |
 | `sent_messages` | One-to-many send operations and destination views |
@@ -71,6 +74,19 @@ SELECT table_name
 FROM information_schema.tables
 ORDER BY table_name
 ```
+
+### Metric tables
+
+Metrics are split by OTel aggregation rather than numeric type. Query
+`metric_gauges`, `metric_sums`, or `metric_histograms` based on the instrument
+aggregation. Each table preserves `f64`, `i64`, and `u64` in separate nullable
+columns so large integers do not lose precision.
+
+All metric rows include the instrument name, scope, unit, timestamps, point
+attributes, and resource attributes. Sum rows also include temporality and
+monotonicity. Histogram rows retain the count, typed sum, optional typed minimum
+and maximum, explicit bounds, and bucket counts. Bounds and bucket counts are
+JSON arrays in `bounds_json` and `bucket_counts_json`.
 
 ## Query examples
 
@@ -103,9 +119,23 @@ GROUP BY status
 ORDER BY count DESC
 ```
 
+Sum delta counter points within the retention window:
+
+```sql
+SELECT scope_name, SUM(sum_u64) AS mailbox_posts
+FROM metric_sums
+WHERE name = 'mailbox.posts'
+  AND temporality = 'delta'
+  AND sum_u64 IS NOT NULL
+GROUP BY scope_name
+ORDER BY mailbox_posts DESC
+```
+
 ## Architecture
 
-Each producer writes framed Arrow IPC batches to a host-local Unix socket. A
+Each producer writes framed Arrow IPC batches to a host-local Unix socket.
+Trace and entity dispatchers write their corresponding tables, while an OTel
+UDS metric exporter writes one frame for each non-empty aggregation buffer. A
 host-local `TelemetryActor` owns the socket, a Rust `DatabaseScanner`, and the
 in-memory tables. The root query engine plans SQL with DataFusion, pushes table
 scans to active collectors, and merges their Arrow results.
@@ -122,7 +152,8 @@ continue operating.
 ## Retention and snapshots
 
 `TelemetryConfig.retention_secs` applies to `sent_messages`, `messages`,
-`message_status_events`, `spans`, `span_events`, and `events`. Trace tables are
+`message_status_events`, `metric_gauges`, `metric_sums`, and
+`metric_histograms`, `spans`, `span_events`, and `events`. Trace tables are
 filtered independently by row timestamp, with spans filtered before dependent
 trace rows. A recent trace row is not displayed by span-joined views if its span
 has already expired. The default is 600 seconds. Set it to `0` to disable
