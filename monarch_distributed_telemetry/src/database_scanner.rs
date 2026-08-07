@@ -341,8 +341,17 @@ const RETENTION_TABLES: &[&str] = &[
     METRIC_HISTOGRAMS,
 ];
 
-/// Interval between routine retention sweeps.
-const RETENTION_INTERVAL: Duration = Duration::from_secs(30);
+/// Bounds for routine retention sweeps.
+const MIN_RETENTION_INTERVAL: Duration = Duration::from_secs(30);
+const MAX_RETENTION_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const RETENTION_INTERVAL_DIVISOR: i64 = 10;
+
+fn retention_interval_us(retention_us: i64) -> i64 {
+    let min_interval_us = MIN_RETENTION_INTERVAL.as_micros() as i64;
+    let max_interval_us = MAX_RETENTION_INTERVAL.as_micros() as i64;
+    let proportional_interval_us = retention_us / RETENTION_INTERVAL_DIVISOR;
+    retention_us.min(proportional_interval_us.clamp(min_interval_us, max_interval_us))
+}
 
 /// Target rows per batch streamed back to the query root.
 ///
@@ -725,9 +734,10 @@ impl DatabaseScanner {
         table_data: Arc<StdMutex<HashMap<String, Arc<LiveTableData>>>>,
         retention_us: i64,
     ) -> AbortHandle {
+        let interval = Duration::from_micros(retention_interval_us(retention_us) as u64);
         let handle = get_tokio_runtime().spawn(async move {
             loop {
-                tokio::time::sleep(RETENTION_INTERVAL).await;
+                tokio::time::sleep(interval).await;
                 let now_us = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .expect("system clock before unix epoch")
@@ -1798,6 +1808,15 @@ mod tests {
             &[SPANS, SPAN_EVENTS, EVENTS],
             "span definitions must be filtered before dependent trace rows"
         );
+    }
+
+    #[test]
+    fn test_retention_interval_scales_with_window() {
+        assert_eq!(retention_interval_us(0), 0);
+        assert_eq!(retention_interval_us(10_000_000), 10_000_000);
+        assert_eq!(retention_interval_us(5 * 60_000_000), 30_000_000);
+        assert_eq!(retention_interval_us(10 * 60_000_000), 60_000_000);
+        assert_eq!(retention_interval_us(60 * 60_000_000), 300_000_000);
     }
 
     #[test]
