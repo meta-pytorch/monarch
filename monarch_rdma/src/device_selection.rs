@@ -147,8 +147,9 @@ impl PciPath {
 /// Walks each endpoint's sysfs ancestor chain toward the root complex,
 /// finds their lowest common ancestor, and takes the minimum link
 /// bandwidth along the way. When the endpoints share no PCIe ancestor the
-/// path runs through the CPU: same NUMA node → [`PathType::Phb`],
-/// different nodes → [`PathType::Sys`], unknown → [`PathType::Dis`].
+/// path runs through the CPU: [`PathType::Phb`] when both sit on the same
+/// NUMA node, [`PathType::Sys`] otherwise — including when either
+/// endpoint's affinity is unknown.
 pub fn pci_path(a: &PCIAddress, b: &PCIAddress) -> PciPath {
     classify(
         &ancestor_chain(a),
@@ -210,12 +211,13 @@ fn classify(a: &[PciHop], numa_a: Option<u32>, b: &[PciHop], numa_b: Option<u32>
             bottleneck_mbytes_per_sec,
         };
     }
-    // No shared PCIe ancestor: the path runs through the CPU.
+    // No shared PCIe ancestor: the path runs through the CPU. An unknown
+    // NUMA node cannot be proven same-node, so it takes the worst reachable
+    // class instead of being reported as unreachable.
     let bottleneck_mbytes_per_sec = min_link_mbytes_per_sec(a).min(min_link_mbytes_per_sec(b));
     let path_type = match (numa_a, numa_b) {
         (Some(x), Some(y)) if x == y => PathType::Phb,
-        (Some(_), Some(_)) => PathType::Sys,
-        _ => PathType::Dis,
+        _ => PathType::Sys,
     };
     PciPath {
         path_type,
@@ -469,7 +471,17 @@ mod tests {
         assert_eq!(phb.bottleneck_mbytes_per_sec, 4000);
         // Different NUMA nodes → SYS.
         assert_eq!(classify(&a, Some(0), &b, Some(1)).path_type, PathType::Sys);
-        // Unknown NUMA node → DIS.
-        assert_eq!(classify(&a, None, &b, Some(0)).path_type, PathType::Dis);
+    }
+
+    #[test]
+    fn test_classify_unknown_numa_is_reachable() {
+        // An unknown NUMA node can't be proven same-node, so the path is SYS
+        // (the worst reachable class) rather than DIS. Reporting DIS would
+        // drop the device from selection entirely.
+        let a = vec![hop("/d/a", 4000), hop("/d/root_a", 16000)];
+        let b = vec![hop("/d/b", 8000), hop("/d/root_b", 16000)];
+        assert_eq!(classify(&a, None, &b, Some(0)).path_type, PathType::Sys);
+        assert_eq!(classify(&a, Some(0), &b, None).path_type, PathType::Sys);
+        assert_eq!(classify(&a, None, &b, None).path_type, PathType::Sys);
     }
 }
