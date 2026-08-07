@@ -3546,7 +3546,7 @@ name = "hyperactor_config_macros"
 version = "0.0.0"
 dependencies = [
  "quote",
- "syn 2.0.119",
+ "syn 3.0.3",
 ]
 
 [[package]]
@@ -3562,7 +3562,7 @@ dependencies = [
  "quote",
  "serde",
  "static_assertions",
- "syn 2.0.119",
+ "syn 3.0.3",
  "timed_test",
  "tokio",
  "tracing",
@@ -4865,7 +4865,7 @@ version = "0.0.0"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.3",
 ]
 
 [[package]]
@@ -7396,7 +7396,7 @@ version = "0.0.0"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.3",
 ]
 
 [[package]]
@@ -7776,7 +7776,7 @@ name = "timed_test"
 version = "0.0.0"
 dependencies = [
  "quote",
- "syn 2.0.119",
+ "syn 3.0.3",
  "tokio",
 ]
 
@@ -8259,7 +8259,7 @@ name = "typeuri_macros"
 version = "0.0.0"
 dependencies = [
  "quote",
- "syn 2.0.119",
+ "syn 3.0.3",
 ]
 
 [[package]]
