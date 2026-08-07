@@ -8,6 +8,18 @@ distributed job resources. Jobs abstract away the details of different
 schedulers (SLURM, local execution, etc.) and provide a unified way to
 allocate hosts and create HostMesh objects.
 
+Overview
+========
+
+The Job API is responsible for preparing the execution environment for a
+Monarch program. A Job specifies *where* a distributed program will run
+(locally, on a cluster such as SLURM, or on Kubernetes) and *what resources*
+are required before any actors or training code is executed.
+
+Jobs are declarative: users describe the desired resources (for example, the
+number of processes or hosts), and Monarch handles interacting with the
+underlying scheduler or runtime to allocate those resources.
+
 Job Model
 =========
 
@@ -33,6 +45,36 @@ Example::
     # Access host meshes by name
     trainer_hosts = state.trainers
     dataloader_hosts = state.dataloaders
+    
+Simple Bootstrap Example
+========================
+
+The following example demonstrates a minimal local Job setup. It allocates
+resources on the local machine and runs a simple actor, illustrating the full
+flow from Job creation to execution.
+
+.. code-block:: python
+
+    from monarch.job import LocalJob
+    from monarch.actor import Actor, endpoint
+
+    class HelloActor(Actor):
+        @endpoint
+        def hello(self):
+            print("Hello from Monarch")
+
+    # Define a local job with two worker processes
+    job = LocalJob(meshes={"workers": 2})
+
+    # Apply the job and retrieve allocated resources
+    state = job.state()
+
+    # Access the allocated host mesh
+    workers = state.workers
+
+    # Spawn actors on the workers and invoke the endpoint
+    actors = workers.spawn("hello", HelloActor)
+    actors.hello.call()
 
 
 Job State
