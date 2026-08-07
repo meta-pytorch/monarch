@@ -68,22 +68,6 @@ async def main():
         job_state = job.state(cached_path=None)
         proc_mesh = job_state.hosts.spawn_procs(per_host={"gpus": 1})
 
-        admin_url = job_state.admin_url
-        assert admin_url is not None
-        mtls_flags = (
-            "--cacert /var/facebook/rootcanal/ca.pem "
-            "--cert /var/facebook/x509_identities/server.pem "
-            "--key /var/facebook/x509_identities/server.pem "
-            if admin_url.startswith("https")
-            else ""
-        )
-        print(f"\nMesh admin server listening on {admin_url}")
-        print(f"  - Root node:     curl {mtls_flags}{admin_url}/v1/root")
-        print(f"  - Mesh tree:     curl {mtls_flags}{admin_url}/v1/tree")
-        print(f"  - API docs:      curl {mtls_flags}{admin_url}/SKILL.md")
-        print(
-            f"  - TUI:           buck2 run fbcode//monarch/hyperactor_mesh_admin_tui:hyperactor_mesh_admin_tui -- --addr {admin_url}"
-        )
         print("\nPress Ctrl+C to stop.\n", flush=True)
 
         for i in range(args.iterations):

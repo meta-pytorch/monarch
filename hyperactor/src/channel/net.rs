@@ -2400,7 +2400,7 @@ fn oss_pem_bundle() -> crate::config::PemBundle {
 }
 
 /// Try to find a usable TLS [`PemBundle`](crate::config::PemBundle)
-/// by probing the same sources as [`try_tls_acceptor`] /
+/// by probing the same sources as [`try_tls_acceptor_with_pem_bundle`] /
 /// [`try_tls_connector`].
 ///
 /// Returns the first bundle whose CA certificate is readable.
@@ -2424,8 +2424,8 @@ pub fn try_tls_pem_bundle() -> Option<crate::config::PemBundle> {
     None
 }
 
-/// Try to build a [`TlsAcceptor`](tokio_rustls::TlsAcceptor) for an
-/// HTTP server by probing for available TLS certificates.
+/// Try to build a [`TlsAcceptor`](tokio_rustls::TlsAcceptor) and retain the
+/// exact [`PemBundle`](crate::config::PemBundle) selected for it.
 ///
 /// Detection order:
 /// 1. **OSS / explicit config** — `HYPERACTOR_TLS_CERT`,
@@ -2443,16 +2443,18 @@ pub fn try_tls_pem_bundle() -> Option<crate::config::PemBundle> {
 /// configured CA (mutual TLS via `WebPkiClientVerifier`). When
 /// `false`, the acceptor authenticates itself but does not demand
 /// client certificates.
-pub fn try_tls_acceptor(enforce_client_tls: bool) -> Option<tokio_rustls::TlsAcceptor> {
+pub fn try_tls_acceptor_with_pem_bundle(
+    enforce_client_tls: bool,
+) -> Option<(tokio_rustls::TlsAcceptor, crate::config::PemBundle)> {
     let oss_bundle = oss_pem_bundle();
     if let Ok(acceptor) = tls::tls_acceptor_from_bundle(&oss_bundle, enforce_client_tls) {
-        return Some(acceptor);
+        return Some((acceptor, oss_bundle));
     }
     tracing::debug!("OSS TLS acceptor failed, trying Meta paths");
 
     let meta_bundle = meta::get_server_pem_bundle();
     if let Ok(acceptor) = tls::tls_acceptor_from_bundle(&meta_bundle, enforce_client_tls) {
-        return Some(acceptor);
+        return Some((acceptor, meta_bundle));
     }
     tracing::debug!("Meta TLS acceptor failed, no TLS available");
 
@@ -2462,7 +2464,7 @@ pub fn try_tls_acceptor(enforce_client_tls: bool) -> Option<tokio_rustls::TlsAcc
 /// Try to build a [`TlsConnector`](tokio_rustls::TlsConnector) for an
 /// HTTP client that needs to connect to a TLS-enabled server.
 ///
-/// Detection mirrors [`try_tls_acceptor`]:
+/// Detection mirrors [`try_tls_acceptor_with_pem_bundle`]:
 /// 1. **OSS** — `HYPERACTOR_TLS_CA` (and optionally
 ///    `HYPERACTOR_TLS_CERT` + `HYPERACTOR_TLS_KEY` for mutual TLS).
 /// 2. **Meta** — root CA at `/var/facebook/rootcanal/ca.pem`,

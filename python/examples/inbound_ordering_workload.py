@@ -150,16 +150,9 @@ async def async_main(args: argparse.Namespace) -> None:
         receiver_ref = str(receiver_addr)
         receiver_ref_encoded = urllib.parse.quote(receiver_ref, safe="")
 
-        print(f"Mesh admin server listening on {state.admin_url}", flush=True)
         print(f"  - Stalled receiver: {receiver_ref}", flush=True)
         print(
             f"  - curl: curl{mtls_flags} {state.admin_url}/v1/{receiver_ref_encoded}",
-            flush=True,
-        )
-        print(
-            "  - TUI:   "
-            f"buck2 run fbcode//monarch/hyperactor_mesh_admin_tui:hyperactor_mesh_admin_tui "
-            f"-- --addr {state.admin_url}",
             flush=True,
         )
         print(

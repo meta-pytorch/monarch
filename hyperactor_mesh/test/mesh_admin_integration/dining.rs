@@ -100,6 +100,7 @@ impl Drop for ShutdownGuard<'_> {
 async fn check_dining_endpoints(bin: &Path) {
     DiningScenario::run(bin, |s| {
         Box::pin(async move {
+            s.fixture.assert_custom_tls_access_instructions().await;
             crate::admin::assert_admin_info(s).await;
             crate::admin::assert_admin_schema(s).await;
             crate::config::check(s).await;
@@ -110,14 +111,14 @@ async fn check_dining_endpoints(bin: &Path) {
     .await;
 }
 
-/// MIT-13, MIT-14, MIT-15, MIT-75, MIT-76, MIT-77: dining-based
+/// MIT-13, MIT-14, MIT-15, MIT-75, MIT-76, MIT-77, MIT-79: dining-based
 /// endpoint assertions — Rust binary.
 pub async fn run_dining_endpoints_rust() {
     let bin = harness::dining_philosophers_rust_binary();
     check_dining_endpoints(&bin).await;
 }
 
-/// MIT-13, MIT-14, MIT-15, MIT-75, MIT-76, MIT-77: dining-based
+/// MIT-13, MIT-14, MIT-15, MIT-75, MIT-76, MIT-77, MIT-79: dining-based
 /// endpoint assertions — Python binary.
 pub async fn run_dining_endpoints_python() {
     let bin = harness::dining_philosophers_python_binary();

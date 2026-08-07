@@ -217,10 +217,10 @@ class TelemetryComponent(JobComponent):
             self._telemetry_url = telemetry_url
             if isinstance(dashboard_url, str):
                 self._dashboard_url = dashboard_url
-                if self._config.include_dashboard:
-                    print(f"Monarch Dashboard: {dashboard_url}", flush=True)
             self._query_engine_client = QueryEngineClient(telemetry_url)
             install_sidecar_socket_sink(socket_path)
+            if self._dashboard_url is not None and self._config.include_dashboard:
+                print(f"Monarch Dashboard: {self._dashboard_url}", flush=True)
         except Exception:
             # Reset so a partial bootstrap leaves a clean "disabled" state:
             # fan-out no-ops and `state` exposes no query client.
