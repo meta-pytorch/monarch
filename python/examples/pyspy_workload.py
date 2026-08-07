@@ -154,9 +154,6 @@ async def async_main() -> None:
             f"\npy-spy workload: mode={args.mode}, "
             f"work_ms={args.work_ms}, concurrency={args.concurrency}"
         )
-        print(f"\nMesh admin server listening on {admin_url}")
-        print(f"  - Mesh tree:     curl {mtls_flags}{admin_url}/v1/tree")
-        print(f"  - API docs:      curl {mtls_flags}{admin_url}/SKILL.md")
         print("\nVerify with:")
         print("  buck2 run fbcode//monarch/python/examples:verify_pyspy -- \\")
         if mtls_flags:

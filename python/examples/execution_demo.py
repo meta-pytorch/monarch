@@ -146,19 +146,6 @@ async def async_main(args: argparse.Namespace) -> None:
         fork_ref = await fork_manager.whoami.call_one()
         phil0_ref = await philosophers.slice(replica=0).whoami.call_one()
 
-        admin_url = state.admin_url
-        assert admin_url is not None
-        mtls_flags = (
-            "--cacert /var/facebook/rootcanal/ca.pem "
-            "--cert /var/facebook/x509_identities/server.pem "
-            "--key /var/facebook/x509_identities/server.pem "
-            if admin_url.startswith("https")
-            else ""
-        )
-        tui = "buck2 run fbcode//monarch/hyperactor_mesh_admin_tui:hyperactor_mesh_admin_tui"
-        print(f"\nMesh admin server listening on {admin_url}")
-        print(f"  - Mesh tree:  curl {mtls_flags}{admin_url}/v1/tree")
-        print(f"  - TUI:        {tui} -- --addr {admin_url}")
         print("\nWatch list (find these in the TUI tree by label):")
         print(
             "  - actor `fork_manager`  -> Execution: `acquire xK` (live contention) + flight recorder"

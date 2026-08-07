@@ -230,19 +230,28 @@
 //!   etc.) rather than propagating panics or unwinding. Failed reply
 //!   sends (the caller went away) are silently swallowed.
 //!
-//! ## TLS transport invariant (MA-T1)
+//! ## TLS transport invariants (MA-T*)
 //!
 //! - **MA-T1 (tls):** At Meta (`fbcode_build`), the admin HTTP
-//!   server **requires** mutual TLS. At startup it probes for
-//!   certificates via `try_tls_acceptor` with client cert
-//!   enforcement enabled. If no usable certificate bundle is found,
-//!   `init()` returns an error — no plain HTTP fallback. In OSS,
-//!   TLS is best-effort with plain HTTP fallback.
+//!   server **requires** mutual TLS. At startup it resolves a paired
+//!   acceptor and credential bundle via
+//!   `try_tls_acceptor_with_pem_bundle` with client cert enforcement
+//!   enabled. If no usable certificate bundle is found, `init()`
+//!   returns an error — no plain HTTP fallback. In OSS, TLS is
+//!   best-effort with plain HTTP fallback.
 //!
 //! - **MA-T2 (scheme-in-url):** The URL returned by `GetAdminAddr`
 //!   is always `https://host:port` or `http://host:port`, never a
 //!   bare `host:port`. All callers receive and use this full URL
 //!   directly.
+//!
+//! - **MA-T3 (access-instructions):** `MeshAdminAgent::init` emits one
+//!   startup access block. For HTTPS, runnable `curl` flags come from
+//!   the exact `PemBundle` paired with the selected acceptor and are
+//!   rendered only when the CA, certificate, and key are `Pem::File`
+//!   or `Pem::StaticPath`. If any credential is `Pem::Value`, the
+//!   block shows endpoint URLs without claiming a runnable `curl`
+//!   command. Plain HTTP endpoints retain runnable `curl` commands.
 //!
 //! ## Client host invariants (CH-*)
 //!
@@ -336,6 +345,7 @@
 
 use std::collections::HashMap;
 use std::io;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -359,7 +369,9 @@ use hyperactor::Instance;
 use hyperactor::OncePortRef;
 use hyperactor::ProcAddr;
 use hyperactor::RefClient;
-use hyperactor::channel::try_tls_acceptor;
+use hyperactor::channel::try_tls_acceptor_with_pem_bundle;
+use hyperactor::config::Pem;
+use hyperactor::config::PemBundle;
 use hyperactor::introspect::IntrospectMessage;
 use hyperactor::introspect::IntrospectResult;
 use hyperactor::introspect::IntrospectView;
@@ -389,6 +401,52 @@ use crate::pyspy::PySpyProfileOpts;
 use crate::pyspy::PySpyProfileResult;
 use crate::pyspy::PySpyResult;
 use crate::pyspy::ValidatedProfileRequest;
+
+/// Builds user-facing commands for accessing a mesh admin server.
+fn mesh_admin_access_instructions(admin_url: &str, tls_bundle: Option<&PemBundle>) -> String {
+    fn path(pem: &Pem) -> Option<&Path> {
+        match pem {
+            Pem::File(path) => Some(path),
+            Pem::StaticPath(path) => Some(Path::new(*path)),
+            Pem::Value(_) => None,
+        }
+    }
+
+    let curl_prefix = if admin_url.starts_with("https://") {
+        tls_bundle.and_then(|bundle| {
+            Some(format!(
+                "curl --cacert {} --cert {} --key {} ",
+                path(&bundle.ca)?.display(),
+                path(&bundle.cert)?.display(),
+                path(&bundle.key)?.display(),
+            ))
+        })
+    } else {
+        Some("curl ".to_string())
+    };
+    let access = |path: &str| match &curl_prefix {
+        Some(prefix) => format!("{prefix}{admin_url}{path}"),
+        None => format!("{admin_url}{path}"),
+    };
+
+    format!(
+        concat!(
+            "Mesh admin server listening on {admin_url}\n",
+            "  - Root node:     {root_access}\n",
+            "  - Mesh tree:     {tree_access}\n",
+            "  - API docs:      {docs_access}\n",
+            "  - TUI:           buck2 run ",
+            "fbcode//monarch/hyperactor_mesh_admin_tui:hyperactor_mesh_admin_tui ",
+            "-- --addr {admin_url}\n",
+            "                   cargo run -p hyperactor_mesh_admin_tui_lib ",
+            "--bin hyperactor_mesh_admin_tui -- --addr {admin_url}",
+        ),
+        admin_url = admin_url,
+        root_access = access("/v1/root"),
+        tree_access = access("/v1/tree"),
+        docs_access = access("/SKILL.md"),
+    )
+}
 
 /// Send an `IntrospectMessage` to an actor and receive the reply.
 /// Encapsulates open_once_port + send + timeout + error handling.
@@ -909,15 +967,16 @@ impl Actor for MeshAdminAgent {
     ///    call `bind()` — unlike `gspawn` — so the actor must do it
     ///    itself before becoming reachable).
     /// 2. Binds a TCP listener (ephemeral or fixed port).
-    /// 3. Builds a TLS acceptor (explicit env vars, then Meta default
-    ///    paths). At Meta (`fbcode_build`), mTLS is mandatory and
-    ///    init fails if no certs are found. In OSS, falls back to
-    ///    plain HTTP.
+    /// 3. Builds a TLS acceptor and retains its selected credential
+    ///    bundle (explicit env vars, then Meta default paths). At Meta
+    ///    (`fbcode_build`), mTLS is mandatory and init fails if no certs
+    ///    are found. In OSS, falls back to plain HTTP.
     /// 4. Creates a dedicated `Instance<()>` client mailbox on
     ///    system_proc for the HTTP bridge's reply ports, keeping
     ///    bridge traffic off the actor's own mailbox.
     /// 5. Spawns the axum server in a background task (HTTPS with
     ///    mTLS at Meta, HTTPS or HTTP in OSS depending on step 3).
+    /// 6. Prints one access block derived from the selected bundle.
     ///
     /// The hostname-based listen address is stored in `admin_host` so
     /// it can be returned via `GetAdminAddr`. The scheme (`https://`
@@ -945,9 +1004,9 @@ impl Actor for MeshAdminAgent {
         // In OSS: TLS is best-effort with plain HTTP fallback.
         // See MA-T1 in module doc.
         let enforce_mtls = cfg!(fbcode_build);
-        let tls_acceptor = try_tls_acceptor(enforce_mtls);
+        let tls = try_tls_acceptor_with_pem_bundle(enforce_mtls);
 
-        if enforce_mtls && tls_acceptor.is_none() {
+        if enforce_mtls && tls.is_none() {
             return Err(anyhow::anyhow!(
                 "mesh admin requires mTLS but no TLS certificates found; \
                  set HYPERACTOR_TLS_CERT/KEY/CA or ensure Meta cert paths exist \
@@ -955,11 +1014,7 @@ impl Actor for MeshAdminAgent {
             ));
         }
 
-        let scheme = if tls_acceptor.is_some() {
-            "https"
-        } else {
-            "http"
-        };
+        let scheme = if tls.is_some() { "https" } else { "http" };
 
         // Build the host portion of the admin URL.
         //
@@ -995,6 +1050,8 @@ impl Actor for MeshAdminAgent {
             .admin_host
             .clone()
             .unwrap_or_else(|| "unknown".to_string());
+        let access_instructions =
+            mesh_admin_access_instructions(&admin_url, tls.as_ref().map(|(_, bundle)| bundle));
         let bridge_state = Arc::new(BridgeState {
             admin_ref: ActorRef::attest(this.self_addr().clone()),
             bridge_cx,
@@ -1012,7 +1069,7 @@ impl Actor for MeshAdminAgent {
         });
         let router = create_mesh_admin_router(bridge_state);
 
-        if let Some(acceptor) = tls_acceptor {
+        if let Some((acceptor, _)) = tls {
             let tls_listener = TlsListener {
                 tcp: listener,
                 acceptor,
@@ -1031,6 +1088,7 @@ impl Actor for MeshAdminAgent {
             });
         }
 
+        println!("{access_instructions}");
         tracing::info!(
             "mesh admin server listening on {}",
             self.admin_host.as_deref().unwrap_or("unknown")
@@ -3057,10 +3115,10 @@ mod advertised_host {
 
     /// Extract SAN entries from the server cert PEM bundle.
     ///
-    /// Loads the same cert bundle that `try_tls_acceptor` uses,
-    /// parses the leaf cert with `x509_parser`, and returns SAN
-    /// DNS names and IP addresses. Returns empty if no cert is
-    /// available or parsing fails.
+    /// Probes cert bundles in the same source order as
+    /// `try_tls_acceptor_with_pem_bundle`, parses the leaf cert with
+    /// `x509_parser`, and returns SAN DNS names and IP addresses.
+    /// Returns empty if no cert is available or parsing fails.
     fn load_cert_sans() -> Vec<SanIdentity> {
         use std::io::BufReader;
 
@@ -3218,6 +3276,60 @@ mod tests {
     // ephemeral port. The default (`None`) reads MESH_ADMIN_ADDR
     // config which is `[::]:1729` — a fixed port that causes bind
     // conflicts when tests run concurrently.
+
+    #[test]
+    fn mesh_admin_access_instructions_print_file_tls_paths() {
+        let bundle = PemBundle {
+            ca: Pem::File("/tmp/custom-ca.pem".into()),
+            cert: Pem::File("/tmp/custom-cert.pem".into()),
+            key: Pem::File("/tmp/custom-key.pem".into()),
+        };
+
+        let instructions =
+            mesh_admin_access_instructions("https://admin.example.com", Some(&bundle));
+
+        assert!(instructions.contains(
+            "Root node:     curl --cacert /tmp/custom-ca.pem --cert /tmp/custom-cert.pem --key /tmp/custom-key.pem https://admin.example.com/v1/root"
+        ));
+    }
+
+    #[test]
+    fn mesh_admin_access_instructions_print_static_tls_paths() {
+        let bundle = PemBundle {
+            ca: Pem::StaticPath("/etc/hyperactor/tls/ca.crt"),
+            cert: Pem::StaticPath("/etc/hyperactor/tls/tls.crt"),
+            key: Pem::StaticPath("/etc/hyperactor/tls/tls.key"),
+        };
+
+        let instructions =
+            mesh_admin_access_instructions("https://admin.example.com", Some(&bundle));
+
+        assert!(instructions.contains(
+            "Root node:     curl --cacert /etc/hyperactor/tls/ca.crt --cert /etc/hyperactor/tls/tls.crt --key /etc/hyperactor/tls/tls.key https://admin.example.com/v1/root"
+        ));
+    }
+
+    #[test]
+    fn mesh_admin_access_instructions_do_not_render_pem_values_as_curl() {
+        let bundle = PemBundle {
+            ca: Pem::Value(b"ca".to_vec()),
+            cert: Pem::File("/tmp/custom-cert.pem".into()),
+            key: Pem::File("/tmp/custom-key.pem".into()),
+        };
+
+        let instructions =
+            mesh_admin_access_instructions("https://admin.example.com", Some(&bundle));
+
+        assert!(instructions.contains("Root node:     https://admin.example.com/v1/root"));
+        assert!(!instructions.contains("Root node:     curl"));
+    }
+
+    #[test]
+    fn mesh_admin_access_instructions_print_plain_http_curl() {
+        let instructions = mesh_admin_access_instructions("http://localhost:1729", None);
+
+        assert!(instructions.contains("Root node:     curl http://localhost:1729/v1/root"));
+    }
 
     /// Minimal introspectable actor for tests. The `#[export]`
     /// attribute generates `Named + Referable + Binds` so that

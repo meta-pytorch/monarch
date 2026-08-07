@@ -69,6 +69,8 @@ pub(crate) struct WorkloadFixture {
     pub(crate) admin_url: String,
     pub(crate) client: Client,
     ca_pem: Vec<u8>,
+    ca_path: PathBuf,
+    combined_path: PathBuf,
     _cert_dir: TempDir,
     /// Child stdin, for workloads driven by the stdin-command /
     /// stdout-sentinel handshake (`execution_workload`). `None` for
@@ -132,6 +134,25 @@ impl WorkloadFixture {
                 timeout.as_secs()
             )
         })?
+    }
+
+    /// Assert MIT-79: startup output advertises this fixture's TLS paths.
+    pub(crate) async fn assert_custom_tls_access_instructions(&self) {
+        let line = self
+            .wait_for_stdout("  - Root node:", Duration::from_secs(10))
+            .await
+            .expect("mesh admin must print root access instructions");
+        assert_eq!(
+            line,
+            format!(
+                "  - Root node:     curl --cacert {} --cert {} --key {} {}/v1/root",
+                self.ca_path.display(),
+                self.combined_path.display(),
+                self.combined_path.display(),
+                self.admin_url,
+            ),
+            "root access instructions must use the server's selected TLS paths"
+        );
     }
 
     /// Build a client that trusts the test CA but presents no client
@@ -620,6 +641,8 @@ pub(crate) async fn start_workload(
         admin_url,
         client,
         ca_pem: pki.ca_pem,
+        ca_path,
+        combined_path,
         _cert_dir: cert_dir,
         stdin: AsyncMutex::new(Some(stdin)),
         stdout_rx: AsyncMutex::new(stdout_rx),

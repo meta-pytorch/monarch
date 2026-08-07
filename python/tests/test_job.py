@@ -1197,6 +1197,18 @@ def test_telemetry_uses_sidecar():
     m.install_sink.assert_called_once_with("/tmp/telemetry.sock")
 
 
+def test_telemetry_dashboard_url_printed_only_once(capsys):
+    with _patched_sidecar():
+        job = MockJobTrait(host_names=["hosts"]).enable_telemetry(
+            TelemetryConfig(include_dashboard=True)
+        )
+        job.state(cached_path=None)
+        job.state(cached_path=None)
+
+    output = capsys.readouterr().out
+    assert output.count("Monarch Dashboard: http://dashboard\n") == 1
+
+
 def test_sidecar_bootstrap_then_fanout_carry_host_meshes():
     """state() bootstraps the sidecar with empty host_meshes, then fans out
     workers with the materialized host meshes."""
@@ -1271,15 +1283,18 @@ def test_sidecar_worker_fanout_uses_configured_host_meshes():
     assert state.hosts.python_executable == python_exe
 
 
-def test_sidecar_bootstrap_failure_is_isolated():
+def test_sidecar_bootstrap_failure_is_isolated(capsys):
     """A sidecar bootstrap failure disables telemetry and never fails state()."""
     with _patched_sidecar(ensure_open_side_effect=RuntimeError("boom")) as m:
-        job = MockJobTrait(host_names=["hosts"]).enable_telemetry(TelemetryConfig())
+        job = MockJobTrait(host_names=["hosts"]).enable_telemetry(
+            TelemetryConfig(include_dashboard=True)
+        )
         state = job.state(cached_path=None)  # must not raise
 
     assert state.query_engine_client is None
     assert state.query_engine is None
     m.query_engine_client_cls.assert_not_called()
+    assert "Monarch Dashboard:" not in capsys.readouterr().out
 
 
 def test_sidecar_worker_fanout_failure_is_isolated():
