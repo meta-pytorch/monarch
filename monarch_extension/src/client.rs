@@ -51,12 +51,6 @@ pub struct WorkerResponse {
     result: Option<Result<wirevalue::Any, Exception>>,
 }
 
-impl WorkerResponse {
-    pub fn new(seq: Seq, result: Option<Result<wirevalue::Any, Exception>>) -> Self {
-        Self { seq, result }
-    }
-}
-
 #[pymethods]
 impl WorkerResponse {
     // For now lets treat Seq as just an int with an opaque alias on python side.
