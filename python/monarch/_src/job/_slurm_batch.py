@@ -27,14 +27,33 @@ import sys
 from typing import List, Optional
 
 from monarch._src.job._batch_env import MONARCH_BATCH_JOB_ENV
+from monarch.tools.network import get_consistent_sockaddr
 
-# Bootstraps one monarch worker bound to this node's hostname. Passed as python
-# ``-c`` argv (no shell), so quoting inside is irrelevant.
+# Bootstraps one monarch worker on this node. Passed as python ``-c`` argv (no
+# shell), so quoting inside is irrelevant. The address comes from
+# ``worker_address``, which the controller also calls to build its dial address
+# (see ``SlurmJob._state``), so the two agree by construction.
 _WORKER_BOOTSTRAP: str = (
     "import socket; from monarch.actor import run_worker_loop_forever; "
-    'run_worker_loop_forever(address=f"tcp://{socket.gethostname()}:%d", '
+    "from monarch._src.job._slurm_batch import worker_address; "
+    "run_worker_loop_forever("
+    "address=worker_address(socket.gethostname(), %d), "
     'ca="trust_all_connections")'
 )
+
+
+def worker_address(hostname: str, port: int) -> str:
+    """The ``tcp://`` URL of the monarch worker serving on ``hostname``.
+
+    Called by both sides of the SLURM bootstrap -- the worker passes it to
+    ``run_worker_loop_forever``, the controller to ``attach_to_workers`` -- so
+    that the address the worker advertises and the one the controller dials come
+    from one expression rather than two files agreeing by convention. They must
+    be the *same string*, not merely mutually reachable: see
+    :func:`monarch.tools.network.get_consistent_sockaddr` for why, and for why
+    the hostname is resolved here instead of left in the URL.
+    """
+    return f"tcp://{get_consistent_sockaddr(hostname, port)}"
 
 
 def main(argv: Optional[List[str]] = None) -> None:
