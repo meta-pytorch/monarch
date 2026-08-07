@@ -375,17 +375,15 @@ class RDMABuffer:
     ) -> None:
         """
         RDMABuffer supports 1d contiguous tensors (including tensor views/slices) or 1d c-contiguous memoryviews.
+        Both CPU and GPU memory are supported.
 
         Args:
             data: torch.Tensor or memoryview to create the buffer from. Must be 1d and contiguous.
                   If provided, addr and size must not be specified.
 
         Raises:
-            ValueError: If data is not 1d contiguous, if size is 0, or if data is a GPU tensor.
+            ValueError: If data is not 1d contiguous, or if its size is 0.
             RuntimeError: If no RDMA backend is available on this platform.
-
-        Note:
-            Currently only CPU tensors are supported. GPU tensor support will be added in the future.
 
         TODO: Create TensorBuffer, which will be main user API supporting non-contiguous tensors
         """
