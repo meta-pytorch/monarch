@@ -19,7 +19,7 @@ monarch_record_batch = { version = "0.0.0", path = "../monarch_record_batch" }
 monarch_telemetry_schema = { version = "0.0.0", path = "../monarch_telemetry_schema" }
 opentelemetry = "0.31"
 opentelemetry-otlp = { version = "0.31.1", features = ["grpc-tonic", "http-proto", "logs", "metrics", "reqwest-blocking-client", "trace", "zstd-tonic"], default-features = false }
-opentelemetry_sdk = { version = "0.31", features = ["experimental_metrics_custom_reader", "metrics", "rt-tokio"] }
+opentelemetry_sdk = { version = "0.32", features = ["experimental_metrics_custom_reader", "metrics", "rt-tokio"] }
 prost = { version = "0.14.4", default-features = false }
 rand = "0.10.2"
 rusqlite = { version = "0.37.0", features = ["backup", "blob", "bundled", "column_decltype", "functions", "limits", "modern_sqlite", "serde_json", "vtab"] }
