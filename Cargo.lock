@@ -4823,7 +4823,6 @@ dependencies = [
  "paste",
  "rand 0.10.2",
  "rdmaxcel-sys",
- "regex",
  "serde",
  "serde_multipart",
  "timed_test",

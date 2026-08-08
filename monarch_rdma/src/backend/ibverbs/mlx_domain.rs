@@ -28,7 +28,7 @@ use std::sync::OnceLock;
 
 use anyhow::Context;
 
-use super::device_selection::get_cuda_device_to_ibv_device;
+use super::device_selection::get_cuda_device_to_ibv_devices;
 use super::domain::IbvDomain;
 use super::domain::IbvDomainImpl;
 use super::domain::register_dmabuf_range;
@@ -120,7 +120,7 @@ pub(super) trait MlxDomainOps: Send + Sync + 'static {
 
     /// CUDA ordinals whose optimal NIC is this domain's device; only segments
     /// on these ordinals are bound here.
-    fn assigned_cuda_devices(&self) -> Vec<i32>;
+    fn assigned_cuda_devices(&self) -> anyhow::Result<Vec<i32>>;
 
     /// Enumerate the currently-live CUDA segments.
     fn scan_segments(&self) -> Vec<ScannedSegment>;
@@ -212,16 +212,16 @@ impl MlxDomainOps for ProdMlxDomainOps {
         self.mlx5dv_enabled
     }
 
-    fn assigned_cuda_devices(&self) -> Vec<i32> {
-        get_cuda_device_to_ibv_device::<MlxDevice>()
-            .iter()
+    fn assigned_cuda_devices(&self) -> anyhow::Result<Vec<i32>> {
+        Ok(get_cuda_device_to_ibv_devices::<MlxDevice>()?
+            .into_iter()
             .enumerate()
-            .filter_map(|(ordinal, nic)| {
-                nic.as_ref()
-                    .filter(|n| n.name() == &self.device_name)
-                    .map(|_| ordinal as i32)
+            .filter_map(|(ordinal, nics)| {
+                nics.iter()
+                    .any(|nic| nic.name() == &self.device_name)
+                    .then_some(ordinal as i32)
             })
-            .collect()
+            .collect())
     }
 
     fn scan_segments(&self) -> Vec<ScannedSegment> {
@@ -648,9 +648,6 @@ pub struct MlxDomain {
     /// Config for the loopback binding QP.
     config: IbvConfig,
     mlx5dv_enabled: bool,
-    /// CUDA ordinals whose optimal NIC is this device. Only segments on
-    /// these ordinals are bound here.
-    cuda_ordinals: Vec<i32>,
     /// Caps the MRs bound to each segment's indirect key.
     mkey_max_entries: usize,
     /// Lazily-created loopback QP (an [`IbvQp`] owning its completion queues and
@@ -668,27 +665,23 @@ impl std::fmt::Debug for MlxDomain {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MlxDomain")
             .field("mlx5dv_enabled", &self.mlx5dv_enabled)
-            .field("cuda_ordinals", &self.cuda_ordinals)
             .finish_non_exhaustive()
     }
 }
 
 impl MlxDomain {
-    /// Build a domain over the given ops, deriving mlx5dv support and the
-    /// served CUDA ordinals from them. `mkey_max_entries` caps the MRs bound to
-    /// every segment's indirect key.
+    /// Build a domain over the given ops, deriving mlx5dv support from them.
+    /// `mkey_max_entries` caps the MRs bound to every segment's indirect key.
     fn new_with_ops(
         ops: Arc<dyn MlxDomainOps>,
         config: IbvConfig,
         mkey_max_entries: usize,
     ) -> Self {
         let mlx5dv_enabled = ops.mlx5dv_enabled();
-        let cuda_ordinals = ops.assigned_cuda_devices();
         Self {
             ops,
             config,
             mlx5dv_enabled,
-            cuda_ordinals,
             mkey_max_entries,
             loopback: OnceLock::new(),
             segments: Mutex::new(HashMap::new()),
@@ -738,12 +731,19 @@ impl MlxDomain {
             return Ok(RegisteredSegment::view(seg, addr, size));
         }
 
+        // Which ordinals this NIC serves, resolved now rather than at domain
+        // construction: the caller holds a CUDA address, so CUDA is initialized
+        // and the ordinal → NIC map is resolvable. If this were instead called
+        // only once at construction, if CUDA were not already initialized,
+        // this domain would permanently have an empty list of ordinals.
+        let cuda_ordinals = self.ops.assigned_cuda_devices()?;
+
         // Pull live segments and keep only the ones on ordinals we serve.
         let scanned: Vec<ScannedSegment> = self
             .ops
             .scan_segments()
             .into_iter()
-            .filter(|s| self.cuda_ordinals.contains(&s.cuda_ordinal))
+            .filter(|s| cuda_ordinals.contains(&s.cuda_ordinal))
             .collect();
 
         let qp = self.loopback_qp_ptr(domain)?;
@@ -789,7 +789,7 @@ impl MlxDomain {
                     "CUDA address 0x{:x} + size {} is not covered by any scanned segment on the CUDA ordinals {:?} mapped to this NIC",
                     addr,
                     size,
-                    self.cuda_ordinals,
+                    cuda_ordinals,
                 )
             })
     }
@@ -935,8 +935,8 @@ mod tests {
             self.lock().mlx5dv_enabled
         }
 
-        fn assigned_cuda_devices(&self) -> Vec<i32> {
-            self.lock().served_ordinals.clone()
+        fn assigned_cuda_devices(&self) -> anyhow::Result<Vec<i32>> {
+            Ok(self.lock().served_ordinals.clone())
         }
 
         fn scan_segments(&self) -> Vec<ScannedSegment> {
@@ -1344,11 +1344,35 @@ mod tests {
     // ----- MlxDomain integration tests -----
 
     #[test]
-    fn test_cuda_ordinals_and_mlx5dv_enabled_derived_from_ops() {
+    fn test_mlx5dv_enabled_derived_from_ops() {
         let mock = MockOps::new(SERVED_NIC, true, &[0, 2]);
         let domain = domain(mock);
-        assert_eq!(domain.domain_impl().cuda_ordinals, vec![0, 2]);
         assert!(domain.domain_impl().mlx5dv_enabled);
+    }
+
+    #[test]
+    fn test_served_ordinals_resolved_per_use_not_at_construction() {
+        // A domain is normally opened by a host registration, before CUDA is
+        // initialized and so before any ordinal resolves to a NIC. Capturing the
+        // served set at construction would exclude every CUDA segment for the
+        // domain's lifetime, so it must be re-read per registration.
+        let base = 0x10_0000_0000;
+        let mock = MockOps::new(SERVED_NIC, true, &[]);
+        let domain = domain(mock.clone());
+        mock.lock().scan = vec![seg(base, MIB2, 0)];
+
+        assert!(
+            register_cuda(&domain, base, 4096).is_err(),
+            "ordinal 0 is not served yet, so its segment must not bind"
+        );
+
+        // CUDA comes up; ordinal 0 now resolves to this NIC.
+        mock.lock().served_ordinals = vec![0];
+
+        let view = register_cuda(&domain, base, 4096)
+            .expect("the segment must bind once its ordinal becomes served");
+        assert_eq!(view.size, 4096);
+        assert_eq!(mock.lock().bind_calls.len(), 1, "one segment bound");
     }
 
     #[test]

@@ -512,9 +512,10 @@ pub(super) unsafe fn register_host_or_dmabuf_mr<I: IbvDomainImpl>(
 mod tests {
     use super::*;
     use crate::backend::cuda_test_utils::CudaAllocator;
+    use crate::backend::cuda_test_utils::cuda_device_count;
     use crate::backend::ibverbs::device::IbvDevice;
     use crate::backend::ibverbs::device::IbvDeviceImpl;
-    use crate::backend::ibverbs::device_selection::get_cuda_device_to_ibv_device;
+    use crate::backend::ibverbs::device_selection::get_cuda_device_to_ibv_devices;
     use crate::backend::ibverbs::mlx_device::MlxDevice;
     use crate::backend::ibverbs::mlx_domain::MlxDomain;
 
@@ -528,9 +529,20 @@ mod tests {
     /// open/creation failure panics. The returned domain owns its context, so it
     /// (and its PD) stays valid after the local [`IbvDevice`] drops.
     fn open_domain_for_cuda_device(device: i32) -> IbvDomain<MlxDomain> {
-        let nic = get_cuda_device_to_ibv_device::<MlxDevice>()
+        // Ranking NICs against a CUDA ordinal asks the driver for the GPU's PCI
+        // address, and `device_selection` deliberately never loads or initializes
+        // the driver itself. Do it here: nothing else in this module touches CUDA
+        // before this point, so the ranking below would otherwise fail with
+        // `CUDA_ERROR_NOT_INITIALIZED`.
+        assert!(
+            cuda_device_count() > device,
+            "CUDA device {device} is required by this test",
+        );
+        let ordinal_to_nics = get_cuda_device_to_ibv_devices::<MlxDevice>()
+            .expect("the CUDA driver is initialized above");
+        let nic = ordinal_to_nics
             .get(device as usize)
-            .and_then(|nic| nic.as_ref())
+            .and_then(|nics| nics.first())
             .expect("CUDA device should map to RDMA NIC")
             .name()
             .clone();

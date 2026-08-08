@@ -47,7 +47,9 @@ mod inner {
         pub type CUmemAccessDesc = hipMemAccessDesc;
 
         // Error codes
+        pub type CUresult = hipError_t;
         pub const CUDA_SUCCESS: hipError_t = hipSuccess;
+        pub const CUDA_ERROR_NOT_INITIALIZED: hipError_t = hipErrorNotInitialized;
 
         // Pointer attributes
         pub const CU_POINTER_ATTRIBUTE_MEMORY_TYPE: hipPointer_attribute =
@@ -56,6 +58,14 @@ mod inner {
             HIP_POINTER_ATTRIBUTE_DEVICE_ORDINAL;
         pub const CU_POINTER_ATTRIBUTE_CONTEXT: hipPointer_attribute =
             HIP_POINTER_ATTRIBUTE_CONTEXT;
+
+        // Device attributes
+        pub type CUdevice_attribute = hipDeviceAttribute_t;
+        pub const CU_DEVICE_ATTRIBUTE_PCI_BUS_ID: hipDeviceAttribute_t = hipDeviceAttributePciBusId;
+        pub const CU_DEVICE_ATTRIBUTE_PCI_DEVICE_ID: hipDeviceAttribute_t =
+            hipDeviceAttributePciDeviceId;
+        pub const CU_DEVICE_ATTRIBUTE_PCI_DOMAIN_ID: hipDeviceAttribute_t =
+            hipDeviceAttributePciDomainId;
 
         // Memory types
         pub const CU_MEMORYTYPE_DEVICE: u32 = 2; // hipMemoryTypeDevice = 2

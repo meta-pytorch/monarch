@@ -19,36 +19,108 @@ use std::sync::LazyLock;
 use anyhow::Error;
 use anyhow::Result;
 use dashmap::DashSet;
-use regex::Regex;
+use rdmaxcel_sys::CUresult;
 
-/// PCI address of the CUDA device with ordinal `idx`, read from
-/// `/proc/driver/nvidia/gpus/*/information` (the NVIDIA driver keys each
-/// GPU's bus id there by its device minor, which equals the CUDA ordinal).
-pub fn get_cuda_pci_address(idx: u32) -> Option<PCIAddress> {
-    let gpu_proc_dir = "/proc/driver/nvidia/gpus";
-    if !Path::new(gpu_proc_dir).exists() {
-        return None;
+fn cuda_error_string(rc: CUresult) -> String {
+    // The lookup below goes through the same driver wrapper as every other call,
+    // so it cannot name the one code that means there is no driver to ask: it
+    // would fail the same way and leave `s` null.
+    if rc == rdmaxcel_sys::CUDA_ERROR_NOT_INITIALIZED {
+        return "CUDA_ERROR_NOT_INITIALIZED".to_owned();
     }
-
-    let minor_regex =
-        Regex::new(r"Device Minor:\s*(\d+)").expect("should compile: regex literal is valid");
-    for entry in fs::read_dir(gpu_proc_dir).ok()? {
-        let entry = entry.ok()?;
-        let info_file = entry.path().join("information");
-
-        if let Ok(content) = fs::read_to_string(&info_file)
-            && let Some(captures) = minor_regex.captures(&content)
-            && let Ok(device_minor) = captures
-                .get(1)
-                .expect("should be present: capture group 1 matched")
-                .as_str()
-                .parse::<u32>()
-            && device_minor == idx
-        {
-            return PCIAddress::parse(&entry.file_name().to_string_lossy().to_lowercase());
-        }
+    let mut s: *const std::os::raw::c_char = std::ptr::null();
+    // SAFETY: `&mut s` is a valid, properly aligned, writable pointer
+    // to a `const char*`, valid for the duration of the call.
+    unsafe { rdmaxcel_sys::rdmaxcel_cuGetErrorString(rc, &mut s) };
+    if s.is_null() {
+        format!("unknown error code ({rc})")
+    } else {
+        // SAFETY: `s` is non-null (checked above) and points to a
+        // null-terminated string with static lifetime, as guaranteed
+        // by `cuGetErrorString`.
+        unsafe { std::ffi::CStr::from_ptr(s) }
+            .to_string_lossy()
+            .into_owned()
     }
-    None
+}
+
+/// Number of CUDA devices visible to this process.
+///
+/// Never loads libcuda and never calls `cuInit`. The `rdmaxcel_cu*` wrappers
+/// adopt an already-resident driver via `dlopen(RTLD_NOLOAD)` and otherwise
+/// report `CUDA_ERROR_NOT_INITIALIZED`, so a process that has not touched CUDA
+/// pays only a failed symbol lookup and never gains a CUDA context -- and gets
+/// an error here.
+pub fn cuda_device_count() -> Result<i32> {
+    let mut count: i32 = 0;
+    // SAFETY: FFI writes one `i32` through the out-pointer and has no other
+    // effect; on a non-success status `count` is left unread.
+    let rc = unsafe { rdmaxcel_sys::rdmaxcel_cuDeviceGetCount(&mut count) };
+    anyhow::ensure!(
+        rc == rdmaxcel_sys::CUDA_SUCCESS,
+        "cuDeviceGetCount failed: {}",
+        cuda_error_string(rc),
+    );
+    Ok(count)
+}
+
+/// One `cuDeviceGetAttribute` query on `device`.
+fn cuda_device_attribute(attr: rdmaxcel_sys::CUdevice_attribute, device: i32) -> Result<i32> {
+    let mut value: i32 = 0;
+    // SAFETY: FFI writes one `i32` through the out-pointer and has no other effect.
+    let rc = unsafe { rdmaxcel_sys::rdmaxcel_cuDeviceGetAttribute(&mut value, attr, device) };
+    anyhow::ensure!(
+        rc == rdmaxcel_sys::CUDA_SUCCESS,
+        "cuDeviceGetAttribute({attr}) failed on CUDA device {device}: {}",
+        cuda_error_string(rc),
+    );
+    Ok(value)
+}
+
+/// PCI address of the CUDA device with runtime ordinal `ordinal`, from the CUDA
+/// driver.
+///
+/// `ordinal` is a *runtime* ordinal: the numbering CUDA exposes after applying
+/// `CUDA_VISIBLE_DEVICES`, as reported by `CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL`
+/// or `torch.cuda.current_device()`. Asking the driver rather than
+/// reconstructing that numbering from `/proc/driver/nvidia` keeps it correct for
+/// every `CUDA_VISIBLE_DEVICES` form (indices, `GPU-<uuid>`, `MIG-<uuid>`), for
+/// any `CUDA_DEVICE_ORDER`, and inside a container exposing a GPU subset.
+///
+/// Errors when the CUDA driver is not initialized in this process, or when
+/// `ordinal` is not visible.
+///
+/// Backend-agnostic: under ROCm rdmaxcel's wrappers resolve to `hipDeviceGet` /
+/// `hipGetDeviceCount` / `hipDeviceGetAttribute`, and `rocm_compat` aliases the
+/// `CU_DEVICE_ATTRIBUTE_PCI_*` constants to their HIP equivalents.
+/// TODO(slurye): validate that this actually works on ROCm.
+pub fn cuda_pci_address(ordinal: u32) -> Result<PCIAddress> {
+    let count = cuda_device_count()?;
+    anyhow::ensure!(
+        i64::from(ordinal) < i64::from(count),
+        "CUDA device {ordinal} is not visible to this process ({count} visible)"
+    );
+
+    let mut device: rdmaxcel_sys::CUdevice = 0;
+    // SAFETY: FFI writes one `CUdevice` through the out-pointer; `ordinal` is in
+    // range per the check above.
+    let rc = unsafe { rdmaxcel_sys::rdmaxcel_cuDeviceGet(&mut device, ordinal as i32) };
+    anyhow::ensure!(
+        rc == rdmaxcel_sys::CUDA_SUCCESS,
+        "cuDeviceGet failed for CUDA device {ordinal}: {}",
+        cuda_error_string(rc),
+    );
+
+    let domain = cuda_device_attribute(rdmaxcel_sys::CU_DEVICE_ATTRIBUTE_PCI_DOMAIN_ID, device)?;
+    let bus = cuda_device_attribute(rdmaxcel_sys::CU_DEVICE_ATTRIBUTE_PCI_BUS_ID, device)?;
+    let slot = cuda_device_attribute(rdmaxcel_sys::CU_DEVICE_ATTRIBUTE_PCI_DEVICE_ID, device)?;
+    Ok(PCIAddress {
+        domain: u16::try_from(domain)?,
+        bus: u8::try_from(bus)?,
+        device: u8::try_from(slot)?,
+        // Assume GPUs are always PCI function 0
+        function: 0,
+    })
 }
 
 /// A PCI address, e.g. `0000:07:00.0`, as found under
@@ -415,6 +487,22 @@ mod tests {
         );
         assert_eq!(PCIAddress::parse("not-an-address"), None);
         assert_eq!(PCIAddress::parse("0000:07:00"), None);
+    }
+
+    #[test]
+    fn test_cuda_pci_address_rejects_an_absent_ordinal() {
+        // Deterministic whether or not another test in this binary has already
+        // initialized CUDA: ordinal 4096 is never visible, so this errors either
+        // way. What matters is that the message names the cause — an
+        // uninitialized driver is the one a caller can act on.
+        let error = format!(
+            "{:#}",
+            cuda_pci_address(4096).expect_err("ordinal 4096 must not resolve")
+        );
+        assert!(
+            error.contains("CUDA_ERROR_NOT_INITIALIZED") || error.contains("not visible"),
+            "the error should name its cause, got: {error}"
+        );
     }
 
     #[test]
