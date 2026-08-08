@@ -60,6 +60,7 @@ use super::primitives::IbvQpInfo;
 use super::primitives::IbvWc;
 use super::primitives::resolve_qp_type;
 use crate::RdmaOpType;
+use crate::local_memory::KeepaliveLocalMemory;
 
 /// A per-work-request completion failure: a work request completed with
 /// a non-success `ibv_wc_status`. Carries the `wr_id`, status, and vendor
@@ -895,10 +896,15 @@ struct PostedOpEntry {
     /// Kept alive so the MR registration outlives every in-flight
     /// WR touching it. Field is intentionally unread.
     _mrv: IbvMemoryRegionView,
+    /// Kept alive so the *memory* outlives every in-flight WR touching
+    /// it: `_mrv` above holds the registration open, but an `ibv_mr`
+    /// does not keep its backing pages mapped. Field is intentionally
+    /// unread.
+    _local_memory: KeepaliveLocalMemory,
     reply: PortHandle<OpResult>,
-    /// First per-WR error observed for this op. The op's final
-    /// reply is held back until `pending_wrs.is_empty()` so we don't
-    /// release the MR while remaining WRs are still in flight.
+    /// First per-WR error observed for this op. The op's final reply is
+    /// held back until `pending_wrs.is_empty()`, so `_mrv` and
+    /// `_local_memory` outlive every WR still in flight.
     first_error: Option<String>,
 }
 
@@ -1115,6 +1121,7 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
                 pending_wrs,
                 is_read,
                 _mrv: mrv,
+                _local_memory: op.local_memory,
                 reply,
                 first_error: None,
             },
@@ -1335,6 +1342,8 @@ impl<M: Manager, Qp: IbvQueuePair> Handler<Tick> for QueuePairActor<M, Qp> {
 mod tests {
     use std::sync::Arc;
     use std::sync::Mutex;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
     use std::time::Duration;
 
     use anyhow::Result;
@@ -2012,6 +2021,27 @@ mod tests {
         KeepaliveLocalMemory::new(Arc::new(FakeKeepalive { addr, size }))
     }
 
+    /// [`Keepalive`] that sets `dropped` when it goes away, so a test can
+    /// tell whether anything still pins the allocation.
+    struct DropFlagKeepalive {
+        addr: usize,
+        size: usize,
+        dropped: Arc<AtomicBool>,
+    }
+    impl Keepalive for DropFlagKeepalive {
+        fn addr(&self) -> usize {
+            self.addr
+        }
+        fn size(&self) -> usize {
+            self.size
+        }
+    }
+    impl Drop for DropFlagKeepalive {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::SeqCst);
+        }
+    }
+
     fn fake_mrv(addr: usize, size: usize) -> IbvMemoryRegionView {
         IbvMemoryRegionView::new(
             addr,
@@ -2051,6 +2081,37 @@ mod tests {
                 device_name: "remote_dev".to_string(),
             },
             remote_manager: fake_remote_ref(),
+        }
+    }
+
+    /// Like [`make_op`], but the local memory reports when it drops.
+    fn make_op_watching_drop(
+        op_type: RdmaOpType,
+        addr: usize,
+        size: usize,
+        dropped: Arc<AtomicBool>,
+    ) -> IbvOp<QpaMockManager> {
+        IbvOp {
+            local_memory: KeepaliveLocalMemory::new(Arc::new(DropFlagKeepalive {
+                addr,
+                size,
+                dropped,
+            })),
+            ..make_op(op_type, addr, size)
+        }
+    }
+
+    /// Await `flag`, which the actor sets from a `Drop` it runs just after
+    /// posting the op's reply — so the reply can be observed a moment
+    /// before the drop lands.
+    async fn await_dropped(flag: &AtomicBool) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while !flag.load(Ordering::SeqCst) {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the pin on the allocation was never released",
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
 
@@ -2208,6 +2269,59 @@ mod tests {
     }
 
     #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn qpa_posted_op_pins_local_memory() -> Result<()> {
+        let harness = QpaHarness::build()?;
+        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(4, 2).await?;
+
+        // Two ops: the second exists only to prove the first has left
+        // `try_post_head`, which is where the `IbvOp` — the batch's own
+        // hold on the allocation — drops. Until then the assertion below
+        // would pass whether or not the posted entry pins anything.
+        let dropped = Arc::new(AtomicBool::new(false));
+        let items = vec![
+            (
+                0usize,
+                make_op_watching_drop(
+                    RdmaOpType::WriteFromLocal,
+                    0x1000,
+                    4096,
+                    Arc::clone(&dropped),
+                ),
+                fake_mrv(0x1000, 4096),
+            ),
+            (
+                1usize,
+                make_op(RdmaOpType::WriteFromLocal, 0x2000, 4096),
+                fake_mrv(0x2000, 4096),
+            ),
+        ];
+        let mut rx = submit_ops(&harness, &actor, items)?;
+
+        let (_, _, wr_ids) = expect_put(recv_posted(&mut posted_rx).await);
+        let (_, _, other_wr_ids) = expect_put(recv_posted(&mut posted_rx).await);
+        assert!(
+            !dropped.load(Ordering::SeqCst),
+            "the allocation must stay mapped while its WR is in flight: `submit` can \
+             return before every WR retires, and the caller is then free to drop it",
+        );
+
+        // The pin lasts exactly as long as the op: retiring op 0 alone
+        // releases it, which would not hold if the entry that pinned the
+        // allocation were some other op's.
+        qp.queue_completion(wr_ids[0]);
+        await_dropped(&dropped).await;
+
+        // Retire op 1 too, so no op is left in flight at teardown.
+        qp.queue_completion(other_wr_ids[0]);
+        assert_eq!(
+            collect_replies(&mut rx, 2).await,
+            vec![(0, Ok(())), (1, Ok(()))]
+        );
+        harness.teardown().await;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn qpa_chunked_op_waits_for_all_wrs() -> Result<()> {
         let harness = QpaHarness::build()?;
         let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(8, 4).await?;
@@ -2249,7 +2363,7 @@ mod tests {
 
         // 3-WR write: simulate the second WR failing first; the op's
         // Err must not fire until the other 2 WRs have also reported
-        // so the MR registration outlives every in-flight WR.
+        // so the MR registration and local memory outlive every in-flight WR.
         let items = vec![(
             42usize,
             make_op(RdmaOpType::WriteFromLocal, 0x1000, 3 * MAX_RDMA_MSG_SIZE),
