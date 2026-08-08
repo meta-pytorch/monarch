@@ -14,7 +14,11 @@ use std::fmt;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::LazyLock;
 
+use anyhow::Error;
+use anyhow::Result;
+use dashmap::DashSet;
 use regex::Regex;
 
 /// PCI address of the CUDA device with ordinal `idx`, read from
@@ -235,10 +239,10 @@ fn common_ancestor(a: &[PciHop], b: &[PciHop]) -> Option<(usize, usize)> {
     })
 }
 
-/// Minimum upstream link bandwidth (MB/s) across `hops`. A hop whose
-/// bandwidth couldn't be read is 0 and drags the whole range to 0, so a
-/// path with an unmeasurable link is treated as the worst case. 0 when
-/// `hops` is empty.
+/// Minimum upstream link bandwidth (MB/s) across `hops`. Per-hop bandwidths
+/// are never 0 — unreadable link attributes fall back to a default — so this
+/// is 0 only for an empty `hops`, meaning a device whose sysfs ancestor chain
+/// could not be resolved at all.
 fn min_link_mbytes_per_sec(hops: &[PciHop]) -> u32 {
     hops.iter()
         .map(|h| h.link_mbytes_per_sec)
@@ -286,9 +290,22 @@ fn numa_node(addr: &PCIAddress) -> Option<u32> {
     u32::try_from(raw.trim().parse::<i32>().ok()?).ok()
 }
 
+/// Per-lane PCIe rate (Mbit/s) assumed when `max_link_speed` is missing or
+/// unrecognized: Gen3, mirroring NCCL's `kvDictPciGen` fallback
+/// (graph/topo.cc).
+const DEFAULT_SPEED_MBITS_PER_LANE: u32 = 6000;
+
+/// Lane count assumed when `max_link_width` is missing or unparseable,
+/// mirroring NCCL's `if (width == 0) width = 16` (graph/topo.cc).
+const DEFAULT_LINK_WIDTH: u32 = 16;
+
 /// Bandwidth (MB/s) of the PCIe link immediately upstream of the device at
-/// `sysfs`, from its own `max_link_speed` / `max_link_width`. An unreadable
-/// value is 0, so the link is treated as the worst case.
+/// `sysfs`, from its own `max_link_speed` / `max_link_width`.
+///
+/// Missing or unparseable attributes fall back to Gen3 x16 rather than to 0.
+/// Link bandwidths are combined with `min` along a path, so a 0 here would
+/// erase every real measurement on that path and collapse unrelated
+/// candidates into a spurious tie.
 fn link_bandwidth_mbytes_per_sec(sysfs: &Path) -> u32 {
     let speed = read_speed_mbits_per_lane(sysfs);
     let width = read_link_width(sysfs);
@@ -298,37 +315,79 @@ fn link_bandwidth_mbytes_per_sec(sysfs: &Path) -> u32 {
     speed.saturating_mul(width) / 8
 }
 
-/// PCIe lane count from `<dir>/max_link_width`, or 0 if unreadable.
-fn read_link_width(dir: &Path) -> u32 {
-    fs::read_to_string(dir.join("max_link_width"))
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(0)
+/// Report, at most once per `(attr, dir)`, that a PCIe link attribute could not
+/// be used, and why. Selection still works — the bandwidth falls back to Gen3
+/// x16 — but every ranking that traverses this link then rests on an assumed
+/// value, and nothing else makes that visible.
+fn warn_unusable_link_attr(attr: &str, dir: &Path, error: &str) {
+    static WARNED: LazyLock<DashSet<(String, String)>> = LazyLock::new(DashSet::new);
+    // `insert` is true only for the first caller to claim this key, and it takes
+    // the shard lock, so exactly one of them warns.
+    if WARNED.insert((attr.to_string(), dir.to_string_lossy().into_owned())) {
+        tracing::warn!(
+            "unusable PCIe {attr} at {}: {error}; assuming Gen3 x16, so RDMA device selection may rank NICs on an assumed bandwidth",
+            dir.display()
+        );
+    }
 }
 
-/// Per-lane PCIe rate (Mbit/s) from `<dir>/max_link_speed`, or 0 if unreadable.
+/// PCIe lane count from `<dir>/max_link_width`, or [`DEFAULT_LINK_WIDTH`] if
+/// the attribute is missing or does not parse as an integer.
+fn read_link_width(dir: &Path) -> u32 {
+    let parsed = fs::read_to_string(dir.join("max_link_width"))
+        .map_err(Error::from)
+        .and_then(|raw| raw.trim().parse::<u32>().map_err(Error::from));
+    match parsed {
+        Ok(width) => {
+            if width == 0 {
+                DEFAULT_LINK_WIDTH
+            } else {
+                width
+            }
+        }
+        Err(error) => {
+            warn_unusable_link_attr("max_link_width", dir, &format!("{error:#}"));
+            DEFAULT_LINK_WIDTH
+        }
+    }
+}
+
+/// Per-lane PCIe rate (Mbit/s) from `<dir>/max_link_speed`, or
+/// [`DEFAULT_SPEED_MBITS_PER_LANE`] if the attribute is missing or names no
+/// generation this knows.
 fn read_speed_mbits_per_lane(dir: &Path) -> u32 {
-    fs::read_to_string(dir.join("max_link_speed"))
-        .ok()
-        .map(|s| pcie_speed_mbits_per_lane(&s))
-        .unwrap_or(0)
+    let parsed = fs::read_to_string(dir.join("max_link_speed"))
+        .map_err(Error::from)
+        .and_then(|raw| pcie_speed_mbits_per_lane(&raw));
+    match parsed {
+        Ok(speed) => speed,
+        Err(error) => {
+            warn_unusable_link_attr("max_link_speed", dir, &format!("{error:#}"));
+            DEFAULT_SPEED_MBITS_PER_LANE
+        }
+    }
 }
 
 /// Per-lane PCIe bandwidth (Mbit/s) for a `max_link_speed` string such as
 /// `"16 GT/s PCIe"`, with line-encoding overhead folded in. `rate * lanes
-/// / 8` gives the link's MB/s. The values and the Gen3 fallback mirror
-/// NCCL's `kvDictPciGen` (graph/topo.cc).
-fn pcie_speed_mbits_per_lane(speed: &str) -> u32 {
+/// / 8` gives the link's MB/s. The values mirror NCCL's `kvDictPciGen`
+/// (graph/topo.cc).
+///
+/// Errors when the rate names no generation in the table, which is what a
+/// generation newer than this list looks like. The caller substitutes a default
+/// and warns; returning one from here would make that silent.
+fn pcie_speed_mbits_per_lane(speed: &str) -> Result<u32> {
     // Match the leading "<rate> GT/s" token; the kernel may append a
     // trailing "PCIe" and prints either "8" or "8.0" style rates.
-    match speed.split_whitespace().next().unwrap_or("") {
-        "2.5" => 1500,          // Gen1
-        "5" | "5.0" => 3000,    // Gen2
-        "8" | "8.0" => 6000,    // Gen3
-        "16" | "16.0" => 12000, // Gen4
-        "32" | "32.0" => 24000, // Gen5
-        "64" | "64.0" => 48000, // Gen6
-        _ => 6000,
+    let rate = speed.split_whitespace().next().unwrap_or("");
+    match rate {
+        "2.5" => Ok(1500),          // Gen1
+        "5" | "5.0" => Ok(3000),    // Gen2
+        "8" | "8.0" => Ok(6000),    // Gen3
+        "16" | "16.0" => Ok(12000), // Gen4
+        "32" | "32.0" => Ok(24000), // Gen5
+        "64" | "64.0" => Ok(48000), // Gen6
+        other => anyhow::bail!("unrecognized PCIe rate {other:?}"),
     }
 }
 
@@ -392,15 +451,40 @@ mod tests {
 
     #[test]
     fn test_pcie_speed_mbits_per_lane() {
-        assert_eq!(pcie_speed_mbits_per_lane("2.5 GT/s PCIe"), 1500);
-        assert_eq!(pcie_speed_mbits_per_lane("5 GT/s"), 3000);
-        assert_eq!(pcie_speed_mbits_per_lane("8.0 GT/s"), 6000);
-        assert_eq!(pcie_speed_mbits_per_lane("16 GT/s PCIe"), 12000);
-        assert_eq!(pcie_speed_mbits_per_lane("32 GT/s"), 24000);
-        assert_eq!(pcie_speed_mbits_per_lane("64 GT/s"), 48000);
-        // Unrecognized / empty defaults to Gen3.
-        assert_eq!(pcie_speed_mbits_per_lane("garbage"), 6000);
-        assert_eq!(pcie_speed_mbits_per_lane(""), 6000);
+        let rate = |s: &str| pcie_speed_mbits_per_lane(s).expect("known generation");
+        assert_eq!(rate("2.5 GT/s PCIe"), 1500);
+        assert_eq!(rate("5 GT/s"), 3000);
+        assert_eq!(rate("8.0 GT/s"), 6000);
+        assert_eq!(rate("16 GT/s PCIe"), 12000);
+        assert_eq!(rate("32 GT/s"), 24000);
+        assert_eq!(rate("64 GT/s"), 48000);
+        // An unrecognized rate errors so the caller warns, rather than
+        // substituting a default here where nothing would report it. "128 GT/s"
+        // stands in for a generation newer than the table.
+        for unknown in ["garbage", "", "128 GT/s"] {
+            assert!(
+                pcie_speed_mbits_per_lane(unknown).is_err(),
+                "{unknown:?} names no known PCIe generation"
+            );
+        }
+    }
+
+    #[test]
+    fn test_missing_link_attrs_fall_back_to_gen3_x16() {
+        // A path with no max_link_speed / max_link_width must not report a
+        // zero-bandwidth link: link bandwidths are combined with `min`, so a 0
+        // would erase every real measurement on the path.
+        let missing = Path::new("/nonexistent/pci/device");
+        assert_eq!(read_link_width(missing), DEFAULT_LINK_WIDTH);
+        assert_eq!(
+            read_speed_mbits_per_lane(missing),
+            DEFAULT_SPEED_MBITS_PER_LANE
+        );
+        assert_eq!(
+            link_bandwidth_mbytes_per_sec(missing),
+            12000,
+            "Gen3 (6000 Mbit/s per lane) x16 is 12000 MB/s"
+        );
     }
 
     fn hop(sysfs: &str, link_mbytes_per_sec: u32) -> PciHop {

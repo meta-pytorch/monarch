@@ -179,8 +179,7 @@ fn best_gpu_path(nic_addr: &PCIAddress) -> Option<PciPath> {
 }
 
 /// Caps `path`'s bottleneck at the NIC's RDMA port speed. A NIC with no
-/// ACTIVE port reports a port speed of 0 and is dragged to the worst
-/// case, like an unreadable PCIe link.
+/// ACTIVE port reports a port speed of 0, dragging the path to the worst case.
 fn cap_by_port_speed(path: PciPath, nic: &IbvDeviceInfo) -> PciPath {
     PciPath {
         bottleneck_mbytes_per_sec: path
