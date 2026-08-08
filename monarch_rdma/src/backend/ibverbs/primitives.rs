@@ -513,8 +513,8 @@ impl IbvDeviceInfo {
     }
 
     /// Aggregate bandwidth (MB/s) of the device's fastest active port,
-    /// derived from its IB `active_speed` / `active_width`. 0 if no port
-    /// is active, which ranks the device at the worst case.
+    /// derived from its IB `active_speed` / `active_width`. 0 if no port is
+    /// active.
     pub fn port_speed_mbytes_per_sec(&self) -> u32 {
         self.ports
             .iter()
