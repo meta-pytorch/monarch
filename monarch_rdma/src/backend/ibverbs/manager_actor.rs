@@ -342,7 +342,7 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
         //   2. otherwise the CUDA-co-located NIC for device memory;
         //   3. otherwise a host-memory NIC assigned by hashing (addr, size).
         let device_name = if let Some(target) = &self.config.target {
-            resolve_target::<I>(target)
+            resolve_target::<I>(target)?
                 .ok_or_else(|| anyhow::anyhow!("configured device target {:?} not found", target))?
                 .name()
                 .clone()
@@ -370,9 +370,10 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
                     })?;
                 assert!(ordinal >= 0, "CUDA device ordinal must be non-negative");
                 Some(
-                    super::device_selection::get_cuda_device_to_ibv_device::<I>()
+                    super::device_selection::get_cuda_device_to_ibv_devices::<I>()?
                         .get(ordinal as usize)
-                        .and_then(|d| d.clone())
+                        .and_then(|nics| nics.first())
+                        .cloned()
                         .ok_or_else(|| {
                             anyhow::anyhow!(
                                 "no RDMA device found for CUDA device ordinal {}",
@@ -391,7 +392,7 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
                     // across all NICs that tie for the best CPU path by hashing the
                     // region's (addr, size); the NICs share the load for host
                     // memory, increasing aggregate throughput.
-                    let devices = select_optimal_ibv_devices::<I>(MemoryLocation::Cpu(None));
+                    let devices = select_optimal_ibv_devices::<I>(MemoryLocation::Cpu(None))?;
                     match devices.len() {
                         0 => anyhow::bail!("no RDMA devices found"),
                         n => {
