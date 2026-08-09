@@ -84,7 +84,10 @@ jobs:
         # underlying auto-trait bounds structurally.
         uv run --frozen --python 3.11 --no-sync --project . \
           cargo --config 'build.rustflags=["--cfg", "hyperactor_verify_auto_traits"]' \
-          doc --locked --workspace --no-deps
+          doc --locked --workspace --no-deps \
+          --exclude monarch_rdma_extension \
+          --exclude cuda_ping_pong \
+          --exclude parameter_server
 
         # Prepare documentation structure for Sphinx and final output
         mkdir -p docs/source/target

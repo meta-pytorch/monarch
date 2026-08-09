@@ -80,6 +80,9 @@ jobs:
           --exclude monarch_tensor_worker \
           --exclude torch-sys-cuda \
           --exclude monarch_rdma \
+          --exclude monarch_rdma_extension \
+          --exclude cuda_ping_pong \
+          --exclude parameter_server \
           --exclude torch-sys || rc=$?
 
         echo "=== sccache stats ==="
