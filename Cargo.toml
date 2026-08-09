@@ -1,115 +1,142 @@
+[patch.crates-io]
+arrow = { version = "57", git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
+arrow-arith = { version = "57", git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
+arrow-array = { version = "57", git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
+arrow-buffer = { version = "57", git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
+arrow-cast = { version = "57", git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
+arrow-csv = { version = "57", git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
+arrow-data = { version = "57", git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
+arrow-ipc = { version = "57", git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
+arrow-json = { version = "57", git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
+arrow-ord = { version = "57", git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
+arrow-pyarrow = { version = "57", git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
+arrow-row = { version = "57", git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
+arrow-schema = { version = "57", git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
+arrow-select = { version = "57", git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
+arrow-string = { version = "57", git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
+bindgen = { git = "https://github.com/jsgf/rust-bindgen", rev = "4d385d21c160e6ee1f443aeb7e00528a1dc7fd44" }
+cxx = { git = "https://github.com/facebookexperimental/cxx.git", rev = "b835645da52253df462725516fbd460ef000d496" }
+cxx-build = { git = "https://github.com/facebookexperimental/cxx.git", rev = "b835645da52253df462725516fbd460ef000d496" }
+opentelemetry = { git = "https://github.com/open-telemetry/opentelemetry-rust", rev = "b998a568632baaa424793a000dfb015f28b5aa5c" }
+opentelemetry-http = { git = "https://github.com/open-telemetry/opentelemetry-rust", rev = "b998a568632baaa424793a000dfb015f28b5aa5c" }
+opentelemetry-otlp = { git = "https://github.com/open-telemetry/opentelemetry-rust", rev = "b998a568632baaa424793a000dfb015f28b5aa5c" }
+opentelemetry-proto = { git = "https://github.com/open-telemetry/opentelemetry-rust", rev = "b998a568632baaa424793a000dfb015f28b5aa5c" }
+opentelemetry_sdk = { git = "https://github.com/open-telemetry/opentelemetry-rust", rev = "b998a568632baaa424793a000dfb015f28b5aa5c" }
+rustls-native-certs = { git = "https://github.com/rustls/rustls-native-certs", rev = "9734b4cc0bfa88224e0fc49867abafa1c56fa28d" }
+tonic = { git = "https://github.com/grpc/grpc-rust", rev = "de65d0a48783869d89b7d8d4a65ce703f1612249" }
+wezterm-color-types = { git = "https://github.com/wezterm/wezterm.git", rev = "05343b387085842b434d267f91b6b0ec157e4331" }
+wezterm-dynamic = { git = "https://github.com/wezterm/wezterm.git", rev = "05343b387085842b434d267f91b6b0ec157e4331" }
+wezterm-input-types = { git = "https://github.com/wezterm/wezterm.git", rev = "05343b387085842b434d267f91b6b0ec157e4331" }
+zbus = { git = "https://github.com/z-galaxy/zbus", rev = "40d8995fa012652c1b1e1e9bd96e54327024be09" }
+zvariant = { git = "https://github.com/z-galaxy/zbus", rev = "40d8995fa012652c1b1e1e9bd96e54327024be09" }
+zvariant_derive = { git = "https://github.com/z-galaxy/zbus", rev = "40d8995fa012652c1b1e1e9bd96e54327024be09" }
+
+[patch."https://github.com/wezterm/wezterm.git"]
+wezterm-bidi = "0.2.3"
+wezterm-blob-leases = "0.1.1"
+wezterm-dynamic-derive = "0.1.1"
+
 [workspace]
-resolver = "3"
 members = [
-    "algebra",
-    "build_utils",
-    "erased_lifetime",
-    "hyper",
-    "hyperactor",
-    "hyperactor_cast",
-    "hyperactor_config",
-    "hyperactor_config_macros",
-    "hyperactor_macros",
-    "hyperactor_mesh",
-    "hyperactor_mesh_admin_tui",
-    "hyperactor_mesh_macros",
-    "hyperactor_remote",
-    "hyperactor_telemetry",
-    "monarch_bench",
-    "monarch_conda",
-    "monarch_cpp_static_libs",
-    "monarch_distributed_telemetry",
-    "monarch_extension",
-    "monarch_hyperactor",
-    "monarch_introspection_snapshot",
-    "monarch_messages",
-    "monarch_mini",
-    "monarch_mini/rust",
-    "monarch_perfetto_trace",
-    "monarch_rdma",
-    "monarch_record_batch",
-    "monarch_record_batch_macros",
-    "monarch_telemetry_schema",
-    "monarch_tensor_worker",
-    "monarch_types",
-    "nccl-sys",
-    "ndslice",
-    "preempt_rwlock",
-    "rankspace",
-    "rdmaxcel-sys",
-    "serde_multipart",
-    "struct_diff_patch",
-    "struct_diff_patch_macros",
-    "timed_test",
-    "torch-sys-cuda",
-    "torch-sys2",
-    "typeuri",
-    "typeuri_macros",
-    "wirevalue",
+  "algebra",
+  "build_utils",
+  "erased_lifetime",
+  "hyper",
+  "hyperactor",
+  "hyperactor_cast",
+  "hyperactor_config",
+  "hyperactor_config_macros",
+  "hyperactor_macros",
+  "hyperactor_mesh",
+  "hyperactor_mesh_admin_tui",
+  "hyperactor_mesh_macros",
+  "hyperactor_remote",
+  "hyperactor_telemetry",
+  "hyperactor_telemetry/tester",
+  "monarch_bench",
+  "monarch_conda",
+  "monarch_cpp_static_libs",
+  "monarch_distributed_telemetry",
+  "monarch_extension",
+  "monarch_gil",
+  "monarch_hyperactor",
+  "monarch_introspection_snapshot",
+  "monarch_messages",
+  "monarch_mini",
+  "monarch_mini/rust",
+  "monarch_perfetto_trace",
+  "monarch_rdma",
+  "monarch_rdma/examples/cuda_ping_pong",
+  "monarch_rdma/examples/parameter_server",
+  "monarch_rdma/extension",
+  "monarch_record_batch",
+  "monarch_record_batch_macros",
+  "monarch_telemetry_schema",
+  "monarch_tensor_worker",
+  "monarch_types",
+  "nccl-sys",
+  "ndslice",
+  "preempt_rwlock",
+  "rankspace",
+  "rdmaxcel-sys",
+  "serde_multipart",
+  "struct_diff_patch",
+  "struct_diff_patch_macros",
+  "timed_test",
+  "torch-sys-cuda",
+  "torch-sys2",
+  "typeuri",
+  "typeuri_macros",
+  "wirevalue",
 ]
 default-members = [
-    "algebra",
-    "build_utils",
-    "erased_lifetime",
-    "hyper",
-    "hyperactor",
-    "hyperactor_cast",
-    "hyperactor_config",
-    "hyperactor_config_macros",
-    "hyperactor_macros",
-    "hyperactor_mesh",
-    "hyperactor_mesh_admin_tui",
-    "hyperactor_mesh_macros",
-    "hyperactor_remote",
-    "hyperactor_telemetry",
-    "monarch_bench",
-    "monarch_conda",
-    "monarch_cpp_static_libs",
-    "monarch_distributed_telemetry",
-    "monarch_extension",
-    "monarch_hyperactor",
-    "monarch_introspection_snapshot",
-    "monarch_messages",
-    "monarch_mini",
-    "monarch_mini/rust",
-    "monarch_perfetto_trace",
-    "monarch_record_batch",
-    "monarch_record_batch_macros",
-    "monarch_telemetry_schema",
-    "monarch_tensor_worker",
-    "monarch_types",
-    "ndslice",
-    "preempt_rwlock",
-    "rankspace",
-    "serde_multipart",
-    "struct_diff_patch",
-    "struct_diff_patch_macros",
-    "timed_test",
-    "torch-sys-cuda",
-    "torch-sys2",
-    "typeuri",
-    "typeuri_macros",
-    "wirevalue",
+  "algebra",
+  "build_utils",
+  "erased_lifetime",
+  "hyper",
+  "hyperactor",
+  "hyperactor_cast",
+  "hyperactor_config",
+  "hyperactor_config_macros",
+  "hyperactor_macros",
+  "hyperactor_mesh",
+  "hyperactor_mesh_admin_tui",
+  "hyperactor_mesh_macros",
+  "hyperactor_remote",
+  "hyperactor_telemetry",
+  "monarch_bench",
+  "monarch_conda",
+  "monarch_cpp_static_libs",
+  "monarch_distributed_telemetry",
+  "monarch_extension",
+  "monarch_hyperactor",
+  "monarch_introspection_snapshot",
+  "monarch_messages",
+  "monarch_mini",
+  "monarch_mini/rust",
+  "monarch_perfetto_trace",
+  "monarch_record_batch",
+  "monarch_record_batch_macros",
+  "monarch_telemetry_schema",
+  "monarch_tensor_worker",
+  "monarch_types",
+  "ndslice",
+  "preempt_rwlock",
+  "rankspace",
+  "serde_multipart",
+  "struct_diff_patch",
+  "struct_diff_patch_macros",
+  "timed_test",
+  "torch-sys-cuda",
+  "torch-sys2",
+  "typeuri",
+  "typeuri_macros",
+  "wirevalue",
 ]
+resolver = "2"
+
+[workspace.package]
+license = "BSD-3-Clause"
 
 [workspace.lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fbcode_build)'] }
-
-[patch.crates-io]
-# Match fbsource's Arrow rev for OSS Cargo builds. The crates.io 57.3.x
-# arrow-pyarrow releases still pull pyo3 0.26, which conflicts with PyO3 0.27.
-arrow = { git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
-arrow-arith = { git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
-arrow-array = { git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
-arrow-buffer = { git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
-arrow-cast = { git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
-arrow-csv = { git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
-arrow-data = { git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
-arrow-ipc = { git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
-arrow-json = { git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
-arrow-ord = { git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
-arrow-pyarrow = { git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
-arrow-row = { git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
-arrow-schema = { git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
-arrow-select = { git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
-arrow-string = { git = "https://github.com/apache/arrow-rs", rev = "fcfe2b4160f6c99107dc89edecdfcd3ff9a4c867" }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(buck_build)"]}
