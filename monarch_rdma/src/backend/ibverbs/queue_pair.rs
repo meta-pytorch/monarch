@@ -1372,7 +1372,9 @@ mod tests {
             use_gpu_direct: false,
             ..Default::default()
         };
-        let device_info = resolve_target::<MlxDevice>(&IbvDeviceTarget::cpu(0)).unwrap();
+        let device_info = resolve_target::<MlxDevice>(&IbvDeviceTarget::cpu(0))
+            .expect("resolving cpu:0 should succeed")
+            .expect("cpu:0 should resolve to a NIC");
         let mut device = IbvDevice::<MlxDevice>::open(device_info.name(), config.clone())
             .expect("resolved device should open");
         let domain = device
@@ -1398,14 +1400,18 @@ mod tests {
             ..Default::default()
         };
 
-        let server_info = resolve_target::<MlxDevice>(&IbvDeviceTarget::cpu(0)).unwrap();
+        let server_info = resolve_target::<MlxDevice>(&IbvDeviceTarget::cpu(0))
+            .expect("resolving cpu:0 should succeed")
+            .expect("cpu:0 should resolve to a NIC");
         let mut server_device =
             IbvDevice::<MlxDevice>::open(server_info.name(), server_config.clone())
                 .expect("server device should open");
         let server_domain = server_device
             .get_or_create_domain("test")
             .expect("server domain creation should succeed");
-        let client_info = resolve_target::<MlxDevice>(&IbvDeviceTarget::cpu(0)).unwrap();
+        let client_info = resolve_target::<MlxDevice>(&IbvDeviceTarget::cpu(0))
+            .expect("resolving cpu:0 should succeed")
+            .expect("cpu:0 should resolve to a NIC");
         let mut client_device =
             IbvDevice::<MlxDevice>::open(client_info.name(), client_config.clone())
                 .expect("client device should open");

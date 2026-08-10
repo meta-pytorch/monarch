@@ -565,7 +565,15 @@ impl IbvDeviceInfo {
         reason = "generic over the backend impl, so it cannot be the parameterless Default::default"
     )]
     pub fn default<I: IbvDeviceImpl>() -> Self {
+        // A CPU location never consults the CUDA driver, so the error arm is
+        // unreachable here; it is surfaced rather than swallowed all the same.
         resolve_target::<I>(&IbvDeviceTarget::MemoryLocation(MemoryLocation::Cpu(None)))
+            .unwrap_or_else(|error| {
+                panic!(
+                    "resolving the default RDMA device for backend {}: {error:#}",
+                    I::backend_name()
+                )
+            })
             .unwrap_or_else(|| panic!("no RDMA device for backend {}", I::backend_name()))
     }
 
