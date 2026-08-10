@@ -306,21 +306,6 @@ async def async_main(args: argparse.Namespace) -> None:
     gate_ref = await gates.whoami.call_one()
     flight0_ref = await flights.slice(replica=0).whoami.call_one()
 
-    admin_url = state.admin_url
-    assert admin_url is not None
-    mtls_flags = (
-        "--cacert /var/facebook/rootcanal/ca.pem "
-        "--cert /var/facebook/x509_identities/server.pem "
-        "--key /var/facebook/x509_identities/server.pem "
-        if admin_url.startswith("https")
-        else ""
-    )
-    tui = (
-        "buck2 run fbcode//monarch/hyperactor_mesh_admin_tui:hyperactor_mesh_admin_tui"
-    )
-    print(f"\nMesh admin server listening on {admin_url}")
-    print(f"  - Mesh tree:  curl {mtls_flags}{admin_url}/v1/tree")
-    print(f"  - TUI:        {tui} -- --addr {admin_url}")
     print("\nOpen these nodes in the TUI tree (by label):")
     print(f"  - flight (replicas 0..{args.flights - 1}) -> Execution: phase turnover")
     print("  - gate_manager        -> Execution: assign_gate xK when gates are full")

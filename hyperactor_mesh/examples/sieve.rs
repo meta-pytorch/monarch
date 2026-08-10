@@ -28,7 +28,6 @@ use hyperactor::RemoteSpawn;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::context;
 use hyperactor_mesh::host_mesh::spawn_admin;
-use hyperactor_mesh::mesh_admin::MeshAdminMessageClient;
 use hyperactor_mesh::this_host;
 use hyperactor_mesh::this_proc;
 use ndslice::View;
@@ -137,36 +136,7 @@ async fn main() -> Result<ExitCode> {
 
     // Start the mesh admin agent.
     let h = this_host().await;
-    let admin_ref = spawn_admin([&h], instance, None, None).await?;
-    let mesh_admin_url = admin_ref
-        .get_admin_addr(instance)
-        .await?
-        .addr
-        .ok_or_else(|| anyhow::anyhow!("mesh admin did not report an address"))?;
-    let mtls_flags = if mesh_admin_url.starts_with("https") {
-        "--cacert /var/facebook/rootcanal/ca.pem \
-         --cert /var/facebook/x509_identities/server.pem \
-         --key /var/facebook/x509_identities/server.pem "
-    } else {
-        ""
-    };
-    println!("Mesh admin server listening on {}", mesh_admin_url);
-    println!(
-        "  - Root node:     curl {}{}/v1/root",
-        mtls_flags, mesh_admin_url
-    );
-    println!(
-        "  - Mesh tree:     curl {}{}/v1/tree",
-        mtls_flags, mesh_admin_url
-    );
-    println!(
-        "  - API docs:      curl {}{}/SKILL.md",
-        mtls_flags, mesh_admin_url
-    );
-    println!(
-        "  - TUI:           buck2 run fbcode//monarch/hyperactor_mesh_admin_tui:hyperactor_mesh_admin_tui -- --addr {}\n                   cargo run -p hyperactor_mesh_admin_tui_lib --bin hyperactor_mesh_admin_tui -- --addr {}",
-        mesh_admin_url, mesh_admin_url
-    );
+    spawn_admin([&h], instance, None, None).await?;
     println!();
 
     // TODO: put an indicatif spinner here

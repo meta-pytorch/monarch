@@ -294,7 +294,6 @@ async def async_main() -> None:
 
         drainer = asyncio.create_task(drain_entered())
 
-        print(f"Mesh admin server listening on {state.admin_url}", flush=True)
         print(f"  - Busy actor:  {busy_ref}", flush=True)
         print(f"  - Idle actor:  {idle_ref}", flush=True)
         print(f"  - Queue actor: {queue_ref}", flush=True)
