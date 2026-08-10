@@ -18,6 +18,9 @@ import threading
 import time
 from typing import Callable, Dict, List, Optional, Union
 
+from monarch._rust_bindings.monarch_hyperactor.config import (
+    get_client_config_bootstrap_env,
+)
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.actor.future import Future
 from monarch._src.job.job import JobState, JobTrait, ProcessState
@@ -138,6 +141,7 @@ class ProcessJob(JobTrait):
         self._tmpdir = tempfile.mkdtemp(prefix="monarch_process_job_")
 
         try:
+            config_env_name, config_env_value = get_client_config_bootstrap_env()
             for mesh_name, count in self._meshes.items():
                 for i in range(count):
                     host_key = f"{mesh_name}_{i}"
@@ -145,6 +149,7 @@ class ProcessJob(JobTrait):
                     env = {**os.environ, "HYPERACTOR_PROCESS_NAME": host_key}
                     if self._env is not None:
                         env.update(self._env)
+                    env[config_env_name] = config_env_value
                     if _IN_PAR:
                         # In PAR/XAR mode, sys.executable is the bare
                         # Python interpreter which cannot import modules
