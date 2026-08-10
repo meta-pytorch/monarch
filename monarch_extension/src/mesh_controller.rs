@@ -103,7 +103,7 @@ where
 impl _Controller {
     #[new]
     fn new(py: Python, client: PyInstance, py_proc_mesh: &Bound<'_, PyAny>) -> PyResult<Self> {
-        let proc_mesh = py_proc_mesh.downcast::<PyProcMesh>()?.borrow().mesh_ref()?;
+        let proc_mesh = py_proc_mesh.cast::<PyProcMesh>()?.borrow().mesh_ref()?;
 
         // Build rank map from proc ids to ranks.
         let rank_map: HashMap<reference::ProcAddr, usize> = proc_mesh
