@@ -24,7 +24,8 @@ use crate::device_selection::MemoryLocation;
 use crate::device_selection::PCIAddress;
 use crate::device_selection::PciPath;
 use crate::device_selection::cpu_path;
-use crate::device_selection::get_cuda_pci_address;
+use crate::device_selection::cuda_device_count;
+use crate::device_selection::cuda_pci_address;
 use crate::device_selection::pci_path;
 
 /// What an [`IbvConfig`](super::primitives::IbvConfig) targets: a memory
@@ -121,33 +122,60 @@ pub fn get_pci_address(device: &IbvDeviceInfo) -> Result<PCIAddress> {
 /// [`PciPath::is_better_than`] (most local, then highest port-capped
 /// bandwidth) and returning all that tie for best.
 ///
-/// NICs with no ACTIVE port are excluded, so this is empty on a host whose
-/// RDMA links are all down.
+/// A NIC that cannot be ranked -- no ACTIVE port, unresolvable PCI address -- is
+/// logged and skipped, so a host with no usable NIC yields an empty list rather
+/// than an error. Errors are reserved for a memory location that cannot be
+/// resolved at all, which no NIC could have compensated for.
 ///
-/// A NIC's path bandwidth is the lesser of its PCIe-chain bottleneck and
-/// its RDMA port speed. Results are cached per `(backend, location)` since
-/// the PCI/NUMA topology is fixed for the process lifetime.
+/// A NIC's path bandwidth is the lesser of its PCIe-chain bottleneck and its
+/// RDMA port speed. Results are cached per `(backend, location)`, empty ones
+/// included, since the PCI/NUMA topology is fixed for the process lifetime. A
+/// host whose links are all down at the first call therefore keeps an empty
+/// answer for the rest of the process.
 pub fn select_optimal_ibv_devices<I: IbvDeviceImpl>(
     location: MemoryLocation,
-) -> Vec<IbvDeviceInfo> {
+) -> Result<Vec<IbvDeviceInfo>> {
     static CACHE: LazyLock<DashMap<(&'static str, MemoryLocation), Vec<IbvDeviceInfo>>> =
         LazyLock::new(DashMap::new);
     let key = (I::typename(), location);
     if let Some(cached) = CACHE.get(&key) {
-        return cached.value().clone();
+        return Ok(cached.value().clone());
     }
-    let result = compute_optimal_ibv_devices::<I>(location);
+    let result = compute_optimal_ibv_devices::<I>(location)?;
     CACHE.insert(key, result.clone());
-    result
+    Ok(result)
 }
 
 /// Uncached core of [`select_optimal_ibv_devices`].
-fn compute_optimal_ibv_devices<I: IbvDeviceImpl>(location: MemoryLocation) -> Vec<IbvDeviceInfo> {
+fn compute_optimal_ibv_devices<I: IbvDeviceImpl>(
+    location: MemoryLocation,
+) -> Result<Vec<IbvDeviceInfo>> {
+    // Resolve the GPU side once, before ranking NICs. An unresolvable GPU
+    // location is a fact about the request, not a reason to skip each NIC in
+    // turn.
+    let gpus = match location {
+        MemoryLocation::Cpu(_) => Vec::new(),
+        MemoryLocation::Gpu(ordinal) => gpu_pci_addresses(ordinal).with_context(|| {
+            format!(
+                "cannot rank RDMA NICs for {location:?}; if the CUDA driver is not initialized \
+                 in this process, initialize it first -- allocate a tensor on the device, call \
+                 torch.cuda.init(), or use your method of choice."
+            )
+        })?,
+    };
+
     let mut best: Option<PciPath> = None;
     let mut devices: Vec<IbvDeviceInfo> = Vec::new();
     for nic in IbvDevice::<I>::list() {
-        let Some(path) = nic_path(&nic, location) else {
-            continue;
+        // A NIC that cannot be ranked is not a failure of the request; drop it
+        // and say why, rather than failing the whole ranking or skipping in
+        // silence.
+        let path = match nic_path(&nic, location, &gpus) {
+            Ok(path) => path,
+            Err(error) => {
+                tracing::warn!("excluding RDMA device {}: {error:#}", nic.name());
+                continue;
+            }
         };
         match best {
             Some(current) if current.is_better_than(&path) => continue,
@@ -157,35 +185,43 @@ fn compute_optimal_ibv_devices<I: IbvDeviceImpl>(location: MemoryLocation) -> Ve
         best = Some(path);
         devices.push(nic);
     }
-    devices
+    Ok(devices)
 }
 
-/// The best [`PciPath`] from `location` to `nic`, capped by the NIC's RDMA
-/// port speed. `None` when the NIC cannot carry traffic or the path can't be
-/// computed: the NIC has no ACTIVE port, or its PCI address or a required GPU
-/// address can't be resolved.
-fn nic_path(nic: &IbvDeviceInfo, location: MemoryLocation) -> Option<PciPath> {
+/// The PCI addresses a [`MemoryLocation::Gpu`] names: just the one for a specific
+/// ordinal, or every visible device in ordinal order when unspecified.
+fn gpu_pci_addresses(ordinal: Option<u32>) -> Result<Vec<PCIAddress>> {
+    match ordinal {
+        Some(ordinal) => Ok(vec![cuda_pci_address(ordinal)?]),
+        None => (0..cuda_device_count()? as u32)
+            .map(cuda_pci_address)
+            .collect(),
+    }
+}
+
+/// The best [`PciPath`] from `location` to `nic`, capped by the NIC's RDMA port
+/// speed. Errors when `nic` cannot be ranked, naming the reason so the caller
+/// can report which device it dropped and why.
+///
+/// `gpus` holds the already-resolved GPU addresses for a
+/// [`MemoryLocation::Gpu`] location, and is empty for a CPU location.
+fn nic_path(nic: &IbvDeviceInfo, location: MemoryLocation, gpus: &[PCIAddress]) -> Result<PciPath> {
     // A NIC with no ACTIVE port cannot carry traffic, so drop it from the
     // candidate set. Leaving it in with a zero bandwidth is not equivalent:
     // `is_better_than` compares `PathType` first, so a down NIC that happens to
     // be PCIe-closer would outrank a working but more distant one.
-    let port_speed_mbytes_per_sec = NonZeroU32::new(nic.port_speed_mbytes_per_sec())?;
-    let nic_addr = get_pci_address(nic).ok()?;
+    let port_speed_mbytes_per_sec =
+        NonZeroU32::new(nic.port_speed_mbytes_per_sec()).context("no ACTIVE port")?;
+    let nic_addr = get_pci_address(nic)?;
     let base = match location {
         MemoryLocation::Cpu(numa) => cpu_path(&nic_addr, numa),
-        MemoryLocation::Gpu(Some(ordinal)) => pci_path(&get_cuda_pci_address(ordinal)?, &nic_addr),
-        MemoryLocation::Gpu(None) => best_gpu_path(&nic_addr)?,
+        MemoryLocation::Gpu(_) => gpus
+            .iter()
+            .map(|gpu_addr| pci_path(gpu_addr, &nic_addr))
+            .reduce(|a, b| if b.is_better_than(&a) { b } else { a })
+            .context("no visible CUDA device to measure a path from")?,
     };
-    Some(cap_by_port_speed(base, port_speed_mbytes_per_sec))
-}
-
-/// The best path from any visible CUDA device to `nic_addr`, or `None` if
-/// no GPU's PCI address resolves.
-fn best_gpu_path(nic_addr: &PCIAddress) -> Option<PciPath> {
-    (0..cuda_device_count())
-        .filter_map(|ordinal| get_cuda_pci_address(ordinal as u32))
-        .map(|gpu_addr| pci_path(&gpu_addr, nic_addr))
-        .reduce(|a, b| if b.is_better_than(&a) { b } else { a })
+    Ok(cap_by_port_speed(base, port_speed_mbytes_per_sec))
 }
 
 /// Caps `path`'s bottleneck at the NIC's RDMA port speed, so a wide PCIe path
@@ -199,53 +235,37 @@ fn cap_by_port_speed(path: PciPath, port_speed_mbytes_per_sec: NonZeroU32) -> Pc
     }
 }
 
-/// Number of NVIDIA GPUs visible to the kernel driver, counted from the
-/// per-GPU directories under `/proc/driver/nvidia/gpus`. This reads kernel
-/// driver state, so unlike `cuDeviceGetCount` it needs no CUDA
-/// initialization; it returns 0 when the NVIDIA driver is absent (no GPU, or
-/// a non-NVIDIA platform).
-///
-/// TODO(slurye): Generalize this (and `get_cuda_pci_address`) to support AMD.
-pub(crate) fn cuda_device_count() -> i32 {
-    std::fs::read_dir("/proc/driver/nvidia/gpus")
-        .map(|entries| entries.flatten().count() as i32)
-        .unwrap_or(0)
-}
-
 /// Resolves an [`IbvDeviceTarget`] to a single NIC of backend `I`: the
 /// named device for [`IbvDeviceTarget::Nic`], or the best NIC for a memory
 /// location. Both arms are scoped to backend `I`, so a name belonging to a
-/// different backend resolves to `None`.
-pub fn resolve_target<I: IbvDeviceImpl>(target: &IbvDeviceTarget) -> Option<IbvDeviceInfo> {
+/// different backend resolves to `Ok(None)`.
+///
+/// `Ok(None)` means "no such device"; an error means the target could not be
+/// evaluated at all, which for a GPU location includes CUDA not being
+/// initialized in this process.
+pub fn resolve_target<I: IbvDeviceImpl>(target: &IbvDeviceTarget) -> Result<Option<IbvDeviceInfo>> {
     match target {
-        IbvDeviceTarget::Nic(name) => IbvDevice::<I>::list()
+        IbvDeviceTarget::Nic(name) => Ok(IbvDevice::<I>::list()
             .into_iter()
-            .find(|device| device.name() == name),
-        IbvDeviceTarget::MemoryLocation(location) => select_optimal_ibv_devices::<I>(*location)
-            .into_iter()
-            .next(),
+            .find(|device| device.name() == name)),
+        IbvDeviceTarget::MemoryLocation(location) => {
+            Ok(select_optimal_ibv_devices::<I>(*location)?
+                .into_iter()
+                .next())
+        }
     }
 }
 
-/// Process-wide CUDA ordinal → optimal NIC map, computed once per backend and
-/// cached. CPU-only workloads pay no initialization cost.
-pub fn get_cuda_device_to_ibv_device<I: IbvDeviceImpl>() -> &'static Vec<Option<IbvDeviceInfo>> {
-    // A function-local `static` in a generic fn is one cell shared across every
-    // `I`, so the cache must be keyed per backend; `I::typename()` selects it.
-    // Each backend's map is `Box::leak`ed once so the cache stores (and returns) a
-    // `&'static`.
-    static CACHE: LazyLock<DashMap<&'static str, &'static Vec<Option<IbvDeviceInfo>>>> =
-        LazyLock::new(DashMap::new);
-    *CACHE.entry(I::typename()).or_insert_with(|| {
-        let result: Vec<Option<IbvDeviceInfo>> = (0..cuda_device_count())
-            .map(|ordinal| {
-                select_optimal_ibv_devices::<I>(MemoryLocation::Gpu(Some(ordinal as u32)))
-                    .into_iter()
-                    .next()
-            })
-            .collect();
-        Box::leak(Box::new(result))
-    })
+/// The NICs of backend `I` for each CUDA runtime ordinal, indexed by ordinal.
+///
+/// Each entry holds every NIC tied for the best path to that ordinal, so it is
+/// empty when no NIC could be ranked against it. Errors only when the ordinals
+/// themselves cannot be enumerated, which in practice means the CUDA driver is
+/// not initialized in this process.
+pub fn get_cuda_device_to_ibv_devices<I: IbvDeviceImpl>() -> Result<Vec<Vec<IbvDeviceInfo>>> {
+    (0..cuda_device_count()?)
+        .map(|ordinal| select_optimal_ibv_devices::<I>(MemoryLocation::Gpu(Some(ordinal as u32))))
+        .collect()
 }
 
 #[cfg(test)]
@@ -322,9 +342,14 @@ mod tests {
             MemoryLocation::Gpu(None),
             MemoryLocation::Gpu(Some(0)),
         ] {
+            let error = format!(
+                "{:#}",
+                nic_path(&down, location, &[])
+                    .expect_err("a NIC with no ACTIVE port must not be a selection candidate")
+            );
             assert!(
-                nic_path(&down, location).is_none(),
-                "a NIC with no ACTIVE port must not be a selection candidate",
+                error.contains("no ACTIVE port"),
+                "the error should name the reason the NIC was excluded, got: {error}"
             );
         }
     }

@@ -437,10 +437,11 @@ impl CudaAllocator {
 }
 
 /// Number of CUDA devices the driver can use, or 0 on failure. Initializes
-/// CUDA (loading the driver if needed) and queries the driver directly, so it
-/// honors `CUDA_VISIBLE_DEVICES` — unlike
-/// [`crate::backend::ibverbs::device_selection::cuda_device_count`], which
-/// counts the kernel-visible GPUs without initializing CUDA.
+/// CUDA, loading the driver if needed — unlike
+/// [`crate::device_selection::cuda_device_count`], which adopts an
+/// already-resident driver and errors when there is none. Tests that reach
+/// device selection call this first so that ranking against a CUDA ordinal has
+/// a driver to ask.
 #[cfg(test)]
 pub(crate) fn cuda_device_count() -> i32 {
     // SAFETY: FFI to the CUDA driver. rdmaxcel only adopts an already-loaded
