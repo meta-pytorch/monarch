@@ -9,6 +9,7 @@
 //! ibverbs-specific device selection: pairs a [`MemoryLocation`] with the
 //! RDMA NIC(s) that have the best PCIe path to it.
 
+use std::num::NonZeroU32;
 use std::str::FromStr;
 use std::sync::LazyLock;
 
@@ -120,6 +121,9 @@ pub fn get_pci_address(device: &IbvDeviceInfo) -> Result<PCIAddress> {
 /// [`PciPath::is_better_than`] (most local, then highest port-capped
 /// bandwidth) and returning all that tie for best.
 ///
+/// NICs with no ACTIVE port are excluded, so this is empty on a host whose
+/// RDMA links are all down.
+///
 /// A NIC's path bandwidth is the lesser of its PCIe-chain bottleneck and
 /// its RDMA port speed. Results are cached per `(backend, location)` since
 /// the PCI/NUMA topology is fixed for the process lifetime.
@@ -157,16 +161,22 @@ fn compute_optimal_ibv_devices<I: IbvDeviceImpl>(location: MemoryLocation) -> Ve
 }
 
 /// The best [`PciPath`] from `location` to `nic`, capped by the NIC's RDMA
-/// port speed. `None` when the path can't be computed — e.g. the NIC's PCI
-/// address or a required GPU address can't be resolved.
+/// port speed. `None` when the NIC cannot carry traffic or the path can't be
+/// computed: the NIC has no ACTIVE port, or its PCI address or a required GPU
+/// address can't be resolved.
 fn nic_path(nic: &IbvDeviceInfo, location: MemoryLocation) -> Option<PciPath> {
+    // A NIC with no ACTIVE port cannot carry traffic, so drop it from the
+    // candidate set. Leaving it in with a zero bandwidth is not equivalent:
+    // `is_better_than` compares `PathType` first, so a down NIC that happens to
+    // be PCIe-closer would outrank a working but more distant one.
+    let port_speed_mbytes_per_sec = NonZeroU32::new(nic.port_speed_mbytes_per_sec())?;
     let nic_addr = get_pci_address(nic).ok()?;
     let base = match location {
         MemoryLocation::Cpu(numa) => cpu_path(&nic_addr, numa),
         MemoryLocation::Gpu(Some(ordinal)) => pci_path(&get_cuda_pci_address(ordinal)?, &nic_addr),
         MemoryLocation::Gpu(None) => best_gpu_path(&nic_addr)?,
     };
-    Some(cap_by_port_speed(base, nic))
+    Some(cap_by_port_speed(base, port_speed_mbytes_per_sec))
 }
 
 /// The best path from any visible CUDA device to `nic_addr`, or `None` if
@@ -178,13 +188,13 @@ fn best_gpu_path(nic_addr: &PCIAddress) -> Option<PciPath> {
         .reduce(|a, b| if b.is_better_than(&a) { b } else { a })
 }
 
-/// Caps `path`'s bottleneck at the NIC's RDMA port speed. A NIC with no
-/// ACTIVE port reports a port speed of 0, dragging the path to the worst case.
-fn cap_by_port_speed(path: PciPath, nic: &IbvDeviceInfo) -> PciPath {
+/// Caps `path`'s bottleneck at the NIC's RDMA port speed, so a wide PCIe path
+/// to a slow NIC is not ranked as though the NIC could saturate it.
+fn cap_by_port_speed(path: PciPath, port_speed_mbytes_per_sec: NonZeroU32) -> PciPath {
     PciPath {
         bottleneck_mbytes_per_sec: path
             .bottleneck_mbytes_per_sec
-            .min(nic.port_speed_mbytes_per_sec()),
+            .min(port_speed_mbytes_per_sec.get()),
         ..path
     }
 }
@@ -296,6 +306,27 @@ mod tests {
             configured_ibverbs_target().expect("configured target should be valid"),
             Some(IbvDeviceTarget::nic("mlx5_1")),
         );
+    }
+
+    #[test]
+    fn nic_with_no_active_port_is_not_a_candidate() {
+        // `for_test_named` builds a device with no ports, so its port speed is 0.
+        // Such a NIC cannot carry traffic and must be rejected outright: capping
+        // it to zero bandwidth instead would leave it eligible, and
+        // `is_better_than` compares `PathType` before bandwidth.
+        let down = IbvDeviceInfo::for_test_named("mlx5_down");
+        assert_eq!(down.port_speed_mbytes_per_sec(), 0);
+        for location in [
+            MemoryLocation::Cpu(None),
+            MemoryLocation::Cpu(Some(0)),
+            MemoryLocation::Gpu(None),
+            MemoryLocation::Gpu(Some(0)),
+        ] {
+            assert!(
+                nic_path(&down, location).is_none(),
+                "a NIC with no ACTIVE port must not be a selection candidate",
+            );
+        }
     }
 
     #[test]
