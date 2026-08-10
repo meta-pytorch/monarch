@@ -108,8 +108,8 @@ fn exercise_python_bootstrap_contract() -> Result<()> {
                 .getattr("bootstrap_host")?
                 .call1((cmd,))?
                 .call_method0("block_on")?;
-            let root_actor_obj = bootstrap_result.downcast::<PyTuple>()?.get_item(2)?;
-            let root_actor = root_actor_obj.downcast::<PyInstance>()?.borrow();
+            let root_actor_obj = bootstrap_result.cast::<PyTuple>()?.get_item(2)?;
+            let root_actor = root_actor_obj.cast::<PyInstance>()?.borrow();
             let root_actor_instance: &Instance<PythonActor> = &root_actor;
 
             // This is the contract under test: the root actor is not the root

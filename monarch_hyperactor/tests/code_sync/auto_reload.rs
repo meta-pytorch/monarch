@@ -79,7 +79,7 @@ CONSTANT = "initial_constant"
                 // Add the temp directory to Python path
                 let sys = py.import("sys")?;
                 let path = sys.getattr("path")?;
-                let path_list = path.downcast::<pyo3::types::PyList>()?;
+                let path_list = path.cast::<pyo3::types::PyList>()?;
                 path_list.insert(0, temp_path.to_string_lossy())?;
 
                 // Import the test module
