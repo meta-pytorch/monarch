@@ -35,11 +35,11 @@ Usage:
     python smoke.py --root "[2401:db00::1]:26600" "[2401:db00::2]:26600"
 
 TLS: the quic transport reads its material from MM_QUIC_CERT / MM_QUIC_KEY /
-MM_QUIC_CA. The client verifies the server certificate against the CA for a
-*fixed* server name ("monarch-mini", baked into the transport), so a single
-shared cert/key/ca set works on every machine regardless of its IP -- no
-per-host certificate signing and no CA private key distribution is required.
-See ``ensure_quic_certs`` and the README section in this file's module docstring.
+MM_QUIC_CA. Both ends present a certificate. The client verifies the server
+against the CA for the fixed name "monarch-mini", and the server requires a
+clientAuth certificate from the CA. A single dual-purpose cert/key/ca set works
+on every machine regardless of its IP -- no per-host certificate signing and no
+CA private key distribution is required. See ``ensure_quic_certs``.
 """
 
 from __future__ import annotations

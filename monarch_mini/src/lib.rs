@@ -21,6 +21,7 @@ mod poller;
 mod quic_net;
 mod shm;
 mod tcp_net;
+mod tls;
 mod transport;
 mod unix_framing;
 mod unix_transport;
