@@ -27,7 +27,10 @@ except ImportError:
     )
 
 from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
-from monarch._rust_bindings.monarch_hyperactor.config import configure
+from monarch._rust_bindings.monarch_hyperactor.config import (
+    configure,
+    get_client_config_bootstrap_env,
+)
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.job.job import JobState, JobTrait
 from monarch.actor import attach
@@ -41,6 +44,17 @@ logger.propagate = False
 # Default monarch port for worker communication
 _DEFAULT_MONARCH_PORT: int = 26600
 _RFC_1123_MAX_LEN = 63
+
+
+def _inject_client_config_env(
+    pod_template: dict[str, Any], config_env: tuple[str, str]
+) -> None:
+    name, value = config_env
+    container = pod_template["spec"]["containers"][0]
+    env_by_name = {entry["name"]: entry for entry in container.get("env", [])}
+    env_by_name[name] = {"name": name, "value": value}
+    container["env"] = list(env_by_name.values())
+
 
 # Seconds to wait for `kubectl port-forward` to report it is ready before giving
 # up, so a silently hung forward cannot stall job initialization indefinitely.
@@ -367,11 +381,13 @@ class KubernetesJob(JobTrait):
 
         api_client = client.ApiClient()
         api = client.CustomObjectsApi(api_client)
+        config_env = get_client_config_bootstrap_env()
 
         for mesh_name, mesh_config in provisioned.items():
             pod_template_dict = api_client.sanitize_for_serialization(
                 mesh_config["pod_template"]
             )
+            _inject_client_config_env(pod_template_dict, config_env)
             metadata: dict[str, Any] = {
                 "name": mesh_name,
                 "namespace": self._namespace,

@@ -65,8 +65,9 @@ def test_batch_mode_invokes_in_allocation_runner(tmp_path, monkeypatch):
     assert shlex.quote(client) in script
     assert "--nodes=2" in script
     # the shell stays dumb: worker srun + teardown now live in the runner
-    assert "srun" not in script
-    assert "trap" not in script
+    script_lines = [line.lstrip() for line in script.splitlines()]
+    assert not any(line.startswith("srun ") for line in script_lines)
+    assert not any(line.startswith("trap ") for line in script_lines)
     assert "scancel" not in script
     assert "sleep" not in script
     # a BatchJob wrapper is cached so the in-allocation client reconnects
@@ -94,6 +95,24 @@ def test_external_controller_mode_has_no_client(tmp_path, monkeypatch):
     assert "_slurm_batch" not in script
     assert "MONARCH_BATCH_JOB" not in script
     assert not (tmp_path / ".monarch" / "job_state.pkl").exists()
+
+
+def test_submit_exports_quoted_client_config_snapshot(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    snapshot = '{"value":"contains spaces and \'quotes\'"}'
+    with (
+        patch(
+            "monarch._src.job.slurm.get_client_config_bootstrap_env",
+            return_value=("HYPERACTOR_CLIENT_CONFIG", snapshot),
+        ),
+        patch(
+            "monarch._src.job.slurm.subprocess.run", side_effect=_fake_sbatch
+        ) as mock,
+    ):
+        _make_job().apply()
+
+    script = _submitted_script(mock)
+    assert f"export HYPERACTOR_CLIENT_CONFIG={shlex.quote(snapshot)}" in script
 
 
 def test_submit_raises_when_job_id_unparseable(tmp_path, monkeypatch):
