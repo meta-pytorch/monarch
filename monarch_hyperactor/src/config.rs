@@ -243,6 +243,15 @@ pub fn reset_config_to_defaults() -> PyResult<()> {
     Ok(())
 }
 
+/// Return the serialized client config snapshot to install in launched processes.
+#[pyfunction]
+fn get_client_config_bootstrap_env() -> PyResult<(String, String)> {
+    let snapshot = hyperactor_config::global::propagatable_attrs();
+    let (name, encoded) = hyperactor_config::client_config_bootstrap_env(&snapshot)
+        .map_err(|error| PyValueError::new_err(error.to_string()))?;
+    Ok((name.to_string(), encoded))
+}
+
 /// Map from the kwarg name passed to `monarch.configure(...)` to the
 /// `Key<T>` associated with that kwarg. This contains all attribute
 /// keys whose `@meta(CONFIG = ConfigAttr { py_name: Some(...), .. })`
@@ -713,6 +722,14 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     )?;
     module.add_function(reset)?;
 
+    let get_client_config_bootstrap_env =
+        wrap_pyfunction!(get_client_config_bootstrap_env, module)?;
+    get_client_config_bootstrap_env.setattr(
+        "__module__",
+        "monarch._rust_bindings.monarch_hyperactor.config",
+    )?;
+    module.add_function(get_client_config_bootstrap_env)?;
+
     let configure = wrap_pyfunction!(configure, module)?;
     configure.setattr(
         "__module__",
@@ -768,6 +785,36 @@ mod tests {
         ))
         attr TEST_NONZERO_USIZE: hyperactor_config::NonZeroUsize =
             hyperactor_config::NonZeroUsize::MIN;
+
+        @meta(CONFIG = ConfigAttr::new(
+            None,
+            Some("test_process_local_config".to_string()),
+        ).process_local())
+        attr TEST_PROCESS_LOCAL_CONFIG: bool = false;
+    }
+
+    #[test]
+    fn test_client_config_bootstrap_env_contains_typed_snapshot() {
+        let _lock = hyperactor_config::global::lock();
+        hyperactor_config::global::reset_to_defaults();
+
+        let mut runtime = Attrs::new();
+        runtime[TOKIO_WORKER_THREADS] = Some(
+            hyperactor_config::NonZeroUsize::try_from(4).expect("test value should be non-zero"),
+        );
+        runtime[TEST_PROCESS_LOCAL_CONFIG] = true;
+        hyperactor_config::global::set(Source::Runtime, runtime);
+
+        let (name, encoded) = get_client_config_bootstrap_env().expect("snapshot should serialize");
+        assert_eq!(name, "HYPERACTOR_CLIENT_CONFIG");
+        let snapshot: Attrs = serde_json::from_str(&encoded).expect("snapshot should decode");
+        assert_eq!(
+            snapshot.get(TOKIO_WORKER_THREADS).copied().flatten(),
+            hyperactor_config::NonZeroUsize::try_from(4).ok()
+        );
+        assert!(!snapshot.contains_key(TEST_PROCESS_LOCAL_CONFIG));
+
+        hyperactor_config::global::reset_to_defaults();
     }
 
     #[test]

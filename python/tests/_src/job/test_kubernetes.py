@@ -488,14 +488,29 @@ class TestCreate(unittest.TestCase):
                 labels={"pod-label": "pod-value"},
                 annotations={"pod-annotation": "ann-value"},
             ),
-            spec=V1PodSpec(containers=[V1Container(name="worker", image="img")]),
+            spec=V1PodSpec(
+                containers=[
+                    V1Container(
+                        name="worker",
+                        image="img",
+                        env=[
+                            V1EnvVar(name="USER_ENV", value="user"),
+                            V1EnvVar(name="HYPERACTOR_CLIENT_CONFIG", value="stale"),
+                        ],
+                    )
+                ]
+            ),
         )
         job.add_mesh("workers", num_replicas=1, pod_template=pod_template)
 
         mock_api = MagicMock()
         mock_custom_api_cls.return_value = mock_api
 
-        job._create(None)
+        with patch(
+            "monarch._src.job.kubernetes.get_client_config_bootstrap_env",
+            return_value=("HYPERACTOR_CLIENT_CONFIG", "launch-snapshot"),
+        ) as mock_config_env:
+            job._create(None)
 
         body = mock_api.create_namespaced_custom_object.call_args.kwargs["body"]
         template_metadata = body["spec"]["podTemplate"]["metadata"]
@@ -503,6 +518,13 @@ class TestCreate(unittest.TestCase):
         self.assertEqual(
             template_metadata["annotations"], {"pod-annotation": "ann-value"}
         )
+        container_env = {
+            entry["name"]: entry["value"]
+            for entry in body["spec"]["podTemplate"]["spec"]["containers"][0]["env"]
+        }
+        self.assertEqual(container_env["USER_ENV"], "user")
+        self.assertEqual(container_env["HYPERACTOR_CLIENT_CONFIG"], "launch-snapshot")
+        mock_config_env.assert_called_once_with()
 
     def test_create_noop_when_all_attach_only(self) -> None:
         """No K8s API calls when no meshes are provisioned."""

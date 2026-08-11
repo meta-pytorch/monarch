@@ -39,6 +39,16 @@
 //! assert_eq!(attrs.get(MAX_RETRIES), Some(&3));
 //! ```
 //!
+//! Declared default expressions are evaluated lazily at most once per process.
+//! This permits defaults that require runtime construction while preserving a
+//! stable value for the lifetime of the process.
+//! Default expressions must be inexpensive, infallible, free of externally
+//! visible side effects, and independent of global configuration. In particular,
+//! reading global configuration from a default expression can deadlock while the
+//! global configuration is being materialized. Registry consumers such as
+//! configuration diagnostics may initialize a default even when an explicit value
+//! ultimately wins.
+//!
 //! # Serialization
 //!
 //! `Attrs` can be serialized to and deserialized automatically:
@@ -141,8 +151,8 @@ pub struct AttrKeyInfo {
     pub display: fn(&dyn SerializableValue) -> String,
     /// Parse an attribute value using AttrValue::parse.
     pub parse: fn(&str) -> Result<Box<dyn SerializableValue>, anyhow::Error>,
-    /// Default value for the attribute, if any.
-    pub default: Option<&'static dyn SerializableValue>,
+    /// Accessor for the lazily initialized default value, if any.
+    pub default: Option<fn() -> &'static dyn SerializableValue>,
     /// A reference to the relevant key object with the associated
     /// type parameter erased. Can be downcast to a concrete Key<T>.
     pub erased: &'static dyn ErasedKey,
@@ -279,7 +289,7 @@ pub fn marked_attr_names(marker: Key<bool>) -> std::collections::HashSet<&'stati
 /// static lifetime and automatically registers them for serialization.
 pub struct Key<T: 'static> {
     name: &'static str,
-    default_value: Option<&'static T>,
+    default_value: Option<&'static LazyLock<T>>,
     attrs: &'static LazyLock<Attrs>,
 }
 
@@ -320,7 +330,7 @@ impl<T: Named + 'static> Key<T> {
     /// Creates a new key with the given name.
     pub const fn new(
         name: &'static str,
-        default_value: Option<&'static T>,
+        default_value: Option<&'static LazyLock<T>>,
         attrs: &'static LazyLock<Attrs>,
     ) -> Self {
         Self {
@@ -332,7 +342,7 @@ impl<T: Named + 'static> Key<T> {
 
     /// Returns a reference to the default value for this key, if one exists.
     pub fn default(&self) -> Option<&'static T> {
-        self.default_value
+        self.default_value.map(LazyLock::force)
     }
 
     /// Returns whether this key has a default value.
@@ -1015,9 +1025,17 @@ macro_rules! assert_impl {
 ///
 /// * Optional visibility modifier (`pub`, `pub(crate)`, etc.)
 /// * `attr` keyword (required)
+/// * Optional default expression, evaluated lazily at most once per process
 /// * Key name (identifier)
 /// * Type of values this key can store
 /// * Optional default value
+///
+/// Default expressions must be inexpensive, infallible, free of externally
+/// visible side effects, and must not access global configuration. A default
+/// can be initialized while global configuration is being materialized, so
+/// re-entering global configuration from the expression can deadlock. Registry
+/// consumers such as configuration diagnostics may initialize a default even
+/// when an explicit value ultimately wins.
 ///
 /// # Example
 ///
@@ -1061,9 +1079,10 @@ macro_rules! declare_attrs {
     (@single $(@meta($($meta_key:ident = $meta_value:expr),* $(,)?))* $(#[$attr:meta])* ; $vis:vis attr $name:ident: $type:ty = $default:expr;) => {
         $crate::assert_impl!($type, $crate::attrs::AttrValue);
 
-        // Create a static default value
+        // Evaluate each declared default at most once, on first use.
         $crate::paste! {
-            static [<$name _DEFAULT>]: $type = $default;
+            static [<$name _DEFAULT>]: std::sync::LazyLock<$type> =
+                std::sync::LazyLock::new(|| $default);
             static [<$name _META_ATTRS>]: std::sync::LazyLock<$crate::attrs::Attrs> =
                 std::sync::LazyLock::new(|| {
                     #[allow(unused_mut)]
@@ -1120,7 +1139,11 @@ macro_rules! declare_attrs {
                     let value: $type = $crate::attrs::AttrValue::parse(value)?;
                     Ok(Box::new(value) as Box<dyn $crate::attrs::SerializableValue>)
                 },
-                default: Some($crate::paste! { &[<$name _DEFAULT>] }),
+                default: Some(|| {
+                    $crate::paste! {
+                        &*[<$name _DEFAULT>] as &'static dyn $crate::attrs::SerializableValue
+                    }
+                }),
                 erased: &$name,
             }
         }
@@ -1193,6 +1216,8 @@ pub use declare_attrs;
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
     use std::time::Duration;
 
     use super::*;
@@ -1455,8 +1480,17 @@ mod tests {
         /// With default...
         attr TIMEOUT_WITH_DEFAULT: Duration = Duration::from_secs(10);
 
+        attr STRING_WITH_LAZY_DEFAULT: String = make_lazy_default();
+
         /// Just to ensure visibilty is parsed.
         pub(crate) attr CRATE_LOCAL_ATTR: String;
+    }
+
+    static LAZY_DEFAULT_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    fn make_lazy_default() -> String {
+        let call = LAZY_DEFAULT_CALLS.fetch_add(1, Ordering::Relaxed);
+        format!("lazy-default-{call}")
     }
 
     #[test]
@@ -1468,6 +1502,27 @@ mod tests {
             Attrs::new().get(TIMEOUT_WITH_DEFAULT),
             Some(&Duration::from_secs(10))
         );
+    }
+
+    #[test]
+    fn test_default_expression_is_initialized_once() {
+        let handles = (0..8)
+            .map(|_| {
+                std::thread::spawn(|| {
+                    STRING_WITH_LAZY_DEFAULT
+                        .default()
+                        .expect("key should have a default")
+                        .clone()
+                })
+            })
+            .collect::<Vec<_>>();
+        let values = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("default reader should complete"))
+            .collect::<Vec<_>>();
+
+        assert!(values.iter().all(|value| value == "lazy-default-0"));
+        assert_eq!(LAZY_DEFAULT_CALLS.load(Ordering::Relaxed), 1);
     }
 
     #[test]
