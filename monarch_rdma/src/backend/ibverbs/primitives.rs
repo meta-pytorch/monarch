@@ -85,6 +85,14 @@ impl Gid {
         self.index
     }
 
+    /// Builds a GID at table index `index` from `addr`, for tests that need a
+    /// concrete GID without a device. The RoCE type is left `Unknown`, matching
+    /// what a non-RoCE fabric reports.
+    #[cfg(test)]
+    pub(super) fn for_test(addr: Ipv6Addr, index: u8) -> Self {
+        Self::new(addr, GidType::Unknown, index)
+    }
+
     /// The GID's address scope.
     fn scope(&self) -> GidScope {
         self.scope
@@ -1299,7 +1307,6 @@ impl IbvQp {
 
     /// The protection domain this QP was created against, shareable as a
     /// keepalive by resources built on the same PD.
-    #[expect(dead_code, reason = "used by EfaQueuePair in a follow-up commit")]
     pub(super) fn pd(&self) -> &Arc<IbvPd> {
         &self.pd
     }
@@ -1551,7 +1558,6 @@ impl Drop for IbvMr {
 /// is the only constructor and it rejects a null result, so the pointer is
 /// always live.
 #[derive(Debug)]
-#[expect(dead_code, reason = "used by EfaQueuePair in a follow-up commit")]
 pub(super) struct IbvAh {
     ah: *mut rdmaxcel_sys::ibv_ah,
     /// Keeps the PD open until after `ibv_destroy_ah`. Never read.
@@ -1567,7 +1573,6 @@ unsafe impl Send for IbvAh {}
 // SAFETY: as for `Send` above.
 unsafe impl Sync for IbvAh {}
 
-#[expect(dead_code, reason = "used by EfaQueuePair in a follow-up commit")]
 impl IbvAh {
     /// Creates an address handle on `pd` from `attr`.
     ///
