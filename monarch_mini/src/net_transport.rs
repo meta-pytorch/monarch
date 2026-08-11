@@ -299,8 +299,10 @@ impl<N: Net> NetTransport<N> {
     ) -> Self {
         let (shutdown_tx, _) = watch::channel(false);
         let (alive_tx, alive_rx) = mpsc::unbounded_channel();
-        if let Some(n) = max_concurrent_connects::<N>() {
-            eprintln!("MM_QUIC connect concurrency capped at {n} simultaneous attempts");
+        if crate::ctx::connection_debug() {
+            if let Some(n) = max_concurrent_connects::<N>() {
+                eprintln!("MM_QUIC connect concurrency capped at {n} simultaneous attempts");
+            }
         }
         // The data runtime is owned here for its lifetime; its handle is shared with
         // the side channels (→ `Net::create`, for quic's endpoint drivers) and with

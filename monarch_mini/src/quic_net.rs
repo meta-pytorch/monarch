@@ -37,9 +37,10 @@
 //! ## Security
 //!
 //! TLS material is taken from the environment (the "we will provide it" hook):
-//! `MM_QUIC_CERT` / `MM_QUIC_KEY` (the cert chain + key this endpoint serves) and
-//! `MM_QUIC_CA` (the authority a joiner trusts). The server presents its cert; the
-//! client verifies it against the CA for the fixed server name [`SERVER_NAME`].
+//! `MM_QUIC_CERT` / `MM_QUIC_KEY` (the cert chain + key this endpoint presents) and
+//! `MM_QUIC_CA` (the authority it trusts). The client verifies the server certificate
+//! against the CA for the fixed name [`SERVER_NAME`], while the server verifies the
+//! client's `clientAuth` certificate against the CA.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -48,7 +49,6 @@ use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::OnceLock;
 use std::task::Context;
 use std::task::Poll;
 
@@ -59,9 +59,8 @@ use quinn::RecvStream;
 use quinn::SendStream;
 use quinn::ServerConfig;
 use quinn::VarInt;
-use rustls::RootCertStore;
-use rustls_pki_types::CertificateDer;
-use rustls_pki_types::PrivateKeyDer;
+use quinn::crypto::rustls::QuicClientConfig;
+use quinn::crypto::rustls::QuicServerConfig;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
 use tokio::io::ReadBuf;
@@ -72,10 +71,8 @@ use tokio::sync::oneshot;
 use crate::matcher::Matcher;
 use crate::net::Net;
 use crate::net::NetConn;
-
-/// Server name the client uses to verify the server's certificate (the cert's SAN
-/// must cover it). Fixed: routing/identity is handled above this layer.
-const SERVER_NAME: &str = "monarch-mini";
+use crate::tls;
+use crate::tls::SERVER_NAME;
 
 /// Per-stream flow-control receive window (`MAX_STREAM_DATA`): how many bytes a peer
 /// may have in flight on one stream before it must wait for the receiver to extend
@@ -102,35 +99,6 @@ fn stream_recv_window_bytes() -> u64 {
         .unwrap_or(DEFAULT_STREAM_RECV_WINDOW_BYTES)
 }
 
-/// Process-wide rustls crypto provider (ring), installed once before any config is
-/// built. Ignoring the result is intentional: a competing install is fine.
-fn ensure_crypto_provider() {
-    static INSTALLED: OnceLock<()> = OnceLock::new();
-    INSTALLED.get_or_init(|| {
-        let _ = selected_provider().install_default();
-    });
-}
-
-/// The ring crypto provider, optionally restricted to a single TLS 1.3 AEAD by
-/// `MM_QUIC_CIPHER` (`aes128` | `aes256` | `chacha20`) so quic's encryption cost can
-/// be A/B'd. Unset ⇒ ring's default suite set and preference order (AES-256-GCM
-/// first on x86). Affects quic only; the tcp/kTLS transport builds its own provider.
-fn selected_provider() -> rustls::crypto::CryptoProvider {
-    use rustls::crypto::ring::cipher_suite;
-    let base = rustls::crypto::ring::default_provider();
-    let suite = match std::env::var("MM_QUIC_CIPHER").ok().as_deref() {
-        Some("aes128") => cipher_suite::TLS13_AES_128_GCM_SHA256,
-        Some("aes256") => cipher_suite::TLS13_AES_256_GCM_SHA384,
-        Some("chacha20") => cipher_suite::TLS13_CHACHA20_POLY1305_SHA256,
-        _ => return base,
-    };
-    eprintln!("MM_QUIC_CIPHER: restricting quic to a single cipher suite");
-    rustls::crypto::CryptoProvider {
-        cipher_suites: vec![suite],
-        ..base
-    }
-}
-
 /// Server + client TLS configs, built once from the environment and shared by all
 /// quic serves/joins in this context.
 struct TlsConfig {
@@ -138,26 +106,11 @@ struct TlsConfig {
     client: ClientConfig,
 }
 
-fn load_certs(path: &str) -> anyhow::Result<Vec<CertificateDer<'static>>> {
-    let data = std::fs::read(path).map_err(|err| anyhow::anyhow!("reading {path}: {err}"))?;
-    let certs = rustls_pemfile::certs(&mut &data[..]).collect::<Result<Vec<_>, _>>()?;
-    anyhow::ensure!(!certs.is_empty(), "no certificates in {path}");
-    Ok(certs)
-}
-
-fn load_key(path: &str) -> anyhow::Result<PrivateKeyDer<'static>> {
-    let data = std::fs::read(path).map_err(|err| anyhow::anyhow!("reading {path}: {err}"))?;
-    rustls_pemfile::private_key(&mut &data[..])?
-        .ok_or_else(|| anyhow::anyhow!("no private key in {path}"))
-}
-
 fn load_tls() -> anyhow::Result<TlsConfig> {
-    ensure_crypto_provider();
-    let cert_path =
-        std::env::var("MM_QUIC_CERT").map_err(|_| anyhow::anyhow!("MM_QUIC_CERT not set"))?;
-    let key_path =
-        std::env::var("MM_QUIC_KEY").map_err(|_| anyhow::anyhow!("MM_QUIC_KEY not set"))?;
-    let ca_path = std::env::var("MM_QUIC_CA").map_err(|_| anyhow::anyhow!("MM_QUIC_CA not set"))?;
+    let tls::Config {
+        mut server,
+        mut client,
+    } = tls::Config::load()?;
 
     // Disable all periodic QUIC traffic so a delegated link is truly silent:
     // `keep_alive_interval = None` (no PING keep-alives) and `max_idle_timeout = None`
@@ -205,14 +158,12 @@ fn load_tls() -> anyhow::Result<TlsConfig> {
     transport.mtu_discovery_config(Some(mtud));
     let transport = Arc::new(transport);
 
-    let mut server = ServerConfig::with_single_cert(load_certs(&cert_path)?, load_key(&key_path)?)?;
+    server.max_early_data_size = u32::MAX;
+    let mut server = ServerConfig::with_crypto(Arc::new(QuicServerConfig::try_from(server)?));
     server.transport_config(transport.clone());
 
-    let mut roots = RootCertStore::empty();
-    for ca in load_certs(&ca_path)? {
-        roots.add(ca)?;
-    }
-    let mut client = ClientConfig::with_root_certificates(Arc::new(roots))?;
+    client.enable_early_data = true;
+    let mut client = ClientConfig::new(Arc::new(QuicClientConfig::try_from(client)?));
     client.transport_config(transport);
 
     Ok(TlsConfig { server, client })
@@ -391,13 +342,15 @@ fn make_client_endpoint(
     set_udp_buffers(&socket, requested);
     let granted = socket.recv_buffer_size().unwrap_or(0);
     let usable = granted / 2;
-    eprintln!(
-        "MM_QUIC client endpoint: recv buf requested {} B, granted {} B (~{} B usable, force={})",
-        requested,
-        granted,
-        usable,
-        !udp_buf_force_disabled()
-    );
+    if crate::ctx::connection_debug() {
+        eprintln!(
+            "MM_QUIC client endpoint: recv buf requested {} B, granted {} B (~{} B usable, force={})",
+            requested,
+            granted,
+            usable,
+            !udp_buf_force_disabled()
+        );
+    }
     socket.bind(&bind.into())?;
     let std_socket: std::net::UdpSocket = socket.into();
     let runtime =
@@ -529,22 +482,28 @@ impl Quic {
             for _ in 0..n {
                 pool.push(make_client_endpoint(bind, client_config.clone(), per)?.0);
             }
-            eprintln!("MM_QUIC client pool: {n} endpoints (explicit), {per} B requested each");
+            if crate::ctx::connection_debug() {
+                eprintln!("MM_QUIC client pool: {n} endpoints (explicit), {per} B requested each");
+            }
             return Ok(pool);
         }
 
         // Adaptive: try to put the whole budget on one socket.
         let (first, usable) = make_client_endpoint(bind, client_config.clone(), total)?;
         if usable >= total {
-            eprintln!("MM_QUIC client pool: 1 endpoint holds the full {total} B budget");
+            if crate::ctx::connection_debug() {
+                eprintln!("MM_QUIC client pool: 1 endpoint holds the full {total} B budget");
+            }
             return Ok(vec![first]);
         }
 
         // Capped below target — spread across enough sockets of `usable` each.
         let n = total.div_ceil(usable.max(1));
-        eprintln!(
-            "MM_QUIC client pool: single socket capped at {usable} B usable; using {n} endpoints to reach {total} B total"
-        );
+        if crate::ctx::connection_debug() {
+            eprintln!(
+                "MM_QUIC client pool: single socket capped at {usable} B usable; using {n} endpoints to reach {total} B total"
+            );
+        }
         let mut pool = Vec::with_capacity(n);
         pool.push(first);
         for _ in 1..n {
@@ -581,7 +540,6 @@ impl Net for Quic {
     type Conn = QuicConn;
 
     fn create(runtime: Option<Handle>) -> anyhow::Result<Self> {
-        ensure_crypto_provider();
         Ok(Self {
             tls: None,
             client_endpoints_v4: Vec::new(),
