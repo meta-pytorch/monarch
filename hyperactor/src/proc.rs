@@ -466,9 +466,6 @@ struct ProcState {
     /// All actor instances in this proc.
     instances: DashMap<ActorId, WeakInstanceCell>,
 
-    /// Root actor ids in this proc, tracked independently from uid shape.
-    root_actors: DashSet<ActorId>,
-
     /// Proc-level queue-pressure accounting (PD-6 through PD-9).
     /// Runtime-driven — updated from `account_enqueue` /
     /// `account_dequeue`, not from publish-time sampling.
@@ -813,7 +810,6 @@ impl Proc {
                 reserved_roots: DashSet::new(),
                 reserved_child_uids: DashSet::new(),
                 instances: DashMap::new(),
-                root_actors: DashSet::new(),
                 queue_stats: Arc::new(ProcQueueStats::new()),
                 terminated_snapshots: DashMap::new(),
                 actor_tombstones: DashMap::new(),
@@ -1308,15 +1304,14 @@ impl Proc {
         })
     }
 
-    /// Traverse all actor trees in this proc, starting from root actors.
+    /// Traverse all actor trees in this proc, starting from each
+    /// proc-supervised actor.
     pub fn traverse<F>(&self, f: &mut F)
     where
         F: FnMut(&InstanceCell, usize),
     {
-        for entry in self.state().root_actors.iter() {
-            if let Some(cell) = self.get_instance_by_id(entry.key()) {
-                cell.traverse(f);
-            }
+        for cell in self.proc_supervised_instances() {
+            cell.traverse(f);
         }
     }
 
@@ -1348,15 +1343,29 @@ impl Proc {
             .and_then(|cell| cell.upgrade())
     }
 
-    /// Returns the ActorAddrs of all root actors in this proc.
-    pub fn root_actor_ids(&self) -> Vec<ActorAddr> {
-        self.state()
-            .root_actors
+    /// Live instances supervised directly by this proc.
+    ///
+    /// Upgrades are collected before filtering: dropping a rejected cell inside
+    /// the iterator can run `InstanceCellState::drop`, which removes from
+    /// `instances` under the iteration guard.
+    fn proc_supervised_instances(&self) -> Vec<InstanceCell> {
+        let live: Vec<InstanceCell> = self
+            .state()
+            .instances
             .iter()
-            .filter_map(|entry| {
-                self.get_instance_by_id(entry.key())
-                    .map(|cell| cell.actor_addr().clone())
-            })
+            .filter_map(|entry| entry.value().upgrade())
+            .collect();
+        live.into_iter()
+            .filter(InstanceCell::is_proc_supervised)
+            .collect()
+    }
+
+    /// Returns the ActorAddrs of all actors supervised directly by this proc.
+    /// An actor whose parent link has expired is not a root.
+    pub fn root_actor_ids(&self) -> Vec<ActorAddr> {
+        self.proc_supervised_instances()
+            .into_iter()
+            .map(|cell| cell.actor_addr().clone())
             .collect()
     }
 
@@ -1567,10 +1576,8 @@ impl Proc {
         // (which must stay alive to receive stop events from the others).
         let mut statuses = HashMap::new();
         for actor_id in self
-            .state()
-            .root_actors
-            .iter()
-            .filter_map(|entry| self.get_instance_by_id(entry.key()))
+            .proc_supervised_instances()
+            .into_iter()
             .filter(|cell| !matches!(*cell.status().borrow(), ActorStatus::Client))
             .map(|cell| cell.actor_addr().clone())
             .collect::<Vec<_>>()
@@ -3770,7 +3777,7 @@ impl<A: Actor> Instance<A> {
 
     /// Return a handle to this instance's parent actor, if it has one.
     pub fn parent_handle<P: Actor>(&self) -> Option<ActorHandle<P>> {
-        let parent_cell = self.inner.cell.inner.parent.upgrade()?;
+        let parent_cell = self.inner.cell.parent()?;
         let ports = if let Ok(ports) = parent_cell.inner.ports.clone().downcast() {
             ports
         } else {
@@ -3988,8 +3995,8 @@ struct InstanceCellState {
     /// An observer that stores the current status of the actor.
     status: watch::Receiver<ActorStatus>,
 
-    /// A weak reference to this instance's parent.
-    parent: WeakInstanceCell,
+    /// The actor or proc that currently supervises this instance.
+    supervision_link: SupervisionLink,
 
     /// This instance's children by their uids.
     children: DashMap<crate::id::Uid, InstanceCell>,
@@ -4094,12 +4101,34 @@ struct InstanceCellState {
     actor_attrs_snapshot: RwLock<Option<Box<dyn Fn() -> hyperactor_config::Attrs + Send + Sync>>>,
 }
 
+/// Logical supervision ownership, independent of weak-reference liveness.
+///
+/// An expired `Actor` link is a broken topology edge, not proc supervision.
+#[derive(Debug)]
+enum SupervisionLink {
+    /// Supervised directly by the proc: a root.
+    Proc,
+    /// Supervised by an actor. The reference may expire; an expired link is a
+    /// broken edge, not proc ownership.
+    Actor(WeakInstanceCell),
+}
+
+impl SupervisionLink {
+    /// The supervising actor, if this link names one that is still live.
+    fn parent(&self) -> Option<InstanceCell> {
+        match self {
+            SupervisionLink::Actor(parent) => parent.upgrade(),
+            SupervisionLink::Proc => None,
+        }
+    }
+}
+
 impl InstanceCellState {
     /// Unlink this instance from its parent, if it has one. If it was unlinked,
     /// the parent is returned.
     fn maybe_unlink_parent(&self) -> Option<InstanceCell> {
-        self.parent
-            .upgrade()
+        self.supervision_link
+            .parent()
             .filter(|parent| parent.inner.unlink(self))
     }
 
@@ -4207,7 +4236,6 @@ impl InstanceCell {
             Box<dyn Fn() -> crate::ordering::OrderingSnapshot + Send + Sync>,
         >,
     ) -> Self {
-        let is_root = parent.is_none();
         let _ais = actor_id.to_string();
         let cell = Self {
             inner: Arc::new(InstanceCellState {
@@ -4220,7 +4248,9 @@ impl InstanceCell {
                 actor_loop,
                 status_tx,
                 status,
-                parent: parent.map_or_else(WeakInstanceCell::new, |cell| cell.downgrade()),
+                supervision_link: parent.as_ref().map_or(SupervisionLink::Proc, |cell| {
+                    SupervisionLink::Actor(cell.downgrade())
+                }),
                 children: DashMap::new(),
                 actor_task_handle: OnceLock::new(),
                 exported_named_ports: DashMap::new(),
@@ -4245,9 +4275,6 @@ impl InstanceCell {
         proc.inner
             .instances
             .insert(actor_id.id().clone(), cell.downgrade());
-        if is_root {
-            proc.inner.root_actors.insert(actor_id.id().clone());
-        }
         cell
     }
 
@@ -4523,7 +4550,7 @@ impl InstanceCell {
 
     /// Link this instance to its parent, if it has one.
     fn maybe_link_parent(&self) {
-        if let Some(parent) = self.inner.parent.upgrade() {
+        if let Some(parent) = self.inner.supervision_link.parent() {
             parent.link(self.clone());
         }
     }
@@ -4662,7 +4689,13 @@ impl InstanceCell {
 
     /// Get parent instance cell, if it exists.
     pub fn parent(&self) -> Option<InstanceCell> {
-        self.inner.parent.upgrade()
+        self.inner.supervision_link.parent()
+    }
+
+    /// Whether the proc supervises this instance directly. Distinct from
+    /// `parent().is_none()`, which is also true of an expired actor link.
+    fn is_proc_supervised(&self) -> bool {
+        matches!(&self.inner.supervision_link, SupervisionLink::Proc)
     }
 
     /// The actor's type name.
@@ -4841,7 +4874,6 @@ impl Drop for InstanceCellState {
         {
             tracing::error!("instance {} was dropped but not in proc", self.actor_id);
         }
-        self.proc.inner.root_actors.remove(self.actor_id.id());
     }
 }
 
@@ -4852,18 +4884,7 @@ pub struct WeakInstanceCell {
     inner: Weak<InstanceCellState>,
 }
 
-impl Default for WeakInstanceCell {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl WeakInstanceCell {
-    /// Create a new weak instance cell that is never upgradeable.
-    pub fn new() -> Self {
-        Self { inner: Weak::new() }
-    }
-
     /// Upgrade this weak instance cell to a strong reference, if possible.
     pub fn upgrade(&self) -> Option<InstanceCell> {
         self.inner.upgrade().map(InstanceCell::wrap)
@@ -6420,10 +6441,7 @@ mod tests {
             child.actor_addr().proc_addr(),
             parent.actor_addr().proc_addr()
         );
-        assert_eq!(
-            child.inner.parent.upgrade().unwrap().actor_addr(),
-            parent.actor_addr()
-        );
+        assert_eq!(child.parent().unwrap().actor_addr(), parent.actor_addr());
         assert_matches!(
             parent.inner.children.get(child.uid()),
             Some(node) if node.actor_addr() == child.actor_addr()
@@ -6481,7 +6499,7 @@ mod tests {
         // Supervision tree is constructed correctly.
         validate_link(third.cell(), second.cell());
         validate_link(second.cell(), first.cell());
-        assert!(first.cell().inner.parent.upgrade().is_none());
+        assert!(first.cell().parent().is_none());
 
         // Supervision tree is torn down correctly.
         // Once each actor is stopped, it should have no linked children.
@@ -6489,6 +6507,11 @@ mod tests {
         third.drain_and_stop("test").unwrap();
         third.await;
         assert!(third_cell.inner.children.is_empty());
+        assert_eq!(
+            third_cell.parent().unwrap().actor_addr(),
+            second.actor_addr()
+        );
+        assert!(second.cell().get_child(third_cell.uid()).is_none());
         drop(third_cell);
         validate_link(second.cell(), first.cell());
 
@@ -6502,6 +6525,44 @@ mod tests {
         first.drain_and_stop("test").unwrap();
         first.await;
         assert!(first_cell.inner.children.is_empty());
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn expired_parent_link_is_not_a_root() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+
+        let parent = proc.spawn_with_label::<TestActor>("parent", TestActor);
+        let child = TestActor::spawn_child(&client, &parent).await;
+        let child_cell = child.cell().clone();
+        let child_addr = child_cell.actor_addr().clone();
+
+        assert!(parent.cell().is_proc_supervised());
+        assert!(!child_cell.is_proc_supervised());
+
+        parent.drain_and_stop("test").unwrap();
+        parent.await;
+        drop(child);
+
+        for i in 0..1000 {
+            if child_cell.parent().is_none() {
+                break;
+            }
+            if i < 50 {
+                tokio::task::yield_now().await;
+            } else {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+        assert!(
+            child_cell.parent().is_none(),
+            "parent cell should be released once the parent stops"
+        );
+
+        // The link stays `Actor`, so an expired parent never promotes the
+        // child to a proc root.
+        assert!(!child_cell.is_proc_supervised());
+        assert!(!proc.root_actor_ids().contains(&child_addr));
     }
 
     #[async_timed_test(timeout_secs = 30)]
