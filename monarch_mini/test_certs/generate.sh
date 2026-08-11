@@ -31,7 +31,7 @@ openssl req \
 
 printf '%s\n' \
   'subjectAltName=DNS:monarch-mini,DNS:localhost,IP:127.0.0.1,IP:::1' \
-  'extendedKeyUsage=serverAuth' \
+  'extendedKeyUsage=serverAuth,clientAuth' \
   >"$tmp_dir/server.ext"
 
 openssl x509 \

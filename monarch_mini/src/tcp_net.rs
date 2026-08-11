@@ -11,8 +11,9 @@
 //! QUIC runs over UDP, which is silently packet-filter-dropped across regions, so a
 //! devserver can only reach same-region QUIC workers. A TLS-over-TCP flow is what the
 //! cross-region enforcer clears, so `tcp://` reaches workers in any region. It reuses
-//! the same TLS material as quic (`MM_QUIC_CERT`/`MM_QUIC_KEY`/`MM_QUIC_CA`), verified
-//! against the CA for the fixed server name [`SERVER_NAME`].
+//! the same TLS material as quic (`MM_QUIC_CERT`/`MM_QUIC_KEY`/`MM_QUIC_CA`). The client
+//! verifies the server certificate against the CA for the fixed name [`SERVER_NAME`],
+//! while the server verifies the client's `clientAuth` certificate against the CA.
 //!
 //! ## kTLS, with a userspace fallback
 //!
@@ -123,9 +124,6 @@ use std::task::Poll;
 
 use ktls::CorkStream;
 use ktls::KtlsStream;
-use rustls::RootCertStore;
-use rustls_pki_types::CertificateDer;
-use rustls_pki_types::PrivateKeyDer;
 use rustls_pki_types::ServerName;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
@@ -149,10 +147,8 @@ use tokio_rustls::server::TlsStream as ServerTlsStream;
 use crate::matcher::Matcher;
 use crate::net::Net;
 use crate::net::NetConn;
-
-/// Server name the client uses to verify the server's certificate (the cert's SAN
-/// must cover it). Shared with the quic transport, which uses the same cert set.
-const SERVER_NAME: &str = "monarch-mini";
+use crate::tls;
+use crate::tls::SERVER_NAME;
 
 /// Listen backlog. Generous so a burst of joiners (e.g. a many-connection bench
 /// against one server) is not refused before the accept loop drains them.
@@ -269,12 +265,6 @@ fn set_congestion(fd: RawFd) {
     }
 }
 
-/// The ring crypto provider, passed explicitly to every rustls config builder so this
-/// transport does not depend on a process-global default being installed.
-fn provider() -> Arc<rustls::crypto::CryptoProvider> {
-    Arc::new(rustls::crypto::ring::default_provider())
-}
-
 /// Server + client TLS configs, built once from the environment and shared by all tcp
 /// serves/joins in this context.
 struct TlsConfig {
@@ -282,44 +272,15 @@ struct TlsConfig {
     client: Arc<rustls::ClientConfig>,
 }
 
-fn load_certs(path: &str) -> anyhow::Result<Vec<CertificateDer<'static>>> {
-    let data = std::fs::read(path).map_err(|err| anyhow::anyhow!("reading {path}: {err}"))?;
-    let certs = rustls_pemfile::certs(&mut &data[..]).collect::<Result<Vec<_>, _>>()?;
-    anyhow::ensure!(!certs.is_empty(), "no certificates in {path}");
-    Ok(certs)
-}
-
-fn load_key(path: &str) -> anyhow::Result<PrivateKeyDer<'static>> {
-    let data = std::fs::read(path).map_err(|err| anyhow::anyhow!("reading {path}: {err}"))?;
-    rustls_pemfile::private_key(&mut &data[..])?
-        .ok_or_else(|| anyhow::anyhow!("no private key in {path}"))
-}
-
 fn load_tls() -> anyhow::Result<TlsConfig> {
-    let cert_path =
-        std::env::var("MM_QUIC_CERT").map_err(|_| anyhow::anyhow!("MM_QUIC_CERT not set"))?;
-    let key_path =
-        std::env::var("MM_QUIC_KEY").map_err(|_| anyhow::anyhow!("MM_QUIC_KEY not set"))?;
-    let ca_path = std::env::var("MM_QUIC_CA").map_err(|_| anyhow::anyhow!("MM_QUIC_CA not set"))?;
+    let tls::Config {
+        mut server,
+        mut client,
+    } = tls::Config::load()?;
 
     // Both configs enable secret extraction so the negotiated keys can be handed to
     // the kernel for kTLS (see the module docs and [`client_ktls`]/[`server_ktls`]).
-    let mut server = rustls::ServerConfig::builder_with_provider(provider())
-        .with_safe_default_protocol_versions()
-        .map_err(|err| anyhow::anyhow!("tls server versions: {err}"))?
-        .with_no_client_auth()
-        .with_single_cert(load_certs(&cert_path)?, load_key(&key_path)?)?;
     server.enable_secret_extraction = true;
-
-    let mut roots = RootCertStore::empty();
-    for ca in load_certs(&ca_path)? {
-        roots.add(ca)?;
-    }
-    let mut client = rustls::ClientConfig::builder_with_provider(provider())
-        .with_safe_default_protocol_versions()
-        .map_err(|err| anyhow::anyhow!("tls client versions: {err}"))?
-        .with_root_certificates(roots)
-        .with_no_client_auth();
     client.enable_secret_extraction = true;
 
     Ok(TlsConfig {
