@@ -32,6 +32,7 @@ use std::time::Duration;
 use hyperactor::ActorAddr;
 use hyperactor::ActorLocal;
 use hyperactor::ActorRef;
+use hyperactor::AnyActorHandle;
 use hyperactor::Endpoint as _;
 use hyperactor::PortRef;
 use hyperactor::RemoteEndpoint as _;
@@ -56,6 +57,7 @@ use ndslice::view::View;
 use rankspace::Rank;
 use rankspace::RankSpace;
 use rankspace::view::CompactView;
+use rankspace::view::View as _;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
@@ -98,33 +100,45 @@ declare_attrs! {
     pub attr SUPERVISION_WATCHDOG_TIMEOUT: Duration = Duration::from_mins(2);
 }
 
-/// An ActorMesh is a collection of ranked A-typed actors.
+/// An ActorMesh is a collection of ranked A-typed actors: the lifecycle owner
+/// over an [`ActorMeshRef`], which is the cast/address surface.
 ///
-/// Bound note: `A: Referable` because the mesh stores/returns
-/// `ActorRef<A>`, which is only defined for `A: Referable`.
+/// The mesh may be *managed* — created via `ProcMesh` and backed by a controller
+/// — or *data-only* — spawned through an `ActorSpawner` and carrying each rank's
+/// local lifecycle handle. Both variants own their actors and can stop them.
+/// Monitoring works through the mesh's members in either case.
+///
+/// Bound note: `A: Referable` because the mesh stores/returns `ActorRef<A>`,
+/// which is only defined for `A: Referable`.
 #[derive(Debug)]
 pub struct ActorMesh<A: Referable> {
-    proc_mesh: ProcMeshRef,
-    id: ActorMeshId,
+    /// The cast/address surface, either controller-backed (`Managed`) or
+    /// detached (`Data`).
     current_ref: ActorMeshRef<A>,
-    /// If present, this is the controller for the mesh. The controller ensures
-    /// the mesh is stopped when the actor owning it is stopped, and can provide
-    /// supervision events via subscribing.
-    /// It may not be present for some types of actors, typically system actors
-    /// such as ProcAgent or CastActor.
-    controller: Option<ActorRef<ActorMeshController<A>>>,
+    lifecycle: ActorMeshLifecycle,
 }
 
-/// A data-only actor mesh.
+/// The local lifecycle handle for one spawner-backed rank.
+pub(crate) type ActorMeshStopHandle = AnyActorHandle;
+
+#[derive(Debug, Clone)]
+enum ActorMeshLifecycle {
+    Managed,
+    Data {
+        stop_handles: Vec<ActorMeshStopHandle>,
+        stop_requested: Arc<OnceCell<()>>,
+    },
+}
+
+/// The data-only variant of [`ActorMeshRef`]: a cheap, detached cast/address
+/// surface built directly from actor refs.
 ///
-/// This mesh is the data variant of [`ActorMeshRef`]: a [`RankSpace`] paired
-/// with its visible actor refs. The rank space can be sparse, so a mesh can
-/// represent failed or absent ranks as occlusions.
-///
-/// The mesh carries no identity beyond its members: two data meshes over the
-/// same rank space and refs are interchangeable. It holds no supervision state
-/// either; a caller monitors it on demand via [`Self::monitor`], which is the
-/// (one and only) supervision relationship, established by `hyperactor_remote`.
+/// Membership is a [`RankSpace`] paired with its visible actor refs. The rank
+/// space can be sparse, so a mesh can represent failed or absent ranks as
+/// occlusions. It carries no identity beyond its members (two data refs over the
+/// same rank space and refs are interchangeable) and no remote supervision
+/// stream; a caller monitors it on demand via [`Self::monitor`]. Casting iterates
+/// the members and posts to each directly — the simple, unoptimized data path.
 pub struct DataActorMesh<A: Referable> {
     members: CompactView<Vec<ActorRef<A>>>,
 }
@@ -146,47 +160,113 @@ impl<A: Referable> ActorMesh<A> {
         controller: Option<ActorRef<ActorMeshController<A>>>,
         members: Arc<ValueMesh<ActorAddr>>,
     ) -> Self {
+        let region = proc_mesh.region().clone();
         let current_ref = ActorMeshRef::new_managed(
             id.clone(),
             Some(proc_mesh.id().clone()),
-            proc_mesh.region().clone(),
+            region,
             controller.clone(),
             members,
         );
 
         Self {
-            proc_mesh,
-            id,
             current_ref,
-            controller,
+            lifecycle: ActorMeshLifecycle::Managed,
         }
     }
 
-    pub fn id(&self) -> &ActorMeshId {
-        &self.id
+    /// Create a data actor mesh from actor refs and their lifecycle handles.
+    pub(crate) fn try_new_data(
+        space: impl Into<RankSpace>,
+        members: Vec<ActorRef<A>>,
+        stop_handles: Vec<ActorMeshStopHandle>,
+    ) -> crate::Result<Self> {
+        assert!(!stop_handles.is_empty(), "data actor mesh must own actors");
+        assert_eq!(
+            stop_handles.len(),
+            members.len(),
+            "data actor mesh must own one lifecycle handle per member"
+        );
+        let current_ref = ActorMeshRef::try_new_data(space, members).inspect_err(|_| {
+            stop_handles.iter().for_each(|handle| {
+                let _ = handle.stop("data mesh construction failed");
+            });
+        })?;
+        Ok(Self {
+            current_ref,
+            lifecycle: ActorMeshLifecycle::Data {
+                stop_handles,
+                stop_requested: Arc::new(OnceCell::new()),
+            },
+        })
+    }
+
+    /// Return the mesh id, if any. Only managed meshes carry an id; data meshes
+    /// are nameless, identified by their members.
+    pub fn id(&self) -> Option<&ActorMeshId> {
+        self.current_ref.as_managed().map(|managed| managed.id())
     }
 
     pub(crate) fn set_controller(&mut self, controller: Option<ActorRef<ActorMeshController<A>>>) {
-        self.controller = controller.clone();
-        if let ActorMeshRef::Managed(current_ref) = &mut self.current_ref {
-            current_ref.set_controller(controller);
-        }
+        self.current_ref
+            .as_managed_mut()
+            .expect("data actor meshes do not use a controller")
+            .set_controller(controller);
+    }
+
+    /// Return a [`MeshMonitor`] over this mesh's members.
+    pub fn monitor(&self, cx: &impl context::Actor) -> MeshMonitor {
+        self.current_ref.monitor(cx)
     }
 
     /// Stop actors on this mesh across all procs.
+    ///
+    /// A data mesh stops each rank's local supervisor proxy. The shared stop
+    /// fence makes this operation one-shot across owner clones.
     pub async fn stop(&mut self, cx: &impl context::Actor, reason: String) -> crate::Result<()> {
-        let ActorMeshRef::Managed(ref mut current_ref) = self.current_ref else {
-            return Err(Error::Other(anyhow::anyhow!(
-                "cannot stop an ActorMesh of DataActorMeshRef"
-            )));
-        };
-        let actor_mesh_name = self.id.to_string();
-        // Remove the controller as an optimization so all future meshes
+        if let ActorMeshLifecycle::Data {
+            stop_handles,
+            stop_requested,
+        } = &mut self.lifecycle
+        {
+            if stop_requested.set(()).is_err() {
+                return Ok(());
+            }
+            let stop_handles = std::mem::take(stop_handles);
+            assert!(
+                !stop_handles.is_empty(),
+                "live data actor mesh must own actors"
+            );
+            let mut stop_error = None;
+            for handle in &stop_handles {
+                if let Err(error) = handle.stop(&reason)
+                    && stop_error.is_none()
+                {
+                    stop_error = Some(error);
+                }
+            }
+            return match stop_error {
+                Some(error) => Err(Error::Other(anyhow::Error::new(error))),
+                None => Ok(()),
+            };
+        }
+        // Remove the controller so all future meshes
         // created from this one (such as slices) know they are already stopped.
         // Refs and slices on other machines will still be able to query the
         // controller and will be sent a notification about this stop by the controller
         // itself.
-        if let Some(controller) = self.controller.take() {
+        let (controller, id, num_ranks) = {
+            let managed = self
+                .current_ref
+                .as_managed_mut()
+                .expect("managed actor mesh has a managed ref");
+            (
+                managed.take_controller(),
+                managed.id().resource_id().clone(),
+                managed.region().num_ranks(),
+            )
+        };
+        if let Some(controller) = controller {
             // Run the Stop/GetState exchange. We wrap it so that, no matter
             // how it ends, we can record a single unhealthy event
             // afterwards. Taking the controller is one-way: once it is gone,
@@ -194,8 +274,6 @@ impl<A: Referable> ActorMesh<A> {
             // silently-still-healthy mesh with a vanished controller would
             // hide the fact that the stop never reached (or never confirmed)
             // the actors.
-            let id = self.id.resource_id().clone();
-            let num_ranks = current_ref.region().num_ranks();
             let result: crate::Result<()> = async {
                 controller.post(
                     cx,
@@ -257,31 +335,10 @@ impl<A: Referable> ActorMesh<A> {
                 Ok(()) => ActorStatus::Stopped("mesh stopped".to_string()),
                 Err(e) => ActorStatus::Stopped(format!("mesh stop failed: {e}")),
             };
-            let mut entry = current_ref.health_state.entry(cx).or_default();
-            let health_state = entry.get_mut();
-            health_state.unhealthy_event = Some(Unhealthy::StreamClosed(MeshFailure {
-                actor_mesh_name: Some(actor_mesh_name),
-                event: ActorSupervisionEvent::new(
-                    // Use an actor id from the mesh.
-                    ndslice::view::Ranked::get(current_ref.as_ref(), 0)
-                        .unwrap()
-                        .actor_addr()
-                        .clone(),
-                    None,
-                    status,
-                    None,
-                ),
-                crashed_ranks: vec![],
-                // MFCA-4: synthesized locally by the mesh handle, not a
-                // controller report.
-                reporting_controller: None,
-            }));
+            self.current_ref.record_stopped(cx, status);
 
             result?;
         }
-        // Also take the controller from the ref, since that is used for
-        // some operations.
-        current_ref.controller.take();
         Ok(())
     }
 }
@@ -305,21 +362,21 @@ impl<A: Referable> Deref for ActorMesh<A> {
 impl<A: Referable> Clone for ActorMesh<A> {
     fn clone(&self) -> Self {
         Self {
-            proc_mesh: self.proc_mesh.clone(),
-            id: self.id.clone(),
             current_ref: self.current_ref.clone(),
-            controller: self.controller.clone(),
+            lifecycle: self.lifecycle.clone(),
         }
     }
 }
 
 impl<A: Referable> Drop for ActorMesh<A> {
     fn drop(&mut self) {
-        tracing::info!(
-            name = "ActorMeshStatus",
-            actor_name = %self.id,
-            status = "Dropped",
-        );
+        if let Some(id) = self.id() {
+            tracing::info!(
+                name = "ActorMeshStatus",
+                actor_name = %id,
+                status = "Dropped",
+            );
+        }
     }
 }
 
@@ -378,7 +435,7 @@ impl<A: Referable> DataActorMesh<A> {
     ///
     /// The caller drives the returned monitor (await it, or run a future under
     /// [`MeshMonitor::guard`]) to observe rank failures, and drops it to stop
-    /// monitoring. The mesh holds no supervision state of its own.
+    /// monitoring.
     pub fn monitor(&self, cx: &impl context::Actor) -> MeshMonitor {
         let actors = self.members.map(|actor| actor.actor_addr().clone());
         MeshMonitor::spawn(cx, actors)
@@ -386,6 +443,8 @@ impl<A: Referable> DataActorMesh<A> {
 
     /// Cast `message` to every member. The data path has no cast domain, so it
     /// iterates the members and posts to each directly: correct but unoptimized.
+    /// This initiates delivery without waiting for it; use [`Self::monitor`] to
+    /// observe actors that stop or fail.
     pub fn cast<M>(&self, cx: &impl context::Actor, message: M) -> crate::Result<()>
     where
         A: RemoteHandles<M>,
@@ -415,7 +474,9 @@ impl<A: Referable> DataActorMesh<A> {
 
 impl<A: Referable> Clone for DataActorMesh<A> {
     fn clone(&self) -> Self {
-        Self::new_unchecked(self.members.clone())
+        Self {
+            members: self.members.clone(),
+        }
     }
 }
 
@@ -497,7 +558,25 @@ impl<A: Referable> ActorMeshRef<A> {
         }
     }
 
+    /// Return a [`MeshMonitor`] over this mesh's members.
+    pub fn monitor(&self, cx: &impl context::Actor) -> MeshMonitor {
+        match self {
+            Self::Managed(managed) => managed.monitor(cx),
+            Self::Data(data) => data.monitor(cx),
+        }
+    }
+
+    /// Return the legacy dense ref mutably when this is the managed variant.
+    pub fn as_managed_mut(&mut self) -> Option<&mut ManagedActorMeshRef<A>> {
+        match self {
+            Self::Managed(managed) => Some(managed),
+            Self::Data(_) => None,
+        }
+    }
     /// Cast a message to all the actors in this mesh.
+    ///
+    /// This initiates delivery without waiting for it; use [`Self::monitor`] to
+    /// observe actors that stop or fail.
     pub fn cast<M>(&self, cx: &impl context::Actor, message: M) -> crate::Result<()>
     where
         A: RemoteHandles<M>,
@@ -542,6 +621,12 @@ impl<A: Referable> ActorMeshRef<A> {
             Self::Managed(m) => Self::Managed(Box::new(m.clone_with_supervision_receiver())),
             Self::Data(d) => Self::Data(d.clone()),
         }
+    }
+
+    pub(crate) fn record_stopped(&self, cx: &impl context::Actor, status: ActorStatus) {
+        self.as_managed()
+            .expect("only managed actor meshes record local stopped state")
+            .record_stopped(cx, status);
     }
 }
 
@@ -1024,7 +1109,6 @@ impl<A: Referable> ManagedActorMeshRef<A> {
         A: RemoteHandles<M>,
         M: RemoteMessage + Clone,
     {
-        self.check_cached_failure(cx)?;
         self.emit_sent_message_telemetry(cx, view::Ranked::region(self));
 
         let mut headers = caller_headers.clone();
@@ -1058,7 +1142,6 @@ impl<A: Referable> ManagedActorMeshRef<A> {
         A: RemoteHandles<M>,
         M: RemoteMessage + Clone,
     {
-        self.check_cached_failure(cx)?;
         self.emit_sent_message_telemetry(
             cx,
             &Region::new(
@@ -1091,22 +1174,6 @@ impl<A: Referable> ManagedActorMeshRef<A> {
         })?;
 
         self.post_cast_direct(cx, point, actor, message, caller_headers)
-    }
-
-    #[allow(clippy::result_large_err)]
-    fn check_cached_failure(&self, cx: &impl context::Actor) -> crate::Result<()> {
-        // First check if the mesh is already dead before sending out any messages
-        // to a possibly undeliverable actor.
-        if let Some(failure) = self.cached_failure(cx) {
-            tracing::debug!(
-                actor_mesh = %self.id,
-                crashed_ranks = ?failure.crashed_ranks,
-                "rejecting cast due to cached supervision failure"
-            );
-            return Err(crate::Error::Supervision(Box::new(failure)));
-        }
-
-        Ok(())
     }
 
     fn emit_sent_message_telemetry(&self, cx: &impl context::Actor, region: &Region) {
@@ -1221,6 +1288,10 @@ impl<A: Referable> ManagedActorMeshRef<A> {
 
     pub fn controller(&self) -> &Option<ActorRef<ActorMeshController<A>>> {
         &self.controller
+    }
+
+    fn take_controller(&mut self) -> Option<ActorRef<ActorMeshController<A>>> {
+        self.controller.take()
     }
 
     fn set_controller(&mut self, controller: Option<ActorRef<ActorMeshController<A>>>) {
@@ -1408,6 +1479,48 @@ impl<A: Referable> ManagedActorMeshRef<A> {
         Ok(message)
     }
 
+    fn monitor(&self, cx: &impl context::Actor) -> MeshMonitor {
+        let space = self.space();
+        let addrs = space
+            .iter_ranks()
+            .map(|rank| {
+                self.get_rank(rank)
+                    .expect("visible rank materializes an actor ref")
+                    .actor_addr()
+                    .clone()
+            })
+            .collect();
+        let actors = CompactView::new(space.clone(), addrs)
+            .expect("managed mesh members form a valid compact view");
+        MeshMonitor::spawn(cx, actors)
+    }
+
+    /// Record a synthetic "stopped" unhealthy event so future casts through this
+    /// ref (and its slices) observe the mesh as no longer live.
+    pub(crate) fn record_stopped(&self, cx: &impl context::Actor, status: ActorStatus) {
+        let mut entry = self.health_state.entry(cx).or_default();
+        let health_state = entry.get_mut();
+        health_state.unhealthy_event = Some(Unhealthy::StreamClosed(MeshFailure {
+            actor_mesh_name: Some(self.id().to_string()),
+            event: ActorSupervisionEvent::new(
+                // Use an actor id from the mesh.
+                self.space()
+                    .iter_ranks()
+                    .next()
+                    .and_then(|rank| self.get_rank(rank))
+                    .expect("mesh must have at least one rank")
+                    .actor_addr()
+                    .clone(),
+                None,
+                status,
+                None,
+            ),
+            crashed_ranks: vec![],
+            // MFCA-4: synthesized locally by the mesh handle, not a controller
+            // report.
+            reporting_controller: None,
+        }));
+    }
     /// Same as Clone, but includes a shared supervision receiver. This copy will
     /// share the same health state and get the same supervision events.
     /// Will have a separate cache.
@@ -1613,7 +1726,7 @@ mod tests {
     use ndslice::view::RankedSliceable;
     use rankspace::Rank;
     use rankspace::RankSpace;
-    use rankspace::view::View as _;
+    use rankspace::view::View;
     use timed_test::assert_no_process_leak;
     use timed_test::async_timed_test;
     use tokio::time::Duration;
@@ -1731,6 +1844,9 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(5), target)
             .await
             .expect("timed out waiting for target to stop");
+
+        mesh.cast(&client, ())
+            .expect("casting to a stopped actor should still initiate delivery");
     }
 
     #[tokio::test]
@@ -1755,7 +1871,7 @@ mod tests {
         };
         let amr: ActorMeshRef<testactor::TestActor> =
             ActorMeshRef::Managed(Box::new(super::ManagedActorMeshRef::with_page_size(
-                am.id().clone(),
+                am.id().expect("spawned actor mesh has an id").clone(),
                 managed.proc_mesh_id.clone(),
                 am.region().clone(),
                 page_size,
@@ -1764,6 +1880,7 @@ mod tests {
             )));
         assert_eq!(amr.extent(), extent!(hosts = 2, gpus = 2));
         assert_eq!(amr.region().num_ranks(), 4);
+        assert_eq!(amr.values().count(), 4);
 
         // 3) Within-rank pointer stability (OnceLock caches &ActorRef)
         let p0_a = amr.get(0).expect("rank 0 exists") as *const _;

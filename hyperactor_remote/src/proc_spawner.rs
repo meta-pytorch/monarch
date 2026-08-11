@@ -137,7 +137,7 @@ pub(crate) const ACTOR_SPAWNER_NAME: &str = "spawner";
 /// The singleton uid of a proc's actor-spawn endpoint. The spawner
 /// attests the endpoint ref at this uid, and the child proc spawns its
 /// `ActorSpawner` under it, so the two agree without a round trip.
-pub(crate) fn actor_spawner_uid() -> Uid {
+pub fn actor_spawner_uid() -> Uid {
     Uid::singleton(Label::strip(ACTOR_SPAWNER_NAME))
 }
 

@@ -144,12 +144,7 @@ pub struct Supervisor {
     liveness_handle: Option<ActorHandle<KeepaliveSupervisor>>,
     session: Option<SupervisorSession>,
     pending_stop: Option<PendingStop>,
-    /// If set, a bare readiness signal is posted here once the worker reports
-    /// [`SupervisorEvent::Linked`] — i.e., once the remote child has become
-    /// reachable. The child's address is returned synchronously by the spawn
-    /// call, so this carries no payload. Fires at most once, hence a
-    /// [`OncePortHandle`]; the supervisor and the caller that opened the port
-    /// are always on the same proc.
+    /// Optional one-shot notification posted after the worker links the child.
     ready: Option<OncePortHandle<()>>,
 }
 
@@ -193,10 +188,8 @@ impl Supervisor {
     /// supervisor has no worker control endpoint; stop requests are therefore
     /// held pending. `fallback_actor` is used only to synthesize a supervision
     /// event if liveness fails before the worker reports the supervised child.
-    /// When `ready` is set, a bare readiness signal is posted to it once the
-    /// worker reports `Linked` — the earliest point at which messages to the
-    /// child are guaranteed to route — so callers can wait for reachability
-    /// instead of guessing with a delay.
+    /// When `ready` is set, it is posted once the worker reports `Linked` — the
+    /// earliest point at which messages to the child are guaranteed to route.
     pub(crate) fn bootstrap_uid<F>(
         liveness: KeepaliveLink,
         options: SupervisionOptions,

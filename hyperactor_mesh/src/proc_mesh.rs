@@ -22,6 +22,7 @@ use hyperactor::Handler;
 use hyperactor::ProcAddr;
 use hyperactor::RemoteMessage;
 use hyperactor::RemoteSpawn;
+use hyperactor::Uid;
 use hyperactor::accum::StreamingReducerOpts;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::remote::Remote;
@@ -31,6 +32,10 @@ use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::declare_attrs;
+use hyperactor_remote::ActorSpawner;
+use hyperactor_remote::ActorSpawnerEndpoint;
+use hyperactor_remote::KeepaliveLink;
+use hyperactor_remote::proc_spawner::actor_spawner_uid;
 use hyperactor_telemetry::hash_to_u64;
 use ndslice::Extent;
 use ndslice::ViewExt as _;
@@ -47,6 +52,7 @@ use crate::ActorMeshRef;
 use crate::Error;
 use crate::HostMeshRef;
 use crate::ValueMesh;
+use crate::actor_mesh::ActorMeshStopHandle;
 use crate::host_mesh::GET_PROC_STATE_MAX_IDLE;
 use crate::host_mesh::host_agent::GetHostProcStates;
 use crate::host_mesh::host_agent::ProcState;
@@ -113,6 +119,11 @@ impl ProcRef {
 
     pub(crate) fn actor_addr(&self, id: &ActorMeshId) -> ActorAddr {
         self.proc_id.actor_addr_uid(id.uid().clone())
+    }
+
+    /// Return the actor spawner hosted by this proc.
+    pub(crate) fn spawner(&self) -> ActorRef<ActorSpawner> {
+        ActorRef::attest(self.proc_id.actor_addr_uid(actor_spawner_uid()))
     }
 }
 
@@ -778,6 +789,63 @@ impl ProcMeshRef {
         result
     }
 
+    /// Spawn an actor on all procs in this mesh using the new data-only mesh API.
+    ///
+    /// This initiates an actor spawn on each proc and constructs a stoppable
+    /// data mesh from the actor refs and local supervisor handles without
+    /// waiting for the remote supervision sessions to link. If a later spawn
+    /// fails, all previously created local supervisors receive a best-effort
+    /// stop request.
+    ///
+    /// Bounds:
+    /// - `A: Actor` - the actor actually runs inside each proc.
+    /// - `A: Referable` - so we can return typed `ActorRef<A>`s inside the `ActorMesh`.
+    /// - `A::Params: RemoteMessage` - spawn parameters must be serializable and routable.
+    pub async fn spawn_data<A: RemoteSpawn, C: context::Actor>(
+        &self,
+        cx: &C,
+        params: &A::Params,
+    ) -> crate::Result<ActorMesh<A>>
+    where
+        A::Params: RemoteMessage + Clone,
+    {
+        // Data meshes are nameless: they are identified by their members, not an id.
+        let region = self.region().clone();
+        let actor_uid = Uid::anonymous();
+        let mut members = Vec::with_capacity(self.ranks.len());
+        let mut stop_handles = Vec::with_capacity(self.ranks.len());
+
+        let stop_spawned = |handles: &[ActorMeshStopHandle], reason: &str| {
+            for handle in handles {
+                let _ = handle.stop(reason);
+            }
+        };
+
+        // Serially spawn an actor on each proc using the proc's actor spawner endpoint.
+        // The actor spawner is a well-known singleton actor running on each proc with
+        // the name "spawner".
+        for proc_ref in self.ranks.iter() {
+            let actor_spawner = proc_ref.spawner();
+            let (actor_ref, stop_handle) = match actor_spawner.spawn_uid_with_link_and_ready(
+                cx,
+                actor_uid.clone(),
+                params.clone(),
+                KeepaliveLink::default(),
+                None,
+            ) {
+                Ok(spawned) => spawned,
+                Err(error) => {
+                    stop_spawned(&stop_handles, "data mesh spawn failed");
+                    return Err(Error::Other(error));
+                }
+            };
+            members.push(actor_ref);
+            stop_handles.push(stop_handle.into_any());
+        }
+
+        ActorMesh::try_new_data(region, members, stop_handles)
+    }
+
     /// Spawn an actor on all procs in this mesh under the given
     /// [`ActorMeshId`](crate::mesh_id::ActorMeshId), returning a new `ActorMesh`.
     ///
@@ -868,7 +936,7 @@ impl ProcMeshRef {
             let controller_name = format!(
                 "{}_{}",
                 crate::mesh_controller::ACTOR_MESH_CONTROLLER_NAME,
-                mesh.id()
+                mesh.id().expect("managed actor mesh should have an id")
             );
             let controller = cx.spawn_with_label(&controller_name, controller);
             // Controller and ActorMesh both depend on references from each other, break
@@ -1020,11 +1088,11 @@ impl ProcMeshRef {
         );
         // Notify telemetry that an actor mesh was created.
         {
-            let id_str = mesh.id().to_string();
+            let id_str = actor_mesh_id.to_string();
 
             // Hash the proc mesh id for parent_mesh_id.
             let parent_mesh_id_hash = hash_to_u64(self.id());
-            let mesh_id_hash = telemetry_actor_mesh_id(self.id(), mesh.id());
+            let mesh_id_hash = telemetry_actor_mesh_id(self.id(), &actor_mesh_id);
 
             hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
                 id: mesh_id_hash,
@@ -1033,8 +1101,7 @@ impl ProcMeshRef {
                     .as_deref()
                     .and_then(python_class_from_supervision_name)
                     .unwrap_or(actor_type),
-                given_name: mesh
-                    .id()
+                given_name: actor_mesh_id
                     .display_label()
                     .map(|l| l.as_str())
                     .unwrap_or("unnamed")
@@ -1319,6 +1386,44 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 300)]
     #[cfg(fbcode_build)]
+    async fn spawn_data_uses_default_actor_spawner() {
+        let instance = testing::instance();
+        let mut hm = testing::host_mesh(1).await;
+        let proc_mesh = hm
+            .spawn(instance, "spawn_data", extent!(gpus = 2), None, None)
+            .await
+            .expect("spawn proc mesh");
+
+        let mut actor_mesh: ActorMesh<testactor::TestActor> = proc_mesh
+            .spawn_data(instance, &())
+            .await
+            .expect("spawn data actor mesh through default spawner");
+        assert_eq!(rankspace::view::View::space(&*actor_mesh).cardinality(), 2);
+        let actor_uids: HashSet<_> = rankspace::view::View::iter(&*actor_mesh)
+            .map(|(_, actor)| actor.actor_addr().id().uid().clone())
+            .collect();
+        assert_eq!(
+            actor_uids.len(),
+            1,
+            "all data mesh actors should share one uid"
+        );
+        let mut actor_mesh_clone = actor_mesh.clone();
+        actor_mesh
+            .stop(instance, "test complete".to_string())
+            .await
+            .expect("stop data actor mesh");
+        actor_mesh_clone
+            .stop(instance, "test complete".to_string())
+            .await
+            .expect("stopping a data actor mesh clone should be idempotent");
+
+        hm.shutdown(instance)
+            .await
+            .expect("host mesh shutdown should complete");
+    }
+
+    #[async_timed_test(timeout_secs = 300)]
+    #[cfg(fbcode_build)]
     async fn actor_environment_survives_two_remote_hops_and_excludes_cast_point() {
         const SENTINEL: u64 = 0xA0FE;
         let operation_timeout = Duration::from_secs(120);
@@ -1535,7 +1640,10 @@ mod tests {
             .await
             .unwrap();
         assert_shared(&w1, &s1);
-        let s1_states = slice.actor_states(instance, s1.id().clone()).await.unwrap();
+        let s1_states = slice
+            .actor_states(instance, s1.id().unwrap().clone())
+            .await
+            .unwrap();
         for rank in 0..slice.region().num_ranks() {
             assert_eq!(
                 s1_states
@@ -1557,7 +1665,10 @@ mod tests {
             .await
             .unwrap();
         assert_shared(&w2, &s2);
-        let w2_states = whole.actor_states(instance, w2.id().clone()).await.unwrap();
+        let w2_states = whole
+            .actor_states(instance, w2.id().unwrap().clone())
+            .await
+            .unwrap();
         for rank in 0..whole.region().num_ranks() {
             assert_eq!(
                 w2_states
@@ -1582,7 +1693,7 @@ mod tests {
             .spawn_service::<testactor::TestActor, _>(instance, "svc_wait", &())
             .await
             .unwrap();
-        let id = sw.id().resource_id().clone();
+        let id = sw.id().unwrap().resource_id().clone();
         let region = slice.region().clone();
         let num_ranks = region.num_ranks();
         let (port, rx) = instance.mailbox().open_accum_port_opts(
