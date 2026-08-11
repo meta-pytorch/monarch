@@ -81,8 +81,11 @@ use ndslice::Region;
 use ndslice::ViewExt;
 use ndslice::extent;
 use ndslice::view;
-use ndslice::view::Ranked;
 use ndslice::view::RegionParseError;
+use rankspace::DimRange;
+use rankspace::Rank;
+use rankspace::RankSpace;
+use rankspace::view::View as _;
 use serde::Deserialize;
 use serde::Serialize;
 use tracing::Instrument;
@@ -705,7 +708,7 @@ impl Drop for HostMeshShutdownGuard {
             status = "Dropping",
         );
         let current_ref = self.0.current_ref.clone();
-        let host_count = current_ref.region().num_ranks();
+        let host_count = current_ref.space().cardinality();
 
         // Best-effort only when a Tokio runtime is available.
         if host_count == 0 {
@@ -955,8 +958,8 @@ impl HostMeshRef {
         cx: &impl context::Actor,
         host_mesh_id: Option<HostMeshId>,
     ) -> anyhow::Result<()> {
-        let region = self.region().clone();
-        let num_hosts = region.num_ranks();
+        let region = self.region();
+        let num_hosts = self.space().cardinality();
         if num_hosts == 0 {
             return Ok(());
         }
@@ -1016,7 +1019,7 @@ impl HostMeshRef {
     }
 
     async fn cast_shutdown(&self, cx: &impl context::Actor) -> anyhow::Result<()> {
-        let num_hosts = self.region().num_ranks();
+        let num_hosts = self.space().cardinality();
         if num_hosts == 0 {
             return Ok(());
         }
@@ -1146,7 +1149,7 @@ impl HostMeshRef {
             }
         }
 
-        let region = self.region().clone();
+        let region = self.region();
 
         // Each host posts a single-rank `Running` overlay at its ordinal once
         // it has installed the config; reduce them into a StatusMesh barrier so
@@ -1295,8 +1298,18 @@ impl HostMeshRef {
     where
         C::A: Handler<MeshFailure>,
     {
-        let per_host_labels = per_host.labels().iter().collect::<HashSet<_>>();
-        let host_labels = self.region().labels().iter().collect::<HashSet<_>>();
+        let per_host_labels = per_host
+            .labels()
+            .iter()
+            .map(|label| label.as_str())
+            .collect::<HashSet<_>>();
+        let host_labels = self
+            .space()
+            .base()
+            .dims()
+            .iter()
+            .map(|dim| dim.name())
+            .collect::<HashSet<_>>();
         if !per_host_labels
             .intersection(&host_labels)
             .collect::<Vec<_>>()
@@ -1354,7 +1367,7 @@ impl HostMeshRef {
                 let create_rank = per_host.num_ranks() * host_rank + per_host_rank;
                 let proc_name = host_agent::proc_name(&proc_mesh_id, create_rank);
                 proc_names.push(proc_name.clone());
-                let proc_id = named_proc_on_host(&agent, &proc_name);
+                let proc_id = named_proc_on_host(agent, &proc_name);
                 let proc_agent =
                     ActorRef::attest(proc_id.actor_addr(crate::proc_agent::PROC_AGENT_ACTOR_NAME));
                 tracing::info!(
@@ -1376,7 +1389,7 @@ impl HostMeshRef {
 
         reply_port.return_undeliverable(false);
 
-        let total_procs = self.region().num_ranks() * per_host.num_ranks();
+        let total_procs = self.space().cardinality() * per_host.num_ranks();
 
         let bootstrap_commands = match per_rank_bootstrap.as_ref() {
             Some(per_rank_bootstrap) => Some(
@@ -1508,7 +1521,7 @@ impl HostMeshRef {
             // mesh can be preserved. Procs reached a non-terminating state above,
             // so seed the controller's per-rank statuses as Running.
             let mesh_ref: ProcMeshRef = (**mesh).clone();
-            let region = ndslice::view::Ranked::region(&mesh_ref).clone();
+            let region = mesh_ref.region();
             let initial_statuses: crate::ValueMesh<resource::Status> =
                 std::iter::repeat_n(resource::Status::Running, region.num_ranks())
                     .collect_mesh::<crate::ValueMesh<_>>(region)?;
@@ -1530,6 +1543,45 @@ impl HostMeshRef {
     /// The identity of the referenced host mesh.
     pub fn id(&self) -> &HostMeshId {
         &self.id
+    }
+
+    /// The mesh rank space.
+    pub fn space(&self) -> &RankSpace {
+        self.host_agent_mesh.space()
+    }
+
+    /// The dense region of the host mesh.
+    ///
+    /// Host meshes are dense by construction, so this is the `ndslice` geometry
+    /// still used by the proc-spawn, supervision, and parsing paths. Prefer
+    /// [`Self::space`] wherever a rank space will do.
+    pub fn region(&self) -> Region {
+        Region::try_from(self.space()).expect("host mesh rank space is dense by construction")
+    }
+
+    /// The host agent at visible base `rank`.
+    pub fn get_rank(&self, rank: Rank) -> Option<&ActorRef<HostAgent>> {
+        self.host_agent_mesh.get_rank(rank)
+    }
+
+    /// A sub-mesh over `space`, which must be a dense subspace of this mesh's
+    /// rank space.
+    ///
+    /// Sparse spaces are rejected so [`Self::region`] stays total, and so the
+    /// backing host-agent mesh keeps its managed (controller-backed) variant.
+    pub fn sliced(&self, space: impl Into<RankSpace>) -> crate::Result<Self> {
+        let space = space.into();
+        Region::try_from(&space)?;
+        Ok(Self {
+            id: self.id.clone(),
+            host_agent_mesh: self.host_agent_mesh.sliced(space)?,
+            bootstrap_command: self.bootstrap_command.clone(),
+        })
+    }
+
+    /// A sub-mesh restricted to `range` along dimension `dim`.
+    pub fn range(&self, dim: &str, range: impl Into<DimRange>) -> crate::Result<Self> {
+        self.sliced(self.space().select(dim, range)?)
     }
 
     /// The `ActorMesh<HostAgent>` backing this host mesh. Casting to it routes
@@ -1773,7 +1825,7 @@ pub async fn spawn_admin(
     anyhow::ensure!(!meshes.is_empty(), "at least one mesh is required (SA-1)");
     for (i, mesh) in meshes.iter().enumerate() {
         anyhow::ensure!(
-            mesh.as_ref().region().num_ranks() != 0,
+            !mesh.as_ref().space().is_empty(),
             "mesh at index {} has no hosts (SA-2)",
             i,
         );
@@ -1801,25 +1853,13 @@ pub async fn spawn_admin(
     Ok(admin_ref)
 }
 
-impl view::Ranked for HostMeshRef {
-    type Item = ActorRef<HostAgent>;
-
-    fn region(&self) -> &Region {
-        self.host_agent_mesh.region()
+impl rankspace::view::View<ActorRef<HostAgent>> for HostMeshRef {
+    fn space(&self) -> &RankSpace {
+        HostMeshRef::space(self)
     }
 
-    fn get(&self, rank: usize) -> Option<&Self::Item> {
-        self.host_agent_mesh.get(rank)
-    }
-}
-
-impl view::RankedSliceable for HostMeshRef {
-    fn sliced(&self, region: Region) -> Self {
-        Self {
-            id: self.id.clone(),
-            host_agent_mesh: self.host_agent_mesh.sliced(region),
-            bootstrap_command: self.bootstrap_command.clone(),
-        }
+    fn get_rank(&self, rank: Rank) -> Option<&ActorRef<HostAgent>> {
+        HostMeshRef::get_rank(self, rank)
     }
 }
 
@@ -1896,7 +1936,6 @@ mod tests {
 
     #[cfg(fbcode_build)]
     use hyperactor_config::attrs::Attrs;
-    use ndslice::ViewExt;
     use ndslice::extent;
     #[cfg(fbcode_build)]
     use timed_test::assert_no_process_leak;
@@ -2309,7 +2348,7 @@ mod tests {
 
         assert_eq!(mesh.host_addrs(), vec![dial_to.clone()]);
         assert_eq!(
-            ndslice::view::Ranked::get(&mesh, 0)
+            rankspace::view::View::get(&mesh, 0)
                 .expect("host rank should exist")
                 .actor_addr()
                 .proc_addr()

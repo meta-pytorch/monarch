@@ -34,7 +34,6 @@ use hyperactor_mesh::logging::LogClientMessage;
 use hyperactor_mesh::logging::LogForwardActor;
 use hyperactor_mesh::logging::LogForwardMessage;
 use monarch_types::SerializablePyErr;
-use ndslice::View;
 use pyo3::Bound;
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
@@ -239,7 +238,7 @@ impl LoggingMeshClient {
         client_actor.post(
             cx,
             LogClientMessage::StartSyncFlush {
-                expected_procs: forwarder_mesh.region().num_ranks(),
+                expected_procs: forwarder_mesh.space().cardinality(),
                 reply: reply_tx.bind(),
                 version: version_tx.bind(),
             },
@@ -584,7 +583,6 @@ mod tests {
     use hyperactor_mesh::ProcMesh;
     use hyperactor_mesh::host_mesh::HostMesh;
     use ndslice::Extent;
-    use ndslice::View; // .region(), .num_ranks() etc.
 
     use super::*;
     use crate::actor::PythonActor;
@@ -624,12 +622,12 @@ mod tests {
         let (proc, instance, mut host_mesh, proc_mesh) = test_world().await.expect("world failed");
 
         assert_eq!(
-            host_mesh.region().num_ranks(),
+            host_mesh.space().cardinality(),
             1,
             "should allocate exactly one host"
         );
         assert_eq!(
-            proc_mesh.region().num_ranks(),
+            proc_mesh.space().cardinality(),
             1,
             "should spawn exactly one proc"
         );

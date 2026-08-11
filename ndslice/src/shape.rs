@@ -9,6 +9,7 @@
 use std::fmt;
 use std::str::FromStr;
 
+use rankspace::RankSpace;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -17,6 +18,7 @@ use crate::Region;
 use crate::Slice;
 use crate::SliceError;
 use crate::selection::Selection;
+use crate::view::DenseSpaceError;
 use crate::view::Extent;
 
 // We always retain dimensions here even if they are selected out.
@@ -226,6 +228,26 @@ impl From<&Region> for Shape {
     fn from(region: &Region) -> Self {
         Shape::new(region.labels().to_vec(), region.slice().clone())
             .expect("Shape::new should not fail because a Region by definition is a valid Shape")
+    }
+}
+
+impl TryFrom<&RankSpace> for Shape {
+    type Error = DenseSpaceError;
+
+    /// Converts a dense rank space into the shape that describes it.
+    ///
+    /// A [`Shape`] is a dense hyperrect, so a space with occluded ranks has no
+    /// faithful shape representation and is rejected.
+    fn try_from(space: &RankSpace) -> Result<Self, Self::Error> {
+        Ok(Shape::from(Region::try_from(space)?))
+    }
+}
+
+impl TryFrom<RankSpace> for Shape {
+    type Error = DenseSpaceError;
+
+    fn try_from(space: RankSpace) -> Result<Self, Self::Error> {
+        Shape::try_from(&space)
     }
 }
 

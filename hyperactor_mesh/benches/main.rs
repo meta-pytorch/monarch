@@ -18,7 +18,6 @@ use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::context;
 use hyperactor_mesh::test_utils;
 use ndslice::extent;
-use ndslice::view::Ranked as _;
 use tokio::time::Duration;
 
 mod bench_actor;
@@ -61,7 +60,7 @@ fn bench_actor_scaling(c: &mut Criterion) {
                     .spawn(instance, "bench", &(Duration::from_millis(0)))
                     .await
                     .unwrap();
-                let num_actors = actor_mesh.region().num_ranks();
+                let num_actors = actor_mesh.space().cardinality();
 
                 let start = Instant::now();
                 for i in 0..iters {
@@ -152,7 +151,7 @@ fn bench_actor_mesh_message_sizes(c: &mut Criterion) {
                             .await
                             .unwrap();
 
-                        let num_actors = actor_mesh.region().num_ranks();
+                        let num_actors = actor_mesh.space().cardinality();
 
                         // Scale timeout with payload size: 30s base + 10s per 100MB.
                         let recv_timeout =

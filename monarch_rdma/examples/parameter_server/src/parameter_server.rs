@@ -86,7 +86,7 @@ use monarch_rdma::backend::ibverbs::device_selection::IbvDeviceTarget;
 use monarch_rdma::local_memory::Keepalive;
 use monarch_rdma::local_memory::KeepaliveLocalMemory;
 use ndslice::extent;
-use ndslice::view::Ranked;
+use rankspace::view::View as _;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::process::Command;

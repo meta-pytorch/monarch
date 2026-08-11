@@ -49,7 +49,7 @@ use monarch_introspection_snapshot::push::SNAPSHOT_TABLE_NAMES;
 use monarch_introspection_snapshot::push::push_snapshot;
 use monarch_introspection_snapshot::service::HttpPublisher;
 use ndslice::extent;
-use ndslice::view::Ranked;
+use rankspace::view::View as _;
 
 // -- Trivial test actor for the fixture --
 //

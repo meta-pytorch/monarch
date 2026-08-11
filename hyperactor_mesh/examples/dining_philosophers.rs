@@ -31,7 +31,6 @@ use hyperactor_mesh::context;
 use hyperactor_mesh::host_mesh::HostMesh;
 use hyperactor_mesh::host_mesh::spawn_admin;
 use hyperactor_mesh::mesh_admin::MeshAdminMessageClient;
-use ndslice::ViewExt;
 use ndslice::extent;
 use serde::Deserialize;
 use serde::Serialize;
@@ -224,7 +223,7 @@ impl Waiter {
         if self.is_chopstick_available(chopstick) {
             self.grant_chopstick(chopstick, rank);
             self.philosophers
-                .range("replica", rank)?
+                .sliced(self.philosophers.space().fix("replica", rank)?)?
                 .cast(cx, PhilosopherMessage::GrantChopstick(chopstick))?
         } else {
             self.chopstick_requests.insert(chopstick, rank);

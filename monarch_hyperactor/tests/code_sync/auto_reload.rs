@@ -18,9 +18,9 @@ use monarch_hyperactor::code_sync::auto_reload::AutoReloadMessage;
 use monarch_hyperactor::code_sync::auto_reload::AutoReloadParams;
 use monarch_hyperactor::runtime::GilSite;
 use monarch_hyperactor::runtime::monarch_with_gil_blocking;
-use ndslice::View;
 use pyo3::ffi::c_str;
 use pyo3::prelude::*;
+use rankspace::view::View as _;
 use tempfile::TempDir;
 use tokio::fs;
 

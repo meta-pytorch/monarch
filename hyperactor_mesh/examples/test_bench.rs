@@ -26,7 +26,6 @@ use hyperactor_mesh::casting::CastInfo;
 use hyperactor_mesh::context;
 use hyperactor_mesh::host_mesh::HostMesh;
 use ndslice::Point;
-use ndslice::ViewExt;
 use ndslice::extent;
 use serde::Deserialize;
 use serde::Serialize;
@@ -83,7 +82,7 @@ async fn main() {
         actor_mesh
             .cast(instance, TestMessage::Ping(port.bind()))
             .unwrap();
-        while received.len() < actor_mesh.extent().num_ranks() {
+        while received.len() < actor_mesh.space().cardinality() {
             received.insert(rx.recv().await.unwrap());
         }
 

@@ -24,8 +24,6 @@ use hyperactor_mesh::actor_mesh::ActorMesh;
 use hyperactor_mesh::actor_mesh::ActorMeshRef;
 use monarch_types::py_global;
 use monarch_types::py_module_add_function;
-use ndslice::view::Ranked;
-use ndslice::view::RankedSliceable;
 use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyNotImplementedError;
 use pyo3::exceptions::PyRuntimeError;
@@ -676,9 +674,10 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
 
 impl SupervisableActorMesh for PythonActorMeshImpl {
     fn new_with_region(&self, region: &PyRegion) -> PyResult<Box<dyn SupervisableActorMesh>> {
-        assert!(region.as_inner().is_subset(self.mesh_ref().region()));
         Ok(Box::new(PythonActorMeshImpl::new_ref(
-            self.mesh_ref().sliced(region.as_inner().clone()),
+            self.mesh_ref()
+                .sliced(region.as_inner().clone().into())
+                .map_err(cast_error_to_py_error)?,
         )))
     }
 }
@@ -783,9 +782,11 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
 #[pymethods]
 impl PythonActorMeshImpl {
     fn get(&self, rank: usize) -> PyResult<Option<PyActorAddr>> {
-        Ok(self
-            .mesh_ref()
-            .get(rank)
+        let mesh_ref = self.mesh_ref();
+        Ok(mesh_ref
+            .space()
+            .rank_at(rank)
+            .and_then(|rank| mesh_ref.get_rank(rank))
             .map(|r| hyperactor::ActorRef::into_actor_addr(r.clone()))
             .map(PyActorAddr::from))
     }
