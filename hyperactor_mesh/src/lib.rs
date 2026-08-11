@@ -101,7 +101,6 @@ use crate::host_mesh::HostMeshRefParseError;
 use crate::host_mesh::host_agent::ProcState;
 use crate::resource::RankedValues;
 use crate::resource::Status;
-use crate::supervision::MeshFailure;
 
 /// A mesh of per-rank lifecycle statuses.
 ///
@@ -239,9 +238,6 @@ pub enum Error {
 
     #[error("proc {0} must be direct-addressable")]
     RankedProc(ProcAddr),
-
-    #[error("{0}")]
-    Supervision(Box<MeshFailure>),
 
     #[error("error: {0} does not exist")]
     NotExist(mesh_id::ResourceId),

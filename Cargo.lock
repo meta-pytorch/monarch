@@ -3591,6 +3591,7 @@ dependencies = [
  "hyperactor_cast",
  "hyperactor_config",
  "hyperactor_mesh_macros",
+ "hyperactor_remote",
  "hyperactor_telemetry",
  "inventory",
  "jsonschema",

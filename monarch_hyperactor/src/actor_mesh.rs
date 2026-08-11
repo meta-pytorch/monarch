@@ -568,10 +568,6 @@ pub(crate) struct PyActorMeshRef {
     name = "PythonActorMeshImpl",
     module = "monarch._rust_bindings.monarch_hyperactor.actor_mesh"
 )]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "PyO3 #[pyclass] enum; Box wrapping interacts with PyO3 codegen and Python interop — separate diff"
-)]
 pub(crate) enum PythonActorMeshImpl {
     Owned(PyActorMesh),
     Ref(PyActorMeshRef),
@@ -683,14 +679,8 @@ impl SupervisableActorMesh for PythonActorMeshImpl {
     }
 }
 
-// Convert a hyperactor_mesh::Error to a Python exception. hyperactor_mesh::Error::Supervision becomes a SupervisionError,
-// all others become a RuntimeError.
 fn cast_error_to_py_error(err: hyperactor_mesh::Error) -> PyErr {
-    if let hyperactor_mesh::Error::Supervision(failure) = err {
-        SupervisionError::new_err_from(*failure)
-    } else {
-        PyRuntimeError::new_err(err.to_string())
-    }
+    PyRuntimeError::new_err(err.to_string())
 }
 
 impl ActorMeshProtocol for ActorMeshRef<PythonActor> {

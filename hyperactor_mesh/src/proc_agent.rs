@@ -47,6 +47,8 @@ use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::declare_attrs;
+use hyperactor_remote::ActorSpawner;
+use hyperactor_remote::proc_spawner::actor_spawner_uid;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -360,6 +362,12 @@ impl ProcAgent {
             hyperactor_cast::cast_actor::CastActor::default(),
         )?;
         cast_handle.bind::<hyperactor_cast::cast_actor::CastActor>();
+
+        // `spawn_data` discovers the per-proc ActorSpawner at its well-known UID,
+        // so legacy ProcAgent bootstrapping must install it. This compatibility
+        // step goes away when proc bootstrapping moves off ProcAgent entirely.
+        let actor_spawner_handle = proc.spawn_with_uid(actor_spawner_uid(), ActorSpawner)?;
+        let _well_known_actor = actor_spawner_handle.bind::<ActorSpawner>();
 
         let orphan_timeout = hyperactor_config::global::get(MESH_ORPHAN_TIMEOUT);
         let agent = ProcAgent {

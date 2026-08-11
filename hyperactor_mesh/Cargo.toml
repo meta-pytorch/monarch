@@ -37,6 +37,7 @@ hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_cast = { version = "0.0.0", path = "../hyperactor_cast" }
 hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
 hyperactor_mesh_macros = { version = "0.0.0", path = "../hyperactor_mesh_macros" }
+hyperactor_remote = { version = "0.0.0", path = "../hyperactor_remote" }
 hyperactor_telemetry = { version = "0.0.0", path = "../hyperactor_telemetry" }
 inventory = "0.3.24"
 libc = "0.2.186"
