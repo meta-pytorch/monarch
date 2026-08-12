@@ -513,3 +513,27 @@ class TestExecOnJobSignature(unittest.TestCase):
         from monarch._src.job.job import BashActor
 
         self.assertTrue(hasattr(BashActor, "run_streaming"))
+
+
+class TestShellOnJob(unittest.TestCase):
+    @mock.patch("monarch._src.job.shell.shell", return_value=0)
+    @mock.patch("monarch._src.tools.commands.load_current_job")
+    def test_defaults_to_rank_zero_of_first_mesh(
+        self, load_current_job: MagicMock, open_shell: MagicMock
+    ) -> None:
+        host_mesh = MagicMock()
+        selected_host = host_mesh.flatten.return_value.slice.return_value
+        job = load_current_job.return_value
+        job.state.return_value._hosts = {"workers": host_mesh}
+        job._components.mounts.python_executable_for_mesh.return_value = None
+
+        returncode = commands.shell_on_job(env=["FOO=bar"], workdir="/tmp/work")
+
+        self.assertEqual(returncode, 0)
+        host_mesh.flatten.assert_called_once_with("rank")
+        host_mesh.flatten.return_value.slice.assert_called_once_with(rank=0)
+        open_shell.assert_called_once_with(
+            selected_host,
+            env={"FOO": "bar"},
+            workdir="/tmp/work",
+        )

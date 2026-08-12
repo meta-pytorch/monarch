@@ -21,6 +21,7 @@ from monarch._src.tools.commands import (
     load_current_job,
     MONARCH_DIR,
     server_ready,
+    shell_on_job,
     torchx_runner,
 )
 
@@ -41,5 +42,6 @@ __all__ = [
     "load_current_job",
     "MONARCH_DIR",
     "server_ready",
+    "shell_on_job",
     "torchx_runner",
 ]
