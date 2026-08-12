@@ -54,6 +54,7 @@ fn main() {
             &src_dir,
             &[
                 "rdmaxcel.h",
+                "rdmaxcel_core_impl.h",
                 "rdmaxcel.c",
                 "rdmaxcel.cpp",
                 "rdmaxcel.cu",
@@ -72,6 +73,7 @@ fn main() {
 
     // Setup rerun triggers
     println!("cargo:rerun-if-changed=src/rdmaxcel.h");
+    println!("cargo:rerun-if-changed=src/rdmaxcel_core_impl.h");
     println!("cargo:rerun-if-changed=src/rdmaxcel.c");
     println!("cargo:rerun-if-changed=src/rdmaxcel.cpp");
     println!("cargo:rerun-if-changed=src/rdmaxcel.cu");
