@@ -44,6 +44,15 @@ Job State
    :show-inheritance:
 
 
+Interactive Shell
+=================
+
+Use a singleton slice of a job's host mesh to open an interactive terminal on
+that host.
+
+.. autofunction:: shell
+
+
 Job Base Class
 ==============
 

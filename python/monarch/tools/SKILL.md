@@ -21,6 +21,9 @@ Quick start:
   # Run a bash script
   monarch exec --script run.sh
 
+  # Open an interactive shell on rank 0
+  monarch shell
+
   # Kill the job when done
   monarch kill
 
@@ -28,6 +31,7 @@ Commands:
 
   apply   Provision workers from a job config Python file
   exec    Run a command on workers
+  shell   Open an interactive shell on one worker
   kill    Kill the active job
   context Manage named job contexts
   debug   Connect to the debug server
@@ -54,3 +58,11 @@ exec options:
   --workdir DIR       Working directory on workers
   --script FILE       Read bash script from FILE (use '-' for stdin)
   --kill              Kill the job after the command finishes
+
+shell options:
+
+  --mesh NAME       Select a mesh (default: first mesh)
+  --point DIM=N,..  Select a host coordinate (default: flat rank 0)
+  -e KEY=VALUE      Extra environment variable (repeatable)
+  --workdir DIR     Working directory on the worker
+  --kill            Kill the job after the shell exits

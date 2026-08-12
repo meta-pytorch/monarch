@@ -1702,7 +1702,7 @@ class Actor(MeshTrait):
         ...
 
     @_doc_stub
-    def __cleanup__(self, exc: Exception | None) -> None:
+    def __cleanup__(self, exc: Exception | None) -> None | Awaitable[None]:
         """Called when the actor stops, normally (via ``ActorMesh.stop()``) or
         because of an error. The same ``__cleanup__`` runs in both cases;
         ``exc`` is ``None`` on a normal stop and carries the exception on an

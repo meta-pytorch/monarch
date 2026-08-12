@@ -20,6 +20,7 @@ from monarch.tools.commands import (
     context_use,
     debug,
     exec_on_job,
+    shell_on_job,
 )
 from monarch.tools.debug_env import _get_debug_server_host, _get_debug_server_port
 
@@ -174,6 +175,54 @@ class ExecCmd:
             sys.exit(rc)
 
 
+class ShellCmd:
+    def add_arguments(self, subparser: argparse.ArgumentParser) -> None:
+        subparser.add_argument(
+            "--mesh",
+            type=str,
+            default=None,
+            metavar="NAME",
+            help="Open the shell on the named mesh (default: first mesh)",
+        )
+        subparser.add_argument(
+            "--point",
+            type=str,
+            default=None,
+            metavar="DIM=N,DIM=N",
+            help="Open the shell at a coordinate (default: flat rank 0)",
+        )
+        subparser.add_argument(
+            "-e",
+            "--env",
+            action="append",
+            default=[],
+            help="Extra environment variables as KEY=VALUE (can be repeated)",
+        )
+        subparser.add_argument(
+            "--workdir",
+            type=str,
+            default=None,
+            help="Working directory on the worker",
+        )
+        subparser.add_argument(
+            "--kill",
+            action="store_true",
+            default=False,
+            help="Kill the job after the shell exits",
+        )
+
+    def run(self, args: argparse.Namespace) -> None:
+        rc = shell_on_job(
+            mesh_name=args.mesh,
+            point_str=args.point,
+            env=args.env or None,
+            workdir=args.workdir,
+            kill=args.kill,
+        )
+        if rc != 0:
+            sys.exit(rc)
+
+
 class ContextCmd:
     def add_arguments(self, subparser: argparse.ArgumentParser) -> None:
         sub = subparser.add_subparsers(title="CONTEXT COMMANDS", dest="context_cmd")
@@ -263,6 +312,7 @@ def get_parser() -> argparse.ArgumentParser:
             "Run a command on workers. Sets MONARCH_RANK_<DIM> and MONARCH_SIZE_<DIM> "
             "env vars for each rank dimension.",
         ),
+        ("shell", ShellCmd(), "Open an interactive shell on one worker"),
         ("kill", KillCmd(), "Kill the active job"),
         ("debug", DebugCmd(), "Connect to the debug server"),
     ]:

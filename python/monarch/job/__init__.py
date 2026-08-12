@@ -19,6 +19,7 @@ from monarch._src.job.job import (
 )
 from monarch._src.job.job_state import JobState
 from monarch._src.job.process import ProcessJob
+from monarch._src.job.shell import shell
 from monarch._src.job.slurm import SlurmJob
 
 # Define exports
@@ -34,6 +35,7 @@ __all__ = [
     "MeshAdminConfig",
     "ProcessJob",
     "set_current_job",
+    "shell",
     "SlurmJob",
     "TelemetryConfig",
 ]
