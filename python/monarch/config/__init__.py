@@ -87,6 +87,7 @@ if TYPE_CHECKING:
             rdma_disable_ibverbs: NotRequired[bool]
             rdma_max_chunk_size_mb: NotRequired[int]
             rdma_ibverbs_target: NotRequired[str]
+            rdma_runtime_worker_threads: NotRequired[int]
 
         # pyrefly: ignore [invalid-annotation]
         ConfigureKwargsType = Unpack[ConfigureArgs]
@@ -188,6 +189,10 @@ def configure(**kwargs: "ConfigureKwargsType") -> None:
                 ``"gpu:<ordinal>"``, or ``"nic:<name>"``. Empty preserves
                 automatic selection. Non-empty value syntax is validated when
                 the RDMA manager starts.
+            rdma_runtime_worker_threads: Worker threads for the shared RDMA
+                data-plane runtime, which every queue pair's poll loop runs on.
+                Latched at the first RDMA use in a process; setting it later
+                has no effect.
 
         **kwargs: Reserved for future configuration keys exposed by Rust bindings.
     """

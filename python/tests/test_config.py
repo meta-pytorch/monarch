@@ -110,6 +110,15 @@ def test_rdma_ibverbs_target_round_trip_and_propagation() -> None:
     assert get_global_config()["rdma_ibverbs_target"] == ""
 
 
+def test_rdma_runtime_worker_threads_round_trip() -> None:
+    assert get_global_config()["rdma_runtime_worker_threads"] == 16
+
+    with configured(rdma_runtime_worker_threads=32) as config:
+        assert config["rdma_runtime_worker_threads"] == 32
+
+    assert get_global_config()["rdma_runtime_worker_threads"] == 16
+
+
 @isolate_in_subprocess
 def test_codec_max_frame_length_exceeds_default() -> None:
     """Test that sending 4 chunks of 256KiB fails with a 1 MiB limit."""

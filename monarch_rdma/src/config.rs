@@ -90,4 +90,15 @@ declare_attrs! {
         Some("rdma_ibverbs_target".to_string()),
     ))
     pub attr RDMA_IBVERBS_TARGET: String = String::new();
+
+    /// Worker-thread count for the shared rdma data-plane runtime, which
+    /// every `QueuePairActor` poll loop runs on.
+    ///
+    /// The runtime is built once, lazily, so this value is latched at the
+    /// first RDMA use in a process and later changes have no effect.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("MONARCH_RDMA_RUNTIME_WORKER_THREADS".to_string()),
+        Some("rdma_runtime_worker_threads".to_string()),
+    ))
+    pub attr RDMA_RUNTIME_WORKER_THREADS: usize = 16;
 }

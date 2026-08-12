@@ -37,15 +37,16 @@ use std::sync::OnceLock;
 
 use hyperactor::runtime_identity::build_data_plane_runtime;
 
-/// Worker-thread count for the shared rdma runtime. >1 so concurrent
-/// `QueuePairActor` ticks make progress in parallel.
-const RDMA_RUNTIME_WORKER_THREADS: usize = 4;
+/// Worker-thread count for the shared rdma runtime.
+fn worker_threads() -> usize {
+    hyperactor_config::global::get(crate::config::RDMA_RUNTIME_WORKER_THREADS)
+}
 
 /// The process-wide rdma data-plane runtime, built on first use and tagged
 /// `DataPlane("rdma")`.
 fn rdma_runtime() -> &'static tokio::runtime::Handle {
     static RT: OnceLock<tokio::runtime::Handle> = OnceLock::new();
-    RT.get_or_init(|| build_data_plane_runtime("rdma", RDMA_RUNTIME_WORKER_THREADS))
+    RT.get_or_init(|| build_data_plane_runtime("rdma", worker_threads()))
 }
 
 /// Spawn an actor server loop onto the shared rdma runtime and return its
@@ -109,5 +110,14 @@ mod tests {
     async fn handle_awaitable_from_caller_runtime() {
         let out = spawn_on_rdma_runtime(async { 7 }).await.unwrap();
         assert_eq!(out, 7);
+    }
+
+    // The worker count comes from config.
+    #[test]
+    fn worker_threads_reads_config() {
+        let lock = hyperactor_config::global::lock();
+        assert_eq!(worker_threads(), 16, "the default is 16");
+        let _guard = lock.override_key(crate::config::RDMA_RUNTIME_WORKER_THREADS, 32);
+        assert_eq!(worker_threads(), 32);
     }
 }
