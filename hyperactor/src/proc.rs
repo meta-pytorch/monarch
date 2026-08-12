@@ -3263,30 +3263,68 @@ impl<A: Actor> Instance<A> {
                 }
             }
         }
+        let was_killed = result
+            .as_ref()
+            .is_err_and(|err| matches!(err.kind.as_ref(), ActorErrorKind::Aborted(_)));
         // Run the actor cleanup function before the actor stops to delete
         // resources. If it times out, continue with stopping the actor.
         // Don't call it if there was a panic, because the actor may
         // be in an invalid state and unable to access anything, for example
         // the GIL.
-        let cleanup_result = if !did_panic {
+        let cleanup_result = if !did_panic && !was_killed {
             let cleanup_timeout = hyperactor_config::global::get(config::CLEANUP_TIMEOUT);
-            match tokio::time::timeout(
+            let cleanup = tokio::time::timeout(
                 cleanup_timeout,
                 self.inner
                     .proc
                     .with_current(actor.cleanup(self, result.as_ref().err())),
-            )
-            .await
-            {
-                Ok(Ok(x)) => Ok(x),
-                Ok(Err(e)) => Err(ActorError::new(
-                    self.self_addr(),
-                    ActorErrorKind::cleanup(e),
-                )),
-                Err(e) => Err(ActorError::new(
-                    self.self_addr(),
-                    ActorErrorKind::cleanup(e.into()),
-                )),
+            );
+            tokio::pin!(cleanup);
+            let signal_receiver = &mut actor_loop_receivers.0;
+            let mut receive_signals = true;
+            loop {
+                tokio::select! {
+                    biased;
+                    signal = signal_receiver.recv(), if receive_signals => {
+                        match signal {
+                            Some(Signal::Kill(reason)) => {
+                                // Aborting discards `result`, so carry an
+                                // already-failed exit into the reason. It is
+                                // the root cause, and nothing downstream sees
+                                // `result` once we return.
+                                let reason = match result.as_ref() {
+                                    Err(err) => {
+                                        format!("{reason} (killed during cleanup after: {err})")
+                                    }
+                                    Ok(_) => reason,
+                                };
+                                return Err(ActorError::new(
+                                    self.self_addr(),
+                                    ActorErrorKind::Aborted(reason),
+                                ));
+                            }
+                            Some(
+                                Signal::Stop(_)
+                                | Signal::DrainAndStop(_)
+                                | Signal::ExitRequested(_),
+                            ) => {}
+                            None => receive_signals = false,
+                        }
+                    }
+                    cleanup_result = &mut cleanup => {
+                        break match cleanup_result {
+                            Ok(Ok(result)) => Ok(result),
+                            Ok(Err(err)) => Err(ActorError::new(
+                                self.self_addr(),
+                                ActorErrorKind::cleanup(err),
+                            )),
+                            Err(err) => Err(ActorError::new(
+                                self.self_addr(),
+                                ActorErrorKind::cleanup(err.into()),
+                            )),
+                        };
+                    }
+                }
             }
         } else {
             Ok(())
@@ -7093,6 +7131,154 @@ mod tests {
         parent.drain_and_stop("test").unwrap();
         assert_matches!(child.await, ActorStatus::Stopped(reason) if reason == "test");
         assert_matches!(parent.await, ActorStatus::Stopped(reason) if reason == "test");
+    }
+
+    #[derive(Debug)]
+    struct CleanupReportingActor {
+        cleaned: Option<oneshot::Sender<()>>,
+    }
+
+    struct CleanupDropGuard(Option<oneshot::Sender<()>>);
+
+    impl Drop for CleanupDropGuard {
+        fn drop(&mut self) {
+            if let Some(dropped) = self.0.take() {
+                let _ = dropped.send(());
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct BlockingCleanupActor {
+        cleanup_started: Option<oneshot::Sender<()>>,
+        cleanup_dropped: Option<oneshot::Sender<()>>,
+    }
+
+    #[async_trait]
+    impl Actor for BlockingCleanupActor {
+        async fn cleanup(
+            &mut self,
+            _this: &Instance<Self>,
+            _err: Option<&ActorError>,
+        ) -> Result<(), anyhow::Error> {
+            let _drop_guard = CleanupDropGuard(self.cleanup_dropped.take());
+            self.cleanup_started.take().unwrap().send(()).unwrap();
+            std::future::pending().await
+        }
+    }
+
+    #[async_trait]
+    impl Actor for CleanupReportingActor {
+        async fn cleanup(
+            &mut self,
+            _this: &Instance<Self>,
+            _err: Option<&ActorError>,
+        ) -> Result<(), anyhow::Error> {
+            self.cleaned.take().unwrap().send(()).unwrap();
+            Ok(())
+        }
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn kill_skips_actor_cleanup() {
+        let proc = Proc::isolated();
+        let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
+        let (cleaned_tx, cleaned_rx) = oneshot::channel();
+        let actor = proc.spawn(CleanupReportingActor {
+            cleaned: Some(cleaned_tx),
+        });
+        actor
+            .status()
+            .clone()
+            .wait_for(ActorStatus::is_idle)
+            .await
+            .unwrap();
+
+        actor.kill("kill").unwrap();
+
+        assert_matches!(
+            actor.await,
+            ActorStatus::Failed(ActorErrorKind::Generic(reason))
+                if reason == "actor explicitly aborted due to: kill"
+        );
+        assert!(cleaned_rx.await.is_err(), "cleanup ran after kill");
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn kill_interrupts_actor_cleanup() {
+        let proc = Proc::isolated();
+        let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
+        let (cleanup_started_tx, cleanup_started_rx) = oneshot::channel();
+        let (cleanup_dropped_tx, cleanup_dropped_rx) = oneshot::channel();
+        let actor = proc.spawn(BlockingCleanupActor {
+            cleanup_started: Some(cleanup_started_tx),
+            cleanup_dropped: Some(cleanup_dropped_tx),
+        });
+
+        actor.stop("stop").unwrap();
+        cleanup_started_rx.await.unwrap();
+        actor.kill("kill").unwrap();
+
+        assert_matches!(
+            tokio::time::timeout(Duration::from_secs(1), actor)
+                .await
+                .expect("kill should interrupt cleanup"),
+            ActorStatus::Failed(ActorErrorKind::Generic(reason))
+                if reason == "actor explicitly aborted due to: kill"
+        );
+        cleanup_dropped_rx
+            .await
+            .expect("cleanup future should be cancelled");
+    }
+
+    #[derive(Debug)]
+    struct FailingBlockingCleanupActor {
+        cleanup_started: Option<oneshot::Sender<()>>,
+    }
+
+    #[async_trait]
+    impl Actor for FailingBlockingCleanupActor {
+        async fn handle_stop(
+            &mut self,
+            _this: &Instance<Self>,
+            _mode: StopMode,
+            _reason: &str,
+        ) -> Result<(), anyhow::Error> {
+            Err(anyhow::anyhow!("original failure"))
+        }
+
+        async fn cleanup(
+            &mut self,
+            _this: &Instance<Self>,
+            _err: Option<&ActorError>,
+        ) -> Result<(), anyhow::Error> {
+            self.cleanup_started.take().unwrap().send(()).unwrap();
+            std::future::pending().await
+        }
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn kill_during_cleanup_preserves_failure_cause() {
+        let proc = Proc::isolated();
+        let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
+        let (cleanup_started_tx, cleanup_started_rx) = oneshot::channel();
+        let actor = proc.spawn(FailingBlockingCleanupActor {
+            cleanup_started: Some(cleanup_started_tx),
+        });
+
+        // The actor has already failed by the time cleanup starts, so the kill
+        // that interrupts cleanup must not erase why it failed.
+        actor.stop("stop").unwrap();
+        cleanup_started_rx.await.unwrap();
+        actor.kill("kill").unwrap();
+
+        assert_matches!(
+            tokio::time::timeout(Duration::from_secs(1), actor)
+                .await
+                .expect("kill should interrupt cleanup"),
+            ActorStatus::Failed(ActorErrorKind::Generic(reason))
+                if reason.contains("kill") && reason.contains("original failure")
+        );
     }
 
     #[derive(Debug)]

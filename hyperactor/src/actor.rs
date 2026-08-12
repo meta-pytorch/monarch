@@ -128,7 +128,9 @@ pub trait Actor: Sized + Send + 'static {
     /// as an ActorError.
     /// This function is not called if there is a panic in the actor, as the
     /// actor may be in an indeterminate state. It is also not called if the
-    /// process is killed, there is no atexit handler or signal handler.
+    /// actor is stopped with [`Instance::kill`] or if the process is killed. If
+    /// [`Instance::kill`] is called while cleanup is running, the cleanup future
+    /// is cancelled.
     async fn cleanup(
         &mut self,
         _this: &Instance<Self>,
