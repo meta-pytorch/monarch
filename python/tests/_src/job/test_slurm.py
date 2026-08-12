@@ -6,6 +6,8 @@
 
 # pyre-unsafe
 
+import json
+import pickle
 import shlex
 import subprocess
 from unittest.mock import patch
@@ -20,6 +22,36 @@ def _fake_sbatch(*args, **kwargs):
     return subprocess.CompletedProcess(
         args=["sbatch"], returncode=0, stdout="Submitted batch job 12345\n", stderr=""
     )
+
+
+def _fake_running_slurm(*args, **kwargs):
+    command = args[0]
+    if command == ["sbatch"]:
+        return _fake_sbatch(*args, **kwargs)
+    if command[0] == "squeue":
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "jobs": [
+                        {
+                            "job_state": ["RUNNING"],
+                            "job_resources": {
+                                "nodes": {
+                                    "allocation": [
+                                        {"name": "trainer-host"},
+                                        {"name": "generator-host"},
+                                    ]
+                                }
+                            },
+                        }
+                    ]
+                }
+            ),
+            stderr="",
+        )
+    raise AssertionError(f"unexpected command: {command}")
 
 
 def _make_job(**overrides) -> SlurmJob:
@@ -94,6 +126,86 @@ def test_external_controller_mode_has_no_client(tmp_path, monkeypatch):
     assert "_slurm_batch" not in script
     assert "MONARCH_BATCH_JOB" not in script
     assert not (tmp_path / ".monarch" / "job_state.pkl").exists()
+
+
+def test_out_of_cluster_attaches_through_first_worker_before_meshes():
+    events = []
+
+    def _record_attach(address):
+        events.append(("attach", address))
+
+    def _record_mesh(*, name, **kwargs):
+        events.append(("mesh", name))
+        return object()
+
+    with (
+        patch(
+            "monarch._src.job.slurm.subprocess.run",
+            side_effect=_fake_running_slurm,
+        ),
+        patch("monarch._src.job.slurm.attach", side_effect=_record_attach),
+        patch("monarch._src.job.slurm.attach_to_workers", side_effect=_record_mesh),
+    ):
+        _make_job(out_of_cluster=True).state(cached_path=None)
+
+    assert events == [
+        ("attach", "tcp://trainer-host:22222"),
+        ("mesh", "trainer"),
+        ("mesh", "generator"),
+    ]
+
+
+def test_explicit_attach_to_overrides_automatic_worker_gateway():
+    with (
+        patch(
+            "monarch._src.job.slurm.subprocess.run",
+            side_effect=_fake_running_slurm,
+        ),
+        patch("monarch._src.job.slurm.attach") as attach,
+        patch("monarch._src.job.slurm.attach_to_workers", return_value=object()),
+    ):
+        _make_job(
+            out_of_cluster=True,
+            attach_to="tcp://127.0.0.1:45678",
+        ).state(cached_path=None)
+
+    attach.assert_called_once_with("tcp://127.0.0.1:45678")
+
+
+def test_out_of_cluster_attaches_once_per_loaded_job():
+    with (
+        patch(
+            "monarch._src.job.slurm.subprocess.run",
+            side_effect=_fake_running_slurm,
+        ),
+        patch("monarch._src.job.slurm.attach") as attach,
+        patch("monarch._src.job.slurm.attach_to_workers", return_value=object()),
+    ):
+        job = _make_job(out_of_cluster=True)
+        job.state(cached_path=None)
+        job.state(cached_path=None)
+
+        reloaded = pickle.loads(job.dumps())
+        reloaded.state(cached_path=None)
+
+    assert [entry.args[0] for entry in attach.call_args_list] == [
+        "tcp://trainer-host:22222",
+        "tcp://trainer-host:22222",
+    ]
+
+
+def test_in_cluster_state_does_not_attach_client_gateway():
+    with (
+        patch(
+            "monarch._src.job.slurm.subprocess.run",
+            side_effect=_fake_running_slurm,
+        ),
+        patch("monarch._src.job.slurm.attach") as attach,
+        patch("monarch._src.job.slurm.attach_to_workers", return_value=object()),
+    ):
+        _make_job().state(cached_path=None)
+
+    attach.assert_not_called()
 
 
 def test_submit_raises_when_job_id_unparseable(tmp_path, monkeypatch):

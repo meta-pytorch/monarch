@@ -20,6 +20,7 @@ from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.job._batch_env import in_batch_job
 from monarch._src.job._slurm_batch import _WORKER_BOOTSTRAP
 from monarch._src.job.job import BatchJob, JobState, JobTrait
+from monarch.actor import attach
 
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -67,6 +68,8 @@ class SlurmJob(JobTrait):
         job_start_timeout: Optional[int] = None,
         account: Optional[str] = None,
         qos: Optional[str] = None,
+        out_of_cluster: bool = False,
+        attach_to: Optional[str] = None,
     ) -> None:
         """
         Args:
@@ -87,6 +90,12 @@ class SlurmJob(JobTrait):
                       This should account for potential queueing delays. If None (default), waits indefinitely.
             account: SLURM account to charge the job to (``#SBATCH --account``). If None, uses the cluster default.
             qos: SLURM quality-of-service to request (``#SBATCH --qos``). If None, uses the cluster default.
+            out_of_cluster: Whether the client runs outside the cluster network.
+                      The client attaches through the first allocated worker so
+                      workers can route messages back through that gateway.
+            attach_to: ZMQ-style address of the worker gateway for out-of-cluster
+                      access. When omitted in out-of-cluster mode, the first
+                      allocated worker's Monarch address is used.
         """
         configure(default_transport=ChannelTransport.TcpWithHostname)
         self._meshes = meshes
@@ -105,6 +114,9 @@ class SlurmJob(JobTrait):
         self._job_start_timeout = job_start_timeout
         self._account = account
         self._qos = qos
+        self._out_of_cluster = out_of_cluster
+        self._attach_to = attach_to
+        self._client_attached = False
         # Track the single SLURM job ID and all allocated hostnames
         self._slurm_job_id: Optional[str] = None
         self._all_hostnames: List[str] = []
@@ -117,6 +129,9 @@ class SlurmJob(JobTrait):
         # address remote workers can dial back, instead of an abstract unix
         # socket whose namespace is local to the original (head) node.
         self.__dict__.update(state)
+        # Attachment belongs to this process's global client context, not the
+        # serialized job state.
+        self._client_attached = False
         configure(default_transport=ChannelTransport.TcpWithHostname)
 
     def add_mesh(self, name: str, num_nodes: int) -> None:
@@ -352,6 +367,14 @@ class SlurmJob(JobTrait):
                 job_id, total_nodes, timeout=self._job_start_timeout
             )
 
+        attach_to = self._attach_to
+        if self._out_of_cluster and attach_to is None:
+            attach_to = f"tcp://{self._all_hostnames[0]}:{self._port}"
+        if attach_to is not None and not self._client_attached:
+            logger.info("Attaching client gateway via duplex address: %s", attach_to)
+            attach(attach_to)
+            self._client_attached = True
+
         # Distribute the allocated hostnames among meshes
         host_meshes = {}
         hostname_idx = 0
@@ -391,6 +414,8 @@ class SlurmJob(JobTrait):
             and spec._job_start_timeout == self._job_start_timeout
             and spec._account == self._account
             and spec._qos == self._qos
+            and spec._out_of_cluster == self._out_of_cluster
+            and spec._attach_to == self._attach_to
             and self._jobs_active()
         )
 
