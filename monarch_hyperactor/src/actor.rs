@@ -40,6 +40,7 @@ use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::mailbox::UndeliverableMessageError;
 use hyperactor::mailbox::UndeliverableReason;
+use hyperactor::proc::ForcedExit;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::ProcMeshRef;
@@ -1223,6 +1224,7 @@ impl PythonActor {
 
         let handle = ai.handle;
         let signal_rx = ai.signal;
+        let forced_exit_rx = ai.forced_exit;
         let supervision_rx = ai.supervision;
         let work_rx = ai.work;
 
@@ -1245,6 +1247,7 @@ impl PythonActor {
             actor.init(instance).await.unwrap();
 
             let mut signal_rx = signal_rx;
+            let mut forced_exit_rx = forced_exit_rx;
             let mut supervision_rx = supervision_rx;
             let mut work_rx = work_rx;
             let mut need_drain = false;
@@ -1306,9 +1309,6 @@ impl PythonActor {
                                 break None;
                             },
                             Some(Signal::ExitRequested(_)) => break None,
-                            Some(Signal::Kill(reason)) => {
-                                break Some(ActorError { actor_id: Box::new(instance.self_addr().clone()), kind: Box::new(ActorErrorKind::Aborted(reason)) })
-                            },
                             None => {
                                 break Some(ActorError {
                                     actor_id: Box::new(instance.self_addr().clone()),
@@ -1316,6 +1316,17 @@ impl PythonActor {
                                 })
                             },
                         }
+                    }
+                    forced_exit = forced_exit_rx.recv() => {
+                        let kind = match forced_exit.expect("forced-exit sender should outlive actor execution") {
+                            ForcedExit::Kill(reason) | ForcedExit::Abort(reason) => {
+                                ActorErrorKind::Aborted(reason)
+                            }
+                        };
+                        break Some(ActorError {
+                            actor_id: Box::new(instance.self_addr().clone()),
+                            kind: Box::new(kind),
+                        });
                     }
                     Some(supervision_event) = supervision_rx.recv() => {
                         if let Err(err) = instance.handle_supervision_event(&mut actor, supervision_event).await {
@@ -1838,7 +1849,7 @@ impl PythonActor {
 
         // Spawn a child actor to await the Python handler method.
         tokio::spawn(handle_async_endpoint_panic(
-            cx.signal_sender(),
+            cx.forced_exit_sender(),
             PythonTask::new(future)?,
             receiver,
             cx.self_addr().to_string(),
@@ -2051,7 +2062,7 @@ impl Handler<MeshFailure> for PythonActor {
 }
 
 async fn handle_async_endpoint_panic(
-    panic_sender: mpsc::UnboundedSender<Signal>,
+    panic_sender: mpsc::UnboundedSender<ForcedExit>,
     task: PythonTask,
     side_channel: oneshot::Receiver<Py<PyAny>>,
     actor_id: String,
@@ -2114,7 +2125,10 @@ async fn handle_async_endpoint_panic(
     if let Some(panic) = panic {
         // Record error and panic metrics
         ENDPOINT_ACTOR_ERROR.add(1, attributes);
-        if panic_sender.send(Signal::Kill(panic.to_string())).is_err() {
+        if panic_sender
+            .send(ForcedExit::Abort(panic.to_string()))
+            .is_err()
+        {
             tracing::warn!("dropped panic signal: actor already stopped: {panic}");
         }
     }
