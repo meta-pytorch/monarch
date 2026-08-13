@@ -84,6 +84,16 @@ pub enum StopMode {
 }
 wirevalue::register_type!(StopMode);
 
+/// The runtime behavior requested by an actor after its stop hook returns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StopProgress {
+    /// Finish with the original stop reason. The runtime forcefully tears down
+    /// any children that remain linked.
+    Complete,
+    /// Continue processing ordinary work and lifecycle events until the actor exits.
+    Continue,
+}
+
 /// An Actor is an independent, asynchronous thread of execution. Each
 /// actor instance has a mailbox, whose messages are delivered through
 /// the method [`Actor::handle`].
@@ -104,19 +114,26 @@ pub trait Actor: Sized + Send + 'static {
 
     /// Handle a stop request from the runtime.
     ///
-    /// The default implementation closes handler ingress and then
-    /// either exits immediately or queues an exit after already
-    /// accepted handler work drains. Actors that need to coordinate
-    /// asynchronous shutdown work can override this method and call
-    /// `Instance::exit()` / `Instance::exit_after_drain()` later,
-    /// once they are ready to terminate.
+    /// The default implementation closes handler ingress, propagates the stop
+    /// mode to direct children, and asks the runtime to finish after they stop.
+    /// Actors that need to coordinate asynchronous shutdown can return
+    /// [`StopProgress::Continue`] and call [`Instance::exit`] when finished.
+    /// [`Instance::kill`] cancels an in-progress stop hook.
+    ///
+    /// While this hook runs, the actor loop services signals but not ordinary
+    /// work, so awaiting anything delivered through handler dispatch blocks
+    /// until [`Instance::kill`]. Coordinate through ports, or return
+    /// [`StopProgress::Continue`] and finish the work in handlers.
+    ///
+    /// Once the hook has run, further `Stop` and `DrainAndStop` requests are
+    /// ignored; [`Instance::kill`] is the escalation path.
     async fn handle_stop(
         &mut self,
         this: &Instance<Self>,
         mode: StopMode,
         reason: &str,
-    ) -> Result<(), anyhow::Error> {
-        handle_stop(this, mode, reason)
+    ) -> Result<StopProgress, anyhow::Error> {
+        handle_stop(this, mode, reason).await
     }
 
     /// Cleanup things used by this actor before shutting down. Notably this function
@@ -302,18 +319,37 @@ pub fn handle_expired_delivery<A: Actor>(
 /// Default implementation of [`Actor::handle_stop`]. Defined as a free
 /// function so that `Actor` implementations that override
 /// [`Actor::handle_stop`] can fall back to this default.
-pub fn handle_stop<A: Actor>(
+///
+/// This closes handler ingress, forwards the original mode and reason to direct
+/// children in creation order, and waits for each to reach a terminal status.
+pub async fn handle_stop<A: Actor>(
     this: &Instance<A>,
     mode: StopMode,
     reason: &str,
-) -> Result<(), anyhow::Error> {
-    // After `close`, no more messages may be enqueued.
-    // exit_after_drain will drain any pending messages before exiting.
+) -> Result<StopProgress, anyhow::Error> {
     this.close();
-    match mode {
-        StopMode::Stop => this.exit(reason).map_err(anyhow::Error::from),
-        StopMode::DrainAndStop => this.exit_after_drain(reason).map_err(anyhow::Error::from),
+    let children = this.children();
+    for child in &children {
+        let result = match mode {
+            StopMode::Stop => child.stop(reason),
+            StopMode::DrainAndStop => child.drain_and_stop(reason),
+        };
+        if let Err(err) = result {
+            tracing::debug!(
+                actor_id = %this.self_addr(),
+                child_id = %child.actor_id(),
+                "child already stopped during parent shutdown: {}",
+                err,
+            );
+        }
     }
+    for child in &children {
+        // A child that never terminates holds this hook open until `Kill`;
+        // the caller owns that deadline.
+        let _ = child.status().wait_for(ActorStatus::is_terminal).await;
+    }
+
+    Ok(StopProgress::Complete)
 }
 
 /// An actor that does nothing. It is used to represent "client only" actors,
@@ -1065,6 +1101,11 @@ pub struct AnyActorHandle {
 }
 
 impl AnyActorHandle {
+    /// Create a lifecycle-only handle without changing supervision ownership.
+    pub(crate) fn new(cell: InstanceCell) -> Self {
+        Self { cell }
+    }
+
     /// The [`ActorAddr`] of the actor represented by this handle.
     pub fn actor_id(&self) -> &ActorAddr {
         self.cell.actor_addr()

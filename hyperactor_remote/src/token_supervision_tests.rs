@@ -20,6 +20,7 @@ use hyperactor::PortHandle;
 use hyperactor::Proc;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::StopMode;
+use hyperactor::actor::StopProgress;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::mailbox::PortReceiver;
@@ -187,16 +188,12 @@ impl Actor for SupervisedChild {
     async fn handle_stop(
         &mut self,
         this: &Instance<Self>,
-        mode: StopMode,
+        _mode: StopMode,
         reason: &str,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<StopProgress> {
         self.stopped.post(this, reason.to_string());
         this.close();
-        match mode {
-            StopMode::Stop => this.exit(reason)?,
-            StopMode::DrainAndStop => this.exit_after_drain(reason)?,
-        }
-        Ok(())
+        Ok(StopProgress::Complete)
     }
 }
 
@@ -397,7 +394,7 @@ async fn test_token_join_parent_exit_stops_child_first() -> anyhow::Result<()> {
         .post(&harness.observer, ParentControl::Exit(StopMode::Stop));
 
     let reason = recv(&mut harness.child_stopped_rx).await?;
-    assert_eq!(reason, "parent stopping");
+    assert_eq!(reason, "parent requested stop");
     harness.stop().await?;
     Ok(())
 }
@@ -412,7 +409,7 @@ async fn test_token_join_parent_exit_drain_and_stops_child_first() -> anyhow::Re
     );
 
     let reason = recv(&mut harness.child_stopped_rx).await?;
-    assert_eq!(reason, "parent draining");
+    assert_eq!(reason, "parent requested drain and stop");
     harness.stop().await?;
     Ok(())
 }
