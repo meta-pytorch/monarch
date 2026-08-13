@@ -145,9 +145,8 @@ pub trait Actor: Sized + Send + 'static {
     /// as an ActorError.
     /// This function is not called if there is a panic in the actor, as the
     /// actor may be in an indeterminate state. It is also not called if the
-    /// actor is stopped with [`Instance::kill`] or if the process is killed. If
-    /// [`Instance::kill`] is called while cleanup is running, the cleanup future
-    /// is cancelled.
+    /// actor is killed, aborted by the runtime, or its process terminates. A
+    /// `Kill` or Abort request that arrives during cleanup cancels its future.
     async fn cleanup(
         &mut self,
         _this: &Instance<Self>,
@@ -767,11 +766,6 @@ pub enum Signal {
 
     /// Exit the actor loop with the provided stop reason.
     ExitRequested(String),
-
-    /// Kill the actor. This will exit the actor loop with an error,
-    /// causing a supervision event to propagate up the supervision
-    /// hierarchy.
-    Kill(String),
 }
 
 impl fmt::Display for Signal {
@@ -780,7 +774,6 @@ impl fmt::Display for Signal {
             Signal::DrainAndStop(reason) => write!(f, "DrainAndStop({})", reason),
             Signal::Stop(reason) => write!(f, "Stop({})", reason),
             Signal::ExitRequested(reason) => write!(f, "ExitRequested({})", reason),
-            Signal::Kill(reason) => write!(f, "Kill({})", reason),
         }
     }
 }
@@ -992,7 +985,7 @@ impl<A: Actor> ActorHandle<A> {
     /// Signal the actor to terminate immediately.
     pub fn kill(&self, reason: &str) -> Result<(), ActorError> {
         tracing::info!("actor handle kill called: {}", self.actor_addr());
-        self.cell.signal(Signal::Kill(reason.to_string()))
+        self.cell.kill(reason.to_string())
     }
 
     /// A watch that observes the lifecycle state of the actor.
@@ -1123,7 +1116,7 @@ impl AnyActorHandle {
 
     /// Signal the actor to terminate immediately.
     pub fn kill(&self, reason: &str) -> Result<(), ActorError> {
-        self.cell.signal(Signal::Kill(reason.to_string()))
+        self.cell.kill(reason.to_string())
     }
 
     /// A watch that observes the lifecycle state of the actor.

@@ -505,6 +505,7 @@ async fn bootstrap_host() -> GlobalState {
         handle,
         supervision,
         signal,
+        forced_exit: _,
         work,
     } = actor_instance;
 
