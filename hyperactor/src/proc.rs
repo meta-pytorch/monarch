@@ -3150,33 +3150,14 @@ impl<A: Actor> Instance<A> {
         // Deliver the supervision event to the parent/proc BEFORE
         // change_status so that any observer waiting for this actor's
         // terminal state can only see it once the event has been
-        // enqueued at its destination.
-        if let Some(parent) = self.inner.cell.maybe_unlink_parent() {
-            if let Some(event) = event_to_deliver {
-                // Parent exists, failure should be propagated to the parent.
-                parent.send_supervision_event_or_crash(event);
-            }
-            // TODO: we should get rid of this signal, and use *only* supervision events for
-            // the purpose of conveying lifecycle changes
-            if let Err(err) = parent.signal(Signal::ChildStopped(self.inner.cell.uid().clone())) {
-                tracing::error!(
-                    "{}: failed to send stop message to parent uid {}: {:?}",
-                    self.self_addr(),
-                    parent.uid(),
-                    err
-                );
-            }
-        } else {
-            // Failure happened to the root actor or orphaned child actors.
-            // In either case, the failure should be propagated to proc.
-            //
-            // Note that orphaned actor is unexpected and would only happen if
-            // there is a bug.
-            if let Some(event) = event_to_deliver {
-                self.inner
-                    .proc
-                    .handle_unhandled_supervision_event(&self, event);
-            }
+        // enqueued at its destination. A returned event had no owning parent
+        // — the root actor, or an orphaned child, which would be a bug.
+        if let Some(event) = event_to_deliver
+            && let Some(event) = self.inner.cell.try_handle_completion_event(event)
+        {
+            self.inner
+                .proc
+                .handle_unhandled_supervision_event(&self, event);
         }
 
         self.stop_introspect(terminal_status.clone()).await;
@@ -3255,18 +3236,18 @@ impl<A: Actor> Instance<A> {
             self.inner.cell.unlink(&child);
         }
 
-        let (mut signal_receiver, _) = actor_loop_receivers;
+        let (_, mut supervision_event_receiver) = actor_loop_receivers;
         while self.inner.cell.child_count() > 0 {
-            match tokio::time::timeout(Duration::from_millis(500), signal_receiver.recv()).await {
-                Ok(Some(Signal::ChildStopped(uid))) => {
-                    assert!(self.inner.cell.get_child(&uid).is_none());
-                }
-                // Drain only tracks child termination; other signals are
-                // intentionally swallowed here.
+            match tokio::time::timeout(
+                Duration::from_millis(500),
+                supervision_event_receiver.recv(),
+            )
+            .await
+            {
                 Ok(Some(_)) => {}
                 Ok(None) => {
-                    // Signal channel closed: no further ChildStopped will
-                    // arrive, so we can no longer track child termination.
+                    // The supervision channel closed, so no further child
+                    // completion events can arrive.
                     // Drop remaining links and exit the drain loop, mirroring
                     // the timeout branch below.
                     self.inner.cell.unlink_all();
@@ -3274,7 +3255,7 @@ impl<A: Actor> Instance<A> {
                 }
                 Err(_) => {
                     tracing::warn!(
-                        "timeout waiting for ChildStopped signal from child on actor: {}, ignoring",
+                        "timeout waiting for child supervision event on actor: {}, ignoring",
                         self.self_addr()
                     );
                     // No more waiting to receive messages. Unlink all remaining
@@ -3381,9 +3362,6 @@ impl<A: Actor> Instance<A> {
                                 .with_current(actor.handle_stop(self, StopMode::DrainAndStop, &reason))
                                 .await
                                 .map_err(|err| ActorError::new(self.self_addr(), ActorErrorKind::processing(err)))?;
-                        },
-                        Signal::ChildStopped(uid) => {
-                            assert!(self.inner.cell.get_child(&uid).is_none());
                         },
                         Signal::ExitRequested(reason) => {
                             break 'messages reason;
@@ -4124,6 +4102,28 @@ impl SupervisionLink {
 }
 
 impl InstanceCellState {
+    /// Deliver this instance's terminal event to its supervising actor, then
+    /// unlink. Returns the event if there is no owning parent to take it.
+    ///
+    /// The parent's completion barrier is `child_count()`, so unlinking first
+    /// would let the parent finish before the event is enqueued.
+    fn try_handle_completion_event(
+        &self,
+        event: ActorSupervisionEvent,
+    ) -> Option<ActorSupervisionEvent> {
+        let Some(parent) = self.supervision_link.parent() else {
+            return Some(event);
+        };
+        let Some(child_entry) = parent.inner.children.get(self.actor_id.uid()) else {
+            return Some(event);
+        };
+
+        parent.send_supervision_event_or_crash(event);
+        drop(child_entry);
+        parent.inner.unlink(self);
+        None
+    }
+
     /// Unlink this instance from its parent, if it has one. If it was unlinked,
     /// the parent is returned.
     fn maybe_unlink_parent(&self) -> Option<InstanceCell> {
@@ -4555,10 +4555,11 @@ impl InstanceCell {
         }
     }
 
-    /// Unlink this instance from its parent, if it has one. If it was unlinked,
-    /// the parent is returned.
-    fn maybe_unlink_parent(&self) -> Option<InstanceCell> {
-        self.inner.maybe_unlink_parent()
+    fn try_handle_completion_event(
+        &self,
+        event: ActorSupervisionEvent,
+    ) -> Option<ActorSupervisionEvent> {
+        self.inner.try_handle_completion_event(event)
     }
 
     /// Return an iterator over this instance's children. This may deadlock if the
@@ -4581,7 +4582,7 @@ impl InstanceCell {
             .collect()
     }
 
-    /// Get a child by its uid.
+    #[cfg(test)]
     fn get_child(&self, uid: &crate::id::Uid) -> Option<InstanceCell> {
         self.inner.children.get(uid).map(|child| child.clone())
     }
