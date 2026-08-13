@@ -198,14 +198,33 @@ impl IbvQueuePair {
             }
 
             if config.use_gpu_direct {
-                let ret = rdmaxcel_sys::register_cuda_memory(dv_qp, dv_recv_cq, dv_send_cq);
-                if ret != 0 {
+                // GPU-Direct doorbell registration (register_cuda_memory) is part
+                // of kernel-launched RDMA and only exists in the `cuda` feature
+                // build; without it the QP/CQ control structures are never mapped
+                // into GPU address space. CPU-initiated RDMA does not use this
+                // path. Fail cleanly (rather than link-error) when the feature is
+                // off and a caller still requests GPU Direct.
+                #[cfg(feature = "cuda")]
+                {
+                    let ret = rdmaxcel_sys::register_cuda_memory(dv_qp, dv_recv_cq, dv_send_cq);
+                    if ret != 0 {
+                        rdmaxcel_sys::ibv_destroy_cq((*(*qp).ibv_qp).recv_cq);
+                        rdmaxcel_sys::ibv_destroy_cq((*(*qp).ibv_qp).send_cq);
+                        rdmaxcel_sys::ibv_destroy_qp((*qp).ibv_qp);
+                        return Err(anyhow::anyhow!(
+                            "failed to register GPU Direct RDMA memory: {:?}",
+                            ret
+                        ));
+                    }
+                }
+                #[cfg(not(feature = "cuda"))]
+                {
                     rdmaxcel_sys::ibv_destroy_cq((*(*qp).ibv_qp).recv_cq);
                     rdmaxcel_sys::ibv_destroy_cq((*(*qp).ibv_qp).send_cq);
                     rdmaxcel_sys::ibv_destroy_qp((*qp).ibv_qp);
                     return Err(anyhow::anyhow!(
-                        "failed to register GPU Direct RDMA memory: {:?}",
-                        ret
+                        "use_gpu_direct requires building monarch_rdma with the \
+                         `cuda` feature (kernel-launched RDMA)"
                     ));
                 }
             }

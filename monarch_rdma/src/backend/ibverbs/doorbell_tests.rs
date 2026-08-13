@@ -131,6 +131,8 @@ mod tests {
         Ok(())
     }
 
+    // GPU-driven doorbell (kernel-launched RDMA) — only built with the `cuda` feature.
+    #[cfg(feature = "cuda")]
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_rdma_write_separate_devices_db_device_trigger() -> Result<(), anyhow::Error> {
         if is_cpu_only_mode() {
@@ -160,6 +162,8 @@ mod tests {
         Ok(())
     }
 
+    // GPU-driven doorbell (kernel-launched RDMA) — only built with the `cuda` feature.
+    #[cfg(feature = "cuda")]
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_rdma_read_separate_devices_db_device_trigger() -> Result<(), anyhow::Error> {
         if std::env::var("MONARCH_RDMA_RUN_ISOLATED").is_err() {
@@ -192,6 +196,8 @@ mod tests {
         Ok(())
     }
 
+    // GPU-driven doorbell (kernel-launched RDMA) — only built with the `cuda` feature.
+    #[cfg(feature = "cuda")]
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_rdma_write_recv_separate_devices_db_trigger() -> Result<(), anyhow::Error> {
         if std::env::var("MONARCH_RDMA_RUN_ISOLATED").is_err() {
