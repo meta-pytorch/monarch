@@ -829,8 +829,8 @@ impl fmt::Display for HandlerInfo {
 pub enum ActorStoppingReason {
     /// The actor is stopping through the normal cooperative shutdown path.
     Requested,
-    /// The actor did not respond to hard kill, and teardown stopped waiting on
-    /// it normally.
+    /// The actor was detached from its parent during forced tree teardown and
+    /// has not yet published its terminal status.
     Zombie(String),
 }
 

@@ -1295,12 +1295,16 @@ impl Proc {
 
         instance.spawn_detached_introspect(receivers.introspect);
 
-        let (signal_rx, supervision_rx) = receivers.actor_loop.unwrap();
+        let ActorLoopReceivers {
+            signal,
+            supervision,
+            ..
+        } = receivers.actor_loop.unwrap();
         Ok(ActorInstance {
             instance,
             handle,
-            supervision: supervision_rx,
-            signal: signal_rx,
+            supervision,
+            signal,
             work: receivers.work,
         })
     }
@@ -1494,10 +1498,18 @@ impl Proc {
         self.spawn_inner(actor_id, actor, Some(parent), environment)
     }
 
-    /// Call `abort` on the `JoinHandle` associated with the given
-    /// root actor. If successful return `Some(root.clone())` else
-    /// `None`.
-    pub fn abort_root_actor(&self, root: &ActorId) -> Option<impl Future<Output = ActorAddr>> {
+    /// Abort a root actor while preserving runtime finalization.
+    ///
+    /// This cancels actor execution, including an in-progress handler or
+    /// cleanup future, but keeps the serving task alive to publish terminal
+    /// status, route supervision, and stop introspection. It does not call
+    /// [`JoinHandle::abort`], which would cancel those runtime responsibilities
+    /// together with actor execution.
+    pub(crate) fn abort_root_actor(
+        &self,
+        root: &ActorId,
+        reason: String,
+    ) -> Option<impl Future<Output = ActorAddr>> {
         self.state()
             .instances
             .get(root)
@@ -1505,20 +1517,23 @@ impl Proc {
             .flat_map(|entry| entry.value().upgrade())
             .map(|cell| {
                 let actor_addr = cell.actor_addr().clone();
-                let r1 = actor_addr.clone();
-                let r2 = actor_addr;
-                // `Instance::start()` is infallible and should
-                // complete quickly, so calling `wait()` on `actor_task_handle`
-                // should be safe (i.e., not hang forever).
+                let mut status = cell.status().clone();
+                let reason = reason.clone();
                 async move {
-                    tokio::task::spawn_blocking(move || {
-                        let h = cell.inner.actor_task_handle.wait();
-                        tracing::debug!("{}: aborting {:?}", r1, h);
-                        h.abort();
-                    })
-                    .await
-                    .unwrap();
-                    r2
+                    if !status.borrow().is_terminal() {
+                        if let Err(err) = cell.abort(reason) {
+                            tracing::debug!(
+                                actor_id = %actor_addr,
+                                "actor already stopped during Abort escalation: {}",
+                                err,
+                            );
+                        }
+                        status
+                            .wait_for(ActorStatus::is_terminal)
+                            .await
+                            .expect("aborted actor should publish terminal status");
+                    }
+                    actor_addr
                 }
             })
             .next()
@@ -1618,7 +1633,7 @@ impl Proc {
             .iter()
             .filter(|(actor_id, _)| !stopped_actors.contains(actor_id))
             .map(|(actor_id, _)| {
-                let f = self.abort_root_actor(actor_id.id());
+                let f = self.abort_root_actor(actor_id.id(), reason.to_string());
                 async move {
                     let _ = if let Some(f) = f { Some(f.await) } else { None };
                     // If `is_none(&_)` then the associated actor's
@@ -1646,7 +1661,7 @@ impl Proc {
             if stopped {
                 stopped_actors.push(coord_id.clone());
             } else {
-                if let Some(f) = self.abort_root_actor(coord_id.id()) {
+                if let Some(f) = self.abort_root_actor(coord_id.id(), reason.to_string()) {
                     f.await;
                 }
                 aborted_actors.push(coord_id.clone());
@@ -2121,6 +2136,11 @@ enum StopOutcome {
     Continue,
 }
 
+enum ActorExecutionOutcome {
+    Completed(Result<String, ActorError>),
+    Aborted(String),
+}
+
 type DelayedPost<A> = Box<dyn FnOnce(&Instance<A>) + Send>;
 
 trait PostAfterEndpoint<A: Actor, M: Message>: Send {
@@ -2450,14 +2470,23 @@ impl<A: Actor> Drop for InstanceState<A> {
 pub struct InstanceReceivers<A: Actor> {
     /// Signal and supervision receivers for the actor loop. `None`
     /// for detached/client instances that don't run an actor loop.
-    actor_loop: Option<(
-        mpsc::UnboundedReceiver<Signal>,
-        mpsc::UnboundedReceiver<ActorSupervisionEvent>,
-    )>,
+    actor_loop: Option<ActorLoopReceivers>,
     /// Work queue for dispatching messages to actor handlers.
     work: ActorWorkReceiver<A>,
     /// Introspect message receiver for the dedicated introspect task.
     introspect: PortReceiver<IntrospectMessage>,
+}
+
+struct ActorLoopSenders {
+    signal: mpsc::UnboundedSender<Signal>,
+    supervision: mpsc::UnboundedSender<ActorSupervisionEvent>,
+    abort: mpsc::UnboundedSender<String>,
+}
+
+struct ActorLoopReceivers {
+    signal: mpsc::UnboundedReceiver<Signal>,
+    supervision: mpsc::UnboundedReceiver<ActorSupervisionEvent>,
+    abort: mpsc::UnboundedReceiver<String>,
 }
 
 impl<A: Actor> Instance<A> {
@@ -2501,9 +2530,18 @@ impl<A: Actor> Instance<A> {
             let (signal_tx, signal_receiver) = mpsc::unbounded_channel::<Signal>();
             let (supervision_tx, supervision_receiver) =
                 mpsc::unbounded_channel::<ActorSupervisionEvent>();
+            let (abort_tx, abort_receiver) = mpsc::unbounded_channel::<String>();
             Some((
-                (signal_tx, supervision_tx),
-                (signal_receiver, supervision_receiver),
+                ActorLoopSenders {
+                    signal: signal_tx,
+                    supervision: supervision_tx,
+                    abort: abort_tx,
+                },
+                ActorLoopReceivers {
+                    signal: signal_receiver,
+                    supervision: supervision_receiver,
+                    abort: abort_receiver,
+                },
             ))
         };
 
@@ -3089,13 +3127,18 @@ impl<A: Actor> Instance<A> {
         // actor loop never sees IntrospectMessage.
         self.spawn_introspect(receivers.introspect);
 
-        let actor_loop_receivers = receivers
+        let ActorLoopReceivers {
+            signal,
+            supervision,
+            abort,
+        } = receivers
             .actor_loop
             .expect("non-detached instance must have actor loop receivers");
         let actor_task_handle = A::spawn_server_task(
             panic_handler::with_backtrace_tracking(self.serve(
                 actor,
-                actor_loop_receivers,
+                (signal, supervision),
+                abort,
                 receivers.work,
             ))
             .instrument(Span::current()),
@@ -3113,15 +3156,40 @@ impl<A: Actor> Instance<A> {
     async fn serve(
         mut self,
         mut actor: A,
-        actor_loop_receivers: (
+        mut actor_loop_receivers: (
             mpsc::UnboundedReceiver<Signal>,
             mpsc::UnboundedReceiver<ActorSupervisionEvent>,
         ),
+        mut abort_receiver: mpsc::UnboundedReceiver<String>,
         mut work_rx: ActorWorkReceiver<A>,
     ) {
-        let result = self
-            .run_actor_tree(&mut actor, actor_loop_receivers, &mut work_rx)
-            .await;
+        let outcome = {
+            let run_actor_tree =
+                self.run_actor_tree(&mut actor, &mut actor_loop_receivers, &mut work_rx);
+            tokio::pin!(run_actor_tree);
+            tokio::select! {
+                biased;
+                // An Abort accepted before actor execution completes owns the
+                // terminal outcome, even if both branches become ready together.
+                reason = abort_receiver.recv() => {
+                    ActorExecutionOutcome::Aborted(
+                        reason.expect("abort sender should outlive actor execution"),
+                    )
+                }
+                result = &mut run_actor_tree => ActorExecutionOutcome::Completed(result),
+            }
+        };
+        let result = match outcome {
+            ActorExecutionOutcome::Completed(result) => result,
+            ActorExecutionOutcome::Aborted(reason) => {
+                let result = Err(ActorError::new(
+                    self.self_addr(),
+                    ActorErrorKind::Aborted(reason),
+                ));
+                self.begin_actor_teardown(&result);
+                result
+            }
+        };
 
         assert!(self.is_stopping());
         // Compute the terminal status and supervision event, but defer
@@ -3160,8 +3228,11 @@ impl<A: Actor> Instance<A> {
                     .with_local_fence(local_fence);
                     (status, Some(event))
                 }
-                _ => {
-                    let error_kind = ActorErrorKind::Generic(err.kind.to_string());
+                error_kind => {
+                    let error_kind = match error_kind {
+                        error_kind @ ActorErrorKind::Aborted(_) => error_kind,
+                        error_kind => ActorErrorKind::Generic(error_kind.to_string()),
+                    };
                     let status = ActorStatus::Failed(error_kind);
                     let event = ActorSupervisionEvent::new(
                         self.inner.cell.actor_addr().clone(),
@@ -3227,13 +3298,31 @@ impl<A: Actor> Instance<A> {
         }
     }
 
+    fn begin_actor_teardown(&self, result: &Result<String, ActorError>) {
+        assert!(!self.is_terminal());
+        // `Zombie` is an out-of-band teardown verdict. Preserve it until the actor task
+        // publishes its true terminal status.
+        if !self.inner.cell.status().borrow().is_zombie() {
+            self.change_status(ActorStatus::stopping());
+        }
+        if let Err(err) = result {
+            tracing::error!("{}: actor failure: {}", self.self_addr(), err);
+        }
+
+        let teardown_reason = match result {
+            Ok(reason) => format!("parent exited: {reason}"),
+            Err(err) => format!("parent failed: {err}"),
+        };
+        self.kill_residual_children(&teardown_reason);
+    }
+
     /// Runs the actor and initiates teardown of its supervision tree. On success,
     /// returns the reason why the actor stopped. On failure, returns the error that
     /// caused the failure after transferring residual children to the proc.
     async fn run_actor_tree(
         &mut self,
         actor: &mut A,
-        mut actor_loop_receivers: (
+        actor_loop_receivers: &mut (
             mpsc::UnboundedReceiver<Signal>,
             mpsc::UnboundedReceiver<ActorSupervisionEvent>,
         ),
@@ -3245,7 +3334,7 @@ impl<A: Actor> Instance<A> {
         // What we do here is just to catch it early so we can handle it.
 
         let mut did_panic = false;
-        let result = match AssertUnwindSafe(self.run(actor, &mut actor_loop_receivers, work_rx))
+        let result = match AssertUnwindSafe(self.run(actor, actor_loop_receivers, work_rx))
             .catch_unwind()
             .await
         {
@@ -3262,21 +3351,7 @@ impl<A: Actor> Instance<A> {
             }
         };
 
-        assert!(!self.is_terminal());
-        // `Zombie` is an out-of-band teardown verdict. Preserve it until the actor task
-        // publishes its true terminal status.
-        if !self.inner.cell.status().borrow().is_zombie() {
-            self.change_status(ActorStatus::stopping());
-        }
-        if let Err(err) = &result {
-            tracing::error!("{}: actor failure: {}", self.self_addr(), err);
-        }
-
-        let teardown_reason = match &result {
-            Ok(reason) => format!("parent exited: {reason}"),
-            Err(err) => format!("parent failed: {err}"),
-        };
-        self.kill_residual_children(&teardown_reason);
+        self.begin_actor_teardown(&result);
         let was_killed = result
             .as_ref()
             .is_err_and(|err| matches!(err.kind.as_ref(), ActorErrorKind::Aborted(_)));
@@ -4126,10 +4201,7 @@ struct InstanceCellState {
     mailbox: Mailbox,
 
     /// Control plane message senders to the actor loop, if one is running.
-    actor_loop: Option<(
-        mpsc::UnboundedSender<Signal>,
-        mpsc::UnboundedSender<ActorSupervisionEvent>,
-    )>,
+    actor_loop: Option<ActorLoopSenders>,
 
     /// A watch for communicating the actor's state.
     status_tx: watch::Sender<ActorStatus>,
@@ -4406,10 +4478,7 @@ impl InstanceCell {
         actor_environment: ActorEnvironment,
         proc: Proc,
         mailbox: Mailbox,
-        actor_loop: Option<(
-            mpsc::UnboundedSender<Signal>,
-            mpsc::UnboundedSender<ActorSupervisionEvent>,
-        )>,
+        actor_loop: Option<ActorLoopSenders>,
         status_tx: watch::Sender<ActorStatus>,
         status: watch::Receiver<ActorStatus>,
         parent: Option<InstanceCell>,
@@ -4649,14 +4718,14 @@ impl InstanceCell {
         self.inner
             .actor_loop
             .as_ref()
-            .map(|(signal_tx, _)| signal_tx.clone())
+            .map(|actor_loop| actor_loop.signal.clone())
             .unwrap_or_else(|| panic!("{} has no runtime signal sender", self.actor_addr()))
     }
 
     /// Send a signal to the actor.
     pub fn signal(&self, signal: Signal) -> Result<(), ActorError> {
-        if let Some((signal_tx, _)) = &self.inner.actor_loop {
-            signal_tx.send(signal).map_err(|_| {
+        if let Some(actor_loop) = &self.inner.actor_loop {
+            actor_loop.signal.send(signal).map_err(|_| {
                 ActorError::new(self.actor_addr(), ActorErrorKind::SignalChannelClosed)
             })
         } else {
@@ -4669,6 +4738,23 @@ impl InstanceCell {
         }
     }
 
+    /// Cancel actor execution while preserving runtime-owned finalization.
+    ///
+    /// Unlike [`Signal::Kill`], this request is observed outside the ordinary
+    /// actor loop. Unlike [`JoinHandle::abort`], it leaves `Instance::serve`
+    /// running so terminal status, supervision, and introspection are finalized.
+    fn abort(&self, reason: String) -> Result<(), ActorError> {
+        let actor_loop = self
+            .inner
+            .actor_loop
+            .as_ref()
+            .unwrap_or_else(|| panic!("{} has no actor runtime", self.actor_addr()));
+        actor_loop
+            .abort
+            .send(reason)
+            .map_err(|_| ActorError::new(self.actor_addr(), ActorErrorKind::SignalChannelClosed))
+    }
+
     /// Used by this actor's children to send a supervision event to this actor.
     /// When it fails to send, we will crash the process. As part of the crash,
     /// all the procs and actors running on this process will be terminated
@@ -4679,8 +4765,8 @@ impl InstanceCell {
     /// detect and handle crashes.
     pub fn send_supervision_event_or_crash(&self, event: ActorSupervisionEvent) {
         match &self.inner.actor_loop {
-            Some((_, supervision_tx)) => {
-                if let Err(err) = supervision_tx.send(event.clone()) {
+            Some(actor_loop) => {
+                if let Err(err) = actor_loop.supervision.send(event.clone()) {
                     if !event.is_error() {
                         // Normal lifecycle events (e.g. clean stop) that fail to
                         // send are silently dropped. This happens when a child
@@ -7154,8 +7240,7 @@ mod tests {
 
         assert_matches!(
             parent.await,
-            ActorStatus::Failed(ActorErrorKind::Generic(reason))
-                if reason == "actor explicitly aborted due to: kill"
+            ActorStatus::Failed(ActorErrorKind::Aborted(reason)) if reason == "kill"
         );
         child_cell
             .status()
@@ -7170,8 +7255,7 @@ mod tests {
         release.send(()).unwrap();
         assert_matches!(
             child.await,
-            ActorStatus::Failed(ActorErrorKind::Generic(reason))
-                if reason.contains("parent failed")
+            ActorStatus::Failed(ActorErrorKind::Aborted(reason)) if reason.contains("parent failed")
         );
     }
 
@@ -7226,8 +7310,7 @@ mod tests {
 
         assert_matches!(
             actor.await,
-            ActorStatus::Failed(ActorErrorKind::Generic(reason))
-                if reason == "actor explicitly aborted due to: kill"
+            ActorStatus::Failed(ActorErrorKind::Aborted(reason)) if reason == "kill"
         );
     }
 
@@ -7280,8 +7363,7 @@ mod tests {
 
         assert_matches!(
             child.await,
-            ActorStatus::Failed(ActorErrorKind::Generic(reason))
-                if reason.contains("parent failed")
+            ActorStatus::Failed(ActorErrorKind::Aborted(reason)) if reason.contains("parent failed")
         );
         assert_matches!(
             parent.await,
@@ -7351,8 +7433,7 @@ mod tests {
 
         assert_matches!(
             parent.await,
-            ActorStatus::Failed(ActorErrorKind::Generic(reason))
-                if reason == "actor explicitly aborted due to: kill"
+            ActorStatus::Failed(ActorErrorKind::Aborted(reason)) if reason == "kill"
         );
         child_cell
             .status()
@@ -7367,8 +7448,7 @@ mod tests {
         release.send(()).unwrap();
         assert_matches!(
             child.await,
-            ActorStatus::Failed(ActorErrorKind::Generic(reason))
-                if reason.contains("parent failed")
+            ActorStatus::Failed(ActorErrorKind::Aborted(reason)) if reason.contains("parent failed")
         );
     }
 
@@ -7393,8 +7473,7 @@ mod tests {
 
         assert_matches!(
             parent.await,
-            ActorStatus::Failed(ActorErrorKind::Generic(reason))
-                if reason == "actor explicitly aborted due to: kill"
+            ActorStatus::Failed(ActorErrorKind::Aborted(reason)) if reason == "kill"
         );
 
         // The blocked child cannot process `Kill`, so it never tears down its
@@ -7404,15 +7483,13 @@ mod tests {
         assert!(proc.root_actor_ids().contains(grandchild_cell.actor_addr()));
         assert_matches!(
             grandchild.await,
-            ActorStatus::Failed(ActorErrorKind::Generic(reason))
-                if reason.contains("parent failed")
+            ActorStatus::Failed(ActorErrorKind::Aborted(reason)) if reason.contains("parent failed")
         );
 
         release.send(()).unwrap();
         assert_matches!(
             child.await,
-            ActorStatus::Failed(ActorErrorKind::Generic(reason))
-                if reason.contains("parent failed")
+            ActorStatus::Failed(ActorErrorKind::Aborted(reason)) if reason.contains("parent failed")
         );
     }
 
@@ -7465,6 +7542,99 @@ mod tests {
         parent.drain_and_stop("test").unwrap();
         assert_matches!(child.await, ActorStatus::Stopped(reason) if reason == "test");
         assert_matches!(parent.await, ActorStatus::Stopped(reason) if reason == "test");
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn abort_keeps_supervision_receiver_open_until_children_detach() {
+        let proc = Proc::isolated();
+        let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
+        let parent = proc.spawn(TestActor);
+        let parent_cell = parent.cell().clone();
+        let child = proc.spawn_child(parent_cell.clone(), TestActor);
+        let child_cell = child.cell().clone();
+        let supervision_sender = parent_cell
+            .inner
+            .actor_loop
+            .as_ref()
+            .unwrap()
+            .supervision
+            .clone();
+
+        let locked_child = child_cell.clone();
+        let (locked_tx, locked_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        let lock_task = tokio::task::spawn_blocking(move || {
+            let _link = locked_child.inner.supervision_link.lock().unwrap();
+            locked_tx.send(()).unwrap();
+            release_rx.blocking_recv().unwrap();
+        });
+        locked_rx.await.unwrap();
+
+        parent_cell.abort("test abort".to_string()).unwrap();
+        parent
+            .status()
+            .wait_for(ActorStatus::is_stopping)
+            .await
+            .unwrap();
+
+        let event = ActorSupervisionEvent::new(
+            child_cell.actor_addr().clone(),
+            None,
+            ActorStatus::generic_failure("test child failure"),
+            None,
+        );
+        assert!(
+            supervision_sender.send(event).is_ok(),
+            "supervision receiver closed before child detachment"
+        );
+
+        release_tx.send(()).unwrap();
+        lock_task.await.unwrap();
+        assert_matches!(
+            parent.await,
+            ActorStatus::Failed(ActorErrorKind::Aborted(reason)) if reason == "test abort"
+        );
+        assert_matches!(
+            child.await,
+            ActorStatus::Failed(ActorErrorKind::Aborted(reason)) if reason.contains("parent failed")
+        );
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn abort_interrupts_blocked_handler_and_finalizes_actor() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let (mut reported_event, _coordinator) =
+            ProcSupervisionCoordinator::set(&proc).await.unwrap();
+        let actor = proc.spawn(TestActor);
+        let actor_addr = actor.actor_addr().clone();
+        let cell = actor.cell().clone();
+        let (entered_tx, entered_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        actor.post(&client, TestActorMessage::Wait(entered_tx, release_rx));
+        entered_rx.await.unwrap();
+
+        let aborted = proc
+            .abort_root_actor(actor_addr.id(), "test abort".to_string())
+            .expect("live root actor should accept abort")
+            .await;
+
+        assert_eq!(aborted, actor_addr);
+        let terminal_status = actor.await;
+        assert_matches!(
+            &terminal_status,
+            ActorStatus::Failed(ActorErrorKind::Aborted(reason))
+                if reason == "test abort"
+        );
+        assert!(
+            release_tx.send(()).is_err(),
+            "abort should cancel the ordinary handler future"
+        );
+        let event = cell
+            .supervision_event()
+            .expect("aborted actor should store a supervision event");
+        assert_eq!(event.actor_status, terminal_status);
+        assert_eq!(reported_event.recv().await, event);
     }
 
     #[derive(Debug)]
@@ -7532,8 +7702,7 @@ mod tests {
 
         assert_matches!(
             actor.await,
-            ActorStatus::Failed(ActorErrorKind::Generic(reason))
-                if reason == "actor explicitly aborted due to: kill"
+            ActorStatus::Failed(ActorErrorKind::Aborted(reason)) if reason == "kill"
         );
         assert!(cleaned_rx.await.is_err(), "cleanup ran after kill");
     }
@@ -7557,12 +7726,47 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(1), actor)
                 .await
                 .expect("kill should interrupt cleanup"),
-            ActorStatus::Failed(ActorErrorKind::Generic(reason))
-                if reason == "actor explicitly aborted due to: kill"
+            ActorStatus::Failed(ActorErrorKind::Aborted(reason)) if reason == "kill"
         );
         cleanup_dropped_rx
             .await
             .expect("cleanup future should be cancelled");
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn abort_interrupts_actor_cleanup_and_finalizes_actor() {
+        let proc = Proc::isolated();
+        let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
+        let (cleanup_started_tx, cleanup_started_rx) = oneshot::channel();
+        let (cleanup_dropped_tx, cleanup_dropped_rx) = oneshot::channel();
+        let actor = proc.spawn(BlockingCleanupActor {
+            cleanup_started: Some(cleanup_started_tx),
+            cleanup_dropped: Some(cleanup_dropped_tx),
+        });
+        let actor_addr = actor.actor_addr().clone();
+        let cell = actor.cell().clone();
+
+        actor.stop("stop").unwrap();
+        cleanup_started_rx.await.unwrap();
+        proc.abort_root_actor(actor_addr.id(), "test abort".to_string())
+            .expect("live root actor should accept abort")
+            .await;
+
+        cleanup_dropped_rx
+            .await
+            .expect("abort should cancel the cleanup future");
+        let terminal_status = actor.await;
+        assert_matches!(
+            &terminal_status,
+            ActorStatus::Failed(ActorErrorKind::Aborted(reason))
+                if reason == "test abort"
+        );
+        assert_eq!(
+            cell.supervision_event()
+                .expect("aborted actor should store a supervision event")
+                .actor_status,
+            terminal_status
+        );
     }
 
     #[derive(Debug)]
@@ -7610,7 +7814,7 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(1), actor)
                 .await
                 .expect("kill should interrupt cleanup"),
-            ActorStatus::Failed(ActorErrorKind::Generic(reason))
+            ActorStatus::Failed(ActorErrorKind::Aborted(reason))
                 if reason.contains("kill") && reason.contains("original failure")
         );
     }
@@ -7763,13 +7967,11 @@ mod tests {
         );
         assert_matches!(
             root_2_1.await,
-            ActorStatus::Failed(ActorErrorKind::Generic(reason))
-                if reason.contains("parent failed")
+            ActorStatus::Failed(ActorErrorKind::Aborted(reason)) if reason.contains("parent failed")
         );
         assert_matches!(
             root_1.await,
-            ActorStatus::Failed(ActorErrorKind::Generic(reason))
-                if reason.contains("parent failed")
+            ActorStatus::Failed(ActorErrorKind::Aborted(reason)) if reason.contains("parent failed")
         );
     }
 

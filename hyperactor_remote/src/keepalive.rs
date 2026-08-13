@@ -509,8 +509,8 @@ mod tests {
 
         assert!(matches!(
             event.actor_status,
-            ActorStatus::Failed(ActorErrorKind::Generic(ref reason))
-                if reason == "actor explicitly aborted due to: keepalive missed for generation 0"
+            ActorStatus::Failed(ActorErrorKind::Aborted(ref reason))
+                if reason == "keepalive missed for generation 0"
         ));
         assert!(!event.actor_id.is_root());
 
@@ -571,8 +571,8 @@ mod tests {
         assert_eq!(event.actor_id.uid(), &uid);
         assert!(matches!(
             event.actor_status,
-            ActorStatus::Failed(ActorErrorKind::Generic(ref reason))
-                if reason == "actor explicitly aborted due to: keepalive acknowledgment missed"
+            ActorStatus::Failed(ActorErrorKind::Aborted(ref reason))
+                if reason == "keepalive acknowledgment missed"
         ));
 
         parent.stop("test").unwrap();
