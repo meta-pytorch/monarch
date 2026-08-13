@@ -679,8 +679,8 @@ pub trait SingleTerminate: Send + Sync {
 /// all currently tracked children (polite stop → wait → forceful
 /// stop), returning a summary of outcomes. The exact stop/kill
 /// semantics are manager-specific: for example, an OS-process manager
-/// might send signals, while an in-process manager might drain/abort
-/// tasks.
+/// might send signals, while an in-process manager might drain and
+/// abort actor execution while preserving runtime finalization.
 #[async_trait::async_trait]
 pub trait BulkTerminate: Send + Sync {
     /// Gracefully terminate all known children.
@@ -835,10 +835,9 @@ impl<'a, H: ProcHandle> ReadyProc<'a, H> {
 ///   waits up to the deadline; managers that also own a child OS
 ///   process may escalate to `SIGKILL` if the proc does not exit in
 ///   time.
-/// - `kill()` requests an immediate, forced termination. For
-///    in-process procs, this may be implemented as an immediate
-///    drain/abort of actor tasks. For external procs, this is
-///    typically a `SIGKILL`.
+/// - `kill()` immediately requests forced termination. In-process
+///   procs ask the runtime to abort actor execution and wait for finalization.
+///   External procs typically receive `SIGKILL`.
 ///
 /// The shape of the terminal value is `Self::TerminalStatus`.
 /// Managers that track rich info (exit code, signal, address, agent)
@@ -911,10 +910,10 @@ pub trait ProcHandle: Clone + Send + Sync + 'static {
         reason: &str,
     ) -> Result<Self::TerminalStatus, TerminateError<Self::TerminalStatus>>;
 
-    /// Force the proc down immediately. For in-process managers this
-    /// may abort actor tasks; for external managers this typically
-    /// sends `SIGKILL`. Also idempotent/race-safe; the terminal
-    /// outcome is the one observed by `wait()`.
+    /// Force the proc down immediately. In-process managers ask the runtime to
+    /// abort actor execution and preserve finalization; external managers
+    /// typically send `SIGKILL`. Also idempotent/race-safe; the terminal outcome
+    /// is the one observed by `wait()`.
     async fn kill(&self) -> Result<Self::TerminalStatus, TerminateError<Self::TerminalStatus>>;
 }
 
@@ -981,7 +980,8 @@ pub enum LocalProcStatus {
 /// process to signal. Lifecycle is purely proc-level:
 /// - `terminate(timeout)`: delegates to
 ///   `Proc::destroy_and_wait(timeout)`, which drains and, at the
-///   deadline, aborts remaining actors.
+///   deadline, aborts remaining actor trees and waits for runtime
+///   finalization.
 /// - `kill()`: uses a zero deadline to emulate a forced stop via
 ///   `destroy_and_wait(Duration::ZERO)`.
 /// - `wait()`: trivial (no external lifecycle to observe).
@@ -1222,7 +1222,7 @@ impl<A: Actor + Referable> ProcHandle for LocalHandle<A> {
         };
 
         // Graceful stop of the *proc* (actors) with a deadline. This
-        // will drain and then abort remaining actors at expiry.
+        // will drain and then abort remaining actor trees at expiry.
         let _ = proc
             .destroy_and_wait(timeout, reason)
             .await
@@ -1232,8 +1232,8 @@ impl<A: Actor + Referable> ProcHandle for LocalHandle<A> {
     }
 
     async fn kill(&self) -> Result<(), TerminateError<Self::TerminalStatus>> {
-        // Forced stop == zero deadline; `destroy_and_wait` will
-        // immediately abort remaining actors and return.
+        // Forced stop == zero deadline; `destroy_and_wait` aborts
+        // remaining actor trees and waits for runtime finalization.
         let mut proc = {
             let guard = self.procs.lock().await;
             match guard.get(self.proc_addr()) {

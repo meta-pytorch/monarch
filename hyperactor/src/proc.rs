@@ -3209,7 +3209,13 @@ impl<A: Actor> Instance<A> {
                     ForcedExit::Abort(reason) => ActorErrorKind::Aborted(reason),
                 };
                 let result = Err(ActorError::new(self.self_addr(), error_kind));
-                self.begin_actor_teardown(&result);
+                let residual_statuses = self.begin_actor_teardown(&result);
+                for mut status in residual_statuses {
+                    status
+                        .wait_for(ActorStatus::is_terminal)
+                        .await
+                        .expect("aborted child should publish terminal status");
+                }
                 result
             }
         };
@@ -3292,9 +3298,9 @@ impl<A: Actor> Instance<A> {
         self.change_status(terminal_status);
     }
 
-    fn kill_residual_children(&self, reason: &str) {
+    fn abort_residual_children(&self, reason: &str) -> Vec<watch::Receiver<ActorStatus>> {
         // Detach the whole subtree, not just direct children: a child that
-        // never processes `Kill` would otherwise strand its own descendants
+        // never yields would otherwise strand its own descendants
         // under a zombie, where neither this parent nor the proc reaches them.
         //
         // Collecting first also keeps no child-map guard held while taking a
@@ -3306,13 +3312,23 @@ impl<A: Actor> Instance<A> {
                 children.push(cell.clone());
             }
         });
+        let mut detached = Vec::with_capacity(children.len());
         for child in children {
             if !child.detach_to_proc_as_zombie(format!(
                 "detached during forced parent teardown: {reason}"
             )) {
                 continue;
             }
+            detached.push(child);
+        }
+
+        let mut statuses = Vec::with_capacity(detached.len());
+        for child in detached {
+            let status = child.status().clone();
             if let Err(err) = child.abort(reason.to_string()) {
+                // The child may have completed actor execution after the subtree
+                // snapshot but before Abort delivery. Its serving envelope still
+                // publishes terminal state, which the caller waits for below.
                 tracing::debug!(
                     actor_id = %self.self_addr(),
                     child_id = %child.actor_addr(),
@@ -3320,10 +3336,15 @@ impl<A: Actor> Instance<A> {
                     err,
                 );
             }
+            statuses.push(status);
         }
+        statuses
     }
 
-    fn begin_actor_teardown(&self, result: &Result<String, ActorError>) {
+    fn begin_actor_teardown(
+        &self,
+        result: &Result<String, ActorError>,
+    ) -> Vec<watch::Receiver<ActorStatus>> {
         assert!(!self.is_terminal());
         // `Zombie` is an out-of-band teardown verdict. Preserve it until the actor task
         // publishes its true terminal status.
@@ -3338,7 +3359,7 @@ impl<A: Actor> Instance<A> {
             Ok(reason) => format!("parent exited: {reason}"),
             Err(err) => format!("parent failed: {err}"),
         };
-        self.kill_residual_children(&teardown_reason);
+        self.abort_residual_children(&teardown_reason)
     }
 
     /// Runs the actor and initiates teardown of its supervision tree. On success,
@@ -3376,7 +3397,7 @@ impl<A: Actor> Instance<A> {
             }
         };
 
-        self.begin_actor_teardown(&result);
+        let _ = self.begin_actor_teardown(&result);
         // Run the actor cleanup function before the actor stops to delete
         // resources. Don't call it if there was a panic, because the actor may
         // be in an invalid state and unable to access anything, for example
@@ -7224,7 +7245,10 @@ mod tests {
             child.await,
             ActorStatus::Failed(ActorErrorKind::Aborted(reason)) if reason.contains("parent failed")
         );
-        assert!(release.send(()).is_err(), "child handler should be aborted");
+        assert!(
+            release.send(()).is_err(),
+            "residual child handler should be aborted"
+        );
     }
 
     #[async_timed_test(timeout_secs = 30)]
@@ -7411,7 +7435,10 @@ mod tests {
             child.await,
             ActorStatus::Failed(ActorErrorKind::Aborted(reason)) if reason.contains("parent failed")
         );
-        assert!(release.send(()).is_err(), "child handler should be aborted");
+        assert!(
+            release.send(()).is_err(),
+            "residual child handler should be aborted"
+        );
     }
 
     #[async_timed_test(timeout_secs = 30)]
@@ -7452,7 +7479,10 @@ mod tests {
             child.await,
             ActorStatus::Failed(ActorErrorKind::Aborted(reason)) if reason.contains("parent failed")
         );
-        assert!(release.send(()).is_err(), "child handler should be aborted");
+        assert!(
+            release.send(()).is_err(),
+            "residual child handler should be aborted"
+        );
     }
 
     #[async_timed_test(timeout_secs = 30)]
@@ -8704,6 +8734,94 @@ mod tests {
         received_ids.sort();
         actor_ids.sort();
         assert_eq!(received_ids, actor_ids);
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn destroy_waits_for_aborted_actor_tree() {
+        let mut proc = Proc::isolated();
+        let client = proc.client("client");
+        let (_reported_event, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
+        let root = proc.spawn_with_label::<TestActor>("root", TestActor);
+        let root_addr = root.actor_addr().clone();
+        let root_cell = root.cell().clone();
+        let child = proc.spawn_child(root_cell.clone(), TestActor);
+        let child_addr = child.actor_addr().clone();
+        let child_cell = child.cell().clone();
+        let grandchild = proc.spawn_child(child_cell.clone(), TestActor);
+        let grandchild_addr = grandchild.actor_addr().clone();
+        let grandchild_cell = grandchild.cell().clone();
+        let (root_entered_tx, root_entered_rx) = oneshot::channel();
+        let (root_release_tx, root_release_rx) = oneshot::channel();
+        root.post(
+            &client,
+            TestActorMessage::Wait(root_entered_tx, root_release_rx),
+        );
+        let (child_entered_tx, child_entered_rx) = oneshot::channel();
+        let (child_release_tx, child_release_rx) = oneshot::channel();
+        child.post(
+            &client,
+            TestActorMessage::Wait(child_entered_tx, child_release_rx),
+        );
+        root_entered_rx.await.unwrap();
+        child_entered_rx.await.unwrap();
+
+        let (_terminated, aborted) = proc
+            .destroy_and_wait(Duration::ZERO, "test destroy")
+            .await
+            .unwrap();
+
+        assert!(aborted.contains(&root_addr));
+        assert!(!aborted.contains(&child_addr));
+        assert!(!aborted.contains(&grandchild_addr));
+        assert!(
+            root_release_tx.send(()).is_err(),
+            "root handler should be aborted"
+        );
+        assert!(
+            child_release_tx.send(()).is_err(),
+            "child handler should be aborted"
+        );
+
+        let root_status = root.await;
+        let child_status = child.await;
+        let grandchild_status = grandchild.await;
+        assert_matches!(
+            &root_status,
+            ActorStatus::Failed(ActorErrorKind::Aborted(_))
+        );
+        assert_matches!(
+            &child_status,
+            ActorStatus::Failed(ActorErrorKind::Aborted(_))
+        );
+        assert_matches!(
+            &grandchild_status,
+            ActorStatus::Failed(ActorErrorKind::Aborted(_))
+        );
+        assert_eq!(root_cell.child_count(), 0);
+        assert_eq!(child_cell.child_count(), 0);
+        assert!(child_cell.parent().is_none());
+        assert!(grandchild_cell.parent().is_none());
+        assert_eq!(
+            root_cell
+                .supervision_event()
+                .expect("aborted root should store its terminal event")
+                .actor_status,
+            root_status
+        );
+        assert_eq!(
+            child_cell
+                .supervision_event()
+                .expect("aborted child should store its terminal event")
+                .actor_status,
+            child_status
+        );
+        assert_eq!(
+            grandchild_cell
+                .supervision_event()
+                .expect("aborted grandchild should store its terminal event")
+                .actor_status,
+            grandchild_status
+        );
     }
 
     // Exercises FI-4 (see introspect.rs module-scope comment).

@@ -205,7 +205,7 @@ class FileWriter(Actor):
 
 **What Has Already Happened:**
 - On graceful shutdown, owned actors normally finish first
-- On failure or forced teardown, descendant cleanup is not guaranteed
+- On failure or forced teardown, descendant cleanup is not guaranteed, but terminal state is still reported
 - Owned actor meshes and proc meshes are no longer usable from this method
 - For shutdown work that needs an owned mesh, expose a dedicated endpoint and call it before `stop()`
 
