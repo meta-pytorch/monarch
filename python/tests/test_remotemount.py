@@ -178,8 +178,8 @@ class TestBlockBoundary:
             assert meta["/big.bin"]["global_offset"] == 0
             assert meta["/"]["total_size"] == size
             assert (size + BLOCK_SIZE - 1) // BLOCK_SIZE == 2
-            block0, _ = materialise_block(meta, 0)
-            block1, _ = materialise_block(meta, 1)
+            block0, _ = materialise_block(meta, 0, bytearray(BLOCK_SIZE))
+            block1, _ = materialise_block(meta, 1, bytearray(BLOCK_SIZE))
             assert len(block0) == BLOCK_SIZE and len(block1) == BLOCK_SIZE
             assert block0 == data[:BLOCK_SIZE]
             assert block1[:1024] == data[BLOCK_SIZE:]
@@ -194,9 +194,9 @@ class TestBlockBoundary:
                 f.write(data)
             meta = build_index(d, {})
             assert meta["/"]["total_size"] == BLOCK_SIZE
-            assert materialise_block(meta, 0)[0] == data
+            assert materialise_block(meta, 0, bytearray(BLOCK_SIZE))[0] == data
             with pytest.raises(ValueError):
-                materialise_block(meta, 1)
+                materialise_block(meta, 1, bytearray(BLOCK_SIZE))
 
     def test_multiple_files_across_block_boundary(self) -> None:
         """Files whose packed layout straddles a block boundary each reconstruct
@@ -412,7 +412,7 @@ class TestMaterialiseSourceDiverged:
                 f.write(b"x" * 1000)
             meta = build_index(d, {})
             os.truncate(path, 500)
-            data, diverged = materialise_block(meta, 0)
+            data, diverged = materialise_block(meta, 0, bytearray(BLOCK_SIZE))
             assert diverged == ["/f.bin"]
             # The diverged file's bytes are garbage, NOT the (now-shorter) source.
             assert data[:1000] != b"x" * 1000
@@ -424,7 +424,7 @@ class TestMaterialiseSourceDiverged:
                 f.write(b"x" * 1000)
             meta = build_index(d, {})
             os.remove(path)
-            _data, diverged = materialise_block(meta, 0)
+            _data, diverged = materialise_block(meta, 0, bytearray(BLOCK_SIZE))
             assert diverged == ["/f.bin"]
 
     def test_mtime_change_same_size_diverges(self) -> None:
@@ -437,7 +437,7 @@ class TestMaterialiseSourceDiverged:
             meta = build_index(d, {})
             st = os.stat(path)
             os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
-            _data, diverged = materialise_block(meta, 0)
+            _data, diverged = materialise_block(meta, 0, bytearray(BLOCK_SIZE))
             assert diverged == ["/f.bin"]
 
     def test_unchanged_files_not_diverged(self) -> None:
@@ -448,7 +448,7 @@ class TestMaterialiseSourceDiverged:
             with open(os.path.join(d, "b.txt"), "wb") as f:
                 f.write(b"b" * 100)
             meta = build_index(d, {})
-            _data, diverged = materialise_block(meta, 0)
+            _data, diverged = materialise_block(meta, 0, bytearray(BLOCK_SIZE))
             assert diverged == []
 
 
@@ -519,7 +519,7 @@ def _publish_block(
     handle: FuseMountHandle, block_id: int, data: bytes, stale: list[str]
 ) -> None:
     """Deliver *data* as block *block_id* the way a worker does: write it into the mount's
-    own buffer through ``block_ptr(block_id)`` (as an RDMA read would land it), then
+    own buffer through ``block_ptr(block_id)`` (as the chain delivery lands it), then
     ``receive_block`` to freeze that buffer into the served block with no copy. ``data``
     may be shorter than ``BLOCK_SIZE``; the buffer's tail stays zeroed, exactly as
     production zero-pads the last block past ``total_size``."""
@@ -533,7 +533,7 @@ def _publish_block(
 def _deliver_blocks(handle: FuseMountHandle, data: bytes) -> None:
     """Hand *data* to the in-memory FUSE mount one block at a time via ``_publish_block``
     (one BLOCK_SIZE-or-shorter block per id) -- the delivery path the tests use in place
-    of the worker's RDMA fan-out."""
+    of the worker's chain delivery."""
     n_blocks = (len(data) + BLOCK_SIZE - 1) // BLOCK_SIZE
     for block_id in range(n_blocks):
         lo = block_id * BLOCK_SIZE
@@ -552,10 +552,11 @@ def _pack_for_test(
         return meta, None, []
     n_blocks = (total_size + BLOCK_SIZE - 1) // BLOCK_SIZE
     staging = bytearray(total_size)
+    mat_buf = bytearray(BLOCK_SIZE)
     for b in range(n_blocks):
         # materialise_block returns a fixed BLOCK_SIZE buffer; clip the tail
         # block's zero pad so ``staging`` stays exactly total_size.
-        block_bytes, _ = materialise_block(meta, b)
+        block_bytes, _ = materialise_block(meta, b, mat_buf)
         start = b * BLOCK_SIZE
         valid = min(BLOCK_SIZE, total_size - start)
         staging[start : start + valid] = block_bytes[:valid]
@@ -624,7 +625,7 @@ class TestFuseMount:
     def test_zero_copy_block_ptr_receive_block(self) -> None:
         """The zero-copy delivery path at the binding level: get a mount-owned buffer's
         address via ``block_ptr`` (which reserves it lazily), write the block into it
-        through a ctypes memoryview (as an RDMA read would), ``receive_block`` to freeze
+        through a ctypes memoryview (as the chain delivery does), ``receive_block`` to freeze
         it into the served block with no copy, and read the file back."""
         content = b"zero copy delivery works"
         metadata: dict[str, object] = {
@@ -641,7 +642,7 @@ class TestFuseMount:
                 mv = memoryview(
                     (ctypes.c_char * BLOCK_SIZE).from_address(handle.block_ptr(0))
                 ).cast("B")
-                mv[: len(content)] = content  # write as RDMA would, into mount memory
+                mv[: len(content)] = content  # write into mount memory (chain recv)
                 handle.receive_block(0, [])  # zero-copy freeze into the served block
                 with open(os.path.join(mnt, "z.txt"), "rb") as f:
                     assert f.read() == content
@@ -1699,23 +1700,26 @@ class TestReceiveBlockPreservesCache:
 @pytest.mark.skipif(not _fuse_available, reason="FUSE not available")
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
-def test_actor_rdma_fanout_to_all_peers() -> None:
-    """The leader's ``broadcast`` fans a block out to every peer over RDMA, and each
-    peer's mount then serves it -- exercising ``setup_leader`` + ``broadcast`` +
-    ``receive_rdma`` + the mesh-cast across a real multi-proc mesh (RDMA over the TCP
-    fallback locally). Reading through each worker's own mount confirms delivery."""
+def test_actor_chain_fanout_to_all_peers() -> None:
+    """The client sources one block down the pipelined broadcast chain and every worker
+    receives it -- mirroring ``MountHandlerClient.open``/``_deliver``: each worker binds its
+    listener + recv ctx (``cbc_listen``); the workers are ordered by rank and each pointed
+    at its successor (``cbc_start``); the client dials the head (``connect``) and stripes the
+    block down it (``send_block``); and ``await_block`` blocks until every worker has
+    committed the block via ``receive_via_cbcast``. Reading through each worker's own mount
+    confirms delivery. The block spans several ``CBC_CHUNK`` frames so the relay's chunk
+    forwarding and offset reassembly are exercised, not just a single-frame block."""
+    from monarch._rust_bindings.monarch_extension.chain_broadcast import (
+        connect,
+        send_block,
+    )
     from monarch.actor import this_host
-    from monarch.remotemount.remotemount import FUSEActor
+    from monarch.remotemount.remotemount import CBC_CHUNK, FUSEActor, RemoteMountLeader
 
-    # A host with no RDMA device (e.g. OSS CI) reports backend "none" and RDMABuffer()
-    # raises. Allow the TCP fallback via the env var, which the spawned worker procs
-    # inherit -- a parent-process monarch.configure() does NOT reach spawned procs. Must
-    # be set before spawn_procs.
-    os.environ["MONARCH_RDMA_ALLOW_TCP_FALLBACK"] = "1"
-
-    content = b"rdma fan-out reaches every peer"
-    # ``broadcast`` stages a full BLOCK_SIZE buffer (mv[:] = data), so pad the block.
-    block = content + bytes(BLOCK_SIZE - len(content))
+    # Several CBC_CHUNK frames so multi-chunk pipelining + reassembly run (not one frame).
+    # Random bytes make the per-rank content check meaningful. The chain writes straight
+    # into each mount's own block buffer (block_ptr), so no RDMA device / fallback is needed.
+    content = os.urandom(3 * CBC_CHUNK + 4096)
     meta: dict[str, object] = {
         "/": {"attr": _dir_attr(), "children": ["f.bin"], "total_size": len(content)},
         "/f.bin": {
@@ -1725,10 +1729,17 @@ def test_actor_rdma_fanout_to_all_peers() -> None:
         },
     }
 
-    n = 3  # rank 0 = leader, ranks 1..2 = its RDMA fan-out peers
+    n = 3  # three workers; the client sources the block down the chain to all of them
     procs = this_host().spawn_procs(per_host={"cpus": n})
-    # handler=None: no fault callback needed -- the block is broadcast before any read.
-    fuse_actors = procs.spawn("FUSEActor", FUSEActor, None)
+    # The leader broker holds the worker mesh and runs the per-block ``await_block`` barrier;
+    # the workers take it as their fault sink. Its ``enqueue`` is unused here -- the block is
+    # delivered explicitly (client -> chain) before any read faults -- so ``None`` is fine.
+    leader = (
+        procs.flatten("rank")
+        .slice(rank=0)
+        .spawn("RemoteMountLeader", RemoteMountLeader, None)
+    )
+    fuse_actors = procs.spawn("FUSEActor", FUSEActor, leader)
     flat = fuse_actors.flatten("rank")
 
     with tempfile.TemporaryDirectory() as base:
@@ -1741,15 +1752,22 @@ def test_actor_rdma_fanout_to_all_peers() -> None:
                 actor.mkdir.call_one(mnts[r]).get()
                 actor.mount.call_one(mnts[r], meta).get()
 
-            # Rank 0 leads; ranks 1.. are its fan-out peers.
-            leader = flat.slice(rank=0)
-            leader.setup_leader.call_one(flat.slice(rank=slice(1, None))).get()
+            leader.set_fuse_actors.call_one(fuse_actors).get()
 
-            # Deliver block 0 to the leader; broadcast commits it locally and mesh-casts
-            # it to every peer over RDMA.
-            leader.broadcast.call_one(0, block, []).get()
+            # Wire the chain exactly as ``open`` does: every worker binds a listener + recv
+            # ctx, order the addrs by rank into head -> ... -> tail, point each worker at its
+            # successor, then dial the head from here (this proc is the chain source).
+            listen = fuse_actors.cbc_listen.call().get()
+            by_rank = sorted((value for _point, value in listen), key=lambda rv: rv[0])
+            addrs = [addr for _rank, addr in by_rank]
+            fuse_actors.cbc_start.call(addrs).get()
+            head = connect(addrs[0])
 
-            # Every worker -- leader and peers -- now serves the block from its own mount.
+            # Source block 0 down the chain, then block until every worker has committed it.
+            send_block(head, content, CBC_CHUNK, 0)
+            leader.await_block.call_one(0, [], len(content)).get()
+
+            # Every worker now serves the block from its own mount.
             for r in range(n):
                 with open(os.path.join(mnts[r], "f.bin"), "rb") as f:
                     assert f.read() == content, f"rank {r} did not receive the block"

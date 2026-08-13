@@ -38,9 +38,11 @@ pyo3 = { version = "0.27", features = ["anyhow", "multiple-pymethods", "py-clone
 pyo3-async-runtimes = { version = "0.27", features = ["attributes", "tokio-runtime"] }
 rdmaxcel-sys = { path = "../rdmaxcel-sys", optional = true }
 serde = { version = "1.0.229", features = ["derive", "rc"] }
+serde_multipart = { version = "0.0.0", path = "../serde_multipart" }
 tokio = { version = "1.52.4", features = ["full", "test-util", "tracing"] }
 torch-sys-cuda = { version = "0.0.0", path = "../torch-sys-cuda", optional = true, default-features = false }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
+typeuri = { version = "0.0.0", path = "../typeuri" }
 wirevalue = { version = "0.0.0", path = "../wirevalue" }
 
 [build-dependencies]

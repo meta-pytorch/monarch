@@ -1,21 +1,22 @@
+# Numbers below are the bare-script default: cubic congestion control (no HYPERACTOR_CHANNEL_TCP_CONGESTION override -- the opt-in bbr cross-DC ship tuning is the stacked follow-up D114236289), client-sourced ship (the client is the chain source, so the block ships down the multi-stream chain, not a single actor-bus hop), post copy-elimination (item 4) + stream/chunk tuning (item 3: 128 streams x 64 KiB), i.e. the same code as Results (a). Cold import 12.2s -- vs 26.1 (chain over the single actor-bus ship) and 20.2 (base RDMA fan-out): the multi-stream ship + block-pointer copy elimination bypassed the ~223 MB/s single-stream limit and beats the base. perworker import cold/warm 8.1/3.1s. qwen3 rows train on c4_test (torchtitan v0.2.2's supported dataset; fineweb_edu_10BT is absent from OSS torchtitan) -- loss is dataset-specific, MFU is compute-bound. kill wall includes the deferred unmount-SIGBUS teardown.
 command,metric,value,unit
-rm -rf .monarch && monarch apply job.job,mount_open,14.4,s
-rm -rf .monarch && monarch apply job.job,wall_incl_mast_alloc,166,s
-monarch exec --all -- echo hello,wall,3.3,s
+rm -rf .monarch && monarch apply job.job,mount_open,10.9,s
+rm -rf .monarch && monarch apply job.job,wall_incl_mast_alloc,172,s
+monarch exec --all -- echo hello,wall,3.2,s
 monarch exec --one -- hostname,wall,3.2,s
-monarch exec --all -- python -c 'import time; t=time.perf_counter(); import torch; print(time.perf_counter()-t)',wall_cold,20.3,s
-monarch exec --all -- python -c 'import time; t=time.perf_counter(); import torch; print(time.perf_counter()-t)',perworker_import_cold,16.7,s
-monarch exec --all -- python -c 'import time; t=time.perf_counter(); import torch; print(time.perf_counter()-t)',wall_warm,7.4,s
-monarch exec --all -- python -c 'import time; t=time.perf_counter(); import torch; print(time.perf_counter()-t)',perworker_import_warm,3.3,s
-monarch apply job.job,reapply_nochange_wall,3.3,s
-monarch apply job.job,reapply_nochange_mount_open,0.3,s
-monarch exec --all --per-host gpu=8 -e MASTER_ADDR=$(monarch exec --one -- hostname | tail -1) -- python train.py,wall_20step,43.5,s
-monarch exec --all --per-host gpu=8 -e MASTER_ADDR=$(monarch exec --one -- hostname | tail -1) -- python train.py,loss_step1,8.05,loss
-monarch exec --all --per-host gpu=8 -e MASTER_ADDR=$(monarch exec --one -- hostname | tail -1) -- python train.py,loss_step20,3.20,loss
-monarch kill,wall,6.9,s
-find $HOME/dev/titan_workspace/.venv -type f -size -100M | wc -l,files_lt100MiB,22504,count
+monarch exec --all -- python -c 'import time; t=time.perf_counter(); import torch; print(time.perf_counter()-t)',wall_cold,12.2,s
+monarch exec --all -- python -c 'import time; t=time.perf_counter(); import torch; print(time.perf_counter()-t)',perworker_import_cold,8.1,s
+monarch exec --all -- python -c 'import time; t=time.perf_counter(); import torch; print(time.perf_counter()-t)',wall_warm,7.1,s
+monarch exec --all -- python -c 'import time; t=time.perf_counter(); import torch; print(time.perf_counter()-t)',perworker_import_warm,3.1,s
+monarch apply job.job,reapply_nochange_wall,3.2,s
+monarch apply job.job,reapply_nochange_mount_open,0.2,s
+monarch exec --all --per-host gpu=8 -e MASTER_ADDR=$(monarch exec --one -- hostname | tail -1) -- python train.py,wall_20step,32.2,s
+monarch exec --all --per-host gpu=8 -e MASTER_ADDR=$(monarch exec --one -- hostname | tail -1) -- python train.py,loss_step1,8.16,loss
+monarch exec --all --per-host gpu=8 -e MASTER_ADDR=$(monarch exec --one -- hostname | tail -1) -- python train.py,loss_step20,3.22,loss
+monarch kill,wall,12.2,s
+find $HOME/dev/titan_workspace/.venv -type f -size -100M | wc -l,files_lt100MiB,23328,count
 find $HOME/dev/titan_workspace/.venv -type f -size +100M | wc -l,files_ge100MiB,19,count
-find $HOME/dev/titan_workspace/.venv -type f -size -100M -printf '%s\n' | awk '{s+=$1}END{print s/2^30}',GiB_lt100MiB,1.3,GiB
+find $HOME/dev/titan_workspace/.venv -type f -size -100M -printf '%s\n' | awk '{s+=$1}END{print s/2^30}',GiB_lt100MiB,1.4,GiB
 find $HOME/dev/titan_workspace/.venv -type f -size +100M -printf '%s\n' | awk '{s+=$1}END{print s/2^30}',GiB_ge100MiB,5.8,GiB
-monarch exec --all --per-host gpu=8 -e MASTER_ADDR=$(monarch exec --one -- hostname | tail -1) -e TITAN_MODEL_MODULE=qwen3 -e TITAN_MODEL_CONFIG=qwen3_1.7b -e TITAN_TRAINING_STEPS=300 -e TITAN_DATASET=fineweb_edu_10BT -- python train.py,loss_step300,5.29,loss
-monarch exec --all --per-host gpu=8 -e MASTER_ADDR=$(monarch exec --one -- hostname | tail -1) -e TITAN_MODEL_MODULE=qwen3 -e TITAN_MODEL_CONFIG=qwen3_1.7b -e TITAN_TRAINING_STEPS=300 -e TITAN_DATASET=fineweb_edu_10BT -- python train.py,mfu,30,pct
+monarch exec --all --per-host gpu=8 -e MASTER_ADDR=$(monarch exec --one -- hostname | tail -1) -e TITAN_MODEL_MODULE=qwen3 -e TITAN_MODEL_CONFIG=qwen3_1.7b -e TITAN_TRAINING_STEPS=300 -e TITAN_DATASET=c4_test -- python train.py,loss_step300,1.74,loss
+monarch exec --all --per-host gpu=8 -e MASTER_ADDR=$(monarch exec --one -- hostname | tail -1) -e TITAN_MODEL_MODULE=qwen3 -e TITAN_MODEL_CONFIG=qwen3_1.7b -e TITAN_TRAINING_STEPS=300 -e TITAN_DATASET=c4_test -- python train.py,mfu,30,pct

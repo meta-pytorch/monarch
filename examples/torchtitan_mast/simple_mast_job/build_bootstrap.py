@@ -38,6 +38,10 @@ _PYTHON = "/usr/local/fbcode/platform010/bin/python3.12"
 DEFAULT_WORKER_FBPKG_NAME = "monarch_additional_packages"
 
 _DEFAULT_NETWORK_AFFINITY = {"preferredScope": 3, "fallbackScope": 3}
+# T1 CPU hosts have no backend/RoCE fabric; MAST rejects the BACKEND_NETWORK
+# scope (3) above when the constraint pins logical server *types*. This frontend
+# scope is what monarch's own notebook.py uses for its CPU workers.
+_CPU_NETWORK_AFFINITY = {"preferredScope": 2, "fallbackScope": 1}
 _DEFAULT_X86_LOCALITY_CONSTRAINTS = ("region", "eag")
 
 # h100 x86 host shape (whole 8-GPU host) for resourceLimit/machineConstraints.
@@ -45,6 +49,17 @@ _H100_RAM_MB = (2048 - 145) * 1024
 _H100_CPU = 112
 _H100_GPU = 8
 _H100_SERVER_SUBTYPE = 200007
+
+# CPU-only (T1) host shape, selected via ``TITAN_HOST_TYPE=cpu``. monarch's own
+# notebook.py schedules CPU workers on this same MastGenAICluster with these
+# values; ``serverTypes: [100]`` selects any T1 host (LogicalServerType.T1). The
+# default host type stays h100, so the main benchmark_table.sh run is unchanged;
+# ``cpu`` exists for the host-count scaling sweep (benchmark_table_scale.sh),
+# which exercises the mount/exec/import data plane at large host counts with GPU
+# training skipped. Override cores/RAM with TITAN_CPU_CPUS / TITAN_CPU_RAM_MB.
+_CPU_SERVER_TYPE = 100
+_CPU_RAM_MB = 54272
+_CPU_CPUS = 15
 
 # Boot the worker loop. Kept in the ``-X faulthandler -c <code>`` form so a
 # hung worker dumps tracebacks on SIGABRT.
@@ -202,6 +217,53 @@ def _parse_locality_constraints(parts: tuple[str, ...]) -> Optional[dict[str, ob
     return {"locality": 1, "options": list(options)}
 
 
+def _host_shape() -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
+    """Resolve the worker host shape from ``TITAN_HOST_TYPE`` (default ``h100``).
+
+    Returns ``(resourceLimit, machineConstraints, networkAffinity)`` for the
+    jobspec. ``cpu`` requests a whole T1 CPU host (no GPU) -- the shape monarch's
+    own ``notebook.py`` schedules on this same ``MastGenAICluster`` -- so the
+    host-count scaling sweep can measure the data plane at large host counts
+    without GPU training. CPU hosts also need the frontend network-affinity
+    scope (see ``_CPU_NETWORK_AFFINITY``). The ``h100`` branch is byte-identical
+    to the original hardcoded spec, so the default run is unchanged.
+    """
+    common: dict[str, object] = {
+        "enableSwapAndSenpai": False,
+        "limitType": 1,
+        "wholeHost": True,
+        "enableZSwap": True,
+        "migType": 0,
+    }
+    host_type = os.environ.get("TITAN_HOST_TYPE", "h100").lower()
+    if host_type == "cpu":
+        cpu_limit: dict[str, object] = {
+            "ramMB": int(os.environ.get("TITAN_CPU_RAM_MB", _CPU_RAM_MB)),
+            "compute": {
+                "cpu": int(os.environ.get("TITAN_CPU_CPUS", _CPU_CPUS)),
+                "gpu": 0,
+            },
+            **common,
+        }
+        return (
+            cpu_limit,
+            {"types": {"serverTypes": [_CPU_SERVER_TYPE]}},
+            _CPU_NETWORK_AFFINITY,
+        )
+    if host_type != "h100":
+        raise ValueError(f"TITAN_HOST_TYPE must be 'h100' or 'cpu', got {host_type!r}")
+    h100_limit: dict[str, object] = {
+        "ramMB": _H100_RAM_MB,
+        "compute": {"cpu": _H100_CPU, "gpu": _H100_GPU},
+        **common,
+    }
+    return (
+        h100_limit,
+        {"types": {"serverSubTypes": [_H100_SERVER_SUBTYPE]}},
+        _DEFAULT_NETWORK_AFFINITY,
+    )
+
+
 def launch_mast(
     *,
     package_name: str,
@@ -216,9 +278,29 @@ def launch_mast(
     job_name_prefix: str = "monarch_remotemount",
     run: bool = True,
 ) -> str:
-    """Launch the torchtitan h100 MAST job using the bootstrap fbpkg (x86 only)."""
-    if not locality_constraints:
+    """Launch the torchtitan MAST job using the bootstrap fbpkg (x86 only).
+
+    Host shape (h100 by default, or CPU-only via ``TITAN_HOST_TYPE=cpu``) comes
+    from ``_host_shape()``. ``TITAN_MAST_CLUSTER`` / ``TITAN_RM_ATTRIBUTION``
+    override the cluster and attribution, and ``TITAN_LOCALITY_REGIONS``
+    (comma-separated, or ``none`` to drop the region pin) overrides the default
+    single-region ``eag`` locality -- useful when a large host count won't fit
+    in one region. All are read here so no caller change is needed.
+    """
+    regions_env = os.environ.get("TITAN_LOCALITY_REGIONS")
+    if regions_env is not None:
+        stripped = regions_env.strip().lower()
+        locality_constraints = (
+            ()
+            if stripped in ("", "none")
+            else ("region", *[r.strip() for r in regions_env.split(",") if r.strip()])
+        )
+    elif not locality_constraints:
         locality_constraints = _DEFAULT_X86_LOCALITY_CONSTRAINTS
+
+    hpc_cluster_uuid = os.environ.get("TITAN_MAST_CLUSTER", hpc_cluster_uuid)
+    rm_attribution = os.environ.get("TITAN_RM_ATTRIBUTION", rm_attribution)
+    resource_limit, machine_constraints, network_affinity = _host_shape()
 
     name = f"{job_name_prefix}_{time.time_ns()}"
     package = _package_spec(package_name, package_version)
@@ -257,19 +339,9 @@ def launch_mast(
                         "PYTHONNOUSERSITE": "1",
                         **(env or {}),
                     },
-                    "resourceLimit": {
-                        "ramMB": _H100_RAM_MB,
-                        "compute": {"cpu": _H100_CPU, "gpu": _H100_GPU},
-                        "enableSwapAndSenpai": False,
-                        "limitType": 1,
-                        "wholeHost": True,
-                        "enableZSwap": True,
-                        "migType": 0,
-                    },
-                    "machineConstraints": {
-                        "types": {"serverSubTypes": [_H100_SERVER_SUBTYPE]}
-                    },
-                    "networkAffinity": dict(_DEFAULT_NETWORK_AFFINITY),
+                    "resourceLimit": resource_limit,
+                    "machineConstraints": machine_constraints,
+                    "networkAffinity": dict(network_affinity),
                     "oncallShortname": hpc_job_oncall,
                     "ports": {"mesh": _WORKER_PORT},
                     "bindMounts": [],
@@ -286,7 +358,7 @@ def launch_mast(
                 },
             }
         ],
-        "networkAffinity": dict(_DEFAULT_NETWORK_AFFINITY),
+        "networkAffinity": dict(network_affinity),
         "applicationMetadata": {
             "model_type_name": "gen_ai_default",
             "rm_attribution": rm_attribution,

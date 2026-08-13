@@ -145,6 +145,16 @@ separate pinned run, so headline numbers differ by allocation noise.
 `BENCHMARK.md` is the full writeup (data-plane mechanism, dedup table,
 big-file list, exec-floor breakdown).
 
+[`benchmark_table_scale.sh`](benchmark_table_scale.sh) is the host-count
+scaling companion. It runs the host-count-dependent rows (apply/mount_open, the
+`monarch exec` floor, cold/warm `import torch`, no-change re-apply, kill) across
+a sweep of host counts (default `1 2 4 … 1024`) on CPU-only hosts
+(`TITAN_HOST_TYPE=cpu`, one whole T1 CPU host per worker), dropping the GPU
+training rows so you can watch how the data plane scales. Each host count is an
+independent `apply → measure → kill` cycle; results stream to
+`benchmark_table_scale.csv` (`hosts,metric,value,unit`). `import torch` still
+exercises the big-`.so` fan-out on CPU hosts even though CUDA never initializes.
+
 ## Tunables
 
 The workspace path default lives in `pyproject.toml` under
@@ -156,6 +166,7 @@ The workspace path default lives in `pyproject.toml` under
 | `TITAN_WORKSPACE`         | `paths.workspace` (`~/dev/titan_workspace`)     | Local dir holding `.venv/` and the torchtitan symlink. |
 | `TITAN_TORCHTITAN`        | `~/dev/torchtitan`       | Your torchtitan checkout (used by `setup_env.sh`).                          |
 | `TITAN_NUM_HOSTS`         | `4`                      | Number of MAST hosts to allocate.                                            |
+| `TITAN_HOST_TYPE`         | `h100`                   | `h100` (whole 8-GPU host) or `cpu` (whole T1 CPU host, no GPU). `cpu` powers the scaling sweep (`benchmark_table_scale.sh`); size it with `TITAN_CPU_CPUS` (`15`) / `TITAN_CPU_RAM_MB` (`54272`), and relax the region pin with `TITAN_LOCALITY_REGIONS` (default `eag`; `none` = any region). |
 | `TITAN_GPUS_PER_HOST`     | `8`                      | Procs/actors spawned per host.                                               |
 | `TITAN_MODEL_CONFIG`      | `llama3_debugmodel`      | Any config registered in `torchtitan/models/.../config_registry.py`.         |
 | `TITAN_TRAINING_STEPS`    | `20`                     | Training steps to run before stopping.                                       |
