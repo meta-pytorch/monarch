@@ -240,7 +240,7 @@ impl GlobalClientActor {
             let event = match *err.kind {
                 ActorErrorKind::UnhandledSupervisionEvent(event) => *event,
                 _ => {
-                    let status = ActorStatus::generic_failure(err.kind.to_string());
+                    let status = ActorStatus::Failed(*err.kind);
                     ActorSupervisionEvent::new(
                         instance.self_addr().clone(),
                         Some("testclient".into()),

@@ -1319,9 +1319,8 @@ impl PythonActor {
                     }
                     forced_exit = forced_exit_rx.recv() => {
                         let kind = match forced_exit.expect("forced-exit sender should outlive actor execution") {
-                            ForcedExit::Kill(reason) | ForcedExit::Abort(reason) => {
-                                ActorErrorKind::Aborted(reason)
-                            }
+                            ForcedExit::Kill(reason) => ActorErrorKind::Killed(reason),
+                            ForcedExit::Abort(reason) => ActorErrorKind::Aborted(reason),
                         };
                         break Some(ActorError {
                             actor_id: Box::new(instance.self_addr().clone()),

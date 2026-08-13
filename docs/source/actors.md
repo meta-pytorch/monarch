@@ -168,6 +168,18 @@ sequenceDiagram
 - `__cleanup__` runs, then the failure is propagated to the supervisor
 - Supervision tree handles recovery (see [Error Handling in Meshes](#error-handling-in-meshes))
 
+Actor lifecycle operations have distinct outcomes:
+
+| Operation | Initiator | Active actor work | Terminal cause |
+| --- | --- | --- | --- |
+| Stop | External caller | Finishes cooperatively | `Stopped` |
+| Kill | External caller | Cancelled at its next yield | `Killed` |
+| Abort | Actor or runtime | Cancelled at its next yield | `Aborted` |
+
+Stop runs actor-owned shutdown and cleanup. Kill and Abort cancel active async
+work and skip actor cleanup. Neither can interrupt synchronous code until it
+yields.
+
 **The `__cleanup__` Method:**
 
 The same `__cleanup__` runs in both normal and error termination. The `exc` argument is `None` on a normal stop and carries the exception on an error stop.
@@ -189,11 +201,11 @@ class FileWriter(Actor):
 
 **When It Runs:**
 - Called automatically in both normal and error termination
-- *Not* called on fatal failures such as OOMs, panics, or fatal signals (e.g., `SIGSEGV`)
+- *Not* called after Kill, Abort, a panic, or process termination
 
 **What Has Already Happened:**
 - On graceful shutdown, owned actors normally finish first
-- On failure or forced teardown, residual descendants are transferred to proc supervision and sent `Kill`; their cleanup may not run
+- On failure or forced teardown, descendant cleanup is not guaranteed
 - Owned actor meshes and proc meshes are no longer usable from this method
 - For shutdown work that needs an owned mesh, expose a dedicated endpoint and call it before `stop()`
 

@@ -3204,10 +3204,10 @@ impl<A: Actor> Instance<A> {
         let result = match outcome {
             ActorExecutionOutcome::Completed(result) => result,
             ActorExecutionOutcome::Forced(forced_exit) => {
-                let reason = match forced_exit {
-                    ForcedExit::Kill(reason) | ForcedExit::Abort(reason) => reason,
+                let error_kind = match forced_exit {
+                    ForcedExit::Kill(reason) => ActorErrorKind::Killed(reason),
+                    ForcedExit::Abort(reason) => ActorErrorKind::Aborted(reason),
                 };
-                let error_kind = ActorErrorKind::Aborted(reason);
                 let result = Err(ActorError::new(self.self_addr(), error_kind));
                 self.begin_actor_teardown(&result);
                 result
@@ -3253,7 +3253,9 @@ impl<A: Actor> Instance<A> {
                 }
                 error_kind => {
                     let error_kind = match error_kind {
-                        error_kind @ ActorErrorKind::Aborted(_) => error_kind,
+                        error_kind @ (ActorErrorKind::Killed(_) | ActorErrorKind::Aborted(_)) => {
+                            error_kind
+                        }
                         error_kind => ActorErrorKind::Generic(error_kind.to_string()),
                     };
                     let status = ActorStatus::Failed(error_kind);
@@ -7212,7 +7214,7 @@ mod tests {
 
         assert_matches!(
             parent.await,
-            ActorStatus::Failed(ActorErrorKind::Aborted(reason)) if reason == "kill"
+            ActorStatus::Failed(ActorErrorKind::Killed(reason)) if reason == "kill"
         );
         assert!(child_cell.parent().is_none());
         assert_eq!(parent_cell.child_count(), 0);
@@ -7276,7 +7278,7 @@ mod tests {
 
         assert_matches!(
             actor.await,
-            ActorStatus::Failed(ActorErrorKind::Aborted(reason)) if reason == "kill"
+            ActorStatus::Failed(ActorErrorKind::Killed(reason)) if reason == "kill"
         );
     }
 
@@ -7399,7 +7401,7 @@ mod tests {
 
         assert_matches!(
             parent.await,
-            ActorStatus::Failed(ActorErrorKind::Aborted(reason)) if reason == "kill"
+            ActorStatus::Failed(ActorErrorKind::Killed(reason)) if reason == "kill"
         );
         assert!(child_cell.parent().is_none());
         assert_eq!(parent_cell.child_count(), 0);
@@ -7433,7 +7435,7 @@ mod tests {
 
         assert_matches!(
             parent.await,
-            ActorStatus::Failed(ActorErrorKind::Aborted(reason)) if reason == "kill"
+            ActorStatus::Failed(ActorErrorKind::Killed(reason)) if reason == "kill"
         );
 
         // Forced teardown reaches the whole subtree without relying on the
@@ -7578,7 +7580,7 @@ mod tests {
         let terminal_status = actor.await;
         assert_matches!(
             &terminal_status,
-            ActorStatus::Failed(ActorErrorKind::Aborted(reason)) if reason == "test kill"
+            ActorStatus::Failed(ActorErrorKind::Killed(reason)) if reason == "test kill"
         );
         assert!(
             release_tx.send(()).is_err(),
@@ -7693,7 +7695,7 @@ mod tests {
 
         assert_matches!(
             actor.await,
-            ActorStatus::Failed(ActorErrorKind::Aborted(reason)) if reason == "kill"
+            ActorStatus::Failed(ActorErrorKind::Killed(reason)) if reason == "kill"
         );
         assert!(cleaned_rx.await.is_err(), "cleanup ran after kill");
     }
@@ -7717,7 +7719,7 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(1), actor)
                 .await
                 .expect("kill should interrupt cleanup"),
-            ActorStatus::Failed(ActorErrorKind::Aborted(reason)) if reason == "kill"
+            ActorStatus::Failed(ActorErrorKind::Killed(reason)) if reason == "kill"
         );
         cleanup_dropped_rx
             .await
@@ -7787,7 +7789,7 @@ mod tests {
     }
 
     #[async_timed_test(timeout_secs = 30)]
-    async fn kill_during_cleanup_reports_kill() {
+    async fn kill_during_cleanup_reports_external_kill() {
         let proc = Proc::isolated();
         let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
         let (cleanup_started_tx, cleanup_started_rx) = oneshot::channel();
@@ -7803,7 +7805,7 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(1), actor)
                 .await
                 .expect("kill should interrupt cleanup"),
-            ActorStatus::Failed(ActorErrorKind::Aborted(reason)) if reason == "kill"
+            ActorStatus::Failed(ActorErrorKind::Killed(reason)) if reason == "kill"
         );
     }
 
