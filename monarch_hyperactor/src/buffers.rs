@@ -73,6 +73,15 @@ unsafe impl Send for KeepPyBytesAlive {}
 // SAFETY: Py<PyBytes> is Send/Sync for immutable bytes
 unsafe impl Sync for KeepPyBytesAlive {}
 
+/// Wrap an immutable Python `bytes` as a zero-copy [`Bytes`] that pins the
+/// `PyBytes` alive for the returned buffer's lifetime, so its payload is never
+/// copied. This is the shared conversion behind [`Buffer::take_part`]'s reference
+/// fragments; callers that slice a block into chunks (e.g. the chain-broadcast
+/// source) reuse it to egress the block without a copy.
+pub fn py_bytes_to_bytes(py_bytes: Py<PyBytes>) -> Bytes {
+    Bytes::from_owner(KeepPyBytesAlive::new(py_bytes))
+}
+
 /// A fragment of data in the buffer, either a copy or a reference.
 #[derive(Clone)]
 enum Fragment {
@@ -218,10 +227,7 @@ impl Buffer {
                 .into_iter()
                 .map(|frag| match frag {
                     Fragment::Copy(bytes) => bytes,
-                    Fragment::Reference(py_bytes) => {
-                        let wrapper = KeepPyBytesAlive::new(py_bytes);
-                        bytes::Bytes::from_owner(wrapper)
-                    }
+                    Fragment::Reference(py_bytes) => py_bytes_to_bytes(py_bytes),
                 })
                 .collect::<Vec<_>>(),
         )

@@ -4653,9 +4653,11 @@ dependencies = [
  "pyo3-async-runtimes",
  "rdmaxcel-sys",
  "serde",
+ "serde_multipart",
  "tokio",
  "torch-sys-cuda",
  "tracing",
+ "typeuri",
  "wirevalue",
 ]
 
