@@ -18,6 +18,7 @@ from monarch._src.job.job import (
     TelemetryConfig,
 )
 from monarch._src.job.job_state import JobState
+from monarch._src.job.port_forward import PortForwarder
 from monarch._src.job.process import ProcessJob
 from monarch._src.job.shell import shell
 from monarch._src.job.slurm import SlurmJob
@@ -33,6 +34,7 @@ __all__ = [
     "load_current_job",
     "LocalJob",
     "MeshAdminConfig",
+    "PortForwarder",
     "ProcessJob",
     "set_current_job",
     "shell",
