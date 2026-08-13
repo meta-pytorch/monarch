@@ -3281,18 +3281,14 @@ impl<A: Actor> Instance<A> {
             .as_ref()
             .is_err_and(|err| matches!(err.kind.as_ref(), ActorErrorKind::Aborted(_)));
         // Run the actor cleanup function before the actor stops to delete
-        // resources. If it times out, continue with stopping the actor.
-        // Don't call it if there was a panic, because the actor may
+        // resources. Don't call it if there was a panic, because the actor may
         // be in an invalid state and unable to access anything, for example
         // the GIL.
         let cleanup_result = if !did_panic && !was_killed {
-            let cleanup_timeout = hyperactor_config::global::get(config::CLEANUP_TIMEOUT);
-            let cleanup = tokio::time::timeout(
-                cleanup_timeout,
-                self.inner
-                    .proc
-                    .with_current(actor.cleanup(self, result.as_ref().err())),
-            );
+            let cleanup = self
+                .inner
+                .proc
+                .with_current(actor.cleanup(self, result.as_ref().err()));
             tokio::pin!(cleanup);
             let signal_receiver = &mut actor_loop_receivers.0;
             let mut receive_signals = true;
@@ -3326,17 +3322,9 @@ impl<A: Actor> Instance<A> {
                         }
                     }
                     cleanup_result = &mut cleanup => {
-                        break match cleanup_result {
-                            Ok(Ok(result)) => Ok(result),
-                            Ok(Err(err)) => Err(ActorError::new(
-                                self.self_addr(),
-                                ActorErrorKind::cleanup(err),
-                            )),
-                            Err(err) => Err(ActorError::new(
-                                self.self_addr(),
-                                ActorErrorKind::cleanup(err.into()),
-                            )),
-                        };
+                        break cleanup_result.map_err(|err| {
+                            ActorError::new(self.self_addr(), ActorErrorKind::cleanup(err))
+                        });
                     }
                 }
             }
