@@ -656,8 +656,12 @@ pub enum ActorErrorKind {
     #[error("{0}")]
     SyntheticSupervision(Box<crate::monitor::SyntheticSupervision>),
 
-    /// The actor was explicitly aborted with the provided reason.
-    #[error("actor explicitly aborted due to: {0}")]
+    /// The actor was killed by an external caller.
+    #[error("actor killed due to: {0}")]
+    Killed(String),
+
+    /// The actor was aborted by its execution or the runtime.
+    #[error("actor aborted by runtime due to: {0}")]
     Aborted(String),
 
     /// The actor's signal channel was closed before the actor loop exited
