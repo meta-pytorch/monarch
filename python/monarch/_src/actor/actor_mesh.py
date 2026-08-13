@@ -1659,6 +1659,11 @@ class Actor(MeshTrait):
             "actor implementations are not meshes, but we can't convince the typechecker of it..."
         )
 
+    def stop(self, reason: str = "stopped by client") -> "Future[None]":
+        raise NotImplementedError(
+            "actor implementations are not meshes, but we can't convince the typechecker of it..."
+        )
+
     # Methods to be (optionally) overridden by user code
     def _handle_undeliverable_message(
         self, message: UndeliverableMessageEnvelope

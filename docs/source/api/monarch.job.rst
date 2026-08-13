@@ -53,6 +53,13 @@ that host.
 .. autofunction:: shell
 
 
+Port Forwarding
+===============
+
+.. autoclass:: PortForwarder
+   :members:
+
+
 Job Base Class
 ==============
 
