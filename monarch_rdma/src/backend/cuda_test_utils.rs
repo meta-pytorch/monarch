@@ -195,18 +195,20 @@ impl CudaAllocation {
     /// `[ptr + offset, ptr + offset + size)` of this allocation. The handle
     /// keeps the whole allocation mapped for its lifetime.
     ///
-    /// Panics if the sub-range does not fit within the currently mapped extent.
+    /// Panics if the sub-range does not fit within the currently mapped extent,
+    /// or if the CUDA driver will not name the device that owns the allocation.
     pub fn keepalive_slice(&self, offset: usize, size: usize) -> KeepaliveLocalMemory {
         let mapped = self.size();
         assert!(
             offset.checked_add(size).is_some_and(|end| end <= mapped),
             "slice [0x{offset:x}, 0x{offset:x}+{size}) exceeds mapped allocation size {mapped}",
         );
-        KeepaliveLocalMemory::new(Arc::new(CudaAllocationSlice {
+        KeepaliveLocalMemory::try_new(Arc::new(CudaAllocationSlice {
             alloc: self.clone(),
             offset,
             size,
         }))
+        .expect("this allocation's own device should be resolvable")
     }
 
     /// Try to free the backing CUDA memory. Returns `true` if the
@@ -709,7 +711,7 @@ impl ReceiverMessageHandler for ReceiverActor {
         // unwritten destination is distinguishable from a successful
         // read.
         let buf: Box<[u8]> = vec![!expected_pattern; size].into_boxed_slice();
-        let local = KeepaliveLocalMemory::new(Arc::new(buf));
+        let local = KeepaliveLocalMemory::try_new(Arc::new(buf))?;
 
         let read_result = remote
             .read_into_local(cx, local.clone(), timeout_secs)
@@ -746,7 +748,7 @@ impl ReceiverMessageHandler for ReceiverActor {
         timeout_secs: u64,
     ) -> Result<Result<(), String>, anyhow::Error> {
         let buf: Box<[u8]> = vec![pattern; size].into_boxed_slice();
-        let local = KeepaliveLocalMemory::new(Arc::new(buf));
+        let local = KeepaliveLocalMemory::try_new(Arc::new(buf))?;
 
         let result = remote
             .write_from_local(cx, local, timeout_secs)

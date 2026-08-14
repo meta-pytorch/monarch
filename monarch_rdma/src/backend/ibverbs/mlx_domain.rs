@@ -47,8 +47,8 @@ use super::primitives::IbvQp;
 use super::queue_pair::connect;
 use super::queue_pair::get_qp_info;
 use crate::backend::ibverbs::mlx_device::MlxDevice;
+use crate::device_selection::MemoryLocation;
 use crate::local_memory::KeepaliveLocalMemory;
-use crate::local_memory::is_device_ptr;
 
 /// A single MR must be 2 MiB aligned and covers at most 4 GiB (one page
 /// under). Larger segments are split across multiple MRs bound to one key.
@@ -820,7 +820,7 @@ impl IbvDomainImpl for MlxDomain {
         mem: &KeepaliveLocalMemory,
     ) -> anyhow::Result<IbvMemoryRegionView> {
         let this = domain.domain_impl();
-        if this.mlx5dv_enabled && is_device_ptr(mem.addr()) {
+        if this.mlx5dv_enabled && matches!(mem.location(), MemoryLocation::Gpu(_)) {
             // SAFETY: `domain.as_ptr()` is null or a live PD, per this method's
             // contract.
             match unsafe { this.register_cuda_mlx5dv_mr(domain, mem.addr(), mem.size()) } {
