@@ -71,4 +71,21 @@ impl IbvMemoryRegionView {
             _guard: guard,
         }
     }
+
+    /// Fabricate a zero-sized view naming `device_name` and carrying `key` as
+    /// both its `lkey` and its `rkey`, over a null MR keepalive whose `Drop`
+    /// is a no-op. For tests that care only about which device a registration
+    /// belongs to, and which of several registrations they are holding.
+    #[cfg(test)]
+    pub(crate) fn for_test(device_name: &str, key: u32) -> Self {
+        Self::new(
+            0,
+            0,
+            0,
+            key,
+            key,
+            device_name.to_string(),
+            Arc::new(IbvMr::null()),
+        )
+    }
 }

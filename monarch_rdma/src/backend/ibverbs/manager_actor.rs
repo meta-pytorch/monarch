@@ -321,22 +321,13 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
             .get_or_create_domain(DEFAULT_DOMAIN)
     }
 
-    /// Resolve `mem` to an [`IbvMemoryRegionView`] using the slot shared by
-    /// every clone of `mem`. On a cold slot, picks the RDMA device (an explicit
-    /// `config.target` if set, else one of the NICs with the best path to
-    /// `mem`'s [`MemoryLocation`]) and registers the region through that
-    /// device's [`IbvDomainImpl`] strategy, installing the result; on a warm
-    /// slot, returns the cached view.
+    /// Resolve `mem` to an [`IbvMemoryRegionView`] on the device this manager
+    /// would choose for it: an explicit `config.target` if set, else one of
+    /// the NICs with the best path to `mem`'s [`MemoryLocation`].
     fn resolve_local_mr(
         &mut self,
         mem: &KeepaliveLocalMemory,
     ) -> Result<IbvMemoryRegionView, anyhow::Error> {
-        if let Some(mrv) = mem.mr_slot().get() {
-            return Ok(mrv.clone());
-        }
-
-        // An explicit `config.target` wins; otherwise take the NICs tied for
-        // the best path to the memory and pick one of them.
         let device_name = match &self.config.target {
             Some(target) => resolve_target::<I>(target)?
                 .ok_or_else(|| anyhow::anyhow!("configured device target {:?} not found", target))?
@@ -344,17 +335,44 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
                 .clone(),
             None => Self::pick_optimal_device(mem)?,
         };
+        self.resolve_local_mr_on(mem, &device_name)
+    }
+
+    /// Resolve `mem` to its [`IbvMemoryRegionView`] on `device_name`,
+    /// registering the region there on first use.
+    ///
+    /// The registration lives on `mem` itself, shared by every clone of that
+    /// handle, so one handle registers a given device at most once. Nothing
+    /// deduplicates separate handles over the same region, though: each
+    /// carries its own registrations, so a region covered by two handles is
+    /// registered once per handle. A failure is recorded on `mem` too and
+    /// returned to later callers rather than retried.
+    fn resolve_local_mr_on(
+        &mut self,
+        mem: &KeepaliveLocalMemory,
+        device_name: &str,
+    ) -> Result<IbvMemoryRegionView, anyhow::Error> {
+        if let Some(mrv) = mem.registered_mr(device_name)? {
+            return Ok(mrv);
+        }
         tracing::debug!(
             "Using RDMA device: {} for memory at 0x{:x}",
             device_name,
             mem.addr()
         );
 
-        let domain = self.get_or_create_device_domain(&device_name)?;
         // The backend strategy handles host vs. device memory (standard MR,
         // dmabuf MR, or a device-specific segment binding).
-        let mrv = domain.register_mr(mem)?;
-        Ok(mem.mr_slot().get_or_init(|| mrv).clone())
+        let registered = self
+            .get_or_create_device_domain(device_name)
+            .and_then(|domain| domain.register_mr(mem));
+        match registered {
+            Ok(mrv) => mem.install_mr(mrv),
+            Err(error) => {
+                mem.record_mr_failure(device_name, &error);
+                Err(error)
+            }
+        }
     }
 
     /// One of the NICs of backend `I` tied for the best path to `mem`.
@@ -868,6 +886,8 @@ mod tests {
     use crate::backend::cuda_test_utils::CudaAllocator;
     use crate::backend::ibverbs::device::list_all_devices;
     use crate::backend::ibverbs::device_selection::IbvDeviceTarget;
+    use crate::backend::ibverbs::device_selection::resolve_target;
+    use crate::backend::ibverbs::mlx_device::MlxDevice;
     use crate::backend::ibverbs::primitives::IbvQpType;
     use crate::local_memory::KeepaliveLocalMemory;
 
@@ -1353,26 +1373,31 @@ mod tests {
     // Tests
     // ====================================================================
 
-    /// `register_remote_buffer` must populate the MR slot shared by
-    /// every clone of the `KeepaliveLocalMemory` it is handed, so that
-    /// later `resolve_local_mr` calls reuse the registered MR instead
-    /// of registering the same region again.
+    /// `register_remote_buffer` must record its registration on the
+    /// `KeepaliveLocalMemory` it is handed — under the name of the device it
+    /// registered on — so that later `resolve_local_mr` calls for that device
+    /// reuse it instead of registering the same region again.
     #[timed_test::async_timed_test(timeout_secs = 60)]
-    async fn test_register_remote_buffer_fills_mr_slot() -> Result<(), anyhow::Error> {
+    async fn test_register_remote_buffer_records_its_registration() -> Result<(), anyhow::Error> {
         require_rdma();
-        let env = TestEnv::same_config(IbvConfig::targeting(IbvDeviceTarget::cpu(0))).await?;
+        let target = IbvDeviceTarget::cpu(0);
+        let device = resolve_target::<MlxDevice>(&target)?
+            .expect("cpu:0 should resolve to a NIC")
+            .name()
+            .clone();
+        let env = TestEnv::same_config(IbvConfig::targeting(target)).await?;
         let buf: Box<[u8]> = vec![0u8; 1024].into_boxed_slice();
         let local = KeepaliveLocalMemory::try_new(Arc::new(buf))?;
         assert!(
-            local.mr_slot().get().is_none(),
-            "MR slot should be empty before registration",
+            local.registered_mr(&device)?.is_none(),
+            "the region should have no registration before it is registered",
         );
         RdmaManagerActor::local_handle(&env.client)
             .request_buffer(&env.client, local.clone())
             .await?;
         assert!(
-            local.mr_slot().get().is_some(),
-            "registration should populate the MR slot",
+            local.registered_mr(&device)?.is_some(),
+            "registration should be recorded under the pinned device {device}",
         );
         env.shutdown().await
     }
