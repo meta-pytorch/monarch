@@ -2010,7 +2010,8 @@ mod tests {
     }
 
     fn fake_local_memory(addr: usize, size: usize) -> KeepaliveLocalMemory {
-        KeepaliveLocalMemory::new(Arc::new(FakeKeepalive { addr, size }))
+        KeepaliveLocalMemory::try_new(Arc::new(FakeKeepalive { addr, size }))
+            .expect("a fake host address has a location")
     }
 
     /// [`Keepalive`] that sets `dropped` when it goes away, so a test can
@@ -2084,11 +2085,12 @@ mod tests {
         dropped: Arc<AtomicBool>,
     ) -> IbvOp<QpaMockManager> {
         IbvOp {
-            local_memory: KeepaliveLocalMemory::new(Arc::new(DropFlagKeepalive {
+            local_memory: KeepaliveLocalMemory::try_new(Arc::new(DropFlagKeepalive {
                 addr,
                 size,
                 dropped,
-            })),
+            }))
+            .expect("a fake host address has a location"),
             ..make_op(op_type, addr, size)
         }
     }

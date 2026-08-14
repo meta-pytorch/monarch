@@ -1120,7 +1120,7 @@ mod tests {
             buffer_size: usize,
         ) -> anyhow::Result<(KeepaliveLocalMemory, crate::RdmaRemoteBuffer)> {
             let cpu_buf = vec![0u8; buffer_size].into_boxed_slice();
-            let local_memory = KeepaliveLocalMemory::new(Arc::new(cpu_buf));
+            let local_memory = KeepaliveLocalMemory::try_new(Arc::new(cpu_buf))?;
             let rdma_remote_buf = rdma_handle
                 .request_buffer(instance, local_memory.clone())
                 .await?;
@@ -1649,7 +1649,7 @@ mod tests {
             );
 
             let alloc = CudaAllocator::get().allocate(device, buffer_size, buffer_size);
-            let local_memory = KeepaliveLocalMemory::new(Arc::new(alloc));
+            let local_memory = KeepaliveLocalMemory::try_new(Arc::new(alloc))?;
             let rdma_remote_buf = rdma_handle
                 .request_buffer(&instance, local_memory.clone())
                 .await?;

@@ -482,7 +482,7 @@ impl Handler<InitializeBuffer> for CudaRdmaActor {
             let addr = self.cu_ptr;
             let size = self.cpu_buffer.len();
             // See the module-level note on `NoKeepalive`.
-            let local_memory = KeepaliveLocalMemory::new(Arc::new(NoKeepalive { addr, size }));
+            let local_memory = KeepaliveLocalMemory::try_new(Arc::new(NoKeepalive { addr, size }))?;
             let handle = self
                 .rdma_manager
                 .downcast_handle(cx)
