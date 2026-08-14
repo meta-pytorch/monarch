@@ -570,7 +570,6 @@ impl DatabaseScanner {
 
     /// Get list of table names.
     fn table_names(&self) -> PyResult<Vec<String>> {
-        self.apply_retention_policies()?;
         let guard = self
             .table_data
             .lock()
@@ -580,7 +579,6 @@ impl DatabaseScanner {
 
     /// Get schema for a table in Arrow IPC format.
     fn schema_for<'py>(&self, py: Python<'py>, table: &str) -> PyResult<Bound<'py, PyBytes>> {
-        self.apply_retention_policies()?;
         let guard = self
             .table_data
             .lock()
@@ -636,8 +634,6 @@ impl DatabaseScanner {
         limit: Option<usize>,
         filter_expr: Option<String>,
     ) -> PyResult<usize> {
-        self.apply_retention_policies()?;
-
         // Get actor instance from context and extract the Rust Instance once
         let actor_module = py.import("monarch.actor")?;
         let ctx = actor_module.call_method0("context")?;
@@ -1005,34 +1001,6 @@ impl DatabaseScanner {
             local_buf.drain_to_record_batch()?,
         )?;
         Ok(())
-    }
-
-    /// Apply retention policies for all configured tables.
-    /// Skipped when retention_us is 0 (unlimited).
-    fn apply_retention_policies(&self) -> PyResult<()> {
-        if self.retention_us == 0 {
-            return Ok(());
-        }
-
-        let now_us = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock before unix epoch")
-            .as_micros() as i64;
-        let where_clause = Self::retention_where_clause(self.retention_us, now_us);
-        let result = if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            tokio::task::block_in_place(|| {
-                handle.block_on(Self::apply_retention_policies_to_tables(
-                    &self.table_data,
-                    &where_clause,
-                ))
-            })
-        } else {
-            get_tokio_runtime().block_on(Self::apply_retention_policies_to_tables(
-                &self.table_data,
-                &where_clause,
-            ))
-        };
-        result.map_err(|e| PyException::new_err(e.to_string()))
     }
 
     /// Return an opaque [`TableStore`] handle for external callers.

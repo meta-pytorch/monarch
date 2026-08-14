@@ -159,9 +159,9 @@ trace rows. A recent trace row is not displayed by span-joined views if its span
 has already expired. The default is 3600 seconds. Set it to `0` to disable
 automatic retention. Periodic maintenance runs approximately once per tenth of
 the retention window, bounded between 30 seconds and 5 minutes and never longer
-than the retention window. Query operations can run retention between periodic
-sweeps. Expired rows can remain visible until the next sweep. Other core tables
-have no automatic retention window.
+than the retention window. Queries do not run retention, so expired rows can
+remain visible until the next periodic sweep. Other core tables have no
+automatic retention window.
 
 `TelemetryConfig.snapshot_interval_secs` controls periodic Mesh Admin topology
 snapshots. The default is 30 seconds; set it to `0` to disable them. Snapshots
