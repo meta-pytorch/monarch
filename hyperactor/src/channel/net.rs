@@ -306,6 +306,103 @@ fn set_tcp_keepalive(stream: &tokio::net::TcpStream) {
     }
 }
 
+/// Swaps the congestion-control algorithm on an established socket. The algorithm
+/// comes from the [`config::CHANNEL_TCP_CONGESTION`] attribute and defaults to
+/// empty (off), so this is a no-op for the overwhelming majority of channels; only
+/// bandwidth-bound long-haul paths (e.g. remotemount's client->leader block ship)
+/// opt in (env `HYPERACTOR_CHANNEL_TCP_CONGESTION` or
+/// `configure(channel_tcp_congestion="bbr")`).
+///
+/// The usual Linux default is `cubic`, which underfills a link with a high
+/// bandwidth-delay product; `bbr` recovers that bandwidth. The algorithm is
+/// (re)selected on an established socket, so this must run after connect/accept
+/// rather than on the socket options up front.
+///
+/// A rejected algorithm fails the connect/accept, unlike [`set_tcp_keepalive`]
+/// above, which is deliberately best-effort: silently falling back to the host
+/// default would leave a path the operator believes is tuned running untuned.
+fn set_tcp_congestion(stream: &tokio::net::TcpStream) -> std::io::Result<()> {
+    let congestion = hyperactor_config::global::get_cloned(config::CHANNEL_TCP_CONGESTION);
+    apply_tcp_congestion(
+        stream,
+        Some(congestion.as_str()).filter(|algo| !algo.is_empty()),
+    )
+}
+
+/// Lists the congestion-control algorithms an unprivileged socket may select.
+/// There is no syscall that enumerates them: `getsockopt(TCP_CONGESTION)` reports
+/// only the socket's current algorithm, so procfs is the only source. The path is
+/// under `ipv4` but governs TCP over both address families -- Linux has one TCP
+/// stack, and the `net.ipv4.tcp_*` names are historical. FreeBSD keeps the list
+/// elsewhere, so there the read simply fails and the error says so.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+const TCP_ALLOWED_CONGESTION_PATH: &str = "/proc/sys/net/ipv4/tcp_allowed_congestion_control";
+
+/// The algorithms this host permits, for a failure message. `Err` carries why they
+/// could not be determined (not Linux, procfs not mounted, unreadable). Read with
+/// `std::fs` from a sync fn and only on the error path; procfs is an in-memory
+/// pseudo-file, so this does no disk I/O.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+fn allowed_tcp_congestion() -> std::io::Result<String> {
+    let listed = std::fs::read_to_string(TCP_ALLOWED_CONGESTION_PATH)?;
+    Ok(listed.split_whitespace().collect::<Vec<_>>().join(", "))
+}
+
+/// Applies the resolved tuning to `stream`. Split from [`set_tcp_congestion`] so the
+/// socket calls can be unit-tested without touching process-global config.
+///
+/// A failure is rewritten to name the rejected algorithm and the legal set, because
+/// the raw errno is actively misleading: the kernel reports an unknown algorithm as
+/// `ENOENT`, which renders as "No such file or directory", and a known but
+/// restricted one as `EPERM`. Those two cases have different fixes -- a typo versus
+/// an algorithm that needs `CAP_NET_ADMIN` or a sysctl change -- so the errno is
+/// preserved alongside the added context.
+///
+/// Gated to the platforms where `socket2` provides `set_tcp_congestion` (Linux and
+/// FreeBSD); see the fallback below for the rest.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+fn apply_tcp_congestion(
+    stream: &tokio::net::TcpStream,
+    congestion: Option<&str>,
+) -> std::io::Result<()> {
+    let Some(algo) = congestion else {
+        return Ok(());
+    };
+    socket2::SockRef::from(stream)
+        .set_tcp_congestion(algo.as_bytes())
+        .map_err(|err| {
+            let allowed = match allowed_tcp_congestion() {
+                Ok(allowed) => format!("allowed: [{allowed}]"),
+                Err(err) => {
+                    format!("cannot read {TCP_ALLOWED_CONGESTION_PATH} to list them: {err}")
+                }
+            };
+            std::io::Error::new(
+                err.kind(),
+                format!("cannot select TCP congestion control {algo:?} ({err}); {allowed}"),
+            )
+        })
+}
+
+/// Fallback where `socket2` does not expose `set_tcp_congestion` (e.g. macOS):
+/// selecting an algorithm is impossible, so an explicit request is an error rather
+/// than a silent no-op -- the same reasoning as a Linux host rejecting the
+/// algorithm. Leaving the attribute empty stays a no-op, so this never fires for
+/// the overwhelming majority of channels.
+#[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+fn apply_tcp_congestion(
+    _stream: &tokio::net::TcpStream,
+    congestion: Option<&str>,
+) -> std::io::Result<()> {
+    let Some(algo) = congestion else {
+        return Ok(());
+    };
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        format!("cannot select TCP congestion control {algo:?}: not supported on this platform"),
+    ))
+}
+
 pub(crate) enum LinkStatus {
     NeverConnected,
     Connected(tokio::time::Instant),
@@ -1581,6 +1678,13 @@ pub(crate) mod tcp {
                             )
                         })?;
                         set_tcp_keepalive(&stream);
+                        set_tcp_congestion(&stream).map_err(|err| {
+                            ClientError::Connect(
+                                self.dest(),
+                                err,
+                                "cannot set TCP congestion control".to_string(),
+                            )
+                        })?;
                         write_link_init(&mut stream, session_id, self.stream_id, self.kind)
                             .await
                             .map_err(|err| ClientError::Io(self.dest(), err))?;
@@ -1625,6 +1729,8 @@ pub(crate) mod tcp {
                 .set_nodelay(true)
                 .map_err(|err| ServerError::Io(ChannelAddr::Tcp(self.addr), err))?;
             set_tcp_keepalive(&stream);
+            set_tcp_congestion(&stream)
+                .map_err(|err| ServerError::Io(ChannelAddr::Tcp(self.addr), err))?;
             Ok((stream, ChannelAddr::Tcp(peer_addr)))
         }
     }
@@ -2021,6 +2127,13 @@ pub(crate) mod tls {
                             )
                         })?;
                         set_tcp_keepalive(&stream);
+                        set_tcp_congestion(&stream).map_err(|err| {
+                            ClientError::Connect(
+                                self.dest(),
+                                err,
+                                "cannot set TCP congestion control".to_string(),
+                            )
+                        })?;
                         let mut tls_stream = self
                             .connector
                             .connect(server_name.clone(), stream)
@@ -2638,6 +2751,54 @@ mod tests {
         assert_eq!(rx.recv().await.unwrap(), 444);
 
         Ok(())
+    }
+
+    // The channel hides the socket fd behind trait objects, so exercise the
+    // tuning helper directly against a real connected stream, mirroring what the
+    // connect/accept paths do. `reno` is universally available and differs from
+    // the `cubic` default, so reading it back proves the setsockopt took effect.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn apply_tcp_congestion_sets_congestion_control() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accept = tokio::spawn(async move { listener.accept().await.unwrap() });
+        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let _server = accept.await.unwrap();
+
+        apply_tcp_congestion(&stream, Some("reno")).unwrap();
+
+        let cc = socket2::SockRef::from(&stream).tcp_congestion().unwrap();
+        assert!(
+            cc.starts_with(b"reno"),
+            "expected reno congestion control, got {:?}",
+            String::from_utf8_lossy(&cc)
+        );
+    }
+
+    // An algorithm the host does not provide must fail the caller rather than
+    // being ignored: a path the operator believes is tuned would otherwise keep
+    // running on the host default. `None` (the empty-config case) stays a no-op.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn apply_tcp_congestion_rejects_unknown_algorithm() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accept = tokio::spawn(async move { listener.accept().await.unwrap() });
+        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let _server = accept.await.unwrap();
+
+        let err = apply_tcp_congestion(&stream, Some("not_a_real_cc_algo"))
+            .expect_err("an unsupported congestion-control algorithm should be an error");
+        // The bare errno is ENOENT ("No such file or directory"), so the message has
+        // to name the algorithm to be actionable.
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not_a_real_cc_algo"),
+            "error should name the rejected algorithm, got {msg:?}"
+        );
+
+        apply_tcp_congestion(&stream, None).expect("None should be a no-op, not an error");
     }
 
     #[tracing_test::traced_test]

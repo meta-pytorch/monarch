@@ -61,6 +61,7 @@ if TYPE_CHECKING:
             cleanup_timeout: NotRequired[str]
             default_encoding: NotRequired[Encoding]
             channel_net_rx_buffer_full_check_interval: NotRequired[str]
+            channel_tcp_congestion: NotRequired[str]
             message_latency_sampling_rate: NotRequired[float]
             enable_dest_actor_reordering_buffer: NotRequired[bool]
             mesh_bootstrap_enable_pdeathsig: NotRequired[bool]
@@ -133,6 +134,7 @@ def configure(**kwargs: "ConfigureKwargsType") -> None:
             cleanup_timeout: Timeout for cleanup operations (humantime).
             default_encoding: Default message encoding (Encoding.Bincode, Encoding.Json, or Encoding.Multipart).
             channel_net_rx_buffer_full_check_interval: Network receive buffer check interval (humantime).
+            channel_tcp_congestion: TCP congestion control: ``"cubic"``, ``"reno"``, ``"bbr"`` (OS-dependent); empty keeps the host default.
             message_latency_sampling_rate: Sampling rate for message latency tracking (0.0 to 1.0).
             enable_dest_actor_reordering_buffer: Enable reordering buffer in dest actor.
 

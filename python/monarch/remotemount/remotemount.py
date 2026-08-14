@@ -719,6 +719,30 @@ class MountHandlerClient(Actor):
         # reset the delivered set: a re-open must re-deliver every block (the previous
         # mesh's in-memory blocks are gone).
         self._delivered.clear()
+
+        # The default cubic underfills a high-BDP WAN link, so tune the chain to bbr.
+        # This runs BEFORE spawn_procs() on purpose: a configure() reaches procs spawned
+        # after it (the Runtime layer is snapshotted into each child as ClientOverride) but
+        # never retroactively, so setting it here is what gets bbr onto the workers' relay
+        # hops as well as this proc's client -> w[0] ship. Setting it after the spawn would
+        # tune only this proc, and would tune the workers on a RE-open (they would inherit
+        # the previous open's setting), making the transport depend on open count.
+        #
+        # Congestion control is sender-side, applied by whichever proc dials, so it has to be
+        # in the config of every proc that dials -- not the caller's proc, which cannot be
+        # relied on to have configured anything before this one was spawned. Writing the
+        # Runtime layer leaves an explicit HYPERACTOR_CHANNEL_TCP_CONGESTION env override
+        # winning, since Env resolves above Runtime.
+        #
+        # Keep this an unscoped configure(), NOT a `with configured(...)`: connect() below
+        # dials lazily -- it returns right after spawning the writer task, and the real
+        # TcpStream connect + set_tcp_congestion run later on that background task, reading
+        # this setting then. A scoped restore would clear it the instant connect() returns,
+        # before the background dial reads it -- silently dropping bbr.
+        from monarch.config import configure
+
+        configure(channel_tcp_congestion="bbr")
+
         self.procs = self.host_mesh.spawn_procs()
 
         # Spawn the fault-request broker first, as a single actor on the leader worker

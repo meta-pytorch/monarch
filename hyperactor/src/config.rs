@@ -204,6 +204,24 @@ declare_attrs! {
     ))
     pub attr CHANNEL_TCP_KEEPALIVE_IDLE: Duration = Duration::from_secs(60);
 
+    /// TCP congestion-control algorithm applied to channel sockets after
+    /// connect/accept (e.g. `bbr`). Empty (the default) leaves the host
+    /// default (`cubic`) in place, so this is a no-op for the overwhelming
+    /// majority of channels; only bandwidth-bound long-haul paths (e.g.
+    /// remotemount's client->leader block ship) opt in. `cubic` underfills a
+    /// link with a high bandwidth-delay product; `bbr` recovers that
+    /// bandwidth. Set via env
+    /// `HYPERACTOR_CHANNEL_TCP_CONGESTION` or
+    /// `configure(channel_tcp_congestion="bbr")`; both propagate to spawned
+    /// worker procs (env via the child's Env layer, `configure` via the
+    /// Runtime config snapshotted into the child), with env winning if both
+    /// are set.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_CHANNEL_TCP_CONGESTION".to_string()),
+        Some("channel_tcp_congestion".to_string()),
+    ))
+    pub attr CHANNEL_TCP_CONGESTION: String = String::new();
+
     /// Maximum time `Link::next()` spends retrying a failed connect
     /// before giving up. Pairs with TCP keepalive: keepalive surfaces
     /// peer death as an I/O error, then the connect-retry loop quits
