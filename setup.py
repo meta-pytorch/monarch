@@ -186,6 +186,13 @@ build_gpu = build_cuda or build_rocm
 # it can't build today only because rdmaxcel-sys compiles device code.
 build_rdma = has_cuda or has_rocm
 
+# Kernel-launched RDMA (GPU-driven doorbell + GPU-Direct registration) links the
+# GPU runtime (libamdhip64/cudart) into _rust_bindings and makes importing monarch
+# load/initialize the GPU runtime. It is OFF unless explicitly requested via
+# USE_RDMA_KERNELS=1, and only meaningful when rdma itself is being built.
+# CPU-initiated RDMA does not need it (the driver API is dlopen'd at runtime).
+build_rdma_kernels = build_rdma and os.environ.get("USE_RDMA_KERNELS", "0") == "1"
+
 print("=" * 80)
 if build_tensor_engine:
     if build_gpu:
@@ -202,7 +209,8 @@ if build_tensor_engine:
 else:
     print("Building WITHOUT tensor_engine (no torch)")
 if build_rdma:
-    print("  - RDMA: included")
+    kernels_note = " (+ kernel-launched RDMA)" if build_rdma_kernels else ""
+    print(f"  - RDMA: included{kernels_note}")
 else:
     print("  - RDMA: not included (no CUDA/ROCm toolchain found; see TODO in setup.py)")
 print("=" * 80)
@@ -391,6 +399,8 @@ locked_cargo_args = ["--locked"]
 rust_features = ["extension-module", "distributed_sql_telemetry"]
 if build_rdma:
     rust_features.append("rdma")
+if build_rdma_kernels:
+    rust_features.append("rdma_cuda")  # opt-in; links the GPU runtime
 if build_tensor_engine:
     rust_features.append("tensor_engine")
 if build_gpu:
