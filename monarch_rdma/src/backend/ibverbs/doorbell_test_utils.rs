@@ -237,10 +237,10 @@ impl Handler<CudaActorMessage> for CudaActor {
 
                 // Register via RdmaManagerActor request_buffer.
                 // See the module-level note on `NoKeepalive`.
-                let local_memory = KeepaliveLocalMemory::new(Arc::new(NoKeepalive {
+                let local_memory = KeepaliveLocalMemory::try_new(Arc::new(NoKeepalive {
                     addr: dptr,
                     size: padded_size,
-                }));
+                }))?;
                 let handle = rdma_actor
                     .downcast_handle(cx)
                     .ok_or_else(|| anyhow::anyhow!("failed to get handle"))?;
@@ -635,10 +635,10 @@ impl DoorbellTestEnv {
                 len: buffer.len(),
                 cpu_ref: Some(buffer),
             });
-            local_memory_1 = KeepaliveLocalMemory::new(Arc::new(NoKeepalive {
+            local_memory_1 = KeepaliveLocalMemory::try_new(Arc::new(NoKeepalive {
                 addr: ptr as usize,
                 size: buffer_size,
-            }));
+            }))?;
             let handle_1 = actor_1
                 .downcast_handle(&instance_1)
                 .ok_or_else(|| anyhow::anyhow!("failed to get handle"))?;
@@ -655,10 +655,10 @@ impl DoorbellTestEnv {
                 .await?;
             rdma_handle_1 = rdma_buf;
             device_ptr_1 = Some(dev_ptr);
-            local_memory_1 = KeepaliveLocalMemory::new(Arc::new(NoKeepalive {
+            local_memory_1 = KeepaliveLocalMemory::try_new(Arc::new(NoKeepalive {
                 addr: dev_ptr,
                 size: buffer_size,
-            }));
+            }))?;
 
             buf_vec.push(Buffer {
                 ptr: dev_ptr as u64,
@@ -676,10 +676,10 @@ impl DoorbellTestEnv {
                 len: buffer.len(),
                 cpu_ref: Some(buffer),
             });
-            local_memory_2 = KeepaliveLocalMemory::new(Arc::new(NoKeepalive {
+            local_memory_2 = KeepaliveLocalMemory::try_new(Arc::new(NoKeepalive {
                 addr: ptr as usize,
                 size: buffer_size,
-            }));
+            }))?;
             let handle_2 = actor_2
                 .downcast_handle(&instance_2)
                 .ok_or_else(|| anyhow::anyhow!("failed to get handle"))?;
@@ -696,10 +696,10 @@ impl DoorbellTestEnv {
                 .await?;
             rdma_handle_2 = rdma_buf;
             device_ptr_2 = Some(dev_ptr);
-            local_memory_2 = KeepaliveLocalMemory::new(Arc::new(NoKeepalive {
+            local_memory_2 = KeepaliveLocalMemory::try_new(Arc::new(NoKeepalive {
                 addr: dev_ptr,
                 size: buffer_size,
-            }));
+            }))?;
 
             buf_vec.push(Buffer {
                 ptr: dev_ptr as u64,

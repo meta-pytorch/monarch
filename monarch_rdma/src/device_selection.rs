@@ -21,6 +21,8 @@ use anyhow::Result;
 use dashmap::DashSet;
 use rdmaxcel_sys::CUresult;
 
+use crate::local_memory::is_device_ptr;
+
 fn cuda_error_string(rc: CUresult) -> String {
     // The lookup below goes through the same driver wrapper as every other call,
     // so it cannot name the one code that means there is no driver to ask: it
@@ -181,6 +183,40 @@ pub enum MemoryLocation {
     Cpu(Option<u32>),
     /// GPU memory on the given CUDA device ordinal, or any GPU if `None`.
     Gpu(Option<u32>),
+}
+
+impl MemoryLocation {
+    /// Where the memory at `addr` lives.
+    ///
+    /// A device pointer resolves to the CUDA ordinal that owns it. Host memory
+    /// is [`Self::Cpu(None)`]: the NUMA node backing the allocation is not
+    /// resolved.
+    ///
+    /// Errors when `addr` is device memory whose owning ordinal cannot be
+    /// queried.
+    pub fn from_addr(addr: usize) -> Result<Self> {
+        if !is_device_ptr(addr) {
+            return Ok(Self::Cpu(None));
+        }
+        let mut ordinal: i32 = -1;
+        // SAFETY: FFI writes one `i32` through the out-pointer; `addr` is passed
+        // by value as an opaque device address and never dereferenced.
+        let rc = unsafe {
+            rdmaxcel_sys::rdmaxcel_cuPointerGetAttribute(
+                &mut ordinal as *mut _ as *mut std::ffi::c_void,
+                rdmaxcel_sys::CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL,
+                addr as rdmaxcel_sys::CUdeviceptr,
+            )
+        };
+        anyhow::ensure!(
+            rc == rdmaxcel_sys::CUDA_SUCCESS,
+            "cuPointerGetAttribute(DEVICE_ORDINAL) failed for device memory at {addr:#x}: {}",
+            cuda_error_string(rc),
+        );
+        Ok(Self::Gpu(Some(
+            u32::try_from(ordinal).expect("CUDA device ordinal should be non-negative"),
+        )))
+    }
 }
 
 /// Locality of a path between two PCI endpoints, ordered best to worst.

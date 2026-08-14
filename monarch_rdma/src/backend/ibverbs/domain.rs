@@ -29,8 +29,8 @@ use super::primitives::IbvDeviceInfo;
 use super::primitives::IbvMr;
 use super::primitives::IbvPd;
 use super::queue_pair::IbvQueuePair;
+use crate::device_selection::MemoryLocation;
 use crate::local_memory::KeepaliveLocalMemory;
-use crate::local_memory::is_device_ptr;
 
 /// Manages RDMA resources including context and protection domain.
 ///
@@ -421,9 +421,10 @@ pub(super) unsafe fn register_dmabuf_mr(
     // so make the pointer's own device context current first. Without this, in a
     // multi-GPU process it fails with `CUDA_ERROR_NOT_FOUND` whenever the active
     // context belongs to a different device than `addr`.
-    // SAFETY: this path is only taken for device memory (`is_device_ptr(addr)`
-    // in `register_host_or_dmabuf_mr`), so `addr` is a valid CUDA device pointer
-    // as `set_ctx_for_ptr` requires. The guard restores the prior context on drop.
+    // SAFETY: this path is only taken for device memory (the
+    // `MemoryLocation::Gpu` arm in `register_host_or_dmabuf_mr`), so `addr` is a
+    // valid CUDA device pointer as `set_ctx_for_ptr` requires. The guard
+    // restores the prior context on drop.
     let _ctx_guard = unsafe { crate::local_memory::set_ctx_for_ptr(addr)? };
 
     let (base, base_size) = cuda_alloc_range(addr)?;
@@ -476,10 +477,9 @@ pub(super) unsafe fn register_host_or_dmabuf_mr<I: IbvDomainImpl>(
     // PD (the helpers error on null), and `[addr, addr + size)` stays valid for
     // the returned MR's lifetime.
     let (mr, mr_offset) = unsafe {
-        if is_device_ptr(addr) {
-            register_dmabuf_mr(domain.pd(), addr, size, access_flags)?
-        } else {
-            (register_host_mr(domain.pd(), addr, size, access_flags)?, 0)
+        match mem.location() {
+            MemoryLocation::Gpu(_) => register_dmabuf_mr(domain.pd(), addr, size, access_flags)?,
+            MemoryLocation::Cpu(_) => (register_host_mr(domain.pd(), addr, size, access_flags)?, 0),
         }
     };
 

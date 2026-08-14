@@ -442,11 +442,12 @@ impl Keepalive for PyKeepalive {
 #[pymethods]
 impl PyLocalMemoryHandle {
     #[new]
-    fn new(obj: Py<PyAny>, addr: usize, size: usize) -> Self {
+    fn new(obj: Py<PyAny>, addr: usize, size: usize) -> PyResult<Self> {
         let keepalive: Arc<dyn Keepalive> = Arc::new(PyKeepalive { obj, addr, size });
-        Self {
-            inner: KeepaliveLocalMemory::new(keepalive),
-        }
+        Ok(Self {
+            inner: KeepaliveLocalMemory::try_new(keepalive)
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
+        })
     }
 
     #[getter]
@@ -563,7 +564,8 @@ fn _make_local_memory_handle_from_memoryview(
         size,
     });
     Ok(PyLocalMemoryHandle {
-        inner: KeepaliveLocalMemory::new(keepalive),
+        inner: KeepaliveLocalMemory::try_new(keepalive)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
     })
 }
 
@@ -592,7 +594,8 @@ fn _make_local_memory_handle_from_tensor(
         numel,
     });
     Ok(PyLocalMemoryHandle {
-        inner: KeepaliveLocalMemory::new(keepalive),
+        inner: KeepaliveLocalMemory::try_new(keepalive)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
     })
 }
 
