@@ -43,12 +43,12 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
-use super::IbvBuffer;
 use super::IbvOp;
 use super::domain::IbvDomain;
 use super::domain::IbvDomainImpl;
 use super::manager_actor::CreatePeerQueuePair;
 use super::memory_region::IbvMemoryRegionView;
+use super::memory_region::IbvRemoteMemoryRegionView;
 use super::primitives::Gid;
 use super::primitives::GidScope;
 use super::primitives::GidType;
@@ -216,8 +216,8 @@ pub trait IbvQueuePair: std::fmt::Debug + Send + Sync + 'static + Sized {
     /// that were posted.
     fn put(
         &mut self,
-        remote_dst: IbvBuffer,
-        local_src: IbvBuffer,
+        remote_dst: IbvRemoteMemoryRegionView,
+        local_src: IbvMemoryRegionView,
     ) -> Result<Vec<u64>, anyhow::Error>;
 
     /// Post an RDMA READ of `remote_src` into `local_dst`. The request may
@@ -225,8 +225,8 @@ pub trait IbvQueuePair: std::fmt::Debug + Send + Sync + 'static + Sized {
     /// that were posted.
     fn get(
         &mut self,
-        local_dst: IbvBuffer,
-        remote_src: IbvBuffer,
+        local_dst: IbvMemoryRegionView,
+        remote_src: IbvRemoteMemoryRegionView,
     ) -> Result<Vec<u64>, anyhow::Error>;
 
     /// Poll `target`'s completion queue for a single work completion.
@@ -703,8 +703,8 @@ impl IbvQueuePair for RCQueuePair {
 
     fn put(
         &mut self,
-        remote_dst: IbvBuffer,
-        local_src: IbvBuffer,
+        remote_dst: IbvRemoteMemoryRegionView,
+        local_src: IbvMemoryRegionView,
     ) -> Result<Vec<u64>, anyhow::Error> {
         if remote_dst.size < local_src.size {
             return Err(anyhow::anyhow!(
@@ -715,7 +715,7 @@ impl IbvQueuePair for RCQueuePair {
         }
         self.post_chunked(
             IbvOperation::Write,
-            local_src.addr,
+            local_src.rdma_addr,
             local_src.lkey,
             remote_dst.addr,
             remote_dst.rkey,
@@ -725,8 +725,8 @@ impl IbvQueuePair for RCQueuePair {
 
     fn get(
         &mut self,
-        local_dst: IbvBuffer,
-        remote_src: IbvBuffer,
+        local_dst: IbvMemoryRegionView,
+        remote_src: IbvRemoteMemoryRegionView,
     ) -> Result<Vec<u64>, anyhow::Error> {
         if local_dst.size < remote_src.size {
             return Err(anyhow::anyhow!(
@@ -737,7 +737,7 @@ impl IbvQueuePair for RCQueuePair {
         }
         self.post_chunked(
             IbvOperation::Read,
-            local_dst.addr,
+            local_dst.rdma_addr,
             local_dst.lkey,
             remote_src.addr,
             remote_src.rkey,
@@ -1015,19 +1015,11 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
             is_read,
         } = pending;
 
-        let local_buf = IbvBuffer {
-            lkey: mrv.lkey,
-            rkey: mrv.rkey,
-            addr: mrv.rdma_addr,
-            size: mrv.size,
-            device_name: mrv.device_name.clone(),
-        };
-
         // 1. Per-op fatal: op alone exceeds the QP's capacity.
         if wrs > self.max_send_wr {
             let err = format!(
                 "op too large for this QP [op_idx={}, qp_key={:?}, op_type={:?}, wrs={}, max_send_wr={}, local: {:?}, remote: {:?}]",
-                op_idx, self.qp_key, op.op_type, wrs, self.max_send_wr, local_buf, op.remote_buffer,
+                op_idx, self.qp_key, op.op_type, wrs, self.max_send_wr, mrv, op.remote_buffer,
             );
             reply.try_post(
                 cx,
@@ -1041,7 +1033,7 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
         if is_read && wrs > self.max_rd_atomic {
             let err = format!(
                 "read op too large for this QP [op_idx={}, qp_key={:?}, wrs={}, max_rd_atomic={}, local: {:?}, remote: {:?}]",
-                op_idx, self.qp_key, wrs, self.max_rd_atomic, local_buf, op.remote_buffer,
+                op_idx, self.qp_key, wrs, self.max_rd_atomic, mrv, op.remote_buffer,
             );
             reply.try_post(
                 cx,
@@ -1073,8 +1065,8 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
 
         // 3. Post.
         let post_result = match op.op_type {
-            RdmaOpType::WriteFromLocal => self.qp.put(op.remote_buffer.clone(), local_buf.clone()),
-            RdmaOpType::ReadIntoLocal => self.qp.get(local_buf.clone(), op.remote_buffer.clone()),
+            RdmaOpType::WriteFromLocal => self.qp.put(op.remote_buffer.clone(), mrv.clone()),
+            RdmaOpType::ReadIntoLocal => self.qp.get(mrv.clone(), op.remote_buffer.clone()),
         };
         let wr_ids = post_result.map_err(|e| {
             anyhow::anyhow!(
@@ -1082,7 +1074,7 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
                 if is_read { "get" } else { "put" },
                 op_idx,
                 self.qp_key,
-                local_buf,
+                mrv,
                 op.remote_buffer,
             )
         })?;
@@ -1536,13 +1528,13 @@ mod tests {
     #[derive(Debug)]
     enum PostedOp {
         Put {
-            remote_dst: IbvBuffer,
-            local_src: IbvBuffer,
+            remote_dst: IbvRemoteMemoryRegionView,
+            local_src: IbvMemoryRegionView,
             wr_ids: Vec<u64>,
         },
         Get {
-            local_dst: IbvBuffer,
-            remote_src: IbvBuffer,
+            local_dst: IbvMemoryRegionView,
+            remote_src: IbvRemoteMemoryRegionView,
             wr_ids: Vec<u64>,
         },
     }
@@ -1658,7 +1650,11 @@ mod tests {
             Ok(rdmaxcel_sys::ibv_qp_state::IBV_QPS_RTS)
         }
 
-        fn put(&mut self, remote_dst: IbvBuffer, local_src: IbvBuffer) -> Result<Vec<u64>> {
+        fn put(
+            &mut self,
+            remote_dst: IbvRemoteMemoryRegionView,
+            local_src: IbvMemoryRegionView,
+        ) -> Result<Vec<u64>> {
             let mut inner = self.inner.lock().unwrap();
             if let Some(msg) = inner.post_error.take() {
                 return Err(anyhow::anyhow!(msg));
@@ -1677,7 +1673,11 @@ mod tests {
             Ok(wr_ids)
         }
 
-        fn get(&mut self, local_dst: IbvBuffer, remote_src: IbvBuffer) -> Result<Vec<u64>> {
+        fn get(
+            &mut self,
+            local_dst: IbvMemoryRegionView,
+            remote_src: IbvRemoteMemoryRegionView,
+        ) -> Result<Vec<u64>> {
             let mut inner = self.inner.lock().unwrap();
             if let Some(msg) = inner.post_error.take() {
                 return Err(anyhow::anyhow!(msg));
@@ -2066,8 +2066,7 @@ mod tests {
         IbvOp {
             op_type,
             local_memory: fake_local_memory(addr, size),
-            remote_buffer: IbvBuffer {
-                lkey: 0,
+            remote_buffer: IbvRemoteMemoryRegionView {
                 rkey: 0,
                 addr: 0x4000_0000,
                 size,
@@ -2166,7 +2165,7 @@ mod tests {
         }
     }
 
-    fn expect_put(p: PostedOp) -> (IbvBuffer, IbvBuffer, Vec<u64>) {
+    fn expect_put(p: PostedOp) -> (IbvMemoryRegionView, IbvRemoteMemoryRegionView, Vec<u64>) {
         match p {
             PostedOp::Put {
                 remote_dst,
@@ -2177,7 +2176,7 @@ mod tests {
         }
     }
 
-    fn expect_get(p: PostedOp) -> (IbvBuffer, IbvBuffer, Vec<u64>) {
+    fn expect_get(p: PostedOp) -> (IbvMemoryRegionView, IbvRemoteMemoryRegionView, Vec<u64>) {
         match p {
             PostedOp::Get {
                 local_dst,
@@ -2246,7 +2245,7 @@ mod tests {
         // wr_ids start at 0 (fresh MockQp), so the single WR is wr 0.
         let (lhandle, rhandle, wr_ids) = expect_put(recv_posted(&mut posted_rx).await);
         assert_eq!(wr_ids, vec![0]);
-        assert_eq!(lhandle.addr, 0x1000);
+        assert_eq!(lhandle.rdma_addr, 0x1000);
         assert_eq!(lhandle.size, 4096);
         assert_eq!(lhandle.lkey, 0x1234);
         assert_eq!(lhandle.rkey, 0x5678);

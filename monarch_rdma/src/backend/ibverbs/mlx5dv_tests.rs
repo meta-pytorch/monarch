@@ -127,10 +127,10 @@ async fn test_indirect_mkey_read_at_large_offset() -> Result<(), anyhow::Error> 
     Ok(())
 }
 
-/// Extract the ibverbs `(lkey, rkey)` from a remote buffer.
-fn ibv_keys_of(remote: &crate::RdmaRemoteBuffer) -> Result<(u32, u32), anyhow::Error> {
+/// Extract the ibverbs `rkey` from a remote buffer.
+fn ibv_rkey_of(remote: &crate::RdmaRemoteBuffer) -> Result<u32, anyhow::Error> {
     let ctx = remote.resolve_mlx().expect("remote buffer is Mellanox");
-    Ok((ctx.buffer.lkey, ctx.buffer.rkey))
+    Ok(ctx.buffer.rkey)
 }
 
 /// Integration test for the indirect-mkey segment-growth path.
@@ -223,12 +223,11 @@ async fn test_indirect_mkey_rebind_grows_existing_segment() -> Result<(), anyhow
         .next()
         .expect("buf B");
 
-    let (lkey_a, rkey_a) = ibv_keys_of(&buf_a)?;
-    let (lkey_b, rkey_b) = ibv_keys_of(&buf_b)?;
+    let rkey_a = ibv_rkey_of(&buf_a)?;
+    let rkey_b = ibv_rkey_of(&buf_b)?;
     assert_ne!(
-        (lkey_a, rkey_a),
-        (lkey_b, rkey_b),
-        "buffers in distinct segments must have distinct (lkey, rkey)",
+        rkey_a, rkey_b,
+        "buffers in distinct segments must have distinct rkeys",
     );
 
     // Expand S1 in place; the next miss triggers a register_segments
@@ -241,20 +240,18 @@ async fn test_indirect_mkey_rebind_grows_existing_segment() -> Result<(), anyhow
         .next()
         .expect("buf C");
 
-    let (lkey_c, rkey_c) = ibv_keys_of(&buf_c)?;
+    let rkey_c = ibv_rkey_of(&buf_c)?;
     // Growth rotates the segment onto a fresh indirect mkey (parking the prior
     // one), so buf C — carved after the grow — carries a new key, distinct from
     // buf A's pre-grow key; the round-trips below confirm A's parked key stays
     // valid. It is also distinct from buf B's separate segment.
     assert_ne!(
-        (lkey_c, rkey_c),
-        (lkey_a, rkey_a),
-        "growth rotates the expandable segment onto a new (lkey, rkey)",
+        rkey_c, rkey_a,
+        "growth rotates the expandable segment onto a new rkey",
     );
     assert_ne!(
-        (lkey_c, rkey_c),
-        (lkey_b, rkey_b),
-        "buffers in distinct segments must have distinct (lkey, rkey)",
+        rkey_c, rkey_b,
+        "buffers in distinct segments must have distinct rkeys",
     );
 
     // Each buffer was filled with its own pattern at registration;
@@ -417,29 +414,29 @@ async fn test_indirect_mkey_rebind_falls_back_to_dmabuf_at_max_sge() -> Result<(
         .expect("buf C");
 
     // Buf B took the dmabuf path (the override forced
-    // register_segments to fail), so its lkey differs from buf A's
+    // register_segments to fail), so its key differs from buf A's
     // indirect mkey — sanity check that the override took effect.
     // Buf C lands at an address inside the [mr_size, phys_size) gap;
-    // it must also fall through to dmabuf and get a distinct lkey.
-    let (lkey_a, _) = ibv_keys_of(&buf_a)?;
-    let (lkey_b, _) = ibv_keys_of(&buf_b)?;
-    let (lkey_c, _) = ibv_keys_of(&buf_c)?;
+    // it must also fall through to dmabuf and get a distinct key.
+    let rkey_a = ibv_rkey_of(&buf_a)?;
+    let rkey_b = ibv_rkey_of(&buf_b)?;
+    let rkey_c = ibv_rkey_of(&buf_c)?;
     assert_ne!(
-        lkey_a, lkey_b,
+        rkey_a, rkey_b,
         "buf B should be registered via the dmabuf fallback after \
          register_segments hit the max_sge override and therefore have \
-         a different lkey from buf A's indirect mkey"
+         a different rkey from buf A's indirect mkey"
     );
     assert_ne!(
-        lkey_a, lkey_c,
+        rkey_a, rkey_c,
         "buf C lands in the [mr_size, phys_size) gap and must fall \
          through to dmabuf; reusing buf A's indirect mkey here would \
-         hand the NIC a stale (lkey, offset) past the bound"
+         hand the NIC a bad (key, offset) past the bound"
     );
 
     // Round-trip every buffer: read the registration pattern, write
-    // a fresh one, read it back. Even if the lkey check above
-    // somehow passed, a stale (lkey, offset) on buf C would fail at
+    // a fresh one, read it back. Even if the rkey check above
+    // somehow passed, a bad (key, offset) on buf C would fail at
     // the NIC with LOC_PROT_ERR.
     for (label, buf, pattern) in [
         ("A", &buf_a, PATTERN_A),

@@ -296,6 +296,9 @@ pub struct CudaRdmaActor {
     cu_ptr: usize,
     // RDMA buffer handle for the CUDA memory
     rdma_buffer_handle: Option<RdmaRemoteBuffer>,
+    // The registered CUDA memory. Held because the ping-pong addresses it
+    // through its local registration, which is the only place its `lkey` lives.
+    local_memory: Option<KeepaliveLocalMemory>,
     // Reference to the RDMA manager actor
     rdma_manager: ActorRef<RdmaManagerActor>,
     // Legacy queue pair for the GPU doorbell ping-pong, created via
@@ -417,6 +420,7 @@ impl RemoteSpawn for CudaRdmaActor {
                 cpu_buffer,
                 cu_ptr: dptr as usize,
                 rdma_buffer_handle: None,
+                local_memory: None,
                 rdma_manager,
                 raw_qp: None,
             })
@@ -487,8 +491,9 @@ impl Handler<InitializeBuffer> for CudaRdmaActor {
                 .rdma_manager
                 .downcast_handle(cx)
                 .ok_or_else(|| anyhow::anyhow!("failed to get handle"))?;
-            let buffer_handle = handle.request_buffer(cx, local_memory).await?;
+            let buffer_handle = handle.request_buffer(cx, local_memory.clone()).await?;
             self.rdma_buffer_handle = Some(buffer_handle);
+            self.local_memory = Some(local_memory);
         }
 
         reply.post(cx, true);
@@ -614,10 +619,19 @@ impl Handler<PerformPingPong> for CudaRdmaActor {
         }
 
         // Resolve the local/remote buffer transport details for the ping-pong.
-        let local_ibv = local_buffer
+        // The local side goes through the registration itself: the wire view a
+        // peer would get carries no `lkey`.
+        let local_device = local_buffer
             .resolve_mlx()
             .ok_or_else(|| anyhow::anyhow!("Mellanox backend not found for local buffer"))?
-            .buffer;
+            .buffer
+            .device_name;
+        let local_ibv = self
+            .local_memory
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Local buffer not registered"))?
+            .registered_mr(&local_device)?
+            .ok_or_else(|| anyhow::anyhow!("local buffer has no registration on {local_device}"))?;
         let remote_ibv = remote_buffer
             .resolve_mlx()
             .ok_or_else(|| anyhow::anyhow!("Mellanox backend not found for remote buffer"))?
@@ -640,7 +654,7 @@ impl Handler<PerformPingPong> for CudaRdmaActor {
             let dv_recv_cq = qp.dv_recv_cq as *mut rdmaxcel_sys::mlx5dv_cq;
             let mut params = rdma_params_t {
                 cu_ptr: self.cu_ptr,
-                laddr: local_ibv.addr,
+                laddr: local_ibv.rdma_addr,
                 lsize: local_ibv.size,
                 lkey: local_ibv.lkey,
                 raddr: remote_ibv.addr,

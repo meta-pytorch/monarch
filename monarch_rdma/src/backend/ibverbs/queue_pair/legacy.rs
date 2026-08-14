@@ -325,7 +325,11 @@ impl IbvQueuePair {
         Ok(())
     }
 
-    pub fn recv(&mut self, lhandle: IbvBuffer, rhandle: IbvBuffer) -> Result<u64, anyhow::Error> {
+    pub fn recv(
+        &mut self,
+        lhandle: IbvMemoryRegionView,
+        rhandle: IbvRemoteMemoryRegionView,
+    ) -> Result<u64, anyhow::Error> {
         unsafe {
             let qp = self.qp as *mut rdmaxcel_sys::rdmaxcel_qp;
             let idx = rdmaxcel_sys::rdmaxcel_qp_fetch_add_recv_wqe_idx(qp);
@@ -347,14 +351,14 @@ impl IbvQueuePair {
 
     pub fn put_with_recv(
         &mut self,
-        lhandle: IbvBuffer,
-        rhandle: IbvBuffer,
+        lhandle: IbvMemoryRegionView,
+        rhandle: IbvRemoteMemoryRegionView,
     ) -> Result<Vec<u64>, anyhow::Error> {
         unsafe {
             let qp = self.qp as *mut rdmaxcel_sys::rdmaxcel_qp;
             let idx = rdmaxcel_sys::rdmaxcel_qp_fetch_add_send_wqe_idx(qp);
             self.post_op(
-                lhandle.addr,
+                lhandle.rdma_addr,
                 lhandle.lkey,
                 lhandle.size,
                 idx,
@@ -371,8 +375,8 @@ impl IbvQueuePair {
 
     pub fn put(
         &mut self,
-        lhandle: IbvBuffer,
-        rhandle: IbvBuffer,
+        lhandle: IbvMemoryRegionView,
+        rhandle: IbvRemoteMemoryRegionView,
     ) -> Result<Vec<u64>, anyhow::Error> {
         let total_size = lhandle.size;
         if rhandle.size < total_size {
@@ -395,7 +399,7 @@ impl IbvQueuePair {
             };
             wr_ids.push(idx);
             self.post_op(
-                lhandle.addr + offset,
+                lhandle.rdma_addr + offset,
                 lhandle.lkey,
                 chunk_size,
                 idx,
@@ -450,8 +454,8 @@ impl IbvQueuePair {
     /// Enqueues a put operation without ringing the doorbell.
     pub fn enqueue_put(
         &mut self,
-        lhandle: IbvBuffer,
-        rhandle: IbvBuffer,
+        lhandle: IbvMemoryRegionView,
+        rhandle: IbvRemoteMemoryRegionView,
     ) -> Result<Vec<u64>, anyhow::Error> {
         let idx = unsafe {
             rdmaxcel_sys::rdmaxcel_qp_fetch_add_send_wqe_idx(
@@ -460,7 +464,7 @@ impl IbvQueuePair {
         };
 
         self.send_wqe(
-            lhandle.addr,
+            lhandle.rdma_addr,
             lhandle.lkey,
             lhandle.size,
             idx,
@@ -475,8 +479,8 @@ impl IbvQueuePair {
     /// Enqueues a put-with-receive operation without ringing the doorbell.
     pub fn enqueue_put_with_recv(
         &mut self,
-        lhandle: IbvBuffer,
-        rhandle: IbvBuffer,
+        lhandle: IbvMemoryRegionView,
+        rhandle: IbvRemoteMemoryRegionView,
     ) -> Result<Vec<u64>, anyhow::Error> {
         let idx = unsafe {
             rdmaxcel_sys::rdmaxcel_qp_fetch_add_send_wqe_idx(
@@ -485,7 +489,7 @@ impl IbvQueuePair {
         };
 
         self.send_wqe(
-            lhandle.addr,
+            lhandle.rdma_addr,
             lhandle.lkey,
             lhandle.size,
             idx,
@@ -500,8 +504,8 @@ impl IbvQueuePair {
     /// Enqueues a get operation without ringing the doorbell.
     pub fn enqueue_get(
         &mut self,
-        lhandle: IbvBuffer,
-        rhandle: IbvBuffer,
+        lhandle: IbvMemoryRegionView,
+        rhandle: IbvRemoteMemoryRegionView,
     ) -> Result<Vec<u64>, anyhow::Error> {
         let idx = unsafe {
             rdmaxcel_sys::rdmaxcel_qp_fetch_add_send_wqe_idx(
@@ -510,7 +514,7 @@ impl IbvQueuePair {
         };
 
         self.send_wqe(
-            lhandle.addr,
+            lhandle.rdma_addr,
             lhandle.lkey,
             lhandle.size,
             idx,
@@ -524,8 +528,8 @@ impl IbvQueuePair {
 
     pub fn get(
         &mut self,
-        lhandle: IbvBuffer,
-        rhandle: IbvBuffer,
+        lhandle: IbvMemoryRegionView,
+        rhandle: IbvRemoteMemoryRegionView,
     ) -> Result<Vec<u64>, anyhow::Error> {
         let total_size = rhandle.size;
         if rhandle.size > lhandle.size {
@@ -550,7 +554,7 @@ impl IbvQueuePair {
             wr_ids.push(idx);
 
             self.post_op(
-                lhandle.addr + offset,
+                lhandle.rdma_addr + offset,
                 lhandle.lkey,
                 chunk_size,
                 idx,

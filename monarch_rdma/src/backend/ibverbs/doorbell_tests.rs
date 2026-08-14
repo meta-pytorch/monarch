@@ -52,22 +52,22 @@ mod tests {
         Ok(())
     }
 
-    /// Brings up a connected legacy QP pair: `qp_1` on `ibv_buffer_1`'s device
-    /// (via `ibv_handle_1`), `qp_2` on `ibv_buffer_2`'s device.
+    /// Brings up a connected legacy QP pair: `qp_1` on side 1's registration
+    /// device (via `ibv_handle_1`), `qp_2` on side 2's.
     async fn connected_pair(
         env: &DoorbellTestEnv,
     ) -> Result<(IbvQueuePair, IbvQueuePair), anyhow::Error> {
         let mut qp_1 = request_queue_pair(
             &env.ibv_handle_1,
             &env.client_1,
-            env.ibv_buffer_1.device_name.clone(),
+            env.local_mrv_1.device_name.clone(),
         )
         .await?
         .map_err(|e| anyhow::anyhow!(e))?;
         let mut qp_2 = request_queue_pair(
             &env.ibv_handle_2,
             &env.client_2,
-            env.ibv_buffer_2.device_name.clone(),
+            env.local_mrv_2.device_name.clone(),
         )
         .await?
         .map_err(|e| anyhow::anyhow!(e))?;
@@ -98,7 +98,7 @@ mod tests {
         }
         let env = DoorbellTestEnv::setup(BSIZE, "cpu:0", "cpu:0").await?;
         let (mut qp_1, _qp_2) = connected_pair(&env).await?;
-        let wr_id = qp_1.enqueue_put(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
+        let wr_id = qp_1.enqueue_put(env.local_mrv_1.clone(), env.remote_mrv_2.clone())?;
         qp_1.ring_doorbell()?;
         wait_for_completion(&mut qp_1, PollTarget::Send, &wr_id, 5).await?;
 
@@ -122,7 +122,7 @@ mod tests {
         }
         let env = DoorbellTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
         let (_qp_1, mut qp_2) = connected_pair(&env).await?;
-        let wr_id = qp_2.enqueue_get(env.ibv_buffer_2.clone(), env.ibv_buffer_1.clone())?;
+        let wr_id = qp_2.enqueue_get(env.local_mrv_2.clone(), env.remote_mrv_1.clone())?;
         qp_2.ring_doorbell()?;
         wait_for_completion(&mut qp_2, PollTarget::Send, &wr_id, 5).await?;
 
@@ -151,7 +151,7 @@ mod tests {
         }
         let env = DoorbellTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
         let (mut qp_1, _qp_2) = connected_pair(&env).await?;
-        qp_1.enqueue_put(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
+        qp_1.enqueue_put(env.local_mrv_1.clone(), env.remote_mrv_2.clone())?;
         ring_db_gpu(&qp_1).await?;
         wait_for_completion_gpu(&mut qp_1, PollTarget::Send, 5).await?;
 
@@ -183,7 +183,7 @@ mod tests {
         }
         let env = DoorbellTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
         let (mut qp_1, _qp_2) = connected_pair(&env).await?;
-        qp_1.enqueue_get(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
+        qp_1.enqueue_get(env.local_mrv_1.clone(), env.remote_mrv_2.clone())?;
         ring_db_gpu(&qp_1).await?;
         wait_for_completion_gpu(&mut qp_1, PollTarget::Send, 5).await?;
 
@@ -217,15 +217,15 @@ mod tests {
         let (mut qp_1, mut qp_2) = connected_pair(&env).await?;
         recv_wqe_gpu(
             &mut qp_1,
-            &env.ibv_buffer_1,
-            &env.ibv_buffer_2,
+            &env.local_mrv_1,
+            &env.remote_mrv_2,
             rdmaxcel_sys::ibv_wc_opcode::IBV_WC_RECV,
         )
         .await?;
         send_wqe_gpu(
             &mut qp_2,
-            &env.ibv_buffer_2,
-            &env.ibv_buffer_1,
+            &env.local_mrv_2,
+            &env.remote_mrv_1,
             rdmaxcel_sys::MLX5_OPCODE_RDMA_WRITE_IMM,
         )
         .await?;
