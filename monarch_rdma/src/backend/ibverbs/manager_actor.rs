@@ -43,7 +43,6 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
-use super::IbvBuffer;
 use super::IbvOp;
 use super::device::IbvDevice;
 use super::device::IbvDeviceImpl;
@@ -53,6 +52,7 @@ use super::domain::IbvDomain;
 use super::domain::IbvDomainImpl;
 use super::efa_device::EfaDevice;
 use super::memory_region::IbvMemoryRegionView;
+use super::memory_region::IbvRemoteMemoryRegionView;
 use super::mlx_device::MlxDevice;
 use super::primitives::IbvConfig;
 use super::primitives::IbvQpInfo;
@@ -136,7 +136,7 @@ wirevalue::register_type!(IbvManagerMessage);
 #[derive(Handler, HandleClient, Debug)]
 pub enum IbvManagerLocalMessage {
     /// Register a remote-facing buffer's MR and return its
-    /// [`IbvBuffer`]. Called by
+    /// [`IbvRemoteMemoryRegionView`]. Called by
     /// [`crate::rdma_manager_actor::RdmaManagerActor::request_buffer`]
     /// at buffer-creation time.
     ///
@@ -146,7 +146,7 @@ pub enum IbvManagerLocalMessage {
         remote_buf_id: usize,
         local: KeepaliveLocalMemory,
         #[reply]
-        reply: OncePortHandle<Result<IbvBuffer, String>>,
+        reply: OncePortHandle<Result<IbvRemoteMemoryRegionView, String>>,
     },
 }
 
@@ -198,8 +198,8 @@ pub struct IbvManagerActor<I: IbvDeviceImpl> {
     /// Map from buffer_id to the registered MR view. The view keeps the MR (and
     /// its PD) alive for the lifetime of the registration; `ReleaseBuffer` drops
     /// the entry, and the FFI resources are released by the `Arc`s' `Drop`s once
-    /// no other holder of the view remains. The wire-facing [`IbvBuffer`] is
-    /// derived from the view on demand.
+    /// no other holder of the view remains. The wire-facing
+    /// [`IbvRemoteMemoryRegionView`] is derived from the view on demand.
     buffer_registrations: HashMap<usize, IbvMemoryRegionView>,
 }
 
@@ -599,9 +599,9 @@ impl<I: IbvDeviceImpl> IbvManagerLocalMessageHandler for IbvManagerActor<I> {
         _cx: &Context<Self>,
         remote_buf_id: usize,
         local: KeepaliveLocalMemory,
-    ) -> Result<Result<IbvBuffer, String>, anyhow::Error> {
+    ) -> Result<Result<IbvRemoteMemoryRegionView, String>, anyhow::Error> {
         if let Some(mrv) = self.buffer_registrations.get(&remote_buf_id) {
-            return Ok(Ok(IbvBuffer::from(mrv)));
+            return Ok(Ok(IbvRemoteMemoryRegionView::from(mrv)));
         }
         // `resolve_local_mr` installs the view in `local`'s shared MR
         // slot, so every clone of this handle — including the one the
@@ -611,7 +611,7 @@ impl<I: IbvDeviceImpl> IbvManagerLocalMessageHandler for IbvManagerActor<I> {
             Ok(v) => v,
             Err(e) => return Ok(Err(e.to_string())),
         };
-        let buf = IbvBuffer::from(&mrv);
+        let buf = IbvRemoteMemoryRegionView::from(&mrv);
         self.buffer_registrations.insert(remote_buf_id, mrv);
         Ok(Ok(buf))
     }
@@ -656,7 +656,7 @@ impl<I: IbvDeviceImpl> std::ops::Deref for IbvBackend<I> {
 #[serde(bound = "")]
 pub struct IbvRemoteBackendContext<I: IbvDeviceImpl> {
     pub manager: ActorRef<IbvManagerActor<I>>,
-    pub buffer: IbvBuffer,
+    pub buffer: IbvRemoteMemoryRegionView,
 }
 
 // `Clone` and `Debug` are hand-rolled to avoid the spurious `I: Clone`

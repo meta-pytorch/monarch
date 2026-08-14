@@ -12,9 +12,10 @@
 use std::io::Error;
 use std::result::Result;
 
-use super::IbvBuffer;
 use super::domain::IbvDomain;
 use super::domain::IbvDomainImpl;
+use super::memory_region::IbvMemoryRegionView;
+use super::memory_region::IbvRemoteMemoryRegionView;
 use super::primitives::Gid;
 use super::primitives::IbvAh;
 use super::primitives::IbvConfig;
@@ -621,8 +622,8 @@ impl IbvQueuePair for EfaQueuePair {
 
     fn put(
         &mut self,
-        remote_dst: IbvBuffer,
-        local_src: IbvBuffer,
+        remote_dst: IbvRemoteMemoryRegionView,
+        local_src: IbvMemoryRegionView,
     ) -> Result<Vec<u64>, anyhow::Error> {
         if remote_dst.size < local_src.size {
             return Err(anyhow::anyhow!(
@@ -633,7 +634,7 @@ impl IbvQueuePair for EfaQueuePair {
         }
         self.post_chunked(
             EfaOp::Write,
-            local_src.addr,
+            local_src.rdma_addr,
             local_src.lkey,
             remote_dst.addr,
             remote_dst.rkey,
@@ -643,8 +644,8 @@ impl IbvQueuePair for EfaQueuePair {
 
     fn get(
         &mut self,
-        local_dst: IbvBuffer,
-        remote_src: IbvBuffer,
+        local_dst: IbvMemoryRegionView,
+        remote_src: IbvRemoteMemoryRegionView,
     ) -> Result<Vec<u64>, anyhow::Error> {
         if local_dst.size < remote_src.size {
             return Err(anyhow::anyhow!(
@@ -655,7 +656,7 @@ impl IbvQueuePair for EfaQueuePair {
         }
         self.post_chunked(
             EfaOp::Read,
-            local_dst.addr,
+            local_dst.rdma_addr,
             local_dst.lkey,
             remote_src.addr,
             remote_src.rkey,

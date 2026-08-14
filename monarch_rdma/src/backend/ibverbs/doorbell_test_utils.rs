@@ -28,10 +28,11 @@ use hyperactor::Uid;
 use hyperactor::channel::ChannelAddr;
 use hyperactor_config::Flattrs;
 
-use super::IbvBuffer;
 use super::device_selection::IbvDeviceTarget;
 use super::manager_actor::IbvManagerActor;
 use super::manager_actor::IbvManagerMessageClient;
+use super::memory_region::IbvMemoryRegionView;
+use super::memory_region::IbvRemoteMemoryRegionView;
 use super::mlx_device::MlxDevice;
 use super::queue_pair::PollTarget;
 use super::queue_pair::legacy::IbvQueuePair;
@@ -351,8 +352,8 @@ pub async fn wait_for_completion(
 /// Posts a work request to the send queue of the given RDMA queue pair.
 pub async fn send_wqe_gpu(
     qp: &mut IbvQueuePair,
-    lhandle: &IbvBuffer,
-    rhandle: &IbvBuffer,
+    lhandle: &IbvMemoryRegionView,
+    rhandle: &IbvRemoteMemoryRegionView,
     op_type: u32,
 ) -> Result<(), anyhow::Error> {
     // SAFETY: `qp` is borrowed for the duration of this call; the
@@ -363,7 +364,7 @@ pub async fn send_wqe_gpu(
         let dv_qp = qp.dv_qp as *mut rdmaxcel_sys::mlx5dv_qp;
         let send_wqe_idx = rdmaxcel_sys::rdmaxcel_qp_load_send_wqe_idx(ibv_qp);
         let params = rdmaxcel_sys::wqe_params_t {
-            laddr: lhandle.addr,
+            laddr: lhandle.rdma_addr,
             length: lhandle.size,
             lkey: lhandle.lkey,
             wr_id: send_wqe_idx,
@@ -386,8 +387,8 @@ pub async fn send_wqe_gpu(
 /// Posts a work request to the receive queue of the given RDMA queue pair.
 pub async fn recv_wqe_gpu(
     qp: &mut IbvQueuePair,
-    lhandle: &IbvBuffer,
-    _rhandle: &IbvBuffer,
+    lhandle: &IbvMemoryRegionView,
+    _rhandle: &IbvRemoteMemoryRegionView,
     op_type: u32,
 ) -> Result<(), anyhow::Error> {
     // SAFETY: `qp` is borrowed for the duration of this call; the
@@ -398,7 +399,7 @@ pub async fn recv_wqe_gpu(
         let dv_qp = qp.dv_qp as *mut rdmaxcel_sys::mlx5dv_qp;
         let recv_wqe_idx = rdmaxcel_sys::rdmaxcel_qp_load_recv_wqe_idx(rdmaxcel_qp);
         let params = rdmaxcel_sys::wqe_params_t {
-            laddr: lhandle.addr,
+            laddr: lhandle.rdma_addr,
             length: lhandle.size,
             lkey: lhandle.lkey,
             wr_id: recv_wqe_idx,
@@ -521,8 +522,14 @@ pub struct DoorbellTestEnv {
     pub rdma_handle_2: RdmaRemoteBuffer,
     pub local_memory_1: KeepaliveLocalMemory,
     pub local_memory_2: KeepaliveLocalMemory,
-    pub ibv_buffer_1: IbvBuffer,
-    pub ibv_buffer_2: IbvBuffer,
+    /// Each side's own registration, which is what it addresses its memory
+    /// through when it is the initiator.
+    pub local_mrv_1: IbvMemoryRegionView,
+    pub local_mrv_2: IbvMemoryRegionView,
+    /// The same regions as the other side sees them: the target of a WR posted
+    /// from the peer.
+    pub remote_mrv_1: IbvRemoteMemoryRegionView,
+    pub remote_mrv_2: IbvRemoteMemoryRegionView,
     cuda_actor_1: Option<ActorRef<CudaActor>>,
     cuda_actor_2: Option<ActorRef<CudaActor>>,
     device_ptr_1: Option<usize>,
@@ -546,6 +553,27 @@ fn accel_target(accel: &str) -> IbvDeviceTarget {
         "nic" => IbvDeviceTarget::nic(idx),
         _ => IbvDeviceTarget::cpu(idx.parse().unwrap()),
     }
+}
+
+/// The local view of `mem`'s registration on `rdma`'s proc: what that side
+/// addresses its own memory through when it posts a work request.
+async fn local_view(
+    rdma: &ActorRef<RdmaManagerActor>,
+    client: &hyperactor::Client,
+    mem: &KeepaliveLocalMemory,
+) -> Result<IbvMemoryRegionView, anyhow::Error> {
+    let handle = rdma
+        .downcast_handle(client)
+        .ok_or_else(|| anyhow::anyhow!("RdmaManagerActor is not in this process"))?;
+    let device = handle
+        .request_buffer(client, mem.clone())
+        .await?
+        .resolve_mlx()
+        .ok_or_else(|| anyhow::anyhow!("local buffer has no Mellanox backend"))?
+        .buffer
+        .device_name;
+    mem.registered_mr(&device)?
+        .ok_or_else(|| anyhow::anyhow!("request_buffer should have registered on {device}"))
 }
 
 /// Helper function to parse accelerator strings
@@ -710,9 +738,11 @@ impl DoorbellTestEnv {
         }
 
         let ctx_1 = rdma_handle_1.resolve_mlx().expect("buffer 1 is Mellanox");
-        let (ibv_actor_1, ibv_buffer_1) = (ctx_1.manager, ctx_1.buffer);
+        let (ibv_actor_1, remote_mrv_1) = (ctx_1.manager, ctx_1.buffer);
         let ctx_2 = rdma_handle_2.resolve_mlx().expect("buffer 2 is Mellanox");
-        let (ibv_actor_2, ibv_buffer_2) = (ctx_2.manager, ctx_2.buffer);
+        let (ibv_actor_2, remote_mrv_2) = (ctx_2.manager, ctx_2.buffer);
+        let local_mrv_1 = local_view(&actor_1, &instance_1, &local_memory_1).await?;
+        let local_mrv_2 = local_view(&actor_2, &instance_2, &local_memory_2).await?;
         let ibv_handle_1: ActorHandle<IbvManagerActor<MlxDevice>> = ibv_actor_1
             .downcast_handle(&instance_1)
             .ok_or_else(|| anyhow::anyhow!("ibv_actor_1 is not in proc_1"))?;
@@ -754,8 +784,10 @@ impl DoorbellTestEnv {
             rdma_handle_2,
             local_memory_1,
             local_memory_2,
-            ibv_buffer_1,
-            ibv_buffer_2,
+            local_mrv_1,
+            local_mrv_2,
+            remote_mrv_1,
+            remote_mrv_2,
             cuda_actor_1,
             cuda_actor_2,
             device_ptr_1,

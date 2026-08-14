@@ -11,9 +11,10 @@
 use std::io::Error;
 use std::result::Result;
 
-use super::IbvBuffer;
 use super::domain::IbvDomain;
 use super::domain::IbvDomainImpl;
+use super::memory_region::IbvMemoryRegionView;
+use super::memory_region::IbvRemoteMemoryRegionView;
 use super::primitives::GidScope;
 use super::primitives::GidType;
 use super::primitives::IbvConfig;
@@ -151,16 +152,16 @@ impl IbvQueuePair for MlxQueuePair {
 
     fn put(
         &mut self,
-        remote_dst: IbvBuffer,
-        local_src: IbvBuffer,
+        remote_dst: IbvRemoteMemoryRegionView,
+        local_src: IbvMemoryRegionView,
     ) -> Result<Vec<u64>, anyhow::Error> {
         self.0.put(remote_dst, local_src)
     }
 
     fn get(
         &mut self,
-        local_dst: IbvBuffer,
-        remote_src: IbvBuffer,
+        local_dst: IbvMemoryRegionView,
+        remote_src: IbvRemoteMemoryRegionView,
     ) -> Result<Vec<u64>, anyhow::Error> {
         self.0.get(local_dst, remote_src)
     }

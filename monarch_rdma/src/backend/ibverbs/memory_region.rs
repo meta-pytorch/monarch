@@ -8,14 +8,22 @@
 
 //! Registered memory regions returned by [`IbvDomainImpl::register_mr`].
 //!
-//! [`IbvMemoryRegionView`] is the cheap, cloneable handle peers use: the keys
-//! and addresses for a slice of registered memory, plus an `Arc<dyn IbvMemoryRegionKeepalive>`
-//! that keeps the backing registration's resources alive until the last clone
-//! of the view drops.
+//! [`IbvMemoryRegionView`] is the cheap, cloneable handle this process addresses
+//! its own registered memory through: the keys and addresses for a slice of
+//! registered memory, plus an `Arc<dyn IbvMemoryRegionKeepalive>` that keeps the
+//! backing registration's resources alive until the last clone of the view
+//! drops.
+//!
+//! [`IbvRemoteMemoryRegionView`] is what a peer gets instead: the same region
+//! reduced to what the wire can carry and the far side can use.
 //!
 //! [`IbvDomainImpl::register_mr`]: super::domain::IbvDomainImpl::register_mr
 
 use std::sync::Arc;
+
+use serde::Deserialize;
+use serde::Serialize;
+use typeuri::Named;
 
 use super::primitives::IbvMr;
 
@@ -87,5 +95,36 @@ impl IbvMemoryRegionView {
             device_name.to_string(),
             Arc::new(IbvMr::null()),
         )
+    }
+}
+
+/// What a peer needs in order to address one of our registered memory regions
+/// over RDMA: the region's `rkey`, its RDMA address, its size, and the device
+/// serving it.
+///
+/// This is the wire form of an [`IbvMemoryRegionView`]. It carries no `lkey` and
+/// no keepalive: an `lkey` only means anything to the protection domain that
+/// issued it, and the registration is kept alive by the views the owning side
+/// holds.
+#[derive(Debug, Clone, Serialize, Deserialize, Named)]
+pub struct IbvRemoteMemoryRegionView {
+    pub rkey: u32,
+    /// RDMA address (may differ from virtual address).
+    pub addr: usize,
+    pub size: usize,
+    /// Name of the RDMA device this region is registered on (e.g., "mlx5_0").
+    pub device_name: String,
+}
+
+impl From<&IbvMemoryRegionView> for IbvRemoteMemoryRegionView {
+    /// The wire transport details are fully derived from the registered MR
+    /// view: the remote key, the RDMA address, the size, and the device name.
+    fn from(view: &IbvMemoryRegionView) -> Self {
+        Self {
+            rkey: view.rkey,
+            addr: view.rdma_addr,
+            size: view.size,
+            device_name: view.device_name.clone(),
+        }
     }
 }
