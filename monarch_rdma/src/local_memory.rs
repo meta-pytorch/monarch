@@ -18,6 +18,7 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 
 use crate::backend::ibverbs::memory_region::IbvMemoryRegionView;
+use crate::device_selection::MemoryLocation;
 
 /// Returns `true` when `addr` is a CUDA device pointer.
 ///
@@ -386,6 +387,8 @@ impl Keepalive for Box<[u8]> {
 pub(crate) struct LocalMemoryInner {
     addr: usize,
     size: usize,
+    /// Where the region lives, resolved once at construction.
+    location: MemoryLocation,
     /// Bandwidth (bytes/s) for direct host-thread pointer access, or `None`
     /// if the memory is not host-accessible.
     direct_access_host_bandwidth: Option<u64>,
@@ -402,21 +405,22 @@ pub(crate) struct LocalMemoryInner {
 }
 
 impl LocalMemoryInner {
-    fn new(addr: usize, size: usize) -> Self {
+    fn try_new(addr: usize, size: usize) -> Result<Self, anyhow::Error> {
+        let location = MemoryLocation::from_addr(addr)?;
         // TODO(slurye): Using placeholder values for now. Fill in with real values.
-        let (host_bw, device_bw) = if is_device_ptr(addr) {
-            (None, Some(1))
-        } else {
-            (Some(1), None)
+        let (host_bw, device_bw) = match location {
+            MemoryLocation::Cpu(_) => (Some(1), None),
+            MemoryLocation::Gpu(_) => (None, Some(1)),
         };
-        Self {
+        Ok(Self {
             addr,
             size,
+            location,
             direct_access_host_bandwidth: host_bw,
             direct_access_device_bandwidth: device_bw,
             mr_slot: Arc::new(OnceLock::new()),
             access: Arc::new(AccessLock::new()),
-        }
+        })
     }
 }
 
@@ -450,6 +454,7 @@ impl Debug for KeepaliveLocalMemory {
         f.debug_struct("KeepaliveLocalMemory")
             .field("addr", &self.inner.addr)
             .field("size", &self.inner.size)
+            .field("location", &self.inner.location)
             .field(
                 "direct_access_host_bandwidth",
                 &self.inner.direct_access_host_bandwidth,
@@ -463,18 +468,19 @@ impl Debug for KeepaliveLocalMemory {
 }
 
 impl KeepaliveLocalMemory {
-    /// Create a new handle. Derives `addr` and `size` from the
-    /// `keepalive` via [`Keepalive::addr`] /
-    /// [`Keepalive::size`], then probes the CUDA driver to
-    /// determine whether the address is a device pointer and sets the
-    /// bandwidth fields accordingly.
-    pub fn new(keepalive: Arc<dyn Keepalive>) -> Self {
+    /// Try to create a new handle. Derives `addr` and `size` from the
+    /// `keepalive` via [`Keepalive::addr`] / [`Keepalive::size`], then
+    /// resolves the region's [`MemoryLocation`] and sets the bandwidth fields
+    /// accordingly.
+    ///
+    /// Errors when the location cannot be resolved.
+    pub fn try_new(keepalive: Arc<dyn Keepalive>) -> Result<Self, anyhow::Error> {
         let addr = keepalive.addr();
         let size = keepalive.size();
-        Self {
-            inner: LocalMemoryInner::new(addr, size),
+        Ok(Self {
+            inner: LocalMemoryInner::try_new(addr, size)?,
             _keepalive: keepalive,
-        }
+        })
     }
 
     /// Starting virtual address of the memory region.
@@ -485,6 +491,11 @@ impl KeepaliveLocalMemory {
     /// Size of the memory region in bytes.
     pub fn size(&self) -> usize {
         self.inner.size
+    }
+
+    /// Where this region lives.
+    pub fn location(&self) -> MemoryLocation {
+        self.inner.location
     }
 
     /// Shared slot for the [`IbvMemoryRegionView`] registered against
@@ -663,11 +674,30 @@ impl WeakLocalMemory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::cuda_test_utils::CudaAllocator;
 
     // -- KeepaliveLocalMemory (host) --
 
     fn host_keepalive_mem(data: Box<[u8]>) -> KeepaliveLocalMemory {
-        KeepaliveLocalMemory::new(Arc::new(data))
+        KeepaliveLocalMemory::try_new(Arc::new(data)).expect("host memory has a location")
+    }
+
+    #[test]
+    fn keepalive_host_location() {
+        let mem = host_keepalive_mem(Box::from([1, 2, 3]));
+        // No NUMA node is resolved.
+        assert_eq!(mem.location(), MemoryLocation::Cpu(None));
+    }
+
+    #[test]
+    fn keepalive_device_location_names_its_cuda_ordinal() {
+        let alloc = CudaAllocator::get().allocate(0, 4096, 4096);
+        assert_eq!(
+            alloc.keepalive_slice(0, 4096).location(),
+            MemoryLocation::Gpu(Some(0)),
+            "a device pointer should resolve to the ordinal that owns it",
+        );
+        alloc.try_free();
     }
 
     #[test]
