@@ -14,4 +14,4 @@ serde = { version = "1.0.229", features = ["derive", "rc"] }
 thiserror = "2.0.19"
 
 [build-dependencies]
-build_utils = { path = "../build_utils" }
+build_utils = { version = "0.0.0", path = "../build_utils" }

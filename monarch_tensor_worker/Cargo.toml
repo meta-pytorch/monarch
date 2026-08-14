@@ -38,7 +38,7 @@ rand = "0.10.2"
 timed_test = { version = "0.0.0", path = "../timed_test" }
 
 [build-dependencies]
-build_utils = { path = "../build_utils" }
+build_utils = { version = "0.0.0", path = "../build_utils" }
 
 [features]
 cuda = ["monarch_messages/cuda", "torch-sys-cuda/cuda"]

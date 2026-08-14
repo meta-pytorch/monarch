@@ -21,7 +21,7 @@ timed_test = { version = "0.0.0", path = "../timed_test" }
 tokio = { version = "1.52.4", features = ["full", "test-util", "tracing"] }
 
 [build-dependencies]
-build_utils = { path = "../build_utils" }
+build_utils = { version = "0.0.0", path = "../build_utils" }
 
 [features]
 default = []

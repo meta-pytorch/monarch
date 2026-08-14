@@ -12,13 +12,13 @@ links = "torch_cuda"
 derive_more = { version = "1.0.0", features = ["full"] }
 fxhash = "0.2.1"
 monarch_types = { version = "0.0.0", path = "../monarch_types" }
-nccl-sys = { path = "../nccl-sys", optional = true }
+nccl-sys = { version = "0.0.0", path = "../nccl-sys", optional = true }
 pyo3 = { version = "0.27", features = ["anyhow", "multiple-pymethods", "py-clone"] }
 thiserror = "2.0.19"
 torch-sys2 = { version = "0.0.0", path = "../torch-sys2" }
 
 [build-dependencies]
-build_utils = { path = "../build_utils" }
+build_utils = { version = "0.0.0", path = "../build_utils" }
 
 [features]
 cuda = ["dep:nccl-sys"]

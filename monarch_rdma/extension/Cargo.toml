@@ -25,4 +25,4 @@ tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 typeuri = { version = "0.0.0", path = "../../typeuri" }
 
 [build-dependencies]
-build_utils = { path = "../../build_utils" }
+build_utils = { version = "0.0.0", path = "../../build_utils" }

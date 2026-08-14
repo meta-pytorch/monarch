@@ -14,4 +14,4 @@ test = false
 doctest = false
 
 [build-dependencies]
-build_utils = { path = "../build_utils" }
+build_utils = { version = "0.0.0", path = "../build_utils" }
