@@ -57,7 +57,7 @@ serde_multipart = { version = "0.0.0", path = "../serde_multipart" }
 strum = { version = "0.28.0", features = ["derive"] }
 tempfile = "3.27.0"
 thiserror = "2.0.19"
-tokio = { version = "1.52.4", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.53.1", features = ["full", "test-util", "tracing"] }
 tokio-rustls = { version = "0.26.4", features = ["logging", "ring", "tls12"], default-features = false }
 tokio-util = { version = "0.7.19", features = ["full"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }

@@ -8,7 +8,7 @@ edition = "2024"
 license = "BSD-3-Clause"
 
 [dependencies]
-tokio = { version = "1.52.4", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.53.1", features = ["full", "test-util", "tracing"] }
 
 [dev-dependencies]
 anyhow = "1.0.104"

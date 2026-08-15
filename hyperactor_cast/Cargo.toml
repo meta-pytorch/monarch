@@ -26,4 +26,4 @@ wirevalue = { version = "0.0.0", path = "../wirevalue" }
 inventory = "0.3.24"
 proptest = "1.11.0"
 timed_test = { version = "0.0.0", path = "../timed_test" }
-tokio = { version = "1.52.4", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.53.1", features = ["full", "test-util", "tracing"] }

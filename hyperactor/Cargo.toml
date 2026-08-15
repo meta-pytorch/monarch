@@ -70,7 +70,7 @@ smol_str = "0.3.6"
 socket2 = { version = "0.6.5", features = ["all"] }
 strum = { version = "0.28.0", features = ["derive"] }
 thiserror = "2.0.19"
-tokio = { version = "1.52.4", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.53.1", features = ["full", "test-util", "tracing"] }
 tokio-rustls = { version = "0.26.4", features = ["logging", "ring", "tls12"], default-features = false }
 tokio-stream = { version = "0.1.19", features = ["fs", "io-util", "net", "signal", "sync", "time"] }
 tokio-util = { version = "0.7.19", features = ["full"] }
