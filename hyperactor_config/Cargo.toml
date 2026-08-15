@@ -26,7 +26,7 @@ serde_json = { version = "1.0.151", features = ["alloc", "float_roundtrip", "raw
 serde_multipart = { version = "0.0.0", path = "../serde_multipart" }
 serde_yaml = "0.9.25"
 shell-quote = "0.7.2"
-thiserror = "2.0.19"
+thiserror = "2.0.20"
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 typeuri = { version = "0.0.0", path = "../typeuri" }
 

@@ -12,7 +12,7 @@ license = "BSD-3-Clause"
 [dependencies]
 proptest = "1.11.0"
 serde = { version = "1.0.229", features = ["derive", "rc"] }
-thiserror = "2.0.19"
+thiserror = "2.0.20"
 
 [dev-dependencies]
 bincode = { version = "2", features = ["serde"] }
