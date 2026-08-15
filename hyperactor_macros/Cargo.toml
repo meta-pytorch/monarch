@@ -27,7 +27,7 @@ syn = { version = "3", features = ["extra-traits", "fold", "full", "visit", "vis
 
 [dev-dependencies]
 anyhow = "1.0.104"
-async-trait = "0.1.91"
+async-trait = "0.1.92"
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 static_assertions = "1.1.0"

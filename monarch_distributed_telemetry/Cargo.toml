@@ -18,7 +18,7 @@ arrow-ipc = "=57.3.0"
 arrow-ord = "=57.3.0"
 arrow-schema = "=57.3.0"
 arrow-select = "=57.3.0"
-async-trait = "0.1.91"
+async-trait = "0.1.92"
 datafusion = "52.5.0"
 futures = { version = "0.3.31", features = ["async-await", "compat"] }
 hyperactor = { version = "0.0.0", path = "../hyperactor" }

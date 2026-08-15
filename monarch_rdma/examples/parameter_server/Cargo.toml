@@ -22,7 +22,7 @@ test = false
 
 [dependencies]
 anyhow = "1.0.104"
-async-trait = "0.1.91"
+async-trait = "0.1.92"
 buck-resources = "1"
 hyperactor = { version = "0.0.0", path = "../../../hyperactor" }
 hyperactor_config = { version = "0.0.0", path = "../../../hyperactor_config" }
