@@ -13,14 +13,11 @@ import subprocess
 import sys
 import time
 from typing import Callable
+from unittest.mock import MagicMock, patch
 
 import pytest
-from monarch._src.spmd.host_mesh import (
-    _IN_PAR,
-    _spawn_worker_process,
-    _worker_addr_key,
-    host_mesh_from_store,
-)
+from monarch._src.spmd.host_mesh import _IN_PAR, _spawn_worker_process, _worker_addr_key
+from monarch.job.spmd import StoreJob
 
 
 def _pid_alive(pid: int) -> bool:
@@ -45,7 +42,7 @@ def _wait_for(
 
 class _InMemoryStore:
     """Minimal store with the subset of ``torch.distributed.Store`` that
-    :func:`host_mesh_from_store` consumes."""
+    :meth:`StoreJob.from_store` consumes."""
 
     def __init__(self) -> None:
         self._values: dict[str, bytes] = {}
@@ -94,7 +91,7 @@ def test_net_transports_require_explicit_port() -> None:
 @pytest.mark.parametrize(
     "missing", ["RANK", "LOCAL_RANK", "WORLD_SIZE", "LOCAL_WORLD_SIZE"]
 )
-def test_host_mesh_from_store_requires_torchelastic_env(
+def test_store_job_from_store_requires_torchelastic_env(
     monkeypatch: pytest.MonkeyPatch, missing: str
 ) -> None:
     # Every torchelastic env var must be present when no keyword override
@@ -106,10 +103,10 @@ def test_host_mesh_from_store_requires_torchelastic_env(
     monkeypatch.setenv("LOCAL_WORLD_SIZE", "1")
     monkeypatch.delenv(missing, raising=False)
     with pytest.raises(RuntimeError, match=missing):
-        host_mesh_from_store(_InMemoryStore())
+        StoreJob.from_store(_InMemoryStore())
 
 
-def test_host_mesh_from_store_kwargs_override_env(
+def test_store_job_from_store_kwargs_override_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Unset every env var, then pass all four topology values via
@@ -120,7 +117,7 @@ def test_host_mesh_from_store_kwargs_override_env(
 
     store = _InMemoryStore()
     assert (
-        host_mesh_from_store(
+        StoreJob.from_store(
             store,
             transport="ipc",
             rank=3,
@@ -132,7 +129,7 @@ def test_host_mesh_from_store_kwargs_override_env(
     )
 
 
-def test_host_mesh_from_store_validates_world_size(
+def test_store_job_from_store_validates_world_size(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("RANK", "0")
@@ -140,10 +137,10 @@ def test_host_mesh_from_store_validates_world_size(
     monkeypatch.setenv("WORLD_SIZE", "3")
     monkeypatch.setenv("LOCAL_WORLD_SIZE", "2")
     with pytest.raises(ValueError, match="divisible"):
-        host_mesh_from_store(_InMemoryStore())
+        StoreJob.from_store(_InMemoryStore())
 
 
-def test_host_mesh_from_store_non_local_rank_zero_is_passive(
+def test_store_job_from_store_non_local_rank_zero_is_passive(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Rank with LOCAL_RANK != 0 and RANK != 0 spawns nothing and returns
@@ -156,9 +153,51 @@ def test_host_mesh_from_store_non_local_rank_zero_is_passive(
     monkeypatch.setenv("LOCAL_WORLD_SIZE", "2")
 
     store = _InMemoryStore()
-    assert host_mesh_from_store(store, transport="ipc") is None
+    assert StoreJob.from_store(store, transport="ipc") is None
     # This rank did not spawn; nobody published for group 1.
     assert _worker_addr_key(1) not in store._values
+
+
+def test_store_job_defers_attach_until_state() -> None:
+    store = _InMemoryStore()
+    host_mesh = MagicMock()
+
+    with (
+        patch(
+            "monarch._src.spmd.host_mesh._spawn_worker_process",
+            return_value=("ipc:///tmp/monarch_worker", 123),
+        ),
+        patch(
+            "monarch._src.job.spmd.attach_to_workers",
+            return_value=host_mesh,
+        ) as attach_to_workers,
+        patch(
+            "monarch._src.job.job_components.Mounts.ensure_open"
+        ) as ensure_mounts_open,
+    ):
+        job = StoreJob.from_store(
+            store,
+            rank=0,
+            local_rank=0,
+            world_size=1,
+            local_world_size=1,
+        )
+        assert job is not None
+        attach_to_workers.assert_not_called()
+
+        state = job.state()
+
+    attach_to_workers.assert_called_once_with(
+        ca="trust_all_connections",
+        workers=["ipc:///tmp/monarch_worker"],
+        name="monarch_worker",
+    )
+    assert state.monarch_worker is host_mesh
+    assert job.apply_id is not None
+    ensure_mounts_open.assert_called_once_with(
+        job.apply_id,
+        {"monarch_worker": host_mesh},
+    )
 
 
 def test_parent_death_kills_worker_via_pipe_eof() -> None:
