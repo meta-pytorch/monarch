@@ -117,6 +117,7 @@ use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::Endpoint;
 use hyperactor::Handler;
+use hyperactor::Instance;
 use hyperactor::OncePortHandle;
 use hyperactor::RemoteSpawn;
 use hyperactor::Uid;
@@ -140,7 +141,12 @@ hyperactor::behavior!(SpawnActor, SpawnActorMessage);
 pub struct ActorSpawner;
 
 #[async_trait]
-impl Actor for ActorSpawner {}
+impl Actor for ActorSpawner {
+    async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
+        this.set_system();
+        Ok(())
+    }
+}
 
 #[async_trait]
 impl Handler<SpawnActorMessage> for ActorSpawner {
