@@ -43,7 +43,7 @@ derivative = "2.2"
 dns-lookup = "1.0.8"
 enum-as-inner = "0.6.1"
 erased-serde = "0.4.10"
-fastrand = "2.4.1"
+fastrand = "2.5.0"
 futures = { version = "0.3.31", features = ["async-await", "compat"] }
 hostname = "0.4.2"
 humantime = "2.4.0"
