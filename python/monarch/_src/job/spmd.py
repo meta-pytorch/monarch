@@ -7,9 +7,8 @@
 """
 Internal implementation of SPMD job primitives.
 
-Provides the :func:`serve` function and :class:`SPMDJob` class for launching
-torchrun-style SPMD training jobs. Parses torchrun arguments and creates a Monarch
-mesh to run the training script, replicating torchrun behavior.
+Provides jobs for launching torchrun-style SPMD training and for attaching the
+Job API to workers rendezvoused through a torch distributed store.
 """
 
 import argparse
@@ -22,9 +21,11 @@ from typing import Any, Dict, List, Optional, Tuple
 from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.config import configure
 from monarch._src.actor.bootstrap import attach_to_workers
+from monarch._src.actor.future import Future
 from monarch._src.actor.host_mesh import this_host
 from monarch._src.job.job import JobState, JobTrait
 from monarch._src.spmd.actor import SPMDActor
+from monarch._src.spmd.host_mesh import _worker_addrs_from_store, StoreLike
 from monarch._src.tools.commands import torchx_runner
 from torchx.runner import Runner
 from torchx.specs import AppDef, AppState, Role
@@ -363,6 +364,81 @@ def serve(
     )
 
     return job
+
+
+class StoreJob(JobTrait):
+    """Job API adapter for a torchrun-style distributed store rendezvous.
+
+    Call :meth:`from_store` collectively on every SPMD rank. Each local rank 0
+    spawns and publishes one Monarch worker. Global rank 0 receives a
+    ``StoreJob``; other ranks receive ``None``. Configure job components on
+    that returned job before calling :meth:`state`.
+
+    The enclosing SPMD allocation owns the worker subprocesses. ``kill()``
+    stops Job API sidecars but leaves workers running until their parent ranks
+    exit.
+    """
+
+    def __init__(self, worker_addrs: list[str], name: str) -> None:
+        super().__init__()
+        self._worker_addrs = worker_addrs
+        self._name = name
+
+    @classmethod
+    def from_store(
+        cls,
+        store: StoreLike,
+        *,
+        monarch_port: int = 0,
+        name: str = "monarch_worker",
+        transport: str = "ipc",
+        rank: int | None = None,
+        local_rank: int | None = None,
+        world_size: int | None = None,
+        local_world_size: int | None = None,
+    ) -> "StoreJob | None":
+        """Create a store-backed job, returning it only on global rank 0.
+
+        Rank topology defaults to ``RANK``, ``LOCAL_RANK``, ``WORLD_SIZE``,
+        and ``LOCAL_WORLD_SIZE``. Each value can be overridden by the matching
+        keyword argument.
+        """
+        worker_addrs = _worker_addrs_from_store(
+            store,
+            monarch_port=monarch_port,
+            name=name,
+            transport=transport,
+            rank=rank,
+            local_rank=local_rank,
+            world_size=world_size,
+            local_world_size=local_world_size,
+        )
+        if worker_addrs is None:
+            return None
+        return cls(worker_addrs, name)
+
+    def state(self, cached_path: str | None = None) -> JobState:
+        """Attach to workers and start configured components without caching."""
+        return super().state(cached_path)
+
+    def _create(self, client_script: str | None = None) -> None:
+        pass
+
+    def _state(self) -> JobState:
+        workers: list[str | Future[str]] = []
+        workers.extend(self._worker_addrs)
+        host_mesh = attach_to_workers(
+            ca="trust_all_connections",
+            workers=workers,
+            name=self._name,
+        )
+        return JobState({self._name: host_mesh})
+
+    def can_run(self, spec: JobTrait) -> bool:
+        return False
+
+    def _kill(self) -> None:
+        pass
 
 
 class SPMDJob(JobTrait):
