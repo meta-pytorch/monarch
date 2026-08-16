@@ -201,12 +201,22 @@ impl Drop for HostShutdownHandles {
 /// built-in service/local procs, asks its [`ProcManager`] to spawn children,
 /// and keeps the gateway peer registrations for those children alive.
 pub struct Host<M> {
-    /// Peer guards for spawned child procs, keyed by name. The stored
-    /// [`PeerAttachGuard`] keeps the gateway peer route for the child
-    /// alive; dropping it removes the entry (used by
-    /// [`Host::terminate_children`] to free slots).
-    procs: HashMap<String, PeerAttachGuard>,
     frontend_addr: ChannelAddr,
+    spawn_state: Arc<HostSpawnState<M>>,
+    frontend_handle: Option<GatewayServeHandle>,
+    backend_handle: Option<GatewayServeHandle>,
+    /// Duplex `serve_via` session to a remote gateway, present when this
+    /// host was bootstrapped out-of-cluster. Kept alive for the host's
+    /// lifetime so the cluster route and outbound forwarder persist.
+    via_handle: Option<GatewayServeHandle>,
+    service_proc: Proc,
+    local_proc: Proc,
+}
+
+struct HostSpawnState<M> {
+    /// Peer guards for spawned child procs, keyed by name. Dropping a stored
+    /// guard removes its gateway peer route.
+    procs: std::sync::Mutex<HashMap<String, PeerAttachGuard>>,
     backend_addr: ChannelAddr,
     /// Connectivity for every proc owned by this host.
     ///
@@ -214,15 +224,12 @@ pub struct Host<M> {
     /// their own gateways and are registered here with
     /// [`Gateway::attach_peer`].
     gateway: Gateway,
-    frontend_handle: Option<GatewayServeHandle>,
-    backend_handle: Option<GatewayServeHandle>,
-    /// Duplex `serve_via` session to a remote gateway, present when this
-    /// host was bootstrapped out-of-cluster. Kept alive for the host's
-    /// lifetime so the cluster route and outbound forwarder persist.
-    via_handle: Option<GatewayServeHandle>,
     manager: M,
-    service_proc: Proc,
-    local_proc: Proc,
+}
+
+/// Owned capability for spawning a child without borrowing its [`Host`].
+pub(crate) struct HostSpawner<M> {
+    state: Arc<HostSpawnState<M>>,
 }
 
 impl<M: ProcManager> Host<M> {
@@ -355,14 +362,16 @@ impl<M: ProcManager> Host<M> {
         );
 
         Ok(Host {
-            procs: HashMap::new(),
             frontend_addr,
-            backend_addr,
-            gateway,
+            spawn_state: Arc::new(HostSpawnState {
+                procs: std::sync::Mutex::new(HashMap::new()),
+                backend_addr,
+                gateway,
+                manager,
+            }),
             frontend_handle: Some(frontend_handle),
             backend_handle: Some(backend_handle),
             via_handle,
-            manager,
             service_proc,
             local_proc,
         })
@@ -370,7 +379,7 @@ impl<M: ProcManager> Host<M> {
 
     /// The underlying proc manager.
     pub fn manager(&self) -> &M {
-        &self.manager
+        &self.spawn_state.manager
     }
 
     /// The address which accepts messages destined for this host.
@@ -403,7 +412,29 @@ impl<M: ProcManager> Host<M> {
         name: String,
         config: M::Config,
     ) -> Result<(ProcAddr, ActorRef<ManagerAgent<M>>), HostError> {
-        if self.procs.contains_key(&name) {
+        self.spawner().spawn(name, config).await
+    }
+
+    pub(crate) fn spawner(&self) -> HostSpawner<M> {
+        HostSpawner {
+            state: Arc::clone(&self.spawn_state),
+        }
+    }
+}
+
+impl<M: ProcManager> HostSpawner<M> {
+    pub(crate) async fn spawn(
+        self,
+        name: String,
+        config: M::Config,
+    ) -> Result<(ProcAddr, ActorRef<ManagerAgent<M>>), HostError> {
+        if self
+            .state
+            .procs
+            .lock()
+            .expect("procs mutex poisoned")
+            .contains_key(&name)
+        {
             return Err(HostError::ProcExists(name));
         }
 
@@ -415,12 +446,13 @@ impl<M: ProcManager> Host<M> {
         // `serve`/`serve_via` controls newly spawned child refs.
         let resource_id = ResourceId::from_name(&name);
         let proc_uid = resource_id.uid().clone();
-        let host_location = self.gateway.default_location();
+        let host_location = self.state.gateway.default_location();
         let location = host_location.with_via(proc_uid.clone());
         let proc_id = resource_id.proc_addr(location);
         let handle = self
+            .state
             .manager
-            .spawn(proc_id.clone(), self.backend_addr.clone(), config)
+            .spawn(proc_id.clone(), self.state.backend_addr.clone(), config)
             .await?;
 
         // Await readiness (config-driven; 0s disables timeout).
@@ -447,21 +479,28 @@ impl<M: ProcManager> Host<M> {
         // The proc id derives from `name`, and we rejected a duplicate
         // `name` above, so this peer uid is unique.
         let guard = self
+            .state
             .gateway
             .attach_peer(proc_uid, child_sender.into_boxed())
             .expect("spawned proc uid is unique: duplicate name rejected above");
-        self.procs.insert(name.clone(), guard);
+        self.state
+            .procs
+            .lock()
+            .expect("procs mutex poisoned")
+            .insert(name.clone(), guard);
 
         Ok((proc_id, ready.agent_ref().clone()))
     }
+}
 
+impl<M: ProcManager> Host<M> {
     /// The host's [`Gateway`]. All incoming traffic addressed to this
     /// host's procs is routed through the gateway: in-process procs
     /// via the gateway's local delivery path, and spawned child
     /// proc gateways through peer routes registered with
     /// [`Gateway::attach_peer`].
     pub fn gateway(&self) -> &Gateway {
-        &self.gateway
+        &self.spawn_state.gateway
     }
 
     /// Take ownership of the frontend server handle.
@@ -738,12 +777,17 @@ impl<M: ProcManager + BulkTerminate> Host<M> {
         reason: &str,
     ) -> TerminateSummary {
         let summary = self
+            .spawn_state
             .manager
             .terminate_all(cx, timeout, max_in_flight, reason)
             .await;
         // Detach procs from the gateway by dropping their attach
         // guards, freeing the name slots for any future respawns.
-        self.procs.clear();
+        self.spawn_state
+            .procs
+            .lock()
+            .expect("procs mutex poisoned")
+            .clear();
         summary
     }
 }
@@ -757,7 +801,10 @@ impl<M: ProcManager + SingleTerminate> SingleTerminate for Host<M> {
         timeout: Duration,
         reason: &str,
     ) -> Result<(Vec<ActorAddr>, Vec<ActorAddr>), anyhow::Error> {
-        self.manager.terminate_proc(cx, proc, timeout, reason).await
+        self.spawn_state
+            .manager
+            .terminate_proc(cx, proc, timeout, reason)
+            .await
     }
 }
 
@@ -1976,7 +2023,7 @@ mod tests {
 
         let (pid, agent) = host.spawn("ok".into(), ()).await.expect("must succeed");
         assert_eq!(agent.actor_addr().proc_addr(), pid);
-        assert!(host.procs.contains_key("ok"));
+        assert!(host.spawn_state.procs.lock().unwrap().contains_key("ok"));
     }
 
     #[tokio::test]
