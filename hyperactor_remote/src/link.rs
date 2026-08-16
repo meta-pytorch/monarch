@@ -198,8 +198,7 @@ mod tests {
         assert_eq!(event.actor_id.uid(), &uid);
         assert!(matches!(
             event.actor_status,
-            ActorStatus::Failed(ActorErrorKind::Generic(ref reason))
-                if reason == "actor explicitly aborted due to: link failed"
+            ActorStatus::Failed(ActorErrorKind::Killed(ref reason)) if reason == "link failed"
         ));
         assert!(!event.actor_id.is_root());
 

@@ -312,7 +312,7 @@ impl Handler<KeepaliveAck> for KeepaliveWorker {
 impl Handler<AckDeadline> for KeepaliveWorker {
     async fn handle(&mut self, cx: &Context<Self>, message: AckDeadline) -> anyhow::Result<()> {
         if self.acked_generation < message.generation {
-            cx.kill("keepalive acknowledgment missed")?;
+            cx.abort("keepalive acknowledgment missed")?;
         }
         Ok(())
     }
@@ -379,7 +379,7 @@ impl Handler<Deadline> for KeepaliveSupervisor {
         // cannot be produced by this actor before it observes that generation.
         if message.generation == self.generation {
             let reason = format!("keepalive missed for generation {}", message.generation);
-            cx.kill(&reason)?;
+            cx.abort(&reason)?;
         }
         Ok(())
     }
@@ -509,8 +509,8 @@ mod tests {
 
         assert!(matches!(
             event.actor_status,
-            ActorStatus::Failed(ActorErrorKind::Generic(ref reason))
-                if reason == "actor explicitly aborted due to: keepalive missed for generation 0"
+            ActorStatus::Failed(ActorErrorKind::Aborted(ref reason))
+                if reason == "keepalive missed for generation 0"
         ));
         assert!(!event.actor_id.is_root());
 
@@ -571,8 +571,8 @@ mod tests {
         assert_eq!(event.actor_id.uid(), &uid);
         assert!(matches!(
             event.actor_status,
-            ActorStatus::Failed(ActorErrorKind::Generic(ref reason))
-                if reason == "actor explicitly aborted due to: keepalive acknowledgment missed"
+            ActorStatus::Failed(ActorErrorKind::Aborted(ref reason))
+                if reason == "keepalive acknowledgment missed"
         ));
 
         parent.stop("test").unwrap();
