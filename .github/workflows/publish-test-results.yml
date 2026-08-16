@@ -1,0 +1,67 @@
+name: Publish Test Results
+
+# Aggregates the JUnit XML that every test workflow already uploads as a
+# `test-results-*` artifact and renders it in the GitHub UI as a check run,
+# PR comment, and inline failure annotations.
+#
+# Why a separate job (rather than a step inside each test job): the Linux test
+# jobs delegate to pytorch/test-infra's reusable `linux_job_v2.yml` and only
+# pass a `script:`, so there is nowhere to add a post-test reporting step.
+# Collecting artifacts in one downstream job covers Python and Rust, Linux and
+# macOS, CPU and GPU uniformly.
+#
+# Why EnricoMi (not pytest-results-action): test-infra's built-in
+# pytest-results-action cannot parse cargo-nextest's JUnit dialect, which is
+# why Rust results were never surfaced. EnricoMi parses both pytest and nextest
+# JUnit XML.
+
+on:
+  workflow_call:
+    inputs:
+      artifact-pattern:
+        description: 'Glob of test-results artifacts to download and publish'
+        type: string
+        default: 'test-results-*'
+      check-name:
+        description: 'Name of the published check run'
+        type: string
+        default: 'Test Results'
+      comment-mode:
+        description: 'EnricoMi PR comment mode (always, changes, failures, errors, off)'
+        type: string
+        default: 'always'
+
+# Least-privilege token for the result publisher: just enough to create the
+# check and post/update the PR comment. On fork PRs the token is read-only and
+# EnricoMi degrades to a no-op (it logs that it cannot post, but does not fail
+# the job); same-repo `gh/**` export PRs and `main` pushes get the full report.
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+  issues: read
+
+jobs:
+  publish-test-results:
+    name: Publish Test Results
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download test result artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ${{ inputs.artifact-pattern }}
+          path: test-artifacts
+          # Do NOT merge-multiple: several artifacts share inner filenames
+          # (nextest-junit.xml, test-results.xml across matrix legs) that would
+          # clobber each other in a single directory. Keeping one subdirectory
+          # per artifact preserves them all.
+
+      - name: Publish test results
+        uses: EnricoMi/publish-unit-test-result-action@c950f6fb443cb5af20a377fd0dfaa78838901040  # v2
+        with:
+          check_name: ${{ inputs.check-name }}
+          comment_mode: ${{ inputs.comment-mode }}
+          # Recurse the per-artifact subdirectories. Matches both pytest
+          # (test-results.xml) and cargo-nextest (nextest-junit.xml) output.
+          files: |
+            test-artifacts/**/*.xml
