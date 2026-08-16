@@ -719,9 +719,11 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
                     .cast_choose_with_headers(instance, &caller_headers, message)
                     .map_err(cast_error_to_py_error),
                 ActorMeshRef::Data(mesh) => {
-                    let members = mesh.members();
-                    if !members.is_empty() {
-                        let actor = &members[rand::rng().random_range(0..members.len())];
+                    let num_ranks = mesh.region().num_ranks();
+                    if num_ranks > 0 {
+                        let actor = mesh
+                            .get(rand::rng().random_range(0..num_ranks))
+                            .expect("selected rank should exist in dense data mesh");
                         actor.post_with_headers(instance, caller_headers, message);
                     }
                     Ok(())
