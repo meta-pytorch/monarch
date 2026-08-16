@@ -28,6 +28,7 @@ use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Proc;
 use hyperactor::actor::StopMode;
+use hyperactor::actor::StopProgress;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::channel::TcpMode;
@@ -163,19 +164,15 @@ impl Actor for DemoChild {
     async fn handle_stop(
         &mut self,
         this: &Instance<Self>,
-        mode: StopMode,
+        _mode: StopMode,
         reason: &str,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<StopProgress> {
         println!("child stopping: {reason}");
         if let Some(path) = &self.stopped_file {
             write_text(path, reason).await?;
         }
         this.close();
-        match mode {
-            StopMode::Stop => this.exit(reason)?,
-            StopMode::DrainAndStop => this.exit_after_drain(reason)?,
-        }
-        Ok(())
+        Ok(StopProgress::Complete)
     }
 }
 
