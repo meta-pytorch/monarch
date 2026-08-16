@@ -209,7 +209,9 @@ impl fmt::Display for ActorSupervisionEvent {
         let name = self.actor_name();
         match &self.actor_status {
             ActorStatus::Failed(
-                err @ (ActorErrorKind::Generic(_) | ActorErrorKind::Aborted(_)),
+                err @ (ActorErrorKind::Generic(_)
+                | ActorErrorKind::Killed(_)
+                | ActorErrorKind::Aborted(_)),
             ) => {
                 writeln!(f, "Supervision event: actor {} failed:", name)?;
                 write!(indented(f).with_str("  "), "{}", err)
@@ -297,6 +299,13 @@ mod tests {
         )
     }
 
+    fn killed(name: &str, msg: &str) -> ActorSupervisionEvent {
+        test_event(
+            name,
+            ActorStatus::Failed(ActorErrorKind::Killed(msg.to_string())),
+        )
+    }
+
     fn unhandled(name: &str, child: ActorSupervisionEvent) -> ActorSupervisionEvent {
         test_event(
             name,
@@ -336,7 +345,17 @@ mod tests {
         assert_eq!(
             format!("{}", e),
             "Supervision event: actor actor_a failed:\n\
-             \x20 actor explicitly aborted due to: user requested"
+             \x20 actor aborted by runtime due to: user requested"
+        );
+    }
+
+    #[test]
+    fn test_display_killed() {
+        let e = killed("actor_a", "user requested");
+        assert_eq!(
+            format!("{}", e),
+            "Supervision event: actor actor_a failed:\n\
+             \x20 actor killed due to: user requested"
         );
     }
 
@@ -421,7 +440,17 @@ mod tests {
         assert_eq!(
             e.failure_report().unwrap(),
             "The actor actor_a and all its descendants have failed:\n\
-             \x20 actor explicitly aborted due to: user requested"
+             \x20 actor aborted by runtime due to: user requested"
+        );
+    }
+
+    #[test]
+    fn test_failure_report_killed() {
+        let e = killed("actor_a", "user requested");
+        assert_eq!(
+            e.failure_report().unwrap(),
+            "The actor actor_a and all its descendants have failed:\n\
+             \x20 actor killed due to: user requested"
         );
     }
 

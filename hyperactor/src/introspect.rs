@@ -109,15 +109,15 @@
 //!   is derived from root-cause actor identity; a parent that failed
 //!   due to a child's event must report `failure_is_propagated ==
 //!   true`.
-//! - **FI-9 (stored-terminal vs delivered-zombie):** For an actor
+//! - **FI-9 (detached-zombie completion suppression):** For an actor
 //!   marked `Zombie` during teardown that then reaches a terminal
 //!   status, `InstanceCell::supervision_event` records the true
-//!   terminal event (`Stopped`/`Failed`, for introspection) while
-//!   the supervision event delivered to the parent/proc remains the
-//!   non-error `Zombie` verdict (for supervision policy). The two
-//!   intentionally diverge; enforced in `proc.rs` `serve()`, where
-//!   the stored `event` and the delivered `event_to_deliver` are
-//!   computed separately.
+//!   terminal event (`Stopped`/`Failed`, for introspection), and the
+//!   terminal status replaces `Zombie`. Because detachment already
+//!   removed the actor from its parent's completion barrier and
+//!   transferred it to proc ownership, the terminal event does not
+//!   re-enter supervision. `try_handle_completion_event` makes this decision
+//!   while holding the supervision ownership lock.
 //!
 //! ## Attrs view invariants (AV-*)
 //!

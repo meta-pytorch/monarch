@@ -58,7 +58,6 @@ if TYPE_CHECKING:
             split_max_buffer_size: NotRequired[int]
             split_max_buffer_age: NotRequired[str]
             stop_actor_timeout: NotRequired[str]
-            cleanup_timeout: NotRequired[str]
             default_encoding: NotRequired[Encoding]
             channel_net_rx_buffer_full_check_interval: NotRequired[str]
             channel_tcp_congestion: NotRequired[str]
@@ -131,7 +130,6 @@ def configure(**kwargs: "ConfigureKwargsType") -> None:
             split_max_buffer_size: Maximum buffer size for message splitting (bytes).
             split_max_buffer_age: Maximum age for split message buffers (humantime).
             stop_actor_timeout: Timeout for stopping actors (humantime).
-            cleanup_timeout: Timeout for cleanup operations (humantime).
             default_encoding: Default message encoding (Encoding.Bincode, Encoding.Json, or Encoding.Multipart).
             channel_net_rx_buffer_full_check_interval: Network receive buffer check interval (humantime).
             channel_tcp_congestion: TCP congestion control: ``"cubic"``, ``"reno"``, ``"bbr"`` (OS-dependent); empty keeps the host default.
