@@ -34,6 +34,7 @@ use hyperactor::Uid;
 use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::StopMode;
+use hyperactor::actor::StopProgress;
 use hyperactor::context;
 use hyperactor::context::Actor as _;
 use hyperactor::mailbox::MessageEnvelope;
@@ -52,10 +53,26 @@ use crate::SupervisorEvent;
 use crate::WorkerCommand;
 use crate::WorkerLike;
 
-#[derive(Debug)]
-struct PendingStop {
+#[derive(Clone, Debug)]
+struct RemoteStopRequest {
     mode: StopMode,
     reason: String,
+}
+
+#[derive(Debug)]
+enum Shutdown {
+    PendingRemoteStop(RemoteStopRequest),
+    AwaitingRemoteCompletion { reason: String },
+    StoppingLiveness { reason: String },
+}
+
+impl Shutdown {
+    fn into_reason(self) -> String {
+        match self {
+            Self::PendingRemoteStop(request) => request.reason,
+            Self::AwaitingRemoteCompletion { reason } | Self::StoppingLiveness { reason } => reason,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -143,7 +160,7 @@ pub struct Supervisor {
     session_id: Uid,
     liveness_handle: Option<ActorHandle<KeepaliveSupervisor>>,
     session: Option<SupervisorSession>,
-    pending_stop: Option<PendingStop>,
+    shutdown: Option<Shutdown>,
     /// Optional one-shot notification posted after the worker links the child.
     ready: Option<OncePortHandle<()>>,
 }
@@ -227,7 +244,7 @@ impl Supervisor {
             session_id,
             liveness_handle: None,
             session: None,
-            pending_stop: None,
+            shutdown: None,
             ready,
         }
     }
@@ -260,17 +277,19 @@ impl Actor for Supervisor {
         this: &Instance<Self>,
         mode: StopMode,
         reason: &str,
-    ) -> anyhow::Result<()> {
-        self.pending_stop = Some(PendingStop {
+    ) -> anyhow::Result<StopProgress> {
+        let request = RemoteStopRequest {
             mode,
             reason: reason.to_string(),
-        });
-        self.send_pending_worker_stop(this)
+        };
+        self.shutdown = Some(Shutdown::PendingRemoteStop(request));
+        self.forward_remote_stop(this)?;
+        Ok(StopProgress::Continue)
     }
 
     async fn handle_supervision_event(
         &mut self,
-        _this: &Instance<Self>,
+        this: &Instance<Self>,
         event: &ActorSupervisionEvent,
     ) -> anyhow::Result<bool> {
         if self
@@ -278,8 +297,13 @@ impl Actor for Supervisor {
             .as_ref()
             .is_some_and(|handle| handle.actor_addr() == &event.actor_id)
         {
-            let event = self.synthesize_unreachable_event("supervision liveness failed");
-            return self.propagate_event(event);
+            self.liveness_handle = None;
+            let Some(shutdown) = self.shutdown.take() else {
+                let event = self.synthesize_unreachable_event("supervision liveness failed");
+                return self.propagate_event(event);
+            };
+            this.exit(&shutdown.into_reason())?;
+            return Ok(true);
         }
         Ok(!event.is_error())
     }
@@ -296,6 +320,10 @@ impl Handler<SupervisorEvent> for Supervisor {
                 display_name,
             } => {
                 self.ensure_session(&session_id)?;
+                anyhow::ensure!(
+                    self.session.is_none(),
+                    "remote supervision session already linked"
+                );
                 if let Some(ready) = self.ready.take() {
                     ready.post(cx, ());
                 }
@@ -304,7 +332,7 @@ impl Handler<SupervisorEvent> for Supervisor {
                     child,
                     display_name,
                 });
-                self.send_pending_worker_stop(cx)?;
+                self.forward_remote_stop(cx)?;
                 Ok(())
             }
             SupervisorEvent::SuperviseRejected { session_id, reason } => {
@@ -314,21 +342,55 @@ impl Handler<SupervisorEvent> for Supervisor {
             SupervisorEvent::SupervisionEvent {
                 session_id,
                 event,
-                disposition: _,
+                disposition,
             } => {
                 self.ensure_session(&session_id)?;
+                if matches!(disposition, RemoteActorDisposition::Terminal) {
+                    self.shutdown = None;
+                }
                 self.propagate_event(event)
             }
             SupervisorEvent::Unlinked { session_id, reason } => {
                 self.ensure_session(&session_id)?;
-                cx.exit(&reason)?;
-                Ok(())
+                let reason = match self.shutdown.take() {
+                    // A duplicate unlink is a peer protocol violation, not a
+                    // local invariant, so restore the phase and reject it.
+                    Some(shutdown @ Shutdown::StoppingLiveness { .. }) => {
+                        self.shutdown = Some(shutdown);
+                        anyhow::bail!("remote supervision session unlinked more than once")
+                    }
+                    Some(shutdown) => shutdown.into_reason(),
+                    None => reason,
+                };
+                self.shutdown = Some(Shutdown::StoppingLiveness { reason });
+                self.stop_liveness_for_shutdown(cx)
             }
         }
     }
 }
 
 impl Supervisor {
+    fn stop_liveness_for_shutdown(&mut self, cx: &Instance<Self>) -> anyhow::Result<()> {
+        let Some(Shutdown::StoppingLiveness { .. }) = self.shutdown.as_ref() else {
+            panic!("liveness stop requires a completed remote shutdown");
+        };
+        cx.close();
+
+        if let Some(liveness) = &self.liveness_handle {
+            let _ = liveness.stop("remote supervision ended");
+            return Ok(());
+        }
+
+        let shutdown = self
+            .shutdown
+            .take()
+            .expect("shutdown should remain present until completion");
+        let Shutdown::StoppingLiveness { reason } = shutdown else {
+            panic!("remote completion should be known after liveness stops");
+        };
+        cx.exit(&reason).map_err(Into::into)
+    }
+
     fn ensure_session(&self, session_id: &hyperactor::Uid) -> anyhow::Result<()> {
         if session_id != &self.session_id {
             anyhow::bail!("remote supervision session id mismatch");
@@ -336,33 +398,38 @@ impl Supervisor {
         Ok(())
     }
 
-    fn send_pending_worker_stop(&mut self, cx: &Instance<Self>) -> anyhow::Result<()> {
-        let Some(stop) = self.pending_stop.take() else {
+    fn forward_remote_stop(&mut self, cx: &Instance<Self>) -> anyhow::Result<()> {
+        let Some(Shutdown::PendingRemoteStop(request)) = self.shutdown.as_ref() else {
             return Ok(());
         };
-        let Some(session) = &self.session else {
+        if let Some(session) = &self.session {
+            (&session.worker).post(
+                cx,
+                WorkerCommand::Stop {
+                    session_id: self.session_id.clone(),
+                    mode: request.mode,
+                    reason: request.reason.clone(),
+                },
+            );
+        } else {
             let Some(worker) = self.bootstrap.worker_endpoint() else {
-                self.pending_stop = Some(stop);
                 return Ok(());
             };
             worker.post(
                 cx,
                 WorkerCommand::Stop {
                     session_id: self.session_id.clone(),
-                    mode: stop.mode,
-                    reason: stop.reason,
+                    mode: request.mode,
+                    reason: request.reason.clone(),
                 },
             );
-            return Ok(());
+        }
+        let Some(Shutdown::PendingRemoteStop(request)) = self.shutdown.take() else {
+            panic!("worker stop requires a pending remote shutdown");
         };
-        (&session.worker).post(
-            cx,
-            WorkerCommand::Stop {
-                session_id: self.session_id.clone(),
-                mode: stop.mode,
-                reason: stop.reason,
-            },
-        );
+        self.shutdown = Some(Shutdown::AwaitingRemoteCompletion {
+            reason: request.reason,
+        });
         Ok(())
     }
 
@@ -848,16 +915,12 @@ mod tests {
         async fn handle_stop(
             &mut self,
             this: &Instance<Self>,
-            mode: StopMode,
+            _mode: StopMode,
             reason: &str,
-        ) -> anyhow::Result<()> {
+        ) -> anyhow::Result<StopProgress> {
             self.stopped.post(this, reason.to_string());
             this.close();
-            match mode {
-                StopMode::Stop => this.exit(reason)?,
-                StopMode::DrainAndStop => this.exit_after_drain(reason)?,
-            }
-            Ok(())
+            Ok(StopProgress::Complete)
         }
     }
 
@@ -1111,7 +1174,7 @@ mod tests {
     // ├── client instance
     // │   ├── ready port: receives the child address
     // │   ├── stopped port: receives the child stop reason
-    // │   └── events port: present but not expected to receive an event
+    // │   └── events port: receives the remote child's terminal event
     // ├── worker: Worker
     // │   ├── child: TestChild
     // │   └── worker-side liveness actor: KeepaliveWorker
@@ -1128,7 +1191,7 @@ mod tests {
         let client = proc.client("client");
         let session_id = Uid::anonymous();
 
-        let (_child_addr, worker, parent, mut stopped_rx, _event_rx) = spawn_supervised_pair(
+        let (child_addr, worker, parent, mut stopped_rx, mut event_rx) = spawn_supervised_pair(
             &proc,
             &client,
             session_id.clone(),
@@ -1144,7 +1207,14 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(reason, "parent stopping");
+        assert_eq!(reason, "test parent stopping");
+
+        let event = tokio::time::timeout(Duration::from_secs(5), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.actor_id, child_addr);
+        assert!(matches!(event.actor_status, ActorStatus::Stopped(_)));
 
         tokio::time::timeout(Duration::from_secs(5), parent)
             .await
@@ -1245,10 +1315,10 @@ mod tests {
     //         └── supervisor: Supervisor
     //             └── supervisor-side liveness actor: KeepaliveSupervisor
     //
-    // Killing Parent still tears down its local supervision subtree. Grandparent
+    // Killing Parent hard-kills its local supervision subtree. Grandparent
     // handles the parent failure so the test process does not treat it as an
-    // unhandled root failure. Parent stops Supervisor, Supervisor forwards the
-    // stop to Worker, and Worker stops TestChild.
+    // unhandled root failure. Since Supervisor does not run its graceful stop
+    // handler, Worker stops TestChild through the liveness orphan policy.
     #[tokio::test]
     async fn test_parent_kill_stops_remote_child() {
         let proc = Proc::isolated();
@@ -1282,7 +1352,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(reason, "parent stopping");
+        assert_eq!(reason, "supervision liveness failed");
 
         let event = tokio::time::timeout(Duration::from_secs(5), event_rx.recv())
             .await
@@ -1743,7 +1813,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(stop_reason, "parent stopping");
+        assert_eq!(stop_reason, "test stop");
 
         tokio::time::timeout(Duration::from_secs(5), parent)
             .await
