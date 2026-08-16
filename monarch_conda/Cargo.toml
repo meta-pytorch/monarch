@@ -12,7 +12,7 @@ name = "conda_sync_cli"
 path = "src/main.rs"
 
 [dependencies]
-aho-corasick = "1.1.4"
+aho-corasick = "1.1.5"
 anyhow = "1.0.104"
 async-tempfile = "0.7.0"
 bincode = { version = "2", features = ["serde"] }
