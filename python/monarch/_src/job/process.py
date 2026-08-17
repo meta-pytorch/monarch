@@ -18,6 +18,7 @@ import threading
 import time
 from typing import Callable, Dict, List, Optional, Union
 
+from monarch._rust_bindings.monarch_hyperactor.config import get_propagatable_config_env
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.actor.future import Future
 from monarch._src.job.job import JobState, JobTrait, ProcessState
@@ -138,11 +139,16 @@ class ProcessJob(JobTrait):
         self._tmpdir = tempfile.mkdtemp(prefix="monarch_process_job_")
 
         try:
+            propagatable_config_env = get_propagatable_config_env()
             for mesh_name, count in self._meshes.items():
                 for i in range(count):
                     host_key = f"{mesh_name}_{i}"
                     addr = f"ipc://{self._tmpdir}/{host_key}"
-                    env = {**os.environ, "HYPERACTOR_PROCESS_NAME": host_key}
+                    env = {
+                        **propagatable_config_env,
+                        **os.environ,
+                        "HYPERACTOR_PROCESS_NAME": host_key,
+                    }
                     if self._env is not None:
                         env.update(self._env)
                     if _IN_PAR:
