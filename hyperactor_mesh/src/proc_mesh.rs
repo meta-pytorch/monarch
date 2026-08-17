@@ -1398,9 +1398,10 @@ mod tests {
             .spawn_data(instance, &())
             .await
             .expect("spawn data actor mesh through default spawner");
-        assert_eq!(rankspace::view::View::space(&*actor_mesh).cardinality(), 2);
-        let actor_uids: HashSet<_> = rankspace::view::View::iter(&*actor_mesh)
-            .map(|(_, actor)| actor.actor_addr().id().uid().clone())
+        assert_eq!(actor_mesh.region().num_ranks(), 2);
+        let actor_uids: HashSet<_> = actor_mesh
+            .values()
+            .map(|actor| actor.actor_addr().id().uid().clone())
             .collect();
         assert_eq!(
             actor_uids.len(),

@@ -3628,7 +3628,6 @@ dependencies = [
  "pin-project",
  "preempt_rwlock",
  "rand 0.10.2",
- "rankspace",
  "reqwest 0.13.4",
  "rustls-pemfile",
  "schemars 1.2.2",
