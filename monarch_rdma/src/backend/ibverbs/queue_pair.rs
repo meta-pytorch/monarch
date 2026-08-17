@@ -875,7 +875,6 @@ struct PendingOp {
     /// construction so retries from a credit head-block don't redo
     /// the work.
     wrs: u32,
-    is_read: bool,
 }
 
 /// State of an op whose WRs are in flight on the QP.
@@ -883,7 +882,6 @@ struct PendingOp {
 struct PostedOpEntry {
     op_idx: usize,
     pending_wrs: HashSet<u64>,
-    is_read: bool,
     /// Kept alive so both the memory and its registration outlive every
     /// in-flight WR touching it.
     _local_memory: KeepaliveLocalMemory,
@@ -919,15 +917,10 @@ pub(super) struct QueuePairActor<M: Manager, Qp: IbvQueuePair> {
     init_timeout: Duration,
     /// QP-wide cap on outstanding send-queue WRs (reads + writes).
     max_send_wr: u32,
-    /// QP-wide cap on outstanding RDMA-READ WRs at the initiator. A
-    /// configured value of 0 means the device imposes no separate read
-    /// limit; the constructor normalizes it to `max_send_wr`, so reads
-    /// gate only against the send-queue slot cap.
-    max_rd_atomic: u32,
-    /// Single FIFO of ops awaiting their first post attempt. If the
-    /// head op bumps against either credit cap, ops queued behind
-    /// it stall — a write stuck behind a credit-blocked read is the
-    /// known consequence; smarter interleaving is future work.
+    /// Single FIFO of ops awaiting their first post attempt. If the head
+    /// op does not fit in the free send-queue slots, ops queued behind it
+    /// stall even where they would have fit; smarter interleaving is
+    /// future work.
     queue: VecDeque<PendingOp>,
     /// op-id → entry, for tracking WR completion. op-ids are local
     /// to this actor (monotonic counter); they exist so we can
@@ -938,8 +931,9 @@ pub(super) struct QueuePairActor<M: Manager, Qp: IbvQueuePair> {
     /// wr_id → local op-id.
     wr_to_op: HashMap<u64, u64>,
     next_op_id: u64,
-    in_flight_reads: u32,
-    in_flight_writes: u32,
+    /// WRs posted to the send queue and not yet reaped:
+    /// what `max_send_wr` gates against.
+    in_flight: u32,
     /// `true` while a `Tick` self-message is already in flight; the
     /// flag prevents stacking redundant ticks.
     tick_armed: bool,
@@ -954,17 +948,8 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
         qp: Qp,
         is_loopback: bool,
         max_send_wr: u32,
-        max_rd_atomic: u32,
     ) -> Self {
         let init_timeout = hyperactor_config::global::get(crate::config::RDMA_QP_INIT_TIMEOUT);
-        // A configured max_rd_atomic of 0 means "no separate read
-        // limit"; fall back to the send-queue slot cap so reads gate
-        // only against max_send_wr.
-        let max_rd_atomic = if max_rd_atomic == 0 {
-            max_send_wr
-        } else {
-            max_rd_atomic
-        };
         Self {
             qp_key,
             local_manager,
@@ -973,13 +958,11 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
             is_loopback,
             init_timeout,
             max_send_wr,
-            max_rd_atomic,
             queue: VecDeque::new(),
             posted: HashMap::new(),
             wr_to_op: HashMap::new(),
             next_op_id: 0,
-            in_flight_reads: 0,
-            in_flight_writes: 0,
+            in_flight: 0,
             tick_armed: false,
             poll_policy: PollSleepPolicy::new(),
         }
@@ -999,19 +982,14 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
     ///   per-op error (e.g. op too large for this QP); caller
     ///   should attempt the next head.
     /// * `Ok(false)` — head can't be posted because the QP is at
-    ///   either `max_send_wr` or, for a head read, `max_rd_atomic`.
-    ///   The op stays at the head; caller should stop walking.
+    ///   `max_send_wr`. The op stays at the head; caller should stop
+    ///   walking.
     /// * `Err(_)` — `qp.put`/`qp.get` failed (e.g. the QP is in
     ///   error state). Fatal: the actor's handler returns this,
     ///   which raises a supervision event.
     fn try_post_head(&mut self, cx: &Instance<Self>) -> Result<bool, anyhow::Error> {
         let pending = self.queue.pop_front().expect("non-empty queue");
-        let PendingOp {
-            op,
-            reply,
-            wrs,
-            is_read,
-        } = pending;
+        let PendingOp { op, reply, wrs } = pending;
         let op_idx = op.op_idx;
 
         // 1. Per-op fatal: op alone exceeds the QP's capacity.
@@ -1029,34 +1007,12 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
             )?;
             return Ok(true);
         }
-        if is_read && wrs > self.max_rd_atomic {
-            let err = format!(
-                "read op too large for this QP [op_idx={}, qp_key={:?}, wrs={}, max_rd_atomic={}, local: {:?}, remote: {:?}]",
-                op_idx, self.qp_key, wrs, self.max_rd_atomic, op.local_memory, op.remote,
-            );
-            reply.try_post(
-                cx,
-                OpResult {
-                    op_idx,
-                    result: Err(err),
-                },
-            )?;
-            return Ok(true);
-        }
 
-        // 2. Credit gating. Every op consumes a send-queue slot;
-        //    reads additionally consume read credits. A read at the
-        //    head that hits either cap stalls the whole queue.
-        let projected_total = self.in_flight_reads + self.in_flight_writes + wrs;
-        if projected_total > self.max_send_wr
-            || (is_read && self.in_flight_reads + wrs > self.max_rd_atomic)
-        {
-            self.queue.push_front(PendingOp {
-                op,
-                reply,
-                wrs,
-                is_read,
-            });
+        // 2. Credit gating. Every op consumes send-queue slots.
+        //    A head op that does not fit stalls the queue behind
+        //    it until enough WRs are reaped.
+        if self.in_flight + wrs > self.max_send_wr {
+            self.queue.push_front(PendingOp { op, reply, wrs });
             return Ok(false);
         }
 
@@ -1097,7 +1053,11 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
         let wr_ids = post_result.map_err(|e| {
             anyhow::anyhow!(
                 "qp.{} failed [op_idx={}, qp_key={:?}, local: {:?}, remote: {:?}]: {e}",
-                if is_read { "get" } else { "put" },
+                if matches!(op.op_type, RdmaOpType::ReadIntoLocal) {
+                    "get"
+                } else {
+                    "put"
+                },
                 op_idx,
                 self.qp_key,
                 local,
@@ -1113,17 +1073,12 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
             self.wr_to_op.insert(*id, op_id);
             pending_wrs.insert(*id);
         }
-        if is_read {
-            self.in_flight_reads += wr_ids.len() as u32;
-        } else {
-            self.in_flight_writes += wr_ids.len() as u32;
-        }
+        self.in_flight += wr_ids.len() as u32;
         self.posted.insert(
             op_id,
             PostedOpEntry {
                 op_idx,
                 pending_wrs,
-                is_read,
                 _local_memory: op.local_memory,
                 reply,
                 first_error: None,
@@ -1177,11 +1132,7 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
                 .get_mut(&op_id)
                 .expect("op_id missing from posted");
             entry.pending_wrs.remove(&wr_id);
-            if entry.is_read {
-                self.in_flight_reads -= 1;
-            } else {
-                self.in_flight_writes -= 1;
-            }
+            self.in_flight -= 1;
             if let Some(err) = wr_error
                 && entry.first_error.is_none()
             {
@@ -1309,12 +1260,10 @@ impl<M: Manager, Qp: IbvQueuePair> Handler<ProcessOps> for QueuePairActor<M, Qp>
     async fn handle(&mut self, cx: &Context<Self>, msg: ProcessOps) -> Result<(), anyhow::Error> {
         for op in msg.items.into_iter() {
             let wrs = self.wr_count(op.local_memory.size());
-            let is_read = matches!(op.op_type, RdmaOpType::ReadIntoLocal);
             self.queue.push_back(PendingOp {
                 op,
                 reply: msg.reply.clone(),
                 wrs,
-                is_read,
             });
         }
         // If a tick is already armed it will pick up the new ops on
@@ -1519,7 +1468,6 @@ mod tests {
         qp: MockQp,
         is_loopback: bool,
         max_send_wr: u32,
-        max_rd_atomic: u32,
         reply: hyperactor::OncePortHandle<ActorHandle<QueuePairActor<QpaMockManager, MockQp>>>,
     }
 
@@ -1534,7 +1482,6 @@ mod tests {
                 msg.qp,
                 msg.is_loopback,
                 msg.max_send_wr,
-                msg.max_rd_atomic,
             );
             let handle = cx.spawn(actor);
             msg.reply.try_post(cx, handle)?;
@@ -1819,7 +1766,7 @@ mod tests {
             qp: MockQp,
             is_loopback: bool,
         ) -> Result<ActorHandle<QueuePairActor<QpaMockManager, MockQp>>> {
-            self.spawn_actor_with_caps(qp_key, peer_manager, qp, is_loopback, 4, 2)
+            self.spawn_actor_with_caps(qp_key, peer_manager, qp, is_loopback, 4)
                 .await
         }
 
@@ -1830,7 +1777,6 @@ mod tests {
             qp: MockQp,
             is_loopback: bool,
             max_send_wr: u32,
-            max_rd_atomic: u32,
         ) -> Result<ActorHandle<QueuePairActor<QpaMockManager, MockQp>>> {
             let (reply, rx) = self.client.mailbox().open_once_port();
             self.parent.try_post(
@@ -1841,7 +1787,6 @@ mod tests {
                     qp,
                     is_loopback,
                     max_send_wr,
-                    max_rd_atomic,
                     reply,
                 },
             )?;
@@ -2140,7 +2085,6 @@ mod tests {
         async fn spawn_ready_actor(
             &self,
             max_send_wr: u32,
-            max_rd_atomic: u32,
         ) -> Result<(
             ActorHandle<QueuePairActor<QpaMockManager, MockQp>>,
             MockQp,
@@ -2159,7 +2103,6 @@ mod tests {
                     qp.clone(),
                     true,
                     max_send_wr,
-                    max_rd_atomic,
                 )
                 .await?;
             await_status(&handle, |s| {
@@ -2257,7 +2200,7 @@ mod tests {
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn qpa_processes_single_write() -> Result<()> {
         let harness = QpaHarness::build()?;
-        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(4, 2).await?;
+        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(4).await?;
 
         let items = vec![make_op(7, RdmaOpType::WriteFromLocal, 0x1000, 4096)];
         let mut rx = submit_ops(&harness, &actor, items)?;
@@ -2287,7 +2230,7 @@ mod tests {
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn qpa_rejects_op_not_registered_on_its_device() -> Result<()> {
         let harness = QpaHarness::build()?;
-        let (actor, _qp, mut posted_rx) = harness.spawn_ready_actor(4, 2).await?;
+        let (actor, _qp, mut posted_rx) = harness.spawn_ready_actor(4).await?;
 
         let items = vec![QueuePairOp {
             local_memory: KeepaliveLocalMemory::try_new(Arc::new(FakeKeepalive {
@@ -2319,7 +2262,7 @@ mod tests {
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn qpa_posted_op_pins_local_memory() -> Result<()> {
         let harness = QpaHarness::build()?;
-        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(4, 2).await?;
+        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(4).await?;
 
         // Two ops: the second exists only to prove the first has left
         // `try_post_head`, which is where the `QueuePairOp` — the batch's own
@@ -2365,7 +2308,7 @@ mod tests {
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn qpa_chunked_op_waits_for_all_wrs() -> Result<()> {
         let harness = QpaHarness::build()?;
-        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(8, 4).await?;
+        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(8).await?;
 
         // A 3-chunk write (3 * MAX_RDMA_MSG_SIZE) splits into 3 WRs;
         // the op's reply must be held back until all 3 complete.
@@ -2401,7 +2344,7 @@ mod tests {
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn qpa_per_wr_error_held_until_all_wrs_complete() -> Result<()> {
         let harness = QpaHarness::build()?;
-        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(8, 4).await?;
+        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(8).await?;
 
         // 3-WR write: simulate the second WR failing first; the op's
         // Err must not fire until the other 2 WRs have also reported
@@ -2449,7 +2392,7 @@ mod tests {
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn qpa_per_wr_error_isolates_to_failing_op() -> Result<()> {
         let harness = QpaHarness::build()?;
-        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(8, 4).await?;
+        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(8).await?;
 
         // Two writes share a batch: op_idx 0 is multi-WR (3 chunks),
         // op_idx 1 is single-WR. One of op_idx 0's WRs fails;
@@ -2490,51 +2433,18 @@ mod tests {
     }
 
     #[timed_test::async_timed_test(timeout_secs = 60)]
-    async fn qpa_read_credit_gating() -> Result<()> {
+    async fn qpa_reads_gate_on_send_slots_like_writes() -> Result<()> {
         let harness = QpaHarness::build()?;
-        // max_rd_atomic=2 lets at most 2 RDMA_READs sit on the QP.
-        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(8, 2).await?;
+        // Reads hold no credit of their own: three of them against
+        // max_send_wr=2 gate on send-queue slots, just as writes would.
+        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(2).await?;
 
         let items = (0..3usize)
             .map(|i| make_op(i, RdmaOpType::ReadIntoLocal, 0x1000 + i * 0x1000, 4096))
             .collect();
         let mut rx = submit_ops(&harness, &actor, items)?;
 
-        // Only the first two reads make it onto the wire; the third
-        // stays parked at the queue head.
-        let (_, _, r0_wrs) = expect_get(recv_posted(&mut posted_rx).await);
-        let (_, _, r1_wrs) = expect_get(recv_posted(&mut posted_rx).await);
-        assert_eq!(r0_wrs, vec![0]);
-        assert_eq!(r1_wrs, vec![1]);
-        assert_no_post(&mut posted_rx, Duration::from_millis(50)).await;
-
-        // Complete the first read; the third should post.
-        qp.queue_completion(r0_wrs[0]);
-        let (_, _, r2_wrs) = expect_get(recv_posted(&mut posted_rx).await);
-        assert_eq!(r2_wrs, vec![2]);
-
-        qp.queue_completion(r1_wrs[0]);
-        qp.queue_completion(r2_wrs[0]);
-        let replies = collect_replies(&mut rx, 3).await;
-        assert_eq!(replies, vec![(0, Ok(())), (1, Ok(())), (2, Ok(()))]);
-        harness.teardown().await;
-        Ok(())
-    }
-
-    #[timed_test::async_timed_test(timeout_secs = 60)]
-    async fn qpa_zero_max_rd_atomic_uses_send_wr() -> Result<()> {
-        let harness = QpaHarness::build()?;
-        // max_rd_atomic=0 means "no separate read limit"; reads gate
-        // only against max_send_wr=2.
-        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(2, 0).await?;
-
-        let items = (0..3usize)
-            .map(|i| make_op(i, RdmaOpType::ReadIntoLocal, 0x1000 + i * 0x1000, 4096))
-            .collect();
-        let mut rx = submit_ops(&harness, &actor, items)?;
-
-        // Two reads fit the send-queue cap; the third parks. Were 0
-        // taken literally, every read would be rejected as too large.
+        // Two reads fit the send-queue cap; the third parks.
         let (_, _, r0_wrs) = expect_get(recv_posted(&mut posted_rx).await);
         let (_, _, r1_wrs) = expect_get(recv_posted(&mut posted_rx).await);
         assert_eq!(r0_wrs, vec![0]);
@@ -2558,7 +2468,7 @@ mod tests {
     async fn qpa_write_slot_gating() -> Result<()> {
         let harness = QpaHarness::build()?;
         // max_send_wr=2 caps total in-flight WRs; submit 4 writes.
-        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(2, 8).await?;
+        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(2).await?;
 
         let items = (0..4usize)
             .map(|i| make_op(i, RdmaOpType::WriteFromLocal, 0x1000 + i * 0x1000, 4096))
@@ -2593,14 +2503,12 @@ mod tests {
         Ok(())
     }
 
+    /// Reads and writes draw on one pool of send-queue slots, so a mixed
+    /// batch parks the head op until enough WRs of either kind are reaped.
     #[timed_test::async_timed_test(timeout_secs = 60)]
-    async fn qpa_blocked_until_one_read_and_one_write_complete() -> Result<()> {
+    async fn qpa_reads_and_writes_share_send_slots() -> Result<()> {
         let harness = QpaHarness::build()?;
-        // max_send_wr=4, max_rd_atomic=2. The trailing 2-WR read
-        // needs *both* a free read credit (only 1 in use) and a free
-        // slot (currently full at 4) — so it sits parked until one
-        // read AND one write complete.
-        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(4, 2).await?;
+        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(4).await?;
 
         let items = vec![
             make_op(0, RdmaOpType::ReadIntoLocal, 0x1000, 4096),
@@ -2611,7 +2519,7 @@ mod tests {
         ];
         let mut rx = submit_ops(&harness, &actor, items)?;
 
-        // First four post: 1 read WR (op 0) + 3 write WRs (ops 1-3).
+        // The first four ops fill all four slots: 1 read WR + 3 write WRs.
         let (_, _, r0_wrs) = expect_get(recv_posted(&mut posted_rx).await);
         let (_, _, w1_wrs) = expect_put(recv_posted(&mut posted_rx).await);
         let (_, _, w2_wrs) = expect_put(recv_posted(&mut posted_rx).await);
@@ -2620,20 +2528,18 @@ mod tests {
         assert_eq!(w1_wrs, vec![1]);
         assert_eq!(w2_wrs, vec![2]);
         assert_eq!(w3_wrs, vec![3]);
-        // The 2-WR read at op_idx 4 stays parked.
+        // The 2-WR read at op_idx 4 needs two free slots, so it parks.
         assert_no_post(&mut posted_rx, Duration::from_millis(50)).await;
 
-        // Completing just the in-flight read frees a read credit but
-        // doesn't free a slot — op 4 still blocks.
+        // One completion frees one slot: still one short.
         qp.queue_completion(r0_wrs[0]);
-        let first_reply = collect_replies(&mut rx, 1).await;
-        assert_eq!(first_reply, vec![(0, Ok(()))]);
+        assert_eq!(collect_replies(&mut rx, 1).await, vec![(0, Ok(()))]);
         assert_no_post(&mut posted_rx, Duration::from_millis(50)).await;
 
-        // Completing one write frees the last slot needed; op 4 posts.
+        // The second completion -- a write this time -- frees the slot the
+        // read was waiting for, so it posts.
         qp.queue_completion(w1_wrs[0]);
-        let second_reply = collect_replies(&mut rx, 1).await;
-        assert_eq!(second_reply, vec![(1, Ok(()))]);
+        assert_eq!(collect_replies(&mut rx, 1).await, vec![(1, Ok(()))]);
         let (_, _, r4_wrs) = expect_get(recv_posted(&mut posted_rx).await);
         assert_eq!(r4_wrs, vec![4, 5]);
 
@@ -2652,7 +2558,7 @@ mod tests {
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn qpa_multiple_batches_share_credit() -> Result<()> {
         let harness = QpaHarness::build()?;
-        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(4, 2).await?;
+        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(4).await?;
 
         // Batch A: 2 writes with op_idx 10, 11.
         let batch_a = vec![
@@ -2691,7 +2597,7 @@ mod tests {
     async fn qpa_op_too_large_for_qp() -> Result<()> {
         let harness = QpaHarness::build()?;
         // max_send_wr=1 with a 2-chunk write → can never fit.
-        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(1, 1).await?;
+        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(1).await?;
 
         let items = vec![
             make_op(0, RdmaOpType::WriteFromLocal, 0x1000, 2 * MAX_RDMA_MSG_SIZE),
@@ -2721,7 +2627,7 @@ mod tests {
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn qpa_poll_error_kills_actor_via_supervision() -> Result<()> {
         let mut harness = QpaHarness::build()?;
-        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(4, 2).await?;
+        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(4).await?;
 
         // Post one op so the next poll has something to look at.
         let items = vec![make_op(0, RdmaOpType::WriteFromLocal, 0x1000, 4096)];
@@ -2747,7 +2653,7 @@ mod tests {
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn qpa_post_error_kills_actor_via_supervision() -> Result<()> {
         let mut harness = QpaHarness::build()?;
-        let (actor, qp, _posted_rx) = harness.spawn_ready_actor(4, 2).await?;
+        let (actor, qp, _posted_rx) = harness.spawn_ready_actor(4).await?;
 
         qp.queue_post_error("simulated post failure");
         let items = vec![make_op(0, RdmaOpType::WriteFromLocal, 0x1000, 4096)];
