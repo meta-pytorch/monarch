@@ -10,6 +10,7 @@
 
 use std::io::Error;
 use std::result::Result;
+use std::sync::Arc;
 
 use super::domain::IbvDomain;
 use super::domain::IbvDomainImpl;
@@ -38,33 +39,29 @@ use super::queue_pair::WorkRequestError;
 pub struct MlxQueuePair(RCQueuePair);
 
 impl MlxQueuePair {
-    /// Creates the `mlx5dv` RC QP and the two completion queues backing it,
-    /// against `domain`'s context and PD, returned as an [`IbvQp`] that owns the
-    /// CQs and PD. The QP carries the mlx5dv send-ops flags that arm its
-    /// extended work-request builder. A null context or PD on `domain` yields
-    /// `Err`.
+    /// Creates the `mlx5dv` RC QP against `domain`'s context and PD, reporting
+    /// its completions on `send_cq`/`recv_cq`, returned as an [`IbvQp`] holding
+    /// a clone of each of them and of the PD. The QP carries the mlx5dv send-ops
+    /// flags that arm its extended work-request builder. A null context or PD on
+    /// `domain` yields `Err`.
     ///
     /// # Safety
     ///
-    /// `domain`'s context and PD, if non-null, must be live.
+    /// `domain`'s context and PD, if non-null, must be live. `send_cq` and
+    /// `recv_cq` must each hold a live `ibv_cq` created on that same context:
+    /// `mlx5dv_create_qp` binds the QP to both, and the device reports its
+    /// completions through them for as long as the QP lives.
     pub(super) unsafe fn create_ibv_qp<I: IbvDomainImpl>(
         domain: &IbvDomain<I>,
         config: &IbvConfig,
+        send_cq: Arc<IbvCq>,
+        recv_cq: Arc<IbvCq>,
     ) -> Result<IbvQp, anyhow::Error> {
         let context = domain.context().as_ptr();
         let pd = domain.as_ptr();
         if pd.is_null() {
             anyhow::bail!("cannot create an MlxQueuePair on a null protection domain");
         }
-
-        // Separate send/recv completion queues, each owning a clone of the
-        // device context. Each `IbvCq` destroys its queue on drop, so an early
-        // return below cleans them up.
-        // SAFETY: `domain`'s context is live (an `IbvDomain` holds a null-or-live
-        // context); `IbvCq::create` rejects a null context.
-        let send_cq = unsafe { IbvCq::create(domain.context().clone(), config.cq_entries) }?;
-        // SAFETY: as for `send_cq` above.
-        let recv_cq = unsafe { IbvCq::create(domain.context().clone(), config.cq_entries) }?;
 
         // An mlx5dv extended RC QP with the caps from `config`. The
         // `SEND_OPS_FLAGS` enable the mlx5dv extended work-request builder; the
@@ -103,15 +100,14 @@ impl MlxQueuePair {
         let qp =
             unsafe { rdmaxcel_sys::mlx5dv_create_qp(context, &mut init_attr, &mut mlx5dv_attr) };
         if qp.is_null() {
-            // `send_cq`/`recv_cq` drop here, destroying the CQs.
             anyhow::bail!(
                 "failed to create mlx5dv queue pair (QP): {}",
                 Error::last_os_error()
             );
         }
         // SAFETY: `qp` is a live RC QP just created against `pd` with
-        // `send_cq`/`recv_cq`; `IbvQp` takes ownership of all of them plus the PD
-        // and destroys them in order on drop.
+        // `send_cq`/`recv_cq`; `IbvQp` holds a clone of each, keeping them alive
+        // for at least as long as the QP it destroys on drop.
         Ok(unsafe { IbvQp::from_raw(qp, send_cq, recv_cq, domain.pd().clone()) })
     }
 }
@@ -120,6 +116,8 @@ impl IbvQueuePair for MlxQueuePair {
     unsafe fn new<I: IbvDomainImpl<QueuePair = Self>>(
         domain: &IbvDomain<I>,
         config: IbvConfig,
+        send_cq: Arc<IbvCq>,
+        recv_cq: Arc<IbvCq>,
     ) -> Result<Self, anyhow::Error> {
         tracing::debug!("creating an MlxQueuePair from config {}", config);
         let gid = domain.device_info().select_gid(
@@ -129,7 +127,7 @@ impl IbvQueuePair for MlxQueuePair {
         )?;
         // SAFETY: an `IbvDomain` holds a null-or-live context and PD, which is
         // `create_ibv_qp`'s contract.
-        let qp = unsafe { Self::create_ibv_qp(domain, &config) }?;
+        let qp = unsafe { Self::create_ibv_qp(domain, &config, send_cq, recv_cq) }?;
         let access_flags = domain.access_flags();
         // SAFETY: `create_ibv_qp` returns a live, fully non-null `IbvQp` (it
         // bails on any null handle).

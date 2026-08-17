@@ -803,6 +803,9 @@ impl IbvQueuePair {
         &mut self,
         target: PollTarget,
     ) -> Result<Option<Result<IbvWc, WorkRequestError>>, PollCompletionError> {
+        // SAFETY: this queue pair created and owns both completion queues, and
+        // `&mut self` excludes another poll through it, so no other thread is
+        // polling the one selected below.
         unsafe {
             let (cq, cq_type) = match target {
                 PollTarget::Send => (self.send_cq as *mut rdmaxcel_sys::ibv_cq, "send"),

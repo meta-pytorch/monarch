@@ -1156,19 +1156,21 @@ impl IbvWc {
 /// destroying the CQ on drop (a no-op if null) before releasing the context.
 /// Holding the context keeps it open across `ibv_destroy_cq`.
 #[derive(Debug)]
-pub(super) struct IbvCq {
+pub struct IbvCq {
     cq: *mut rdmaxcel_sys::ibv_cq,
     /// Keeps the context open until after `ibv_destroy_cq`. Never read.
     _context: Arc<IbvContext>,
 }
 
-// SAFETY: the only raw member is the `ibv_cq` pointer. The ibverbs CQ it names is
-// not thread-affine — it may be created on one thread and used or destroyed on
-// another (`Send`) — and `IbvCq` exposes no operation that mutates the CQ through
-// a shared `&` (`as_ptr` only hands back the pointer value), so sharing a
-// `&IbvCq` cannot race (`Sync`).
+// SAFETY: the only raw member is the `ibv_cq` pointer, and the ibverbs CQ it
+// names is not thread-affine: it may be created on one thread and used or
+// destroyed on another.
 unsafe impl Send for IbvCq {}
-// SAFETY: as for `Send` above.
+// SAFETY: nothing reachable from a `&IbvCq` touches the queue. `as_ptr` hands
+// back a pointer value, and no other operation takes `&self`, so concurrent
+// holders cannot race. Whether the returned `*mut ibv_cq` may be used from
+// several threads at once is a separate question, answered by the safety
+// contract of the unsafe code that uses it.
 unsafe impl Sync for IbvCq {}
 
 impl IbvCq {
@@ -1245,14 +1247,16 @@ impl Drop for IbvCq {
 
 /// Owns an `ibv_qp` together with the resources it is built against: its two
 /// completion queues and the protection domain. The QP is destroyed on drop (a
-/// no-op if null) before the CQs and PD, so the destruction order is correct by
-/// construction and holders need not track the CQs or PD separately.
+/// no-op if null), and holding the CQs and PD here keeps them alive for at
+/// least the QP's lifetime, so holders need not track them separately.
+///
+/// The completion queues are shared (`Arc`) because one queue can back many
+/// QPs; all that matters is that every `IbvCq` outlives the QPs built on it.
 #[derive(Debug)]
 pub(super) struct IbvQp {
     qp: *mut rdmaxcel_sys::ibv_qp,
-    /// Declared after `qp` so the QP is destroyed before its completion queues.
-    send_cq: IbvCq,
-    recv_cq: IbvCq,
+    send_cq: Arc<IbvCq>,
+    recv_cq: Arc<IbvCq>,
     /// Keeps the PD alive for the QP's lifetime and is the source of the QP's
     /// device context (via [`IbvPd::context`]).
     pd: Arc<IbvPd>,
@@ -1278,8 +1282,8 @@ impl IbvQp {
     /// `send_cq`/`recv_cq` as its completion queues.
     pub(super) unsafe fn from_raw(
         qp: *mut rdmaxcel_sys::ibv_qp,
-        send_cq: IbvCq,
-        recv_cq: IbvCq,
+        send_cq: Arc<IbvCq>,
+        recv_cq: Arc<IbvCq>,
         pd: Arc<IbvPd>,
     ) -> Self {
         Self {
@@ -1322,8 +1326,8 @@ impl IbvQp {
     pub(super) fn null() -> Self {
         Self {
             qp: std::ptr::null_mut(),
-            send_cq: IbvCq::null(),
-            recv_cq: IbvCq::null(),
+            send_cq: Arc::new(IbvCq::null()),
+            recv_cq: Arc::new(IbvCq::null()),
             pd: Arc::new(IbvPd::null()),
         }
     }

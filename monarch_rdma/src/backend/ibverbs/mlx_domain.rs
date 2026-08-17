@@ -40,6 +40,7 @@ use super::primitives::GidScope;
 use super::primitives::GidType;
 use super::primitives::IbvConfig;
 use super::primitives::IbvContext;
+use super::primitives::IbvCq;
 use super::primitives::IbvDeviceInfo;
 use super::primitives::IbvMr;
 use super::primitives::IbvPd;
@@ -244,10 +245,21 @@ impl MlxDomainOps for ProdMlxDomainOps {
         domain: &IbvDomain<MlxDomain>,
         config: &IbvConfig,
     ) -> anyhow::Result<IbvQp> {
-        // The `IbvQp` owns its completion queues and PD, so an early return or
-        // panic in the connect below still tears everything down in order.
-        // SAFETY: an `IbvDomain` holds a null-or-live context and PD.
-        let qp = unsafe { MlxQueuePair::create_ibv_qp(domain, config) }
+        // This QP is private to mkey binding and its completions are polled
+        // here, not by a `QueuePairActor`, so it gets its own completion queues
+        // rather than sharing the ones the data path uses.
+        // SAFETY: an `IbvDomain` holds a null-or-live context; `IbvCq::create`
+        // rejects a null context.
+        let send_cq =
+            Arc::new(unsafe { IbvCq::create(domain.context().clone(), config.cq_entries) }?);
+        // SAFETY: as for `send_cq` above.
+        let recv_cq =
+            Arc::new(unsafe { IbvCq::create(domain.context().clone(), config.cq_entries) }?);
+        // The `IbvQp` holds a clone of each CQ and of the PD, so an early return
+        // or panic in the connect below still tears everything down in order.
+        // SAFETY: an `IbvDomain` holds a null-or-live context and PD, and both
+        // CQs were just created on that context.
+        let qp = unsafe { MlxQueuePair::create_ibv_qp(domain, config, send_cq, recv_cq) }
             .context("could not create loopback QP for mkey binding")?;
         let context = qp.context().as_ptr();
         let access_flags = domain.access_flags();
@@ -486,7 +498,9 @@ impl RegisteredSegment {
     /// # Safety
     ///
     /// If `pd` is non-null it must be a live protection domain and `qp` a valid
-    /// queue pair, both valid for this call.
+    /// queue pair, both valid for this call. Nothing else may poll `qp`'s send
+    /// completion queue meanwhile: binding posts a work request and polls that
+    /// queue until it completes.
     unsafe fn grow(
         &self,
         pd: &Arc<IbvPd>,
@@ -758,7 +772,9 @@ impl MlxDomain {
                 // Grew: extend the existing segment in place (reuses its MRs,
                 // retires its prior key internally).
                 // SAFETY: `pd`/`qp` satisfy this function's contract (live PD or
-                // null; valid loopback QP) and are forwarded unchanged.
+                // null; valid loopback QP) and are forwarded unchanged. The
+                // segments lock held here serializes every use of the domain's
+                // one loopback QP, so nothing else polls its completion queue.
                 Some(seg) => unsafe { seg.grow(pd, qp, access, scanned_seg) }?,
                 // New: create an empty segment and grow it to the full range.
                 None => {

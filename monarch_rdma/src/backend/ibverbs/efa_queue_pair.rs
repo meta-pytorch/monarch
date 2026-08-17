@@ -11,6 +11,7 @@
 
 use std::io::Error;
 use std::result::Result;
+use std::sync::Arc;
 
 use super::domain::IbvDomain;
 use super::domain::IbvDomainImpl;
@@ -409,6 +410,8 @@ impl IbvQueuePair for EfaQueuePair {
     unsafe fn new<I: IbvDomainImpl<QueuePair = Self>>(
         domain: &IbvDomain<I>,
         config: IbvConfig,
+        send_cq: Arc<IbvCq>,
+        recv_cq: Arc<IbvCq>,
     ) -> Result<Self, anyhow::Error> {
         tracing::debug!("creating an EfaQueuePair from config {}", config);
         // `IbvDomain`'s `pd` accessor permits null (e.g. a test domain); a real
@@ -463,15 +466,6 @@ impl IbvQueuePair for EfaQueuePair {
             device_attr.max_rq_wr
         );
 
-        // Separate send/recv completion queues, each owning a clone of the
-        // device context. Each `IbvCq` destroys its queue on drop, so an early
-        // return below cleans them up.
-        // SAFETY: `context` is live (see above); `IbvCq::create` rejects a null
-        // context.
-        let send_cq = unsafe { IbvCq::create(domain.context().clone(), config.cq_entries) }?;
-        // SAFETY: as for `send_cq` above.
-        let recv_cq = unsafe { IbvCq::create(domain.context().clone(), config.cq_entries) }?;
-
         // An SRD queue pair: a driver queue-pair type selected through
         // `efadv_qp_init_attr`. The send-ops flags both request the RDMA
         // builders and are what makes `ibv_qp_to_qp_ex` yield a builder at all.
@@ -513,7 +507,6 @@ impl IbvQueuePair for EfaQueuePair {
             )
         };
         if qp.is_null() {
-            // `send_cq`/`recv_cq` drop here, destroying the CQs.
             anyhow::bail!(
                 "failed to create EFA SRD queue pair (QP): {}",
                 Error::last_os_error()
@@ -521,8 +514,8 @@ impl IbvQueuePair for EfaQueuePair {
         }
 
         // SAFETY: `qp` is a live SRD QP just created against `pd` with
-        // `send_cq`/`recv_cq`; `IbvQp` takes ownership of all of them plus the
-        // PD and destroys them in order on drop.
+        // `send_cq`/`recv_cq`; `IbvQp` holds a clone of each, keeping them alive
+        // for at least as long as the QP it destroys on drop.
         let qp = unsafe { IbvQp::from_raw(qp, send_cq, recv_cq, domain.pd().clone()) };
 
         Ok(Self {
@@ -670,7 +663,9 @@ impl IbvQueuePair for EfaQueuePair {
     ) -> Result<Option<Result<IbvWc, WorkRequestError>>, PollCompletionError> {
         // SAFETY: `self.qp` owns the live queue pair built in `new`, along with
         // its completion queues and device context, all non-null and alive for
-        // `self`'s lifetime.
+        // `self`'s lifetime. `&mut self` excludes another poll through this queue
+        // pair, and its completion queues are reached through nothing else, so no
+        // other thread is polling them.
         unsafe { super::queue_pair::poll_one(&self.qp, target) }
     }
 }

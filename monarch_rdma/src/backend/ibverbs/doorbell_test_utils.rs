@@ -456,7 +456,8 @@ pub async fn wait_for_completion_gpu(
 ) -> Result<bool, anyhow::Error> {
     // SAFETY: `qp` is borrowed mutably for the duration of this call;
     // the `rdmaxcel_qp` pointer is consumed before we return, so the
-    // QP's `Drop` cannot run mid-use.
+    // QP's `Drop` cannot run mid-use. That mutable borrow is also what
+    // makes this the only poller of the completion queue read below.
     unsafe {
         let start_time = Instant::now();
         let timeout = Duration::from_secs(timeout_secs);

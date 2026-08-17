@@ -25,6 +25,7 @@ use anyhow::Context;
 use super::memory_region::IbvMemoryRegionView;
 use super::primitives::IbvConfig;
 use super::primitives::IbvContext;
+use super::primitives::IbvCq;
 use super::primitives::IbvDeviceInfo;
 use super::primitives::IbvMr;
 use super::primitives::IbvPd;
@@ -189,7 +190,10 @@ impl<I: IbvDomainImpl> IbvDomain<I> {
     /// Create a queue pair against this domain, dispatching to the backend
     /// [`IbvDomainImpl`] strategy.
     pub fn create_queue_pair(&self, config: &IbvConfig) -> anyhow::Result<I::QueuePair> {
-        I::create_queue_pair(self, config)
+        // SAFETY: a fully-constructed `IbvDomain` holds a null-or-live PD, and
+        // through it a null-or-live context, per its construction contract --
+        // which is what `I::create_queue_pair` requires.
+        unsafe { I::create_queue_pair(self, config) }
     }
 }
 
@@ -241,15 +245,38 @@ pub trait IbvDomainImpl: std::fmt::Debug + Send + Sync + 'static + Sized {
         unsafe { register_host_or_dmabuf_mr(domain, mem) }
     }
 
-    /// Create a queue pair against `domain`. The default builds [`Self::QueuePair`]
-    /// directly; backends override to construct their own queue-pair type.
-    fn create_queue_pair(
+    /// Create a queue pair against `domain`, on its own pair of completion
+    /// queues. The default builds [`Self::QueuePair`] directly; backends
+    /// override to construct their own queue-pair type.
+    ///
+    /// # Safety
+    ///
+    /// `domain` must hold a null or live PD (`domain.as_ptr()`) and, with it, a
+    /// null or live device context: this allocates the completion queues on that
+    /// context and builds the queue pair against that PD. A null PD yields
+    /// `Err` rather than reaching the driver.
+    unsafe fn create_queue_pair(
         domain: &IbvDomain<Self>,
         config: &IbvConfig,
     ) -> anyhow::Result<Self::QueuePair> {
-        // SAFETY: a fully-constructed `IbvDomain` holds a null-or-live PD per
-        // its construction contract, which is what `IbvQueuePair::new` requires.
-        unsafe { Self::QueuePair::new(domain, config.clone()) }
+        // Reject a null PD (e.g. a test domain) before allocating the completion
+        // queues, so a domain that cannot back a queue pair says so rather than
+        // building two CQs only to throw them away.
+        if domain.as_ptr().is_null() {
+            anyhow::bail!("cannot create a queue pair on a null protection domain");
+        }
+
+        // SAFETY: `domain`'s context is null or live (this method's contract);
+        // `IbvCq::create` rejects a null context.
+        let send_cq =
+            Arc::new(unsafe { IbvCq::create(domain.context().clone(), config.cq_entries) }?);
+        // SAFETY: as for `send_cq` above.
+        let recv_cq =
+            Arc::new(unsafe { IbvCq::create(domain.context().clone(), config.cq_entries) }?);
+        // SAFETY: `domain` holds a live PD (null was rejected above) per this
+        // method's contract, which is what `IbvQueuePair::new` requires, and both
+        // CQs were just created on that domain's context.
+        unsafe { Self::QueuePair::new(domain, config.clone(), send_cq, recv_cq) }
     }
 }
 
