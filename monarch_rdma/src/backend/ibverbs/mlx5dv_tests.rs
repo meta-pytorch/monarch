@@ -127,10 +127,17 @@ async fn test_indirect_mkey_read_at_large_offset() -> Result<(), anyhow::Error> 
     Ok(())
 }
 
-/// Extract the ibverbs `rkey` from a remote buffer.
+/// Extract the ibverbs `rkey` from a remote buffer. These tests pin one NIC,
+/// so the buffer carries exactly one registration.
 fn ibv_rkey_of(remote: &crate::RdmaRemoteBuffer) -> Result<u32, anyhow::Error> {
     let ctx = remote.resolve_mlx().expect("remote buffer is Mellanox");
-    Ok(ctx.buffer.rkey)
+    let [view] = ctx.buffers.as_slice() else {
+        anyhow::bail!(
+            "expected one registration on the pinned NIC, got {:?}",
+            ctx.buffers,
+        );
+    };
+    Ok(view.rkey)
 }
 
 /// Integration test for the indirect-mkey segment-growth path.

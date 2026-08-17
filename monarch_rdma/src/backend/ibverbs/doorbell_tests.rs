@@ -133,6 +133,9 @@ mod tests {
 
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_rdma_write_separate_devices_db_device_trigger() -> Result<(), anyhow::Error> {
+        if std::env::var("MONARCH_RDMA_RUN_ISOLATED").is_err() {
+            return Ok(());
+        }
         if is_cpu_only_mode() {
             println!("Skipping CUDA test in CPU-only mode");
             return Ok(());

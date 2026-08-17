@@ -50,7 +50,9 @@ use crate::local_memory::KeepaliveLocalMemory;
 pub struct IbvOp<M: Referable = IbvManagerActor<MlxDevice>> {
     pub op_type: RdmaOpType,
     pub local_memory: KeepaliveLocalMemory,
-    pub remote_buffer: IbvRemoteMemoryRegionView,
+    /// One memory registration for each NIC that the target memory
+    /// on the remote can be reached through.
+    pub remote_buffers: Vec<IbvRemoteMemoryRegionView>,
     pub remote_manager: ActorRef<M>,
 }
 
@@ -61,7 +63,7 @@ impl<M: Referable> Clone for IbvOp<M> {
         Self {
             op_type: self.op_type,
             local_memory: self.local_memory.clone(),
-            remote_buffer: self.remote_buffer.clone(),
+            remote_buffers: self.remote_buffers.clone(),
             remote_manager: self.remote_manager.clone(),
         }
     }

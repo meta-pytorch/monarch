@@ -86,6 +86,7 @@ use monarch_rdma::RdmaManagerMessageClient;
 use monarch_rdma::RdmaRemoteBuffer;
 use monarch_rdma::backend::ibverbs::device_selection::IbvDeviceTarget;
 use monarch_rdma::backend::ibverbs::manager_actor::RawQueuePair;
+use monarch_rdma::backend::ibverbs::memory_region::IbvRemoteMemoryRegionView;
 use monarch_rdma::backend::ibverbs::primitives::IbvQpInfo;
 use monarch_rdma::backend::ibverbs::queue_pair::legacy::IbvQueuePair;
 use monarch_rdma::cu_check;
@@ -145,6 +146,17 @@ pub fn ping_pong(
     let result = unsafe { launchPingPong(params, iterations, initial_length, device_id) };
 
     if result == 0 { Ok(()) } else { Err(result) }
+}
+
+/// The NIC serving a buffer's first registration. A buffer may be registered on
+/// several; this example drives a single queue pair, and taking the first entry
+/// is a stable choice because the registrations come back in device-name order.
+fn first_device(buffers: &[IbvRemoteMemoryRegionView]) -> Result<String, anyhow::Error> {
+    Ok(buffers
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("buffer carries no ibverbs registration"))?
+        .device_name
+        .clone())
 }
 
 // HACK — `NoKeepalive` keeps nothing alive. The CUDA allocation
@@ -558,7 +570,7 @@ impl Handler<CreateRawQp> for CudaRdmaActor {
         manager_handle.try_post(
             cx,
             RawQueuePair {
-                self_device: local_ctx.buffer.device_name.clone(),
+                self_device: first_device(&local_ctx.buffers)?,
                 reply: reply_handle,
             },
         )?;
@@ -621,11 +633,12 @@ impl Handler<PerformPingPong> for CudaRdmaActor {
         // Resolve the local/remote buffer transport details for the ping-pong.
         // The local side goes through the registration itself: the wire view a
         // peer would get carries no `lkey`.
-        let local_device = local_buffer
-            .resolve_mlx()
-            .ok_or_else(|| anyhow::anyhow!("Mellanox backend not found for local buffer"))?
-            .buffer
-            .device_name;
+        let local_device = first_device(
+            &local_buffer
+                .resolve_mlx()
+                .ok_or_else(|| anyhow::anyhow!("Mellanox backend not found for local buffer"))?
+                .buffers,
+        )?;
         let local_ibv = self
             .local_memory
             .as_ref()
@@ -635,7 +648,10 @@ impl Handler<PerformPingPong> for CudaRdmaActor {
         let remote_ibv = remote_buffer
             .resolve_mlx()
             .ok_or_else(|| anyhow::anyhow!("Mellanox backend not found for remote buffer"))?
-            .buffer;
+            .buffers
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("remote buffer carries no registration"))?;
 
         // The queue pair was created by `CreateRawQp` and connected by
         // `ConnectRawQp` before this message; drive the doorbell on it.
