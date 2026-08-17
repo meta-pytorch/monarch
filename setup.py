@@ -189,9 +189,9 @@ build_rdma = has_cuda or has_rocm
 # Kernel-launched RDMA (GPU-driven doorbell + GPU-Direct registration) links the
 # GPU runtime (libamdhip64/cudart) into _rust_bindings and makes importing monarch
 # load/initialize the GPU runtime. It is OFF unless explicitly requested via
-# USE_RDMA_KERNELS=1, and only meaningful when rdma itself is being built.
+# USE_RDMA_CUDA_KERNELS=1, and only meaningful when rdma itself is being built.
 # CPU-initiated RDMA does not need it (the driver API is dlopen'd at runtime).
-build_rdma_kernels = build_rdma and os.environ.get("USE_RDMA_KERNELS", "0") == "1"
+build_rdma_kernels = build_rdma and os.environ.get("USE_RDMA_CUDA_KERNELS", "0") == "1"
 
 print("=" * 80)
 if build_tensor_engine:
