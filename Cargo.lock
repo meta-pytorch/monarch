@@ -1457,7 +1457,7 @@ dependencies = [
  "clap",
  "criterion-plot",
  "csv",
- "futures 0.3.32",
+ "futures 0.3.34",
  "is-terminal",
  "itertools 0.10.5",
  "num-traits",
@@ -1796,7 +1796,7 @@ dependencies = [
  "datafusion-session",
  "datafusion-sql",
  "flate2",
- "futures 0.3.32",
+ "futures 0.3.34",
  "itertools 0.14.0",
  "liblzma",
  "log",
@@ -1830,7 +1830,7 @@ dependencies = [
  "datafusion-physical-expr",
  "datafusion-physical-plan",
  "datafusion-session",
- "futures 0.3.32",
+ "futures 0.3.34",
  "itertools 0.14.0",
  "log",
  "object_store",
@@ -1855,7 +1855,7 @@ dependencies = [
  "datafusion-physical-expr-adapter",
  "datafusion-physical-expr-common",
  "datafusion-physical-plan",
- "futures 0.3.32",
+ "futures 0.3.34",
  "itertools 0.14.0",
  "log",
  "object_store",
@@ -1891,7 +1891,7 @@ version = "52.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "567d40e285f5b79f8737b576605721cd6c1133b5d2b00bdbd5d9838d90d0812f"
 dependencies = [
- "futures 0.3.32",
+ "futures 0.3.34",
  "log",
  "tokio",
 ]
@@ -1918,7 +1918,7 @@ dependencies = [
  "datafusion-physical-plan",
  "datafusion-session",
  "flate2",
- "futures 0.3.32",
+ "futures 0.3.34",
  "glob",
  "itertools 0.14.0",
  "liblzma",
@@ -1949,7 +1949,7 @@ dependencies = [
  "datafusion-physical-expr-common",
  "datafusion-physical-plan",
  "datafusion-session",
- "futures 0.3.32",
+ "futures 0.3.34",
  "itertools 0.14.0",
  "object_store",
  "tokio",
@@ -1972,7 +1972,7 @@ dependencies = [
  "datafusion-physical-expr-common",
  "datafusion-physical-plan",
  "datafusion-session",
- "futures 0.3.32",
+ "futures 0.3.34",
  "object_store",
  "regex",
  "tokio",
@@ -1995,7 +1995,7 @@ dependencies = [
  "datafusion-physical-expr-common",
  "datafusion-physical-plan",
  "datafusion-session",
- "futures 0.3.32",
+ "futures 0.3.34",
  "object_store",
  "tokio",
 ]
@@ -2021,7 +2021,7 @@ dependencies = [
  "datafusion-physical-plan",
  "datafusion-pruning",
  "datafusion-session",
- "futures 0.3.32",
+ "futures 0.3.34",
  "itertools 0.14.0",
  "log",
  "object_store",
@@ -2048,7 +2048,7 @@ dependencies = [
  "dashmap",
  "datafusion-common",
  "datafusion-expr",
- "futures 0.3.32",
+ "futures 0.3.34",
  "log",
  "object_store",
  "parking_lot",
@@ -2351,7 +2351,7 @@ dependencies = [
  "datafusion-functions-window-common",
  "datafusion-physical-expr",
  "datafusion-physical-expr-common",
- "futures 0.3.32",
+ "futures 0.3.34",
  "half",
  "hashbrown 0.16.1",
  "indexmap 2.14.0",
@@ -2920,9 +2920,9 @@ checksum = "3a471a38ef8ed83cd6e40aa59c1ffe17db6855c18e3604d9c4ed8c08ebc28678"
 
 [[package]]
 name = "futures"
-version = "0.3.32"
+version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b147ee9d1f6d097cef9ce628cd2ee62288d963e16fb287bd9286455b241382d"
+checksum = "9a31d2a3fbaaeb2af2368bbdd904aa8e812d3c04a1ee10d3171f52d556e5d0a3"
 dependencies = [
  "futures-channel",
  "futures-core",
@@ -2935,9 +2935,9 @@ dependencies = [
 
 [[package]]
 name = "futures-channel"
-version = "0.3.32"
+version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07bbe89c50d7a535e539b8c17bc0b49bdb77747034daa8087407d655f3f7cc1d"
+checksum = "b1f9e3d69d39e4862ffed03ed071a76f9a13ba1d9109d355b0f0aa6b15e393c4"
 dependencies = [
  "futures-core",
  "futures-sink",
@@ -2945,15 +2945,15 @@ dependencies = [
 
 [[package]]
 name = "futures-core"
-version = "0.3.32"
+version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e3450815272ef58cec6d564423f6e755e25379b217b0bc688e295ba24df6b1d"
+checksum = "92d699e522242e69e3003b94ecc1f960f3a5e015aa7c5d7486e65ad01dd94f5e"
 
 [[package]]
 name = "futures-executor"
-version = "0.3.32"
+version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "baf29c38818342a3b26b5b923639e7b1f4a61fc5e76102d4b1981c6dc7a7579d"
+checksum = "031b47cf1a3c6cc8bc2fc76cd437f521619387907d469316e7c0bc278f1f5432"
 dependencies = [
  "futures-core",
  "futures-task",
@@ -2962,9 +2962,9 @@ dependencies = [
 
 [[package]]
 name = "futures-io"
-version = "0.3.32"
+version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cecba35d7ad927e23624b22ad55235f2239cfa44fd10428eecbeba6d6a717718"
+checksum = "53c0fa8157de1303bfffdaa1cc2a673bfffb60102f76b0ef4441659124373fed"
 
 [[package]]
 name = "futures-lite"
@@ -2981,32 +2981,32 @@ dependencies = [
 
 [[package]]
 name = "futures-macro"
-version = "0.3.32"
+version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e835b70203e41293343137df5c0664546da5745f82ec9b84d40be8336958447b"
+checksum = "9fb9654ba8355388abeb8dcb4fc62f511300867002afc858860463bdd9fe0c44"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.3",
 ]
 
 [[package]]
 name = "futures-sink"
-version = "0.3.32"
+version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c39754e157331b013978ec91992bde1ac089843443c49cbc7f46150b0fad0893"
+checksum = "1944426bf7d03f1d14f708785e4b33efd750b36d48a157b836b3efc15ede8e1d"
 
 [[package]]
 name = "futures-task"
-version = "0.3.32"
+version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "037711b3d59c33004d3856fbdc83b99d4ff37a24768fa1be9ce3538a1cde4393"
+checksum = "cd417de3d1d015fc3bfd2b1ea46dfc7bab72ef86f1cc7cc9c78e728b34a6d1fd"
 
 [[package]]
 name = "futures-util"
-version = "0.3.32"
+version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "389ca41296e6190b48053de0321d02a77f32f8a5d2461dd38762c0593805c6d6"
+checksum = "0d50a92467f8ba5dd6e3ee5d4bd04d73ab2e4e1c44474a0674821dfce14b79bc"
 dependencies = [
  "futures 0.1.31",
  "futures-channel",
@@ -3473,7 +3473,7 @@ dependencies = [
  "enum-as-inner",
  "erased-serde",
  "fastrand",
- "futures 0.3.32",
+ "futures 0.3.34",
  "hostname",
  "humantime",
  "hyperactor_config",
@@ -3611,7 +3611,7 @@ dependencies = [
  "dashmap",
  "enum-as-inner",
  "erased-serde",
- "futures 0.3.32",
+ "futures 0.3.34",
  "hostname",
  "humantime",
  "hyperactor",
@@ -3662,7 +3662,7 @@ dependencies = [
  "chrono",
  "clap",
  "crossterm",
- "futures 0.3.32",
+ "futures 0.3.34",
  "humantime",
  "hyperactor",
  "hyperactor_cast",
@@ -4594,7 +4594,7 @@ dependencies = [
  "dashmap",
  "digest",
  "filetime",
- "futures 0.3.32",
+ "futures 0.3.34",
  "globset",
  "ignore",
  "itertools 0.15.0",
@@ -4634,7 +4634,7 @@ dependencies = [
  "async-trait",
  "build_utils",
  "datafusion",
- "futures 0.3.32",
+ "futures 0.3.34",
  "hyperactor",
  "hyperactor_telemetry",
  "monarch_gil",
@@ -4661,7 +4661,7 @@ dependencies = [
  "build_utils",
  "bytes",
  "fuse3",
- "futures 0.3.32",
+ "futures 0.3.34",
  "hyperactor",
  "hyperactor_mesh",
  "hyperactor_telemetry",
@@ -4712,7 +4712,7 @@ dependencies = [
  "bytes",
  "dir-diff",
  "erased-serde",
- "futures 0.3.32",
+ "futures 0.3.34",
  "humantime",
  "hyperactor",
  "hyperactor_config",
@@ -4848,7 +4848,7 @@ dependencies = [
  "bytes",
  "dashmap",
  "erased-serde",
- "futures 0.3.32",
+ "futures 0.3.34",
  "hyperactor",
  "hyperactor_config",
  "hyperactor_mesh",
@@ -4920,7 +4920,7 @@ dependencies = [
  "async-trait",
  "build_utils",
  "derive_more 1.0.0",
- "futures 0.3.32",
+ "futures 0.3.34",
  "hyperactor",
  "hyperactor_config",
  "hyperactor_mesh",
@@ -5245,7 +5245,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "chrono",
- "futures 0.3.32",
+ "futures 0.3.34",
  "http 1.5.0",
  "humantime",
  "itertools 0.14.0",
@@ -5499,7 +5499,7 @@ dependencies = [
  "bytes",
  "chrono",
  "flate2",
- "futures 0.3.32",
+ "futures 0.3.34",
  "half",
  "hashbrown 0.16.1",
  "lz4_flex",
@@ -5781,7 +5781,7 @@ name = "preempt_rwlock"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "futures 0.3.32",
+ "futures 0.3.34",
  "tokio",
 ]
 
@@ -5960,7 +5960,7 @@ version = "0.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57ddb5b570751e93cc6777e81fee8087e59cd53b5043292f2a6d59d5bd80fdfd"
 dependencies = [
- "futures 0.3.32",
+ "futures 0.3.34",
  "once_cell",
  "pin-project-lite",
  "pyo3",

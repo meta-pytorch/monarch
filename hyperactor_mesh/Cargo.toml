@@ -30,7 +30,7 @@ chrono = { version = "0.4.45", features = ["clock", "serde", "std"], default-fea
 dashmap = { version = "6.2.1", features = ["rayon", "serde"] }
 enum-as-inner = "0.6.1"
 erased-serde = "0.4.10"
-futures = { version = "0.3.31", features = ["async-await", "compat"] }
+futures = { version = "0.3.34", features = ["async-await", "compat"] }
 hostname = "0.4.2"
 humantime = "2.4.0"
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
