@@ -187,6 +187,9 @@ impl Actor for RdmaManagerActor {
         {
             let _ = crate::backend::ibverbs::device_selection::configured_ibverbs_target()?;
         }
+        // Likewise: nothing reads the affinity policy until a transfer runs, so
+        // a malformed value would otherwise surface far from its cause.
+        let _ = crate::backend::ibverbs::device_selection::configured_peer_device_affinity()?;
 
         // Spawn every available backend. `spawn_available` bails when none
         // is available (e.g. no NIC and TCP fallback disabled).

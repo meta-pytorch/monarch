@@ -9,6 +9,7 @@
 //! ibverbs-specific device selection: pairs a [`MemoryLocation`] with the
 //! RDMA NIC(s) that have the best PCIe path to it.
 
+use std::collections::BTreeSet;
 use std::num::NonZeroU32;
 use std::str::FromStr;
 use std::sync::LazyLock;
@@ -103,6 +104,150 @@ pub(crate) fn configured_ibverbs_target() -> Result<Option<IbvDeviceTarget>> {
         )
     })?;
     Ok(Some(target))
+}
+
+/// Which of a peer's NICs a local NIC is allowed to pair with for a transfer.
+///
+/// Two NICs both being up does not mean the fabric carries traffic between
+/// them. For example, some fabrics may be organized into planes, where NICs
+/// can only talk to other NICs in the same plane. Instead of trying to add
+/// complex, dynamic network topology detection into monarch, it's much easier
+/// to simply let the user tell us the topology of their network. This is
+/// configurable using the config attr.
+/// [`RDMA_PEER_DEVICE_AFFINITY`](crate::config::RDMA_PEER_DEVICE_AFFINITY).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PeerDeviceAffinityPolicy {
+    /// Every local NIC reaches every peer NIC.
+    Any,
+    /// A local NIC reaches a peer NIC only if the two carry the same device
+    /// name.
+    MatchName,
+    /// A local NIC reaches a peer NIC only where some group names both. A NIC
+    /// no group names reaches nothing. There may be any number of groups, of
+    /// any size, and they are disjoint, so a NIC belongs to at most one.
+    Groups(Vec<BTreeSet<String>>),
+}
+
+impl PeerDeviceAffinityPolicy {
+    /// Pair each device in `local` with at most one device in `remote`.
+    ///
+    /// Entry `i` is the index in `remote` that `local[i]` should use, or `None`
+    /// when it has no partner: no NIC appears in two pairs, so the shorter list
+    /// bounds how many pairs there are, and the policy can rule out the rest.
+    ///
+    /// Same-named NICs pair first, no matter what the policy says.
+    /// Whatever is left over pairs subject to the policy, taking the
+    /// first NIC in `remote` it can still reach.
+    ///
+    /// Both lists are expected in [`select_optimal_ibv_devices`] order, which
+    /// is what makes that choice reproducible: two processes ranking the same
+    /// NICs list them identically, so each arrives at the same pairing without
+    /// exchanging anything.
+    ///
+    /// The leftovers are matched greedily in order, so an earlier device can
+    /// take the only partner a later one could have used. Maximizing the number
+    /// of pairs is likely not worth a matching algorithm here.
+    pub fn pairs(&self, local: &[String], remote: &[String]) -> Vec<Option<usize>> {
+        let mut pairs: Vec<Option<usize>> = vec![None; local.len()];
+        let mut taken = vec![false; remote.len()];
+
+        for (i, local_device) in local.iter().enumerate() {
+            let same_name = remote
+                .iter()
+                .position(|remote_device| remote_device == local_device)
+                .filter(|j| !taken[*j]);
+            if let Some(j) = same_name {
+                pairs[i] = Some(j);
+                taken[j] = true;
+            }
+        }
+
+        for (i, local_device) in local.iter().enumerate() {
+            if pairs[i].is_some() {
+                continue;
+            }
+            let candidate = remote
+                .iter()
+                .enumerate()
+                .find(|(j, remote_device)| !taken[*j] && self.can_pair(local_device, remote_device))
+                .map(|(j, _)| j);
+            if let Some(j) = candidate {
+                pairs[i] = Some(j);
+                taken[j] = true;
+            }
+        }
+        pairs
+    }
+
+    /// Whether a transfer may run between `local` and `remote`.
+    fn can_pair(&self, local: &str, remote: &str) -> bool {
+        match self {
+            Self::Any => true,
+            Self::MatchName => local == remote,
+            Self::Groups(groups) => groups
+                .iter()
+                .any(|group| group.contains(local) && group.contains(remote)),
+        }
+    }
+}
+
+impl FromStr for PeerDeviceAffinityPolicy {
+    type Err = anyhow::Error;
+
+    fn from_str(spec: &str) -> Result<Self> {
+        let spec = spec.trim();
+        match spec {
+            "" | "any" => Ok(Self::Any),
+            "match_name" => Ok(Self::MatchName),
+            _ => {
+                let groups = spec.strip_prefix("groups:").with_context(|| {
+                    format!(
+                        "peer device affinity {spec:?} must be `any`, `match_name`, or `groups:` \
+                         followed by `|`-separated groups of comma-separated device names"
+                    )
+                })?;
+                let groups = groups
+                    .split('|')
+                    .map(|group| {
+                        let names: BTreeSet<String> = group
+                            .split(',')
+                            .map(str::trim)
+                            .filter(|name| !name.is_empty())
+                            .map(str::to_owned)
+                            .collect();
+                        anyhow::ensure!(
+                            !names.is_empty(),
+                            "peer device affinity {spec:?} has a group naming no device",
+                        );
+                        Ok(names)
+                    })
+                    .collect::<Result<Vec<BTreeSet<String>>>>()?;
+
+                let mut claimed: BTreeSet<&String> = BTreeSet::new();
+                for name in groups.iter().flatten() {
+                    anyhow::ensure!(
+                        claimed.insert(name),
+                        "peer device affinity {spec:?} names {name:?} in more than one group; \
+                         groups must be disjoint",
+                    );
+                }
+                Ok(Self::Groups(groups))
+            }
+        }
+    }
+}
+
+/// The configured [`PeerDeviceAffinityPolicy`].
+///
+/// Returns an error when the value is malformed.
+pub(crate) fn configured_peer_device_affinity() -> Result<PeerDeviceAffinityPolicy> {
+    let spec = hyperactor_config::global::get_cloned(crate::config::RDMA_PEER_DEVICE_AFFINITY);
+    spec.parse().map_err(|error| {
+        anyhow::anyhow!(
+            "invalid RDMA_PEER_DEVICE_AFFINITY (`rdma_peer_device_affinity` in Python) value \
+             {spec:?}: {error}"
+        )
+    })
 }
 
 /// The PCI address of an RDMA NIC, resolved from its sysfs device link
@@ -345,6 +490,160 @@ mod tests {
             configured_ibverbs_target().expect("configured target should be valid"),
             Some(IbvDeviceTarget::nic("mlx5_1")),
         );
+    }
+
+    /// Device names as a caller passes them: in [`select_optimal_ibv_devices`]
+    /// order, which is sorted by name.
+    fn devices<const N: usize>(names: [&str; N]) -> Vec<String> {
+        assert!(names.is_sorted(), "callers pass device names in order");
+        names.map(str::to_owned).to_vec()
+    }
+
+    /// Every device is paired at most once on either side.
+    fn assert_one_pair_per_device(pairs: &[Option<usize>], remote_len: usize) {
+        let mut used = vec![false; remote_len];
+        for peer in pairs.iter().flatten() {
+            assert!(
+                !std::mem::replace(&mut used[*peer], true),
+                "peer device {peer} was paired twice in {pairs:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn same_names_pair_before_anything_else() {
+        // `Any` permits every pairing, so only the name-first pass decides this
+        // one. Both sides lead with a NIC the other does not have, and the
+        // shared `mlx5_5` sits at a different index on each side: pairing by
+        // position would hand `mlx5_2` the peer's `mlx5_5` and leave the local
+        // `mlx5_5` with nothing.
+        let local = devices(["mlx5_0", "mlx5_2", "mlx5_5"]);
+        let remote = devices(["mlx5_3", "mlx5_5"]);
+        let pairs = PeerDeviceAffinityPolicy::Any.pairs(&local, &remote);
+        assert_eq!(
+            pairs,
+            vec![
+                // mlx5_0 takes what the name match left: the peer's mlx5_3.
+                Some(0),
+                // Nothing is left for mlx5_2.
+                None,
+                // The name match, claimed before either leftover was placed.
+                Some(1),
+            ],
+        );
+        assert_one_pair_per_device(&pairs, remote.len());
+    }
+
+    #[test]
+    fn match_name_pairs_only_the_same_name() {
+        let local = devices(["mlx5_0", "mlx5_9"]);
+        let remote = devices(["mlx5_0", "mlx5_1"]);
+        assert_eq!(
+            PeerDeviceAffinityPolicy::MatchName.pairs(&local, &remote),
+            // `mlx5_9` has no counterpart on the peer, and `mlx5_1` is left
+            // unpaired rather than handed to it — which is what `Any` would do.
+            vec![Some(0), None],
+        );
+    }
+
+    #[test]
+    fn groups_pair_within_a_group_only() {
+        // The groups cross the two lists: `mlx5_0` may only reach the peer's
+        // second NIC and `mlx5_2` only its first, so the pairing has to invert
+        // the list order. No name is shared, so nothing here comes from the
+        // name-first pass either.
+        let policy: PeerDeviceAffinityPolicy = "groups:mlx5_0,mlx5_3|mlx5_1,mlx5_2"
+            .parse()
+            .expect("group spec should parse");
+        let local = devices(["mlx5_0", "mlx5_2", "mlx5_7"]);
+        let remote = devices(["mlx5_1", "mlx5_3"]);
+        let pairs = policy.pairs(&local, &remote);
+        assert_eq!(
+            pairs,
+            vec![
+                // mlx5_0 shares a group with mlx5_3.
+                Some(1),
+                // mlx5_2 shares a group with mlx5_1.
+                Some(0),
+                // mlx5_7 is in no group, so it reaches nothing.
+                None,
+            ],
+        );
+        assert_one_pair_per_device(&pairs, remote.len());
+    }
+
+    #[test]
+    fn a_choice_between_peers_takes_the_first_reachable() {
+        // `mlx5_7` shares no name with the peer and can reach two of its NICs,
+        // so the pick is the first of those in order — skipping `mlx5_0`, which
+        // its group does not name.
+        let policy: PeerDeviceAffinityPolicy = "groups:mlx5_1,mlx5_3,mlx5_7"
+            .parse()
+            .expect("group spec should parse");
+        let local = devices(["mlx5_6", "mlx5_7"]);
+        let remote = devices(["mlx5_0", "mlx5_1", "mlx5_3"]);
+        let pairs = policy.pairs(&local, &remote);
+        assert_eq!(
+            pairs,
+            // mlx5_6 is in no group, so it reaches nothing.
+            vec![None, Some(1)],
+        );
+        assert_one_pair_per_device(&pairs, remote.len());
+    }
+
+    #[test]
+    fn pairs_over_empty_lists_are_empty() {
+        let local = devices(["mlx5_0", "mlx5_1"]);
+        assert!(PeerDeviceAffinityPolicy::Any.pairs(&[], &local).is_empty());
+        assert_eq!(
+            PeerDeviceAffinityPolicy::Any.pairs(&local, &[]),
+            vec![None; local.len()],
+            "a peer advertising no device leaves every local NIC unpaired",
+        );
+    }
+
+    #[test]
+    fn parses_each_affinity_policy() {
+        for (spec, expected) in [
+            ("", PeerDeviceAffinityPolicy::Any),
+            ("any", PeerDeviceAffinityPolicy::Any),
+            ("  match_name  ", PeerDeviceAffinityPolicy::MatchName),
+            (
+                // Three groups, one of them a single device.
+                "groups:mlx5_0, mlx5_1|mlx5_2|mlx5_3,mlx5_4",
+                PeerDeviceAffinityPolicy::Groups(vec![
+                    ["mlx5_0", "mlx5_1"].map(str::to_owned).into(),
+                    ["mlx5_2"].map(str::to_owned).into(),
+                    ["mlx5_3", "mlx5_4"].map(str::to_owned).into(),
+                ]),
+            ),
+        ] {
+            assert_eq!(
+                spec.parse::<PeerDeviceAffinityPolicy>()
+                    .unwrap_or_else(|error| panic!("{spec:?} should parse: {error}")),
+                expected,
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_affinity_policies() {
+        // A bare name, an unknown kind, group specs with an empty group, and
+        // overlapping groups.
+        for invalid in [
+            "mlx5_0",
+            "exact",
+            "groups",
+            "groups:",
+            "groups:mlx5_0|",
+            "groups:|mlx5_0",
+            "groups:mlx5_0,mlx5_1|mlx5_1,mlx5_2",
+        ] {
+            assert!(
+                invalid.parse::<PeerDeviceAffinityPolicy>().is_err(),
+                "expected {invalid:?} to be rejected",
+            );
+        }
     }
 
     #[test]
