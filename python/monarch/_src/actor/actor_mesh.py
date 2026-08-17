@@ -1289,7 +1289,7 @@ async def _handle_queued_message(actor: Any, msg: "QueuedMessage") -> None:
             msg.context,
             msg.method,
             msg.bytes,
-            panic_flag,  # pyre-ignore[6]: _QueuePanicFlag implements PanicFlag protocol
+            panic_flag,
             msg.local_state,
             msg.refs,
             msg.response_port,

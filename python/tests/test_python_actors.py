@@ -1544,7 +1544,6 @@ def test_simple_bootstrap():
             procs.append(proc)
             workers.append(addr)
 
-        # pyrefly: ignore [bad-argument-type]
         hosts = attach_to_workers(ca="trust_all_connections", workers=workers)
 
         hello = hosts.spawn_procs().spawn("hello", Hello)
@@ -1629,7 +1628,6 @@ def test_config_propagates_to_host_agent():
             procs.append(proc)
             workers.append(addr)
 
-        # pyrefly: ignore [bad-argument-type]
         hosts = attach_to_workers(ca="trust_all_connections", workers=workers)
 
         # _spawn_admin() spawns MeshAdminAgent on the caller's local
@@ -1685,7 +1683,6 @@ def test_fd_bootstrap():
         # The client connects to the real port, not the fd syntax.
         workers.append(f"tcp://127.0.0.1:{port}")
 
-    # pyrefly: ignore [bad-argument-type]
     hosts = attach_to_workers(ca="trust_all_connections", workers=workers)
     hello = hosts.spawn_procs().spawn("hello", Hello)
 
@@ -1888,7 +1885,6 @@ def test_instance_name():
     logs.logger.error("HUH")
     assert "actor=<root>" in logs.contents
     try:
-        # pyrefly: ignore [bad-assignment]
         monarch.actor.config.prefix_python_logs_with_actor = False
         logs = CaptureLogs()
         logs.logger.error("HUH")

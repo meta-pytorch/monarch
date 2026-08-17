@@ -311,12 +311,10 @@ class PipelineParallelism:
         assert len(pp_stages) == len(self.meshes)
         for stage_idx, stage in enumerate(pp_stages):
             for module in stage:
-                # pyrefly: ignore [missing-attribute]
                 state_dict = module.state_dict()
                 for k, v in state_dict.items():
                     if isinstance(v, Tensor):
                         state_dict[k] = v.to_mesh(self.meshes[stage_idx])
-                # pyrefly: ignore [missing-attribute]
                 module.load_state_dict(state_dict, assign=True)
 
     def copy_params_to_new_model(
@@ -369,7 +367,6 @@ class PipelineParallelism:
         optimizers = []
 
         for stage in self.stages:
-            # pyrefly: ignore [missing-attribute]
             params = list(chain(*[list(m.parameters()) for m in stage]))
             optimizers.append(
                 config_fn(
@@ -753,13 +750,10 @@ class PipelineParallelism:
                                 input_tensor=input_tensor,
                                 output_tensor=output_tensor,
                                 output_tensor_grad=borrow_output_tensor_grad,
-                                # pyrefly: ignore [bad-argument-type]
                                 y=microbatch_y[microbatch_id]
                                 if is_last_stage
                                 else None,
-                                # pyrefly: ignore [bad-argument-type]
                                 loss_layer=self.loss_layer if is_last_stage else None,
-                                # pyrefly: ignore [bad-argument-type]
                                 loss_list=self.loss_list if is_last_stage else None,
                                 model_chunk_id=model_chunk_id,
                                 microbatch_id=microbatch_id,
@@ -771,7 +765,6 @@ class PipelineParallelism:
                                 input_tensor_grad
                             )
                             if output_tensor_grad is not None:
-                                # pyrefly: ignore [unbound-name]
                                 output_tensor_grad_borrow.drop()
                     case _:
                         raise ValueError(f"{action=} is unknown or unsupported")

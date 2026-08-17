@@ -34,11 +34,9 @@ def _controller_autograd_function_forward(
             wire_ctx = autograd.function.FunctionCtx()
             # Track arg tensors that have requires_grad
             arg_tensors, _ = tree_flatten(args)
-            # pyrefly: ignore [missing-attribute]
             wire_ctx.args_requires_grads = []
             for i, arg in enumerate(arg_tensors):
                 if isinstance(arg, torch.Tensor) and arg.requires_grad:
-                    # pyrefly: ignore [missing-attribute]
                     wire_ctx.args_requires_grads.append(i)
             out, ctx_attrs, ctx_tensors = func(
                 autograd_function_class.__module__,

@@ -43,7 +43,6 @@ class TestRandomFunctions:
 
     @classmethod
     def local_device_mesh(cls, num_hosts, gpu_per_host, activate=True):
-        # pyrefly: ignore [missing-attribute]
         return cls.local.local_device_mesh(
             num_hosts,
             gpu_per_host,

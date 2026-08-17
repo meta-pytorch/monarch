@@ -37,18 +37,14 @@ class PingPongActor(Actor):
             self.data = torch.rand(n, dtype=torch.float32, device=device)
             self.recv_buf = torch.zeros(n, dtype=torch.float32, device=device)
         elif buffer_type == "bytearray":
-            # pyrefly: ignore [bad-assignment]
             self.data = bytearray(os.urandom(size_bytes))
-            # pyrefly: ignore [bad-assignment]
             self.recv_buf = bytearray(size_bytes)
         elif buffer_type == "memoryview":
             self._data_mmap = mmap.mmap(-1, size_bytes)
             self._data_mmap.write(os.urandom(size_bytes))
             self._data_mmap.seek(0)
-            # pyrefly: ignore [bad-assignment]
             self.data = self._data_mmap
             self._recv_mmap = mmap.mmap(-1, size_bytes)
-            # pyrefly: ignore [bad-assignment]
             self.recv_buf = self._recv_mmap
         else:
             raise ValueError(f"Unknown buffer_type: {buffer_type!r}")
@@ -56,6 +52,7 @@ class PingPongActor(Actor):
     @endpoint
     async def get_buffer(self) -> RDMABuffer:
         if self.buffer_type in ("cpu_tensor", "cuda_tensor"):
+            # pyrefly: ignore [missing-attribute]
             return RDMABuffer(self.data.view(torch.uint8).flatten())
         else:
             # pyrefly: ignore [bad-argument-type]
@@ -65,7 +62,9 @@ class PingPongActor(Actor):
     async def read_from(self, peer_buf: RDMABuffer) -> float:
         """Read peer's data into recv_buf, return elapsed seconds."""
         if self.buffer_type in ("cpu_tensor", "cuda_tensor"):
+            # pyrefly: ignore [missing-attribute]
             self.recv_buf.zero_()
+            # pyrefly: ignore [missing-attribute]
             local = self.recv_buf.view(torch.uint8).flatten()
         elif self.buffer_type == "bytearray":
             for i in range(len(self.recv_buf)):
@@ -89,6 +88,7 @@ class PingPongActor(Actor):
         if self.buffer_type in ("cpu_tensor", "cuda_tensor"):
             # .cpu() is a no-op on CPU tensors, required for cuda_tensor
             # since numpy doesn't accept CUDA storage.
+            # pyrefly: ignore [missing-attribute]
             raw = buf.cpu().numpy().tobytes()
         else:
             raw = bytes(buf)

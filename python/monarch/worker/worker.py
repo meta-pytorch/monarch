@@ -420,7 +420,6 @@ class Stream:
                 r.set(exc)
         finally:
             if _tls.tracing:
-                # pyre-fixme[8]: Attribute has type `ErrorContext`; used as `None`.
                 _tls.tracing.current_context = None
 
     @schedule_on_stream_thread(executes_on_error=False)
@@ -1073,7 +1072,6 @@ class Worker:
                 # responds to messages, with a strong guarentee of never
                 # getting stuck. For now we just run everything on this thread.
                 monitor(
-                    # pyrefly: ignore [bad-argument-type]
                     lambda: (
                         logger.error(
                             f"possible stall while waiting for message: recent messages: {debugq} "

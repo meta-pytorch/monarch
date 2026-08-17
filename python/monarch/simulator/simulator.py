@@ -126,7 +126,6 @@ class SimulatorTraceMode(enum.Enum):
 
 def get_fake_tensor(x):
     if isinstance(x, (torch.Tensor, DTensorRef)):
-        # pyrefly: ignore [missing-attribute]
         return x._fake
     return x
 
@@ -137,7 +136,6 @@ def get_ids(tree):
     ids = {}
     for arg in tree_leaves(tree):
         if isinstance(arg, (torch.Tensor, DTensorRef)):
-            # pyrefly: ignore [missing-attribute]
             ids[arg.ref] = arg._fake
     return ids
 
@@ -189,7 +187,6 @@ class Simulator:
         if use_real_profiler:
             self.runtime_profiler = RuntimeProfiler(world_size=cuda_device_count)
         else:
-            # pyrefly: ignore [bad-assignment]
             self.runtime_profiler = FakeRuntimeProfiler(world_size=world_size)
         self.events: List[TraceEvent] = []
         self.command_id = 0
@@ -979,12 +976,10 @@ class SimulatorInterface:
 
     def upload(self):
         sim = self._ctrl.simulator
-        # pyrefly: ignore [missing-attribute]
         old, sim.upload_trace = sim.upload_trace, True
         try:
             self._ctrl.step()
         finally:
-            # pyrefly: ignore [missing-attribute]
             sim.upload_trace = old
 
     def _display_html(self, html_code):
@@ -1054,7 +1049,6 @@ class SimulatorInterface:
             tempfile.NamedTemporaryFile(suffix=".json", delete=False) as json_file,
             tempfile.NamedTemporaryFile(suffix=".pkl", delete=False) as memory_pkl,
         ):
-            # pyrefly: ignore [missing-attribute]
             sim._report(trace_path=json_file.name, memory_view_path=memory_pkl.name)
             self._display_trace(json_file.name, memory_pkl.name)
 

@@ -95,7 +95,6 @@ class TestSimulator:
         mesh = monarch.Simulator(
             hosts=1,
             gpus=2,
-            # pyrefly: ignore [bad-argument-type]
             trace_path=trace_path,
             group_workers=group_workers,
             trace_mode=SimulatorTraceMode.EVERYTHING,
@@ -106,7 +105,6 @@ class TestSimulator:
             ac1 = torch.randn(100, 100)
             ac2 = torch.mm(ac1, ac1)
             ac3 = torch.nn.init.uniform_(ac2)
-            # pyrefly: ignore [bad-argument-type]
             borrow_ac3, borrow = other_stream.borrow(ac3, mutable=True)
             with other_stream.activate():
                 borrow_ac3.add_(borrow_ac3)

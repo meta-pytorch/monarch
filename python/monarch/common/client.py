@@ -535,7 +535,6 @@ def tree_map_refs(first_ref: int, tree):
 class Recorder:
     def __init__(self):
         self.borrow_entries_created: Dict[int, Borrow] = {}
-        # pyrefly: ignore [bad-specialization]
         self.messages: List[Union[NDSlice, List[NDSlice]], NamedTuple] = []
         # these tables track the externally captured tensors that we
         # use and mutate whenever this recording is run.
@@ -543,7 +542,6 @@ class Recorder:
         self.mutates = {}  # ordered set
         self.creates: List[weakref.ref] = []
         self.tracebacks = []
-        # pyrefly: ignore [bad-assignment]
         self.first_ref: int = math.inf
         self.reference_recording: Optional["Recording"] = None
         # Map from formal tensor storage to its corresponding argument indices
@@ -596,7 +594,6 @@ class Recorder:
 
     @property
     def flat_messages(self):
-        # pyrefly: ignore [bad-argument-type]
         return flatten_messages(self.messages)
 
     def run_once(self, client: "Client"):
@@ -629,7 +626,6 @@ class Recorder:
             ),
             msg,
         )
-        # pyrefly: ignore [bad-argument-type]
         self.messages.append((ranks, msg))
         reference_recording = self.reference_recording
         if reference_recording is not None:
@@ -691,7 +687,6 @@ class Recorder:
             list(self.mutates.keys()),
             sorted(mutated_formal_indices),
             self.tracebacks,
-            # pyrefly: ignore [bad-argument-type]
             self.messages,
             nresults,
             nformals,
