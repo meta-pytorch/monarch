@@ -242,11 +242,8 @@ class RDMATest(Actor):
                     return 0.0
                 return size_bytes / (time_seconds * 1e9)
 
-            # pyrefly: ignore [bad-argument-type]
             avg_throughput = calc_throughput_gbs(avg_size, avg_time)
-            # pyrefly: ignore [bad-argument-type]
             max_throughput = calc_throughput_gbs(avg_size, min_time)
-            # pyrefly: ignore [bad-argument-type]
             min_throughput = calc_throughput_gbs(avg_size, max_time)
 
             # Print results
@@ -295,11 +292,8 @@ class RDMATest(Actor):
                 return 0.0
             return size_bytes / (time_seconds * 1e9)
 
-        # pyrefly: ignore [bad-argument-type]
         avg_aggregate_tp = calc_throughput_gbs(avg_batch_size, avg_batch_time)
-        # pyrefly: ignore [bad-argument-type]
         max_aggregate_tp = calc_throughput_gbs(avg_batch_size, min_batch_time)
-        # pyrefly: ignore [bad-argument-type]
         min_aggregate_tp = calc_throughput_gbs(avg_batch_size, max_batch_time)
 
         print(f"\nAGGREGATE THROUGHPUT (concurrency={concurrency}, GB = 1000^3 bytes):")

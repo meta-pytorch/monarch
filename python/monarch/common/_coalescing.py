@@ -267,7 +267,6 @@ def compile(fn=None, verify=True):
     """
     if fn is None:
         return lambda fn: compile(fn, verify)
-    # pyrefly: ignore [no-matching-overload]
     cache: Dict[Any, Recording] = defaultdict(list)
 
     @functools.wraps(fn)
@@ -277,12 +276,9 @@ def compile(fn=None, verify=True):
             return fn(*args, **kwargs)
 
         tensors, shape_key = hashable_tensor_flatten(args, kwargs)
-        # pyrefly: ignore [missing-attribute]
         input_group = TensorGroup([t._fake for t in tensors])
-        # pyrefly: ignore [missing-attribute]
         props = tuple((t.mesh, t.stream, t.requires_grad) for t in tensors)
         key = (shape_key, input_group.pattern, props)
-        # pyrefly: ignore [not-iterable]
         for entry in cache[key]:
             if entry.matches(input_group.tensors):
                 if entry.to_verify is not None:
@@ -294,7 +290,6 @@ def compile(fn=None, verify=True):
         entry = _record_and_define(fn, args, kwargs)
         if not verify:
             entry.to_verify = None
-        # pyrefly: ignore [missing-attribute]
         cache[key].append(entry)
         return entry.run(args, kwargs)
 

@@ -308,41 +308,32 @@ class CommandHistory:
                     )
                 case "BorrowFirstUse":
                     borrow_id = getattr(msg, "borrow", None)
-                    # pyrefly: ignore [bad-index]
                     stream_name = ir._control.borrows_info[borrow_id].dst_stream_name
                     command_type = f"BorrowFirstUse: {borrow_id}"
                     devices = [worker_rank]
                     control_dependencies = [
-                        # pyrefly: ignore [bad-index]
                         ir._control.borrows_info[borrow_id].create_id
                     ]
-                    # pyrefly: ignore [bad-index]
                     ir._control.borrows_info[borrow_id].firstuse_id = command_id
                 case "BorrowLastUse":
                     borrow_id = getattr(msg, "borrow", None)
                     stream_name = src_stream_name = ir._control.borrows_info[
-                        # pyrefly: ignore [bad-index]
                         borrow_id
                     ].dst_stream_name
                     dst_stream_name = ir._control.borrows_info[
-                        # pyrefly: ignore [bad-index]
                         borrow_id
                     ].src_stream_name
                     command_type = f"BorrowLastUse: {borrow_id}"
                     devices = [worker_rank]
-                    # pyrefly: ignore [bad-index]
                     ir._control.borrows_info[borrow_id].lastuse_id = command_id
                 case "BorrowDrop":
                     borrow_id = getattr(msg, "borrow", None)
-                    # pyrefly: ignore [bad-index]
                     stream_name = ir._control.borrows_info[borrow_id].src_stream_name
                     command_type = f"BorrowDrop: {borrow_id}"
                     devices = [worker_rank]
                     control_dependencies = [
-                        # pyrefly: ignore [bad-index]
                         ir._control.borrows_info[borrow_id].lastuse_id
                     ]
-                    # pyrefly: ignore [bad-index]
                     ir._control.borrows_info[borrow_id].drop_id = command_id
 
             if dag_item_type in [
@@ -355,12 +346,10 @@ class CommandHistory:
             ]:
                 ir.insert_node(
                     worker_rank,
-                    # pyrefly: ignore [bad-argument-type]
                     stream_name,
                     command_id,
                     command_type,
                     devices,
-                    # pyrefly: ignore [bad-argument-type]
                     control_dependencies,
                     tb,
                 )

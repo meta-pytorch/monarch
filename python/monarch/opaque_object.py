@@ -83,7 +83,6 @@ class OpaqueObject(OpaqueRef):
 
     def call_method_on_shard_and_fetch(self, method_name, *args, **kwargs):
         return call_on_shard_and_fetch(
-            # pyrefly: ignore [bad-argument-type]
             remote(_invoke_method),
             self,
             method_name,

@@ -26,7 +26,6 @@ class TestGradIter(TestCase):
         a, b = torch.std_mean(t + t2)
 
         r2 = torch.autograd.grad([a, b], [t2, t], retain_graph=True)
-        # pyrefly: ignore [missing-argument]
         r = list(GradientGenerator([a, b], [t2, t]))
         print(a, b)
         print(a.grad_fn, b.grad_fn)
@@ -61,7 +60,6 @@ class TestGradIter(TestCase):
         cgrads = torch.autograd.grad(
             [loss], [t, w3, w6, u, w2, w5], allow_unused=True, retain_graph=True
         )
-        # pyrefly: ignore [missing-argument]
         gi = GradientGenerator([loss], [t, w3, w6, u, w2, w5])
         grads = [*gi]
         self.checkEqual(grads, cgrads)
@@ -83,7 +81,6 @@ class TestGradIter(TestCase):
         t11 = t10.sum()
 
         cgrads = torch.autograd.grad([t11], [t2, t], retain_graph=True)
-        # pyrefly: ignore [missing-argument]
         gi = GradientGenerator([t11], [t2, t])
         grads = [*gi]
         self.checkEqual(grads, cgrads)
@@ -95,7 +92,6 @@ class TestGradIter(TestCase):
 
         r = (t * t3).sum()
         cgrads = torch.autograd.grad([r], [t, t2], retain_graph=True)
-        # pyrefly: ignore [missing-argument]
         gi = GradientGenerator([r], [t, t2])
         grads = [*gi]
         self.checkEqual(grads, cgrads)

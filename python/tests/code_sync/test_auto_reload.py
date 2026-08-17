@@ -49,7 +49,7 @@ class TestAutoReloader(unittest.TestCase):
                 filename = workspace / "test_module.py"
                 write_text(filename, "foo = 1\n")
 
-                import test_module  # pyre-ignore: Undefined import [21]
+                import test_module
 
                 self.assertEqual(Path(test_module.__file__), filename)
                 self.assertEqual(test_module.foo, 1)
@@ -95,7 +95,7 @@ class TestAutoReloader(unittest.TestCase):
                 )
                 filename.unlink()
 
-                import test_module  # pyre-ignore: Undefined import [21]
+                import test_module
 
                 self.assertEqual(Path(test_module.__file__), pyc)
                 self.assertEqual(test_module.foo, 1)

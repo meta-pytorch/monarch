@@ -35,7 +35,6 @@ class Nest(Actor):
 
     @endpoint
     def nested(self, func: Callable[[], T]) -> T:
-        # pyrefly: ignore [bad-return]
         return self.nest.run.broadcast(func)
 
     @endpoint
@@ -78,7 +77,6 @@ class FaultCapture:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.failure_happened.wait(timeout=30)
-        # pyrefly: ignore [bad-assignment]
         monarch.actor.unhandled_fault_hook = self.original_hook
 
     def capture_fault(self, failure: MeshFailure) -> None:

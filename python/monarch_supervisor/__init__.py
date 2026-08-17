@@ -760,7 +760,6 @@ class Context(FilteredMessageQueue):
         connection_histogram = {}
         for connection in self._name_to_connection.values():
             state = connection.state.name
-            # pyrefly: ignore [unsupported-operation]
             connection_histogram[state] = connection_histogram.setdefault(state, 0) + 1
 
         status = Status(
@@ -777,7 +776,6 @@ class Context(FilteredMessageQueue):
             self._heartbeats,
             self._heartbeat_ttl_sum / self._heartbeats if self._heartbeats else 0,
             self._heartbeat_min_ttl,
-            # pyrefly: ignore [bad-argument-type]
             connection_histogram,
             avg_event_loop_time,
             max_event_loop_time,
@@ -982,7 +980,6 @@ class LocalMessageQueue(FilteredMessageQueue):
     async def recv_async(self) -> Letter:
         if self._async_socket is None:
             self._async_socket = zmq.asyncio.Socket.from_socket(self._sock)
-        # pyrefly: ignore [missing-attribute]
         return Letter(None, await self._async_socket.recv_pyobj())
 
     def send(self, message: Any) -> None:

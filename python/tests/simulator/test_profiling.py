@@ -20,46 +20,28 @@ class TestRuntimeEstimator(unittest.TestCase):
         runtime = RuntimeEstimator()
 
         input_tensor = torch.rand(10, 10)
-        # pyrefly: ignore [missing-attribute]
         input_tensor.ref = 1
-        # pyrefly: ignore [missing-attribute]
         input_tensor._fake = None
         output_tensor = torch.rand(10, 10)
-        # pyrefly: ignore [missing-attribute]
         output_tensor.ref = 2
-        # pyrefly: ignore [missing-attribute]
         output_tensor._fake = None
 
         send_tensor = messages.SendTensor(
-            # pyrefly: ignore [bad-argument-type]
             result=output_tensor,
-            # pyrefly: ignore [bad-argument-type]
             from_ranks=[1],
-            # pyrefly: ignore [bad-argument-type]
             to_ranks=[2],
-            # pyrefly: ignore [bad-argument-type]
             tensor=input_tensor,
-            # pyrefly: ignore [bad-argument-type]
             factory=None,
-            # pyrefly: ignore [bad-argument-type]
             from_stream=None,
-            # pyrefly: ignore [bad-argument-type]
             to_stream=None,
         )
         reduce = messages.Reduce(
-            # pyrefly: ignore [bad-argument-type]
             result=output_tensor,
-            # pyrefly: ignore [bad-argument-type]
             local_tensor=input_tensor,
-            # pyrefly: ignore [bad-argument-type]
             factory=None,
-            # pyrefly: ignore [bad-argument-type]
             source_mesh=None,
-            # pyrefly: ignore [bad-argument-type]
             stream=None,
-            # pyrefly: ignore [bad-argument-type]
             dims=None,
-            # pyrefly: ignore [bad-argument-type]
             reduction=None,
             scatter=False,
             inplace=False,
@@ -68,19 +50,12 @@ class TestRuntimeEstimator(unittest.TestCase):
         call_function = messages.CallFunction(
             ident=1,
             result=None,
-            # pyrefly: ignore [bad-argument-type]
             mutates=None,
-            # pyrefly: ignore [bad-argument-type]
             function=None,
-            # pyrefly: ignore [bad-argument-type]
             args=None,
-            # pyrefly: ignore [bad-argument-type]
             kwargs=None,
-            # pyrefly: ignore [bad-argument-type]
             stream=None,
-            # pyrefly: ignore [bad-argument-type]
             device_mesh=None,
-            # pyrefly: ignore [bad-argument-type]
             remote_process_groups=None,
         )
 
@@ -106,7 +81,6 @@ class TestRuntimeEstimator(unittest.TestCase):
         self.assertEqual(runtime.get_runtime("wait_event"), 5_000)
 
         runtime.set_custom_timing(
-            # pyrefly: ignore [bad-argument-type]
             {
                 TimingType.SEND_TENSOR: lambda msg: 4_000,
                 TimingType.REDUCE: lambda msg: 5_000,

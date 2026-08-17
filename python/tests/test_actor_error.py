@@ -1428,7 +1428,6 @@ class ErrorActorWithSupervise(ErrorActor):
     @endpoint
     async def stop_subworker(self) -> None:
         """Stop the inner actor this one owns"""
-        # pyrefly: ignore [missing-attribute]
         await self.mesh.stop()
 
     @endpoint

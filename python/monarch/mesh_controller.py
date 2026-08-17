@@ -101,7 +101,6 @@ class PdbWrapper(pdb.Pdb):
             # not the nested one inside session.run. This means that the local
             # variables are what gets printed, etc. To do this
             # we first execute up 2 to get to that frame.
-            # pyrefly: ignore [bad-argument-type]
             self.do_up(2)
         return r
 
@@ -570,7 +569,6 @@ def actor_rref(endpoint, pickling_state: PicklingState):
         result_msg = None
 
     actor_msg_kind, broker_id = _create_call_method_indirect_message(
-        # pyrefly: ignore [bad-argument-type]
         endpoint._name,
         # pyrefly: ignore [bad-argument-type]
         mesh.client,

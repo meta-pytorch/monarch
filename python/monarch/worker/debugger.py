@@ -29,7 +29,6 @@ def _set_trace(*, header=None):
     stream = _tls.stream
     if stream is None:
         _orig_set_trace(header=header)
-    # pyrefly: ignore [bad-argument-type]
     ds = PdbWrapper(stream, header)
     ds.set_trace()
 
@@ -51,7 +50,6 @@ class PdbWrapper(pdb.Pdb):
             # not the nested one inside session.run. This means that the local
             # variables are what gets printed, etc. To do this
             # we first execute up 2 to get to that frame.
-            # pyrefly: ignore [bad-argument-type]
             self.do_up(2)
         return r
 
