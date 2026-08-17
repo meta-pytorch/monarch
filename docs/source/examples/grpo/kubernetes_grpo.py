@@ -172,7 +172,13 @@ from kubernetes.client import (
     V1VolumeMount,
 )
 from monarch._src.job.kubernetes import _WORKER_BOOTSTRAP_SCRIPT
-from monarch.actor import Actor, current_rank, current_size, endpoint
+from monarch.actor import (
+    Actor,
+    concurrent_endpoint,
+    current_rank,
+    current_size,
+    endpoint,
+)
 from monarch.job.kubernetes import KubernetesJob
 from monarch.rdma import RDMABuffer
 
@@ -470,7 +476,9 @@ class Scorer(Actor):
         )
         await self.replay_buffer.put.call(scored)
 
-    @endpoint
+    # Run as a concurrent endpoint so the scorer can queue completions from
+    # the generator mesh while the learner is busy with the previous rollout.
+    @concurrent_endpoint
     async def run(self) -> None:
         if self.running:
             return
@@ -548,7 +556,9 @@ class Generator(Actor):
         self.cond = asyncio.Condition()
         self.policy_version = 0
 
-    @endpoint
+    # Run concurrently so a rollout can wait for the learner's weight update;
+    # serial endpoint dispatch would leave the update queued behind that wait.
+    @concurrent_endpoint
     async def generate(self, prompt_text: str, ground_truth: str) -> None:
         async with self.cond:
             await self.cond.wait_for(
@@ -1154,12 +1164,12 @@ async def main(
         # Best-effort per-mesh cleanup; one failure must not skip the other.
         if learner_mesh is not None:
             try:
-                learner_mesh.stop().get()
+                await learner_mesh.stop()
             except Exception as e:
                 print(f"[cleanup] learner_mesh.stop() failed: {e}")
         if gen_mesh is not None:
             try:
-                gen_mesh.stop().get()
+                await gen_mesh.stop()
             except Exception as e:
                 print(f"[cleanup] gen_mesh.stop() failed: {e}")
         # Unconditional so MonarchMesh CRDs and pods are always torn down.
