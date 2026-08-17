@@ -13,8 +13,11 @@ use std::time::Duration;
 
 use anyhow::Result;
 use hyperactor::Client;
+use hyperactor::ProcId;
 use hyperactor::RemoteMessage;
 use hyperactor::channel::ChannelAddr;
+use hyperactor::id::Label;
+use hyperactor::id::Uid;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::proc::Proc;
 use monarch_types::PickledPyObject;
@@ -27,6 +30,144 @@ use pyo3::types::PyType;
 use crate::actor::PythonActor;
 use crate::actor::PythonActorHandle;
 use crate::runtime::signal_safe_block_on;
+
+#[pyclass(
+    frozen,
+    name = "Uid",
+    module = "monarch._rust_bindings.monarch_hyperactor.proc"
+)]
+#[derive(Clone)]
+pub struct PyUid {
+    inner: Uid,
+}
+
+#[pymethods]
+impl PyUid {
+    #[staticmethod]
+    fn anonymous() -> Self {
+        Self {
+            inner: Uid::anonymous(),
+        }
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (label=None))]
+    fn instance(label: Option<&str>) -> PyResult<Self> {
+        Ok(Self {
+            inner: match label {
+                Some(label) => Uid::instance(Label::new(label).map_err(|error| {
+                    PyValueError::new_err(format!("invalid uid label: {error}"))
+                })?),
+                None => Uid::anonymous(),
+            },
+        })
+    }
+
+    #[staticmethod]
+    fn from_string(uid: &str) -> PyResult<Self> {
+        Ok(Self {
+            inner: uid
+                .parse()
+                .map_err(|error| PyValueError::new_err(format!("invalid uid: {error}")))?,
+        })
+    }
+
+    #[getter]
+    fn label(&self) -> Option<String> {
+        self.inner.label().map(ToString::to_string)
+    }
+
+    #[getter]
+    fn is_instance(&self) -> bool {
+        matches!(&self.inner, Uid::Instance(..))
+    }
+
+    #[getter]
+    fn is_singleton(&self) -> bool {
+        matches!(&self.inner, Uid::Singleton(..))
+    }
+
+    fn __str__(&self) -> String {
+        self.inner.to_string()
+    }
+
+    fn __hash__(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.inner.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn __eq__(&self, other: &Bound<'_, PyAny>) -> PyResult<bool> {
+        Ok(other
+            .extract::<PyRef<'_, PyUid>>()
+            .is_ok_and(|other| self.inner == other.inner))
+    }
+
+    fn __reduce__<'py>(slf: &Bound<'py, Self>) -> PyResult<(Bound<'py, PyAny>, (String,))> {
+        Ok((slf.getattr("from_string")?, (slf.borrow().__str__(),)))
+    }
+}
+
+#[pyclass(
+    frozen,
+    name = "ProcId",
+    module = "monarch._rust_bindings.monarch_hyperactor.proc"
+)]
+#[derive(Clone)]
+pub struct PyProcId {
+    pub(crate) inner: ProcId,
+}
+
+#[pymethods]
+impl PyProcId {
+    #[new]
+    fn new(uid: PyRef<'_, PyUid>) -> Self {
+        Self {
+            inner: ProcId::new(uid.inner.clone(), None),
+        }
+    }
+
+    #[staticmethod]
+    fn from_string(proc_id: &str) -> PyResult<Self> {
+        Ok(Self {
+            inner: proc_id
+                .parse()
+                .map_err(|error| PyValueError::new_err(format!("invalid proc id: {error}")))?,
+        })
+    }
+
+    #[getter]
+    fn uid(&self) -> PyUid {
+        PyUid {
+            inner: self.inner.uid().clone(),
+        }
+    }
+
+    #[getter]
+    fn label(&self) -> Option<String> {
+        self.inner.label().map(ToString::to_string)
+    }
+
+    fn __str__(&self) -> String {
+        self.inner.to_string()
+    }
+
+    fn __hash__(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.inner.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn __eq__(&self, other: &Bound<'_, PyAny>) -> PyResult<bool> {
+        Ok(other
+            .extract::<PyRef<'_, PyProcId>>()
+            .is_ok_and(|other| self.inner == other.inner))
+    }
+
+    fn __reduce__<'py>(slf: &Bound<'py, Self>) -> PyResult<(Bound<'py, PyAny>, (String,))> {
+        Ok((slf.getattr("from_string")?, (slf.borrow().__str__(),)))
+    }
+}
 
 /// Wrapper around a proc that provides utilities to implement a python actor.
 #[derive(Clone, Debug)]
@@ -436,6 +577,8 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
 }
 
 pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResult<()> {
+    hyperactor_mod.add_class::<PyUid>()?;
+    hyperactor_mod.add_class::<PyProcId>()?;
     hyperactor_mod.add_class::<PyProc>()?;
     hyperactor_mod.add_class::<PyActorAddr>()?;
     hyperactor_mod.add_class::<PySerialized>()?;

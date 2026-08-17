@@ -10,6 +10,7 @@ Monarch Actor API - Public interface for actor functionality.
 """
 
 from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
+from monarch._rust_bindings.monarch_hyperactor.proc import ProcId, Uid
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent
 from monarch._rust_bindings.monarch_hyperactor.supervision import MeshFailure
 from monarch._src.actor import config
@@ -63,6 +64,7 @@ __all__ = [
     "Future",
     "Point",
     "ProcMesh",
+    "ProcId",
     "Channel",
     "send",
     "shutdown_context",
@@ -91,4 +93,5 @@ __all__ = [
     "get_meter",
     "span",
     "traced",
+    "Uid",
 ]
