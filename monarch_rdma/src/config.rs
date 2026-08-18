@@ -91,6 +91,21 @@ declare_attrs! {
     ))
     pub attr RDMA_IBVERBS_TARGET: String = String::new();
 
+    /// Which peer NICs each local NIC may pair with for a transfer.
+    ///
+    /// Accepted forms are `any`, `match_name`, and `groups:` followed by any
+    /// number of `|`-separated groups, each naming any number of devices,
+    /// comma-separated — `groups:mlx5_0,mlx5_1|mlx5_2,mlx5_3|mlx5_4,mlx5_5` and
+    /// `groups:mlx5_0` are both valid. Groups must be disjoint. Parsed into a
+    /// [`PeerDeviceAffinityPolicy`](crate::backend::ibverbs::device_selection::PeerDeviceAffinityPolicy).
+    /// The empty default means `any`, since a `String` attribute cannot default
+    /// to anything else. Value syntax is validated when the RDMA manager starts.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("MONARCH_RDMA_PEER_DEVICE_AFFINITY".to_string()),
+        Some("rdma_peer_device_affinity".to_string()),
+    ))
+    pub attr RDMA_PEER_DEVICE_AFFINITY: String = String::new();
+
     /// Worker-thread count for the shared rdma data-plane runtime, which
     /// every `QueuePairActor` poll loop runs on.
     ///
