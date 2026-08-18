@@ -33,7 +33,7 @@ urlencoding = "2.1.0"
 wezterm-dynamic = { git = "https://github.com/wezterm/wezterm.git", rev = "05343b387085842b434d267f91b6b0ec157e4331", features = ["std"] }
 
 [dev-dependencies]
-uuid = { version = "1.24.0", features = ["rng-getrandom", "serde", "v4", "v5", "v6", "v7", "v8"] }
+uuid = { version = "1.24.1", features = ["rng-getrandom", "serde", "v4", "v5", "v6", "v7", "v8"] }
 
 [lints]
 workspace = true
