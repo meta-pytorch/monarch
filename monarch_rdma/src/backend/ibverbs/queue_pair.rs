@@ -177,18 +177,26 @@ pub(super) struct QpKey {
 /// [`IbvDomainImpl::QueuePair`](super::domain::IbvDomainImpl::QueuePair) and builds
 /// it through [`Self::new`].
 pub trait IbvQueuePair: std::fmt::Debug + Send + Sync + 'static + Sized {
-    /// Creates a queue pair against `domain` in the RESET state;
-    /// [`Self::connect`] transitions it to RTS before use.
+    /// Creates a queue pair against `domain` in the RESET state, reporting its
+    /// completions on `send_cq` and `recv_cq`; [`Self::connect`] transitions it
+    /// to RTS before use.
+    ///
+    /// The completion queues are created by the caller rather than here, so that
+    /// one queue can back many queue pairs. Implementers hold a clone of each,
+    /// which is what keeps them alive for the QP's lifetime.
     ///
     /// # Safety
     ///
     /// `domain`'s PD (`domain.as_ptr()`) must be null or a valid protection
     /// domain. Callers must ensure the PD outlives the QP; the easiest way to
     /// do this is for implementers to store a clone of `domain.pd()` (an
-    /// `Arc<IbvPd>`) inside the QP.
+    /// `Arc<IbvPd>`) inside the QP. `send_cq` and `recv_cq` must have been
+    /// created on `domain`'s device context.
     unsafe fn new<I: IbvDomainImpl<QueuePair = Self>>(
         domain: &IbvDomain<I>,
         config: IbvConfig,
+        send_cq: Arc<IbvCq>,
+        recv_cq: Arc<IbvCq>,
     ) -> Result<Self, anyhow::Error>;
 
     /// Transitions the QP through `INIT -> RTR -> RTS`, connected to `info`.
@@ -425,6 +433,8 @@ pub(super) unsafe fn connect(
 /// queues and device context are likewise non-null and live: this invokes the
 /// `poll_cq` verb through them without re-checking. A placeholder [`IbvQp`]
 /// built from null handles does not qualify.
+///
+/// No other thread may be polling `target`'s completion queue for the duration.
 pub(super) unsafe fn poll_one(
     qp: &IbvQp,
     target: PollTarget,
@@ -613,11 +623,12 @@ impl IbvQueuePair for RCQueuePair {
     unsafe fn new<I: IbvDomainImpl<QueuePair = Self>>(
         domain: &IbvDomain<I>,
         config: IbvConfig,
+        send_cq: Arc<IbvCq>,
+        recv_cq: Arc<IbvCq>,
     ) -> Result<Self, anyhow::Error> {
         tracing::debug!("creating an RCQueuePair from config {}", config);
         // `IbvDomain`'s `pd` accessor permits null (e.g. a test domain); a real
-        // QP needs one, so reject null up front (`IbvCq::create` likewise rejects
-        // a null context).
+        // QP needs one, so reject null up front.
         let pd = domain.as_ptr();
         if pd.is_null() {
             anyhow::bail!("cannot create an RCQueuePair on a null protection domain");
@@ -630,14 +641,6 @@ impl IbvQueuePair for RCQueuePair {
             Some(GidScope::Global),
             Some(GidType::RoCEv2),
         )?;
-
-        // Separate send/recv completion queues. Each `IbvCq` destroys its queue
-        // on drop, so an early return below (or a panic) cleans them up.
-        // SAFETY: `domain`'s context is null or live; `IbvCq::create` rejects
-        // a null context.
-        let send_cq = unsafe { IbvCq::create(domain.context().clone(), config.cq_entries) }?;
-        // SAFETY: as for `send_cq` above.
-        let recv_cq = unsafe { IbvCq::create(domain.context().clone(), config.cq_entries) }?;
 
         // A standard RC QP with the caps from `config`.
         let mut init_attr = rdmaxcel_sys::ibv_qp_init_attr {
@@ -659,15 +662,14 @@ impl IbvQueuePair for RCQueuePair {
         // `ibv_qp_init_attr`. `ibv_create_qp` returns null on failure.
         let qp = unsafe { rdmaxcel_sys::ibv_create_qp(pd, &mut init_attr) };
         if qp.is_null() {
-            // `send_cq`/`recv_cq` drop here, destroying the CQs.
             anyhow::bail!(
                 "failed to create queue pair (QP): {}",
                 Error::last_os_error()
             );
         }
         // SAFETY: `qp` is a live RC QP just created against `pd` with
-        // `send_cq`/`recv_cq`; `IbvQp` takes ownership of all of them plus the
-        // PD and destroys them in order on drop.
+        // `send_cq`/`recv_cq`; `IbvQp` holds a clone of each, keeping them alive
+        // for at least as long as the QP it destroys on drop.
         let qp = unsafe { IbvQp::from_raw(qp, send_cq, recv_cq, domain.pd().clone()) };
         let access_flags = domain.access_flags();
         // SAFETY: `qp` and its `send_cq`/`recv_cq`/PD/context were all created
@@ -750,7 +752,9 @@ impl IbvQueuePair for RCQueuePair {
     ) -> Result<Option<Result<IbvWc, WorkRequestError>>, PollCompletionError> {
         // SAFETY: `self.qp` wraps a live, fully non-null `ibv_qp` — everything
         // reached through it included — per `from_qp`'s contract, and it stays
-        // alive for `self`'s lifetime.
+        // alive for `self`'s lifetime. `&mut self` excludes another poll through
+        // this queue pair, and its completion queues are reached through nothing
+        // else, so no other thread is polling them.
         unsafe { poll_one(&self.qp, target) }
     }
 }
@@ -1597,6 +1601,8 @@ mod tests {
         unsafe fn new<I: IbvDomainImpl<QueuePair = Self>>(
             _domain: &IbvDomain<I>,
             _config: IbvConfig,
+            _send_cq: Arc<IbvCq>,
+            _recv_cq: Arc<IbvCq>,
         ) -> Result<Self> {
             // No `IbvDomainImpl` sets `Q = MockQp`, so this is never reached;
             // the mock is built directly via `MockQp::new`.
