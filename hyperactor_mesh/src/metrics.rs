@@ -8,12 +8,6 @@
 
 use hyperactor_telemetry::*;
 
-declare_static_timer!(
-    ACTOR_MESH_CAST_DURATION,
-    "actor_mesh_cast_duration",
-    TimeUnit::Micros
-);
-
 // Per-proc memory samples emitted on the periodic tick of
 // `Handler<RepublishIntrospect>` for `ProcAgent`, governed by
 // `PROCESS_MEMORY_METRIC_INTERVAL`. Values are bytes; the underlying
