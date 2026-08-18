@@ -28,6 +28,7 @@ use std::sync::OnceLock;
 
 use anyhow::Context;
 
+use super::cq_pool::cq_entries_for;
 use super::device_selection::get_cuda_device_to_ibv_devices;
 use super::domain::IbvDomain;
 use super::domain::IbvDomainImpl;
@@ -246,20 +247,19 @@ impl MlxDomainOps for ProdMlxDomainOps {
         config: &IbvConfig,
     ) -> anyhow::Result<IbvQp> {
         // This QP is private to mkey binding and its completions are polled
-        // here, not by a `QueuePairActor`, so it gets its own completion queues
-        // rather than sharing the ones the data path uses.
+        // here, not by a `QueuePairActor`, so it gets its own completion queue
+        // rather than drawing on the device's pool -- sized to hold everything
+        // its one owner can have outstanding. One queue serves both sides, since
+        // it posts no receives.
+        let cq_entries = cq_entries_for(1, config.max_send_wr, domain.device_info().max_cqe())?;
         // SAFETY: an `IbvDomain` holds a null-or-live context; `IbvCq::create`
         // rejects a null context.
-        let send_cq =
-            Arc::new(unsafe { IbvCq::create(domain.context().clone(), config.cq_entries) }?);
-        // SAFETY: as for `send_cq` above.
-        let recv_cq =
-            Arc::new(unsafe { IbvCq::create(domain.context().clone(), config.cq_entries) }?);
-        // The `IbvQp` holds a clone of each CQ and of the PD, so an early return
+        let cq = Arc::new(unsafe { IbvCq::create(domain.context().clone(), cq_entries) }?);
+        // The `IbvQp` holds a clone of the CQ and of the PD, so an early return
         // or panic in the connect below still tears everything down in order.
-        // SAFETY: an `IbvDomain` holds a null-or-live context and PD, and both
-        // CQs were just created on that context.
-        let qp = unsafe { MlxQueuePair::create_ibv_qp(domain, config, send_cq, recv_cq) }
+        // SAFETY: an `IbvDomain` holds a null-or-live context and PD, and the CQ
+        // was just created on that context.
+        let qp = unsafe { MlxQueuePair::create_ibv_qp(domain, config, Arc::clone(&cq), cq) }
             .context("could not create loopback QP for mkey binding")?;
         let context = qp.context().as_ptr();
         let access_flags = domain.access_flags();

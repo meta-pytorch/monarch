@@ -664,8 +664,8 @@ impl IbvQueuePair for EfaQueuePair {
         // SAFETY: `self.qp` owns the live queue pair built in `new`, along with
         // its completion queues and device context, all non-null and alive for
         // `self`'s lifetime. `&mut self` excludes another poll through this queue
-        // pair, and its completion queues are reached through nothing else, so no
-        // other thread is polling them.
+        // pair, and its lease leaves it the only queue pair polling that
+        // completion queue, so no other thread is polling it.
         unsafe { super::queue_pair::poll_one(&self.qp, target) }
     }
 }

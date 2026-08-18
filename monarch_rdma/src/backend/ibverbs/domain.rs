@@ -187,13 +187,17 @@ impl<I: IbvDomainImpl> IbvDomain<I> {
         unsafe { I::register_mr(self, mem) }
     }
 
-    /// Create a queue pair against this domain, dispatching to the backend
-    /// [`IbvDomainImpl`] strategy.
-    pub fn create_queue_pair(&self, config: &IbvConfig) -> anyhow::Result<I::QueuePair> {
+    /// Create a queue pair against this domain, reporting its completions on
+    /// `cq`, dispatching to the backend [`IbvDomainImpl`] strategy.
+    pub fn create_queue_pair(
+        &self,
+        config: &IbvConfig,
+        cq: Arc<IbvCq>,
+    ) -> anyhow::Result<I::QueuePair> {
         // SAFETY: a fully-constructed `IbvDomain` holds a null-or-live PD, and
         // through it a null-or-live context, per its construction contract --
         // which is what `I::create_queue_pair` requires.
-        unsafe { I::create_queue_pair(self, config) }
+        unsafe { I::create_queue_pair(self, config, cq) }
     }
 }
 
@@ -245,38 +249,36 @@ pub trait IbvDomainImpl: std::fmt::Debug + Send + Sync + 'static + Sized {
         unsafe { register_host_or_dmabuf_mr(domain, mem) }
     }
 
-    /// Create a queue pair against `domain`, on its own pair of completion
-    /// queues. The default builds [`Self::QueuePair`] directly; backends
-    /// override to construct their own queue-pair type.
+    /// Create a queue pair against `domain`, reporting every completion on
+    /// `cq`. The default builds [`Self::QueuePair`] directly; backends override
+    /// to construct their own queue-pair type.
+    ///
+    /// One queue serves both the send and receive sides, because nothing posts
+    /// receive work requests on these queue pairs -- a separate receive queue
+    /// would only ever stay empty.
     ///
     /// # Safety
     ///
     /// `domain` must hold a null or live PD (`domain.as_ptr()`) and, with it, a
-    /// null or live device context: this allocates the completion queues on that
-    /// context and builds the queue pair against that PD. A null PD yields
-    /// `Err` rather than reaching the driver.
+    /// null or live device context, and `cq` must hold a live `ibv_cq` created
+    /// on that context: the queue pair is built against that PD and reports its
+    /// completions on that queue. A null PD yields `Err` rather than reaching
+    /// the driver.
     unsafe fn create_queue_pair(
         domain: &IbvDomain<Self>,
         config: &IbvConfig,
+        cq: Arc<IbvCq>,
     ) -> anyhow::Result<Self::QueuePair> {
-        // Reject a null PD (e.g. a test domain) before allocating the completion
-        // queues, so a domain that cannot back a queue pair says so rather than
-        // building two CQs only to throw them away.
+        // Reject a null PD (e.g. a test domain) up front, so a domain that
+        // cannot back a queue pair says so rather than reaching the driver.
         if domain.as_ptr().is_null() {
             anyhow::bail!("cannot create a queue pair on a null protection domain");
         }
 
-        // SAFETY: `domain`'s context is null or live (this method's contract);
-        // `IbvCq::create` rejects a null context.
-        let send_cq =
-            Arc::new(unsafe { IbvCq::create(domain.context().clone(), config.cq_entries) }?);
-        // SAFETY: as for `send_cq` above.
-        let recv_cq =
-            Arc::new(unsafe { IbvCq::create(domain.context().clone(), config.cq_entries) }?);
-        // SAFETY: `domain` holds a live PD (null was rejected above) per this
-        // method's contract, which is what `IbvQueuePair::new` requires, and both
-        // CQs were just created on that domain's context.
-        unsafe { Self::QueuePair::new(domain, config.clone(), send_cq, recv_cq) }
+        // SAFETY: `domain` holds a live PD (null was rejected above) and `cq` a
+        // live queue on its context, per this method's contract, which is what
+        // `IbvQueuePair::new` requires.
+        unsafe { Self::QueuePair::new(domain, config.clone(), Arc::clone(&cq), cq) }
     }
 }
 
@@ -576,7 +578,7 @@ mod tests {
         let mut config = IbvConfig::default();
         MlxDevice::apply_config_defaults(&mut config);
         let dev =
-            IbvDevice::<MlxDevice>::open(&nic, config.clone()).expect("mapped NIC should open");
+            IbvDevice::<MlxDevice>::try_open(&nic, config.clone()).expect("mapped NIC should open");
         // SAFETY: `dev.context()` wraps the live `ibv_context` opened above; the
         // returned `Arc<IbvContext>` keeps it open for the new domain's lifetime.
         unsafe { IbvDomain::new(dev.context(), dev.device_info().clone(), &config) }

@@ -45,6 +45,7 @@ mod tests {
 
     use super::*;
     use crate::backend::ibverbs::domain::IbvDomain;
+    use crate::backend::ibverbs::primitives::IbvCq;
     use crate::backend::ibverbs::primitives::IbvPd;
 
     // A domain with no protection domain cannot build a queue pair, and says so
@@ -61,7 +62,7 @@ mod tests {
             )
         };
         let err = domain
-            .create_queue_pair(&IbvConfig::default())
+            .create_queue_pair(&IbvConfig::default(), Arc::new(IbvCq::null()))
             .expect_err("a null protection domain cannot back a queue pair");
         assert!(
             err.to_string().contains("null protection domain"),
