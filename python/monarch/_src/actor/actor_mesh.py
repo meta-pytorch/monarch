@@ -16,7 +16,7 @@ import inspect
 import logging
 import threading
 import warnings
-from abc import abstractmethod, abstractproperty
+from abc import abstractmethod
 from dataclasses import dataclass
 from functools import cache
 from pprint import pformat
@@ -171,7 +171,8 @@ class Instance(abc.ABC):
 
         return real_spawn(proc_mesh)
 
-    @abstractproperty
+    @property
+    @abstractmethod
     def _mailbox(self) -> Mailbox:
         """
         This can be removed once we fix all the uses of mailbox to just use context instead.
@@ -185,7 +186,8 @@ class Instance(abc.ABC):
         """
         return self.actor_id.proc_id
 
-    @abstractproperty
+    @property
+    @abstractmethod
     def actor_id(self) -> ActorAddr:
         """
         The actor_id of the current actor.
