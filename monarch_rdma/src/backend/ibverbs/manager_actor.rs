@@ -37,7 +37,6 @@ use hyperactor::Instance;
 use hyperactor::OncePortHandle;
 use hyperactor::OncePortRef;
 use hyperactor::PortHandle;
-use hyperactor::RefClient;
 use hyperactor::actor::Referable;
 use serde::Deserialize;
 use serde::Serialize;
@@ -62,6 +61,7 @@ use super::queue_pair::OpResult;
 use super::queue_pair::ProcessOps;
 use super::queue_pair::QpKey;
 use super::queue_pair::QueuePairActor;
+use super::queue_pair::QueuePairOp;
 use super::queue_pair::legacy;
 use crate::RdmaOp;
 use crate::RdmaTransportLevel;
@@ -123,30 +123,20 @@ pub struct RawQueuePair {
     pub reply: OncePortHandle<Result<legacy::IbvQueuePair, String>>,
 }
 
-/// Cross-proc messages handled by [`IbvManagerActor`].
-#[derive(Handler, HandleClient, RefClient, Debug, Serialize, Deserialize, Named)]
-pub enum IbvManagerMessage {
-    /// Release a buffer registration by `remote_buf_id`. Fire-and-forget
-    /// (no reply port) to avoid blocking the caller during teardown.
-    ReleaseBuffer { remote_buf_id: usize },
-}
-wirevalue::register_type!(IbvManagerMessage);
-
 /// Local-only messages for [`IbvManagerActor`].
 #[derive(Handler, HandleClient, Debug)]
 pub enum IbvManagerLocalMessage {
-    /// Register a remote-facing buffer's MR and return its
-    /// [`IbvRemoteMemoryRegionView`]. Called by
+    /// Register `local`'s MRs and reply with one
+    /// [`IbvRemoteMemoryRegionView`] per registration. Called by
     /// [`crate::rdma_manager_actor::RdmaManagerActor::request_buffer`]
     /// at buffer-creation time.
     ///
-    /// The MR lives in [`IbvManagerActor::buffer_registrations`] and
-    /// is deregistered on [`IbvManagerMessage::ReleaseBuffer`].
+    /// The registrations live on `local` itself, so they stay in force for as
+    /// long as any holder of that handle does.
     RegisterRemoteBuffer {
-        remote_buf_id: usize,
         local: KeepaliveLocalMemory,
         #[reply]
-        reply: OncePortHandle<Result<IbvRemoteMemoryRegionView, String>>,
+        reply: OncePortHandle<Result<Vec<IbvRemoteMemoryRegionView>, String>>,
     },
 }
 
@@ -165,7 +155,6 @@ const DEFAULT_DOMAIN: &str = "default";
 #[derive(Debug)]
 #[hyperactor::export(
     handlers = [
-        IbvManagerMessage,
         CreatePeerQueuePair<IbvManagerActor<I>>,
     ],
 )]
@@ -194,13 +183,6 @@ pub struct IbvManagerActor<I: IbvDeviceImpl> {
     devices: HashMap<String, IbvDevice<I>>,
 
     config: IbvConfig,
-
-    /// Map from buffer_id to the registered MR view. The view keeps the MR (and
-    /// its PD) alive for the lifetime of the registration; `ReleaseBuffer` drops
-    /// the entry, and the FFI resources are released by the `Arc`s' `Drop`s once
-    /// no other holder of the view remains. The wire-facing
-    /// [`IbvRemoteMemoryRegionView`] is derived from the view on demand.
-    buffer_registrations: HashMap<usize, IbvMemoryRegionView>,
 }
 
 #[async_trait]
@@ -239,9 +221,8 @@ impl<I: IbvDeviceImpl> Drop for IbvManagerActor<I> {
             let _ = handle.drain_and_stop("IbvManagerActor dropped");
         }
 
-        // The remaining fields (`peer_created_qps`,
-        // `buffer_registrations`, `devices`) free their FFI resources
-        // through their elements' `Drop`s when this struct is dropped.
+        // The remaining fields (`peer_created_qps`, `devices`) free their FFI
+        // resources through their elements' `Drop`s when this struct is dropped.
     }
 }
 
@@ -294,7 +275,6 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
             peer_created_qps: HashMap::new(),
             devices: HashMap::new(),
             config,
-            buffer_registrations: HashMap::new(),
         };
 
         Ok(actor)
@@ -467,35 +447,6 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
 }
 
 #[async_trait]
-impl<I: IbvDeviceImpl> IbvManagerMessageHandler for IbvManagerActor<I> {
-    async fn release_buffer(
-        &mut self,
-        _cx: &Context<Self>,
-        remote_buf_id: usize,
-    ) -> Result<(), anyhow::Error> {
-        // Dropping the entry releases the manager's `Arc` clones on
-        // the view's MR and PD; FFI cleanup happens via their `Drop`s
-        // once the last referencing view is gone.
-        self.buffer_registrations.remove(&remote_buf_id);
-        Ok(())
-    }
-}
-
-// `#[hyperactor::handle(IbvManagerMessage)]` would generate a
-// non-generic `impl Handler<...> for IbvManagerActor<I>` that
-// can't see `I`; we write the generic delegation by hand.
-#[async_trait]
-impl<I: IbvDeviceImpl> Handler<IbvManagerMessage> for IbvManagerActor<I> {
-    async fn handle(
-        &mut self,
-        cx: &Context<Self>,
-        message: IbvManagerMessage,
-    ) -> Result<(), anyhow::Error> {
-        <Self as IbvManagerMessageHandler>::handle(self, cx, message).await
-    }
-}
-
-#[async_trait]
 impl<I: IbvDeviceImpl> Handler<SubmitOps<I>> for IbvManagerActor<I> {
     async fn handle(&mut self, cx: &Context<Self>, msg: SubmitOps<I>) -> Result<(), anyhow::Error> {
         let SubmitOps { ops, reply } = msg;
@@ -505,8 +456,20 @@ impl<I: IbvDeviceImpl> Handler<SubmitOps<I>> for IbvManagerActor<I> {
         // one-item `ProcessOps` to that QP. The QP can then post and
         // poll op `i` while we run `resolve_local_mr` for op `i+1`.
         for (i, op) in ops.into_iter().enumerate() {
-            let mrv = match self.resolve_local_mr(&op.local_memory) {
-                Ok(mrv) => mrv,
+            // One pair per op for now: the peer's first registration against
+            // whichever NIC this side resolves the local MR on.
+            let Some(remote) = op.remote_buffers.first().cloned() else {
+                reply.try_post(
+                    cx,
+                    OpResult {
+                        op_idx: i,
+                        result: Err("the remote buffer carries no ibverbs registration".to_owned()),
+                    },
+                )?;
+                continue;
+            };
+            let self_device = match self.resolve_local_mr(&op.local_memory) {
+                Ok(mrv) => mrv.device_name.clone(),
                 Err(e) => {
                     reply.try_post(
                         cx,
@@ -519,12 +482,11 @@ impl<I: IbvDeviceImpl> Handler<SubmitOps<I>> for IbvManagerActor<I> {
                 }
             };
             let qp_key = QpKey {
-                self_device: mrv.device_name.clone(),
+                self_device,
                 other_id: op.remote_manager.actor_addr().id().clone(),
-                other_device: op.remote_buffer.device_name.clone(),
+                other_device: remote.device_name.clone(),
             };
-            let peer_manager = op.remote_manager.clone();
-            let handle = match self.ensure_qp_actor(cx, &qp_key, peer_manager) {
+            let handle = match self.ensure_qp_actor(cx, &qp_key, op.remote_manager) {
                 Ok(h) => h,
                 Err(e) => {
                     reply.try_post(
@@ -540,7 +502,12 @@ impl<I: IbvDeviceImpl> Handler<SubmitOps<I>> for IbvManagerActor<I> {
             handle.try_post(
                 cx,
                 ProcessOps {
-                    items: vec![(i, op, mrv)],
+                    items: vec![QueuePairOp {
+                        op_idx: i,
+                        op_type: op.op_type,
+                        local_memory: op.local_memory,
+                        remote,
+                    }],
                     reply: reply.clone(),
                 },
             )?;
@@ -597,28 +564,21 @@ impl<I: IbvDeviceImpl> IbvManagerLocalMessageHandler for IbvManagerActor<I> {
     async fn register_remote_buffer(
         &mut self,
         _cx: &Context<Self>,
-        remote_buf_id: usize,
         local: KeepaliveLocalMemory,
-    ) -> Result<Result<IbvRemoteMemoryRegionView, String>, anyhow::Error> {
-        if let Some(mrv) = self.buffer_registrations.get(&remote_buf_id) {
-            return Ok(Ok(IbvRemoteMemoryRegionView::from(mrv)));
-        }
-        // `resolve_local_mr` installs the view in `local`'s shared MR
-        // slot, so every clone of this handle — including the one the
-        // caller holds — reuses this registration instead of registering
-        // the same region again.
-        let mrv = match self.resolve_local_mr(&local) {
-            Ok(v) => v,
-            Err(e) => return Ok(Err(e.to_string())),
-        };
-        let buf = IbvRemoteMemoryRegionView::from(&mrv);
-        self.buffer_registrations.insert(remote_buf_id, mrv);
-        Ok(Ok(buf))
+    ) -> Result<Result<Vec<IbvRemoteMemoryRegionView>, String>, anyhow::Error> {
+        // The registration is installed on `local`'s shared map, so every clone
+        // of this handle — including the one the caller holds — reuses it rather
+        // than registering the same region on that device again.
+        Ok(self
+            .resolve_local_mr(&local)
+            .map(|mrv| vec![IbvRemoteMemoryRegionView::from(&mrv)])
+            .map_err(|error| format!("{error:#}")))
     }
 }
 
-// `#[hyperactor::handle(IbvManagerLocalMessage)]` analogue, written
-// generically; see the `IbvManagerMessage` block above.
+// `#[hyperactor::handle(IbvManagerLocalMessage)]` would generate a non-generic
+// `impl Handler<...> for IbvManagerActor<I>` that can't see `I`; we write the
+// generic delegation by hand.
 #[async_trait]
 impl<I: IbvDeviceImpl> Handler<IbvManagerLocalMessage> for IbvManagerActor<I> {
     async fn handle(
@@ -650,13 +610,17 @@ impl<I: IbvDeviceImpl> std::ops::Deref for IbvBackend<I> {
     }
 }
 
-/// Serializable per-buffer context for an ibverbs backend: the manager
-/// to route ops through and the wire description of the registered MR.
+/// Serializable per-buffer context for an ibverbs backend: the manager to route
+/// ops through and the wire description of every MR the buffer is registered
+/// under, one per NIC serving it.
+///
+/// The order is [`select_optimal_ibv_devices`]'s, so an initiator that takes,
+/// say, the first entry picks the same NIC the owner would have named first.
 #[derive(Serialize, Deserialize, Named)]
 #[serde(bound = "")]
 pub struct IbvRemoteBackendContext<I: IbvDeviceImpl> {
     pub manager: ActorRef<IbvManagerActor<I>>,
-    pub buffer: IbvRemoteMemoryRegionView,
+    pub buffers: Vec<IbvRemoteMemoryRegionView>,
 }
 
 // `Clone` and `Debug` are hand-rolled to avoid the spurious `I: Clone`
@@ -666,7 +630,7 @@ impl<I: IbvDeviceImpl> Clone for IbvRemoteBackendContext<I> {
     fn clone(&self) -> Self {
         Self {
             manager: self.manager.clone(),
-            buffer: self.buffer.clone(),
+            buffers: self.buffers.clone(),
         }
     }
 }
@@ -675,7 +639,7 @@ impl<I: IbvDeviceImpl> std::fmt::Debug for IbvRemoteBackendContext<I> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IbvRemoteBackendContext")
             .field("manager", &self.manager)
-            .field("buffer", &self.buffer)
+            .field("buffers", &self.buffers)
             .finish()
     }
 }
@@ -721,26 +685,29 @@ where
     async fn register_remote_buffer(
         &self,
         cx: &(impl hyperactor::context::Actor + Send + Sync),
-        remote_buf_id: usize,
+        _remote_buf_id: usize,
         local: KeepaliveLocalMemory,
     ) -> Result<IbvRemoteBackendContext<I>> {
-        let buffer = self
+        let buffers = self
             .0
-            .register_remote_buffer(cx, remote_buf_id, local)
+            .register_remote_buffer(cx, local)
             .await?
             .map_err(|e| anyhow::anyhow!(e))?;
         Ok(IbvRemoteBackendContext {
             manager: self.0.bind(),
-            buffer,
+            buffers,
         })
     }
 
+    /// No-op: this backend holds no per-buffer state. A region's registrations
+    /// live on the [`KeepaliveLocalMemory`] they were made for, so a buffer is
+    /// released by its owner dropping that handle.
     async fn release_buffer(
         &self,
-        cx: &(impl hyperactor::context::Actor + Send + Sync),
-        remote_buf_id: usize,
+        _cx: &(impl hyperactor::context::Actor + Send + Sync),
+        _remote_buf_id: usize,
     ) -> Result<()> {
-        self.0.release_buffer(cx, remote_buf_id).await
+        Ok(())
     }
 
     /// Submit a batch of RDMA operations.
@@ -770,7 +737,7 @@ where
             ibv_ops.push(IbvOp {
                 op_type: op.op_type,
                 local_memory: op.local.clone(),
-                remote_buffer: ctx.buffer,
+                remote_buffers: ctx.buffers,
                 remote_manager: ctx.manager,
             });
         }
@@ -1891,14 +1858,14 @@ mod tests {
                 .backends
                 .mlx
                 .as_mut()
-                .map(|ctx| &mut ctx.buffer),
+                .map(|ctx| &mut ctx.buffers),
             bogus_remote
                 .backends
                 .efa
                 .as_mut()
-                .map(|ctx| &mut ctx.buffer),
+                .map(|ctx| &mut ctx.buffers),
         ];
-        for buf in bufs.into_iter().flatten() {
+        for buf in bufs.into_iter().flatten().flatten() {
             buf.rkey = 0xdead_beef;
             buf.addr = 0xdead_0000;
         }

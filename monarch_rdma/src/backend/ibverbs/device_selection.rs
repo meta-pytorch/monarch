@@ -132,6 +132,11 @@ pub fn get_pci_address(device: &IbvDeviceInfo) -> Result<PCIAddress> {
 /// included, since the PCI/NUMA topology is fixed for the process lifetime. A
 /// host whose links are all down at the first call therefore keeps an empty
 /// answer for the rest of the process.
+///
+/// The NICs come back in lexicographic order by name, per
+/// [`compute_optimal_ibv_devices`]; the cache hands back the same order.
+/// Callers rely on it to agree with their peers on which of several tied NICs to
+/// use without exchanging anything.
 pub fn select_optimal_ibv_devices<I: IbvDeviceImpl>(
     location: MemoryLocation,
 ) -> Result<Vec<IbvDeviceInfo>> {
@@ -146,7 +151,13 @@ pub fn select_optimal_ibv_devices<I: IbvDeviceImpl>(
     Ok(result)
 }
 
-/// Uncached core of [`select_optimal_ibv_devices`].
+/// Uncached core of [`select_optimal_ibv_devices`], returning the tied-best NICs
+/// in lexicographic order by device name.
+///
+/// That order is part of the contract rather than an artifact of how the devices
+/// were enumerated: two processes ranking the same [`MemoryLocation`] over the
+/// same NICs produce the same sequence, so each can pick the same element — the
+/// first, say — and know the other picked its counterpart.
 fn compute_optimal_ibv_devices<I: IbvDeviceImpl>(
     location: MemoryLocation,
 ) -> Result<Vec<IbvDeviceInfo>> {
@@ -185,6 +196,7 @@ fn compute_optimal_ibv_devices<I: IbvDeviceImpl>(
         best = Some(path);
         devices.push(nic);
     }
+    devices.sort_by(|a, b| a.name().cmp(b.name()));
     Ok(devices)
 }
 
@@ -240,6 +252,11 @@ fn cap_by_port_speed(path: PciPath, port_speed_mbytes_per_sec: NonZeroU32) -> Pc
 /// location. Both arms are scoped to backend `I`, so a name belonging to a
 /// different backend resolves to `Ok(None)`.
 ///
+/// Where several NICs tie for a memory location, this takes the first, which by
+/// [`select_optimal_ibv_devices`]'s ordering is the lexicographically smallest
+/// name. Two processes pinning the same location over the same NICs therefore
+/// resolve to the same device.
+///
 /// `Ok(None)` means "no such device"; an error means the target could not be
 /// evaluated at all, which for a GPU location includes CUDA not being
 /// initialized in this process.
@@ -258,10 +275,11 @@ pub fn resolve_target<I: IbvDeviceImpl>(target: &IbvDeviceTarget) -> Result<Opti
 
 /// The NICs of backend `I` for each CUDA runtime ordinal, indexed by ordinal.
 ///
-/// Each entry holds every NIC tied for the best path to that ordinal, so it is
-/// empty when no NIC could be ranked against it. Errors only when the ordinals
-/// themselves cannot be enumerated, which in practice means the CUDA driver is
-/// not initialized in this process.
+/// Each entry holds every NIC tied for the best path to that ordinal, in
+/// lexicographic order by name per [`select_optimal_ibv_devices`], so an entry
+/// is empty when no NIC could be ranked against its ordinal. Errors only when
+/// the ordinals themselves cannot be enumerated, which in practice means the
+/// CUDA driver is not initialized in this process.
 pub fn get_cuda_device_to_ibv_devices<I: IbvDeviceImpl>() -> Result<Vec<Vec<IbvDeviceInfo>>> {
     (0..cuda_device_count()?)
         .map(|ordinal| select_optimal_ibv_devices::<I>(MemoryLocation::Gpu(Some(ordinal as u32))))
@@ -270,6 +288,7 @@ pub fn get_cuda_device_to_ibv_devices<I: IbvDeviceImpl>() -> Result<Vec<Vec<IbvD
 
 #[cfg(test)]
 mod tests {
+    use super::super::mlx_device::MlxDevice;
     use super::*;
 
     #[test]
@@ -326,6 +345,25 @@ mod tests {
             configured_ibverbs_target().expect("configured target should be valid"),
             Some(IbvDeviceTarget::nic("mlx5_1")),
         );
+    }
+
+    #[test]
+    fn optimal_devices_come_back_in_name_order() {
+        // Peers pair their NICs by position in this list, so the order is part of
+        // the contract rather than a detail of how devices were enumerated. A
+        // host with no NIC trivially satisfies it, which is why this is not
+        // gated on hardware.
+        for location in [MemoryLocation::Cpu(None), MemoryLocation::Cpu(Some(0))] {
+            let names: Vec<String> = select_optimal_ibv_devices::<MlxDevice>(location)
+                .expect("ranking CPU memory needs no CUDA")
+                .iter()
+                .map(|nic| nic.name().clone())
+                .collect();
+            assert!(
+                names.is_sorted(),
+                "{location:?} ranked NICs out of order: {names:?}",
+            );
+        }
     }
 
     #[test]

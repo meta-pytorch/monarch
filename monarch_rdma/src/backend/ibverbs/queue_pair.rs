@@ -43,7 +43,6 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
-use super::IbvOp;
 use super::domain::IbvDomain;
 use super::domain::IbvDomainImpl;
 use super::manager_actor::CreatePeerQueuePair;
@@ -840,18 +839,26 @@ pub(super) struct OpResult {
     pub(super) result: Result<(), String>,
 }
 
-/// Local-only message: enqueue a batch of ops on this QP. As each
-/// op resolves the actor sends one `(op_idx, result)` tuple on
-/// `reply` — `op_idx` is the original index of the op in the
-/// user-facing `IbvManagerActor::submit_ops` request, so the receiver
-/// can correlate replies across batches that were sliced per-QP. The
-/// inner `Result` is `Ok(())` if every WR for the op completed
-/// successfully, otherwise `Err` carrying the first per-WR error
-/// observed (held back until the op's other WRs also report, so the
-/// MR registration outlives the data path).
+/// One op the manager has assigned to a queue pair.
 #[derive(Debug)]
-pub(super) struct ProcessOps<M: Referable> {
-    pub(super) items: Vec<(usize, IbvOp<M>, IbvMemoryRegionView)>,
+pub(super) struct QueuePairOp {
+    /// Index of the op in the caller's `submit` batch, echoed back in the
+    /// [`OpResult`] so the manager can correlate replies across the batches it
+    /// sliced per QP.
+    pub(super) op_idx: usize,
+    pub(super) op_type: RdmaOpType,
+    pub(super) local_memory: KeepaliveLocalMemory,
+    pub(super) remote: IbvRemoteMemoryRegionView,
+}
+
+/// Local-only message: enqueue a batch of ops on this QP. As each op resolves
+/// the actor sends one [`OpResult`] on `reply`. Its inner `Result` is `Ok(())`
+/// if every WR for the op completed successfully, otherwise `Err` carrying the
+/// first per-WR error observed (held back until the op's other WRs also report,
+/// so the memory handle and MR registration outlive the data path).
+#[derive(Debug)]
+pub(super) struct ProcessOps {
+    pub(super) items: Vec<QueuePairOp>,
     pub(super) reply: PortHandle<OpResult>,
 }
 
@@ -861,10 +868,8 @@ struct Tick;
 
 /// An op accepted by the actor but not yet posted to the QP.
 #[derive(Debug)]
-struct PendingOp<M: Referable> {
-    op_idx: usize,
-    op: IbvOp<M>,
-    mrv: IbvMemoryRegionView,
+struct PendingOp {
+    op: QueuePairOp,
     reply: PortHandle<OpResult>,
     /// WR count this op will issue when posted, computed once at
     /// construction so retries from a credit head-block don't redo
@@ -879,18 +884,13 @@ struct PostedOpEntry {
     op_idx: usize,
     pending_wrs: HashSet<u64>,
     is_read: bool,
-    /// Kept alive so the MR registration outlives every in-flight
-    /// WR touching it. Field is intentionally unread.
-    _mrv: IbvMemoryRegionView,
-    /// Kept alive so the *memory* outlives every in-flight WR touching
-    /// it: `_mrv` above holds the registration open, but an `ibv_mr`
-    /// does not keep its backing pages mapped. Field is intentionally
-    /// unread.
+    /// Kept alive so both the memory and its registration outlive every
+    /// in-flight WR touching it.
     _local_memory: KeepaliveLocalMemory,
     reply: PortHandle<OpResult>,
     /// First per-WR error observed for this op. The op's final reply is
-    /// held back until `pending_wrs.is_empty()`, so `_mrv` and
-    /// `_local_memory` outlive every WR still in flight.
+    /// held back until `pending_wrs.is_empty()`, so `_local_memory` outlives
+    /// every WR still in flight.
     first_error: Option<String>,
 }
 
@@ -928,7 +928,7 @@ pub(super) struct QueuePairActor<M: Manager, Qp: IbvQueuePair> {
     /// head op bumps against either credit cap, ops queued behind
     /// it stall — a write stuck behind a credit-blocked read is the
     /// known consequence; smarter interleaving is future work.
-    queue: VecDeque<PendingOp<M>>,
+    queue: VecDeque<PendingOp>,
     /// op-id → entry, for tracking WR completion. op-ids are local
     /// to this actor (monotonic counter); they exist so we can
     /// route per-WR completions to the right `PostedOpEntry`
@@ -1007,19 +1007,18 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
     fn try_post_head(&mut self, cx: &Instance<Self>) -> Result<bool, anyhow::Error> {
         let pending = self.queue.pop_front().expect("non-empty queue");
         let PendingOp {
-            op_idx,
             op,
-            mrv,
             reply,
             wrs,
             is_read,
         } = pending;
+        let op_idx = op.op_idx;
 
         // 1. Per-op fatal: op alone exceeds the QP's capacity.
         if wrs > self.max_send_wr {
             let err = format!(
                 "op too large for this QP [op_idx={}, qp_key={:?}, op_type={:?}, wrs={}, max_send_wr={}, local: {:?}, remote: {:?}]",
-                op_idx, self.qp_key, op.op_type, wrs, self.max_send_wr, mrv, op.remote_buffer,
+                op_idx, self.qp_key, op.op_type, wrs, self.max_send_wr, op.local_memory, op.remote,
             );
             reply.try_post(
                 cx,
@@ -1033,7 +1032,7 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
         if is_read && wrs > self.max_rd_atomic {
             let err = format!(
                 "read op too large for this QP [op_idx={}, qp_key={:?}, wrs={}, max_rd_atomic={}, local: {:?}, remote: {:?}]",
-                op_idx, self.qp_key, wrs, self.max_rd_atomic, mrv, op.remote_buffer,
+                op_idx, self.qp_key, wrs, self.max_rd_atomic, op.local_memory, op.remote,
             );
             reply.try_post(
                 cx,
@@ -1053,9 +1052,7 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
             || (is_read && self.in_flight_reads + wrs > self.max_rd_atomic)
         {
             self.queue.push_front(PendingOp {
-                op_idx,
                 op,
-                mrv,
                 reply,
                 wrs,
                 is_read,
@@ -1063,10 +1060,39 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
             return Ok(false);
         }
 
-        // 3. Post.
+        // 3. Resolve the local side. A QP is bound to one device on each side,
+        //    so the only registration it can address is the one on
+        //    `self_device`: an `lkey` from any other protection domain means
+        //    nothing here.
+        let local = match op.local_memory.registered_mr(&self.qp_key.self_device) {
+            Ok(Some(view)) => view,
+            other => {
+                let err = match other {
+                    Ok(None) => format!(
+                        "local memory is not registered on this QP's device [op_idx={}, qp_key={:?}, local: {:?}]",
+                        op_idx, self.qp_key, op.local_memory,
+                    ),
+                    Err(error) => format!(
+                        "local memory cannot be registered on this QP's device [op_idx={}, qp_key={:?}]: {error:#}",
+                        op_idx, self.qp_key,
+                    ),
+                    Ok(Some(_)) => unreachable!("matched by the arm above"),
+                };
+                reply.try_post(
+                    cx,
+                    OpResult {
+                        op_idx,
+                        result: Err(err),
+                    },
+                )?;
+                return Ok(true);
+            }
+        };
+
+        // 4. Post.
         let post_result = match op.op_type {
-            RdmaOpType::WriteFromLocal => self.qp.put(op.remote_buffer.clone(), mrv.clone()),
-            RdmaOpType::ReadIntoLocal => self.qp.get(mrv.clone(), op.remote_buffer.clone()),
+            RdmaOpType::WriteFromLocal => self.qp.put(op.remote.clone(), local.clone()),
+            RdmaOpType::ReadIntoLocal => self.qp.get(local.clone(), op.remote.clone()),
         };
         let wr_ids = post_result.map_err(|e| {
             anyhow::anyhow!(
@@ -1074,12 +1100,12 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
                 if is_read { "get" } else { "put" },
                 op_idx,
                 self.qp_key,
-                mrv,
-                op.remote_buffer,
+                local,
+                op.remote,
             )
         })?;
 
-        // 4. Track in-flight state.
+        // 5. Track in-flight state.
         let op_id = self.next_op_id;
         self.next_op_id += 1;
         let mut pending_wrs = HashSet::with_capacity(wr_ids.len());
@@ -1098,7 +1124,6 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
                 op_idx,
                 pending_wrs,
                 is_read,
-                _mrv: mrv,
                 _local_memory: op.local_memory,
                 reply,
                 first_error: None,
@@ -1280,19 +1305,13 @@ impl<M: Manager, Qp: IbvQueuePair> Actor for QueuePairActor<M, Qp> {
 }
 
 #[async_trait]
-impl<M: Manager, Qp: IbvQueuePair> Handler<ProcessOps<M>> for QueuePairActor<M, Qp> {
-    async fn handle(
-        &mut self,
-        cx: &Context<Self>,
-        msg: ProcessOps<M>,
-    ) -> Result<(), anyhow::Error> {
-        for (op_idx, op, mrv) in msg.items.into_iter() {
+impl<M: Manager, Qp: IbvQueuePair> Handler<ProcessOps> for QueuePairActor<M, Qp> {
+    async fn handle(&mut self, cx: &Context<Self>, msg: ProcessOps) -> Result<(), anyhow::Error> {
+        for op in msg.items.into_iter() {
             let wrs = self.wr_count(op.local_memory.size());
             let is_read = matches!(op.op_type, RdmaOpType::ReadIntoLocal);
             self.queue.push_back(PendingOp {
-                op_idx,
                 op,
-                mrv,
                 reply: msg.reply.clone(),
                 wrs,
                 is_read,
@@ -2009,9 +2028,20 @@ mod tests {
         }
     }
 
+    /// Local memory already registered on [`SELF_DEVICE`], which is what the QP
+    /// resolves to post an op.
     fn fake_local_memory(addr: usize, size: usize) -> KeepaliveLocalMemory {
-        KeepaliveLocalMemory::try_new(Arc::new(FakeKeepalive { addr, size }))
-            .expect("a fake host address has a location")
+        registered(
+            KeepaliveLocalMemory::try_new(Arc::new(FakeKeepalive { addr, size }))
+                .expect("a fake host address has a location"),
+        )
+    }
+
+    /// Install a [`SELF_DEVICE`] registration over the whole of `mem`.
+    fn registered(mem: KeepaliveLocalMemory) -> KeepaliveLocalMemory {
+        mem.install_mr(fake_mrv(mem.addr(), mem.size()))
+            .expect("a fresh handle carries no registration");
+        mem
     }
 
     /// [`Keepalive`] that sets `dropped` when it goes away, so a test can
@@ -2042,55 +2072,49 @@ mod tests {
             size,
             0x1234,
             0x5678,
-            "dev0".to_string(),
+            SELF_DEVICE.to_string(),
             // A null MR keepalive: its `Drop` is a no-op.
             Arc::new(IbvMr::null()),
         )
     }
 
-    /// Build a `QpaMockManager` ref attested to an unrelated proc;
-    /// only used to populate `IbvOp::remote_manager` (the actor
-    /// never sends to it during op processing — it just reads
-    /// `op.remote_buffer`).
-    fn fake_remote_ref() -> ActorRef<QpaMockManager> {
-        let proc_id = hyperactor::id::ProcId::new(
-            hyperactor::id::Uid::Instance(0xc0ffee, None),
-            Some(hyperactor::id::Label::new("remote").unwrap()),
-        );
-        let proc_addr =
-            hyperactor::ProcAddr::new(proc_id, hyperactor::channel::ChannelAddr::Local(1).into());
-        ActorRef::attest(proc_addr.actor_addr("remote-mgr"))
-    }
+    /// Devices of the QP `spawn_ready_actor` builds. The local memory of an op
+    /// must be registered on `SELF_DEVICE` for the QP to post it.
+    const SELF_DEVICE: &str = "mlx5_0";
+    const PEER_DEVICE: &str = "mlx5_0";
 
-    fn make_op(op_type: RdmaOpType, addr: usize, size: usize) -> IbvOp<QpaMockManager> {
-        IbvOp {
+    fn make_op(op_idx: usize, op_type: RdmaOpType, addr: usize, size: usize) -> QueuePairOp {
+        QueuePairOp {
+            op_idx,
             op_type,
             local_memory: fake_local_memory(addr, size),
-            remote_buffer: IbvRemoteMemoryRegionView {
+            remote: IbvRemoteMemoryRegionView {
                 rkey: 0,
                 addr: 0x4000_0000,
                 size,
-                device_name: "remote_dev".to_string(),
+                device_name: PEER_DEVICE.to_string(),
             },
-            remote_manager: fake_remote_ref(),
         }
     }
 
     /// Like [`make_op`], but the local memory reports when it drops.
     fn make_op_watching_drop(
+        op_idx: usize,
         op_type: RdmaOpType,
         addr: usize,
         size: usize,
         dropped: Arc<AtomicBool>,
-    ) -> IbvOp<QpaMockManager> {
-        IbvOp {
-            local_memory: KeepaliveLocalMemory::try_new(Arc::new(DropFlagKeepalive {
-                addr,
-                size,
-                dropped,
-            }))
-            .expect("a fake host address has a location"),
-            ..make_op(op_type, addr, size)
+    ) -> QueuePairOp {
+        QueuePairOp {
+            local_memory: registered(
+                KeepaliveLocalMemory::try_new(Arc::new(DropFlagKeepalive {
+                    addr,
+                    size,
+                    dropped,
+                }))
+                .expect("a fake host address has a location"),
+            ),
+            ..make_op(op_idx, op_type, addr, size)
         }
     }
 
@@ -2124,9 +2148,9 @@ mod tests {
         )> {
             let (qp, posted_rx) = MockQp::new(0x1, 0x2);
             let qp_key = QpKey {
-                self_device: "mlx5_0".into(),
+                self_device: SELF_DEVICE.into(),
                 other_id: self.parent_id(),
-                other_device: "mlx5_0".into(),
+                other_device: PEER_DEVICE.into(),
             };
             let handle = self
                 .spawn_actor_with_caps(
@@ -2192,7 +2216,7 @@ mod tests {
     fn submit_ops(
         harness: &QpaHarness,
         actor: &ActorHandle<QueuePairActor<QpaMockManager, MockQp>>,
-        items: Vec<(usize, IbvOp<QpaMockManager>, IbvMemoryRegionView)>,
+        items: Vec<QueuePairOp>,
     ) -> Result<hyperactor::mailbox::PortReceiver<OpResult>> {
         let (reply, rx) = harness.client.mailbox().open_port::<OpResult>();
         actor.try_post(&harness.client, ProcessOps { items, reply })?;
@@ -2235,11 +2259,7 @@ mod tests {
         let harness = QpaHarness::build()?;
         let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(4, 2).await?;
 
-        let items = vec![(
-            7usize,
-            make_op(RdmaOpType::WriteFromLocal, 0x1000, 4096),
-            fake_mrv(0x1000, 4096),
-        )];
+        let items = vec![make_op(7, RdmaOpType::WriteFromLocal, 0x1000, 4096)];
         let mut rx = submit_ops(&harness, &actor, items)?;
 
         // wr_ids start at 0 (fresh MockQp), so the single WR is wr 0.
@@ -2249,14 +2269,49 @@ mod tests {
         assert_eq!(lhandle.size, 4096);
         assert_eq!(lhandle.lkey, 0x1234);
         assert_eq!(lhandle.rkey, 0x5678);
-        assert_eq!(lhandle.device_name, "dev0");
+        assert_eq!(lhandle.device_name, SELF_DEVICE);
         assert_eq!(rhandle.addr, 0x4000_0000);
         assert_eq!(rhandle.size, 4096);
-        assert_eq!(rhandle.device_name, "remote_dev");
+        assert_eq!(rhandle.device_name, PEER_DEVICE);
 
         qp.queue_completion(0);
         let replies = collect_replies(&mut rx, 1).await;
         assert_eq!(replies, vec![(7, Ok(()))]);
+        harness.teardown().await;
+        Ok(())
+    }
+
+    /// The QP addresses local memory through its registration on `self_device`,
+    /// which the manager makes before dispatching. An op whose memory carries no
+    /// such registration fails on its own, and nothing is posted.
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn qpa_rejects_op_not_registered_on_its_device() -> Result<()> {
+        let harness = QpaHarness::build()?;
+        let (actor, _qp, mut posted_rx) = harness.spawn_ready_actor(4, 2).await?;
+
+        let items = vec![QueuePairOp {
+            local_memory: KeepaliveLocalMemory::try_new(Arc::new(FakeKeepalive {
+                addr: 0x1000,
+                size: 4096,
+            }))
+            .expect("a fake host address has a location"),
+            ..make_op(3, RdmaOpType::WriteFromLocal, 0x1000, 4096)
+        }];
+        let mut rx = submit_ops(&harness, &actor, items)?;
+
+        let replies = collect_replies(&mut rx, 1).await;
+        let [(op_idx, result)] = replies.as_slice() else {
+            panic!("expected exactly one reply, got {replies:?}");
+        };
+        assert_eq!(*op_idx, 3);
+        let error = result
+            .as_ref()
+            .expect_err("unregistered local memory cannot be posted");
+        assert!(
+            error.contains("not registered on this QP's device"),
+            "the error should name the missing registration: {error}",
+        );
+        assert_no_post(&mut posted_rx, Duration::from_millis(200)).await;
         harness.teardown().await;
         Ok(())
     }
@@ -2267,26 +2322,19 @@ mod tests {
         let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(4, 2).await?;
 
         // Two ops: the second exists only to prove the first has left
-        // `try_post_head`, which is where the `IbvOp` — the batch's own
+        // `try_post_head`, which is where the `QueuePairOp` — the batch's own
         // hold on the allocation — drops. Until then the assertion below
         // would pass whether or not the posted entry pins anything.
         let dropped = Arc::new(AtomicBool::new(false));
         let items = vec![
-            (
-                0usize,
-                make_op_watching_drop(
-                    RdmaOpType::WriteFromLocal,
-                    0x1000,
-                    4096,
-                    Arc::clone(&dropped),
-                ),
-                fake_mrv(0x1000, 4096),
+            make_op_watching_drop(
+                0,
+                RdmaOpType::WriteFromLocal,
+                0x1000,
+                4096,
+                Arc::clone(&dropped),
             ),
-            (
-                1usize,
-                make_op(RdmaOpType::WriteFromLocal, 0x2000, 4096),
-                fake_mrv(0x2000, 4096),
-            ),
+            make_op(1, RdmaOpType::WriteFromLocal, 0x2000, 4096),
         ];
         let mut rx = submit_ops(&harness, &actor, items)?;
 
@@ -2321,10 +2369,11 @@ mod tests {
 
         // A 3-chunk write (3 * MAX_RDMA_MSG_SIZE) splits into 3 WRs;
         // the op's reply must be held back until all 3 complete.
-        let items = vec![(
-            11usize,
-            make_op(RdmaOpType::WriteFromLocal, 0x1000, 3 * MAX_RDMA_MSG_SIZE),
-            fake_mrv(0x1000, 3 * MAX_RDMA_MSG_SIZE),
+        let items = vec![make_op(
+            11,
+            RdmaOpType::WriteFromLocal,
+            0x1000,
+            3 * MAX_RDMA_MSG_SIZE,
         )];
         let mut rx = submit_ops(&harness, &actor, items)?;
 
@@ -2357,10 +2406,11 @@ mod tests {
         // 3-WR write: simulate the second WR failing first; the op's
         // Err must not fire until the other 2 WRs have also reported
         // so the MR registration and local memory outlive every in-flight WR.
-        let items = vec![(
-            42usize,
-            make_op(RdmaOpType::WriteFromLocal, 0x1000, 3 * MAX_RDMA_MSG_SIZE),
-            fake_mrv(0x1000, 3 * MAX_RDMA_MSG_SIZE),
+        let items = vec![make_op(
+            42,
+            RdmaOpType::WriteFromLocal,
+            0x1000,
+            3 * MAX_RDMA_MSG_SIZE,
         )];
         let mut rx = submit_ops(&harness, &actor, items)?;
 
@@ -2405,16 +2455,8 @@ mod tests {
         // op_idx 1 is single-WR. One of op_idx 0's WRs fails;
         // op_idx 1's WR succeeds independently.
         let items = vec![
-            (
-                0usize,
-                make_op(RdmaOpType::WriteFromLocal, 0x1000, 3 * MAX_RDMA_MSG_SIZE),
-                fake_mrv(0x1000, 3 * MAX_RDMA_MSG_SIZE),
-            ),
-            (
-                1usize,
-                make_op(RdmaOpType::WriteFromLocal, 0x2000, 4096),
-                fake_mrv(0x2000, 4096),
-            ),
+            make_op(0, RdmaOpType::WriteFromLocal, 0x1000, 3 * MAX_RDMA_MSG_SIZE),
+            make_op(1, RdmaOpType::WriteFromLocal, 0x2000, 4096),
         ];
         let mut rx = submit_ops(&harness, &actor, items)?;
 
@@ -2454,13 +2496,7 @@ mod tests {
         let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(8, 2).await?;
 
         let items = (0..3usize)
-            .map(|i| {
-                (
-                    i,
-                    make_op(RdmaOpType::ReadIntoLocal, 0x1000 + i * 0x1000, 4096),
-                    fake_mrv(0x1000 + i * 0x1000, 4096),
-                )
-            })
+            .map(|i| make_op(i, RdmaOpType::ReadIntoLocal, 0x1000 + i * 0x1000, 4096))
             .collect();
         let mut rx = submit_ops(&harness, &actor, items)?;
 
@@ -2493,13 +2529,7 @@ mod tests {
         let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(2, 0).await?;
 
         let items = (0..3usize)
-            .map(|i| {
-                (
-                    i,
-                    make_op(RdmaOpType::ReadIntoLocal, 0x1000 + i * 0x1000, 4096),
-                    fake_mrv(0x1000 + i * 0x1000, 4096),
-                )
-            })
+            .map(|i| make_op(i, RdmaOpType::ReadIntoLocal, 0x1000 + i * 0x1000, 4096))
             .collect();
         let mut rx = submit_ops(&harness, &actor, items)?;
 
@@ -2531,13 +2561,7 @@ mod tests {
         let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(2, 8).await?;
 
         let items = (0..4usize)
-            .map(|i| {
-                (
-                    i,
-                    make_op(RdmaOpType::WriteFromLocal, 0x1000 + i * 0x1000, 4096),
-                    fake_mrv(0x1000 + i * 0x1000, 4096),
-                )
-            })
+            .map(|i| make_op(i, RdmaOpType::WriteFromLocal, 0x1000 + i * 0x1000, 4096))
             .collect();
         let mut rx = submit_ops(&harness, &actor, items)?;
 
@@ -2579,31 +2603,11 @@ mod tests {
         let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(4, 2).await?;
 
         let items = vec![
-            (
-                0usize,
-                make_op(RdmaOpType::ReadIntoLocal, 0x1000, 4096),
-                fake_mrv(0x1000, 4096),
-            ),
-            (
-                1usize,
-                make_op(RdmaOpType::WriteFromLocal, 0x2000, 4096),
-                fake_mrv(0x2000, 4096),
-            ),
-            (
-                2usize,
-                make_op(RdmaOpType::WriteFromLocal, 0x3000, 4096),
-                fake_mrv(0x3000, 4096),
-            ),
-            (
-                3usize,
-                make_op(RdmaOpType::WriteFromLocal, 0x4000, 4096),
-                fake_mrv(0x4000, 4096),
-            ),
-            (
-                4usize,
-                make_op(RdmaOpType::ReadIntoLocal, 0x5000, 2 * MAX_RDMA_MSG_SIZE),
-                fake_mrv(0x5000, 2 * MAX_RDMA_MSG_SIZE),
-            ),
+            make_op(0, RdmaOpType::ReadIntoLocal, 0x1000, 4096),
+            make_op(1, RdmaOpType::WriteFromLocal, 0x2000, 4096),
+            make_op(2, RdmaOpType::WriteFromLocal, 0x3000, 4096),
+            make_op(3, RdmaOpType::WriteFromLocal, 0x4000, 4096),
+            make_op(4, RdmaOpType::ReadIntoLocal, 0x5000, 2 * MAX_RDMA_MSG_SIZE),
         ];
         let mut rx = submit_ops(&harness, &actor, items)?;
 
@@ -2652,32 +2656,16 @@ mod tests {
 
         // Batch A: 2 writes with op_idx 10, 11.
         let batch_a = vec![
-            (
-                10usize,
-                make_op(RdmaOpType::WriteFromLocal, 0x1000, 4096),
-                fake_mrv(0x1000, 4096),
-            ),
-            (
-                11usize,
-                make_op(RdmaOpType::WriteFromLocal, 0x2000, 4096),
-                fake_mrv(0x2000, 4096),
-            ),
+            make_op(10, RdmaOpType::WriteFromLocal, 0x1000, 4096),
+            make_op(11, RdmaOpType::WriteFromLocal, 0x2000, 4096),
         ];
         let mut rx_a = submit_ops(&harness, &actor, batch_a)?;
 
         // Batch B: 2 writes with op_idx 20, 21. Shares the QP with
         // Batch A — together they sit at 4/4 max_send_wr.
         let batch_b = vec![
-            (
-                20usize,
-                make_op(RdmaOpType::WriteFromLocal, 0x3000, 4096),
-                fake_mrv(0x3000, 4096),
-            ),
-            (
-                21usize,
-                make_op(RdmaOpType::WriteFromLocal, 0x4000, 4096),
-                fake_mrv(0x4000, 4096),
-            ),
+            make_op(20, RdmaOpType::WriteFromLocal, 0x3000, 4096),
+            make_op(21, RdmaOpType::WriteFromLocal, 0x4000, 4096),
         ];
         let mut rx_b = submit_ops(&harness, &actor, batch_b)?;
 
@@ -2706,16 +2694,8 @@ mod tests {
         let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(1, 1).await?;
 
         let items = vec![
-            (
-                0usize,
-                make_op(RdmaOpType::WriteFromLocal, 0x1000, 2 * MAX_RDMA_MSG_SIZE),
-                fake_mrv(0x1000, 2 * MAX_RDMA_MSG_SIZE),
-            ),
-            (
-                1usize,
-                make_op(RdmaOpType::WriteFromLocal, 0x2000, 4096),
-                fake_mrv(0x2000, 4096),
-            ),
+            make_op(0, RdmaOpType::WriteFromLocal, 0x1000, 2 * MAX_RDMA_MSG_SIZE),
+            make_op(1, RdmaOpType::WriteFromLocal, 0x2000, 4096),
         ];
         let mut rx = submit_ops(&harness, &actor, items)?;
 
@@ -2744,11 +2724,7 @@ mod tests {
         let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(4, 2).await?;
 
         // Post one op so the next poll has something to look at.
-        let items = vec![(
-            0usize,
-            make_op(RdmaOpType::WriteFromLocal, 0x1000, 4096),
-            fake_mrv(0x1000, 4096),
-        )];
+        let items = vec![make_op(0, RdmaOpType::WriteFromLocal, 0x1000, 4096)];
         let _rx = submit_ops(&harness, &actor, items)?;
         let _ = recv_posted(&mut posted_rx).await;
         qp.queue_poll_error(PollCompletionError::for_test("simulated CQ poison"));
@@ -2774,11 +2750,7 @@ mod tests {
         let (actor, qp, _posted_rx) = harness.spawn_ready_actor(4, 2).await?;
 
         qp.queue_post_error("simulated post failure");
-        let items = vec![(
-            0usize,
-            make_op(RdmaOpType::WriteFromLocal, 0x1000, 4096),
-            fake_mrv(0x1000, 4096),
-        )];
+        let items = vec![make_op(0, RdmaOpType::WriteFromLocal, 0x1000, 4096)];
         let _rx = submit_ops(&harness, &actor, items)?;
 
         let event = harness.next_supervision_failure().await;
