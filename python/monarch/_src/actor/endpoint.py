@@ -86,9 +86,12 @@ class Endpoint(Protocol[P, R]):
 
     def choose(self, *args: P.args, **kwargs: P.kwargs) -> Future[R]:
         """
-        Load balanced sends a message to one chosen actor and awaits a result.
+        Sends a message to a randomly selected actor and waits for its result.
 
-        Load balanced RPC-style entrypoint for request/response messaging.
+        Each call independently selects an actor uniformly at random. Selection
+        does not account for actor load, so calls are balanced only across many
+        calls. Use ``call_one`` on a slice of the mesh when placement must be
+        deterministic.
         """
         ...
 

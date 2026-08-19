@@ -752,7 +752,11 @@ pub(crate) trait Endpoint {
         wrap_in_future(py, task)
     }
 
-    /// Load balanced sends a message to one chosen actor and awaits a result.
+    /// Sends a message to a randomly selected actor and waits for its result.
+    ///
+    /// Each call independently selects an actor uniformly at random. Selection does
+    /// not account for actor load, so calls are balanced only across many calls. Use
+    /// `call_one` on a slice of the mesh when placement must be deterministic.
     fn choose<'py>(
         &self,
         py: Python<'py>,
@@ -1142,7 +1146,11 @@ impl ActorEndpoint {
         self.call(py, args, kwargs)
     }
 
-    /// Load balanced sends a message to one chosen actor and awaits a result.
+    /// Sends a message to a randomly selected actor and waits for its result.
+    ///
+    /// Each call independently selects an actor uniformly at random. Selection does
+    /// not account for actor load, so calls are balanced only across many calls. Use
+    /// `call_one` on a slice of the mesh when placement must be deterministic.
     #[pyo3(signature = (*args, **kwargs), name = "choose")]
     fn py_choose<'py>(
         &self,
@@ -1287,7 +1295,11 @@ impl Remote {
         self.call(py, args, kwargs)
     }
 
-    /// Load balanced sends a message to one chosen actor and awaits a result.
+    /// Sends a message to a randomly selected actor and waits for its result.
+    ///
+    /// Each call independently selects an actor uniformly at random. Selection does
+    /// not account for actor load, so calls are balanced only across many calls. Use
+    /// `call_one` on a slice of the mesh when placement must be deterministic.
     #[pyo3(signature = (*args, **kwargs), name = "choose")]
     fn py_choose<'py>(
         &self,
