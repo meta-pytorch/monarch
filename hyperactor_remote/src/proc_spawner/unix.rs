@@ -97,14 +97,13 @@ use tokio::process::Command;
 use tokio::sync::oneshot;
 use typeuri::Named;
 
-use super::ProcSpawner;
+use super::SpawnProc;
 use super::actor_spawner_ref;
 use super::actor_spawner_uid;
 use super::spawned_proc_addr_for_spawner_addr;
 use crate::ActorSpawner;
 use crate::OrphanPolicy;
 use crate::RemoteActorDisposition;
-use crate::SpawnProc;
 use crate::Supervise;
 use crate::SupervisionOptions;
 use crate::SupervisorEvent;
@@ -112,6 +111,7 @@ use crate::TokenOptions;
 use crate::TokenPolicy;
 use crate::WorkerCommand;
 use crate::actor_spawner::SpawnActor;
+use crate::proto::SpawnProc as SpawnProcMessage;
 use crate::token;
 
 /// Environment variable containing the one-shot token a child proc uses to boot and join its spawner.
@@ -267,7 +267,7 @@ impl UnixProcCommand {
     }
 }
 
-/// Unix process backed implementation of [`ProcSpawner`].
+/// Unix process backed implementation of [`SpawnProc`].
 ///
 /// `UnixProcSpawner` starts one OS child process per spawned proc. The child
 /// process calls [`UnixProc::boot_from_env`], starts a proc-local [`SpawnActor`]
@@ -275,7 +275,7 @@ impl UnixProcCommand {
 /// token supplied by the spawner. The spawner links the proc only after that
 /// join, and the child process exits when the actor-spawn endpoint exits.
 #[derive(Debug)]
-#[hyperactor::export(SpawnProc)]
+#[hyperactor::export(SpawnProcMessage)]
 pub struct UnixProcSpawner {
     command: UnixProcCommand,
     procs: HashMap<Uid, ActorHandle<UnixProcWorker>>,
@@ -337,8 +337,12 @@ impl Actor for UnixProcSpawner {
 }
 
 #[async_trait]
-impl Handler<SpawnProc> for UnixProcSpawner {
-    async fn handle(&mut self, cx: &Context<Self>, message: SpawnProc) -> anyhow::Result<()> {
+impl Handler<SpawnProcMessage> for UnixProcSpawner {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: SpawnProcMessage,
+    ) -> anyhow::Result<()> {
         if !message.uid.is_instance() {
             reject_supervise(cx, &message.supervise, "spawned procs cannot be singletons");
             return Ok(());
@@ -372,7 +376,7 @@ impl Handler<SpawnProc> for UnixProcSpawner {
     }
 }
 
-hyperactor::assert_behaves!(UnixProcSpawner as ProcSpawner);
+hyperactor::assert_behaves!(UnixProcSpawner as SpawnProc);
 
 /// Helper for Unix child processes launched by [`UnixProcSpawner`].
 pub struct UnixProc;
