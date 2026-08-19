@@ -9,6 +9,7 @@
 import json
 import pickle
 import shlex
+import socket
 import subprocess
 from unittest.mock import patch
 
@@ -123,7 +124,9 @@ def test_external_controller_mode_has_no_client(tmp_path, monkeypatch):
     script = _submitted_script(mock)
     assert "srun" in script
     assert "run_worker_loop_forever" in script
-    assert "_slurm_batch" not in script
+    # No in-allocation runner. Matches the invocation, not the bare module name:
+    # the worker bootstrap legitimately imports worker_address from _slurm_batch.
+    assert "-m monarch._src.job._slurm_batch" not in script
     assert "MONARCH_BATCH_JOB" not in script
     assert not (tmp_path / ".monarch" / "job_state.pkl").exists()
 
@@ -382,3 +385,26 @@ def test_runner_kills_workers_if_terminate_times_out(monkeypatch):
     _run_runner(monkeypatch, workers)
     assert workers.terminated is True
     assert workers.killed is True  # falls back to SIGKILL when terminate hangs
+
+
+def test_worker_address_is_the_shared_rule_with_a_tcp_prefix():
+    """``worker_address`` must stay a thin wrapper -- the resolution rule and its
+    own tests live in ``monarch.tools.network``."""
+    with patch(
+        "socket.getaddrinfo",
+        return_value=[
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::2", 22222, 0, 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.1", 22222)),
+        ],
+    ):
+        assert _slurm_batch.worker_address("node-0", 22222) == "tcp://10.0.0.1:22222"
+
+
+def test_worker_bootstrap_derives_its_address_from_worker_address():
+    """The worker's served address and the controller's dial address must come
+    from the same helper; if the bootstrap ever computes its own, they can drift
+    apart again."""
+    bootstrap = _slurm_batch._WORKER_BOOTSTRAP % 22222
+    assert "worker_address(socket.gethostname(), 22222)" in bootstrap
+    assert "'" not in bootstrap  # embedded in a single-quoted srun argument
+    compile(bootstrap, "<bootstrap>", "exec")
