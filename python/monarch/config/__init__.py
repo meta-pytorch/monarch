@@ -88,6 +88,7 @@ if TYPE_CHECKING:
             rdma_disable_ibverbs: NotRequired[bool]
             rdma_max_chunk_size_mb: NotRequired[int]
             rdma_ibverbs_target: NotRequired[str]
+            rdma_peer_device_affinity: NotRequired[str]
             rdma_runtime_worker_threads: NotRequired[int]
 
         # pyrefly: ignore [invalid-annotation]
@@ -191,6 +192,13 @@ def configure(**kwargs: "ConfigureKwargsType") -> None:
                 ``"gpu:<ordinal>"``, or ``"nic:<name>"``. Empty preserves
                 automatic selection. Non-empty value syntax is validated when
                 the RDMA manager starts.
+            rdma_peer_device_affinity: Which peer NICs each local NIC may pair
+                with for a transfer. Accepts ``"any"``, ``"match_name"``, or
+                ``"groups:"`` followed by any number of ``|``-separated groups,
+                each naming any number of comma-separated devices, e.g.
+                ``"groups:mlx5_0,mlx5_1|mlx5_2,mlx5_3|mlx5_4"``. Groups must be
+                disjoint. Empty, the default, means ``"any"``. Value syntax is
+                validated when the RDMA manager starts.
             rdma_runtime_worker_threads: Worker threads for the shared RDMA
                 data-plane runtime, which every queue pair's poll loop runs on.
                 Latched at the first RDMA use in a process; setting it later

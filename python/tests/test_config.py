@@ -110,6 +110,16 @@ def test_rdma_ibverbs_target_round_trip_and_propagation() -> None:
     assert get_global_config()["rdma_ibverbs_target"] == ""
 
 
+def test_rdma_peer_device_affinity_round_trip() -> None:
+    assert get_global_config()["rdma_peer_device_affinity"] == ""
+
+    for policy in ("any", "match_name", "groups:mlx5_0,mlx5_1|mlx5_2,mlx5_3"):
+        with configured(rdma_peer_device_affinity=policy) as config:
+            assert config["rdma_peer_device_affinity"] == policy
+
+    assert get_global_config()["rdma_peer_device_affinity"] == ""
+
+
 def test_rdma_runtime_worker_threads_round_trip() -> None:
     assert get_global_config()["rdma_runtime_worker_threads"] == 16
 

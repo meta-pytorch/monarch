@@ -84,6 +84,7 @@ def configure(
     rdma_disable_ibverbs: bool = ...,
     rdma_max_chunk_size_mb: int = ...,
     rdma_ibverbs_target: str = ...,
+    rdma_peer_device_affinity: str = ...,
     **kwargs: object,
 ) -> None:
     """Configure Hyperactor runtime defaults for this process.
@@ -186,6 +187,13 @@ def configure(
             "gpu:<ordinal>", or "nic:<name>". Empty preserves automatic
             selection. Non-empty value syntax is validated when the RDMA
             manager starts.
+        rdma_peer_device_affinity: Which peer NICs each local NIC may pair
+            with for a transfer. Accepts "any", "match_name", or "groups:"
+            followed by any number of "|"-separated groups, each naming any
+            number of comma-separated devices, e.g.
+            "groups:mlx5_0,mlx5_1|mlx5_2,mlx5_3|mlx5_4". Groups must be
+            disjoint. Empty, the default, means "any". Value syntax is
+            validated when the RDMA manager starts.
         **kwargs: Reserved for future configuration keys
 
     For historical reasons, this API is named ``configure(...)``;
