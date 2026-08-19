@@ -7,6 +7,7 @@
  */
 
 use super::*;
+use crate::backend::ibverbs::cq_pool::cq_entries_for;
 use crate::backend::ibverbs::primitives::IbvPd;
 
 /// An RDMA Queue Pair (QP) for communication between two endpoints.
@@ -144,11 +145,15 @@ impl IbvQueuePair {
                 Some(GidType::RoCEv2),
             )?
         };
+        // This queue pair builds its own completion queues rather than drawing
+        // on the device's pool, so size them the way a pooled queue is sized:
+        // to hold everything its one owner can have outstanding.
+        let cq_entries = cq_entries_for(1, config.max_send_wr, domain.device_info().max_cqe())?;
         unsafe {
             let qp = rdmaxcel_sys::rdmaxcel_qp_create(
                 context,
                 pd,
-                config.cq_entries,
+                cq_entries,
                 config.max_send_wr.try_into().unwrap(),
                 config.max_recv_wr.try_into().unwrap(),
                 config.max_send_sge.try_into().unwrap(),

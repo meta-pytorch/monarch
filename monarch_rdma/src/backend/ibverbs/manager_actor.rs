@@ -286,19 +286,25 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
         &mut self,
         device_name: &str,
     ) -> Result<&IbvDomain<I::Domain>, anyhow::Error> {
+        self.get_or_create_device(device_name)?
+            .get_or_create_domain(DEFAULT_DOMAIN)
+    }
+
+    /// Get the named RDMA device, opening it on first use.
+    fn get_or_create_device(
+        &mut self,
+        device_name: &str,
+    ) -> Result<&mut IbvDevice<I>, anyhow::Error> {
         if !self.devices.contains_key(device_name) {
-            let device =
-                IbvDevice::<I>::open(device_name, self.config.clone()).ok_or_else(|| {
-                    anyhow::anyhow!("{} does not advertise {}", I::backend_name(), device_name,)
-                })?;
+            let device = IbvDevice::<I>::try_open(device_name, self.config.clone())?;
             // Print device info if MONARCH_DEBUG_RDMA=1 is set.
             crate::print_device_info_if_debug_enabled(device.context().as_ptr());
             self.devices.insert(device_name.to_string(), device);
         }
-        self.devices
+        Ok(self
+            .devices
             .get_mut(device_name)
-            .expect("device just inserted or already present")
-            .get_or_create_domain(DEFAULT_DOMAIN)
+            .expect("device just inserted or already present"))
     }
 
     /// Resolve `mem` to an [`IbvMemoryRegionView`] on the device this manager
@@ -392,11 +398,11 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
         if self.peer_created_qps.contains_key(qp_key) {
             anyhow::bail!("peer queue pair already exists for {qp_key:?}");
         }
-        let self_device = &qp_key.self_device;
+        let self_device = qp_key.self_device.clone();
         let config = self.config.clone();
-        let domain = self.get_or_create_device_domain(self_device)?;
-        let mut qp = domain
-            .create_queue_pair(&config)
+        let mut qp = self
+            .get_or_create_device(&self_device)?
+            .create_non_posting_queue_pair(DEFAULT_DOMAIN, &config)
             .map_err(|e| anyhow::anyhow!("could not create peer IbvQueuePair: {}", e))?;
         let local_info = qp
             .get_qp_info()
@@ -423,11 +429,11 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
         if let Some(h) = self.qp_handles.get(qp_key) {
             return Ok(h.clone());
         }
-        let self_device = &qp_key.self_device;
+        let self_device = qp_key.self_device.clone();
         let config = self.config.clone();
-        let domain = self.get_or_create_device_domain(self_device)?;
-        let qp = domain
-            .create_queue_pair(&config)
+        let (qp, cq_lease) = self
+            .get_or_create_device(&self_device)?
+            .create_queue_pair(DEFAULT_DOMAIN, &config)
             .map_err(|e| anyhow::anyhow!("could not create IbvQueuePair for {qp_key:?}: {}", e))?;
         let local_manager: ActorRef<Self> = cx.bind();
         let is_loopback = local_manager.actor_addr() == peer_manager.actor_addr()
@@ -437,6 +443,7 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
             local_manager,
             peer_manager,
             qp,
+            cq_lease,
             is_loopback,
             config.max_send_wr,
         ));

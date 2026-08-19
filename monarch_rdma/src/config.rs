@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
+use hyperactor_config::NonZeroUsize;
 use hyperactor_config::attrs::declare_attrs;
 
 declare_attrs! {
@@ -105,6 +106,23 @@ declare_attrs! {
         Some("rdma_peer_device_affinity".to_string()),
     ))
     pub attr RDMA_PEER_DEVICE_AFFINITY: String = String::new();
+
+    /// How many queue pairs share one completion queue.
+    ///
+    /// Sharing is what lets one poller reap for several queue pairs. Each
+    /// completion queue is sized to hold every sharer's work requests at once
+    /// (`rdma_qps_per_cq * max_send_wr` entries), so raising this trades
+    /// completion-queue memory for fewer completion queues to poll. Opening a
+    /// device fails outright if it cannot hold a completion queue that large.
+    ///
+    /// Only 1 is accepted for now: each queue pair polls its own completion
+    /// queue, so sharing one would give it several pollers.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("MONARCH_RDMA_QPS_PER_CQ".to_string()),
+        Some("rdma_qps_per_cq".to_string()),
+    ))
+    pub attr RDMA_QPS_PER_CQ: NonZeroUsize =
+        NonZeroUsize::new(1).expect("1 is non-zero");
 
     /// Worker-thread count for the shared rdma data-plane runtime, which
     /// every `QueuePairActor` poll loop runs on.

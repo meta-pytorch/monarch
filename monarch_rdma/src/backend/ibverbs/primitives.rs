@@ -270,8 +270,6 @@ pub struct IbvConfig {
     /// device itself (the co-located NIC for GPU memory, or a hash-assigned
     /// NIC for host memory).
     pub target: Option<IbvDeviceTarget>,
-    /// `cq_entries` - The number of completion queue entries.
-    pub cq_entries: i32,
     /// `port_num` - The physical port number on the device.
     pub port_num: u8,
     /// `max_send_wr` - The maximum number of outstanding send work requests.
@@ -322,7 +320,6 @@ impl Default for IbvConfig {
     fn default() -> Self {
         Self {
             target: None,
-            cq_entries: 1024,
             port_num: 1,
             max_send_wr: 512,
             max_recv_wr: 512,
@@ -418,6 +415,8 @@ pub struct IbvDeviceInfo {
     max_qp: i32,
     /// `max_cq` - Maximum number of completion queues supported.
     max_cq: i32,
+    /// `max_cqe` - Maximum number of entries in a single completion queue.
+    max_cqe: i32,
     /// `max_mr` - Maximum number of memory regions supported.
     max_mr: i32,
     /// `max_pd` - Maximum number of protection domains supported.
@@ -544,6 +543,12 @@ impl IbvDeviceInfo {
         self.max_cq
     }
 
+    /// Maximum number of entries a single completion queue on this device can
+    /// hold.
+    pub fn max_cqe(&self) -> i32 {
+        self.max_cqe
+    }
+
     /// Returns the maximum number of memory regions supported by the RDMA device.
     pub fn max_mr(&self) -> i32 {
         self.max_mr
@@ -600,6 +605,7 @@ impl IbvDeviceInfo {
             ports: Vec::new(),
             max_qp: 0,
             max_cq: 0,
+            max_cqe: 0,
             max_mr: 0,
             max_pd: 0,
             max_qp_wr: 0,
@@ -885,6 +891,7 @@ pub(super) unsafe fn query_device_info(
         ports: Vec::new(),
         max_qp: device_attr.max_qp,
         max_cq: device_attr.max_cq,
+        max_cqe: device_attr.max_cqe,
         max_mr: device_attr.max_mr,
         max_pd: device_attr.max_pd,
         max_qp_wr: device_attr.max_qp_wr,
@@ -1766,6 +1773,7 @@ mod tests {
                 ports,
                 max_qp: 0,
                 max_cq: 0,
+                max_cqe: 0,
                 max_mr: 0,
                 max_pd: 0,
                 max_qp_wr: 0,

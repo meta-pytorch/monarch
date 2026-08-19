@@ -33,6 +33,8 @@ use std::sync::LazyLock;
 
 use typeuri::Named;
 
+use super::cq_pool::CqLease;
+use super::cq_pool::CqPool;
 use super::domain::IbvDomain;
 use super::domain::IbvDomainImpl;
 use super::primitives::IbvConfig;
@@ -214,37 +216,31 @@ pub(crate) struct IbvDevice<I: IbvDeviceImpl> {
     device_info: IbvDeviceInfo,
     config: IbvConfig,
     context: Arc<IbvContext>,
+    /// The completion queues the device's queue pairs share, created on demand.
+    cq_pool: CqPool,
     _marker: PhantomData<I>,
 }
 
 #[expect(dead_code, reason = "called by manager_actor in follow-up commits")]
 impl<I: IbvDeviceImpl> IbvDevice<I> {
-    /// Opens `name` under impl `I`, storing `config` as-is. Returns
-    /// `None` if `name` is not one of the devices registered for
-    /// `I::typename()`; otherwise returns an `IbvDevice<I>` with the
-    /// device's queried [`IbvDeviceInfo`] and the given [`IbvConfig`].
+    /// Opens `name` under impl `I`, storing `config` as-is, and returns an
+    /// `IbvDevice<I>` with the device's queried [`IbvDeviceInfo`] and the given
+    /// [`IbvConfig`].
     ///
-    /// # Panics
-    ///
-    /// Panics if a registered device cannot be opened — e.g. it
-    /// disappeared from the system between registration and open.
-    /// Such a failure indicates a broken driver invariant rather
-    /// than a runtime condition the caller can recover from.
-    pub fn open(name: &str, config: IbvConfig) -> Option<Self> {
+    /// Fails when `name` is not one of the devices registered for
+    /// `I::typename()`, when a registered device cannot be reopened, or when the
+    /// device cannot hold a completion queue of the configured size.
+    pub fn try_open(name: &str, config: IbvConfig) -> anyhow::Result<Self> {
         let device_info = DEVICE_NAMES_BY_IMPL
             .get(I::typename())
             .and_then(|entry| entry.devices.iter().find(|d| d.name() == name).cloned());
-        let device_info = match device_info {
-            Some(info) => info,
-            None => {
-                tracing::warn!(
-                    "ibv device {} not found under backend {}; available: {:?}",
-                    name,
-                    I::backend_name(),
-                    *DEVICE_NAMES_BY_IMPL,
-                );
-                return None;
-            }
+        let Some(device_info) = device_info else {
+            anyhow::bail!(
+                "ibv device {} not found under backend {}; available: {:?}",
+                name,
+                I::backend_name(),
+                *DEVICE_NAMES_BY_IMPL,
+            );
         };
 
         // The registry already confirmed `name` belongs to `I`, so
@@ -317,14 +313,17 @@ impl<I: IbvDeviceImpl> IbvDevice<I> {
         unsafe { rdmaxcel_sys::ibv_free_device_list(device_list) };
 
         if let Some(failure) = failure {
-            panic!("{}", failure);
+            anyhow::bail!(failure);
         }
 
-        Some(Self {
+        let context = context.expect("device context opened above");
+        let cq_pool = CqPool::new(Arc::clone(&context), &device_info, config.max_send_wr)?;
+        Ok(Self {
             domains: HashMap::new(),
             device_info,
             config,
-            context: context.expect("device context opened above"),
+            context,
+            cq_pool,
             _marker: PhantomData,
         })
     }
@@ -371,6 +370,39 @@ impl<I: IbvDeviceImpl> IbvDevice<I> {
             .domains
             .get(name)
             .expect("domain just inserted or already present"))
+    }
+
+    /// Creates a queue pair in the domain named `domain_name`, with one of this
+    /// device's shared completion queues.
+    ///
+    /// The returned [`CqLease`] is the queue pair's lease on that completion
+    /// queue. It must be held separately from the queue pair, because it must
+    /// live until all of that queue pair's CQEs have been drained, which could
+    /// differ from the queue pair's lifetime on unclean teardown.
+    pub fn create_queue_pair(
+        &mut self,
+        domain_name: &str,
+        config: &IbvConfig,
+    ) -> anyhow::Result<(<I::Domain as IbvDomainImpl>::QueuePair, CqLease)> {
+        // Reserve first: the lease borrows nothing from `self`, so the mutable
+        // borrow ends here and the domain lookup below can take its own.
+        let lease = self.cq_pool.acquire_one()?;
+        let domain = self.get_or_create_domain(domain_name)?;
+        let qp = domain.create_queue_pair(config, Arc::clone(lease.cq()))?;
+        Ok((qp, lease))
+    }
+
+    /// Creates a queue pair in the domain named `domain_name` that never posts,
+    /// and so needs no lease on the completion queue it is created against; see
+    /// [`CqPool::cq_without_lease`].
+    pub fn create_non_posting_queue_pair(
+        &mut self,
+        domain_name: &str,
+        config: &IbvConfig,
+    ) -> anyhow::Result<<I::Domain as IbvDomainImpl>::QueuePair> {
+        let cq = self.cq_pool.cq_without_lease()?;
+        let domain = self.get_or_create_domain(domain_name)?;
+        domain.create_queue_pair(config, cq)
     }
 
     /// Whether any device claimed by impl `I` is present on this

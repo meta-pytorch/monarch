@@ -43,6 +43,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
+use super::cq_pool::CqLease;
 use super::domain::IbvDomain;
 use super::domain::IbvDomainImpl;
 use super::manager_actor::CreatePeerQueuePair;
@@ -753,8 +754,8 @@ impl IbvQueuePair for RCQueuePair {
         // SAFETY: `self.qp` wraps a live, fully non-null `ibv_qp` — everything
         // reached through it included — per `from_qp`'s contract, and it stays
         // alive for `self`'s lifetime. `&mut self` excludes another poll through
-        // this queue pair, and its completion queues are reached through nothing
-        // else, so no other thread is polling them.
+        // this queue pair, and its lease leaves it the only queue pair polling
+        // that completion queue, so no other thread is polling it.
         unsafe { poll_one(&self.qp, target) }
     }
 }
@@ -942,6 +943,14 @@ pub(super) struct QueuePairActor<M: Manager, Qp: IbvQueuePair> {
     /// flag prevents stacking redundant ticks.
     tick_armed: bool,
     poll_policy: PollSleepPolicy,
+    /// This queue pair's lease on the device's completion queue. Never read: it
+    /// is held so the lease -- and the completion queue itself -- outlive the
+    /// queue pair, which drops with this actor. This placement is temporary and
+    /// works now only because each queue pair still gets its own unique CQ. Once
+    /// multiple QPs share a CQ (and polling is handled elsewhere), the CQ's poller
+    /// will own the lease, ensuring it isn't dropped until all of a QP's pending
+    /// work requests have been drained.
+    _cq_lease: CqLease,
 }
 
 impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
@@ -950,6 +959,7 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
         local_manager: ActorRef<M>,
         peer_manager: ActorRef<M>,
         qp: Qp,
+        cq_lease: CqLease,
         is_loopback: bool,
         max_send_wr: u32,
     ) -> Self {
@@ -969,6 +979,7 @@ impl<M: Manager, Qp: IbvQueuePair> QueuePairActor<M, Qp> {
             in_flight: 0,
             tick_armed: false,
             poll_policy: PollSleepPolicy::new(),
+            _cq_lease: cq_lease,
         }
     }
 
@@ -1325,7 +1336,7 @@ mod tests {
         let device_info = resolve_target::<MlxDevice>(&IbvDeviceTarget::cpu(0))
             .expect("resolving cpu:0 should succeed")
             .expect("cpu:0 should resolve to a NIC");
-        let mut device = IbvDevice::<MlxDevice>::open(device_info.name(), config.clone())
+        let mut device = IbvDevice::<MlxDevice>::try_open(device_info.name(), config.clone())
             .expect("resolved device should open");
         let domain = device
             .get_or_create_domain("test")
@@ -1354,7 +1365,7 @@ mod tests {
             .expect("resolving cpu:0 should succeed")
             .expect("cpu:0 should resolve to a NIC");
         let mut server_device =
-            IbvDevice::<MlxDevice>::open(server_info.name(), server_config.clone())
+            IbvDevice::<MlxDevice>::try_open(server_info.name(), server_config.clone())
                 .expect("server device should open");
         let server_domain = server_device
             .get_or_create_domain("test")
@@ -1363,7 +1374,7 @@ mod tests {
             .expect("resolving cpu:0 should succeed")
             .expect("cpu:0 should resolve to a NIC");
         let mut client_device =
-            IbvDevice::<MlxDevice>::open(client_info.name(), client_config.clone())
+            IbvDevice::<MlxDevice>::try_open(client_info.name(), client_config.clone())
                 .expect("client device should open");
         let client_domain = client_device
             .get_or_create_domain("test")
@@ -1484,6 +1495,7 @@ mod tests {
                 local_manager,
                 msg.peer_manager,
                 msg.qp,
+                CqLease::for_test(),
                 msg.is_loopback,
                 msg.max_send_wr,
             );
