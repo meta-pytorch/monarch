@@ -32,6 +32,7 @@ from monarch._src.job.telemetry_config import TelemetryConfig
 # only be importing _public_ monarch API functions.
 from monarch.actor import (
     Actor,
+    attach,
     current_rank,
     enable_transport,
     endpoint,
@@ -393,6 +394,7 @@ class JobTrait(ABC):
         self._status: Literal["running", "not_running"] | CachedRunning = "not_running"
         self._components: JobComponents = JobComponents()
         self._apply_id: Optional[str] = None
+        self._client_attached_to: str | None = None
 
     def _should_spawn_telemetry_worker_collector_actors(self) -> bool:
         """Whether sidecar telemetry should spawn per-host worker collectors.
@@ -402,6 +404,28 @@ class JobTrait(ABC):
         local fan-out.
         """
         return True
+
+    def _attach_client(self, attach_to: str | None) -> None:
+        """Attach the process-global client context; detaching requires exit."""
+        if attach_to is None:
+            return
+        if self._client_attached_to is not None:
+            if self._client_attached_to != attach_to:
+                raise RuntimeError(
+                    "client is already attached through "
+                    f"{self._client_attached_to}, not {attach_to}; detaching is "
+                    "not supported, so use a new process to attach through a "
+                    "different address"
+                )
+            logger.debug(
+                "Client gateway is already attached via duplex address: %s",
+                attach_to,
+            )
+            return
+
+        logger.info("Attaching client gateway via duplex address: %s", attach_to)
+        attach(attach_to)
+        self._client_attached_to = attach_to
 
     def _connect_host_meshes(self, running_job: "JobTrait") -> Dict[str, HostMesh]:
         """Run the connect phases and return the final host meshes.

@@ -143,7 +143,7 @@ def test_out_of_cluster_attaches_through_first_worker_before_meshes():
             "monarch._src.job.slurm.subprocess.run",
             side_effect=_fake_running_slurm,
         ),
-        patch("monarch._src.job.slurm.attach", side_effect=_record_attach),
+        patch("monarch._src.job.job.attach", side_effect=_record_attach),
         patch("monarch._src.job.slurm.attach_to_workers", side_effect=_record_mesh),
     ):
         _make_job(out_of_cluster=True).state(cached_path=None)
@@ -161,7 +161,7 @@ def test_explicit_attach_to_overrides_automatic_worker_gateway():
             "monarch._src.job.slurm.subprocess.run",
             side_effect=_fake_running_slurm,
         ),
-        patch("monarch._src.job.slurm.attach") as attach,
+        patch("monarch._src.job.job.attach") as attach,
         patch("monarch._src.job.slurm.attach_to_workers", return_value=object()),
     ):
         _make_job(
@@ -172,13 +172,25 @@ def test_explicit_attach_to_overrides_automatic_worker_gateway():
     attach.assert_called_once_with("tcp://127.0.0.1:45678")
 
 
+def test_client_cannot_reattach_through_different_gateway():
+    job = _make_job()
+
+    with patch("monarch._src.job.job.attach") as attach:
+        job._attach_client("tcp://trainer-host:22222")
+        job._attach_client("tcp://trainer-host:22222")
+        with pytest.raises(RuntimeError, match="use a new process"):
+            job._attach_client("tcp://other-host:22222")
+
+    attach.assert_called_once_with("tcp://trainer-host:22222")
+
+
 def test_out_of_cluster_attaches_once_per_loaded_job():
     with (
         patch(
             "monarch._src.job.slurm.subprocess.run",
             side_effect=_fake_running_slurm,
         ),
-        patch("monarch._src.job.slurm.attach") as attach,
+        patch("monarch._src.job.job.attach") as attach,
         patch("monarch._src.job.slurm.attach_to_workers", return_value=object()),
     ):
         job = _make_job(out_of_cluster=True)
@@ -200,7 +212,7 @@ def test_in_cluster_state_does_not_attach_client_gateway():
             "monarch._src.job.slurm.subprocess.run",
             side_effect=_fake_running_slurm,
         ),
-        patch("monarch._src.job.slurm.attach") as attach,
+        patch("monarch._src.job.job.attach") as attach,
         patch("monarch._src.job.slurm.attach_to_workers", return_value=object()),
     ):
         _make_job().state(cached_path=None)
@@ -285,10 +297,11 @@ def test_kill_is_noop_inside_batch_allocation(monkeypatch):
     run.assert_not_called()
 
 
-def test_kill_scancels_for_external_controller(monkeypatch):
+def test_kill_scancels_for_external_client(monkeypatch):
     monkeypatch.delenv("MONARCH_BATCH_JOB", raising=False)
     job = _make_job()
     job._slurm_job_id = "777"
+    job._client_attached_to = "tcp://trainer-host:22222"
     seen = []
 
     def _record(*args, **kwargs):
@@ -298,6 +311,7 @@ def test_kill_scancels_for_external_controller(monkeypatch):
     with patch("monarch._src.job.slurm.subprocess.run", side_effect=_record):
         job._kill()
     assert ["scancel", "777"] in seen
+    assert job._client_attached_to == "tcp://trainer-host:22222"
 
 
 def test_jobs_active_for_reloaded_batch_job(monkeypatch):

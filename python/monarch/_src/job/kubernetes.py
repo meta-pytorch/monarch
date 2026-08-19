@@ -30,7 +30,6 @@ from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.config import configure
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.job.job import JobState, JobTrait
-from monarch.actor import attach
 
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -771,10 +770,7 @@ class KubernetesJob(JobTrait):
                     )
 
             if attach_to is not None:
-                logger.info(
-                    "Attaching client gateway via duplex address: %s", attach_to
-                )
-                attach(attach_to)
+                self._attach_client(attach_to)
 
             for mesh_name, pods in all_mesh_pods.items():
                 # Create worker addresses using discovered IPs and ports
@@ -834,6 +830,8 @@ class KubernetesJob(JobTrait):
             NotImplementedError: If no provisioned meshes exist (all
                 meshes are attach-only).
         """
+        # Close local forwarding even when attach-only meshes make remote
+        # teardown unsupported.
         self._terminate_port_forwards()
 
         provisioned = [
