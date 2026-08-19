@@ -10,7 +10,7 @@ import json
 import pickle
 import shlex
 import subprocess
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from monarch._src.job import _slurm_batch
@@ -130,6 +130,8 @@ def test_external_controller_mode_has_no_client(tmp_path, monkeypatch):
 
 def test_out_of_cluster_attaches_through_first_worker_before_meshes():
     events = []
+    job = _make_job(out_of_cluster=True)
+    job._components.telemetry = MagicMock()
 
     def _record_attach(address):
         events.append(("attach", address))
@@ -145,11 +147,18 @@ def test_out_of_cluster_attaches_through_first_worker_before_meshes():
         ),
         patch("monarch._src.job.job.attach", side_effect=_record_attach),
         patch("monarch._src.job.slurm.attach_to_workers", side_effect=_record_mesh),
+        patch(
+            "monarch._src.job.job.create_job_sidecar",
+            side_effect=lambda _apply_id, attach_to: events.append(
+                ("sidecar", attach_to)
+            ),
+        ),
     ):
-        _make_job(out_of_cluster=True).state(cached_path=None)
+        job.state(cached_path=None)
 
     assert events == [
         ("attach", "tcp://trainer-host:22222"),
+        ("sidecar", "tcp://trainer-host:22222"),
         ("mesh", "trainer"),
         ("mesh", "generator"),
     ]

@@ -25,7 +25,7 @@ from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.job._batch_env import in_batch_job, MONARCH_BATCH_JOB_ENV
 from monarch._src.job._telemetry_query_client import QueryEngineClient
 from monarch._src.job.job_components import JobComponents, MeshAdminConfig
-from monarch._src.job.job_sidecar import stop_job_sidecar
+from monarch._src.job.job_sidecar import create_job_sidecar, stop_job_sidecar
 from monarch._src.job.telemetry_config import TelemetryConfig
 
 # note: the jobs api is intended as a library so it should
@@ -405,6 +405,24 @@ class JobTrait(ABC):
         """
         return True
 
+    def _sidecar_attach_to(self) -> str | None:
+        """Duplex gateway address the job sidecar should attach through."""
+        return self._client_attached_to
+
+    def _requires_sidecar_gateway(self) -> bool:
+        """Whether a sidecar must join the client's scheduler gateway.
+
+        Scheduler jobs override this when their workers advertise addresses
+        that the independently running sidecar cannot reach directly. The
+        gateway must then be resolved before the sidecar starts its actor
+        context.
+        """
+        return False
+
+    def _prepare_client_gateway(self) -> None:
+        """Resolve and attach through a scheduler-provided client gateway."""
+        return None
+
     def _attach_client(self, attach_to: str | None) -> None:
         """Attach the process-global client context; detaching requires exit."""
         if attach_to is None:
@@ -439,6 +457,18 @@ class JobTrait(ABC):
         the raw host meshes (``self``, a cached job, or the wrapped
         CachedRunning job).
         """
+        if running_job._requires_sidecar_gateway() and self._components.needs_sidecar():
+            # The sidecar runs in a separate process, so attaching the client
+            # does not make cluster-only worker addresses routable from the
+            # sidecar. Start it through the same scheduler gateway before any
+            # component initializes the sidecar's actor context.
+            running_job._prepare_client_gateway()
+            attach_to = running_job._sidecar_attach_to()
+            if self.apply_id is not None and attach_to is not None:
+                create_job_sidecar(
+                    self.apply_id,
+                    attach_to=attach_to,
+                )
         self._components.before_connect(self)
         host_meshes = dict(running_job._state()._hosts)
         return self._components.connect(self, host_meshes)
@@ -1070,10 +1100,14 @@ class BatchJob(JobTrait):
     def _should_spawn_telemetry_worker_collector_actors(self) -> bool:
         return self._job._should_spawn_telemetry_worker_collector_actors()
 
-    def _connect_host_meshes(self, running_job: "JobTrait") -> Dict[str, HostMesh]:
-        self._components.before_connect(self)
-        host_meshes = dict(running_job._state()._hosts)
-        return self._components.connect(self, host_meshes)
+    def _prepare_client_gateway(self) -> None:
+        self._job._prepare_client_gateway()
+
+    def _sidecar_attach_to(self) -> str | None:
+        return self._job._sidecar_attach_to()
+
+    def _requires_sidecar_gateway(self) -> bool:
+        return self._job._requires_sidecar_gateway()
 
     def state(
         self, cached_path: Optional[str] = ".monarch/job_state.pkl"

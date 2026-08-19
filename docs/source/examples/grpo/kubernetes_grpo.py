@@ -188,6 +188,7 @@ from monarch.actor import (
     current_size,
     endpoint,
 )
+from monarch.job import TelemetryConfig
 from monarch.job.kubernetes import KubeConfig, KubernetesJob
 from monarch.rdma import RDMABuffer
 
@@ -1078,6 +1079,7 @@ async def main(
         timeout=600,
         kubeconfig=KubeConfig.from_path(kubeconfig) if out_of_cluster else None,
     )
+    k8s_job.enable_telemetry(TelemetryConfig(include_dashboard=True, dashboard_port=0))
     # Learner pod requests 2 GPUs; ``device_map="auto"`` inside the actor
     # spreads the trainable policy across both. ``spawn_procs({"gpus": 1})``
     # below still spawns a single learner proc that sees both GPUs in its

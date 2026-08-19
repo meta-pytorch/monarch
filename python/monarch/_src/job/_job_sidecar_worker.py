@@ -15,30 +15,29 @@ refresh/shutdown requests.
 
 Usage::
 
-    python -m monarch._src.job._job_sidecar_worker [--runtime-transport TRANSPORT] <socket_path> <lock_fd>
+    python -m monarch._src.job._job_sidecar_worker \
+        [--runtime-transport TRANSPORT] [--attach-to ADDRESS] \
+        <socket_path> <lock_fd>
 """
 
-import sys
+import argparse
 
 
 def main() -> None:
-    args = sys.argv[1:]
-    if len(args) < 2:
-        raise RuntimeError("job sidecar worker requires socket path and lock fd")
-
-    runtime_transport = None
-    startup_args = args[:-2]
-    if startup_args:
-        if len(startup_args) != 2 or startup_args[0] != "--runtime-transport":
-            raise RuntimeError(f"unexpected job sidecar worker args: {startup_args!r}")
-        runtime_transport = startup_args[1]
-
-    socket_path = args[-2]
-    int(args[-1])  # keep fd open to hold the flock for the process lifetime
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--runtime-transport")
+    parser.add_argument("--attach-to")
+    parser.add_argument("socket_path")
+    parser.add_argument("lock_fd", type=int)
+    args = parser.parse_args()
 
     from monarch._src.job.job_sidecar import _run_job_sidecar
 
-    _run_job_sidecar(socket_path, runtime_transport=runtime_transport)
+    _run_job_sidecar(
+        args.socket_path,
+        runtime_transport=args.runtime_transport,
+        attach_to=args.attach_to,
+    )
 
 
 if __name__ == "__main__":

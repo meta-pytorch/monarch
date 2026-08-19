@@ -117,6 +117,10 @@ class MountComponent(JobComponent):
             result[mesh_name] = mesh
         return result
 
+    def needs_sidecar(self) -> bool:
+        """Whether configured mounts require the shared job sidecar."""
+        return bool(self._mounts._remote_entries or self._mounts._gather_entries)
+
     def python_executable_for_mesh(self, mesh_name: str) -> Optional[str]:
         return self._python_executables.get(mesh_name, self._default_python_exe)
 
@@ -400,6 +404,10 @@ class JobComponents:
     telemetry: Optional[TelemetryComponent] = None
     admin: Optional[AdminComponent] = None
     snapshot: Optional[SnapshotComponent] = None
+
+    def needs_sidecar(self) -> bool:
+        """Whether telemetry or mounts require the shared job sidecar."""
+        return self.mounts.needs_sidecar() or self.telemetry is not None
 
     def _ordered(self) -> List[JobComponent]:
         components: List[JobComponent] = [self.mounts]

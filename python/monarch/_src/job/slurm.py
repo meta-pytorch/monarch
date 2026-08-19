@@ -139,6 +139,24 @@ class SlurmJob(JobTrait):
             return f"tcp://{self._all_hostnames[0]}:{self._port}"
         return None
 
+    def _requires_sidecar_gateway(self) -> bool:
+        return self._out_of_cluster or self._attach_to is not None
+
+    def _prepare_client_gateway(self) -> None:
+        if not self._jobs_active():
+            raise RuntimeError("SLURM job is no longer active")
+
+        if not self._all_hostnames:
+            job_id = self._resolved_job_id()
+            if job_id is None:
+                raise RuntimeError("SLURM job ID is not set")
+            total_nodes = sum(self._meshes.values())
+            self._all_hostnames = self._wait_for_job_start(
+                job_id, total_nodes, timeout=self._job_start_timeout
+            )
+
+        self._attach_client(self._resolve_attach_to())
+
     def add_mesh(self, name: str, num_nodes: int) -> None:
         self._meshes[name] = num_nodes
 
@@ -359,20 +377,7 @@ class SlurmJob(JobTrait):
             raise
 
     def _state(self) -> JobState:
-        if not self._jobs_active():
-            raise RuntimeError("SLURM job is no longer active")
-
-        # Wait for job to start and get hostnames if not already done
-        if not self._all_hostnames:
-            job_id = self._resolved_job_id()
-            if job_id is None:
-                raise RuntimeError("SLURM job ID is not set")
-            total_nodes = sum(self._meshes.values())
-            self._all_hostnames = self._wait_for_job_start(
-                job_id, total_nodes, timeout=self._job_start_timeout
-            )
-
-        self._attach_client(self._resolve_attach_to())
+        self._prepare_client_gateway()
 
         # Distribute the allocated hostnames among meshes
         host_meshes = {}
