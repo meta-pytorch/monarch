@@ -10,7 +10,7 @@
 //!
 //! Run `spawner` in one process and `driver` in another. The spawner process
 //! starts a [`UnixProcSpawner`], publishes a rendezvous token for its
-//! [`ProcSpawner`] interface, and waits. The driver joins that token, asks the
+//! [`SpawnProc`] interface, and waits. The driver joins that token, asks the
 //! spawner to spawn a Unix child proc, receives the proc's `SpawnActor`
 //! interface, spawns a remote [`Calculator`] actor through that proc-local spawner, issues one
 //! calculation, and exits through [`Instance::exit`]. The spawned child process
@@ -41,10 +41,10 @@ use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Flattrs;
 use hyperactor_remote::ActorSpawnerEndpoint;
 use hyperactor_remote::JoinResult;
-use hyperactor_remote::ProcSpawner;
 use hyperactor_remote::ProcSpawnerEndpoint;
 use hyperactor_remote::Token;
 use hyperactor_remote::TokenOptions;
+use hyperactor_remote::proc_spawner::SpawnProc;
 use hyperactor_remote::proc_spawner::unix::UnixProc;
 use hyperactor_remote::proc_spawner::unix::UnixProcCommand;
 use hyperactor_remote::proc_spawner::unix::UnixProcSpawner;
@@ -53,7 +53,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
-type DemoToken = Token<ActorRef<ProcSpawner>, ActorAddr>;
+type DemoToken = Token<ActorRef<SpawnProc>, ActorAddr>;
 
 #[derive(Debug)]
 struct SpawnerArgs {
@@ -196,7 +196,7 @@ impl Actor for SpawnerBootstrap {
         let proc_spawner = this.spawn(UnixProcSpawner::new_with_command(command));
         let token = token::create(
             this,
-            proc_spawner.bind::<ProcSpawner>(),
+            proc_spawner.bind::<SpawnProc>(),
             this.port::<token::Joined<ActorAddr>>().bind(),
             TokenOptions::default(),
         )?;
@@ -254,7 +254,7 @@ impl Actor for Driver {
         self.token.join(
             this,
             this.self_addr().clone(),
-            this.port::<JoinResult<ActorRef<ProcSpawner>>>().bind(),
+            this.port::<JoinResult<ActorRef<SpawnProc>>>().bind(),
         )?;
         Ok(())
     }
@@ -270,11 +270,11 @@ impl Actor for Driver {
 }
 
 #[async_trait]
-impl Handler<JoinResult<ActorRef<ProcSpawner>>> for Driver {
+impl Handler<JoinResult<ActorRef<SpawnProc>>> for Driver {
     async fn handle(
         &mut self,
         cx: &Context<Self>,
-        message: JoinResult<ActorRef<ProcSpawner>>,
+        message: JoinResult<ActorRef<SpawnProc>>,
     ) -> anyhow::Result<()> {
         let proc_spawner = match message {
             JoinResult::Joined { peer } => peer,

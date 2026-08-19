@@ -25,7 +25,7 @@ use hyperactor::Uid;
 use hyperactor::context;
 
 use crate::KeepaliveLink;
-use crate::SpawnProc;
+use crate::SpawnProc as SpawnProcMessage;
 use crate::SupervisionOptions;
 use crate::Supervisor;
 use crate::actor_spawner::SpawnActor;
@@ -33,7 +33,7 @@ use crate::actor_spawner::SpawnActor;
 pub mod unix;
 
 // Behavior implemented by actors that expose proc spawning.
-hyperactor::behavior!(ProcSpawner, SpawnProc);
+hyperactor::behavior!(SpawnProc, SpawnProcMessage);
 
 /// Convenience methods for endpoints that accept [`SpawnProc`] requests.
 pub trait ProcSpawnerEndpoint {
@@ -41,7 +41,7 @@ pub trait ProcSpawnerEndpoint {
     fn spawn_proc(&self, cx: &impl context::Actor) -> anyhow::Result<ActorRef<SpawnActor>>
     where
         Self: Clone + Send + 'static,
-        for<'a> &'a Self: Endpoint<SpawnProc>,
+        for<'a> &'a Self: Endpoint<SpawnProcMessage>,
     {
         self.spawn_proc_uid(cx, Uid::anonymous())
     }
@@ -54,7 +54,7 @@ pub trait ProcSpawnerEndpoint {
     ) -> anyhow::Result<ActorRef<SpawnActor>>
     where
         Self: Clone + Send + 'static,
-        for<'a> &'a Self: Endpoint<SpawnProc>,
+        for<'a> &'a Self: Endpoint<SpawnProcMessage>,
     {
         self.spawn_proc_uid_with_link(cx, uid, KeepaliveLink::default())
     }
@@ -76,7 +76,7 @@ pub trait ProcSpawnerEndpoint {
     ) -> anyhow::Result<ActorRef<SpawnActor>>
     where
         Self: Clone + Send + 'static,
-        for<'a> &'a Self: Endpoint<SpawnProc>,
+        for<'a> &'a Self: Endpoint<SpawnProcMessage>,
     {
         self.spawn_proc_uid_with_link_and_ready(cx, uid, KeepaliveLink::default(), Some(ready))
     }
@@ -90,7 +90,7 @@ pub trait ProcSpawnerEndpoint {
     ) -> anyhow::Result<ActorRef<SpawnActor>>
     where
         Self: Clone + Send + 'static,
-        for<'a> &'a Self: Endpoint<SpawnProc>,
+        for<'a> &'a Self: Endpoint<SpawnProcMessage>,
     {
         self.spawn_proc_uid_with_link_and_ready(cx, uid, liveness, None)
     }
@@ -108,7 +108,7 @@ pub trait ProcSpawnerEndpoint {
     ) -> anyhow::Result<ActorRef<SpawnActor>>
     where
         Self: Clone + Send + 'static,
-        for<'a> &'a Self: Endpoint<SpawnProc>,
+        for<'a> &'a Self: Endpoint<SpawnProcMessage>,
     {
         anyhow::ensure!(uid.is_instance(), "spawned procs cannot be singletons");
 
@@ -121,7 +121,7 @@ pub trait ProcSpawnerEndpoint {
             actor_spawner.actor_addr().clone(),
             ready,
             move |cx, supervise| {
-                proc_spawner.post(cx, SpawnProc { uid, supervise });
+                proc_spawner.post(cx, SpawnProcMessage { uid, supervise });
                 Ok(())
             },
         ));
@@ -129,7 +129,7 @@ pub trait ProcSpawnerEndpoint {
     }
 }
 
-impl<T> ProcSpawnerEndpoint for T where for<'a> &'a T: Endpoint<SpawnProc> {}
+impl<T> ProcSpawnerEndpoint for T where for<'a> &'a T: Endpoint<SpawnProcMessage> {}
 
 /// Well-known singleton name of a proc's actor-spawn endpoint.
 pub(crate) const ACTOR_SPAWNER_NAME: &str = "spawner";
@@ -145,7 +145,7 @@ pub(crate) fn actor_spawner_ref(proc_addr: &ProcAddr) -> ActorRef<SpawnActor> {
     ActorRef::attest(proc_addr.actor_addr_uid(actor_spawner_uid()))
 }
 
-fn spawned_proc_addr(spawner: impl Endpoint<SpawnProc>, uid: &Uid) -> ProcAddr {
+fn spawned_proc_addr(spawner: impl Endpoint<SpawnProcMessage>, uid: &Uid) -> ProcAddr {
     let spawner_addr = spawner.endpoint_location().actor_addr().proc_addr();
     spawned_proc_addr_for_spawner_addr(&spawner_addr, uid)
 }
@@ -155,7 +155,10 @@ pub(crate) fn spawned_proc_addr_for_spawner_addr(spawner: &ProcAddr, uid: &Uid) 
     ProcAddr::new(ProcId::new(uid.clone(), None), location)
 }
 
-fn spawned_actor_spawner(spawner: impl Endpoint<SpawnProc>, uid: &Uid) -> ActorRef<SpawnActor> {
+fn spawned_actor_spawner(
+    spawner: impl Endpoint<SpawnProcMessage>,
+    uid: &Uid,
+) -> ActorRef<SpawnActor> {
     actor_spawner_ref(&spawned_proc_addr(spawner, uid))
 }
 

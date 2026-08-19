@@ -30,7 +30,6 @@ pub use keepalive::KeepaliveSupervisorParams;
 pub use keepalive::KeepaliveWorker;
 pub use keepalive::KeepaliveWorkerParams;
 pub use link::LinkSpec;
-pub use proc_spawner::ProcSpawner;
 pub use proc_spawner::ProcSpawnerEndpoint;
 pub use proto::Gspawn;
 pub use proto::OrphanPolicy;
