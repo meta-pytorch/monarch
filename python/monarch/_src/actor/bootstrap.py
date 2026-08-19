@@ -8,13 +8,14 @@
 
 
 from pathlib import Path
-from typing import List, Literal, Optional, Union
+from typing import Literal, Optional, Sequence, Union
 
 from monarch._rust_bindings.monarch_hyperactor.bootstrap import (
     attach_to_workers as _attach_to_workers,
     run_worker_loop_forever as _run_worker_loop_forever,
 )
 from monarch._rust_bindings.monarch_hyperactor.host_mesh import HostMesh as HyHostMesh
+from monarch._rust_bindings.monarch_hyperactor.proc import ProcId
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent
 from monarch._src.actor.actor_mesh import _Lazy
@@ -42,6 +43,7 @@ def run_worker_loop_forever(
     private_key: PrivateKey = None,
     ca: CA,
     address: str,
+    service_proc_id: Optional[ProcId] = None,
 ) -> None:
     """
     Start a monarch server at "address" capable of letting this machine participate in
@@ -70,6 +72,11 @@ def run_worker_loop_forever(
     use this machine as a host. If the client disconnects or cannot be contacted, this server
     kills all the current work and waits for a new connection.
 
+    service_proc_id identifies this worker's host service proc. Launchers that
+    supply it must pass the same value to ``attach_to_workers``. Unlike the
+    legacy ``service`` identity, an instance-specific ID is independent of the
+    address used to reach the worker.
+
 
     private_key is a tls private key file loaded as bytes used to establish secure connections.
     Things connecting to this machine must trust this private_key in the certificate authority file.
@@ -90,15 +97,16 @@ def run_worker_loop_forever(
             "implementation does not get the host name right if it was specified as a wild card. We have to fix this"
         )
 
-    _run_worker_loop_forever(address).block_on()
+    _run_worker_loop_forever(address, service_proc_id=service_proc_id).block_on()
 
 
 def attach_to_workers(
     *,
     private_key: PrivateKey = None,
     ca: CA,
-    workers: List[str | Future[str]],
+    workers: Sequence[str | Future[str]],
     name: Optional[str] = None,
+    service_proc_ids: Optional[Sequence[ProcId]] = None,
 ) -> HostMesh:
     """
     Create a host mesh that is connected to the list of workers
@@ -115,6 +123,10 @@ def attach_to_workers(
     worker and stores only ``dial_to`` in the host mesh. The ``bind_to`` half
     is a serve-side detail and is not part of the host, proc, or actor
     identity.
+
+    If ``service_proc_ids`` is provided, it must contain the service proc ID
+    used by each corresponding worker. Those IDs become part of the host-agent
+    references stored and serialized by the returned host mesh.
 
 
     private_key is a tls private key file loaded as bytes used to establish secure connections.
@@ -136,7 +148,12 @@ def attach_to_workers(
 
     instance = context().actor_instance._as_rust()
     host_mesh: PythonTask[HyHostMesh] = _attach_to_workers(
-        instance, workers_tasks, name=name
+        instance,
+        workers_tasks,
+        name=name,
+        service_proc_ids=(
+            list(service_proc_ids) if service_proc_ids is not None else None
+        ),
     )
     extent = Extent(["hosts"], [len(workers)])
     hm = HostMesh(

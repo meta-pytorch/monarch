@@ -344,6 +344,7 @@
 //! live invariant. It is not in this registry.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::io;
 use std::path::Path;
 use std::sync::Arc;
@@ -385,7 +386,6 @@ use typeuri::Named;
 
 use crate::config_dump::ConfigDump;
 use crate::config_dump::ConfigDumpResult;
-use crate::host::SERVICE_PROC_NAME;
 use crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
 use crate::host_mesh::host_agent::HostAgent;
 use crate::introspect::NodePayload;
@@ -859,6 +859,8 @@ struct BridgeState {
     /// Addr to the `MeshAdminAgent` actor that performs
     /// reference resolution.
     admin_ref: ActorRef<MeshAdminAgent>,
+    /// Exact actor identities of the HostAgents managed by this admin.
+    host_agents: HashSet<hyperactor::ActorAddr>,
     /// Dedicated client mailbox on system_proc for HTTP bridge reply
     /// ports. Using a separate `Instance<()>` avoids sharing the
     /// actor's own mailbox with the HTTP bridge and ensures the
@@ -1054,6 +1056,7 @@ impl Actor for MeshAdminAgent {
             mesh_admin_access_instructions(&admin_url, tls.as_ref().map(|(_, bundle)| bundle));
         let bridge_state = Arc::new(BridgeState {
             admin_ref: ActorRef::attest(this.self_addr().clone()),
+            host_agents: self.host_agents_by_actor_id.keys().cloned().collect(),
             bridge_cx,
             resolve_semaphore: tokio::sync::Semaphore::new(hyperactor_config::global::get(
                 crate::config::MESH_ADMIN_MAX_CONCURRENT_RESOLVES,
@@ -2319,19 +2322,18 @@ impl ResolvedProcHandler {
 /// Parse + route + attest. No probe. The single `ActorRef::attest`
 /// minting point. Used by `config_bridge` which intentionally skips
 /// the probe (CFG-4).
-fn route_proc_handler(raw_proc_reference: &str) -> Result<ResolvedProcHandler, ApiError> {
+fn route_proc_handler(
+    host_agents: &HashSet<hyperactor::ActorAddr>,
+    raw_proc_reference: &str,
+) -> Result<ResolvedProcHandler, ApiError> {
     let (_proc_reference, proc_id) = parse_proc_reference(raw_proc_reference)?;
-    let is_service = proc_id
-        .uid()
-        .as_singleton()
-        .is_some_and(|label| label.as_str() == SERVICE_PROC_NAME);
-    if is_service {
-        let agent_id = proc_id.actor_addr(HOST_MESH_AGENT_ACTOR_NAME);
-        Ok(ResolvedProcHandler::Host(ActorRef::attest(agent_id)))
-    } else {
-        let agent_id = proc_id.actor_addr(PROC_AGENT_ACTOR_NAME);
-        Ok(ResolvedProcHandler::Proc(ActorRef::attest(agent_id)))
+    let host_agent_id = proc_id.actor_addr(HOST_MESH_AGENT_ACTOR_NAME);
+    if host_agents.contains(&host_agent_id) {
+        return Ok(ResolvedProcHandler::Host(ActorRef::attest(host_agent_id)));
     }
+
+    let proc_agent_id = proc_id.actor_addr(PROC_AGENT_ACTOR_NAME);
+    Ok(ResolvedProcHandler::Proc(ActorRef::attest(proc_agent_id)))
 }
 
 /// Parse + route + attest + probe (PS-13).
@@ -2339,7 +2341,7 @@ async fn resolve_proc_handler(
     state: &BridgeState,
     raw_proc_reference: &str,
 ) -> Result<ResolvedProcHandler, ApiError> {
-    let handler = route_proc_handler(raw_proc_reference)?;
+    let handler = route_proc_handler(&state.host_agents, raw_proc_reference)?;
     let cx = &state.bridge_cx;
     if !probe_actor(cx, &handler.agent_id()).await? {
         return Err(ApiError::not_found(
@@ -2636,7 +2638,7 @@ async fn config_bridge(
     State(state): State<Arc<BridgeState>>,
     AxumPath(proc_reference): AxumPath<String>,
 ) -> Result<Json<ConfigDumpResult>, ApiError> {
-    let handler = route_proc_handler(&proc_reference)?;
+    let handler = route_proc_handler(&state.host_agents, &proc_reference)?;
     let timeout =
         hyperactor_config::global::get(crate::config::MESH_ADMIN_CONFIG_DUMP_BRIDGE_TIMEOUT);
     let result = handler.config_dump(&state.bridge_cx, timeout).await?;
@@ -3264,11 +3266,13 @@ mod advertised_host {
 mod tests {
     use std::net::SocketAddr;
 
+    use hyperactor::ProcId;
     use hyperactor::channel::ChannelAddr;
     use hyperactor::id::Label;
     use hyperactor::testing::ids::test_proc_id_with_addr;
 
     use super::*;
+    use crate::host::SERVICE_PROC_NAME;
     use crate::mesh_id::ResourceId;
 
     // Integration tests that spawn MeshAdminAgent must pass
@@ -4487,40 +4491,58 @@ mod tests {
         assert_eq!(parsed, proc_id);
     }
 
-    /// PS-12: service proc routes to HostAgent.
+    /// PS-12: a registered legacy service proc routes to HostAgent.
     #[test]
     fn route_proc_handler_service_proc_yields_host() {
         let addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
         let proc_id = ResourceId::proc_addr_from_name(ChannelAddr::Tcp(addr), SERVICE_PROC_NAME);
-        let handler = route_proc_handler(&proc_id.to_string()).unwrap();
+        let host_agents = HashSet::from([proc_id.actor_addr(HOST_MESH_AGENT_ACTOR_NAME)]);
+        let handler = route_proc_handler(&host_agents, &proc_id.to_string()).unwrap();
         assert!(
             matches!(handler, ResolvedProcHandler::Host(_)),
-            "service proc should resolve to Host variant"
+            "a registered legacy service proc should resolve to Host"
         );
     }
 
-    /// PS-12: non-service proc routes to ProcAgent.
+    /// PS-12: an unregistered worker proc routes to ProcAgent.
     #[test]
     fn route_proc_handler_worker_proc_yields_proc() {
         let addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
         let proc_id = test_proc_id_with_addr(ChannelAddr::Tcp(addr), "worker_0");
-        let handler = route_proc_handler(&proc_id.to_string()).unwrap();
+        let handler = route_proc_handler(&HashSet::new(), &proc_id.to_string()).unwrap();
         assert!(
             matches!(handler, ResolvedProcHandler::Proc(_)),
-            "non-service proc should resolve to Proc variant"
+            "an unregistered worker proc should resolve to Proc"
         );
     }
 
-    /// PS-12: a labeled instance named "service" is still a normal proc.
+    /// PS-12: a registered instance proc routes to HostAgent regardless of label.
     #[test]
-    fn route_proc_handler_service_instance_yields_proc() {
+    fn route_proc_handler_registered_instance_yields_host() {
         let addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
-        let proc_id =
-            ResourceId::proc_addr_from_name(ChannelAddr::Tcp(addr), "service-deadbeefdeadbeef");
-        let handler = route_proc_handler(&proc_id.to_string()).unwrap();
+        let proc_id = ProcAddr::new(
+            ProcId::instance(Label::strip("host-control")),
+            ChannelAddr::Tcp(addr).into(),
+        );
+        let host_agents = HashSet::from([proc_id.actor_addr(HOST_MESH_AGENT_ACTOR_NAME)]);
+        let handler = route_proc_handler(&host_agents, &proc_id.to_string()).unwrap();
+        assert!(
+            matches!(handler, ResolvedProcHandler::Host(_)),
+            "a registered proc should resolve to Host regardless of its label"
+        );
+    }
+
+    #[test]
+    fn route_proc_handler_service_label_without_host_registration_yields_proc() {
+        let addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
+        let proc_id = ProcAddr::new(
+            ProcId::instance(Label::strip(SERVICE_PROC_NAME)),
+            ChannelAddr::Tcp(addr).into(),
+        );
+        let handler = route_proc_handler(&HashSet::new(), &proc_id.to_string()).unwrap();
         assert!(
             matches!(handler, ResolvedProcHandler::Proc(_)),
-            "service-labeled instance proc should resolve to Proc variant"
+            "an unregistered proc must not become a host service based on its label"
         );
     }
 }

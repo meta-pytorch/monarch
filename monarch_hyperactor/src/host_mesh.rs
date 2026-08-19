@@ -412,6 +412,7 @@ fn bootstrap_host(
             None,
             gateway,
             via_addr,
+            None,
         )
         .await
         .map_err(|e| PyException::new_err(e.to_string()))?;
