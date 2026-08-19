@@ -45,6 +45,10 @@ jobs:
           setup_cuda_environment
         elif [[ "${{ matrix.gpu-arch-type }}" == "rocm" ]]; then
           setup_rocm_environment
+          # ROCm import-order race: make monarch import torch before its native
+          # extension so torch's HIP runtime wins rocprofiler-register (avoids the
+          # fatal hip.cpp:512 "hipApiName ..." abort). See monarch/__init__.py.
+          export MONARCH_PRELOAD_TORCH=1
         fi
 
         # Install torch nightly before installing the wheel,
