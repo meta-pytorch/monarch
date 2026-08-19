@@ -17,6 +17,12 @@ import pytest
 
 _THIS_DIR = Path(__file__).parent
 
+# The multihost RDMA benchmark's modules import as bare names -- `bench_topology`,
+# not a dotted path -- so the owning directory needs to be added to `sys.path`.
+_BENCH_DIR = _THIS_DIR.parent / "benches" / "multihost_rdma"
+if str(_BENCH_DIR) not in sys.path:
+    sys.path.insert(0, str(_BENCH_DIR))
+
 collect_ignore: list[str] = []
 
 # FUSE and RDMA require Linux; skip these files on other platforms to avoid
