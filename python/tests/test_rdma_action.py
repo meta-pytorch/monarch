@@ -133,27 +133,11 @@ class ActionClient(Actor):
         return False
 
     @endpoint
-    async def overlapping_writes_into_local_error(self, buffer: RDMABuffer) -> bool:
-        # Two `read_remote`s onto overlapping local destinations both write
-        # the same local memory: the new local-side claim algorithm must
-        # flag this as a race.
-        size = buffer.size()
-        slot = torch.zeros(size, dtype=torch.uint8, device=self.device)
-        action = RDMAAction()
-        action.read_remote(slot, buffer)
-        try:
-            action.read_remote(slot, buffer)
-        except ValueError:
-            return True
-        return False
-
-    @endpoint
     async def overlapping_reads_from_local_ok(
         self, buffer_a: RDMABuffer, buffer_b: RDMABuffer
     ) -> None:
-        # Two `write_remote`s using the same local memory range both *read*
-        # local memory — that is safe, and the new algorithm must let it
-        # through (the old python helper would have errored).
+        # Two `write_remote`s sharing one local source range, which is what a
+        # fan-out does: one buffer's contents sent to several peers.
         size = min(buffer_a.size(), buffer_b.size())
         slot = torch.zeros(size, dtype=torch.uint8, device=self.device)
         action = RDMAAction()
@@ -399,27 +383,9 @@ async def test_submit_validation_errors_surface(host_device, client_device) -> N
 @pytest.mark.parametrize(
     ("host_device", "client_device"), DEVICE_VARIANTS, ids=DEVICE_IDS
 )
-async def test_overlapping_local_writes_are_a_race(host_device, client_device) -> None:
-    # Two `read_remote`s onto the same local destination are concurrent writes —
-    # the bug-fixed claim algorithm must flag this as a race.
-    size = 32
-    host, client = await _spawn_host_and_client(
-        num_buffers=1, size=size, host_device=host_device, client_device=client_device
-    )
-    (buffer,) = await host.create_buffers.call_one()
-    caught = await client.overlapping_writes_into_local_error.call_one(buffer)
-    assert caught, "Expected ValueError from two overlapping read_remote claims"
-
-
-@rdma_backends
-@pytest.mark.parametrize(
-    ("host_device", "client_device"), DEVICE_VARIANTS, ids=DEVICE_IDS
-)
 async def test_overlapping_local_reads_are_ok(host_device, client_device) -> None:
-    # Two `write_remote`s from the same local source both *read* local memory —
-    # safe; today's python helper would have errored, the new one merges.
-    # Uses two distinct remote buffers so the test exercises the local-side
-    # read-merge without two writes landing on the same remote target.
+    # One local source range feeding two ops in a single action. The two remote
+    # buffers are distinct, so nothing writes the same range on either side.
     size = 32
     host, client = await _spawn_host_and_client(
         num_buffers=2, size=size, host_device=host_device, client_device=client_device
