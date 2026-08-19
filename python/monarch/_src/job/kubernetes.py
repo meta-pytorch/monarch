@@ -28,8 +28,16 @@ except ImportError:
 
 from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.config import configure
+from monarch._rust_bindings.monarch_hyperactor.proc import ProcId
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.job.job import JobState, JobTrait
+from monarch._src.job.service_identity import (
+    deserialize_service_proc_ids,
+    new_service_proc_id,
+    serialize_service_proc_ids,
+    SERVICE_PROC_IDS_ENV,
+    SERVICE_PROC_RANK_ENV,
+)
 from monarch.actor import attach
 
 
@@ -56,11 +64,16 @@ _MONARCHMESH_PLURAL = "monarchmeshes"
 _WORKER_BOOTSTRAP_SCRIPT: str = textwrap.dedent("""\
     import os
     import socket
+    from monarch._src.job.service_identity import ranked_service_proc_id_from_env
     from monarch.actor import run_worker_loop_forever
     port = os.environ.get("MONARCH_PORT", "26600")
     hostname = socket.getfqdn()
     address = f"tcp://{hostname}:{port}@tcp://0.0.0.0:{port}"
-    run_worker_loop_forever(address=address, ca="trust_all_connections")
+    run_worker_loop_forever(
+        address=address,
+        service_proc_id=ranked_service_proc_id_from_env(),
+        ca="trust_all_connections",
+    )
 """)
 
 
@@ -184,6 +197,7 @@ class _MeshConfigRequired(TypedDict):
 class _MeshConfig(_MeshConfigRequired, total=False):
     labels: dict[str, str]
     annotations: dict[str, str]
+    image_spec: ImageSpec
     pod_template: client.V1PodTemplateSpec
 
 
@@ -234,6 +248,7 @@ class KubernetesJob(JobTrait):
         self._kubeconfig: KubeConfig = kubeconfig or KubeConfig()
         self._attach_to = attach_to
         self._meshes: dict[str, _MeshConfig] = {}
+        self._service_proc_ids: dict[str, list[ProcId]] = {}
         self._port_forward_processes: list[subprocess.Popen[str]] = []
         super().__init__()
 
@@ -334,9 +349,7 @@ class KubernetesJob(JobTrait):
             mesh_entry["annotations"] = annotations
 
         if image_spec is not None:
-            mesh_entry["pod_template"] = self._build_worker_pod_template(
-                image_spec, port
-            )
+            mesh_entry["image_spec"] = image_spec
         elif pod_template is not None:
             mesh_entry["pod_template"] = pod_template
 
@@ -360,6 +373,11 @@ class KubernetesJob(JobTrait):
         provisioned = {
             name: cfg for name, cfg in self._meshes.items() if cfg.get("provisioned")
         }
+        if self._service_proc_ids:
+            raise RuntimeError(
+                "KubernetesJob._create should be called once; "
+                "_service_proc_ids already set"
+            )
         if not provisioned:
             return
 
@@ -369,9 +387,59 @@ class KubernetesJob(JobTrait):
         api = client.CustomObjectsApi(api_client)
 
         for mesh_name, mesh_config in provisioned.items():
-            pod_template_dict = api_client.sanitize_for_serialization(
-                mesh_config["pod_template"]
-            )
+            pod_template = mesh_config.get("pod_template")
+            image_spec = mesh_config.get("image_spec")
+            if image_spec is not None:
+                # If the CRD already exists, reuse its service proc IDs so
+                # we stay in sync with the already-running pods. This mirrors
+                # the metadata roundtrip used in the yardstick MAST launcher.
+                service_proc_ids: list[ProcId] | None = None
+                try:
+                    existing = api.get_namespaced_custom_object(
+                        group=_MONARCHMESH_GROUP,
+                        version=_MONARCHMESH_VERSION,
+                        namespace=self._namespace,
+                        plural=_MONARCHMESH_PLURAL,
+                        name=mesh_name,
+                    )
+                    containers = (
+                        existing.get("spec", {})
+                        .get("podTemplate", {})
+                        .get("spec", {})
+                        .get("containers", [])
+                    )
+                    if containers:
+                        for env_var in containers[0].get("env", []):
+                            if env_var.get("name") == SERVICE_PROC_IDS_ENV:
+                                serialized = env_var.get("value")
+                                if serialized:
+                                    try:
+                                        candidate = deserialize_service_proc_ids(
+                                            serialized
+                                        )
+                                        if (
+                                            len(candidate)
+                                            == mesh_config["num_replicas"]
+                                        ):
+                                            service_proc_ids = candidate
+                                    except Exception:
+                                        pass
+                                break
+                except ApiException as e:
+                    if e.status != 404:
+                        raise
+
+                if service_proc_ids is None:
+                    service_proc_ids = [
+                        new_service_proc_id()
+                        for _ in range(mesh_config["num_replicas"])
+                    ]
+                self._service_proc_ids[mesh_name] = service_proc_ids
+                pod_template = self._build_worker_pod_template(
+                    image_spec, mesh_config["port"], service_proc_ids
+                )
+            assert pod_template is not None
+            pod_template_dict = api_client.sanitize_for_serialization(pod_template)
             metadata: dict[str, Any] = {
                 "name": mesh_name,
                 "namespace": self._namespace,
@@ -420,6 +488,7 @@ class KubernetesJob(JobTrait):
     def _build_worker_pod_template(
         image_spec: ImageSpec,
         port: int,
+        service_proc_ids: list[ProcId],
     ) -> client.V1PodTemplateSpec:
         """
         Build a V1PodTemplateSpec for the MonarchMesh CRD.
@@ -430,6 +499,7 @@ class KubernetesJob(JobTrait):
         Args:
             image_spec: ImageSpec with container image and optional resources.
             port: Monarch worker port.
+            service_proc_ids: Service process identities indexed by pod rank.
 
         Returns:
             V1PodTemplateSpec suitable for the ``podTemplate`` CRD field.
@@ -441,7 +511,21 @@ class KubernetesJob(JobTrait):
                 requests=k8s_resources,
                 limits=k8s_resources,
             )
-        env = [client.V1EnvVar(name="MONARCH_PORT", value=str(port))]
+        env = [
+            client.V1EnvVar(name="MONARCH_PORT", value=str(port)),
+            client.V1EnvVar(
+                name=SERVICE_PROC_RANK_ENV,
+                value_from=client.V1EnvVarSource(
+                    field_ref=client.V1ObjectFieldSelector(
+                        field_path="metadata.labels['apps.kubernetes.io/pod-index']"
+                    )
+                ),
+            ),
+            client.V1EnvVar(
+                name=SERVICE_PROC_IDS_ENV,
+                value=serialize_service_proc_ids(service_proc_ids),
+            ),
+        ]
         container = client.V1Container(
             name="worker",
             image=image_spec.image,
@@ -779,11 +863,13 @@ class KubernetesJob(JobTrait):
             for mesh_name, pods in all_mesh_pods.items():
                 # Create worker addresses using discovered IPs and ports
                 workers = [f"tcp://{pod.ip}:{pod.port}" for pod in pods]
+                service_proc_ids = self._service_proc_ids.get(mesh_name)
                 # Create host mesh by attaching to workers
                 host_mesh = attach_to_workers(
                     name=mesh_name,
                     ca="trust_all_connections",
                     workers=workers,  # type: ignore[arg-type]
+                    service_proc_ids=service_proc_ids,
                 )
                 host_meshes[mesh_name] = host_mesh
         except Exception:

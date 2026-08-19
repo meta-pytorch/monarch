@@ -21,11 +21,19 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.config import configure
+from monarch._rust_bindings.monarch_hyperactor.proc import ProcId
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.actor.host_mesh import this_host
 from monarch._src.job.job import JobState, JobTrait
+from monarch._src.job.service_identity import (
+    new_service_proc_id,
+    serialize_service_proc_ids,
+    SERVICE_PROC_IDS_ENV,
+    SERVICE_PROC_RANK_ENV,
+)
 from monarch._src.spmd.actor import SPMDActor
 from monarch._src.tools.commands import torchx_runner
+from torchx import specs
 from torchx.runner import Runner
 from torchx.specs import AppDef, AppState, Role
 
@@ -319,8 +327,16 @@ def serve(
 
     # Cache original entrypoints before modifying
     original_roles = []
+    service_proc_ids_by_role: dict[str, list[ProcId]] = {}
     scheme = "metatls" if scheduler.startswith("mast") else "tcp"
-    for role in appdef.roles:
+    if len(appdef.roles) > 1:
+        warnings.warn(
+            "SPMDJob currently only uses service proc IDs for the first role; "
+            f"got {len(appdef.roles)} roles, only {appdef.roles[0].name!r} will be "
+            "given coordinated identities. Other roles will use legacy fallback.",
+            stacklevel=2,
+        )
+    for idx, role in enumerate(appdef.roles):
         original_roles.append(
             {
                 "entrypoint": role.entrypoint,
@@ -328,12 +344,28 @@ def serve(
             }
         )
 
+        # Only the first role is used by SPMDJob._state (which inspects
+        # status.roles[0]). Generating IDs for other roles would leave workers
+        # with fixed identities that the client never uses, so restrict to idx==0.
+        if idx == 0:
+            service_proc_ids = [new_service_proc_id() for _ in range(role.num_replicas)]
+            service_proc_ids_by_role[role.name] = service_proc_ids
+            role.env[SERVICE_PROC_IDS_ENV] = serialize_service_proc_ids(
+                service_proc_ids
+            )
+            role.env[SERVICE_PROC_RANK_ENV] = specs.macros.replica_id
+
         role.args = [
             "python",
             "-X",
             "faulthandler",
             "-c",
-            f'import socket; from monarch.actor import run_worker_loop_forever; run_worker_loop_forever(ca="trust_all_connections", address=f"{scheme}://{{socket.getfqdn()}}:26600")',
+            "import os, socket; "
+            "from monarch._src.job.service_identity import ranked_service_proc_id_from_env; "
+            "from monarch.actor import run_worker_loop_forever; "
+            f'run_worker_loop_forever(ca="trust_all_connections", '
+            f"service_proc_id=ranked_service_proc_id_from_env() if {SERVICE_PROC_IDS_ENV!r} in os.environ else None, "
+            f'address=f"{scheme}://{{socket.getfqdn()}}:26600")',
         ]
 
     # Fall back to cwd if no workspace defined in appdef
@@ -360,6 +392,9 @@ def serve(
         scheduler=scheduler,
         workspace=workspace,
         original_roles=original_roles,
+        service_proc_ids=(
+            service_proc_ids_by_role[appdef.roles[0].name] if appdef.roles else None
+        ),
     )
 
     return job
@@ -378,12 +413,14 @@ class SPMDJob(JobTrait):
         scheduler: str,
         workspace: Optional[str] = None,
         original_roles: Optional[List[Dict[str, Any]]] = None,
+        service_proc_ids: list[ProcId] | None = None,
     ):
         super().__init__()
         self._app_handle = handle
         self._scheduler = scheduler
         self._workspace = workspace
         self._original_roles = original_roles or []
+        self._service_proc_ids = service_proc_ids
         self._hostnames: Optional[List[str]] = None
 
     def _get_runner(self) -> Runner:
@@ -459,16 +496,19 @@ class SPMDJob(JobTrait):
         assert status is not None and status.roles and status.roles[0].replicas
 
         # Extract hostnames from status
-        hostnames = [
-            replica.hostname
-            for replica in sorted(status.roles[0].replicas, key=lambda r: r.id)
-        ]
+        replicas = sorted(status.roles[0].replicas, key=lambda r: r.id)
+        hostnames = [replica.hostname for replica in replicas]
         self._hostnames = hostnames
 
         configure(default_transport=_get_channel_transport(self._scheduler))
         workers = attach_to_workers(
             ca="trust_all_connections",
             workers=[_get_worker_addr(self._scheduler, h) for h in hostnames],
+            service_proc_ids=(
+                [self._service_proc_ids[replica.id] for replica in replicas]
+                if self._service_proc_ids is not None
+                else None
+            ),
         )
 
         return JobState({"workers": workers})

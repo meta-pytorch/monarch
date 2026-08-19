@@ -135,6 +135,16 @@ counters.slice(gpus=slice(0, 4)).increment.broadcast()
 print(counters.get_value.call().get())
 
 
+# Standalone helper for the getting-started example. This was previously
+# `monarch.actor.hosts_from_config` (now removed from public API). It is
+# kept here as an example of how a config-driven HostMesh could be built
+# and is not part of Monarch's public API.
+import os
+import subprocess
+import sys
+import tempfile
+
+from monarch._src.job.service_identity import new_service_proc_id
 # %%
 # ``broadcast`` and ``call`` are the most commonly used adverbs. The ``call_one`` adverb we used
 # earlier is actually just a special case of ``call``, asserting that you know there is only
@@ -148,13 +158,55 @@ print(counters.get_value.call().get())
 # machines are obtained depends on the scheduling system (Slurm, Kubernetes, SkyPilot, etc.),
 # but these schedulers are typically encapsulated in a config file.
 
-from monarch.actor import context, HostMesh, hosts_from_config
+from monarch.actor import context, HostMesh
+
+
+def hosts_from_config(name: str) -> HostMesh:
+    """
+    Get the host mesh 'name' from the monarch configuration for the project.
+
+    This config can be modified so that the same code can create meshes from scheduler sources,
+    and different sizes etc.
+
+    WARNING: This function is a standin so that our getting_started example code works. The real implementation
+    needs an RFC design.
+    """
+    num_hosts = 2
+    tmpdir = tempfile.mkdtemp(prefix="monarch_hosts_from_config_")
+    workers = []
+    service_proc_ids = []
+    for i in range(num_hosts):
+        addr = f"ipc://{tmpdir}/{name}_{i}"
+        service_proc_id = new_service_proc_id()
+        env = {**os.environ}
+        cmd = [
+            sys.executable,
+            "-c",
+            "from monarch._rust_bindings.monarch_hyperactor.proc import ProcId; "
+            "from monarch.actor import run_worker_loop_forever; "
+            f'run_worker_loop_forever(address="{addr}", '
+            f"service_proc_id=ProcId.from_string({str(service_proc_id)!r}), "
+            'ca="trust_all_connections")',
+        ]
+        subprocess.Popen(cmd, env=env, start_new_session=True)
+        workers.append(addr)
+        service_proc_ids.append(service_proc_id)
+
+    from monarch._src.actor.bootstrap import attach_to_workers
+
+    return attach_to_workers(
+        name=name,
+        ca="trust_all_connections",
+        # pyrefly: ignore [bad-argument-type]
+        workers=workers,
+        service_proc_ids=service_proc_ids,
+    )
 
 
 # %%
 # We obtain the mesh of hosts for the job by loading that config:
 
-hosts: HostMesh = hosts_from_config("MONARCH_HOSTS")  # NYI: hosts_from_config
+hosts: HostMesh = hosts_from_config("MONARCH_HOSTS")  # example helper, not public API
 print(hosts.extent)
 
 # An extent is the logical shape of a mesh. It is an ordered map, specifying the size of

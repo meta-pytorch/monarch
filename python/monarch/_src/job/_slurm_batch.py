@@ -28,11 +28,14 @@ from typing import List, Optional
 
 from monarch._src.job._batch_env import MONARCH_BATCH_JOB_ENV
 
+
 # Bootstraps one monarch worker bound to this node's hostname. Passed as python
 # ``-c`` argv (no shell), so quoting inside is irrelevant.
 _WORKER_BOOTSTRAP: str = (
-    "import socket; from monarch.actor import run_worker_loop_forever; "
+    "import os, socket; from monarch.actor import run_worker_loop_forever; "
+    "from monarch._src.job.service_identity import ranked_service_proc_id_from_env; "
     'run_worker_loop_forever(address=f"tcp://{socket.gethostname()}:%d", '
+    'service_proc_id=ranked_service_proc_id_from_env(rank_env="SLURM_NODEID"), '
     'ca="trust_all_connections")'
 )
 

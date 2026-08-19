@@ -7,9 +7,6 @@
 # pyre-strict
 
 import os
-import subprocess
-import sys
-import tempfile
 from typing import Any, Awaitable, Callable, Dict, Literal, Optional, Tuple
 
 from monarch._rust_bindings.monarch_hyperactor.host_mesh import (
@@ -511,39 +508,3 @@ def _spawn_admin(
         return admin_url, admin_ref
 
     return Future._from_coro(task())
-
-
-def hosts_from_config(name: str) -> HostMesh:
-    """
-    Get the host mesh 'name' from the monarch configuration for the project.
-
-    This config can be modified so that the same code can create meshes from scheduler sources,
-    and different sizes etc.
-
-    WARNING: This function is a standin so that our getting_started example code works. The real implementation
-    needs an RFC design.
-    """
-    num_hosts = 2
-    tmpdir = tempfile.mkdtemp(prefix="monarch_hosts_from_config_")
-    workers = []
-    for i in range(num_hosts):
-        addr = f"ipc://{tmpdir}/{name}_{i}"
-        env = {**os.environ}
-        cmd = [
-            sys.executable,
-            "-c",
-            "from monarch.actor import run_worker_loop_forever; "
-            f'run_worker_loop_forever(address="{addr}", '
-            'ca="trust_all_connections")',
-        ]
-        subprocess.Popen(cmd, env=env, start_new_session=True)
-        workers.append(addr)
-
-    from monarch._src.actor.bootstrap import attach_to_workers
-
-    return attach_to_workers(
-        name=name,
-        ca="trust_all_connections",
-        # pyrefly: ignore [bad-argument-type]
-        workers=workers,
-    )
