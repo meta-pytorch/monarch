@@ -18,6 +18,7 @@ use hyperactor::accum::Accumulator;
 use hyperactor::accum::CommReducer;
 use hyperactor::accum::ReducerFactory;
 use hyperactor::accum::ReducerSpec;
+use hyperactor::id::Label;
 use hyperactor::mailbox::OncePortReceiver;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor_mesh::value_mesh::ValueOverlay;
@@ -59,6 +60,8 @@ use crate::metrics::ENDPOINT_CHOOSE_THROUGHPUT;
 use crate::metrics::ENDPOINT_STREAM_ERROR;
 use crate::metrics::ENDPOINT_STREAM_LATENCY_US_HISTOGRAM;
 use crate::metrics::ENDPOINT_STREAM_THROUGHPUT;
+use crate::metrics::EndpointAttrs;
+use crate::metrics::UNKNOWN;
 use crate::pickle::PendingMessage;
 use crate::pickle::PicklingState;
 use crate::pytokio::PyPythonTask;
@@ -112,22 +115,14 @@ impl EndpointAdverb {
 /// Call `mark_error()` before dropping to also record an error.
 pub struct RecordEndpointGuard {
     start: tokio::time::Instant,
-    method_name: String,
-    actor_count: usize,
+    attrs: Arc<EndpointAttrs>,
     adverb: EndpointAdverb,
     error_occurred: Cell<bool>,
 }
 
 impl RecordEndpointGuard {
-    fn new(
-        start: tokio::time::Instant,
-        method_name: String,
-        actor_count: usize,
-        adverb: EndpointAdverb,
-    ) -> Self {
-        let attributes = hyperactor_telemetry::kv_pairs!(
-            "method" => method_name.clone()
-        );
+    fn new(start: tokio::time::Instant, attrs: Arc<EndpointAttrs>, adverb: EndpointAdverb) -> Self {
+        let attributes = attrs.as_slice();
         match adverb {
             EndpointAdverb::Call => {
                 ENDPOINT_CALL_THROUGHPUT.add(1, attributes);
@@ -145,8 +140,7 @@ impl RecordEndpointGuard {
 
         Self {
             start,
-            method_name,
-            actor_count,
+            attrs,
             adverb,
             error_occurred: Cell::new(false),
         }
@@ -159,12 +153,7 @@ impl RecordEndpointGuard {
 
 impl Drop for RecordEndpointGuard {
     fn drop(&mut self) {
-        let actor_count_str = self.actor_count.to_string();
-        let attributes = hyperactor_telemetry::kv_pairs!(
-            "method" => self.method_name.clone(),
-            "actor_count" => actor_count_str
-        );
-
+        let attributes = self.attrs.as_slice();
         let duration_us = self.start.elapsed().as_micros();
 
         match self.adverb {
@@ -355,7 +344,7 @@ async fn collect_value(
 async fn collect_valuemesh(
     extent: Extent,
     rx: OncePortReceiver<PythonMessage>,
-    method_name: String,
+    attrs: Arc<EndpointAttrs>,
     supervision_monitor: Option<Arc<dyn Supervisable>>,
     instance: &Instance<PythonActor>,
     qualified_endpoint_name: Option<String>,
@@ -364,12 +353,7 @@ async fn collect_valuemesh(
 
     let expected_count = extent.num_ranks();
 
-    let record_guard = RecordEndpointGuard::new(
-        start,
-        method_name.clone(),
-        expected_count,
-        EndpointAdverb::Call,
-    );
+    let record_guard = RecordEndpointGuard::new(start, attrs, EndpointAdverb::Call);
 
     enum RaceResult {
         Collected(Box<PythonMessage>),
@@ -488,7 +472,7 @@ async fn collect_valuemesh(
 
 fn value_collector(
     mut receiver: PortReceiver<PythonMessage>,
-    method_name: String,
+    attrs: Arc<EndpointAttrs>,
     supervision_monitor: Option<Arc<dyn Supervisable>>,
     instance: Instance<PythonActor>,
     qualified_endpoint_name: Option<String>,
@@ -499,7 +483,7 @@ fn value_collector(
         let _span_guard = span_guard;
         let start = tokio::time::Instant::now();
 
-        let record_guard = RecordEndpointGuard::new(start, method_name, 1, adverb);
+        let record_guard = RecordEndpointGuard::new(start, attrs, adverb);
 
         match collect_value(
             &mut receiver,
@@ -539,10 +523,9 @@ pub struct PyValueStream {
     supervision_monitor: Option<Arc<dyn Supervisable>>,
     instance: Instance<PythonActor>,
     remaining: AtomicUsize,
-    method_name: String,
+    attrs: Arc<EndpointAttrs>,
     qualified_endpoint_name: Option<String>,
     start: tokio::time::Instant,
-    actor_count: usize,
     future_class: Py<PyAny>,
 }
 
@@ -564,12 +547,10 @@ impl PyValueStream {
         let instance = self.instance.clone_for_py();
         let qualified_endpoint_name = self.qualified_endpoint_name.clone();
         let start = self.start;
-        let method_name = self.method_name.clone();
-        let actor_count = self.actor_count;
+        let attrs = self.attrs.clone();
 
         let task: PyPythonTask = PythonTask::new(async move {
-            let record_guard =
-                RecordEndpointGuard::new(start, method_name, actor_count, EndpointAdverb::Stream);
+            let record_guard = RecordEndpointGuard::new(start, attrs, EndpointAdverb::Stream);
 
             let mut rx_guard = receiver.lock().await;
 
@@ -614,6 +595,11 @@ pub(crate) trait Endpoint {
 
     /// Get the method name for this endpoint.
     fn get_method_name(&self) -> &str;
+
+    /// The attributes every metric recorded for this endpoint carries. Built
+    /// once per endpoint; the adverbs hand a clone to the tasks that outlive
+    /// the borrow of `self`.
+    fn metric_attrs(&self) -> &Arc<EndpointAttrs>;
 
     /// Create and send a message with the given args/kwargs.
     fn send_message<'py>(
@@ -717,7 +703,7 @@ pub(crate) trait Endpoint {
         let span_guard = self.enter_endpoint_span(EndpointAdverb::Call, instance.self_addr());
 
         let extent = self.get_extent(py)?;
-        let method_name = self.get_method_name().to_string();
+        let attrs = self.metric_attrs().clone();
         let (port_ref, receiver) = self.open_reduce_response_port(&instance);
 
         let supervision_monitor = self.get_supervision_monitor();
@@ -740,7 +726,7 @@ pub(crate) trait Endpoint {
             collect_valuemesh(
                 extent,
                 receiver,
-                method_name,
+                attrs,
                 supervision_monitor,
                 &instance_for_task,
                 qualified_endpoint_name,
@@ -776,7 +762,7 @@ pub(crate) trait Endpoint {
 
         let task = value_collector(
             receiver,
-            self.get_method_name().to_string(),
+            self.metric_attrs().clone(),
             self.get_supervision_monitor(),
             instance.clone_for_py(),
             self.get_qualified_name(),
@@ -820,7 +806,7 @@ pub(crate) trait Endpoint {
 
         let task = value_collector(
             receiver,
-            self.get_method_name().to_string(),
+            self.metric_attrs().clone(),
             self.get_supervision_monitor(),
             instance.clone_for_py(),
             self.get_qualified_name(),
@@ -839,7 +825,6 @@ pub(crate) trait Endpoint {
         kwargs: Option<&Bound<'py, PyDict>>,
     ) -> PyResult<Py<PyAny>> {
         let extent = self.get_extent(py)?;
-        let method_name = self.get_method_name().to_string();
 
         let instance = self.get_current_instance(py)?;
         let (port_ref, receiver) = self.open_response_port(&instance);
@@ -861,20 +846,16 @@ pub(crate) trait Endpoint {
         let qualified_endpoint_name = self.get_qualified_name();
         let future_class = make_future(py).unbind();
 
-        let attributes = hyperactor_telemetry::kv_pairs!(
-            "method" => method_name.clone()
-        );
-        ENDPOINT_STREAM_THROUGHPUT.add(1, attributes);
+        ENDPOINT_STREAM_THROUGHPUT.add(1, self.metric_attrs().as_slice());
 
         let stream = PyValueStream {
             receiver: Arc::new(tokio::sync::Mutex::new(receiver)),
             supervision_monitor,
             instance: instance.clone_for_py(),
             remaining: AtomicUsize::new(actor_count),
-            method_name,
+            attrs: self.metric_attrs().clone(),
             qualified_endpoint_name,
             start,
-            actor_count,
             future_class,
         };
 
@@ -889,10 +870,7 @@ pub(crate) trait Endpoint {
         kwargs: Option<&Bound<'py, PyDict>>,
     ) -> PyResult<()> {
         let instance = self.get_current_instance(py)?;
-        let method_name = self.get_method_name();
-        let attributes = hyperactor_telemetry::kv_pairs!(
-            "method" => method_name.to_string()
-        );
+        let attributes = self.metric_attrs().as_slice();
 
         match self.send_message(py, args, kwargs, None, AllOrChoose::All, &instance) {
             Ok(()) => {
@@ -919,6 +897,9 @@ pub struct ActorEndpoint {
     signature: Option<Py<PyAny>>,
     proc_mesh: Option<Py<PyAny>>,
     propagator: Option<Py<PyAny>>,
+    /// An endpoint outlives every invocation on it, so building its attributes
+    /// once here keeps the per-invocation metrics allocation-free.
+    attrs: Arc<EndpointAttrs>,
 }
 
 impl ActorEndpoint {
@@ -962,6 +943,10 @@ impl Endpoint for ActorEndpoint {
         self.method.name()
     }
 
+    fn metric_attrs(&self) -> &Arc<EndpointAttrs> {
+        &self.attrs
+    }
+
     fn send_message<'py>(
         &self,
         py: Python<'py>,
@@ -1000,7 +985,7 @@ impl Endpoint for ActorEndpoint {
 
     fn enter_endpoint_span(&self, adverb: EndpointAdverb, actor_id: &ActorAddr) -> SpanGuard {
         let mesh = self.mesh_name.as_str();
-        let method = self.method.name();
+        let method = self.get_method_name();
         SpanGuard::actor_endpoint(adverb.as_str(), actor_id, mesh, method)
     }
 }
@@ -1019,6 +1004,12 @@ impl ActorEndpoint {
         proc_mesh: Option<Py<PyAny>>,
         propagator: Option<Py<PyAny>>,
     ) -> Self {
+        // `mesh_name` is the raw name Python spawned the mesh under, so it takes
+        // the same stripping that produced the actors' own label. Only the
+        // metric is canonicalized; `mesh_name` keeps the user's spelling for
+        // error messages and spans.
+        let actor = Label::strip(&mesh_name);
+        let attrs = Arc::new(EndpointAttrs::new(method.name(), Some(&actor)));
         Self {
             inner: actor_mesh.get_inner(),
             shape: shape.get_inner().clone(),
@@ -1027,6 +1018,7 @@ impl ActorEndpoint {
             signature,
             proc_mesh,
             propagator,
+            attrs,
         }
     }
 
@@ -1212,6 +1204,7 @@ impl ActorEndpoint {
 pub struct Remote {
     /// The wrapped Python RemoteImpl object
     inner: Py<PyAny>,
+    attrs: Arc<EndpointAttrs>,
 }
 
 impl Endpoint for Remote {
@@ -1221,7 +1214,11 @@ impl Endpoint for Remote {
     }
 
     fn get_method_name(&self) -> &str {
-        "unknown"
+        UNKNOWN
+    }
+
+    fn metric_attrs(&self) -> &Arc<EndpointAttrs> {
+        &self.attrs
     }
 
     fn send_message<'py>(
@@ -1273,7 +1270,11 @@ impl Remote {
     /// Create a new Remote wrapping a Python RemoteImpl object.
     #[new]
     fn new(remote: Py<PyAny>) -> Self {
-        Self { inner: remote }
+        let attrs = Arc::new(EndpointAttrs::new(UNKNOWN, None));
+        Self {
+            inner: remote,
+            attrs,
+        }
     }
 
     /// Call the endpoint on all actors and collect all responses into a ValueMesh.
@@ -1525,6 +1526,9 @@ mod tests {
             unreachable!()
         }
         fn get_method_name(&self) -> &str {
+            unreachable!()
+        }
+        fn metric_attrs(&self) -> &Arc<EndpointAttrs> {
             unreachable!()
         }
         fn send_message<'py>(

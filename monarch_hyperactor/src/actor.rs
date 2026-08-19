@@ -86,6 +86,7 @@ use crate::metrics::ENDPOINT_ACTOR_COUNT;
 use crate::metrics::ENDPOINT_ACTOR_ERROR;
 use crate::metrics::ENDPOINT_ACTOR_LATENCY_US_HISTOGRAM;
 use crate::metrics::ENDPOINT_ACTOR_PANIC;
+use crate::metrics::EndpointAttrs;
 use crate::pickle::PicklingState;
 use crate::pickle::pickle_to_part;
 use crate::proc::PyActorAddr;
@@ -1798,7 +1799,7 @@ impl PythonActor {
         message: PythonMessage,
     ) -> anyhow::Result<()> {
         let resolved = message.resolve_indirect_call(cx).await?;
-        let endpoint = resolved.method.to_string();
+        let attrs = EndpointAttrs::new(resolved.method.name(), cx.self_addr().label());
 
         // Create a channel for signaling panics in async endpoints.
         // See [Panics in async endpoints].
@@ -1842,8 +1843,7 @@ impl PythonActor {
             cx.signal_sender(),
             PythonTask::new(future)?,
             receiver,
-            cx.self_addr().to_string(),
-            endpoint,
+            attrs,
             cx.headers()
                 .get(hyperactor::mailbox::headers::TELEMETRY_MESSAGE_ID),
         ));
@@ -2055,13 +2055,10 @@ async fn handle_async_endpoint_panic(
     panic_sender: mpsc::UnboundedSender<Signal>,
     task: PythonTask,
     side_channel: oneshot::Receiver<Py<PyAny>>,
-    actor_id: String,
-    endpoint: String,
+    attrs: EndpointAttrs,
     telemetry_message_id: Option<u64>,
 ) {
-    // Create attributes for metrics with actor_id and endpoint
-    let attributes =
-        hyperactor_telemetry::kv_pairs!("actor_id" => actor_id, "endpoint" => endpoint);
+    let attributes = attrs.as_slice();
 
     // Record the start time for latency measurement
     let start_time = std::time::Instant::now();
