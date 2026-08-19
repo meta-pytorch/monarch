@@ -10,8 +10,34 @@
 //!
 //! This module contains metrics definitions for tracking Python actor endpoint performance.
 
+use hyperactor::id::Label;
 use hyperactor_telemetry::declare_static_counter;
 use hyperactor_telemetry::declare_static_histogram;
+use opentelemetry::KeyValue;
+
+/// Stands in for a name an endpoint cannot supply.
+pub(crate) const UNKNOWN: &str = "unknown";
+
+/// The attributes carried by every endpoint metric:
+///   - the endpoint's method;
+///   - the actor it belongs to. Specifically, this is the name users use to
+///     spawn their mesh, not the actor ID, which contains additional information
+///     such as channel address.
+pub(crate) struct EndpointAttrs([KeyValue; 2]);
+
+impl EndpointAttrs {
+    pub(crate) fn new(method: &str, actor: Option<&Label>) -> Self {
+        let actor = actor.map_or_else(|| UNKNOWN.to_owned(), |actor| actor.as_str().to_owned());
+        Self([
+            KeyValue::new("method", method.to_owned()),
+            KeyValue::new("actor", actor),
+        ])
+    }
+
+    pub(crate) fn as_slice(&self) -> &[KeyValue] {
+        &self.0
+    }
+}
 
 // ENDPOINT METRICS
 // Tracks the size of endpoint messages in bytes
