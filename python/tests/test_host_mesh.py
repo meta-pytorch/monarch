@@ -34,6 +34,7 @@ from monarch._src.actor.pickle import flatten, unflatten
 from monarch._src.actor.proc_mesh import get_or_spawn_controller
 from monarch._src.job.job import ProcessState
 from monarch._src.job.process import ProcessJob
+from monarch._src.job.service_identity import new_service_proc_id
 from monarch.config import configured
 from scoped_state import scoped_state
 
@@ -728,6 +729,7 @@ class DuplexProcessJob(ProcessJob):
             for i in range(count):
                 host_key = f"{mesh_name}_{i}"
                 addr = f"ipc://{self._tmpdir}/{host_key}"
+                service_proc_id = new_service_proc_id()
                 worker_env = {**os.environ, "HYPERACTOR_PROCESS_NAME": host_key}
                 if self._env is not None:
                     worker_env.update(self._env)
@@ -735,12 +737,16 @@ class DuplexProcessJob(ProcessJob):
                 cmd = [
                     sys.executable,
                     "-c",
+                    "from monarch._rust_bindings.monarch_hyperactor.proc import ProcId; "
                     "from monarch.actor import run_worker_loop_forever; "
                     f'run_worker_loop_forever(address="{addr}", '
+                    f"service_proc_id=ProcId.from_string({str(service_proc_id)!r}), "
                     'ca="trust_all_connections")',
                 ]
                 proc = subprocess.Popen(cmd, env=worker_env, start_new_session=True)
-                self._host_to_pid[host_key] = ProcessState(proc.pid, addr)
+                self._host_to_pid[host_key] = ProcessState(
+                    proc.pid, addr, service_proc_id
+                )
 
         # Wait for the first worker's frontend socket to appear.
         # The duplex server is now on the same address as the frontend.

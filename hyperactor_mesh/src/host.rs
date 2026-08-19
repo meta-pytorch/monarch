@@ -14,8 +14,8 @@
 //! and frontend endpoints, multiplexes inbound traffic to in-process procs,
 //! and routes spawned child proc gateways through peer routes.
 //!
-//! Use [`Host::new`] or [`Host::new_with_gateway`] to construct a host, start
-//! its backend and frontend accept loops, then [`Host::spawn`] to create child procs.
+//! Use [`Host::new`] or [`Host::new_with_gateway`] to construct a host, start its
+//! backend and frontend accept loops, then [`Host::spawn`] to create child procs.
 //! Spawned children are returned as [`ProcAddr`] values whose location is
 //! advertised through this host's gateway.
 //!
@@ -76,6 +76,7 @@ use hyperactor::ActorRef;
 use hyperactor::Gateway;
 use hyperactor::Proc;
 use hyperactor::ProcAddr;
+use hyperactor::ProcId;
 use hyperactor::actor::Binds;
 use hyperactor::actor::Referable;
 use hyperactor::channel;
@@ -88,9 +89,25 @@ use hyperactor::channel::Tx;
 use hyperactor::context;
 use hyperactor::gateway::GatewayServeHandle;
 use hyperactor::gateway::PeerAttachGuard;
+use hyperactor::id::Label;
 use hyperactor::mailbox::IntoBoxedMailboxSender as _;
 use hyperactor::mailbox::MailboxClient;
 use hyperactor::mailbox::MailboxServer;
+use tokio::process::Child;
+use tokio::process::Command;
+use tokio::sync::Mutex;
+
+use crate::mesh_id::ResourceId;
+
+/// Name of the system service proc on a host.
+///
+/// Hosts the admin actor layer: HostMeshAgent, MeshAdminAgent, and bridge.
+pub const SERVICE_PROC_NAME: &str = hyperactor::proc::LEGACY_SERVICE_PROC_NAME;
+
+pub(crate) fn legacy_service_proc_id() -> ProcId {
+    ProcId::singleton(Label::strip(SERVICE_PROC_NAME))
+}
+
 /// Name of the local client proc on a host.
 ///
 /// See LP-1 (lazy activation) in module doc.
@@ -99,16 +116,7 @@ use hyperactor::mailbox::MailboxServer;
 /// `GetLocalProc` is never sent, so the local proc remains empty
 /// throughout the program's lifetime. Code that inspects the local
 /// proc's actors must not assume they exist.
-pub use hyperactor::proc::LEGACY_LOCAL_PROC_NAME as LOCAL_PROC_NAME;
-/// Name of the system service proc on a host.
-///
-/// Hosts the admin actor layer: HostMeshAgent, MeshAdminAgent, and bridge.
-pub use hyperactor::proc::LEGACY_SERVICE_PROC_NAME as SERVICE_PROC_NAME;
-use tokio::process::Child;
-use tokio::process::Command;
-use tokio::sync::Mutex;
-
-use crate::mesh_id::ResourceId;
+pub const LOCAL_PROC_NAME: &str = "local";
 
 /// The type of error produced by host operations.
 #[derive(Debug, thiserror::Error)]
@@ -148,6 +156,10 @@ pub enum HostError {
     /// Attaching the gateway to a remote `serve_via` session failed.
     #[error("failed to attach gateway via session: {0}")]
     ViaAttachFailure(#[source] anyhow::Error),
+
+    /// Constructing a built-in proc failed.
+    #[error("failed to construct built-in proc: {0}")]
+    ProcConstructionFailure(#[source] anyhow::Error),
 }
 
 /// Client transport handles transferred to the bootstrap shutdown task.
@@ -244,19 +256,26 @@ impl<M: ProcManager> Host<M> {
         // host share one routing table with the rest of the process.
         // Callers that need a different gateway (e.g. via attach) build
         // it externally and pass it to [`new_with_gateway`].
-        Self::new_with_gateway(manager, addr, listener, Gateway::global().clone(), None).await
+        Self::new_with_gateway(
+            manager,
+            addr,
+            listener,
+            Gateway::global().clone(),
+            None,
+            legacy_service_proc_id(),
+        )
+        .await
     }
 
-    /// Like [`new_with_default`], but uses a caller-provided
-    /// [`Gateway`] instead of creating one internally.
+    /// Like [`new_with_default`], but uses a caller-provided [`Gateway`] and
+    /// requires the caller to choose the service proc identity.
     ///
     /// Serving the backend and frontend endpoints, choosing the frontend
     /// transport, and adopting the frontend address as the gateway's
     /// advertised location are all owned by the gateway. The host operates on
     /// a vanilla gateway: it never inspects the transport nor rewrites the
     /// gateway's location. Adopting the bound frontend address makes the
-    /// legacy pseudo-singleton proc ids (system, local) carry it so remote
-    /// hosts can reach them by name.
+    /// built-in proc ids carry it so remote hosts can reach them.
     ///
     /// When `via` is `Some`, the gateway attaches to that remote duplex
     /// address with [`Gateway::serve_via`] *after* the local
@@ -273,6 +292,7 @@ impl<M: ProcManager> Host<M> {
         listener: Option<std::net::TcpListener>,
         gateway: Gateway,
         via: Option<ChannelAddr>,
+        service_proc_id: ProcId,
     ) -> Result<Self, HostError> {
         let mut backend_handle = Gateway::serve(&gateway, ChannelAddr::any(manager.transport()))?;
         let backend_addr = gateway.default_location().addr().clone();
@@ -341,8 +361,16 @@ impl<M: ProcManager> Host<M> {
         // gateway servers are live. The HostAgent is published only
         // after it binds its handler, so the brief unroutable window is
         // before normal clients can discover this host.
-        let service_proc = Proc::legacy_service_pseudo_singleton_on_gateway(gateway.clone());
-        let local_proc = Proc::legacy_local_pseudo_singleton_on_gateway(gateway.clone());
+        let service_proc = Proc::builder()
+            .proc_id(service_proc_id)
+            .shared_gateway(gateway.clone())
+            .build()
+            .map_err(HostError::ProcConstructionFailure)?;
+        let local_proc = Proc::builder()
+            .proc_id(ProcId::instance(Label::strip(LOCAL_PROC_NAME)))
+            .shared_gateway(gateway.clone())
+            .build()
+            .map_err(HostError::ProcConstructionFailure)?;
         let service_proc_id = service_proc.proc_addr().clone();
         let local_proc_id = local_proc.proc_addr().clone();
 
@@ -2268,6 +2296,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_explicit_service_and_local_proc_ids_are_instances() {
+        let proc_manager = LocalProcManager::new(|proc: Proc| async move {
+            Ok(proc.spawn_with_label::<()>("host_agent", ()))
+        });
+        let service_proc_id = ProcId::instance(hyperactor::id::Label::strip("service"));
+
+        let host = Host::new_with_gateway(
+            proc_manager,
+            ChannelAddr::any(ChannelTransport::Unix),
+            None,
+            Gateway::new(),
+            None,
+            service_proc_id.clone(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(host.system_proc().proc_id(), &service_proc_id);
+        assert!(matches!(
+            host.local_proc().proc_id().uid(),
+            hyperactor::id::Uid::Instance(..)
+        ));
+        assert_eq!(
+            host.local_proc()
+                .proc_id()
+                .label()
+                .map(|label| label.as_str()),
+            Some(LOCAL_PROC_NAME)
+        );
+    }
+
+    #[tokio::test]
     async fn test_spawn_uses_latest_serve_location_after_prior_default_override() {
         let proc_manager = LocalProcManager::new(|proc: Proc| async move {
             Ok(proc.spawn_with_label::<()>("host_agent", ()))
@@ -2284,6 +2344,7 @@ mod tests {
             None,
             gateway,
             None,
+            legacy_service_proc_id(),
         )
         .await
         .unwrap();
@@ -2311,6 +2372,7 @@ mod tests {
             None,
             Gateway::new(),
             None,
+            legacy_service_proc_id(),
         )
         .await
         .unwrap();
@@ -2362,6 +2424,7 @@ mod tests {
             None,
             gateway.clone(),
             Some(remote_addr.clone()),
+            legacy_service_proc_id(),
         )
         .await
         .unwrap();

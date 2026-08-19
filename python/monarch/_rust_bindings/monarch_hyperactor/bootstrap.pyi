@@ -14,6 +14,7 @@ CA = Union[bytes, Path, Literal["trust_all_connections"]]
 
 from monarch._rust_bindings.monarch_hyperactor.context import Instance
 from monarch._rust_bindings.monarch_hyperactor.host_mesh import HostMesh
+from monarch._rust_bindings.monarch_hyperactor.proc import ProcId
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 
 def bootstrap_main() -> int:
@@ -21,9 +22,12 @@ def bootstrap_main() -> int:
     with sys.exit()."""
     ...
 
-def run_worker_loop_forever(address: str) -> PythonTask[None]: ...
+def run_worker_loop_forever(
+    address: str, service_proc_id: Optional[ProcId] = None
+) -> PythonTask[None]: ...
 def attach_to_workers(
     instance: Instance,
     workers: List[PythonTask[str]],
     name: Optional[str] = None,
+    service_proc_ids: Optional[List[ProcId]] = None,
 ) -> PythonTask[HostMesh]: ...

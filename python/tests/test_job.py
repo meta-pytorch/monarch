@@ -19,12 +19,13 @@ import threading
 import time
 import types
 from dataclasses import dataclass
-from typing import cast, Dict, Optional, Sequence
+from typing import Any, cast, Dict, Optional, Sequence
 from unittest.mock import MagicMock, patch
 
 import monarch._src.job._job_sidecar_worker as js_worker
 import monarch._src.job.job_sidecar as js
 import pytest
+from monarch._rust_bindings.monarch_hyperactor.proc import ProcId, Uid
 
 # Import directly from _src since job module isn't properly exposed
 from monarch._src.job.job import (
@@ -43,7 +44,53 @@ from monarch._src.job.job_components import JobComponent, JobComponents, MountCo
 from monarch._src.job.mount_config import Mounts
 from monarch._src.job.process import ProcessJob
 from monarch._src.job.process_guard import _Shutdown, _wait_for_socket
+from monarch._src.job.service_identity import (
+    deserialize_service_proc_ids,
+    new_service_proc_id,
+    serialize_service_proc_ids,
+)
 from monarch.actor import Future, HostMesh
+
+
+def test_service_proc_ids_are_instance_identities() -> None:
+    first = new_service_proc_id()
+    second = new_service_proc_id()
+
+    assert isinstance(first, ProcId)
+    assert first != second
+    assert first.label == "service"
+    assert first.uid.is_instance
+    assert str(first).startswith("service<") and str(first).endswith(">")
+    assert ProcId.from_string(str(first)) == first
+    assert pickle.loads(pickle.dumps(first)) == first
+    assert deserialize_service_proc_ids(
+        serialize_service_proc_ids([first, second])
+    ) == [
+        first,
+        second,
+    ]
+
+
+def test_service_proc_id_rejects_singleton_uid() -> None:
+    from monarch.actor import run_worker_loop_forever
+
+    with pytest.raises(ValueError, match="instance UID"):
+        run_worker_loop_forever(
+            address="ipc://unused",
+            service_proc_id=ProcId(Uid.from_string("service")),
+            ca="trust_all_connections",
+        )
+
+
+def test_service_proc_id_rejects_string() -> None:
+    from monarch.actor import run_worker_loop_forever
+
+    with pytest.raises(TypeError):
+        run_worker_loop_forever(
+            address="ipc://unused",
+            service_proc_id=cast(Any, "service<2>"),
+            ca="trust_all_connections",
+        )
 
 
 def _append_line(path: str, line: str) -> None:
@@ -628,7 +675,13 @@ def test_process_job_kill_reaps_worker_session():
 
         tmpdir = tempfile.mkdtemp(prefix="test_process_job_kill_")
         job = ProcessJob({"hosts": 1})
-        job._host_to_pid = {"h_0": ProcessState(worker, f"ipc://{tmpdir}/h_0")}
+        job._host_to_pid = {
+            "h_0": ProcessState(
+                worker,
+                f"ipc://{tmpdir}/h_0",
+                ProcId.from_string("service<2>"),
+            )
+        }
         job._tmpdir = tmpdir
 
         job._kill()

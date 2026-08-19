@@ -2578,7 +2578,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_gateway_serve_via_delivers_peeled_legacy_local_proc_destination() {
+    async fn test_gateway_serve_via_delivers_peeled_instance_proc_destination() {
         let server_gw = Gateway::new();
         let mut accept_handle = server_gw
             .serve_duplex(ChannelAddr::any(ChannelTransport::Unix))
@@ -2587,7 +2587,11 @@ mod tests {
 
         let client_gw = Gateway::new();
         let mut serve_via = client_gw.serve_via(server_addr).await.unwrap();
-        let client_proc = Proc::legacy_local_pseudo_singleton_on_gateway(client_gw.clone());
+        let client_proc = Proc::builder()
+            .proc_id(ProcId::anonymous())
+            .shared_gateway(client_gw.clone())
+            .build()
+            .unwrap();
         let client = client_proc.client("recv");
         let (port, mut rx) = client.bind_handler_port::<u64>();
         let PortLocation::Bound(via_dest) = port.location() else {
@@ -2670,7 +2674,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_gateway_serve_via_relay_delivers_to_client_legacy_local_proc() {
+    async fn test_gateway_serve_via_relay_delivers_to_client_instance_proc() {
         let relay_gw = Gateway::new();
         let mut accept_handle = relay_gw
             .serve_duplex(ChannelAddr::any(ChannelTransport::Unix))
@@ -2679,7 +2683,11 @@ mod tests {
 
         let client_gw = Gateway::new();
         let mut serve_via = client_gw.serve_via(relay_addr.clone()).await.unwrap();
-        let client_proc = Proc::legacy_local_pseudo_singleton_on_gateway(client_gw.clone());
+        let client_proc = Proc::builder()
+            .proc_id(ProcId::anonymous())
+            .shared_gateway(client_gw.clone())
+            .build()
+            .unwrap();
         let client = client_proc.client("recv");
         let (port, mut rx) = client.bind_handler_port::<u64>();
         let PortLocation::Bound(via_dest) = port.location() else {

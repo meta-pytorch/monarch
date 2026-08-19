@@ -23,6 +23,7 @@ import os
 import sys
 import threading
 
+from monarch._src.job.service_identity import service_proc_id_from_env
 from monarch._src.spmd.host_mesh import _ADDR_ENV, _PARENT_WATCH_FD_ENV
 from monarch.actor import run_worker_loop_forever
 
@@ -68,7 +69,11 @@ def main() -> None:
             daemon=True,
             name="monarch-worker-parent-watch",
         ).start()
-    run_worker_loop_forever(address=addr, ca="trust_all_connections")
+    run_worker_loop_forever(
+        address=addr,
+        service_proc_id=service_proc_id_from_env(),
+        ca="trust_all_connections",
+    )
 
 
 if __name__ == "__main__":

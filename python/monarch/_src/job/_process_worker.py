@@ -16,10 +16,12 @@ variables.
 
 import os
 
+from monarch._src.job.service_identity import service_proc_id_from_env
 from monarch.actor import run_worker_loop_forever
 
 if __name__ == "__main__":
     run_worker_loop_forever(
         address=os.environ["_MONARCH_WORKER_ADDR"],
+        service_proc_id=service_proc_id_from_env(),
         ca="trust_all_connections",
     )

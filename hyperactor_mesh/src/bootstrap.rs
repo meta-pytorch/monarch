@@ -43,6 +43,7 @@ use hyperactor::Endpoint as _;
 use hyperactor::Gateway;
 use hyperactor::Label;
 use hyperactor::ProcAddr;
+use hyperactor::ProcId;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelError;
@@ -81,6 +82,7 @@ use crate::host::SingleTerminate;
 use crate::host::TerminateError;
 use crate::host::TerminateSummary;
 use crate::host::WaitError;
+use crate::host::legacy_service_proc_id;
 use crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
 use crate::host_mesh::host_agent::HostAgent;
 use crate::logging::OutputTarget;
@@ -310,6 +312,7 @@ impl DrainedHostShutdown {
 ///   with `serve_via` during bootstrap — after the local serves but
 ///   before any ref is minted — so refs advertise the routable `Via`
 ///   location (used by out-of-cluster clients).
+/// - `service_proc_id`: optional caller-provided identity for the service proc.
 pub async fn host(
     addr: ChannelAddr,
     command: Option<BootstrapCommand>,
@@ -318,6 +321,7 @@ pub async fn host(
     listener: Option<std::net::TcpListener>,
     gateway: Gateway,
     via: Option<ChannelAddr>,
+    service_proc_id: Option<ProcId>,
 ) -> anyhow::Result<(ActorHandle<HostAgent>, HostShutdownHandle)> {
     if let Some(attrs) = config {
         hyperactor_config::global::set(hyperactor_config::global::Source::Runtime, attrs);
@@ -332,7 +336,9 @@ pub async fn host(
     };
     let manager = BootstrapProcManager::new(command)?;
 
-    let host = Host::new_with_gateway(manager, addr, listener, gateway, via).await?;
+    let service_proc_id = service_proc_id.unwrap_or_else(legacy_service_proc_id);
+    let host =
+        Host::new_with_gateway(manager, addr, listener, gateway, via, service_proc_id).await?;
     let addr = host.addr().clone();
 
     // The ShutdownHost handler sends the active client transports back here
@@ -590,9 +596,9 @@ impl Bootstrap {
                 let (serve_addr, _) = local_proc_addr(&socket_dir_path, proc_id.id())?;
 
                 // The following is a modified host::spawn_proc to support direct
-                // dialing between local procs: 1) we bind each proc to a deterministic
-                // address in socket_dir_path; 2) we use LocalProcDialer to dial these
-                // addresses for local procs.
+                // dialing between spawned sibling procs: 1) we bind each proc to a
+                // deterministic address in socket_dir_path; 2) we use LocalProcDialer
+                // to dial those addresses directly.
                 let proc_sender = mailbox::LocalProcDialer::new(
                     local_addr.clone(),
                     socket_dir_path,
@@ -642,6 +648,7 @@ impl Bootstrap {
                     exit_on_shutdown,
                     None,
                     Gateway::global().clone(),
+                    None,
                     None,
                 )
                 .await?;
@@ -3461,6 +3468,7 @@ mod tests {
             false,
             None,
             Gateway::global().clone(),
+            None,
             None,
         )
         .await

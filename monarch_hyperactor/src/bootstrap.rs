@@ -8,8 +8,10 @@
 
 use futures::future::try_join_all;
 use hyperactor::Gateway;
+use hyperactor::ProcAddr;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::id::Label;
+use hyperactor::id::Uid;
 use hyperactor_mesh::bootstrap::BootstrapCommand;
 use hyperactor_mesh::bootstrap::bootstrap;
 use hyperactor_mesh::bootstrap::halt;
@@ -19,9 +21,11 @@ use hyperactor_mesh::mesh_id::HostMeshId;
 use monarch_types::MapPyErr;
 use pyo3::Bound;
 use pyo3::PyAny;
+use pyo3::PyRef;
 use pyo3::PyResult;
 use pyo3::Python;
 use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::PyValueError;
 use pyo3::pyfunction;
 use pyo3::types::PyAnyMethods;
 use pyo3::types::PyModule;
@@ -29,6 +33,7 @@ use pyo3::types::PyModuleMethods;
 use pyo3::wrap_pyfunction;
 
 use crate::host_mesh::PyHostMesh;
+use crate::proc::PyProcId;
 use crate::pytokio::PyPythonTask;
 use crate::runtime::GilSite;
 use crate::runtime::monarch_with_gil;
@@ -57,9 +62,22 @@ pub fn bootstrap_main(py: Python) -> PyResult<Bound<PyAny>> {
 }
 
 #[pyfunction]
-pub fn run_worker_loop_forever(_py: Python<'_>, address: &str) -> PyResult<PyPythonTask> {
+#[pyo3(signature = (address, service_proc_id=None))]
+pub fn run_worker_loop_forever(
+    _py: Python<'_>,
+    address: &str,
+    service_proc_id: Option<&PyProcId>,
+) -> PyResult<PyPythonTask> {
     let (addr, listener) = ChannelAddr::from_zmq_url_with_listener(address)?;
-
+    let service_proc_id = service_proc_id.map(|proc_id| proc_id.inner.clone());
+    if service_proc_id
+        .as_ref()
+        .is_some_and(|proc_id| !matches!(proc_id.uid(), Uid::Instance(..)))
+    {
+        return Err(PyValueError::new_err(
+            "service_proc_id must have an instance UID",
+        ));
+    }
     // Check if we're running in a PAR/XAR build by looking for FB_XAR_INVOKED_NAME environment variable
     let invoked_name = std::env::var("FB_XAR_INVOKED_NAME");
 
@@ -107,10 +125,18 @@ pub fn run_worker_loop_forever(_py: Python<'_>, address: &str) -> PyResult<PyPyt
     });
 
     PyPythonTask::new(async move {
-        let (_agent_handle, shutdown) =
-            host(addr, command, None, true, listener, Gateway::new(), None)
-                .await
-                .map_pyerr()?;
+        let (_agent_handle, shutdown) = host(
+            addr,
+            command,
+            None,
+            true,
+            listener,
+            Gateway::new(),
+            None,
+            service_proc_id,
+        )
+        .await
+        .map_pyerr()?;
         shutdown.stop_and_join().await;
         halt::<()>().await;
         Ok(())
@@ -118,11 +144,37 @@ pub fn run_worker_loop_forever(_py: Python<'_>, address: &str) -> PyResult<PyPyt
 }
 
 #[pyfunction]
+#[pyo3(signature = (instance, workers, name=None, service_proc_ids=None))]
 pub fn attach_to_workers(
     instance: &crate::context::PyInstance,
     workers: Vec<Bound<'_, PyPythonTask>>,
     name: Option<&str>,
+    service_proc_ids: Option<Vec<PyRef<'_, PyProcId>>>,
 ) -> PyResult<PyPythonTask> {
+    let service_proc_ids = service_proc_ids.map(|proc_ids| {
+        proc_ids
+            .into_iter()
+            .map(|proc_id| proc_id.inner.clone())
+            .collect::<Vec<_>>()
+    });
+    let worker_count = workers.len();
+    if let Some(service_proc_ids) = &service_proc_ids
+        && service_proc_ids.len() != worker_count
+    {
+        return Err(PyValueError::new_err(format!(
+            "worker/service proc id count mismatch: {worker_count} workers, {} ids",
+            service_proc_ids.len()
+        )));
+    }
+    if service_proc_ids.as_ref().is_some_and(|proc_ids| {
+        proc_ids
+            .iter()
+            .any(|proc_id| !matches!(proc_id.uid(), Uid::Instance(..)))
+    }) {
+        return Err(PyValueError::new_err(
+            "service_proc_ids must all have instance UIDs",
+        ));
+    }
     let tasks = workers
         .into_iter()
         .map(|x| x.borrow_mut().take_task())
@@ -150,9 +202,18 @@ pub fn attach_to_workers(
             .await;
         let addresses = addresses?;
 
-        let host_mesh = HostMesh::attach(&*instance, name, addresses)
-            .await
-            .map_err(|e| anyhow::anyhow!("attach failed: {}", e))?;
+        let host_mesh = match service_proc_ids {
+            Some(service_proc_ids) => {
+                let service_procs = addresses
+                    .into_iter()
+                    .zip(service_proc_ids)
+                    .map(|(address, proc_id)| ProcAddr::new(proc_id, address.into()))
+                    .collect();
+                HostMesh::attach_with_service_procs(&*instance, name, service_procs).await
+            }
+            None => HostMesh::attach(&*instance, name, addresses).await,
+        }
+        .map_err(|e| anyhow::anyhow!("attach failed: {}", e))?;
         Ok(PyHostMesh::new_owned(host_mesh))
     })
 }

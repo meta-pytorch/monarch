@@ -21,6 +21,7 @@ from typing import Callable, Dict, List, Optional, Union
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.actor.future import Future
 from monarch._src.job.job import JobState, JobTrait, ProcessState
+from monarch._src.job.service_identity import new_service_proc_id, SERVICE_PROC_ID_ENV
 
 logger = logging.getLogger(__name__)
 
@@ -142,9 +143,12 @@ class ProcessJob(JobTrait):
                 for i in range(count):
                     host_key = f"{mesh_name}_{i}"
                     addr = f"ipc://{self._tmpdir}/{host_key}"
+                    service_proc_id = new_service_proc_id()
                     env = {**os.environ, "HYPERACTOR_PROCESS_NAME": host_key}
                     if self._env is not None:
                         env.update(self._env)
+                    env["_MONARCH_WORKER_ADDR"] = addr
+                    env[SERVICE_PROC_ID_ENV] = str(service_proc_id)
                     if _IN_PAR:
                         # In PAR/XAR mode, sys.executable is the bare
                         # Python interpreter which cannot import modules
@@ -152,14 +156,16 @@ class ProcessJob(JobTrait):
                         # (sys.argv[0]) with PAR_MAIN_OVERRIDE pointing
                         # to the worker module.
                         env["PAR_MAIN_OVERRIDE"] = _PROCESS_WORKER_MODULE
-                        env["_MONARCH_WORKER_ADDR"] = addr
                         cmd = [sys.argv[0]]
                     else:
                         cmd = [
                             sys.executable,
                             "-c",
+                            "from monarch._src.job.service_identity import "
+                            "service_proc_id_from_env; "
                             "from monarch.actor import run_worker_loop_forever; "
                             f'run_worker_loop_forever(address="{addr}", '
+                            "service_proc_id=service_proc_id_from_env(), "
                             'ca="trust_all_connections")',
                         ]
                     proc = subprocess.Popen(
@@ -170,7 +176,9 @@ class ProcessJob(JobTrait):
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
                     )
-                    self._host_to_pid[host_key] = ProcessState(proc.pid, addr)
+                    self._host_to_pid[host_key] = ProcessState(
+                        proc.pid, addr, service_proc_id
+                    )
                     logger.info(
                         "ProcessJob: spawned worker pid=%d mesh=%s rank=%d addr=%s",
                         proc.pid,
@@ -243,6 +251,10 @@ class ProcessJob(JobTrait):
                 name=mesh_name,
                 ca="trust_all_connections",
                 workers=workers,
+                service_proc_ids=[
+                    self._host_to_pid[f"{mesh_name}_{i}"].service_proc_id
+                    for i in range(count)
+                ],
             )
 
         return JobState(host_meshes)
