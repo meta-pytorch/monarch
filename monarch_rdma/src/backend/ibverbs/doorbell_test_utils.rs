@@ -30,7 +30,6 @@ use hyperactor_config::Flattrs;
 
 use super::device_selection::IbvDeviceTarget;
 use super::manager_actor::IbvManagerActor;
-use super::manager_actor::IbvManagerMessageClient;
 use super::memory_region::IbvMemoryRegionView;
 use super::memory_region::IbvRemoteMemoryRegionView;
 use super::mlx_device::MlxDevice;
@@ -39,6 +38,7 @@ use super::queue_pair::legacy::IbvQueuePair;
 use crate::IbvConfig;
 use crate::RdmaManagerMessageClient;
 use crate::RdmaRemoteBuffer;
+use crate::ReleaseBufferClient;
 use crate::local_memory::Keepalive;
 use crate::local_memory::KeepaliveLocalMemory;
 use crate::rdma_manager_actor::RdmaManagerActor;
@@ -570,7 +570,10 @@ async fn local_view(
         .await?
         .resolve_mlx()
         .ok_or_else(|| anyhow::anyhow!("local buffer has no Mellanox backend"))?
-        .buffer
+        .buffers
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("local buffer carries no registration"))?
         .device_name;
     mem.registered_mr(&device)?
         .ok_or_else(|| anyhow::anyhow!("request_buffer should have registered on {device}"))
@@ -737,10 +740,25 @@ impl DoorbellTestEnv {
             cuda_actor_2 = Some(cuda_actor_ref_2);
         }
 
+        // Both sides pin a NIC, so each buffer carries exactly one registration.
         let ctx_1 = rdma_handle_1.resolve_mlx().expect("buffer 1 is Mellanox");
-        let (ibv_actor_1, remote_mrv_1) = (ctx_1.manager, ctx_1.buffer);
+        let (ibv_actor_1, remote_mrv_1) = (
+            ctx_1.manager,
+            ctx_1
+                .buffers
+                .into_iter()
+                .next()
+                .expect("buffer 1 is registered"),
+        );
         let ctx_2 = rdma_handle_2.resolve_mlx().expect("buffer 2 is Mellanox");
-        let (ibv_actor_2, remote_mrv_2) = (ctx_2.manager, ctx_2.buffer);
+        let (ibv_actor_2, remote_mrv_2) = (
+            ctx_2.manager,
+            ctx_2
+                .buffers
+                .into_iter()
+                .next()
+                .expect("buffer 2 is registered"),
+        );
         let local_mrv_1 = local_view(&actor_1, &instance_1, &local_memory_1).await?;
         let local_mrv_2 = local_view(&actor_2, &instance_2, &local_memory_2).await?;
         let ibv_handle_1: ActorHandle<IbvManagerActor<MlxDevice>> = ibv_actor_1
@@ -796,11 +814,13 @@ impl DoorbellTestEnv {
     }
 
     pub async fn cleanup(self) -> Result<(), anyhow::Error> {
-        self.ibv_actor_1
+        // Release through the owning manager, which is what holds the memory
+        // handles the registrations hang off.
+        self.actor_1
             .release_buffer(&self.client_1, self.rdma_handle_1.id)
             .await?;
 
-        self.ibv_actor_2
+        self.actor_2
             .release_buffer(&self.client_2, self.rdma_handle_2.id)
             .await?;
         Ok(())

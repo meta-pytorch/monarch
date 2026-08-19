@@ -461,6 +461,11 @@ impl LocalMemoryInner {
 /// memory is not directly accessible from that context.
 #[derive(Clone)]
 pub struct KeepaliveLocalMemory {
+    // Field order carries the drop order, and it matters: `inner` holds this
+    // handle's MR registrations, and they must go before `_keepalive` releases
+    // the memory. An `ibv_mr` does not keep its pages mapped, so a registration
+    // outliving the allocation is a window in which a peer's in-flight DMA
+    // lands in memory that has been freed and possibly handed out again.
     inner: LocalMemoryInner,
     _keepalive: Arc<dyn Keepalive>,
 }
