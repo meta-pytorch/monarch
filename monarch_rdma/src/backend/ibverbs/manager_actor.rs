@@ -439,7 +439,6 @@ impl<I: IbvDeviceImpl> IbvManagerActor<I> {
             qp,
             is_loopback,
             config.max_send_wr,
-            config.max_rd_atomic as u32,
         ));
         self.qp_handles.insert(qp_key.clone(), actor.clone());
         Ok(actor)
