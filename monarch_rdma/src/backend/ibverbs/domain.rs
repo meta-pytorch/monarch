@@ -364,7 +364,7 @@ pub(super) unsafe fn register_dmabuf_range(
 /// returns an error unless `addr` is a device pointer whose owning context is
 /// current (see [`crate::local_memory::set_ctx_for_ptr`]).
 fn cuda_alloc_range(addr: usize) -> anyhow::Result<(usize, usize)> {
-    let mut base: rdmaxcel_sys::CUdeviceptr = 0;
+    let mut base: rdmaxcel_sys::CUdeviceptr = unsafe { std::meem::zeroed() };
     let mut size: usize = 0;
     // SAFETY: the out-params point to local variables and `addr` is passed by
     // value as an opaque device address (never dereferenced); the call writes
