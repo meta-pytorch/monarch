@@ -214,6 +214,11 @@ impl PicklingStateInner {
     pub fn take_buffer(self) -> Part {
         self.buffer
     }
+
+    /// The size in bytes of the pickled payload.
+    pub fn payload_len(&self) -> usize {
+        self.buffer.len()
+    }
 }
 
 /// Python-visible wrapper for the result of a pickling operation.
@@ -428,6 +433,15 @@ impl PendingMessage {
             kind: std::mem::take(&mut self.kind),
             state: PicklingState { inner: Some(inner) },
         })
+    }
+
+    /// The size in bytes of the pickled payload. Out-of-band mesh references
+    /// are carried beside these bytes, so they do not count towards it.
+    pub(crate) fn payload_len(&self) -> usize {
+        self.state
+            .inner_ref()
+            .expect("should be called before the message is resolved")
+            .payload_len()
     }
 
     fn into_python_message(mut self) -> PyResult<PythonMessage> {
@@ -841,6 +855,22 @@ mod tests {
                 }),
             },
         )
+    }
+
+    /// `payload_len` reports the pickled bytes only, so an out-of-band ref does
+    /// not change it: the refs table rides beside the payload, not inside it.
+    #[test]
+    fn payload_len_counts_pickled_bytes_only() {
+        let kind = PythonMessageKind::Result { rank: Some(7) };
+        let buffer = vec![0, 1, 2, 3, 127, 128, 254, 255];
+
+        for refs in [Vec::new(), vec![resolved_proc_mesh_ref()]] {
+            assert_eq!(
+                pending_message(kind.clone(), buffer.clone(), refs).payload_len(),
+                8,
+                "payload_len should be the length of the pickled buffer"
+            );
+        }
     }
 
     #[tokio::test]

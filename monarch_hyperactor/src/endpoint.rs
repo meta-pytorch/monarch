@@ -57,6 +57,7 @@ use crate::metrics::ENDPOINT_CALL_THROUGHPUT;
 use crate::metrics::ENDPOINT_CHOOSE_ERROR;
 use crate::metrics::ENDPOINT_CHOOSE_LATENCY_US_HISTOGRAM;
 use crate::metrics::ENDPOINT_CHOOSE_THROUGHPUT;
+use crate::metrics::ENDPOINT_MESSAGE_SIZE_HISTOGRAM;
 use crate::metrics::ENDPOINT_STREAM_ERROR;
 use crate::metrics::ENDPOINT_STREAM_LATENCY_US_HISTOGRAM;
 use crate::metrics::ENDPOINT_STREAM_THROUGHPUT;
@@ -930,7 +931,11 @@ impl ActorEndpoint {
                 .map_or_else(|| py.None(), |p| p.clone_ref(py)),
         ))?;
         let mut pending: PyRefMut<'_, PendingMessage> = result.extract()?;
-        pending.take()
+        let message = pending.take()?;
+
+        ENDPOINT_MESSAGE_SIZE_HISTOGRAM.record(message.payload_len() as f64, self.attrs.as_slice());
+
+        Ok(message)
     }
 }
 
