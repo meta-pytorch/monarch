@@ -20,7 +20,6 @@ from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.job._batch_env import in_batch_job
 from monarch._src.job._slurm_batch import _WORKER_BOOTSTRAP
 from monarch._src.job.job import BatchJob, JobState, JobTrait
-from monarch.actor import attach
 
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -116,7 +115,6 @@ class SlurmJob(JobTrait):
         self._qos = qos
         self._out_of_cluster = out_of_cluster
         self._attach_to = attach_to
-        self._client_attached = False
         # Track the single SLURM job ID and all allocated hostnames
         self._slurm_job_id: Optional[str] = None
         self._all_hostnames: List[str] = []
@@ -131,8 +129,15 @@ class SlurmJob(JobTrait):
         self.__dict__.update(state)
         # Attachment belongs to this process's global client context, not the
         # serialized job state.
-        self._client_attached = False
+        self._client_attached_to = None
         configure(default_transport=ChannelTransport.TcpWithHostname)
+
+    def _resolve_attach_to(self) -> str | None:
+        if self._attach_to is not None:
+            return self._attach_to
+        if self._out_of_cluster:
+            return f"tcp://{self._all_hostnames[0]}:{self._port}"
+        return None
 
     def add_mesh(self, name: str, num_nodes: int) -> None:
         self._meshes[name] = num_nodes
@@ -367,13 +372,7 @@ class SlurmJob(JobTrait):
                 job_id, total_nodes, timeout=self._job_start_timeout
             )
 
-        attach_to = self._attach_to
-        if self._out_of_cluster and attach_to is None:
-            attach_to = f"tcp://{self._all_hostnames[0]}:{self._port}"
-        if attach_to is not None and not self._client_attached:
-            logger.info("Attaching client gateway via duplex address: %s", attach_to)
-            attach(attach_to)
-            self._client_attached = True
+        self._attach_client(self._resolve_attach_to())
 
         # Distribute the allocated hostnames among meshes
         host_meshes = {}
@@ -470,7 +469,7 @@ class SlurmJob(JobTrait):
 
         No-op in batch mode: ``BatchJob`` registers this as an ``atexit`` hook on
         the in-allocation client, but the sbatch runner owns teardown there, so
-        the client must not scancel its own allocation. The external-controller
+        the client must not scancel its own allocation. The external-client
         path scancels as before.
         """
         if in_batch_job():

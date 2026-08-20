@@ -977,8 +977,13 @@ class TestKill(unittest.TestCase):
     def test_kill_attach_only_raises_not_implemented(self) -> None:
         job = self._make_job()
         job.add_mesh("workers", num_replicas=1)
+        job._client_attached_to = "tcp://127.0.0.1:45678"
         with self.assertRaises(NotImplementedError):
             job._kill()
+        self.assertEqual(
+            job._client_attached_to,
+            "tcp://127.0.0.1:45678",
+        )
 
     @patch("monarch._src.job.kubernetes.client.CustomObjectsApi")
     @patch("monarch._src.job.kubernetes.config.load_incluster_config")
@@ -1252,7 +1257,7 @@ class TestStateOutOfCluster(unittest.TestCase):
         ]
 
     @patch("monarch._src.job.kubernetes.attach_to_workers")
-    @patch("monarch._src.job.kubernetes.attach")
+    @patch("monarch._src.job.job.attach")
     @patch("monarch._src.job.kubernetes.KubernetesJob._port_forward_to_pod")
     @patch("monarch._src.job.kubernetes.watch.Watch")
     @patch("monarch._src.job.kubernetes.client.CoreV1Api")
@@ -1292,7 +1297,7 @@ class TestStateOutOfCluster(unittest.TestCase):
         mock_attach.assert_called_once_with("tcp://127.0.0.1:45678")
 
     @patch("monarch._src.job.kubernetes.attach_to_workers")
-    @patch("monarch._src.job.kubernetes.attach")
+    @patch("monarch._src.job.job.attach")
     @patch("monarch._src.job.kubernetes.KubernetesJob._port_forward_to_pod")
     @patch("monarch._src.job.kubernetes.watch.Watch")
     @patch("monarch._src.job.kubernetes.client.CoreV1Api")
@@ -1333,7 +1338,7 @@ class TestStateOutOfCluster(unittest.TestCase):
         mock_attach.assert_called_once_with("tcp://127.0.0.1:55555")
 
     @patch("monarch._src.job.kubernetes.attach_to_workers")
-    @patch("monarch._src.job.kubernetes.attach")
+    @patch("monarch._src.job.job.attach")
     @patch("monarch._src.job.kubernetes.KubernetesJob._port_forward_to_pod")
     @patch("monarch._src.job.kubernetes.watch.Watch")
     @patch("monarch._src.job.kubernetes.client.CoreV1Api")
