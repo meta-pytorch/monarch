@@ -49,6 +49,7 @@ dependencies = [
     "clusterscope",
     "flask>=2.0",
     "py-spy",
+    "xxhash",
 ]
 
 # PyTorch nightly build indices for different platforms
