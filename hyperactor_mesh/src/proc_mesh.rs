@@ -71,6 +71,13 @@ use crate::resource::Status;
 use crate::supervision::MeshFailure;
 
 declare_attrs! {
+    /// Whether ordinary actor mesh spawns use the direct spawn path.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_USE_DIRECT_SPAWN".to_string()),
+        Some("use_direct_spawn".to_string()),
+    ))
+    pub attr USE_DIRECT_SPAWN: bool = false;
+
     /// The maximum idle time between updates while spawning actor
     /// meshes.
     @meta(CONFIG = ConfigAttr::new(
@@ -134,6 +141,14 @@ pub struct ProcMesh {
     id: ProcMeshId,
     current_ref: ProcMeshRef,
     controller: Option<ActorRef<crate::mesh_controller::ProcMeshController>>,
+}
+
+enum SpawnedActorMesh<A: RemoteSpawn> {
+    Managed {
+        mesh: ActorMesh<A>,
+        statuses: crate::StatusMesh,
+    },
+    Data(ActorMesh<A>),
 }
 
 impl ProcMesh {
@@ -770,7 +785,7 @@ impl ProcMeshRef {
         tracing::info!(name = "ActorMeshStatus", status = "Spawn::Attempt");
         let id = ActorMeshId::singleton(Label::strip(name));
         let result = self
-            .spawn_mesh_inner(cx, id, params, None)
+            .spawn_managed_mesh_inner(cx, id, params, None)
             .await
             .map(|(mesh, _statuses)| mesh);
         match &result {
@@ -793,9 +808,9 @@ impl ProcMeshRef {
     ///
     /// This initiates an actor spawn on each proc and constructs a stoppable
     /// data mesh from the actor refs and local supervisor handles without
-    /// waiting for the remote supervision sessions to link. If a later spawn
-    /// fails, all previously created local supervisors receive a best-effort
-    /// stop request.
+    /// waiting for the remote supervision sessions to link. If a request cannot
+    /// be initiated, all previously created local supervisors receive a
+    /// best-effort stop request.
     ///
     /// Bounds:
     /// - `A: Actor` - the actor actually runs inside each proc.
@@ -807,13 +822,25 @@ impl ProcMeshRef {
         params: &A::Params,
     ) -> crate::Result<ActorMesh<A>>
     where
-        A::Params: RemoteMessage + Clone,
+        A::Params: RemoteMessage,
     {
-        // Data meshes are nameless: they are identified by their members, not an id.
+        self.spawn_data_mesh_inner(cx, params, None)
+    }
+
+    fn spawn_data_mesh_inner<A: RemoteSpawn, C: context::Actor>(
+        &self,
+        cx: &C,
+        params: &A::Params,
+        actor_mesh_id: Option<&ActorMeshId>,
+    ) -> crate::Result<ActorMesh<A>>
+    where
+        A::Params: RemoteMessage,
+    {
         let region = self.region().clone();
-        let actor_uid = Uid::anonymous();
+        let actor_uid = actor_mesh_id.map_or_else(Uid::anonymous, |id| id.uid().clone());
         let mut members = Vec::with_capacity(self.ranks.len());
         let mut stop_handles = Vec::with_capacity(self.ranks.len());
+        let serialized_params = bincode::serde::encode_to_vec(params, bincode::config::legacy())?;
 
         let stop_spawned = |handles: &[ActorMeshStopHandle], reason: &str| {
             for handle in handles {
@@ -821,15 +848,24 @@ impl ProcMeshRef {
             }
         };
 
-        // Serially spawn an actor on each proc using the proc's actor spawner endpoint.
-        // The actor spawner is a well-known singleton actor running on each proc with
-        // the name "spawner".
+        // Each call only schedules a local supervisor that sends a one-way spawn
+        // request. No rank waits for another rank's remote actor initialization.
         for proc_ref in self.ranks.iter() {
+            let params = match bincode::serde::decode_from_slice(
+                &serialized_params,
+                bincode::config::legacy(),
+            ) {
+                Ok((params, _)) => params,
+                Err(error) => {
+                    stop_spawned(&stop_handles, "data mesh spawn failed");
+                    return Err(error.into());
+                }
+            };
             let actor_spawner = proc_ref.spawner();
             let (actor_ref, stop_handle) = match actor_spawner.spawn_uid_with_link_and_ready(
                 cx,
                 actor_uid.clone(),
-                params.clone(),
+                params,
                 KeepaliveLink::default(),
                 None,
             ) {
@@ -915,41 +951,65 @@ impl ProcMeshRef {
     where
         C::A: Handler<MeshFailure>,
     {
-        let (mut mesh, statuses) = self
+        let spawned = self
             .spawn_mesh_inner(cx, actor_mesh_id, params, supervision_display_name.clone())
             .await?;
-        // System actors are managed by their owning runtime, not an
-        // ActorMeshController.
-        if !is_system_actor {
-            // Spawn a unique mesh manager for each actor mesh, so the type of the
-            // mesh can be preserved.
-            let controller: ActorMeshController<A> = ActorMeshController::new(
-                ActorMeshControlPlane::new(mesh.deref().clone(), self.clone()),
-                supervision_display_name,
-                Some(cx.instance().port().bind()),
-                statuses,
-            );
-            // hyperactor::proc AI-3: controller name must include mesh
-            // identity for proc-wide ActorAddr uniqueness. A fixed base name alone
-            // collides across parents because pid allocation is
-            // parent-scoped.
-            let controller_name = format!(
-                "{}_{}",
-                crate::mesh_controller::ACTOR_MESH_CONTROLLER_NAME,
-                mesh.id().expect("managed actor mesh should have an id")
-            );
-            let controller = cx.spawn_with_label(&controller_name, controller);
-            // Controller and ActorMesh both depend on references from each other, break
-            // the cycle by setting the controller after the fact.
-            mesh.set_controller(Some(controller.bind()));
+        match spawned {
+            SpawnedActorMesh::Data(mesh) => Ok(mesh),
+            SpawnedActorMesh::Managed { mut mesh, statuses } => {
+                // System actors are managed by their owning runtime, not an
+                // ActorMeshController.
+                if !is_system_actor {
+                    // Spawn a unique mesh manager for each actor mesh, so the type of the
+                    // mesh can be preserved.
+                    let controller: ActorMeshController<A> = ActorMeshController::new(
+                        ActorMeshControlPlane::new(mesh.deref().clone(), self.clone()),
+                        supervision_display_name,
+                        Some(cx.instance().port().bind()),
+                        statuses,
+                    );
+                    // hyperactor::proc AI-3: controller name must include mesh
+                    // identity for proc-wide ActorAddr uniqueness. A fixed base name alone
+                    // collides across parents because pid allocation is
+                    // parent-scoped.
+                    let controller_name = format!(
+                        "{}_{}",
+                        crate::mesh_controller::ACTOR_MESH_CONTROLLER_NAME,
+                        mesh.id()
+                            .expect("managed spawn result must carry a mesh id")
+                    );
+                    let controller = cx.spawn_with_label(&controller_name, controller);
+                    // Controller and ActorMesh both depend on references from each other, break
+                    // the cycle by setting the controller after the fact.
+                    mesh.set_controller(Some(controller.bind()));
+                }
+                Ok(mesh)
+            }
         }
-        Ok(mesh)
     }
 
-    /// The common spawn path shared by
-    /// [`spawn_with_name_inner`](Self::spawn_with_name_inner) and
-    /// [`spawn_controllerless_service`](Self::spawn_controllerless_service): the
-    /// create/update cast, the accumulator port, the bounded
+    async fn spawn_mesh_inner<A: RemoteSpawn, C: context::Actor>(
+        &self,
+        cx: &C,
+        actor_mesh_id: ActorMeshId,
+        params: &A::Params,
+        supervision_display_name: Option<String>,
+    ) -> crate::Result<SpawnedActorMesh<A>> {
+        if hyperactor_config::global::get(USE_DIRECT_SPAWN) && actor_mesh_id.uid().is_instance() {
+            return self
+                .spawn_data_mesh_inner(cx, params, Some(&actor_mesh_id))
+                .map(SpawnedActorMesh::Data);
+        }
+
+        let (mesh, statuses) = self
+            .spawn_managed_mesh_inner(cx, actor_mesh_id, params, supervision_display_name)
+            .await?;
+        Ok(SpawnedActorMesh::Managed { mesh, statuses })
+    }
+
+    /// The managed spawn path used by singleton services and by ordinary
+    /// spawns when [`USE_DIRECT_SPAWN`] is disabled: the create/update cast,
+    /// the accumulator port, the bounded
     /// `GetRankStatus::wait` with terminal / timeout mapping, mesh
     /// materialization, and telemetry. It carries **no**
     /// `C::A: Handler<MeshFailure>` bound — that is required only by the
@@ -957,7 +1017,7 @@ impl ProcMeshRef {
     /// bounded caller layers on afterward. Returns the mesh together with the
     /// final `StatusMesh` (moved into the controller for non-system actors;
     /// discarded otherwise — system actors and the controllerless path).
-    async fn spawn_mesh_inner<A: RemoteSpawn, C: context::Actor>(
+    async fn spawn_managed_mesh_inner<A: RemoteSpawn, C: context::Actor>(
         &self,
         cx: &C,
         actor_mesh_id: ActorMeshId,
@@ -1353,6 +1413,8 @@ mod tests {
     #[cfg(fbcode_build)]
     use super::ACTOR_SPAWN_MAX_IDLE;
     #[cfg(fbcode_build)]
+    use super::USE_DIRECT_SPAWN;
+    #[cfg(fbcode_build)]
     use crate::ActorMesh;
     #[cfg(fbcode_build)]
     use crate::casting::CAST_POINT;
@@ -1418,6 +1480,55 @@ mod tests {
             .await
             .expect("stopping a data actor mesh clone should be idempotent");
 
+        hm.shutdown(instance)
+            .await
+            .expect("host mesh shutdown should complete");
+    }
+
+    #[async_timed_test(timeout_secs = 300)]
+    #[cfg(fbcode_build)]
+    async fn spawn_uses_direct_path_when_configured_but_services_remain_managed() {
+        let config = hyperactor_config::global::lock();
+        let _mode = config.override_key(USE_DIRECT_SPAWN, true);
+        let instance = testing::instance();
+        let mut hm = testing::host_mesh(1).await;
+        let proc_mesh = hm
+            .spawn(
+                instance,
+                "configured_data_spawn",
+                extent!(gpus = 2),
+                None,
+                None,
+            )
+            .await
+            .expect("spawn proc mesh");
+
+        let mut actor_mesh: ActorMesh<testactor::TestActor> = proc_mesh
+            .spawn(instance, "configured_data_actor", &())
+            .await
+            .expect("initiate configured data actor mesh spawn");
+        assert!(
+            actor_mesh.as_managed().is_none(),
+            "configured instance spawn should return a data mesh"
+        );
+        assert_eq!(actor_mesh.region().num_ranks(), 2);
+        assert!(actor_mesh.values().all(|actor| {
+            actor.actor_addr().label().map(|label| label.as_str()) == Some("configured_data_actor")
+        }));
+
+        let service: ActorMesh<testactor::TestActor> = proc_mesh
+            .spawn_service(instance, "configured_managed_service", &())
+            .await
+            .expect("spawn managed service");
+        assert!(
+            service.as_managed().is_some(),
+            "service spawn should ignore the data mesh flag"
+        );
+
+        actor_mesh
+            .stop(instance, "test complete".to_string())
+            .await
+            .expect("stop configured data actor mesh");
         hm.shutdown(instance)
             .await
             .expect("host mesh shutdown should complete");
@@ -1952,6 +2063,7 @@ mod tests {
         hyperactor_telemetry::initialize_logging(hyperactor_telemetry::DefaultTelemetryClock {});
 
         let config = hyperactor_config::global::lock();
+        let _mode = config.override_key(USE_DIRECT_SPAWN, false);
         let _guard = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
         let _guard2 = config.override_key(
             hyperactor::config::HOST_SPAWN_READY_TIMEOUT,

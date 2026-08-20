@@ -1698,6 +1698,7 @@ mod tests {
     use crate::mesh_id::ResourceId;
     use crate::proc_agent::ActorState;
     use crate::proc_agent::MESH_ORPHAN_TIMEOUT;
+    use crate::proc_mesh::USE_DIRECT_SPAWN;
     use crate::resource;
     use crate::supervision::MeshFailure;
     use crate::test_utils::local_host_mesh;
@@ -1949,6 +1950,7 @@ mod tests {
     #[tokio::test]
     async fn test_orphaned_actors_are_cleaned_up() {
         let config = hyperactor_config::global::lock();
+        let _mode = config.override_key(USE_DIRECT_SPAWN, false);
         // Short orphan timeout so SelfCheck fires frequently.
         let _orphan = config.override_key(MESH_ORPHAN_TIMEOUT, Some(Duration::from_secs(1)));
 
@@ -2074,6 +2076,7 @@ mod tests {
     #[cfg(fbcode_build)]
     async fn test_orphaned_actors_cleaned_up_on_controller_crash() {
         let config = hyperactor_config::global::lock();
+        let _mode = config.override_key(USE_DIRECT_SPAWN, false);
         let _orphan = config.override_key(MESH_ORPHAN_TIMEOUT, Some(Duration::from_secs(2)));
         let _poll = config.override_key(SUPERVISION_POLL_FREQUENCY, Duration::from_secs(1));
         let _proc_spawn = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
