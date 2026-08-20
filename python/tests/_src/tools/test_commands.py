@@ -70,7 +70,7 @@ class TestCommands(unittest.TestCase):
             dryrun_info = commands.create(config)
             assert isinstance(dryrun_info, AppDryRunInfo)
 
-            app = dryrun_info._app
+            app = dryrun_info.app
             assert app is not None
 
             for role in app.roles:

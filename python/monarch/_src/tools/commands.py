@@ -124,8 +124,8 @@ def create(
             info.request,
             fmt=defaults.dryrun_info_formatter(info),
         )
-        info_json_fmt._app = info._app
-        info_json_fmt._cfg = info._cfg
+        info_json_fmt.app = info.app
+        info_json_fmt.cfg = info.cfg
         info_json_fmt._scheduler = info._scheduler
 
         if config.dryrun:
