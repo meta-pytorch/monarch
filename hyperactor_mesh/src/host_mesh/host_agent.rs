@@ -278,7 +278,6 @@ pub(crate) struct ProcMetadata {
 }
 
 #[derive(Debug)]
-#[expect(dead_code)]
 pub(crate) enum CompletionAction {
     Keep,
     Stop { timeout: Duration, reason: String },
@@ -291,6 +290,7 @@ pub(crate) enum ProcCreationState {
     Pending {
         metadata: ProcMetadata,
         on_completion: CompletionAction,
+        /// Latest owner keepalive received before proc creation completed.
         expiry_time: Option<std::time::SystemTime>,
     },
     Created {
@@ -1179,7 +1179,6 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
             HostAgentMode::Local(host) => Either::Right(host.spawn(id.to_string(), ())),
         };
 
-        let was_empty = self.created.is_empty();
         self.created.insert(
             id.clone(),
             ProcCreationState::Pending {
@@ -1194,46 +1193,175 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
         );
 
         let created = spawn.await;
+        <Self as Handler<ProcSpawned>>::handle(self, cx, ProcSpawned { id, created }).await
+    }
+}
+
+struct ProcSpawned {
+    id: ResourceId,
+    created: Result<(ProcAddr, ActorRef<ProcAgent>), HostError>,
+}
+
+#[async_trait]
+impl Handler<ProcSpawned> for HostAgent {
+    async fn handle(&mut self, cx: &Context<Self>, spawned: ProcSpawned) -> anyhow::Result<()> {
+        let ProcSpawned { id, created } = spawned;
 
         if let Err(e) = &created {
             tracing::error!("failed to spawn proc {}: {}", id, e);
         }
-        let (metadata, expiry_time) = match self
-            .created
-            .remove(&id)
-            .expect("synchronous proc creation remains pending until spawn completes")
-        {
-            ProcCreationState::Pending {
-                metadata,
-                on_completion: CompletionAction::Keep,
-                expiry_time,
-            } => (metadata, expiry_time),
-            ProcCreationState::Pending { .. }
-            | ProcCreationState::Created { .. }
-            | ProcCreationState::Failed { .. } => {
-                unreachable!("HostAgent cannot process another request during synchronous spawn")
-            }
+
+        // A WaitRankStatus stashed before this proc existed carries its own reply
+        // rank (RSP-3); starting a status watch bridge for it needs the proc_id.
+        let proc_id = created.as_ref().ok().map(|(pid, _)| pid.clone());
+        let drain_status = match &created {
+            Ok(_) => Status::Stopped,
+            Err(error) => Status::Failed(error.to_string()),
         };
-        self.created.insert(
-            id.clone(),
-            ProcCreationState::from_spawn_result(metadata, expiry_time, created),
-        );
+
+        let (metadata, on_completion, expiry_time) = match self.created.remove(&id) {
+            Some(ProcCreationState::Pending {
+                metadata,
+                on_completion,
+                expiry_time,
+            }) => (metadata, on_completion, expiry_time),
+            Some(state) => {
+                self.created.insert(id, state);
+                return Ok(());
+            }
+            None => return Ok(()),
+        };
+
+        let mut record = Some(ProcCreationState::from_spawn_result(
+            metadata,
+            expiry_time,
+            created,
+        ));
+        if !matches!(&on_completion, CompletionAction::Drain) {
+            self.created.insert(
+                id.clone(),
+                record.take().expect("non-drain completion has a record"),
+            );
+        }
+
+        match on_completion {
+            CompletionAction::Keep => {}
+            CompletionAction::Stop { timeout, reason } => {
+                if let (Some(proc_id), Some(host)) = (proc_id.as_ref(), self.host()) {
+                    host.request_stop(cx, proc_id, timeout, &reason).await;
+                }
+            }
+            CompletionAction::Drain => {
+                let drain = self
+                    .pending_drain
+                    .as_ref()
+                    .expect("pending drain owns deferred proc completion");
+                let timeout = drain.timeout;
+                let reason = match &drain.kind {
+                    PendingDrainKind::Full => "full drain",
+                    PendingDrainKind::Selective(_) => "selective drain",
+                };
+                let termination_error = match proc_id.as_ref() {
+                    Some(proc_id) => match self.host() {
+                        Some(host) => host
+                            .terminate_proc(cx, &id, proc_id, timeout, reason)
+                            .await
+                            .err(),
+                        None => Some(anyhow::anyhow!("host unavailable while terminating {}", id)),
+                    },
+                    None => None,
+                };
+                let waiter_status = match &termination_error {
+                    Some(error) => Status::Failed(error.to_string()),
+                    None => drain_status,
+                };
+
+                if let Some(error) = termination_error {
+                    self.created.insert(
+                        id.clone(),
+                        record.take().expect("failed drain retains the proc record"),
+                    );
+                    self.pending_drain
+                        .as_mut()
+                        .expect("pending drain owns deferred proc completion")
+                        .record_failure(format!("{id}: {error}"));
+
+                    if let HostAgentState::Detached(_) = &self.state {
+                        let host =
+                            match std::mem::replace(&mut self.state, HostAgentState::Shutdown) {
+                                HostAgentState::Detached(host) => host,
+                                _ => unreachable!(),
+                            };
+                        self.state = HostAgentState::Attached(host);
+                    }
+                } else {
+                    self.watching.remove(&id);
+                }
+
+                self.flush_proc_waiters_with_status(cx, &id, waiter_status);
+
+                let drain_finished = {
+                    let drain = self
+                        .pending_drain
+                        .as_mut()
+                        .expect("pending drain owns deferred proc completion");
+                    drain.remaining = drain
+                        .remaining
+                        .checked_sub(1)
+                        .expect("pending drain count includes completed proc");
+                    drain.remaining == 0
+                };
+
+                if drain_finished {
+                    let drain = self.pending_drain.take().expect("pending drain exists");
+                    if matches!(&drain.kind, PendingDrainKind::Full) {
+                        self.start_full_drain(cx, drain);
+                    } else {
+                        let overlay = drain.overlay();
+                        drain.reply.post(cx, overlay);
+                    }
+                }
+
+                self.publish_introspect_properties(cx);
+                return Ok(());
+            }
+            CompletionAction::Shutdown => {
+                if self.pending_proc_waiters.contains_key(&id) {
+                    self.flush_proc_waiters(cx, &id).await;
+                }
+
+                let shutdown_finished = {
+                    let shutdown = self
+                        .pending_shutdown
+                        .as_mut()
+                        .expect("pending shutdown owns deferred proc completion");
+                    shutdown.remaining = shutdown
+                        .remaining
+                        .checked_sub(1)
+                        .expect("pending shutdown count includes completed proc");
+                    shutdown.remaining == 0
+                };
+
+                self.publish_introspect_properties(cx);
+                if shutdown_finished {
+                    let shutdown = self
+                        .pending_shutdown
+                        .take()
+                        .expect("pending shutdown exists");
+                    self.finish_shutdown(cx, shutdown).await;
+                }
+                return Ok(());
+            }
+        }
 
         // Transition Detached → Attached on first proc creation.
-        if was_empty && let HostAgentState::Detached(_) = &self.state {
+        if let HostAgentState::Detached(_) = &self.state {
             let host = match std::mem::replace(&mut self.state, HostAgentState::Shutdown) {
                 HostAgentState::Detached(h) => h,
                 _ => unreachable!(),
             };
             self.state = HostAgentState::Attached(host);
         }
-
-        // A WaitRankStatus stashed before this proc existed carries its own reply
-        // rank (RSP-3); starting a status watch bridge for it needs the proc_id.
-        let proc_id = self.created.get(&id).and_then(|state| match state {
-            ProcCreationState::Created { proc_id, .. } => Some(proc_id.clone()),
-            ProcCreationState::Pending { .. } | ProcCreationState::Failed { .. } => None,
-        });
 
         // Bridge status changes to any pending waiters, then flush once now.
         if self.pending_proc_waiters.contains_key(&id) {
