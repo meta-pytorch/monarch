@@ -635,6 +635,23 @@ impl HostAgent {
         timeout: std::time::Duration,
         max_in_flight: usize,
     ) {
+        let terminal_statuses =
+            self.created
+                .iter()
+                .map(|(id, state)| {
+                    (
+                        id.clone(),
+                        match state {
+                            ProcCreationState::Failed { error, .. } => {
+                                Status::Failed(error.to_string())
+                            }
+                            ProcCreationState::Pending { .. }
+                            | ProcCreationState::Created { .. } => Status::Stopped,
+                        },
+                    )
+                })
+                .collect::<Vec<_>>();
+
         if let Some(host_mode) = self.host_mut() {
             match host_mode {
                 HostAgentMode::Process { host, .. } => {
@@ -650,6 +667,9 @@ impl HostAgent {
                     tracing::info!(?summary, "terminated children on local host");
                 }
             }
+        }
+        for (id, status) in terminal_statuses {
+            self.flush_proc_waiters_with_status(cx, &id, status);
         }
         self.created.clear();
     }
@@ -1349,7 +1369,8 @@ impl Handler<resource::WaitRankStatus> for HostAgent {
                 let status = match self.host() {
                     Some(host) => host.proc_status(proc_id).await.0,
                     None => Status::Stopped,
-                };
+                }
+                .clamp_min(self.min_proc_status());
 
                 // If already at or past the requested threshold, reply immediately.
                 if status >= msg.min_status {
@@ -1377,6 +1398,22 @@ impl Handler<resource::WaitRankStatus> for HostAgent {
                 .expect("valid single-run overlay");
                 let _ = msg.reply.post(cx, overlay);
             }
+            Some(ProcCreationState::Pending { on_completion, .. })
+                if !matches!(on_completion, CompletionAction::Keep) =>
+            {
+                if Status::Stopping >= msg.min_status {
+                    let _ = msg.reply.post(
+                        cx,
+                        StatusOverlay::try_from_runs(vec![(rank..(rank + 1), Status::Stopping)])
+                            .expect("valid single-run overlay"),
+                    );
+                } else {
+                    self.pending_proc_waiters
+                        .entry(msg.id.clone())
+                        .or_default()
+                        .push((msg.min_status, rank, msg.reply));
+                }
+            }
             Some(ProcCreationState::Pending { .. }) | None => {
                 // Proc isn't ready yet. Stash the waiter with the rank the
                 // request carries (RSP-3); proc creation starts the watch bridge.
@@ -1402,26 +1439,33 @@ impl Handler<ProcStatusChanged> for HostAgent {
 impl HostAgent {
     /// Flush pending `WaitRankStatus` waiters whose threshold is now satisfied.
     async fn flush_proc_waiters(&mut self, cx: &Context<'_, Self>, id: &ResourceId) {
-        use crate::StatusOverlay;
-        use crate::resource::Status;
-
         let status = match self.created.get(id) {
-            Some(ProcCreationState::Pending {
-                on_completion: CompletionAction::Keep,
-                ..
-            }) => Status::Initializing,
-            Some(ProcCreationState::Pending { .. }) => Status::Stopping,
             Some(ProcCreationState::Created { proc_id, .. }) => match self.host() {
                 Some(host) => host.proc_status(proc_id).await.0,
                 None => Status::Stopped,
             },
             Some(ProcCreationState::Failed { error, .. }) => Status::Failed(error.to_string()),
-            None => {
+            Some(ProcCreationState::Pending { on_completion, .. })
+                if !matches!(on_completion, CompletionAction::Keep) =>
+            {
+                Status::Stopping
+            }
+            Some(ProcCreationState::Pending { .. }) | None => {
                 // Proc not created yet, nothing to flush.
                 return;
             }
-        };
+        }
+        .clamp_min(self.min_proc_status());
 
+        self.flush_proc_waiters_with_status(cx, id, status);
+    }
+
+    fn flush_proc_waiters_with_status(
+        &mut self,
+        cx: &Context<'_, Self>,
+        id: &ResourceId,
+        status: Status,
+    ) {
         let Some(waiters) = self.pending_proc_waiters.get_mut(id) else {
             return;
         };
