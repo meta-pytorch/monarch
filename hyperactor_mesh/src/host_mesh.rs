@@ -1341,18 +1341,14 @@ impl HostMeshRef {
             },
         );
 
-        // Build each proc's `ProcRef` up front: the caller derives the same
-        // id/rank (`host_agent::proc_name(&proc_mesh_id, create_rank)`) that
-        // each HostAgent will, so the refs are ready before the cast lands. A single
-        // `SpawnProcs` cast (below) then has each HostAgent spawn all of its
-        // per-host slots, replying with status overlays to drive the readiness
-        // barrier.
+        // Build each proc's `ProcRef` up front from the same slot derivation used
+        // by the HostAgent spawn and wait handlers.
         let mut proc_names = Vec::new();
         let client_config_override = hyperactor_config::global::propagatable_attrs();
         for (host_rank, agent) in self.host_agent_mesh.values().enumerate() {
-            for per_host_rank in 0..per_host.num_ranks() {
-                let create_rank = per_host.num_ranks() * host_rank + per_host_rank;
-                let proc_name = host_agent::proc_name(&proc_mesh_id, create_rank);
+            for (_, create_rank, proc_name) in
+                host_agent::proc_slots(&proc_mesh_id, host_rank, per_host.num_ranks())
+            {
                 proc_names.push(proc_name.clone());
                 let proc_id = named_proc_on_host(&agent, &proc_name);
                 let proc_agent =
@@ -1395,8 +1391,8 @@ impl HostMeshRef {
             None => None,
         };
 
-        // One cast: each HostAgent spawns all `num_per_host` of its proc slots,
-        // deriving each proc's id/rank from its stamped host rank.
+        // Start each host's proc slots, then subscribe to their readiness on the
+        // same ordered sender-destination streams.
         self.host_agent_mesh.cast(
             cx,
             host_agent::SpawnProcs {
@@ -1408,7 +1404,15 @@ impl HostMeshRef {
                 default_bootstrap_command: self.bootstrap_command.clone(),
                 proc_bind,
                 bootstrap_commands,
-                status_reply: Some(reply_port),
+            },
+        )?;
+        self.host_agent_mesh.cast(
+            cx,
+            host_agent::WaitProcs {
+                rank: resource::Rank::default(),
+                proc_mesh_id: proc_mesh_id.clone(),
+                num_per_host: per_host.num_ranks(),
+                status_reply: reply_port,
             },
         )?;
 
