@@ -1637,6 +1637,7 @@ mod tests {
     use crate::proc_agent::ActorState;
     use crate::proc_mesh::ACTOR_SPAWN_MAX_IDLE;
     use crate::proc_mesh::GET_ACTOR_STATE_MAX_IDLE;
+    use crate::proc_mesh::USE_DIRECT_SPAWN;
     use crate::resource;
     use crate::supervision::MeshFailure;
     use crate::test_utils::local_host_mesh;
@@ -1770,6 +1771,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_actor_mesh_ref_lazy_materialization() {
+        let config = hyperactor_config::global::lock();
+        let _mode = config.override_key(USE_DIRECT_SPAWN, false);
         // 1) Bring up procs and spawn actors.
         let instance = testing::instance();
         // Small mesh so the test runs fast, but > page_size so we
@@ -2007,6 +2010,7 @@ mod tests {
 
         let instance = testing::instance();
         let config = hyperactor_config::global::lock();
+        let _mode = config.override_key(USE_DIRECT_SPAWN, false);
         let _proc_spawn = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(120));
         let _actor_spawn = config.override_key(ACTOR_SPAWN_MAX_IDLE, Duration::from_secs(120));
         let _host_spawn = config.override_key(
@@ -2109,6 +2113,7 @@ mod tests {
         hyperactor_telemetry::initialize_logging_for_test();
 
         let config = hyperactor_config::global::lock();
+        let _mode = config.override_key(USE_DIRECT_SPAWN, false);
         let _poll = config.override_key(SUPERVISION_POLL_FREQUENCY, Duration::from_secs(1));
         let _guard = config.override_key(GET_ACTOR_STATE_MAX_IDLE, Duration::from_secs(1));
         let _proc_guard = config.override_key(GET_PROC_STATE_MAX_IDLE, Duration::from_secs(1));
@@ -2219,6 +2224,7 @@ mod tests {
         let supervisor = supervision_port.bind();
         let (mut hm, _actor_mesh, sliced, sliced_replicas, child_name) = {
             let config = hyperactor_config::global::lock();
+            let _mode = config.override_key(USE_DIRECT_SPAWN, false);
             let _proc_spawn = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(120));
             let _actor_spawn = config.override_key(ACTOR_SPAWN_MAX_IDLE, Duration::from_secs(120));
             let _host_spawn = config.override_key(
@@ -2764,6 +2770,7 @@ mod tests {
         // handler waits for ProcAgents to report `Stopped`. Shorten it
         // from 30s to 1s so the test finishes quickly.
         let config = hyperactor_config::global::lock();
+        let _mode = config.override_key(USE_DIRECT_SPAWN, false);
         let _proc_spawn = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
         let _host_spawn = config.override_key(
             hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
@@ -2856,6 +2863,7 @@ mod tests {
         hyperactor_telemetry::initialize_logging_for_test();
 
         let config = hyperactor_config::global::lock();
+        let _mode = config.override_key(USE_DIRECT_SPAWN, false);
         let _proc_spawn = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
         let _host_spawn = config.override_key(
             hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
